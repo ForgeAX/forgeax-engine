@@ -54,9 +54,16 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
   reproduce, `rhi capture`, then [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md).
 
 > [!IMPORTANT]
-> **forgeax is the single product entry.** Discover commands progressively with forgeax help;
+> **forgeax is the Engine command entry.** Discover commands progressively with forgeax help;
 > forgeax help --tree --json returns the complete structured command tree. ToolContribution, ToolClient,
 > and ToolRun are internal composition contracts behind the CLI, not additional product entries.
+
+Optional View owns a separate file launcher. For interactive scene/asset review,
+read the game's `skills/forgeax-view-start/SKILL.md`, or its installed copy at
+`node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.md`.
+From the game root: `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
+This needs no global SDK or manual Backend startup. Cold `forgeax help` does not
+discover the launcher; ordinary Engine commands do not require View.
 
 `--json` output is compact by default: large owner fields are summarized and listed in
 `omitted.fields`. Add `--detail` only when a decision needs one of them, for example
@@ -75,13 +82,28 @@ Custom Preview hosts use `readProjectFacts` from `@forgeax/engine-devkit` and
 Include the session's `watchFiles` in source-change handling and await `dispose()`
 on shutdown or failed startup.
 
+View editor Play borrows the current project resource server. It returns a game
+page before its World is ready; `play.ready` waits for the authenticated World.
+Stop retires the game page while the editor and resources remain available.
+Project/Engine source changes require a fresh accepted project revision; Play
+never bypasses the captured-source guards.
+
 Select the [View operating mode](../../tools/forgeax-mcp/README.md#view-operating-modes)
 before starting services. Default interface development, human review and browser
 annotations to platform independent View; hand off its actual View/project URL.
 Use platform simulation for MCP bridge regression and platform native for actual
 host behavior. Keep simulation and native evidence distinct.
 
-For Linux batch jobs without a monitor, first follow Linux unattended validation: writable XDG state, explicit headless versus Xvfb, and sandboxed non-root Chromium.
+Native Codex View instances are client-owned: the last App/business MCP process exit triggers Engine cleanup after three seconds of grace, including abnormal process exit. Binding and project selection survive; reopened targets and tokens are fresh. A page closure alone does not stop an instance retained by another MCP user. Manually started backends retain their explicit `backend stop` lifecycle. Stop a daemon before changing between manual and client ownership.
+
+For Linux batch jobs without a monitor, follow the
+unattended validation setup.
+For captures and live runs under Linux root, Engine can start an unprivileged
+Chromium child with a writable private profile and sandboxing enabled. With no
+display, the default is headless. An available borrowed page needs no local
+browser or display. If `browser-sandbox-root` remains, read the attempted
+launch's reason and report the affected gameplay and visual checks as
+unverified. A build or asset check only covers its own stage.
 
 ## Persistent live control
 

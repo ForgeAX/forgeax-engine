@@ -881,15 +881,16 @@ import {
         '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
         '#pragma variant_axis LOD_DITHER',
         '#pragma variant_axis GPU_SCENE_DIRECT',
+        '#pragma variant_axis ALPHA_MASK',
+        '#pragma variant_axis CLIPPING_PLANES',
       ]);
     });
 
-    it('(b2) shadow_caster.wgsl keeps LOD coverage unconditional (no LOD_DITHER axis)', () => {
-      // The shadow pass is not on the discard-free lane; an axis there only
-      // multiplies published rows without a pass that requests it.
+    it('(b2) shadow_caster.wgsl gates LOD coverage independently', () => {
+      // Only a fading scene-index shadow batch requests LOD coverage.
       const src = stripComments(readWgsl('shadow_caster.wgsl'));
-      expect(src).not.toMatch(/#pragma\s+variant_axis\s+LOD_DITHER/);
-      expect(src).not.toMatch(/#if\s+LOD_DITHER/);
+      expect(src).toMatch(/#pragma\s+variant_axis\s+LOD_DITHER/);
+      expect(src).toMatch(/#if\s+LOD_DITHER == true\s+applyLodCoverage\(in\.clip\.xy/);
       expect(src).toMatch(/applyLodCoverage\(in\.clip\.xy/);
     });
 
@@ -1686,7 +1687,7 @@ import {
     {
       file: 'lighting-punctual.wgsl',
       importPath: 'forgeax_pbr::lighting_punctual',
-      exportedFns: ['evalPunctualBody', 'evalPoint', 'evalSpot'],
+      exportedFns: ['evalPunctualBodyLobes', 'evalPoint', 'evalSpot'],
       zeroBinding: true,
     },
   ];
@@ -1740,7 +1741,7 @@ import {
       expect(codeOnly).not.toMatch(/fn\s+evalDirectional\s*\(/);
       expect(codeOnly).not.toMatch(/fn\s+evalPoint\s*\(/);
       expect(codeOnly).not.toMatch(/fn\s+evalSpot\s*\(/);
-      expect(codeOnly).not.toMatch(/fn\s+evalPunctualBody\s*\(/);
+      expect(codeOnly).not.toMatch(/fn\s+evalPunctualBody(?:Lobes)?\s*\(/);
     });
 
     it('built-in PBR shaders evaluate directional CSM for base and clearcoat contributions', () => {

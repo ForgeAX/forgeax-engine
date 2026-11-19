@@ -30,6 +30,7 @@ import {
 } from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
 import {
+  type SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
@@ -42,6 +43,7 @@ export function bindStandardSceneDataTarget(
   topology: import('../render-pipeline').RenderPipelineTopology,
   schema:
     | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
+    | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
 ): RenderPipelineTarget {
@@ -287,6 +289,7 @@ export function createStandardSceneSurfaceDepthTarget(
 export function createStandardSceneSurfaceDataTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   size: GraphTextureDescriptor['size'],
+  sharedDepth?: RenderPipelineTarget,
 ): Result<StandardSceneSurfaceDataTargets, RenderGraphError> {
   const normal = createRenderPipelineTarget(graph, 'standard-scene-surface-normal', {
     format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
@@ -295,7 +298,10 @@ export function createStandardSceneSurfaceDataTargets(
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!normal.ok) return normal;
-  const depth = createStandardSceneSurfaceDepthTarget(graph, size);
+  const depth =
+    sharedDepth === undefined
+      ? createStandardSceneSurfaceDepthTarget(graph, size)
+      : ok(sharedDepth);
   if (!depth.ok) return depth;
   return ok({
     normalSchema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
@@ -365,9 +371,11 @@ export function addStandardSceneSurfaceDataPass(
   targets: Pick<StandardSceneSurfaceDataTargets, 'depth'> &
     Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
+  name = 'standard-scene-surface-data',
+  fragmentEntryPoint = 'fs_ao_input',
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
-    name: 'standard-scene-surface-data',
+    name,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     gpuDrivenFilter: 'opaque',
     ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
@@ -375,7 +383,7 @@ export function addStandardSceneSurfaceDataPass(
     selector: FORWARD_PASS_SELECTOR,
     recordMode: 'opaque',
     passKind: 'forward',
-    fragmentEntryPoint: 'fs_ao_input',
+    fragmentEntryPoint,
     colorLoadOp: 'clear',
     depthLoadOp: 'clear',
   });

@@ -102,8 +102,13 @@ export async function verifyClippingPlanes(
   renderer: Renderer,
   recorder: RecorderAttachment,
   save: (name: string, bytes: Uint8Array) => void | Promise<void>,
-  materials?: { assets: AssetRegistry; handles: readonly AssetHandle<'material'>[] },
+  materials?: {
+    assets: AssetRegistry;
+    handles: readonly AssetHandle<'material'>[];
+    viewClipping?: true;
+  },
 ) {
+  const viewClipping = materials === undefined || materials.viewClipping === true;
   const world = materials === undefined ? new World() : new World({ assets: materials.assets });
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -241,7 +246,7 @@ export async function verifyClippingPlanes(
           camera,
           ClippingPlanes,
           clippingPlanesData({
-            planes: materials === undefined ? planes : [],
+            planes: viewClipping ? planes : [],
             intersection,
             clipShadows,
           }),
@@ -251,7 +256,7 @@ export async function verifyClippingPlanes(
       // Retained static shadow depth bakes the camera clipping casters honor,
       // so a change to it rebuilds every static layer in full.
       const shadowClipping =
-        clipShadows && materials === undefined && planes.length > 0
+        clipShadows && viewClipping && planes.length > 0
           ? JSON.stringify([planes, intersection])
           : '';
       if (!direct && previousGpuShadowClipping !== undefined) {
@@ -387,27 +392,31 @@ export async function verifyClippingPlanes(
           workIndex: work.workIndex,
           eventIndex: work.eventIndex,
         }));
-        let shadowPixels = 0;
-        for (let arrayLayer = 0; ; arrayLayer++) {
-          const shadowResult = batched[arrayLayer + 2];
-          if (shadowResult === undefined)
-            throw new Error(`missing batched shadow read for layer ${arrayLayer}`);
-          if (!shadowResult.ok) {
-            if (arrayLayer === 0) throw shadowResult.error;
-            break;
+        const readShadowCoverage = () => {
+          let shadowPixels = 0;
+          for (let arrayLayer = 0; ; arrayLayer++) {
+            const shadowResult = batched[arrayLayer + 2];
+            if (shadowResult === undefined)
+              throw new Error(`missing batched shadow read for layer ${arrayLayer}`);
+            if (!shadowResult.ok) {
+              if (arrayLayer === 0) throw shadowResult.error;
+              break;
+            }
+            const shadowRead = shadowResult.value;
+            if (shadowRead === undefined || shadowRead.format !== 'depth32float')
+              throw new Error('missing shadow depth evidence');
+            const depths = new Float32Array(
+              shadowRead.bytes.buffer,
+              shadowRead.bytes.byteOffset,
+              shadowRead.bytes.byteLength / 4,
+            );
+            shadowPixels += depths.filter((value) => value > 0).length;
+            if (arrayLayer >= layerCount)
+              throw new Error('shadow texture descriptor omitted a readable array layer');
           }
-          const shadowRead = shadowResult.value;
-          if (shadowRead === undefined || shadowRead.format !== 'depth32float')
-            throw new Error('missing shadow depth evidence');
-          const depths = new Float32Array(
-            shadowRead.bytes.buffer,
-            shadowRead.bytes.byteOffset,
-            shadowRead.bytes.byteLength / 4,
-          );
-          shadowPixels += depths.filter((value) => value > 0).length;
-          if (arrayLayer >= layerCount)
-            throw new Error('shadow texture descriptor omitted a readable array layer');
-        }
+          return shadowPixels;
+        };
+        const shadowPixels = readShadowCoverage();
         if (name === 'baseline') baselineShadowPixels = shadowPixels;
         expect(baselineShadowPixels).toBeGreaterThan(0);
         const shadowRatio = shadowPixels / baselineShadowPixels;
@@ -437,6 +446,23 @@ export async function verifyClippingPlanes(
     }
     expect(errors).toEqual([]);
     await save('report.json', new TextEncoder().encode(JSON.stringify(reports, null, 2)));
+  } catch (failure) {
+    await save(
+      'failure.json',
+      new TextEncoder().encode(
+        JSON.stringify(
+          { failure, errors },
+          (_key, value: unknown) =>
+            value instanceof Error
+              ? Object.fromEntries(
+                  Object.getOwnPropertyNames(value).map((key) => [key, Reflect.get(value, key)]),
+                )
+              : value,
+          2,
+        ),
+      ),
+    );
+    throw failure;
   } finally {
     unsubscribe();
     lease.dispose();

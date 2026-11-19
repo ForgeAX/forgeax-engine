@@ -1300,3 +1300,11 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 
 .fx-resource-page-status { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--fx-color-surface-canvas); color: var(--fx-color-text-primary); }
 .fx-resource-page-status[data-phase="failed"] { inset: auto 16px 16px; padding: 12px; justify-content: flex-start; border: 1px solid currentColor; }
+
+.fx-view-project-chooser__tabs, .fx-view-project-chooser__actions { display: flex; gap: 8px; margin: 12px 0; }
+.fx-view-project-chooser__actions { justify-content: flex-end; }
+.fx-view-project-chooser__list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow: auto; margin: 10px 0; }
+.fx-view-project-chooser__list button { display: flex; flex-direction: column; text-align: left; gap: 3px; padding: 8px; border: 1px solid var(--fx-border-default); border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.fx-view-project-chooser__list button[aria-pressed="true"] { border-color: currentColor; }
+.fx-view-project-chooser__list button span { overflow-wrap: anywhere; opacity: .7; font-size: 12px; }
+.fx-view-project-chooser__list button:disabled { opacity: .55; cursor: default; }

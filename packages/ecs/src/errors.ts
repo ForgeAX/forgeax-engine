@@ -1,54 +1,42 @@
-import type * as QueryErrors from './errors/query-and-component-errors';
-import type * as BatchErrors from './errors/query-batch-errors';
-import type * as FieldErrors from './errors/sprite-and-shared-errors';
+import type { AssetError } from '@forgeax/engine-types';
+
+class EcsFault<const C extends string, const D, const N extends string> extends Error {
+  protected declare readonly ecsFaultIdentity: void;
+  constructor(
+    override readonly name: N,
+    readonly code: C,
+    message: string,
+    readonly hint: string,
+    readonly expected: string,
+    readonly detail: D,
+  ) {
+    super(`[${code}] ${message}\n  expected: ${expected}\n  hint: ${hint}`);
+  }
+}
+
+import type { SharedKernelEligibilityReason, WorldExecutionState } from './execution/shared-kernel';
 import type { MemoryError, MemoryErrorDetail } from './memory-types';
 
-// @forgeax/engine-ecs — typed error class collection.
-//
-// Typed error classes covering all boundary conditions. Each follows progressive
-// disclosure format: one-line summary → context fields → hint fix suggestion.
-// Each exposes a `.hint` readonly property for programmatic extraction.
-
-// ────────────────────────────────────────────────────────────────────────────
-// Re-exports from split error sub-files (w3-b — package cohesion split)
-// ────────────────────────────────────────────────────────────────────────────
-
-export {
-  ComponentNotDefinedError,
-  QueryDataRequiresFieldsError,
-  QueryDescriptorConflictError,
-  QueryIterationActiveError,
-  QueryIterationInvalidatedError,
-  QuerySpanUnavailableError,
-  type QuerySpanUnavailableReason,
-  RemoveEntityComponentError,
-  SpawnDataUnknownFieldError,
-} from './errors/query-and-component-errors';
-
-export {
-  RelationshipDetachMismatchError,
-  RelationshipMirrorComponentNotRegisteredError,
-  RelationshipMirrorFieldTypeMismatchError,
-  RelationshipSelfCycleError,
-  RelationshipTargetReadonlyError,
-} from './errors/relationship-errors';
-export {
-  SharedKernelEligibilityError,
-  SharedKernelFailureError,
-  WorldPoisonedError,
-} from './errors/shared-kernel-errors';
-export { SharedFieldInvalidValueError } from './errors/sprite-and-shared-errors';
-export {
-  ArrayRangeOutOfBoundsError,
-  ComponentFieldInvalidValueError,
-  ManagedArrayInvalidValueError,
-  ScheduleScopeMismatchError,
-  TimeConfigInvalidError,
-  TimeDeltaInvalidError,
-  TimeScaleInvalidError,
-  TimeScaleLeaseReleasedError,
-  validateEnumFieldValues,
-} from './errors/validation-errors';
+class DetailError<D> extends Error {
+  constructor(
+    message: string,
+    readonly hint: string,
+    readonly expected: string,
+    readonly detail: D,
+  ) {
+    super(`${message}\n  expected: ${expected}\n  hint: ${hint}`);
+  }
+}
+class RangeDetailError<D> extends RangeError {
+  constructor(
+    message: string,
+    readonly hint: string,
+    readonly expected: string,
+    readonly detail: D,
+  ) {
+    super(`${message}\n  expected: ${expected}\n  hint: ${hint}`);
+  }
+}
 
 /**
  * Thrown when an attempt is made to encode an entity index that does not fit
@@ -89,7 +77,7 @@ export class SchemaUnsupportedFieldError extends Error {
   constructor(fieldName: string, fieldType: string) {
     const hint =
       'Use a scalar (f32/f64/i32/u32/i16/u16/i8/u8/bool/enum), entity, string, ' +
-      'unique<T>, shared<T>, asset<kind>, buffer, buffer<N>, array<T>, or array<T,N>. ' +
+      'unique<T>, shared<T>, asset<kind>, array<T>, or array<T,N>. ' +
       'AssetRegistry owns asset content; unique<T> owns one non-asset value.';
     super(
       `Schema field "${fieldName}" has unsupported type "${fieldType}".\n` +
@@ -101,22 +89,17 @@ export class SchemaUnsupportedFieldError extends Error {
   }
 }
 
-export class SparseStorageRequiresTagError extends Error {
-  override readonly name = 'SparseStorageRequiresTagError';
-  readonly code = 'sparse-storage-requires-tag' as const;
-  readonly expected = 'sparse components have an empty schema and no relationship metadata';
-  readonly hint = 'remove all fields and relationship metadata, or use storage: table';
-  readonly detail: { readonly componentName: string };
-
-  constructor(componentName: string) {
-    super(
-      `Sparse component "${componentName}" must be a zero-field, non-relationship tag.\n` +
-        `  component: ${componentName}\n` +
-        `  hint: remove all fields and relationship metadata, or use storage: table`,
-    );
-    this.detail = { componentName };
-  }
+export function createSparseStorageRequiresTagError(componentName: string) {
+  return new EcsFault(
+    'SparseStorageRequiresTagError',
+    'sparse-storage-requires-tag',
+    `Sparse component "${componentName}" must be a zero-field, non-relationship tag.`,
+    'remove all fields and relationship metadata, or use storage: table',
+    'sparse components have an empty schema and no relationship metadata',
+    { componentName },
+  );
 }
+export type SparseStorageRequiresTagError = ReturnType<typeof createSparseStorageRequiresTagError>;
 
 /**
  * Thrown (or returned via the `Result` err branch — `r.ok === false`, `r.error`)
@@ -234,65 +217,40 @@ export class ComponentNotPresentError extends Error {
  * `.detail` — `{ code: 'cyclic-dependency'; cycle: readonly string[] }` contains the
  *    structured cycle path for programmatic consumption.
  */
-export class CyclicDependencyError extends Error {
-  override readonly name = 'CyclicDependencyError';
-  readonly code = 'cyclic-dependency' as const;
-  readonly expected = 'the schedule dependency graph is acyclic';
-  readonly hint: string;
-  /** Structured cycle path — programmatic consumers read this, not the message. */
-  readonly detail: { readonly code: 'cyclic-dependency'; readonly cycle: readonly string[] };
-
-  constructor(cycle: readonly string[]) {
-    const cycleStr = cycle.join(' -> ');
-    const hint = `Cycle path: ${cycleStr}. Remove one ordering constraint to break the cycle.`;
-    super(`DAG Schedule has a cyclic dependency.\n  cycle: ${cycleStr}\n  hint: ${hint}`);
-    this.hint = hint;
-    this.detail = { code: 'cyclic-dependency' as const, cycle };
-  }
+export function createCyclicDependencyError(cycle: readonly string[]) {
+  const cycleStr = cycle.join(' -> ');
+  const hint = `Cycle path: ${cycleStr}. Remove one ordering constraint to break the cycle.`;
+  return new EcsFault(
+    'CyclicDependencyError',
+    'cyclic-dependency',
+    `DAG Schedule has a cyclic dependency.`,
+    hint,
+    'the schedule dependency graph is acyclic',
+    { code: 'cyclic-dependency' as const, cycle },
+  );
 }
+export type CyclicDependencyError = ReturnType<typeof createCyclicDependencyError>;
 
-/**
- * Returned via `Result.err` from `world.addSystems`
- * when a SystemSet token fails local structural validation.
- *
- * The sole public invalid-token error type (D-2a). Covers all rejection
- * scenarios: plain-object cast, unregistered name, stale token after
- * overwrite, and cross-realm copies.
- *
- * `.code = 'system-set-not-registered'`
- * `.expected` — the name of the unregistered token.
- * `.hint` — suggests passing the current token to the owning World schedule.
- * `.detail` — `{ code, name, registered }` where `registered` is a deterministic snapshot
- *    of the current World-local schedule keys.
- */
-export class SystemSetNotRegisteredError extends Error {
-  override readonly name = 'SystemSetNotRegisteredError';
-  readonly code = 'system-set-not-registered' as const;
-  /** The name carried by the rejected token. */
-  readonly expected: string;
-  readonly hint: string;
-  /** Deterministic snapshot of the current World-local schedule for repair. */
-  readonly detail: {
-    readonly code: 'system-set-not-registered';
-    readonly name: string;
-    readonly registered: readonly string[];
-  };
-
-  constructor(name: string, registered: readonly string[]) {
-    const hint =
-      `SystemSet "${name}" is not valid for the current World schedule. ` +
-      `Pass a non-empty SystemSet token owned by this World schedule.`;
-    const message =
-      `SystemSet "${name}" is not registered.\n` +
-      `  expected: ${name}\n` +
-      `  registered: [${registered.join(', ')}]\n` +
-      `  hint: ${hint}`;
-    super(message);
-    this.expected = name;
-    this.hint = hint;
-    this.detail = { code: 'system-set-not-registered' as const, name, registered };
-  }
+/** Ordering referenced an unregistered system set in this schedule. */
+export function createSystemSetNotRegisteredError(name: string, registered: readonly string[]) {
+  const hint =
+    `SystemSet "${name}" is not valid for the current World schedule. ` +
+    `Pass a non-empty SystemSet token owned by this World schedule.`;
+  const message =
+    `SystemSet "${name}" is not registered.\n` +
+    `  expected: ${name}\n` +
+    `  registered: [${registered.join(', ')}]\n` +
+    `  hint: ${hint}`;
+  return new EcsFault(
+    'SystemSetNotRegisteredError',
+    'system-set-not-registered',
+    message,
+    hint,
+    name,
+    { code: 'system-set-not-registered' as const, name, registered },
+  );
 }
+export type SystemSetNotRegisteredError = ReturnType<typeof createSystemSetNotRegisteredError>;
 
 /**
  * Factory for {@link SystemSetNotRegisteredError}. Consumed by
@@ -302,23 +260,10 @@ export function systemSetNotRegistered(
   name: string,
   registered: readonly string[],
 ): SystemSetNotRegisteredError {
-  return new SystemSetNotRegisteredError(name, registered);
+  return createSystemSetNotRegisteredError(name, registered);
 }
 
-/**
- * Closed-set ScheduleMutationError code union (M2 — plan-strategy D-3).
- *
- * Schedule add-only API (`removeSystem` / `replaceSystem`) returns
- * `Result<void, ScheduleMutationError>` carrying one of these codes. The
- * `@forgeax/engine-remote` layer (M3) bridges these strings to JSON-RPC
- * `RemoteErrorCode` 1:1 — keeping ECS free of console / wire dependencies.
- *
- * - `system-before-unknown` — name argument does not match any registered system.
- * - `system-name-conflict`  — reserved for the M3 inject path; surfaced from
- *   schedule when callers inject a name that already exists.
- * - `cyclic-injection`      — schedule build detected a cycle introduced by
- *   the mutation; carries the cycle path in `.detail.cycle`.
- */
+/** Closed schedule-mutation failures. */
 export type ScheduleMutationErrorCode = 'system-before-unknown';
 
 export interface ScheduleMutationErrorDetail {
@@ -371,16 +316,17 @@ export class ResourceNotFoundError extends Error {
   }
 }
 
-export class ChangeEpochExhaustedError extends Error {
+export class ChangeEpochExhaustedError extends DetailError<{ readonly epoch: number }> {
   override readonly name = 'ChangeEpochExhaustedError';
   readonly code = 'change-epoch-exhausted' as const;
-  readonly expected = 'mutationEpoch < Number.MAX_SAFE_INTEGER';
-  readonly hint = 'Rebuild the World before performing another mutation.';
-  readonly detail: { readonly epoch: number };
 
   constructor(epoch: number) {
-    super(`World mutation epoch is exhausted at ${epoch}.\n  hint: Rebuild the World.`);
-    this.detail = { epoch };
+    super(
+      `World mutation epoch is exhausted at ${epoch}.`,
+      'Rebuild the World before performing another mutation.',
+      'mutationEpoch < Number.MAX_SAFE_INTEGER',
+      { epoch },
+    );
   }
 }
 
@@ -396,19 +342,21 @@ export class DerivedWriteActiveError extends Error {
   }
 }
 
-export class DerivedRangeOutOfBoundsError extends Error {
-  override readonly name = 'DerivedRangeOutOfBoundsError';
-  readonly code = 'derived-range-out-of-bounds' as const;
-  readonly expected = 'a non-negative span-relative range with start + count <= span.length';
-  readonly hint =
-    'check start and count against the QuerySpan length, then retry without changing World state';
-  readonly detail: { readonly start: number; readonly count: number; readonly spanLength: number };
-
-  constructor(start: number, count: number, spanLength: number) {
-    super(`Derived range [${start}, ${start + count}) exceeds QuerySpan length ${spanLength}.`);
-    this.detail = { start, count, spanLength };
-  }
+export function createDerivedRangeOutOfBoundsError(
+  start: number,
+  count: number,
+  spanLength: number,
+) {
+  return new EcsFault(
+    'DerivedRangeOutOfBoundsError',
+    'derived-range-out-of-bounds',
+    `Derived range [${start}, ${start + count}) exceeds QuerySpan length ${spanLength}.`,
+    'check start and count against the QuerySpan length, then retry without changing World state',
+    'a non-negative span-relative range with start + count <= span.length',
+    { start, count, spanLength },
+  );
 }
+export type DerivedRangeOutOfBoundsError = ReturnType<typeof createDerivedRangeOutOfBoundsError>;
 
 /**
  * Thrown when insertResource/removeResource is called on a World-owned
@@ -441,8 +389,6 @@ export class ProtectedResourceError extends Error {
     this.expected = expected;
   }
 }
-
-// ────────────────────────────────────────────────────────────────────────────
 // Managed value lifetime errors.
 
 /**
@@ -454,29 +400,19 @@ export class ProtectedResourceError extends Error {
  * `.detail = { handle, target }`
  * `.hint` — recommends checking handle lifetime against owner despawn.
  */
-export class UniqueRefReleasedError extends Error {
-  override readonly name = 'UniqueRefReleasedError';
-  readonly code = 'unique-ref-released' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly handle: number; readonly target: string };
-
-  constructor(handle: number, target: string) {
-    const hint = `Handle ${handle} (target ${target}) was released before this access. Re-acquire via the producing system or re-spawn the asset before reading.`;
-    const expected = 'live (refcount >= 1) managed handle';
-    super(
-      `UniqueRefStore: handle is already released.\n` +
-        `  code: unique-ref-released\n` +
-        `  handle: ${handle}\n` +
-        `  target: ${target}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { handle, target };
-  }
+export function createUniqueRefReleasedError(handle: number, target: string) {
+  const hint = `Handle ${handle} (target ${target}) was released before this access. Re-acquire via the producing system or re-spawn the asset before reading.`;
+  const expected = 'live (refcount >= 1) managed handle';
+  return new EcsFault(
+    'UniqueRefReleasedError',
+    'unique-ref-released',
+    'UniqueRefStore: handle is already released.',
+    hint,
+    expected,
+    { handle, target },
+  );
 }
+export type UniqueRefReleasedError = ReturnType<typeof createUniqueRefReleasedError>;
 
 /**
  * Thrown / returned via `Result.err` when UniqueRefStore.release is called on
@@ -486,31 +422,19 @@ export class UniqueRefReleasedError extends Error {
  * `.detail = { handle, target }`
  * `.hint` — recommends auditing the release-loop entry points (set / removeComponent / despawn).
  */
-export class UniqueRefDoubleReleaseError extends Error {
-  override readonly name = 'UniqueRefDoubleReleaseError';
-  readonly code = 'unique-ref-double-release' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly handle: number; readonly target: string };
-
-  constructor(handle: number, target: string) {
-    const hint = `Handle ${handle} (target ${target}) was released twice. Only one of {despawn / removeComponent / set} should release a managed handle per lifecycle.`;
-    const expected = 'first release of a managed handle (refcount transition 1 -> 0)';
-    super(
-      `UniqueRefStore: double release on handle.\n` +
-        `  code: unique-ref-double-release\n` +
-        `  handle: ${handle}\n` +
-        `  target: ${target}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { handle, target };
-  }
+export function createUniqueRefDoubleReleaseError(handle: number, target: string) {
+  const hint = `Handle ${handle} (target ${target}) was released twice. Only one of {despawn / removeComponent / set} should release a managed handle per lifecycle.`;
+  const expected = 'first release of a managed handle (refcount transition 1 -> 0)';
+  return new EcsFault(
+    'UniqueRefDoubleReleaseError',
+    'unique-ref-double-release',
+    'UniqueRefStore: double release on handle.',
+    hint,
+    expected,
+    { handle, target },
+  );
 }
-
-// ────────────────────────────────────────────────────────────────────────────
+export type UniqueRefDoubleReleaseError = ReturnType<typeof createUniqueRefDoubleReleaseError>;
 // feat-20260614-ecs-shared-component-and-unique-rename M3 — SharedRefStore
 // closed-union extension (+2). Mirrors the UniqueRef* pair — `'shared-ref-released'`
 // covers resolve-after-release / retain-after-release; `'shared-ref-double-release'`
@@ -521,7 +445,6 @@ export class UniqueRefDoubleReleaseError extends Error {
 // debugging a double-release see the exact rc transition that surfaced the
 // failure (charter P3 progressive disclosure). Empty `target` handled the
 // same way as UniqueRef* — runtime-erased phantom, surfaced as '<unknown>'.
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Thrown / returned via `Result.err` when SharedRefStore.resolve / .retain is
@@ -531,331 +454,169 @@ export class UniqueRefDoubleReleaseError extends Error {
  * `.detail = { handle, target }`
  * `.hint` — recommends checking handle lifetime against owner / consumer release.
  */
-export class SharedRefReleasedError extends Error {
-  override readonly name = 'SharedRefReleasedError';
-  readonly code = 'shared-ref-released' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly handle: number; readonly target: string };
-
-  constructor(handle: number, target: string) {
-    const hint = `Handle ${handle} (target ${target}) was released (refcount reached 0). Re-acquire via the producing system or re-spawn the asset before reading.`;
-    const expected = 'live (refcount >= 1) shared handle';
-    super(
-      `SharedRefStore: handle is already released.\n` +
-        `  code: shared-ref-released\n` +
-        `  handle: ${handle}\n` +
-        `  target: ${target}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { handle, target };
-  }
+export function createSharedRefReleasedError(handle: number, target: string) {
+  const hint = `Handle ${handle} (target ${target}) was released (refcount reached 0). Re-acquire via the producing system or re-spawn the asset before reading.`;
+  const expected = 'live (refcount >= 1) shared handle';
+  return new EcsFault(
+    'SharedRefReleasedError',
+    'shared-ref-released',
+    'SharedRefStore: handle is already released.',
+    hint,
+    expected,
+    { handle, target },
+  );
 }
+export type SharedRefReleasedError = ReturnType<typeof createSharedRefReleasedError>;
 
-/**
- * Thrown / returned via `Result.err` when SharedRefStore.release is called on
- * a handle whose refcount is already zero (double-release). Distinct from the
- * UniqueRef family because shared release is rc--, not direct slot drop —
- * AI users debug this by reading `.detail.rc` (always 0 here) alongside the
- * payload-presence signal.
- *
- * `.code = 'shared-ref-double-release'`
- * `.detail = { handle, target, rc }`
- * `.hint` — recommends auditing the producer / consumer release pairs.
- */
-export class SharedRefDoubleReleaseError extends Error {
-  override readonly name = 'SharedRefDoubleReleaseError';
-  readonly code = 'shared-ref-double-release' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly handle: number; readonly target: string; readonly rc: number };
-
-  constructor(handle: number, target: string, rc: number) {
-    const hint = `Handle ${handle} (target ${target}) released with rc=${rc}. Each shared handle must have a matching alloc/retain for every release; audit the producer / consumer release pairs.`;
-    const expected = 'rc >= 1 before release';
-    super(
-      `SharedRefStore: double release on handle.\n` +
-        `  code: shared-ref-double-release\n` +
-        `  handle: ${handle}\n` +
-        `  target: ${target}\n` +
-        `  rc: ${rc}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { handle, target, rc };
-  }
+/** Release attempted on an already released shared reference. */
+export function createSharedRefDoubleReleaseError(handle: number, target: string, rc: number) {
+  const hint = `Handle ${handle} (target ${target}) released with rc=${rc}. Each shared handle must have a matching alloc/retain for every release; audit the producer / consumer release pairs.`;
+  const expected = 'rc >= 1 before release';
+  return new EcsFault(
+    'SharedRefDoubleReleaseError',
+    'shared-ref-double-release',
+    'SharedRefStore: double release on handle.',
+    hint,
+    expected,
+    { handle, target, rc },
+  );
 }
+export type SharedRefDoubleReleaseError = ReturnType<typeof createSharedRefDoubleReleaseError>;
 
 /** Raised before SharedRefStore mutates slot state for a nullish payload. */
-export class SharedRefPayloadInvalidError extends Error {
-  override readonly name = 'SharedRefPayloadInvalidError';
-  readonly code = 'shared-ref-payload-invalid' as const;
-  readonly expected = 'a non-null, non-undefined shared payload';
-  readonly hint = 'Allocate a concrete payload and let its owning effect dispose it.';
-  readonly detail: { readonly target: string; readonly actual: 'null' | 'undefined' };
-
-  constructor(target: string, actual: 'null' | 'undefined') {
-    super(`SharedRefStore: ${actual} payload is not a valid shared reference for ${target}.`);
-    this.detail = { target, actual };
-  }
+export function createSharedRefPayloadInvalidError(target: string, actual: 'null' | 'undefined') {
+  return new EcsFault(
+    'SharedRefPayloadInvalidError',
+    'shared-ref-payload-invalid',
+    `SharedRefStore: ${actual} payload is not a valid shared reference for ${target}.`,
+    'Allocate a concrete payload and let its owning effect dispose it.',
+    'a non-null, non-undefined shared payload',
+    { target, actual },
+  );
 }
+export type SharedRefPayloadInvalidError = ReturnType<typeof createSharedRefPayloadInvalidError>;
 
-/**
- * Returned via `Result.err` when SharedRefStore.resolve / .retain / .release
- * is called with a handle whose generation no longer matches the store's
- * current generation for that slot — the slot was released and re-allocated
- * to a different payload. Distinct from `'shared-ref-released'` (slot empty,
- * never re-allocated): stale means the slot IS live but belongs to a newer
- * allocation.
- *
- * `.code = 'shared-ref-stale'`
- * `.detail = { slot, expectedGeneration, actualGeneration }`
- * `.hint` — recommends re-acquiring the handle from AssetRegistry.
- */
-export class SharedRefStaleError extends Error {
+/** Generation mismatch in SharedRefStore; the slot may now belong to another payload. */
+export class SharedRefStaleError extends DetailError<{
+  readonly slot: number;
+  readonly expectedGeneration: number;
+  readonly actualGeneration: number;
+}> {
   override readonly name = 'SharedRefStaleError';
   readonly code = 'shared-ref-stale' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: {
-    readonly slot: number;
-    readonly expectedGeneration: number;
-    readonly actualGeneration: number;
-  };
 
   constructor(slot: number, expectedGeneration: number, actualGeneration: number) {
     const hint = `Handle for slot ${slot} is stale: expected generation ${expectedGeneration}, but the store has generation ${actualGeneration} (slot was released and re-allocated). Re-acquire the handle from AssetRegistry.`;
     const expected = `generation === ${actualGeneration} (current store generation)`;
-    super(
-      `SharedRefStore: stale handle.\n` +
-        `  code: shared-ref-stale\n` +
-        `  slot: ${slot}\n` +
-        `  expectedGeneration: ${expectedGeneration}\n` +
-        `  actualGeneration: ${actualGeneration}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { slot, expectedGeneration, actualGeneration };
+    super('SharedRefStore: stale handle.', hint, expected, {
+      slot,
+      expectedGeneration,
+      actualGeneration,
+    });
   }
 }
 
-/**
- * Returned via `Result.err` when UniqueRefStore.resolve / .release is
- * called with a handle whose generation no longer matches the store's
- * current generation for that slot — the slot was released and re-allocated.
- * Distinct from `'unique-ref-released'` (slot empty). UniqueRefStore has
- * no retain method; the stale surface is resolve + release only.
- *
- * `.code = 'unique-ref-stale'`
- * `.detail = { slot, expectedGeneration, actualGeneration }`
- * `.hint` — recommends re-acquiring the handle from the producing system.
- */
-export class UniqueRefStaleError extends Error {
+/** Generation mismatch in UniqueRefStore; the slot may now belong to another payload. */
+export class UniqueRefStaleError extends DetailError<{
+  readonly slot: number;
+  readonly expectedGeneration: number;
+  readonly actualGeneration: number;
+}> {
   override readonly name = 'UniqueRefStaleError';
   readonly code = 'unique-ref-stale' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: {
-    readonly slot: number;
-    readonly expectedGeneration: number;
-    readonly actualGeneration: number;
-  };
 
   constructor(slot: number, expectedGeneration: number, actualGeneration: number) {
     const hint = `Handle for slot ${slot} is stale: expected generation ${expectedGeneration}, but the store has generation ${actualGeneration} (slot was released and re-allocated). Re-acquire the handle via the producing system or re-spawn the asset.`;
     const expected = `generation === ${actualGeneration} (current store generation)`;
-    super(
-      `UniqueRefStore: stale handle.\n` +
-        `  code: unique-ref-stale\n` +
-        `  slot: ${slot}\n` +
-        `  expectedGeneration: ${expectedGeneration}\n` +
-        `  actualGeneration: ${actualGeneration}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { slot, expectedGeneration, actualGeneration };
+    super('UniqueRefStore: stale handle.', hint, expected, {
+      slot,
+      expectedGeneration,
+      actualGeneration,
+    });
   }
 }
 
-/**
- * Thrown / returned via `Result.err` when BufferPool indexing reads or writes
- * an offset outside the slot's `[0, size)` byte range. Triggers are limited
- * to the `buffer:<N>` and managed-array-element-buffer paths; the
- * `'string'` schema vocab no longer routes through this code (collapsed onto
- * the managed-ref dispatch by feat-20260515-string-managed-collapse — JS
- * string capacity is bounded by the host runtime, not by BufferPool buckets).
- *
- * `.code = 'managed-buffer-out-of-bounds'`
- * `.detail = { index, size }`
- * `.hint` — points at the field's `'buffer'` / `buffer<N>` schema declaration.
- */
-export class ManagedBufferOutOfBoundsError extends RangeError {
+/** A buffer access or allocation exceeds its admitted bounds. */
+export class ManagedBufferOutOfBoundsError extends RangeDetailError<{
+  readonly index: number;
+  readonly size: number;
+}> {
   override readonly name = 'ManagedBufferOutOfBoundsError';
   readonly code = 'managed-buffer-out-of-bounds' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly index: number; readonly size: number };
 
   constructor(index: number, size: number) {
-    const hint = `Index ${index} is outside [0, ${size}). Check the field's 'buffer' / 'buffer<N>' declaration matches the access pattern.`;
+    const hint = `Index ${index} is outside [0, ${size}). Check the field's array declaration matches the access pattern.`;
     const expected = `index in [0, ${size})`;
-    super(
-      `BufferPool: index out of bounds.\n` +
-        `  code: managed-buffer-out-of-bounds\n` +
-        `  index: ${index}\n` +
-        `  size: ${size}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { index, size };
+    super('Managed storage: index out of bounds.', hint, expected, { index, size });
   }
 }
+
+/** An array schema declares an element type outside the closed vocabulary. */
+export function createManagedArrayElementTypeNotAllowedError(
+  fieldName: string,
+  elementType: string,
+) {
+  const hint = `array<T> element type must be a scalar (f32/f64/i32/u32/i16/u16/i8/u8/bool/enum) or entity. unique<X> / buffer / nested array<...> are forbidden on field "${fieldName}".`;
+  const expected = 'element type in {scalar | entity}';
+  return new EcsFault(
+    'ManagedArrayElementTypeNotAllowedError',
+    'managed-array-element-type-not-allowed',
+    'managed-array: element type not allowed.',
+    hint,
+    expected,
+    {
+      fieldName,
+      elementType,
+      hint,
+    },
+  );
+}
+export type ManagedArrayElementTypeNotAllowedError = ReturnType<
+  typeof createManagedArrayElementTypeNotAllowedError
+>;
 
 /**
- * Thrown / returned via `Result.err` when BufferPool resize is asked to shrink
- * a slot below its current allocated size — the pool only grows.
- *
- * `.code = 'managed-buffer-shrink-not-supported'`
- * `.detail = { requested, current }`
- * `.hint` — directs callers to allocate a fresh slot if a smaller buffer is needed.
+ * Union of all EcsError types that World methods can return via Result.
+ * AI users: switch on `.code` for programmatic branching.
  */
-export class ManagedBufferShrinkNotSupportedError extends Error {
-  override readonly name = 'ManagedBufferShrinkNotSupportedError';
-  readonly code = 'managed-buffer-shrink-not-supported' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly requested: number; readonly current: number };
-
-  constructor(requested: number, current: number) {
-    const hint = `BufferPool only grows. Requested ${requested} bytes < current ${current}; allocate a fresh slot if a smaller buffer is required.`;
-    const expected = `requested >= ${current}`;
-    super(
-      `BufferPool: shrink not supported.\n` +
-        `  code: managed-buffer-shrink-not-supported\n` +
-        `  requested: ${requested}\n` +
-        `  current: ${current}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { requested, current };
-  }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// feat-20260515-buffer-array-vocab-collapse w11 — closed-union evolution.
-//
-// 4 managed-array-* error classes deleted (replaced by the 4 collapsed-vocab
-// codes below); ManagedArrayElementTypeNotAllowedError preserved (still
-// surfaced from defineComponent's schema parser).
-//
-// 2 surviving error classes:
-//   - FixedSizeMismatchError              ('fixed-size-mismatch')
-//   - InstanceTransformsStrideMismatchError ('instance-transforms-stride-mismatch')
-//
-// Naming-prefix orthogonality (plan-strategy §2.5):
-//   fixed-     element-type or capacity contract violations on fixed shape
-//   array-     operation failures (pop on empty) on the array vocab keyword
-//   instance-  GPU-render component-specific stride contract (Instances.transforms)
-//
-// The array element-wise facade was removed; only write-shape and render
-// stride errors remain on this boundary. The
-// `instance-transforms-stride-mismatch` member is the plan-strategy §2.4
-// evolution surfaced from `packages/runtime/src/render-system-extract.ts`
-// defensive entry (consumed by w15 in M3, but the error class lives here so
-// the EcsErrorCode union closure is owned by ECS — RhiError is not extended
-// per plan-strategy §2.4 decision).
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Returned via `Result.err` from `world.set` when a `buffer<N>` field is
- * written with a `Uint8Array` whose `byteLength` does not equal the
- * schema-declared fixed size `N`. AI users resize their payload to exactly
- * `N` bytes (zero-pad or truncate at the producer) before calling `world.set`.
- *
- * `.code = 'fixed-size-mismatch'`
- * `.detail = { expected, actual }`
- * `.hint` — points at the producer's payload sizing.
- */
-export class FixedSizeMismatchError extends Error {
-  override readonly name = 'FixedSizeMismatchError';
-  readonly code = 'fixed-size-mismatch' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly expected: number; readonly actual: number };
-
-  constructor(fieldName: string, expected: number, actual: number) {
-    const hint = `buffer<${expected}> set with byteLength ${actual} (expected ${expected}); resize your Uint8Array to exactly ${expected} bytes before world.set`;
-    const expectedStr = `byteLength === ${expected}`;
-    super(
-      `buffer<N>: fixed-size mismatch.\n` +
-        `  code: fixed-size-mismatch\n` +
-        `  field: ${fieldName}\n` +
-        `  expected: ${expected}\n` +
-        `  actual: ${actual}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expectedStr;
-    this.detail = { expected, actual };
-  }
-}
-
-/**
- * Thrown by `defineComponent` when an `array<T>` / `array<T,N>` schema field
- * carries an element type outside the legal whitelist (scalars + entity).
- * Forms like `array<unique<X>>` / `array<asset<kind>>` / `array<buffer:N>` /
- * `array<array<...>>` are rejected (AC-03 runtime fail-safe). The TS layer
- * blocks these forms at compile time; this error is the runtime backstop for
- * `as unknown as SchemaFieldType` casts.
- *
- * `.code = 'managed-array-element-type-not-allowed'`
- * `.detail = { fieldName, elementType, hint }`
- * `.hint` — lists the whitelist of legal element types.
- */
-export class ManagedArrayElementTypeNotAllowedError extends Error {
-  override readonly name = 'ManagedArrayElementTypeNotAllowedError';
-  readonly code = 'managed-array-element-type-not-allowed' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: {
-    readonly fieldName: string;
-    readonly elementType: string;
-    readonly hint: string;
-  };
-
-  constructor(fieldName: string, elementType: string) {
-    const hint = `array<T> element type must be a scalar (f32/f64/i32/u32/i16/u16/i8/u8/bool/enum) or entity. unique<X> / buffer / nested array<...> are forbidden on field "${fieldName}".`;
-    const expected = 'element type in {scalar | entity}';
-    super(
-      `managed-array: element type not allowed.\n` +
-        `  code: managed-array-element-type-not-allowed\n` +
-        `  field: ${fieldName}\n` +
-        `  elementType: ${elementType}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { fieldName, elementType, hint };
-  }
-}
+export type EcsError =
+  | TimeScaleInvalidError
+  | TimeScaleLeaseReleasedError
+  | MemoryError
+  | AssetError
+  | ArrayRangeOutOfBoundsError
+  | CommandFailedError
+  | StaleEntityError
+  | ComponentNotPresentError
+  | ComponentAlreadyPresentError
+  | ComponentFieldInvalidValueError
+  | ManagedArrayInvalidValueError
+  | SharedFieldInvalidValueError
+  | SpawnDataUnknownFieldError
+  | UniqueRefReleasedError
+  | UniqueRefDoubleReleaseError
+  | UniqueRefStaleError
+  | ManagedBufferOutOfBoundsError
+  | RelationshipSelfCycleError
+  | RelationshipDetachMismatchError
+  | RelationshipTargetReadonlyError
+  | ComponentNotDefinedError
+  | RemoveEntityComponentError
+  | SystemSetNotRegisteredError
+  | SystemFailedError
+  | TimeDeltaInvalidError
+  | TimeConfigInvalidError
+  | ScheduleScopeMismatchError
+  | SharedKernelEligibilityError
+  | SharedKernelFailureError
+  | DerivedRangeOutOfBoundsError
+  | DerivedWriteActiveError
+  | ChangeEpochExhaustedError
+  | WorldPoisonedError;
 
 /** Expected operation failures, including direct store and schedule entry points. */
 type CoreOperationError =
-  | import('./world').EcsError
+  | EcsError
   | CyclicDependencyError
   | ResourceNotFoundError
   | ScheduleMutationError
@@ -863,8 +624,8 @@ type CoreOperationError =
   | SharedRefDoubleReleaseError
   | SharedRefPayloadInvalidError
   | SharedRefStaleError
-  | QueryErrors.SpawnDataUnknownFieldError
-  | FieldErrors.SharedFieldInvalidValueError;
+  | SpawnDataUnknownFieldError
+  | SharedFieldInvalidValueError;
 
 /** Closed code projection from the errors the operation owners actually expose. */
 export type EcsErrorCode = CoreOperationError['code'];
@@ -877,30 +638,18 @@ type ErrorDetail<E> = E extends { readonly code: string; readonly detail: infer 
  * Detached error details derive from their declaring ECS classes.
  * Memory payloads retain their own `kind` discriminator.
  */
-export type EcsErrorDetail =
-  | MemoryErrorDetail
-  | ErrorDetail<
-      | Exclude<CoreOperationError, MemoryError>
-      | SparseStorageRequiresTagError
-      | ManagedArrayElementTypeNotAllowedError
-      | QueryErrors.QueryDescriptorConflictError
-      | QueryErrors.QueryDataRequiresFieldsError
-      | QueryErrors.QuerySpanUnavailableError
-      | QueryErrors.QueryIterationInvalidatedError
-      | QueryErrors.QueryIterationActiveError
-      | BatchErrors.QueryBatchUnavailableError
-    >;
+type DetailedEcsError =
+  | Exclude<CoreOperationError, MemoryError>
+  | SparseStorageRequiresTagError
+  | ManagedArrayElementTypeNotAllowedError
+  | QueryDescriptorConflictError
+  | QueryDataRequiresFieldsError
+  | QuerySpanUnavailableError
+  | QueryIterationInvalidatedError
+  | QueryIterationActiveError
+  | QueryBatchUnavailableError;
 
-/**
- * Layer-3 error envelope routed through managed-storage callbacks. Callers
- * narrow `detail` through the source-owned `EcsErrorDetail` union.
- */
-export interface ManagedArrayErrorEnvelope {
-  readonly code: EcsErrorCode;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: unknown;
-}
+export type EcsErrorDetail = MemoryErrorDetail | ErrorDetail<DetailedEcsError>;
 
 export type CommandKind = 'spawn' | 'despawn' | 'addComponent' | 'removeComponent';
 
@@ -910,65 +659,527 @@ export interface CommandCommitEvidence {
 }
 
 /** Expected command preflight failure, with the exact batch location. */
-export class CommandFailedError extends Error {
-  override readonly name = 'CommandFailedError';
-  readonly code = 'command-failed' as const;
-  readonly expected = 'all deferred commands pass preflight before commit';
-  readonly hint =
-    'Inspect detail.cause, repair the command at detail.commandIndex, and run the World again.';
-  override readonly cause: unknown;
-  readonly detail: {
-    readonly systemName: string;
-    readonly schedule: string;
-    readonly commandIndex: number;
-    readonly commandKind: CommandKind;
-    readonly cause: unknown;
-  };
-
-  constructor(
-    systemName: string,
-    schedule: string,
-    commandIndex: number,
-    commandKind: CommandKind,
-    cause: unknown,
-  ) {
-    super(
-      `Deferred command failed before commit in ${schedule}/${systemName} ` +
-        `at command ${commandIndex} (${commandKind}).`,
-    );
-    this.cause = cause;
-    this.detail = { systemName, schedule, commandIndex, commandKind, cause };
-  }
+export function createCommandFailedError(
+  systemName: string,
+  schedule: string,
+  commandIndex: number,
+  commandKind: CommandKind,
+  cause: unknown,
+) {
+  return Object.assign(
+    new EcsFault(
+      'CommandFailedError',
+      'command-failed',
+      `Deferred command failed before commit in ${schedule}/${systemName} at command ${commandIndex} (${commandKind}).`,
+      'Inspect detail.cause, repair the command at detail.commandIndex, and run the World again.',
+      'all deferred commands pass preflight before commit',
+      { systemName, schedule, commandIndex, commandKind, cause },
+    ),
+    { cause: cause } as const,
+  );
 }
+export type CommandFailedError = ReturnType<typeof createCommandFailedError>;
 
 /** Unknown system failure. The World is poisoned because row writes may exist. */
-export class SystemFailedError extends Error {
-  override readonly name = 'SystemFailedError';
-  readonly code = 'system-failed' as const;
-  readonly expected = 'a system completes without throwing or returning a failed Result';
-  readonly hint =
-    'Inspect detail.cause, stop using this poisoned World, and rebuild it from the owning App.';
-  override readonly cause: unknown;
-  readonly detail: {
-    readonly systemName: string;
-    readonly schedule: string;
-    readonly cause: unknown;
-    readonly lastCommittedCommand: CommandCommitEvidence | null;
-  };
+export function createSystemFailedError(
+  systemName: string,
+  schedule: string,
+  cause: unknown,
+  lastCommittedCommand: CommandCommitEvidence | null = null,
+) {
+  return Object.assign(
+    new EcsFault(
+      'SystemFailedError',
+      'system-failed',
+      `System ${schedule}/${systemName} failed; World is poisoned.`,
+      'Inspect detail.cause, stop using this poisoned World, and rebuild it from the owning App.',
+      'a system completes without throwing or returning a failed Result',
+      { systemName, schedule, cause, lastCommittedCommand },
+    ),
+    { cause: cause } as const,
+  );
+}
+export type SystemFailedError = ReturnType<typeof createSystemFailedError>;
 
-  constructor(
-    systemName: string,
-    schedule: string,
-    cause: unknown,
-    lastCommittedCommand: CommandCommitEvidence | null = null,
-  ) {
-    super(`System ${schedule}/${systemName} failed; World is poisoned.`);
-    this.cause = cause;
-    this.detail = { systemName, schedule, cause, lastCommittedCommand };
+/** Rejects removal of the Entity identity column. */
+export class RemoveEntityComponentError extends Error {
+  override readonly name = 'RemoveEntityComponentError';
+  // Published error-code spelling; changing it requires a version boundary.
+  readonly code = 'remove-essential-component' as const;
+  readonly hint =
+    'Entity stores the entity identity and cannot be removed. Despawn the entity instead.';
+  readonly expected = 'a component other than Entity';
+  readonly detail = { componentName: 'Entity' } as const;
+
+  constructor() {
+    super('removeComponent: Entity cannot be removed.');
   }
 }
 
-export {
-  QueryBatchUnavailableError,
-  type QueryBatchUnavailableReason,
-} from './errors/query-batch-errors';
+/** A serialized component name is absent from the supplied component catalog. */
+export class ComponentNotDefinedError extends DetailError<{ readonly name: string }> {
+  override readonly name = 'ComponentNotDefinedError';
+  readonly code = 'component-not-defined' as const;
+
+  constructor(componentName: string, opts?: { expected?: string; hint?: string }) {
+    const expected = opts?.expected ?? `component '${componentName}' defined before instantiate`;
+    const hint =
+      opts?.hint ??
+      `define the component via defineComponent('${componentName}', ...) before instantiating this SceneAsset`;
+    super('instantiate: component not defined.', hint, expected, { name: componentName });
+  }
+}
+
+/** Spawn/add/set input contains an undeclared field. Keys are checked before storage mutation. */
+export function createSpawnDataUnknownFieldError(
+  componentName: string,
+  fieldName: string,
+  knownFields: readonly string[],
+) {
+  const sortedKnown = [...knownFields].sort();
+  const expected = `field name in {${sortedKnown.join(', ')}}`;
+  const hint =
+    `'${fieldName}' is not a schema field of '${componentName}'. ` +
+    `Known fields: ${sortedKnown.join(', ')}. ` +
+    `Check for a typo or a stale single-vs-plural rename (e.g. 'material' vs 'materials').`;
+  return new EcsFault(
+    'SpawnDataUnknownFieldError',
+    'spawn-data-unknown-field',
+    `${componentName}: spawn data carries unknown field.`,
+    hint,
+    expected,
+    {
+      component: componentName,
+      field: fieldName,
+      knownFields: sortedKnown,
+    },
+  );
+}
+export type SpawnDataUnknownFieldError = ReturnType<typeof createSpawnDataUnknownFieldError>;
+export type QuerySpanUnavailableReason =
+  | 'optional-data'
+  | 'sparse-component'
+  | 'relationship-component';
+
+export function createQueryDescriptorConflictError(
+  componentName: string,
+  roles: readonly string[],
+) {
+  const hint = `Remove ${componentName} from all but one of: ${roles.join(', ')}.`;
+  return new EcsFault(
+    'QueryDescriptorConflictError',
+    'query-descriptor-conflict',
+    `Query descriptor roles conflict for ${componentName}.`,
+    hint,
+    'each component occupies one descriptor role',
+    { componentName, roles },
+  );
+}
+export type QueryDescriptorConflictError = ReturnType<typeof createQueryDescriptorConflictError>;
+
+export function createQueryDataRequiresFieldsError(componentName: string) {
+  const hint = `Move tag ${componentName} to with or without.`;
+  return new EcsFault(
+    'QueryDataRequiresFieldsError',
+    'query-data-requires-fields',
+    `Query data access requires fields on ${componentName}.`,
+    hint,
+    'a component with at least one data field',
+    { componentName },
+  );
+}
+export type QueryDataRequiresFieldsError = ReturnType<typeof createQueryDataRequiresFieldsError>;
+
+export function createQuerySpanUnavailableError(reason: QuerySpanUnavailableReason) {
+  return new EcsFault(
+    'QuerySpanUnavailableError',
+    'query-span-unavailable',
+    `Query spans are unavailable: ${reason}.`,
+    'Use row iteration or split the query.',
+    'a descriptor whose rows form contiguous table ranges',
+    { reason },
+  );
+}
+export type QuerySpanUnavailableError = ReturnType<typeof createQuerySpanUnavailableError>;
+
+export function createQueryIterationInvalidatedError(
+  expectedStructureEpoch: number,
+  actualStructureEpoch: number,
+) {
+  const expected = `structure epoch ${expectedStructureEpoch}`;
+  return new EcsFault(
+    'QueryIterationInvalidatedError',
+    'query-iteration-invalidated',
+    `Query iteration was invalidated by structure epoch ${actualStructureEpoch}.`,
+    'Use deferred Commands for structural mutation, then restart iteration.',
+    expected,
+    { expectedStructureEpoch, actualStructureEpoch },
+  );
+}
+export type QueryIterationInvalidatedError = ReturnType<
+  typeof createQueryIterationInvalidatedError
+>;
+
+export class QueryIterationActiveError extends Error {
+  override readonly name = 'QueryIterationActiveError';
+  readonly code = 'query-iteration-active' as const;
+  readonly expected = 'one active iterator per Query';
+  readonly hint = 'Complete the active iterator or create an independent Query.';
+  readonly detail = {};
+
+  constructor() {
+    super('Query already has an active iterator.\n  hint: Complete it before iterating again.');
+  }
+}
+
+export type QueryBatchUnavailableReason =
+  | 'write-access'
+  | 'temporal-filter'
+  | 'undeclared-component'
+  | 'unknown-field'
+  | 'non-numeric-field'
+  | 'missing-required-data'
+  | 'expired-batch';
+
+/** The read-only physical batch boundary rejects unsupported access explicitly. */
+export class QueryBatchUnavailableError extends DetailError<{
+  readonly reason: QueryBatchUnavailableReason;
+  readonly componentName?: string;
+  readonly fieldName?: string;
+}> {
+  override readonly name = 'QueryBatchUnavailableError';
+  readonly code = 'query-batch-unavailable' as const;
+
+  constructor(reason: QueryBatchUnavailableReason, componentName?: string, fieldName?: string) {
+    super(
+      `Query batch access is unavailable: ${reason}.`,
+      'Use read/optional numeric fields within this batch; use existing rows or spans for write/temporal descriptors.',
+      'a live read-only batch and a declared inline numeric field',
+      {
+        reason,
+        ...(componentName === undefined ? {} : { componentName }),
+        ...(fieldName === undefined ? {} : { fieldName }),
+      },
+    );
+  }
+}
+/** A relationship edge would violate the pair's self/cycle policy. */
+export function createRelationshipSelfCycleError(
+  component: string,
+  entity: number,
+  ancestor: number,
+) {
+  const hint = `Linking entity ${entity} via "${component}" would close a cycle through ancestor ${ancestor}. Reparent to an entity that is not a descendant of ${entity}.`;
+  const expected = 'acyclic parent chain';
+  return new EcsFault(
+    'RelationshipSelfCycleError',
+    'relationship-self-cycle',
+    'relationship: cycle detected.',
+    hint,
+    expected,
+    { component, entity, ancestor },
+  );
+}
+export type RelationshipSelfCycleError = ReturnType<typeof createRelationshipSelfCycleError>;
+
+/** The supplied parent differs from the child's current relationship target. */
+export function createRelationshipDetachMismatchError(
+  component: string,
+  child: number,
+  expectedParent: number,
+  actualParent: number,
+) {
+  const hint = `removeChild(${expectedParent}, ${child}) via "${component}": child's current parent is ${actualParent}, not ${expectedParent}. Detach from the actual parent or re-read the current relationship.`;
+  const expected = `child's "${component}" parent === ${expectedParent}`;
+  return new EcsFault(
+    'RelationshipDetachMismatchError',
+    'relationship-detach-mismatch',
+    'relationship: detach parent mismatch.',
+    hint,
+    expected,
+    {
+      component,
+      child,
+      expectedParent,
+      actualParent,
+    },
+  );
+}
+export type RelationshipDetachMismatchError = ReturnType<
+  typeof createRelationshipDetachMismatchError
+>;
+
+/** Returned when callers attempt to mutate an engine-maintained target list. */
+export function createRelationshipTargetReadonlyError(component: string, operation: string) {
+  const hint = `Component "${component}" is an engine-maintained relationship target. Mutate its source component instead of ${operation}.`;
+  return new EcsFault(
+    'RelationshipTargetReadonlyError',
+    'component-field-invalid-value',
+    `[RelationshipTargetReadonlyError component-field-invalid-value] ${hint}`,
+    hint,
+    'relationship source mutation',
+    { component, operation },
+  );
+}
+export type RelationshipTargetReadonlyError = ReturnType<
+  typeof createRelationshipTargetReadonlyError
+>;
+
+export function createSharedKernelEligibilityError(
+  kernelName: string,
+  reason: SharedKernelEligibilityReason,
+) {
+  return new EcsFault(
+    'SharedKernelEligibilityError',
+    'shared-kernel-ineligible',
+    `Shared kernel "${kernelName}" is ineligible: ${reason}.`,
+    'export a named function from the kernel module and use only dense numeric QuerySpan columns',
+    'a module-loadable named kernel with one or more numeric QuerySpan read/write declarations',
+    { kernelName, reason },
+  );
+}
+export type SharedKernelEligibilityError = ReturnType<typeof createSharedKernelEligibilityError>;
+
+export function createSharedKernelFailureError(
+  kernelName: string,
+  worldIdentity: string,
+  cause: unknown,
+  partialWrite: boolean,
+) {
+  return new EcsFault(
+    'SharedKernelFailureError',
+    'shared-kernel-failed',
+    `Shared kernel "${kernelName}" failed; World ${worldIdentity} is poisoned.`,
+    'do not retry this World; inspect detail.cause and rebuild with a new World identity',
+    'every dispatched shard completes without a possible partial write',
+    { kernelName, worldIdentity, cause, partialWrite, retryable: false },
+  );
+}
+export type SharedKernelFailureError = ReturnType<typeof createSharedKernelFailureError>;
+
+export function createWorldPoisonedError(worldIdentity: string, fault: unknown) {
+  return new EcsFault(
+    'WorldPoisonedError',
+    'world-poisoned',
+    `World ${worldIdentity} is poisoned and cannot update.`,
+    'stop scheduling this World and explicitly bootstrap a new World identity',
+    'World health is healthy before update',
+    { worldIdentity, fault },
+  );
+}
+export type WorldPoisonedError = ReturnType<typeof createWorldPoisonedError>;
+
+/** The single poisoned-World fence: the structured error to refuse with, or undefined when healthy. */
+export function worldPoisonedError(state: WorldExecutionState): WorldPoisonedError | undefined {
+  return state.health === 'poisoned'
+    ? createWorldPoisonedError(state.identity, state.fault)
+    : undefined;
+}
+
+/** A shared scalar or array element is not a resolved numeric handle.
+ * The optional index identifies an invalid array element; assets use their separate owner. */
+export function createSharedFieldInvalidValueError(
+  componentName: string,
+  fieldName: string,
+  fieldType: string,
+  actualValue: unknown,
+  index?: number,
+) {
+  const at = index === undefined ? '' : `[${index}]`;
+  const expected = `a resolved numeric Handle for shared field '${fieldName}${at}'`;
+  const hint =
+    `'${fieldName}${at}' on '${componentName}' is a ${fieldType} reference; ` +
+    `got ${typeof actualValue} (${JSON.stringify(actualValue)}). ` +
+    `Allocate non-asset resources with world.allocSharedRef(target, value). ` +
+    `Managed assets use asset<kind> fields and assets.load(guid, kind) or assets.create(value).`;
+  return new EcsFault(
+    'SharedFieldInvalidValueError',
+    'shared-field-invalid-value',
+    `${componentName}.${fieldName}${at}: shared field bound to a non-handle value.`,
+    hint,
+    expected,
+    index === undefined
+      ? { component: componentName, field: fieldName, fieldType, actualValue }
+      : { component: componentName, field: fieldName, fieldType, actualValue, index },
+  );
+}
+export type SharedFieldInvalidValueError = ReturnType<typeof createSharedFieldInvalidValueError>;
+
+export function createTimeDeltaInvalidError(received: number) {
+  return new EcsFault(
+    'TimeDeltaInvalidError',
+    'time-delta-invalid',
+    `Invalid world.update delta: ${received}.`,
+    'Call world.update(deltaSeconds) with a finite non-negative delta.',
+    'a finite delta greater than or equal to 0',
+    { received },
+  );
+}
+export type TimeDeltaInvalidError = ReturnType<typeof createTimeDeltaInvalidError>;
+
+export function createTimeConfigInvalidError(detail: {
+  readonly fixedDeltaSeconds: number;
+  readonly maxStepsPerUpdate: number;
+  readonly maxDeltaSeconds: number;
+}) {
+  const expected = 'maxDeltaSeconds >= (maxStepsPerUpdate + 1) * fixedDeltaSeconds';
+  return new EcsFault(
+    'TimeConfigInvalidError',
+    'time-config-invalid',
+    `Invalid World time policy.`,
+    'Increase maxDeltaSeconds or decrease maxStepsPerUpdate or fixedDeltaSeconds.',
+    expected,
+    detail,
+  );
+}
+export type TimeConfigInvalidError = ReturnType<typeof createTimeConfigInvalidError>;
+
+export function createScheduleScopeMismatchError(
+  sourceSchedule: string,
+  targetSchedule: string,
+  reference?: string,
+) {
+  const expected = `a reference owned by ${sourceSchedule}`;
+  const hint = `The referenced item belongs to ${targetSchedule}; register and order it in ${sourceSchedule}.`;
+  return new EcsFault(
+    'ScheduleScopeMismatchError',
+    'schedule-scope-mismatch',
+    `Schedule scope mismatch.`,
+    hint,
+    expected,
+    {
+      sourceSchedule,
+      targetSchedule,
+      ...(reference ? { reference } : {}),
+    },
+  );
+}
+export type ScheduleScopeMismatchError = ReturnType<typeof createScheduleScopeMismatchError>;
+
+/**
+ * Returned when a closed enum field receives a value outside its reflected
+ * labels. The write owner runs this before any archetype or column mutation.
+ */
+export function createComponentFieldInvalidValueError(
+  entity: number | undefined,
+  component: string,
+  field: string,
+  received: unknown,
+  allowedValues: Readonly<Record<string, number>>,
+) {
+  const entries = Object.entries(allowedValues)
+    .map(([label, value]) => `${label}=${value}`)
+    .join(', ');
+  const expected = `${component}.${field} in { ${entries} }`;
+  const hint = `Set ${component}.${field} to one of the reflected enum values: ${entries}`;
+  return new EcsFault(
+    'ComponentFieldInvalidValueError',
+    'component-field-invalid-value',
+    `${component}.${field} received an invalid enum value.`,
+    hint,
+    expected,
+    {
+      entity,
+      component,
+      field,
+      received,
+      allowedValues,
+    },
+  );
+}
+export type ComponentFieldInvalidValueError = ReturnType<
+  typeof createComponentFieldInvalidValueError
+>;
+
+/**
+ * Returned before an ECS write when a managed `array<T>` field receives a
+ * value that the storage boundary cannot interpret as an array payload. The
+ * old column writer treated arbitrary objects as an empty payload, which
+ * silently changed the row while retaining no evidence of the caller error.
+ */
+export function createManagedArrayInvalidValueError(
+  componentName: string,
+  fieldName: string,
+  fieldType: string,
+  actualValue: unknown,
+) {
+  const hint =
+    `Set ${componentName}.${fieldName} to a plain array or TypedArray matching ` +
+    `${fieldType}; use null or undefined to clear the managed value.`;
+  return new EcsFault(
+    'ManagedArrayInvalidValueError',
+    'managed-array-invalid-value',
+    `${componentName}.${fieldName}: managed array received an invalid value.`,
+    hint,
+    'an Array or TypedArray payload (or null/undefined to clear it)',
+    { component: componentName, field: fieldName, fieldType, actualValue },
+  );
+}
+export type ManagedArrayInvalidValueError = ReturnType<typeof createManagedArrayInvalidValueError>;
+
+/**
+ * Returned by `World.setArrayRange` when the written window does not fit the
+ * field's current length, or the field is not a numeric array. The write
+ * never resizes: a range write that would grow the array must use `set`.
+ */
+export class ArrayRangeOutOfBoundsError extends RangeDetailError<{
+  readonly component: string;
+  readonly field: string;
+  readonly offset: number;
+  readonly length: number;
+  readonly size: number;
+}> {
+  override readonly name = 'ArrayRangeOutOfBoundsError';
+  readonly code = 'array-range-out-of-bounds' as const;
+
+  constructor(
+    componentName: string,
+    fieldName: string,
+    offset: number,
+    length: number,
+    size: number,
+  ) {
+    const expected = `an integer offset with offset + length <= ${size}`;
+    const hint =
+      size < 0
+        ? `${componentName}.${fieldName} is not a numeric array field; use world.set for it.`
+        : `Write within [0, ${size}) of ${componentName}.${fieldName}, or use world.set to resize the array.`;
+    super(
+      `${componentName}.${fieldName}: range [${offset}, ${offset + length}) is outside the array.`,
+      hint,
+      expected,
+      { component: componentName, field: fieldName, offset, length, size },
+    );
+  }
+}
+
+type FactoryFault = Extract<DetailedEcsError, EcsFault<string, unknown, string>>;
+/** Distinguish an owner-produced expected failure from an arbitrary thrown value. */
+export function isEcsFault<C extends FactoryFault['code']>(
+  cause: unknown,
+  code: C,
+): cause is Extract<FactoryFault, { readonly code: C }> {
+  return cause instanceof EcsFault && cause.code === code;
+}
+
+export class TimeScaleInvalidError extends Error {
+  override readonly name = 'TimeScaleInvalidError';
+  readonly code = 'time-scale-invalid' as const;
+  readonly expected = 'a finite scale greater than or equal to 0';
+  readonly hint = 'Pass a finite non-negative scale to World.acquireTimeScale or lease.set.';
+  readonly detail: { readonly received: number };
+  constructor(received: number) {
+    super(`Invalid time scale: ${received}`);
+    this.detail = { received };
+  }
+}
+export class TimeScaleLeaseReleasedError extends Error {
+  override readonly name = 'TimeScaleLeaseReleasedError';
+  readonly code = 'time-scale-lease-released' as const;
+  readonly expected = 'an active time scale lease';
+  readonly hint = 'Acquire a new lease; released contributions cannot be reactivated.';
+  readonly detail = {};
+  constructor() {
+    super('Cannot change a released time scale lease.');
+  }
+}

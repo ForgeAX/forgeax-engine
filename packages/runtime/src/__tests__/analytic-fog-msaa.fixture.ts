@@ -115,6 +115,7 @@ export async function verifyAnalyticFogMsaa(manifest: string) {
     return {
       width: SIZE,
       height: SIZE,
+      passNames: [...renderer.inspect().perFramePassNames],
       read: (x: number, y: number) =>
         readPixel(image.bytes, image.metadata, x, y).slice(0, 3) as [number, number, number],
     };
@@ -155,8 +156,12 @@ export async function verifyAnalyticFogMsaa(manifest: string) {
     expect(report.passed, JSON.stringify(report)).toBe(true);
     const combined = await sample(ANTIALIAS_MSAA_FXAA);
     expect(combined.read(0, 0)).toEqual([0, 0, 0]);
-    expect(renderer.inspect().perFramePassNames).toContain('analytic-fog');
-    expect(renderer.inspect().perFramePassNames).toContain('fxaa');
+    // Forward fog stays with covered geometry; native Final owns FXAA.
+    expect(fourX.passNames).not.toContain('analytic-fog');
+    expect(fourX.passNames).not.toContain('standard-final');
+    expect(combined.passNames).not.toContain('analytic-fog');
+    expect(combined.passNames).toContain('standard-grade');
+    expect(combined.passNames).toContain('standard-final');
     expect(errors).toEqual([]);
   } finally {
     unsubscribe();

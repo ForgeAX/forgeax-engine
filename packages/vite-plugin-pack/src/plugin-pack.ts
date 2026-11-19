@@ -50,7 +50,11 @@ import { createPluginBuild } from './build/plugin-build.js';
 import { projectPackIndexUrl, resolvePackBuildInputs } from './build-inputs.js';
 import { shareArtifactBodies } from './dev/artifact-bodies.js';
 import { publishAuthoredDevPacks as publishAuthoredDevPacksOwner } from './dev/authored-pack-publication.js';
-import { startMetaImport as startMetaImportOwner } from './dev/meta-import.js';
+import {
+  type PreparedMetaImport,
+  prepareMetaImport,
+  startMetaImport as startMetaImportOwner,
+} from './dev/meta-import.js';
 import {
   createPluginServer,
   type PluginServerProjectionState,
@@ -477,12 +481,38 @@ export function createPluginPackInternal(
     serializedCatalog = { projection, binding, body };
     return body;
   }
+  function importProductDdc() {
+    // Admit live cooker identity at each source preparation, including after edits.
+    return createSourcePackageBuildDdc({
+      root: composition.ddc.buildCacheRoot,
+      identityRoot: composition.ddc.identityRoot ?? process.cwd(),
+      producerIdentity: opts.producerIdentity,
+      cookers: opts.cookers,
+    }).catch(() => undefined);
+  }
+
+  async function prepareVersionedMetaImport(
+    metaPath: string,
+    declaration: RunImportMeta,
+    signal: AbortSignal,
+  ): Promise<PreparedMetaImport> {
+    const productDdc = await importProductDdc();
+    return prepareMetaImport(metaPath, declaration, {
+      importerRegistry,
+      cookers: opts.cookers,
+      fsForImport,
+      ...(productDdc === undefined ? {} : { sourcePackageDdc: productDdc }),
+      signal,
+    });
+  }
+
   async function ensureVersionedMetaImport(
     metaPath: string,
     declaration?: RunImportMeta,
     signal?: AbortSignal,
     projection?: PluginServerProjectionState,
     runtimeBinding?: RuntimeAssetBinding,
+    prepared?: PreparedMetaImport,
   ): Promise<PackIndexEntry[]> {
     const effectiveDeclaration = declaration ?? state.catalogProjection.declarations.get(metaPath);
     if (effectiveDeclaration === undefined) {
@@ -518,36 +548,33 @@ export function createPluginPackInternal(
         devArtifactBodies: state.devArtifactBodies,
         pendingImportPublications: undefined,
       };
-      // Each production attempt admits current native cooker identities. A
-      // long-lived dev owner must not freeze them across material source edits.
-      const productDdc = await createSourcePackageBuildDdc({
-        root: composition.ddc.buildCacheRoot,
-        identityRoot: composition.ddc.identityRoot ?? process.cwd(),
-        producerIdentity: opts.producerIdentity,
-        cookers: opts.cookers,
-      }).catch(() => undefined);
-      return startMetaImportOwner(metaPath, {
-        ddcRoot: (_cwd, binding) => runtimeDdcRoot(projectDdcRoot, binding),
-        ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
-        getCatalogProjection: () => target.catalogProjection,
-        setCatalogProjection: (projection) => {
-          target.catalogProjection = projection;
+      const productDdc = prepared === undefined ? await importProductDdc() : undefined;
+      return startMetaImportOwner(
+        metaPath,
+        {
+          ddcRoot: (_cwd, binding) => runtimeDdcRoot(projectDdcRoot, binding),
+          ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
+          getCatalogProjection: () => target.catalogProjection,
+          setCatalogProjection: (projection) => {
+            target.catalogProjection = projection;
+          },
+          importedGuids: target.importedGuids,
+          metaPackBodies: target.metaPackBodies,
+          devArtifactBodies: target.devArtifactBodies,
+          importerRegistry,
+          cookers: opts.cookers,
+          fsForImport,
+          ...(productDdc === undefined ? {} : { sourcePackageDdc: productDdc }),
+          publishCatalogDelta,
+          cookedProjection: COOKED_CURRENT_PROJECTION,
+          ...(target.pendingImportPublications === undefined
+            ? {}
+            : { pendingImportPublications: target.pendingImportPublications }),
+          ...(signal === undefined ? {} : { signal }),
+          declaration: effectiveDeclaration,
         },
-        importedGuids: target.importedGuids,
-        metaPackBodies: target.metaPackBodies,
-        devArtifactBodies: target.devArtifactBodies,
-        importerRegistry,
-        cookers: opts.cookers,
-        fsForImport,
-        ...(productDdc === undefined ? {} : { sourcePackageDdc: productDdc }),
-        publishCatalogDelta,
-        cookedProjection: COOKED_CURRENT_PROJECTION,
-        ...(target.pendingImportPublications === undefined
-          ? {}
-          : { pendingImportPublications: target.pendingImportPublications }),
-        ...(signal === undefined ? {} : { signal }),
-        declaration: effectiveDeclaration,
-      });
+        prepared,
+      );
     })().finally(() => {
       if (inFlightMetaImports.get(metaPath)?.promise === promise) {
         inFlightMetaImports.delete(metaPath);
@@ -792,6 +819,11 @@ export function createPluginPackInternal(
     },
     callbacks: {
       publishAuthoredDevPacks,
+      metaImportPreparation(metaPath, declaration, signal) {
+        return importerRegistry.get(declaration.importer)?.capabilities?.parallelPreparation
+          ? () => prepareVersionedMetaImport(metaPath, declaration, signal)
+          : undefined;
+      },
       ensureMetaImport: ensureVersionedMetaImport,
       commitGeneration: async (candidate, signal) => {
         const committedImports: StagedImportPublication[] = [];

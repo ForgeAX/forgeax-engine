@@ -1,7 +1,10 @@
 import type { Result, RhiError, ShaderModule } from '@forgeax/engine-rhi';
 import {
+  findVariantByDefines,
   findVariantByKey,
+  isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
+  materialShaderAxes,
   materialShaderSource,
 } from '@forgeax/engine-shader';
 import type { SeedShaderModule } from './material-shader-policy';
@@ -116,6 +119,31 @@ export function selectGpuDrivenSceneIndexVariant(
   vertexColorAvailable = false,
   atmosphereAvailable = false,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
+  if (manifestEntry !== undefined && isShaderTemplateManifestRow(manifestEntry)) {
+    const axes = new Set(materialShaderAxes(manifestEntry));
+    const optional = {
+      COVERAGE_ONLY: false,
+      VISIBLE_SURFACE_AVAILABLE: false,
+      ALPHA_MASK: false,
+      DIRECTIONAL_SHADOW_SIMPLE: false,
+      LEAN_LIGHTING: false,
+      STANDARD_LEAN_INPUTS: false,
+      CLUSTER_FORWARD_AVAILABLE: false,
+      PROBE_BLEND_AVAILABLE: false,
+      EXTENDED_LIGHTING_AVAILABLE: extendedLightingAvailable,
+      DIRECTIONAL_PCSS_AVAILABLE: directionalPcssAvailable,
+      PROJECTOR_AVAILABLE: projectorAvailable,
+      REFLECTION_FALLBACK_AVAILABLE: false,
+      TRANSMISSION_AVAILABLE: false,
+    };
+    return findVariantByDefines(manifestEntry, {
+      ...Object.fromEntries(Object.entries(optional).filter(([axis]) => axes.has(axis))),
+      STORAGE_BUFFER_AVAILABLE: true,
+      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+      ATMOSPHERE_AVAILABLE: atmosphereAvailable,
+      VERTEX_COLOR_AVAILABLE: vertexColorAvailable,
+    });
+  }
   return manifestEntry?.variants.find(
     (variant) =>
       isOrdinaryMaterialVariant(variant) &&
@@ -182,10 +210,7 @@ export function selectBootVariant(
   manifestEntry: MaterialShaderManifestEntry | undefined,
   axes: Readonly<Record<string, boolean>>,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
-  const required = Object.entries(axes);
-  return manifestEntry?.variants.find(({ defines }) =>
-    required.every(([axis, value]) => (defines[axis] ?? false) === value),
-  );
+  return manifestEntry === undefined ? undefined : findVariantByDefines(manifestEntry, axes);
 }
 
 /**

@@ -2,6 +2,8 @@ import type { ViewFrontendConfig } from './config.ts';
 import type { EngineWorkspaceProvider } from '@forgeax/engine/app';
 import type { ViewPlatform, CarrierCapabilities } from '@forgeax/view-plugin-display/carrier-contract';
 import type { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
+import type { ViewFrontendRole } from '@forgeax/view-workspace-core/frontend-contract';
+export type { ViewFrontendRole } from '@forgeax/view-workspace-core/frontend-contract';
 export type ViewBackendProductConfig = {
   platform?: ViewPlatform; capabilities?: Partial<CarrierCapabilities>; workspaceEngine?: EngineWorkspaceProvider;
   workspaceAccessToken?: string; workspaceAuthorize?: NonNullable<ConstructorParameters<typeof ViewWorkspaceBroker>[0]>['authorize'];
@@ -31,11 +33,11 @@ export const VIEW_PLUGIN_VERSION = '0.2.0';
 export const VIEW_FRONTEND_ROOT_PROGRAM = '@forgeax/view/frontend-root';
 export const VIEW_FRONTEND_MODULE = Object.freeze({ specifier: VIEW_FRONTEND_ROOT_PROGRAM });
 
-export function viewFrontendRoot(frontendConfig: ViewFrontendConfig | undefined, disabledPages: readonly string[] = []) {
+export function viewFrontendRoot(frontendConfig: ViewFrontendConfig | undefined, disabledPages: readonly string[] = [], role: ViewFrontendRole = 'shell') {
   return Object.freeze({
     program: VIEW_FRONTEND_ROOT_PROGRAM,
     codeRevision: buildRevision,
-    config: { frontendConfig, disabledPages },
+    config: { frontendConfig, disabledPages, role },
   });
 }
 
@@ -71,7 +73,7 @@ export const VIEW_CAPABILITY_FRONTEND_PLUGINS = Object.freeze([
 ]);
 
 /** Static native composition. Pack assets own game plugin identity; View owns only its UI policy. */
-export function createViewProductPlan({ backendConfig, frontendConfig, disabledPages = [] }: { backendConfig?: ViewBackendProductConfig; frontendConfig?: ViewFrontendConfig; disabledPages?: readonly string[] } = {}) {
+export function createViewProductPlan({ backendConfig, frontendConfig, disabledPages = [], role = 'shell' }: { backendConfig?: ViewBackendProductConfig; frontendConfig?: ViewFrontendConfig; disabledPages?: readonly string[]; role?: ViewFrontendRole } = {}) {
   const pages = new Set<string>(VIEW_PRODUCT_PLUGINS.filter(isPagePlugin).map(plugin => plugin.PAGE_TYPE));
   for (const page of disabledPages) {
     if (!pages.has(page)) throw new TypeError(`Unknown View page: ${page}`);
@@ -93,7 +95,7 @@ export function createViewProductPlan({ backendConfig, frontendConfig, disabledP
     { id: display.BACKEND_PLUGIN_ID, module: display.BACKEND_MODULE, config: displayBackendConfig },
     { id: plugins.BACKEND_PLUGIN_ID, module: plugins.BACKEND_MODULE, config: {} },
   ];
-  const frontend = [
+  const shellFrontend = [
     { id: SHELL_PLUGIN_ID, module: SHELL_MODULE },
     { id: VIEW_WORKSPACE_CORE.FRONTEND_PLUGIN_ID, module: VIEW_WORKSPACE_CORE.FRONTEND_MODULE },
     { id: assetReferences.FRONTEND_PLUGIN_ID, module: assetReferences.FRONTEND_MODULE },
@@ -103,6 +105,12 @@ export function createViewProductPlan({ backendConfig, frontendConfig, disabledP
       .map(plugin => ({ id: plugin.FRONTEND_PLUGIN_ID, module: plugin.FRONTEND_MODULE })),
     ...VIEW_CAPABILITY_FRONTEND_PLUGINS.map(plugin => ({ id: plugin.FRONTEND_PLUGIN_ID, module: plugin.FRONTEND_MODULE })),
   ];
+  const frontend = role === 'project-document'
+    ? [
+        { id: VIEW_WORKSPACE_CORE.FRONTEND_PLUGIN_ID, module: VIEW_WORKSPACE_CORE.FRONTEND_MODULE },
+        { id: PRESENTATION_PLUGIN_ID, module: PRESENTATION_MODULE },
+      ]
+    : shellFrontend;
   return Object.freeze({
     backend: Object.freeze(backend),
     frontend: Object.freeze(frontend),

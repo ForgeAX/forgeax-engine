@@ -26,6 +26,10 @@ it('uses actual perspective and orthographic depth hits and rejects clear, foreg
     { scene: 9, water: 10, front: true, hit: false },
     { scene: 10, water: 10, front: true, hit: false },
     { scene: 15, water: 10, front: true, hit: true },
+    { scene: 1, water: 1, front: true, hit: false },
+    { scene: 50, water: 50, front: true, hit: false },
+    { scene: 10.001, water: 10, front: true, hit: true },
+    { scene: 50.001, water: 50, front: true, hit: true },
     { scene: 10.25, water: 10, front: false, hit: false },
     { scene: 1.25, water: 1, front: true, hit: true },
   ];

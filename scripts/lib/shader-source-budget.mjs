@@ -7,7 +7,7 @@ import {
 } from './runner-resources.mjs';
 
 /** Admit a cold source producer before loading the compiler or its worker pool. */
-export function admitShaderSourceBudget() {
+export function admitShaderSourceBudget({ workerBudget = shaderSourceCompileWorkers } = {}) {
   const resources = runnerResources();
   const policyHeapMiB = shaderProducerHeapSize(resources);
   // A parent's explicit Node argument is an intentional producer budget.
@@ -18,16 +18,18 @@ export function admitShaderSourceBudget() {
     ?.at(-1)
     ?.match(/(\d+)$/)?.[1];
   const heapMiB = Math.min(policyHeapMiB, Number(explicitHeap ?? policyHeapMiB));
-  const workers = shaderSourceCompileWorkers(
-    resources,
-    process.env.FORGEAX_SHADER_COMPILE_WORKERS,
-    heapMiB,
-  );
-  process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(workers);
-  if (explicitHeap !== undefined && Number(explicitHeap) === heapMiB) return;
   const currentHeapMiB = getHeapStatistics().heap_size_limit / 1024 ** 2;
-  if (currentHeapMiB >= heapMiB && currentHeapMiB < heapMiB + 512) return;
-  console.log(`[shared-build] source budget: heap=${heapMiB} MiB workers=${workers}`);
+  if (
+    Number(explicitHeap) === heapMiB ||
+    (explicitHeap === undefined && currentHeapMiB >= heapMiB && currentHeapMiB < heapMiB + 512)
+  ) {
+    if (workerBudget !== null) {
+      const workers = workerBudget(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS, heapMiB);
+      process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(workers);
+      console.log(`[shared-build] source budget: heap=${heapMiB} MiB workers=${workers}`);
+    }
+    return;
+  }
   const result = spawnSync(
     process.execPath,
     [

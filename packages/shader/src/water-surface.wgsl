@@ -311,8 +311,9 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
   let crestCompression = clamp((physicalWave.compression - material.surfaceCrestFoamCompressionMinimum)
     / max(material.surfaceCrestFoamCompressionRange, 0.000001), 0.0, 1.0);
   let crestFoam = crestCompression * physicalWave.weight * material.surfaceCrestFoamAmount;
-  // A sky miss is encoded as far by the depth producer. Foreground and back faces cannot emit.
-  let depthHit = input.frontFacing && input.sceneDepthWithoutWaterM > input.pixelDepthM && input.sceneDepthWithoutWaterM < view.temporalProjection.y;
+  // A sky miss is encoded as far. Independent f32 depth reconstruction must not create a self-hit.
+  // The meter floor and relative guard stay below a millimeter over the tested 1-50 m range.
+  let depthHit = input.frontFacing && input.sceneDepthWithoutWaterM > input.pixelDepthM + max(0.00001, abs(input.pixelDepthM) * 0.000002) && input.sceneDepthWithoutWaterM < view.temporalProjection.y;
   let clearanceM = input.sceneDepthWithoutWaterM - input.pixelDepthM;
   let depthFoam = select(0.0, (1.0 - smoothstep(0.0, max(material.sceneDepthFoamWidthM, 0.000001), clearanceM)) * material.sceneDepthFoamAmount, depthHit);
   let sharedFoamActive = waterFluidSharedFoamActive(bodyIndex);

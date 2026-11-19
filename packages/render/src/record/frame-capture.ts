@@ -88,8 +88,16 @@ function compileCubeCaptureFrame(
     undefined,
     terrainReceivers,
     sharedShadows,
+    lighting.scenePasses,
   );
-  return { ...lighting, graph, viewport: work.physical.descriptor };
+  return {
+    ...lighting,
+    graph,
+    viewport: {
+      width: Math.max(1, work.physical.descriptor.width >> (work.mipLevel ?? 0)),
+      height: Math.max(1, work.physical.descriptor.height >> (work.mipLevel ?? 0)),
+    },
+  };
 }
 
 function compileProbeCaptureFrame(
@@ -127,6 +135,8 @@ function compileProbeCaptureFrame(
     lighting.lighting,
     { ...probe, viewBindGroupDynamicOffset: 0, step: undefined },
     terrainReceivers,
+    undefined,
+    lighting.scenePasses,
   );
   return { ...lighting, graph, viewport: { width: probe.rawSize, height: probe.rawSize } };
 }
@@ -365,14 +375,27 @@ function executeCaptureFrame(
   };
   // Only the program owner can distinguish a pending native compile from a
   // valid fallback or an unsupported request. Never infer it from a null draw.
-  const pending = () =>
+  let encoded = true;
+  const pending = () => {
+    encoded = false;
     markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
+  };
   if (capture.runtime.withPipelinePreparationErrors === undefined) execute();
   else capture.runtime.withPipelinePreparationErrors(execute, pending);
   if (capture.frameState.pipelinePreparationPending)
     markPipelinePreparationPending(
       frameState,
       capture.frameState.pipelinePreparationPendingReason ?? { code: 'scene-pipeline-preparation' },
+    );
+  if (
+    encoded &&
+    !capture.frameState.pipelinePreparationPending &&
+    'candidateGeneration' in capture.work &&
+    typeof capture.work.candidateGeneration === 'number'
+  )
+    (internals.viewContext?.root ?? internals).rendererCaptureOwner?.recordEncoded(
+      capture.work.target,
+      capture.work.candidateGeneration,
     );
   flushMeshDrawUploads(internals.device.queue, capture.pipeline.meshStorageBuffer);
   const publishCapture = capture.frameState.pendingAtmospherePublish;

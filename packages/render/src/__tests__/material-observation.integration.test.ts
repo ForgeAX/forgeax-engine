@@ -225,6 +225,7 @@ describe('resident MeshMaterialBindingObservation', () => {
 
   it('projects sampler, readiness, mip, and nearest preparation failure without producer fields', () => {
     const observation = projectMeshMaterialBindingObservation({
+      worldId: 0,
       entityKey: 9,
       bindings,
       diagnostics: [],
@@ -263,6 +264,7 @@ describe('resident MeshMaterialBindingObservation', () => {
 
   it('recomputes aggregate counts from the retained observations', () => {
     const first = projectMeshMaterialBindingObservation({
+      worldId: 0,
       entityKey: 1,
       bindings,
       diagnostics: [],

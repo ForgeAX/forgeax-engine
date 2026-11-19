@@ -48,10 +48,11 @@ import type {
   RapierRigidBody,
   RapierWorld,
 } from './physics-entity-records.js';
-import type {
-  PhysicsSyncDescriptor,
-  PhysicsSyncState,
-  PhysicsTransform3D,
+import {
+  hasZeroColliderScale,
+  type PhysicsSyncDescriptor,
+  type PhysicsSyncState,
+  type PhysicsTransform3D,
 } from './physics-sync-descriptor.js';
 import type { SharedCollisionGeometry } from './shared-collision-geometry.js';
 import type { SourceOwnedTypeRejection } from './source-owned-shape.js';
@@ -1007,26 +1008,26 @@ export function runAuthoredColliderDesc(
   transform: PhysicsTransform3D,
   collider: ColliderSnapshot,
   bodyType: RigidBodyType,
-): ColliderDesc {
+): ColliderDesc | undefined {
   const RAPIER = rapierModule;
   const x = Math.abs(transform.scale.x),
     y = Math.abs(transform.scale.y),
     z = Math.abs(transform.scale.z);
+  const dimensions =
+    collider.shape === ColliderShapeValue.cuboid
+      ? collider.halfExtents
+      : collider.shape === ColliderShapeValue.sphere
+        ? [collider.radius]
+        : collider.shape <= ColliderShapeValue.cone
+          ? [collider.radius, collider.halfHeight]
+          : [];
   if (
-    ![
-      x,
-      y,
-      z,
-      ...(collider.shape === ColliderShapeValue.cuboid
-        ? collider.halfExtents
-        : collider.shape === ColliderShapeValue.sphere
-          ? [collider.radius]
-          : collider.shape <= ColliderShapeValue.cone
-            ? [collider.radius, collider.halfHeight]
-            : []),
-    ].every((v) => Number.isFinite(v) && v > 0)
+    !dimensions.every((v) => Number.isFinite(v) && v > 0) ||
+    ![x, y, z].every((v) => Number.isFinite(v) && (bodyType === 'static' || v > 0))
   )
     return colliderFailure('collider dimensions and world scale must be finite and positive');
+  // A collapsed static shape has no collision volume. Keep its body for restoration.
+  if (hasZeroColliderScale(transform.scale)) return undefined;
   let desc: ColliderDesc;
   switch (colliderShapeFromF32(collider.shape)) {
     case 'cuboid':

@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import { probeR32FloatRenderCapability } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { beforeAll, expect, it } from 'vitest';
-import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
+import {
+  adaptExposure,
+  autoExposureTarget,
+  weightedLuminanceHistogram,
+} from '../pipeline/standard-output/auto-exposure/oracle';
 import type { DepthPyramidShaderSources } from '../render-contract';
 import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
 import {
@@ -136,6 +140,31 @@ it('keeps every weighted histogram bin exact across atomic and fragment plans, i
     expect(fragment.histogram).toEqual(compute.histogram);
     expect(fragment.candidate.slice(1)).toEqual([1, 7, 1]);
     expect(fragment.candidate[0]).toBeCloseTo(compute.candidate[0] ?? 0, 6);
+  }
+});
+
+it.each([
+  'compute',
+  'fragment',
+] as const)('adapts exposure in submit order before CPU completion on %s', async (execution) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const factory = (descriptor: GPUShaderModuleDescriptor) =>
+    createShaderModuleImmediate(device, descriptor);
+  const deltas = [1 / 120, 1 / 10, 1 / 240, 1 / 60];
+  const exposure = await runPortableExposure(
+    device,
+    factory,
+    execution,
+    1,
+    1,
+    new Float32Array([1, 1, 1, 1]),
+    deltas,
+  );
+  const target = autoExposureTarget(new Uint32Array(exposure.histogram), 0, [-8, 8], 1);
+  let expected = 1;
+  for (const [index, dt] of deltas.entries()) {
+    expected = adaptExposure(expected, target, dt, 3, 1);
+    expect(exposure.timeline[index]).toBeCloseTo(expected, 6);
   }
 });
 

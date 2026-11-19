@@ -1,6 +1,9 @@
 import { encodeBase64, err, ok, type PackV2Error, type Result } from '@forgeax/engine-types';
 
+import { decodePackData, encodePackData } from './data.js';
+
 const SCHEMA = 'pack-material-programs/2';
+const BINARY_SCHEMA = 'pack-material-programs/3';
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -108,6 +111,81 @@ class Interner {
   }
 }
 
+/** Only canonical artifact byte views change representation; author metadata keeps native JSON. */
+function artifactByteView(program: unknown): Uint8Array | undefined {
+  if (!record(program) || 'toJSON' in program) return undefined;
+  const artifact = Object.getOwnPropertyDescriptor(program, 'artifact')?.value;
+  if (!record(artifact) || 'toJSON' in artifact) return undefined;
+  const bytes = Object.getOwnPropertyDescriptor(artifact, 'bytes')?.value;
+  return bytes instanceof Uint8Array && !('toJSON' in bytes) ? new Uint8Array(bytes) : undefined;
+}
+
+function encodeProgramBytes(
+  pack: unknown,
+  programs: unknown[],
+  abis: unknown[],
+): unknown | undefined {
+  const views = programs.map(artifactByteView);
+  if (!views.some((view) => view !== undefined)) return undefined;
+  // Reuse the Pack binary codec. Its paths already name the real table slots;
+  // private byte snapshots avoid exporting unrelated backing-buffer storage.
+  const encoded = encodePackData({
+    programs: views.map((bytes) => ({ artifact: { bytes: bytes ?? null } })),
+  });
+  return {
+    schemaVersion: BINARY_SCHEMA,
+    pack,
+    programs: programs.map((program, index) =>
+      views[index] === undefined
+        ? program
+        : {
+            ...(program as Record<string, unknown>),
+            artifact: {
+              ...((program as Record<string, unknown>).artifact as Record<string, unknown>),
+              bytes: null,
+            },
+          },
+    ),
+    abis,
+    binary: encoded.binary,
+  };
+}
+
+/** Decode only artifact-byte slots, retaining caller-owned wire data unchanged. */
+function decodeProgramBytes(value: Record<string, unknown>): unknown {
+  if (
+    !Array.isArray(value.programs) ||
+    !record(value.binary) ||
+    !Array.isArray(value.binary.views) ||
+    value.binary.views.length === 0
+  )
+    throw new TypeError('missing program binary table');
+  if (
+    !value.binary.views.every(
+      (view: unknown) =>
+        record(view) &&
+        view.kind === 'Uint8Array' &&
+        Array.isArray(view.path) &&
+        view.path.length === 4 &&
+        view.path[0] === 'programs' &&
+        typeof view.path[1] === 'string' &&
+        /^(0|[1-9][0-9]*)$/.test(view.path[1]) &&
+        view.path[2] === 'artifact' &&
+        view.path[3] === 'bytes',
+    )
+  )
+    throw new TypeError('invalid program binary path');
+  return decodePackData({
+    ...value,
+    schemaVersion: SCHEMA,
+    programs: value.programs.map((program: unknown) =>
+      record(program) && record(program.artifact)
+        ? { ...program, artifact: { ...program.artifact } }
+        : program,
+    ),
+  });
+}
+
 /** Transport sharing ends at the package boundary; every material keeps its complete record. */
 export function encodeMaterialProgramWire(value: unknown): unknown {
   if (!record(value) || value.schemaVersion !== '2.0.0' || !Array.isArray(value.assets))
@@ -130,6 +208,8 @@ export function encodeMaterialProgramWire(value: unknown): unknown {
   const table = programs.values.map((program) =>
     mapAbis(program as Record<string, unknown>, (abi) => abis.index(abi)),
   );
+  const binary = encodeProgramBytes(pack, table, abis.values);
+  if (binary !== undefined) return binary;
   return programs.repeated || abis.repeated
     ? { schemaVersion: SCHEMA, pack, programs: table, abis: abis.values }
     : value;
@@ -137,7 +217,8 @@ export function encodeMaterialProgramWire(value: unknown): unknown {
 
 /** Restore sharing before ordinary envelope, publication and material integrity validation. */
 export function decodeMaterialProgramWire(value: unknown): Result<unknown, PackV2Error> {
-  if (!record(value) || value.schemaVersion !== SCHEMA) return ok(value);
+  if (!record(value) || (value.schemaVersion !== SCHEMA && value.schemaVersion !== BINARY_SCHEMA))
+    return ok(value);
   const failure = () =>
     err<PackV2Error>({
       code: 'pack-v2-envelope-invalid',
@@ -145,6 +226,15 @@ export function decodeMaterialProgramWire(value: unknown): Result<unknown, PackV
       hint: 'rebuild the package with the current Engine',
       detail: { observed: 'invalid material program table', expected: SCHEMA },
     });
+  if (value.schemaVersion === BINARY_SCHEMA) {
+    try {
+      const restored = decodeProgramBytes(value);
+      if (!record(restored)) return failure();
+      return decodeMaterialProgramWire(restored);
+    } catch {
+      return failure();
+    }
+  }
   if (
     Object.keys(value).some(
       (key) => !['schemaVersion', 'pack', 'programs', 'abis'].includes(key),

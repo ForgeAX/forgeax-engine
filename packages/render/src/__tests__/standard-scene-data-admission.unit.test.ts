@@ -176,7 +176,16 @@ it('uses the authored Standard root while preserving the selected cooked program
       programs: [
         {
           pass: 'forward',
-          context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+          context: {
+            backend: 'webgpu',
+            capability: 'storage-buffer',
+            pipeline: 'forward',
+            pass: 'forward',
+            geometry: 'mesh',
+            profile: 'forgeax-material-wgsl-v1',
+            toolchain: 'naga-oil',
+            instrumentation: 'none',
+          },
           address: 'direct',
           specializationKey: selectedProgram,
           artifactHash: 'shader-artifact-7',
@@ -349,7 +358,16 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
       programs: [
         {
           pass: 'forward',
-          context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+          context: {
+            backend: 'webgpu',
+            capability: 'storage-buffer',
+            pipeline: 'forward',
+            pass: 'forward',
+            geometry: 'mesh',
+            profile: 'forgeax-material-wgsl-v1',
+            toolchain: 'naga-oil',
+            instrumentation: 'none',
+          },
           address: 'direct',
           specializationKey: 'cooked:standard-forward',
           artifactHash: 'shader-forward-only-hash',
@@ -1196,7 +1214,16 @@ function frozenSurfaceMaterial(handle: number, module: string): MaterialResource
           programs: [
             {
               pass: 'forward',
-              context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+              context: {
+                backend: 'webgpu',
+                capability: 'storage-buffer',
+                pipeline: 'forward',
+                pass: 'forward',
+                geometry: 'mesh',
+                profile: 'forgeax-material-wgsl-v1',
+                toolchain: 'naga-oil',
+                instrumentation: 'none',
+              },
               address: 'direct',
               specializationKey: programKey,
               artifactHash: `shader-artifact-${handle}`,

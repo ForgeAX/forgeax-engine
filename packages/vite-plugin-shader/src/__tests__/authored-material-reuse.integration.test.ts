@@ -54,7 +54,11 @@ it('reuses Standard code across authored packages without accepting an invalid e
     expect(publication).toBeDefined();
     if (publication === undefined) throw new Error('Authored manifest missing');
     const wire = JSON.parse(publication.source) as {
-      readonly reflections: readonly unknown[];
+      readonly reflections: readonly {
+        readonly bindingIndices: readonly number[];
+        readonly entryPointsIndex?: number;
+      }[];
+      readonly reflectionBindings: readonly unknown[];
       readonly entryPoints: readonly unknown[];
       readonly materialShaders: readonly {
         readonly identifier: string;
@@ -65,6 +69,18 @@ it('reuses Standard code across authored packages without accepting an invalid e
           readonly entryPointsIndex?: number;
         }[];
       }[];
+    };
+    const reflectionAt = (index: number) => {
+      const pooled = wire.reflections[index];
+      if (pooled === undefined) throw new Error('Pooled reflection missing');
+      const { bindingIndices, entryPointsIndex, ...metadata } = pooled;
+      return {
+        ...metadata,
+        boundGlobals: bindingIndices.map((binding) => wire.reflectionBindings[binding]),
+        ...(entryPointsIndex === undefined
+          ? {}
+          : { entryPoints: wire.entryPoints[entryPointsIndex] }),
+      };
     };
     const manifest = (await readShaderManifestPublication(JSON.parse(publication.source))) as {
       materialShaders: MaterialShaderManifestEntry[];
@@ -80,7 +96,7 @@ it('reuses Standard code across authored packages without accepting an invalid e
       expect(entry.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
       expect(entry.reflection?.schemaVersion).toBe('shader-reflection/3');
       expect(Number.isSafeInteger(wire.materialShaders[index]?.reflectionIndex)).toBe(true);
-      expect(wire.reflections[wire.materialShaders[index]?.reflectionIndex ?? -1]).toEqual(
+      expect(reflectionAt(wire.materialShaders[index]?.reflectionIndex ?? -1)).toEqual(
         entry.reflection,
       );
       expect(Number.isSafeInteger(wire.materialShaders[index]?.entryPointsIndex)).toBe(true);
@@ -102,9 +118,7 @@ it('reuses Standard code across authored packages without accepting an invalid e
           ),
         ).toBe(true);
         expect(
-          wire.reflections[
-            wire.materialShaders[index]?.variants[variantIndex]?.reflectionIndex ?? -1
-          ],
+          reflectionAt(wire.materialShaders[index]?.variants[variantIndex]?.reflectionIndex ?? -1),
         ).toEqual(variant.reflection);
         expect(
           Number.isSafeInteger(

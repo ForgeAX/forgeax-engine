@@ -1,5 +1,6 @@
 import {
   type MaterialShaderManifestEntry,
+  materialShaderPreparedSourceRows,
   materialShaderSourceMatches,
 } from '@forgeax/engine-shader';
 import type { PointShadowSnapshot } from './render-system-extract';
@@ -65,7 +66,10 @@ export function inspectPointShadow(
 
 const POINT_SHADOW_LANE =
   /@group\s*\(\s*0\s*\)\s*@binding\s*\(\s*5\s*\)\s*var\s+\w+\s*:\s*texture_depth_cube_array\b/u;
-const laneByEntry = new WeakMap<MaterialShaderManifestEntry, boolean>();
+const laneByEntry = new WeakMap<
+  MaterialShaderManifestEntry,
+  { readonly count: number; readonly lane: boolean }
+>();
 
 /**
  * Derive whether any loaded material program samples the point-shadow atlas.
@@ -76,13 +80,16 @@ export function materialShadersSamplePointShadows(
   entries: Iterable<MaterialShaderManifestEntry>,
 ): boolean {
   for (const entry of entries) {
-    let lane = laneByEntry.get(entry);
-    if (lane === undefined) {
-      lane =
-        materialShaderSourceMatches(entry, POINT_SHADOW_LANE) ||
-        entry.variants.some((variant) => materialShaderSourceMatches(variant, POINT_SHADOW_LANE));
-      laneByEntry.set(entry, lane);
+    const rows = materialShaderPreparedSourceRows(entry);
+    let cached = laneByEntry.get(entry);
+    if (cached === undefined || cached.count !== rows.length) {
+      cached = {
+        count: rows.length,
+        lane: rows.some((row) => materialShaderSourceMatches(row, POINT_SHADOW_LANE)),
+      };
+      laneByEntry.set(entry, cached);
     }
+    const lane = cached.lane;
     if (lane) return true;
   }
   return false;

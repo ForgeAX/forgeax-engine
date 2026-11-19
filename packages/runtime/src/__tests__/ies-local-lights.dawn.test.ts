@@ -38,7 +38,7 @@ async function disposeIesHost({ target, recorder, host }: IesHost) {
 afterAll(async () => {
   try {
     if (ordinaryHost !== undefined) await disposeIesHost(await ordinaryHost);
-    nativeDevices.assertMaximum(19);
+    nativeDevices.assertMaximum(11);
   } finally {
     nativeDevices.restore();
   }

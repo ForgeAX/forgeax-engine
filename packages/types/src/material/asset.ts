@@ -208,6 +208,10 @@ export type MaterialTextureValue = {
 export type MaterialValue = boolean | number | readonly number[] | string | MaterialTextureValue;
 
 export interface MaterialProgram {
+  /** The program writes the complete versioned Standard GBuffer. */
+  readonly gbuffer?: import('../material-program-abi.js').MaterialGBufferLayout;
+  /** The program evaluates height fog at vertices and applies it before color blending. */
+  readonly forwardFog?: 'height-vertex/1';
   /** Defaults to the ordinary Render material interface. Cook checks reflected resources. */
   readonly bindings?: import('../material-program-abi.js').MaterialProgramBindingContract;
   readonly sceneDepth?: import('../material-program-abi.js').MaterialSceneDepth;
@@ -403,11 +407,26 @@ function assertMaterialStaticSwitches(staticSwitches: unknown): void {
   }
 }
 
+function assertMaterialModuleSlots(moduleSlots: unknown, context: string, index: number): void {
+  if (moduleSlots === undefined) return;
+  if (!isRecord(moduleSlots)) {
+    throw new Error(`${context}: pass ${index} has malformed module slots`);
+  }
+  for (const [name, slot] of Object.entries(moduleSlots)) {
+    if (typeof slot !== 'string')
+      throw new Error(`${context}: module slot ${name} is not a string`);
+  }
+}
+
 function assertMaterialProgram(
   program: Record<string, unknown>,
   context: string,
   index: number,
 ): void {
+  if (program.gbuffer !== undefined && program.gbuffer !== 'standard-gbuffer/2')
+    throw new Error(`${context}: pass ${index} has an unsupported Standard GBuffer contract`);
+  if (program.forwardFog !== undefined && program.forwardFog !== 'height-vertex/1')
+    throw new Error(`${context}: pass ${index} has an unsupported Forward fog contract`);
   if (typeof program.module !== 'string' || program.module.length === 0) {
     throw new Error(`${context}: pass ${index} has no module identity`);
   }
@@ -432,14 +451,7 @@ function assertMaterialProgram(
   ) {
     throw new Error(`${context}: pass ${index} has malformed entry points`);
   }
-  if (program.moduleSlots === undefined) return;
-  if (!isRecord(program.moduleSlots)) {
-    throw new Error(`${context}: pass ${index} has malformed module slots`);
-  }
-  for (const [name, slot] of Object.entries(program.moduleSlots)) {
-    if (typeof slot !== 'string')
-      throw new Error(`${context}: module slot ${name} is not a string`);
-  }
+  assertMaterialModuleSlots(program.moduleSlots, context, index);
 }
 
 function assertMaterialPasses(passes: unknown, context: string): void {

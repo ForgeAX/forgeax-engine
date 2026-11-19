@@ -27,7 +27,7 @@ async function dependencyRoot(root, name) {
  * Registry packages stay ordinary exact-version dependencies so publication
  * uploads only Engine bytes and package managers reuse their caches.
  */
-export async function bundleEngineArchive({ engineArchive, members, version }) {
+export async function bundleEngineArchive({ engineArchive, members, version, viewTool }) {
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-engine-bundle-'));
   try {
     const packageRoot = resolve(temporary, 'package');
@@ -35,7 +35,8 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     await rm(resolve(packageRoot, 'node_modules'), { recursive: true, force: true });
     const graph = new Map();
     const internal = new Map(members.map((member) => [member.name, member]));
-    async function visit(source) {
+    if (viewTool) internal.set('@forgeax/view', { root: viewTool.root });
+    async function visit(source, dependencySource = source) {
       source = await realpath(source);
       if (graph.has(source)) return graph.get(source);
       const manifest = JSON.parse(await readFile(resolve(source, 'package.json'), 'utf8'));
@@ -47,6 +48,8 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
         ...manifest.optionalDependencies,
       };
       for (const name of Object.keys(dependencies).sort()) {
+        // The embedded tool consumes its containing public Engine package.
+        if (manifest.name === '@forgeax/view' && name === '@forgeax/engine') continue;
         // An optional registry peer is the consumer's opt-in, not delivery.
         if (
           manifest.peerDependenciesMeta?.[name]?.optional === true &&
@@ -55,7 +58,7 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
           !internal.has(name)
         )
           continue;
-        const target = await dependencyRoot(source, name);
+        const target = await dependencyRoot(dependencySource, name);
         if (target === undefined) {
           if (
             Object.hasOwn(manifest.optionalDependencies ?? {}, name) ||
@@ -72,6 +75,7 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     for (const member of [...members].sort((a, b) => a.name.localeCompare(b.name))) {
       roots.set(member.name, await visit(member.root));
     }
+    if (viewTool) roots.set('@forgeax/view', await visit(viewTool.root, viewTool.dependencySource));
     const key = (node) => `${node.manifest.name}@${node.manifest.version}`;
     const ordered = [...graph.values()].sort((a, b) => key(a).localeCompare(key(b)));
     // Only unpatched registry installs can be fetched again by a consumer.
@@ -91,41 +95,45 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     // Other physical versions under the same name cannot share that root slot,
     // so they stay bundled at ordinary nested placement.
     const external = new Map();
-    for (let changed = true; changed; ) {
-      changed = false;
-      external.clear();
-      const claims = new Map();
-      for (const node of ordered) {
-        if (!bundled.has(node)) continue;
-        for (const [name, target] of node.dependencies) {
-          const claim = claims.get(name) ?? new Map();
-          const edges = claim.get(target) ?? [];
-          edges.push(Object.hasOwn(node.manifest.optionalDependencies ?? {}, name));
-          claim.set(target, edges);
-          claims.set(name, claim);
+    const selectExternalDependencies = () => {
+      for (let changed = true; changed; ) {
+        changed = false;
+        external.clear();
+        const claims = new Map();
+        for (const node of ordered) {
+          if (!bundled.has(node)) continue;
+          for (const [name, target] of node.dependencies) {
+            const claim = claims.get(name) ?? new Map();
+            const edges = claim.get(target) ?? [];
+            edges.push(Object.hasOwn(node.manifest.optionalDependencies ?? {}, name));
+            claim.set(target, edges);
+            claims.set(name, claim);
+          }
         }
-      }
-      for (const [name, claim] of [...claims].sort(([a], [b]) => a.localeCompare(b))) {
-        const candidates = [...claim.keys()].filter((target) => !bundled.has(target));
-        if (candidates.length === 0) continue;
-        const rootOwner = roots.get(name);
-        const [selected] =
-          rootOwner !== undefined
-            ? []
-            : candidates.sort(
-                (a, b) => claim.get(b).length - claim.get(a).length || key(a).localeCompare(key(b)),
-              );
-        if (selected !== undefined) {
-          external.set(name, { node: selected, optional: claim.get(selected).every(Boolean) });
-        }
-        for (const target of candidates) {
-          if (target !== selected) {
-            bundled.add(target);
-            changed = true;
+        for (const [name, claim] of [...claims].sort(([a], [b]) => a.localeCompare(b))) {
+          const candidates = [...claim.keys()].filter((target) => !bundled.has(target));
+          if (candidates.length === 0) continue;
+          const rootOwner = roots.get(name);
+          const [selected] =
+            rootOwner !== undefined
+              ? []
+              : candidates.sort(
+                  (a, b) =>
+                    claim.get(b).length - claim.get(a).length || key(a).localeCompare(key(b)),
+                );
+          if (selected !== undefined) {
+            external.set(name, { node: selected, optional: claim.get(selected).every(Boolean) });
+          }
+          for (const target of candidates) {
+            if (target !== selected) {
+              bundled.add(target);
+              changed = true;
+            }
           }
         }
       }
-    }
+    };
+    selectExternalDependencies();
     // Bundled third-party roots, such as a patched dependency, keep their
     // import name at the package root when no Engine owner occupies it.
     for (const node of ordered) {
@@ -141,7 +149,7 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       placements.set(destination, node);
       await mkdir(destination, { recursive: true });
       const member = internal.get(node.manifest.name);
-      if (member !== undefined) {
+      if (member?.archive !== undefined) {
         await execute('tar', ['-xzf', member.archive, '-C', destination, '--strip-components=1']);
       } else {
         await cp(node.source, destination, {
@@ -166,7 +174,9 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
       }
       await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
     }
-    for (const [name, node] of roots) await copy(node, resolve(packageRoot, 'node_modules', name));
+    const rootPlacement = (name) =>
+      resolve(packageRoot, name === '@forgeax/view' ? 'tools/view' : `node_modules/${name}`);
+    for (const [name, node] of roots) await copy(node, rootPlacement(name));
     const expanded = new Set();
     async function expand(node, destination) {
       if (expanded.has(destination)) return;
@@ -190,8 +200,7 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
         await expand(target, nested);
       }
     }
-    for (const [name, node] of roots)
-      await expand(node, resolve(packageRoot, 'node_modules', name));
+    for (const [name, node] of roots) await expand(node, rootPlacement(name));
     const exact = (name, node) =>
       name === node.manifest.name
         ? node.manifest.version
@@ -200,7 +209,9 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     const sorted = (entries) => Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
     manifest.dependencies = sorted([
-      ...[...roots].map(([name, node]) => [name, internal.has(name) ? version : exact(name, node)]),
+      ...[...roots]
+        .filter(([name]) => name !== '@forgeax/view')
+        .map(([name, node]) => [name, internal.has(name) ? version : exact(name, node)]),
       ...[...external]
         .filter(([, owner]) => !owner.optional)
         .map(([name, owner]) => [name, exact(name, owner.node)]),
@@ -210,7 +221,10 @@ export async function bundleEngineArchive({ engineArchive, members, version }) {
         .filter(([, owner]) => owner.optional)
         .map(([name, owner]) => [name, exact(name, owner.node)]),
     );
-    manifest.bundledDependencies = [...roots.keys()].sort();
+    manifest.bundledDependencies = [...roots.keys()]
+      .filter((name) => name !== '@forgeax/view')
+      .sort();
+    if (viewTool) manifest.files = [...new Set([...(manifest.files ?? []), 'tools/view'])];
     delete manifest.devDependencies;
     delete manifest.scripts;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);

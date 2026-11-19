@@ -5,7 +5,10 @@ import {
   createMaterialProgramSetDigest,
 } from '@forgeax/engine-pack/material-cook';
 import type { AssetHandle } from '@forgeax/engine-types';
-import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import {
+  MATERIAL_CONTEXT,
+  materialRecordFixture,
+} from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { installDefaultAssetDecoders } from '../asset-contributions';
@@ -36,7 +39,7 @@ import {
 import { ChildOf, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry, type ShaderRegistryDevice } from '@forgeax/engine-shader';
 import type { MaterialAsset, MaterialPass, MeshAsset } from '@forgeax/engine-types';
-import { srgbChannelToLinear } from '@forgeax/engine-types';
+import { selectMaterialStaticContract, srgbChannelToLinear } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame, extractSource } from '../../../render/src/render-system-extract-tail';
@@ -298,32 +301,41 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
       );
     });
 
-    it('keeps custom Standard Surface fields in the extracted material ABI', () => {
+    it('keeps custom Standard Surface fields in the extracted material ABI', async () => {
       const world = new World();
       spawnCamera(world);
       const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
       installDefaultAssetDecoders(assets);
       world.bindAssets(assets).unwrap();
       const mesh = registerMesh(world);
-      const material = testAssets(world)
-        .create(
-          Materials.standard({
-            surfaceModule: 'game_3d::rusted_iron_surface',
-            parameters: [
-              { name: 'ironColor', type: 'color' },
-              { name: 'rustDark', type: 'color' },
-              { name: 'rustBright', type: 'color' },
-              { name: 'noiseScale', type: 'f32' },
-            ],
-            values: {
-              ironColor: [0.4, 0.45, 0.47, 1],
-              rustDark: [0.42, 0.085, 0.018, 1],
-              rustBright: [0.95, 0.34, 0.055, 1],
-              noiseScale: 1.85,
-            },
-          }),
-        )
-        .unwrap();
+      const authored = selectMaterialStaticContract(
+        Materials.standard({
+          surfaceModule: 'game_3d::rusted_iron_surface',
+          parameters: [
+            { name: 'ironColor', type: 'color' },
+            { name: 'rustDark', type: 'color' },
+            { name: 'rustBright', type: 'color' },
+            { name: 'noiseScale', type: 'f32' },
+          ],
+          values: {
+            ironColor: [0.4, 0.45, 0.47, 1],
+            rustDark: [0.42, 0.085, 0.018, 1],
+            rustBright: [0.95, 0.34, 0.055, 1],
+            noiseScale: 1.85,
+          },
+        }),
+      );
+      const record = materialRecordFixture({
+        passes: authored.passes?.filter((pass) => pass.name === 'forward'),
+        parameters: authored.parameters,
+        values: authored.values,
+      });
+      const loaded = await loadMaterialFixture(assets, {
+        ...record,
+        resolved: { ...record.resolved, staticSwitches: authored.staticSwitches },
+      });
+      if (!loaded.ok) throw new Error(JSON.stringify(loaded.error), { cause: loaded.error });
+      const material = loaded.value.handle;
       world
         .spawn(
           { component: Transform, data: { ...identity(), pos: [0, 0, -2] } },
@@ -332,7 +344,10 @@ import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
         )
         .unwrap();
 
-      const frame = extractFrame(world, prepareExtractContext(world, { assets }));
+      const frame = extractFrame(
+        world,
+        prepareExtractContext(world, { assets, materialContext: MATERIAL_CONTEXT }),
+      );
       const snapshot = frame.renderables[0]?.material.snapshot;
       const schemaNames = snapshot?.materialParamSchema?.map((entry) => entry.name) ?? [];
 

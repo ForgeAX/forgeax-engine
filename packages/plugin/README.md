@@ -62,6 +62,10 @@ despawn the child still reads.
 to wait until completion or explicit cancellation. `cleanupTimeoutMs` remains a
 separate bounded cleanup policy.
 
+`onFiber` observes the installed native root immediately, while startup is
+pending. If the observer throws, the startup owner aborts and performs the same
+bounded Fiber cleanup before returning a structured startup failure.
+
 `inspectPluginFiber` projects native state and missing services. Asset origin carries the source and session identity, not another installation state. Disposal remains native; domain owners must verify their contributions were released. Source/config updates rebuild the session in a fresh page or Worker. Compilation failure may retain the running session; startup failure after replacement does not restore game progress.
 
 Failed startup and explicit `disposePluginFiber(fiber, timeoutMs?)` share the

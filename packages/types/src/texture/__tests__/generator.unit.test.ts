@@ -63,3 +63,18 @@ describe('runtime GPU texture generator admission', () => {
     ).toBe(false);
   });
 });
+
+it('admits normal-roughness mip filtering only for generated linear RGBA8 output', () => {
+  const withFilter = (patch: object) => ({
+    ...recipe(),
+    outputs: { color: { ...output, mipFilter: 'normal-roughness', ...patch } },
+  });
+  expect(validateTextureGenerator(withFilter({})).ok).toBe(true);
+  for (const patch of [
+    { mipFilter: 'unknown' },
+    { format: 'rgba16float' },
+    { mips: { kind: 'none' } },
+    { format: 'rgba8unorm-srgb', colorSpace: 'srgb' },
+  ])
+    expect(validateTextureGenerator(withFilter(patch)).ok).toBe(false);
+});

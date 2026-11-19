@@ -6,12 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { type Component, componentSchema, defineComponent } from '../component';
-import {
-  isComponentFullyTransient,
-  isComponentPortable,
-  isFieldPortable,
-  validateProfileComponents,
-} from '../externalization/index';
+import { validateProfileComponents } from '../externalization/index';
 
 // ── Test components ──────────────────────────────────────────────────────────
 
@@ -77,73 +72,33 @@ describe('m3 — portable value validation: fully transient component rejection'
     expect(result.errors[0]?.code).toBe('component-fully-transient');
     expect(result.errors[0]?.component).toBe('TestAllFieldsTransient');
   });
-
-  it('(c) isComponentFullyTransient returns true for component-level transient', () => {
-    expect(isComponentFullyTransient(FullyTransient as Component)).toBe(true);
-  });
-
-  it('(d) isComponentFullyTransient returns true for all-fields-transient', () => {
-    expect(isComponentFullyTransient(AllFieldsTransient as Component)).toBe(true);
-  });
-
-  it('(e) isComponentFullyTransient returns false for component with at least one portable field', () => {
-    expect(isComponentFullyTransient(Portable as Component)).toBe(false);
-  });
 });
 
-describe('m3 — portable value validation: non-portable field type rejection', () => {
-  it('(a) unique<T> field type is not portable', () => {
-    expect(isFieldPortable('unique<SomeResource>')).toBe(false);
+it('accepts portable scalar, entity, array, and byte-array layouts', () => {
+  const Fields = defineComponent('TestPortableLayouts', {
+    number: 'f32',
+    name: 'string',
+    target: 'entity',
+    targets: 'array<entity>',
+    values: 'array<f32>',
+    position: 'array<f32, 3>',
+    enabled: 'bool',
+    status: 'enum',
+    bytes: 'array<u8>',
+    rgba: 'array<u8, 256>',
   });
+  expect(validateProfileComponents([Fields])).toEqual({ valid: true, errors: [] });
+});
 
-  it('(b) shared<T> field type is not portable', () => {
-    expect(isFieldPortable('shared<SomeAsset>')).toBe(false);
+it('rejects fixed reference-array layouts', () => {
+  const Fields = defineComponent('TestNonPortableFixedArrays', {
+    shared: 'array<shared<Ref>, 2>',
+    assets: 'array<asset<mesh>, 2>',
   });
-
-  it('(d) numeric scalar (f32) is portable', () => {
-    expect(isFieldPortable('f32')).toBe(true);
-  });
-
-  it('(e) string is portable', () => {
-    expect(isFieldPortable('string')).toBe(true);
-  });
-
-  it('(f) entity is portable', () => {
-    expect(isFieldPortable('entity')).toBe(true);
-  });
-
-  it('(g) array<entity> is portable', () => {
-    expect(isFieldPortable('array<entity>')).toBe(true);
-  });
-
-  it('(h) array<f32> is portable', () => {
-    expect(isFieldPortable('array<f32>')).toBe(true);
-  });
-
-  it('(i) array<f32,3> is portable', () => {
-    expect(isFieldPortable('array<f32, 3>')).toBe(true);
-  });
-
-  it('(j) array<shared<T>> is not portable when its elements are shared refs', () => {
-    expect(isFieldPortable('array<shared<SomeAsset>>')).toBe(false);
-    expect(isFieldPortable('array<shared<SomeAsset>, 2>')).toBe(false);
-  });
-
-  it('(k) bool is portable', () => {
-    expect(isFieldPortable('bool')).toBe(true);
-  });
-
-  it('(l) enum is portable', () => {
-    expect(isFieldPortable('enum')).toBe(true);
-  });
-
-  it('(m) buffer is portable', () => {
-    expect(isFieldPortable('buffer')).toBe(true);
-  });
-
-  it('(n) buffer<N> is portable', () => {
-    expect(isFieldPortable('buffer<256>')).toBe(true);
-  });
+  expect(validateProfileComponents([Fields]).errors.map((error) => error.field)).toEqual([
+    'shared',
+    'assets',
+  ]);
 });
 
 describe('m3 — portable value validation: validateProfileComponents rejects non-portable', () => {
@@ -199,20 +154,6 @@ describe('m3 — portable value validation: validateProfileComponents rejects no
   });
 });
 
-describe('m3 — isComponentPortable', () => {
-  it('(a) component with at least one portable, non-transient field is portable', () => {
-    expect(isComponentPortable(Portable as Component)).toBe(true);
-  });
-
-  it('(b) component with entity field is portable', () => {
-    expect(isComponentPortable(WithEntity as Component)).toBe(true);
-  });
-
-  it('(c) fully transient component is not portable', () => {
-    expect(isComponentPortable(FullyTransient as Component)).toBe(false);
-  });
-});
-
 // ── m3-profile-rejection-test supplemental: exhaustive rejection edge cases ──
 
 describe('m3 — profile rejection supplemental: multi-component and multi-error', () => {
@@ -233,13 +174,6 @@ describe('m3 — profile rejection supplemental: multi-component and multi-error
       'field-not-portable',
       'field-not-portable',
     ]);
-  });
-
-  it('(i) shared<T> and unique<T> are not portable (direct string test)', () => {
-    // shared<SomeAsset> and unique<SomeResource> are not valid
-    // defineComponent field types, so test isFieldPortable directly.
-    expect(isFieldPortable('shared<SomeAsset>')).toBe(false);
-    expect(isFieldPortable('unique<SomeResource>')).toBe(false);
   });
 
   it('(j) validateProfileComponents with no network metadata in schema', () => {

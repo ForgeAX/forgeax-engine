@@ -1,6 +1,7 @@
 import type { GlobalSdfGrid } from '../raytracing/global-sdf';
 import type { GlobalSdfQueryOptions } from '../raytracing/global-sdf-query';
 import type { SsaoParameterConfig } from '../ssao-config';
+import type { StandardOutputContract } from './standard-output/types';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
 /**
  * Largest `StandardProfile.lightCount`: the Cluster's DirectLightSlot array
@@ -210,6 +211,8 @@ export interface StandardProfile {
   readonly configurationRevision?: number;
   /** Concrete budgets derived from the active engine quality selection. */
   readonly quality?: import('../quality').RenderQualityBudgets;
+  /** Versioned color ordering; omitted retains the saved V1 pipeline contract. */
+  readonly outputContract?: StandardOutputContract;
   /** Merge ready native view raster passes whose shaders only read depth. */
   readonly featureReadOnlyDepthBatching?: boolean;
   /** Explicit off/on diagnostic override of the production policy. */
@@ -227,7 +230,7 @@ export interface StandardProfile {
   readonly pbr: boolean;
   readonly ibl: boolean;
   readonly ssao: boolean | SsaoParameterConfig;
-  /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted means on. */
+  /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted is off for Forward, on for Deferred. */
   readonly gpuOcclusion?: boolean | undefined;
   /** Opt-in ordering experiment only; omitted preserves production GBuffer order. */
   readonly gbufferBatchOrderDiagnostic?:
@@ -245,6 +248,7 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   // capacity comes from the published DirectLightSlot reflection.
   lightCount: STANDARD_MAX_LIGHT_COUNT,
   renderPath: 'forward',
+  outputContract: 'standard-output-v2',
   pbr: true,
   ibl: true,
   ssao: false,

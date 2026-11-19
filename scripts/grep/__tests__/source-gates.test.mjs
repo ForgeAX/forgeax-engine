@@ -35,7 +35,7 @@ for (const [script, violation] of cases) {
       if (script.includes('shader-manifest'))
         put(`${sourceRoot}/__test-stubs__/hidden.ts`, violation);
       if (script.includes('buffer-colon'))
-        put('packages/ecs/src/__tests__/buffer-array-vocab.test-d.ts', violation);
+        put('packages/ecs/src/__tests__/component-fields.test-d.ts', violation);
       if (script.includes('managed-array-error'))
         put('packages/ecs/src/__tests__/errors.unit.test.ts', violation);
       const clean = run();

@@ -3,7 +3,7 @@
 #import forgeax_material::ray_abi::{RayMaterialInput, RayMaterialSurface}
 #import forgeax_pbr::ray_bsdf::{RAY_BSDF_LAMBERT, rayBasis, rayBsdfValue, rayBsdfPdf, sampleRayBsdf, rayPowerHeuristic}
 #import forgeax_pbr::ibl_shared::{standardDiffuseWeight}
-#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation}
+#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation, decodeSpotDecay}
 
 #import forgeax_ray::traversal::{Triangle, Node, Ray, Hit, TraceResult, triangles, nodes, traceAny, traceOccluder, traceReference, traceReferenceAfter}
 
@@ -170,7 +170,7 @@ fn missPath(index: u32) {
       let delta=light.positionKind.xyz-position; distance=length(delta);
       incoming=delta/max(distance,1e-8);
       scale=evalDistanceAttenuation(distance*distance,light.directionRange.w,light.radiance.w,1e-4);
-      if (kind == 3u) { scale=evalSpotAttenuation(light.positionKind.xyz,light.directionRange.xyz,position,light.cone.x,light.cone.y,light.directionRange.w); }
+      if (kind == 3u) { scale=evalSpotAttenuation(light.positionKind.xyz,light.directionRange.xyz,position,light.cone.x,light.cone.y,light.directionRange.w,decodeSpotDecay(bitcast<u32>(light.radiance.w))); }
     }
     let cosine=max(dot(n,incoming),0.0);
     if (cosine > 0.0 && dot(ng,incoming)>0.0 && visible(position,ng,incoming,distance)) { radiance += rayBsdfValue(surface,outgoing,incoming,
@@ -405,7 +405,7 @@ fn sealQuery(index: u32) {
     if (kind >= 2u) {
       let delta=light.positionKind.xyz-position; distance=length(delta); incoming=delta/max(distance,1e-8);
       scale=evalDistanceAttenuation(distance*distance,light.directionRange.w,light.radiance.w,1e-4);
-      if (kind == 3u) { scale=evalSpotAttenuation(light.positionKind.xyz,light.directionRange.xyz,position,light.cone.x,light.cone.y,light.directionRange.w); }
+      if (kind == 3u) { scale=evalSpotAttenuation(light.positionKind.xyz,light.directionRange.xyz,position,light.cone.x,light.cone.y,light.directionRange.w,decodeSpotDecay(bitcast<u32>(light.radiance.w))); }
     }
     incident=light.radiance.xyz*scale*max(dot(n,incoming),0.0);
   } else {

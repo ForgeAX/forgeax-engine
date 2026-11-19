@@ -1,4 +1,7 @@
-import { withSupportedLeanInputs } from '@forgeax/engine-shader';
+import {
+  STANDARD_SURFACE_DISCARDS_OVERRIDE,
+  withSupportedLeanInputs,
+} from '@forgeax/engine-shader';
 import {
   STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
   standardTransmissionAdmission,
@@ -9,6 +12,17 @@ import {
   OIT_FRAGMENT_ENTRY,
   OIT_PREMULTIPLIED_FRAGMENT_ENTRY,
 } from '../oit/eligibility';
+import {
+  POINTS_LINES_MATERIAL_SHADER_ID,
+  POINTS_LINES_VERTEX_LAYOUT,
+  pointsLinesFragmentEntry,
+} from '../points-lines/record';
+import type { PointsLinesStyle } from '../points-lines/snapshot';
+import {
+  PREDEPTH_FRAGMENT_ENTRY,
+  predepthCoversMaterial,
+  predepthFragmentEntry,
+} from '../predepth-coverage';
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { ValidatedRenderable } from './frame-snapshot';
@@ -32,6 +46,7 @@ import {
 import { materialPipelineArtifactRequest } from '../assembly/material/pipeline-helpers';
 import {
   MaterialSampledTextureBudgetExceededError,
+  RendererContractFailureError,
   type VertexColorVariantConflictError,
 } from '../errors/render';
 import { maskedInEarlyPassVariantSet, materialAlphaMask } from '../material-alpha-mask';
@@ -42,6 +57,7 @@ import {
   transformRenderState,
 } from '../material-render-state';
 import {
+  applySurfaceDiscardAxis,
   colorlessFormat,
   colorlessFragmentEntry,
   effectiveStandardShadowReception,
@@ -74,7 +90,7 @@ import type {
   RenderSystemInternals,
 } from './render-context';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
-import { translucentFogComposition, translucentViewOffset } from './view-ubo';
+import { materialFogViewOffset, translucentFogComposition } from './view-ubo';
 
 /** Resolve the material artifact key from the draw's declared shader family. */
 function geometryMaterialVariantSet(
@@ -370,6 +386,7 @@ export function resolveGeometryMaterialVariantSet(
 export type PipelineRequestRuntime = Pick<
   RenderSystemInternals,
   | 'device'
+  | 'shaderRegistry'
   | 'errorRegistry'
   | 'metrics'
   | 'getMaterialArtifact'
@@ -428,6 +445,7 @@ function prepassFragmentEntry(
   artifact: MaterialShaderArtifact | undefined,
   surfaceDiscards: number | undefined,
   fragmentEntry: string | undefined,
+  alphaToCoverageEnabled: boolean,
 ): string | null | undefined {
   return colorlessFragmentEntry(
     colorless,
@@ -436,6 +454,7 @@ function prepassFragmentEntry(
     surfaceDiscards,
     fragmentEntry,
     artifact?.program,
+    alphaToCoverageEnabled,
   );
 }
 
@@ -449,6 +468,7 @@ export interface GeometryPipelineRequestContext {
   readonly reflectionFallbackColorFormat: GPUTextureFormat | undefined;
   readonly translucentFog: boolean;
   readonly viewFog?: boolean | undefined;
+  readonly vertexHeightFog?: boolean | undefined;
   readonly viewShadows?: boolean | undefined;
   readonly splitLdrSprite: boolean;
   readonly transparentColorFormat: GPUTextureFormat | undefined;
@@ -471,6 +491,7 @@ export function geometryPipelineRequestContext(
     | 'reflectionFallbackColorFormat'
     | 'translucentFog'
     | 'viewFog'
+    | 'vertexHeightFog'
     | 'viewShadows'
     | 'splitLdrSprite'
     | 'transparentColorFormat'
@@ -490,6 +511,7 @@ export function geometryPipelineRequestContext(
     reflectionFallbackColorFormat: c.reflectionFallbackColorFormat,
     translucentFog: c.translucentFog === true,
     viewFog: c.viewFog,
+    vertexHeightFog: c.vertexHeightFog,
     viewShadows: c.viewShadows,
     splitLdrSprite: c.splitLdrSprite,
     transparentColorFormat: c.transparentColorFormat,
@@ -577,9 +599,18 @@ export function createGeometryPipelineRequests(
   const viewOffsetForBlend = (blend: GPUBlendState | undefined, fog?: boolean): number => {
     const composition =
       c.translucentFog === true && fog !== false ? translucentFogComposition(blend) : undefined;
-    return composition === undefined
-      ? viewBindGroupDynamicOffset
-      : translucentViewOffset(composition);
+    const dataOnly =
+      coverageOnly ||
+      surfacePass === 'depth' ||
+      surfacePass === 'shadow' ||
+      surfacePass === 'velocity' ||
+      surfacePass === 'nearest-layer';
+    return materialFogViewOffset(
+      viewBindGroupDynamicOffset,
+      c.vertexHeightFog === true,
+      dataOnly ? false : fog,
+      composition,
+    );
   };
   const materialPipelineLookupCache = new Map<string, Map<string, MaterialPipelineLookup[]>>();
   // Attachment formats are pass-owned. Reuse their immutable projection and
@@ -744,6 +775,7 @@ export function createGeometryPipelineRequests(
           shaderArtifact,
           surfaceDiscards,
           fragmentEntry,
+          renderState?.alphaToCoverageEnabled === true,
         ),
         undefined,
         materialAbiRasterConstants(
@@ -796,6 +828,28 @@ export function createGeometryPipelineRequests(
       frameLean = c.leanLighting;
     }
   };
+
+  /** The actual expanded primitive request shared by preparation and drawing. */
+  const resolvePointsLinesPipeline = (
+    material: MaterialSnapshot,
+    style: PointsLinesStyle | undefined,
+    layout: import('@forgeax/engine-geometry').VertexLayoutProjection,
+    preparation = false,
+  ): MaterialShaderPipelineEntry | null =>
+    resolveMaterialPipelineOrGeneral(
+      POINTS_LINES_MATERIAL_SHADER_ID,
+      geometryRenderStateForTopology('line-list', { ...material.renderState, cullMode: 'none' }),
+      'triangle-list',
+      'uint32',
+      undefined,
+      colorFormatOverride,
+      layout,
+      undefined,
+      pointsLinesFragmentEntry(style),
+      undefined,
+      undefined,
+      preparation,
+    );
 
   // True when the current resolution reported or observed per-draw facts; such
   // a selection is resolved again for each draw instead of being reused.
@@ -856,7 +910,7 @@ export function createGeometryPipelineRequests(
         pipelineRenderState,
         smTopology,
         entry.mesh.indexFormat,
-        variantSet,
+        `${variantSet}+ALPHA_MASK=${materialAlphaMask(submeshMaterial.paramSnapshot)}`,
         colorFormatOverride,
         entry.mesh.layoutProjection,
         vertexEntry,
@@ -885,6 +939,85 @@ export function createGeometryPipelineRequests(
     return { entry: resolveUnlit(unlitVariantSet), sceneDirect: false };
   };
 
+  const resolveDrawArtifact = (
+    entry: ValidatedRenderable,
+    smMaterialShaderId: string | undefined,
+    submeshMaterial: MaterialSnapshot,
+    authoredVariantSet: string | undefined,
+    isSkinEntry: boolean,
+  ): MaterialShaderArtifact | undefined => {
+    return smMaterialShaderId === undefined
+      ? undefined
+      : runtime.getMaterialShaderArtifact?.(smMaterialShaderId, {
+          deformation: isSkinEntry ? 'skin' : 'rigid',
+          address: 'direct',
+          variantSet:
+            applySurfaceDiscardAxis(authoredVariantSet, {
+              [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscardMask(
+                false,
+                (c.clipping?.planes.length ?? 0) > 0,
+              ),
+            }).variantSet ?? '',
+          clustered: clusteredLighting,
+          alphaMask: materialAlphaMask(submeshMaterial.paramSnapshot),
+          vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
+            (attribute) => attribute.key === 'color',
+          ),
+        });
+  };
+
+  const assertDrawForwardFog = (
+    shaderArtifact: MaterialShaderArtifact | undefined,
+    smMaterialShaderId: string | undefined,
+    materialPipelineEntry: MaterialShaderPipelineEntry | null,
+    pipelineRenderState: MaterialSnapshot['renderState'],
+  ): void => {
+    if (
+      c.vertexHeightFog === true &&
+      !coverageOnly &&
+      (surfacePass === undefined || surfacePass === 'color') &&
+      pipelineRenderState?.fog !== false
+    ) {
+      let contract =
+        shaderArtifact?.program.forwardFog ??
+        shaderArtifact?.receipt?.forwardFog ??
+        materialPipelineEntry?.program?.forwardFog;
+      if (contract === undefined) {
+        const registered = runtime.shaderRegistry?.findMaterialArtifact(
+          smMaterialShaderId ?? 'forgeax::default-unlit',
+        );
+        if (registered?.ok) contract = registered.value.program.forwardFog;
+      }
+      if (contract !== 'height-vertex/1')
+        throw new RendererContractFailureError(
+          'draw',
+          `material program ${smMaterialShaderId ?? 'forgeax::default-unlit'} must declare forwardFog: height-vertex/1 and apply vertex fog before blending, or author renderState.fog: false`,
+        );
+    }
+  };
+
+  const resolveDrawCoverage = (
+    fragmentEntry: string | undefined,
+    coveredByPredepth: boolean,
+    shaderArtifact: MaterialShaderArtifact | undefined,
+    smMaterialShaderId: string | undefined,
+  ): string | undefined | false => {
+    if (fragmentEntry === PREDEPTH_FRAGMENT_ENTRY) {
+      pipelineSelection.skipped = !coveredByPredepth;
+      if (!coveredByPredepth || shaderArtifact === undefined) return false;
+      fragmentEntry =
+        colorFormats.length === 0 ? predepthFragmentEntry(shaderArtifact) : 'fs_ao_input';
+    }
+    // A program without the surface-data entry is shaded by the main pass only.
+    pipelineSelection.skipped = outsideSurfaceDataPass(
+      fragmentEntry,
+      smMaterialShaderId,
+      shaderArtifact,
+    );
+    if (pipelineSelection.skipped) return false;
+    return fragmentEntry;
+  };
+
   const resolveDrawPipeline = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     smTopology: PrimitiveTopology,
@@ -909,25 +1042,22 @@ export function createGeometryPipelineRequests(
       selectedShaderId,
       submeshMaterial,
     );
-    const shaderArtifact =
-      smMaterialShaderId === undefined
-        ? undefined
-        : runtime.getMaterialShaderArtifact?.(smMaterialShaderId, {
-            deformation: isSkinEntry ? 'skin' : 'rigid',
-            address: 'direct',
-            clustered: clusteredLighting,
-            alphaMask: materialAlphaMask(submeshMaterial.paramSnapshot),
-            vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
-              (attribute) => attribute.key === 'color',
-            ),
-          });
-    // A program without the surface-data entry is shaded by the main pass only.
-    pipelineSelection.skipped = outsideSurfaceDataPass(
-      fragmentEntry,
+    const shaderArtifact = resolveDrawArtifact(
+      entry,
       smMaterialShaderId,
-      shaderArtifact,
+      submeshMaterial,
+      authoredVariantSet,
+      isSkinEntry,
     );
-    if (pipelineSelection.skipped) return false;
+    const coveredByPredepth = predepthCoversMaterial(shaderArtifact, selectedRenderState);
+    const coverageEntry = resolveDrawCoverage(
+      fragmentEntry,
+      coveredByPredepth,
+      shaderArtifact,
+      smMaterialShaderId,
+    );
+    if (coverageEntry === false) return false;
+    fragmentEntry = coverageEntry;
     const resolveDrawProbeBlend = () => {
       const cookedProbeBlend =
         shaderArtifact !== undefined && requiresProbeBlendRecord(shaderArtifact);
@@ -993,7 +1123,7 @@ export function createGeometryPipelineRequests(
     projectDepthAndWaterRenderState();
     const unseededRenderState = pipelineRenderState;
     pipelineRenderState = seededGeometryRenderState(
-      seededDepth,
+      seededDepth && coveredByPredepth,
       pipelineRenderState,
       smMaterialShaderId,
       submeshMaterial.paramSnapshot,
@@ -1146,7 +1276,11 @@ export function createGeometryPipelineRequests(
       // (`equal`, no write), so it selects the program without the alpha
       // discard; that opaque key takes the simple receiver like any opaque draw.
       const drawVariantSet = seededDrawVariantSet(
-        { seededDepth, transparent: submeshMaterial.transparent, oitAccumulateDraw },
+        {
+          seededDepth: seededDepth && coveredByPredepth,
+          transparent: submeshMaterial.transparent,
+          oitAccumulateDraw,
+        },
         variantSet,
         unseededRenderState,
         pipelineRenderState,
@@ -1188,6 +1322,12 @@ export function createGeometryPipelineRequests(
     } else {
       smPipelineHandle = selectGeometryPipeline(pipelineState, isHdrTarget, msaaActive);
     }
+    assertDrawForwardFog(
+      shaderArtifact,
+      smMaterialShaderId,
+      materialPipelineEntry,
+      pipelineRenderState,
+    );
     pipelineSelection.pipeline = smPipelineHandle;
     pipelineSelection.material = materialPipelineEntry;
     pipelineSelection.probeBlend = probeBlendAvailable;
@@ -1205,6 +1345,7 @@ export function createGeometryPipelineRequests(
 
   return {
     resolveMaterialPipeline: resolveMaterialPipelineOrGeneral,
+    resolvePointsLinesPipeline,
     resolveDrawPipeline,
     pipelineSelection,
     viewOffsetForBlend,
@@ -1237,7 +1378,7 @@ export function prepareGeometryPipelineRequests(
   skipDraw?: (entry: ValidatedRenderable, index: number) => boolean,
   requests = createGeometryPipelineRequests(c, options),
 ): void {
-  const { resolveDrawPipeline, pipelineSelection } = requests;
+  const { resolveDrawPipeline, resolvePointsLinesPipeline, pipelineSelection } = requests;
   const { passKind, oit, fragmentEntryPoint } = options;
   const { frameState } = c;
   const preparePass = (
@@ -1265,6 +1406,23 @@ export function prepareGeometryPipelineRequests(
         fragmentEntry = eligibility.premultiplied
           ? OIT_PREMULTIPLIED_FRAGMENT_ENTRY
           : OIT_FRAGMENT_ENTRY;
+    }
+    if (entry.source.pointsLines !== undefined) {
+      if (
+        resolvePointsLinesPipeline(
+          material,
+          entry.source.pointsLines.style,
+          POINTS_LINES_VERTEX_LAYOUT,
+          true,
+        ) === null
+      )
+        markPipelinePreparationPending(frameState, {
+          code: 'material-pipeline-preparation',
+          entity: entry.source.entityKey,
+          pass: passKind,
+          shader: POINTS_LINES_MATERIAL_SHADER_ID,
+        });
+      return;
     }
     const resolved = resolveDrawPipeline(
       entry,

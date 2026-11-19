@@ -214,7 +214,7 @@ it('prepares an explicit opaque-normal entry at four samples with equal-depth re
     if (request === undefined) throw new Error('missing normal pipeline request');
     expect(request[19]).toBe('fs_ao_input_msaa');
     const fragmentEntry = request[19];
-    if (fragmentEntry === undefined) throw new Error('missing explicit normal fragment entry');
+    if (fragmentEntry == null) throw new Error('missing explicit normal fragment entry');
     expect(
       buildPipelineDescriptor(
         {

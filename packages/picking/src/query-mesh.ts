@@ -52,6 +52,8 @@ export function queryMesh(
 export function queryMeshMatrix(world: World, entity: EntityHandle, screen: ScreenRay) {
   const matrix = readWorldMatrix(world, entity);
   if (matrix === undefined || !world.hasComponent(entity, GlyphText)) return matrix;
+  const glyph = world.get(entity, GlyphText);
+  if (glyph.ok && glyph.value.worldOriented) return matrix;
   const camera = mat4.invert(mat4.create(), screen.view);
   const forward = vec3.normalize(
     vec3.create(),

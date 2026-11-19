@@ -183,12 +183,9 @@ export function queryContactManifolds(
     undefined,
     undefined,
     (row, own, otherOwner) => {
-      // A pair without any solver contact contributes only its empty manifold
-      // roster; skip the per-manifold native reads for it.
-      if (row.touching === 0) {
-        budget.add('manifolds', row.manifolds);
-        return;
-      }
+      // A non-touching pair has no manifold reads to charge. Large triangle
+      // meshes can have thousands of retained empty manifolds in a single pair.
+      if (row.touching === 0) return;
       const otherBody = otherOwner.body;
       const awake =
         (body.isDynamic() && !body.isSleeping()) ||

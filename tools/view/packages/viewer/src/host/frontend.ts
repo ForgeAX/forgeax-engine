@@ -1,5 +1,5 @@
 import type { Context } from '@forgeax/engine-plugin';
-import type { HostRootDescriptor, HostAssembly } from '@forgeax/engine-host/protocol';
+import type { HostAssembly } from '@forgeax/engine-host/protocol';
 import type { FrontendHost } from '@forgeax/engine-host/frontend';
 import type { ViewFrontendConfig } from '../config.ts';
 export type ViewFrontendConnectionOptions = ViewFrontendConfig & {
@@ -13,15 +13,8 @@ import { HOST_ASSEMBLY_CHANGED_TOPIC } from '@forgeax/engine-host/transport';
 import { requireWorkspaceString } from '@forgeax/view-workspace-core/contract';
 import { workspaceBrowserEndpoint } from '@forgeax/view-workspace-core/client';
 
-import { VIEW_FRONTEND_ROOT_PROGRAM } from '../frontend-root.ts';
-import { createViewFrontendRoot } from '../frontend-root.ts';
-
-export async function resolveViewFrontendRoot(root: HostRootDescriptor, localConfig?: ViewFrontendConfig) {
-  if (root.program !== VIEW_FRONTEND_ROOT_PROGRAM) {
-    throw new Error(`Unexpected View frontend root: ${root.program}`);
-  }
-  return createViewFrontendRoot(localConfig);
-}
+import { resolveViewFrontendRoot } from '../frontend-root.ts';
+export { resolveViewFrontendRoot } from '../frontend-root.ts';
 import { createViewSlotRegistry } from './slot-registry.ts';
 import { createViewPageHost, createViewPageTypeRegistry } from './page-registry.ts';
 

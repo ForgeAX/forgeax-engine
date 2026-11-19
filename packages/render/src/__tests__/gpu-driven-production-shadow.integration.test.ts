@@ -535,6 +535,7 @@ describe('GPU-driven production shadow projection', () => {
       draw: () => undefined,
     } as unknown as RhiRenderPassEncoder;
     const context = {
+      camera: {},
       runtime: {
         device,
         getMaterialShaderPipelineEntry: (...args: unknown[]) => {
@@ -664,6 +665,7 @@ describe('GPU-driven production shadow projection', () => {
     });
     const feature = vi.fn();
     const context = {
+      camera: {},
       runtime: { device, getMaterialShaderPipeline: () => pipeline },
       pipelineState: {
         projectorAvailable: false,
@@ -757,6 +759,7 @@ describe('GPU-driven production shadow projection', () => {
       materialProgramKeys: { shadow: 'forgeax::default-shadow-caster' },
     });
     const context = {
+      camera: {},
       runtime: {
         device: { caps: { storageBuffer: false } },
         getMaterialShaderPipeline: () => null,

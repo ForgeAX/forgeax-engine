@@ -4,6 +4,7 @@ import type { DevKitHostBinding } from '@forgeax/engine/devkit';
 import type { HostRootDescriptor } from '@forgeax/engine-host/protocol';
 import type { ToolJsonSchema, ToolSchema } from '@forgeax/engine-tool-runtime';
 import type { ViewWorkspaceBroker } from '@forgeax/view-workspace-core/broker';
+import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import type { ViewFrontendConfig } from '@forgeax/view-viewer/config';
 import { workspaceDiagnosticRecord } from '@forgeax/view-workspace-core/command-error';
 export type ViewProductConfig = Pick<ViewHostServerOptions, 'port'> & { disabledPages?: readonly string[]; staticRoot?: string; frontendConfig?: Pick<ViewFrontendConfig, 'layout'>; frontend?: { root?: Partial<HostRootDescriptor>; module?: DevKitHostBinding['frontendModule'] } };
@@ -14,15 +15,15 @@ import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
 import { defineTool, toolJsonSchema } from '@forgeax/engine-tool-runtime';
-import { registerTools, startNativePlugin } from '@forgeax/engine-plugin';
-import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE } from '@forgeax/view-viewer/catalog/shared';
+import { disposePluginFiber, inspectPluginFiber, registerTools, startNativePlugin } from '@forgeax/engine-plugin';
+import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE, VIEW_WORKSPACE_CORE } from '@forgeax/view-viewer/catalog/shared';
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer, type ViewHostServerOptions } from '@forgeax/view-workspace-core/resident';
 import { installedEngineRoot } from '../engine-root.ts';
 
 import { openViewProject, viewProjectOpenError } from '../view-project-open.ts';
-import { resolveProjectIntent, withProjectIntent } from '../view-start.ts';
+import { resolveProjectIntent } from '../view-start.ts';
 import { viewStartFrontendConfigSchema } from '../commands.ts';
 
 const ownerArgs = toolJsonSchema({ type: 'object', properties: { root: { type: 'string' } }, additionalProperties: false });
@@ -103,6 +104,11 @@ export default {
       cleanup: workspaceDiagnosticRecord(record.detail).cleanup ?? 'failed',
     }); };
     let workspaceCore: ViewWorkspaceBroker | undefined;
+    let activePlan: ReturnType<typeof createViewProductPlan> | undefined;
+    const contributions = new Map<string, Fiber>();
+    const contributionFailures = new Map<string, ReturnType<typeof failed>>();
+    let activation: Promise<void> | undefined;
+    let activationController: AbortController | undefined;
     let openAbort: AbortController | undefined;
     let sessionEpoch = 0;
     let queue: Promise<unknown> = Promise.resolve();
@@ -111,28 +117,60 @@ export default {
       queue = result.catch(() => {});
       return result;
     };
+    const viewerUrl = () => ctx.devkitBackend.viewBootstrap?.viewerUrl ?? server?.viewerUrl;
     const status = () => failure ? { phase: 'failed', error: failure } : ({ phase: server ? 'ready' : 'stopped', ...(server ? {
-      url: server.viewerUrl,
+      ...(viewerUrl() === undefined ? {} : { url: viewerUrl() }),
       // Derive the public presentation identity from its native admission lease.
       // A fixed URL can outlive that lease; the credential itself stays private.
       presentationId: createHash('sha256').update(server.frontendTicket).digest('hex'),
+      capabilities: Object.fromEntries((activePlan?.backend ?? [])
+        .filter(({ module }) => module !== VIEW_WORKSPACE_CORE.BACKEND_MODULE)
+        .map(({ id }) => {
+          const fiber = contributions.get(id);
+          const inspection = fiber === undefined ? undefined : inspectPluginFiber(fiber);
+          const phase = inspection === undefined || inspection.state === 'pending' || inspection.state === 'loading'
+            ? 'preparing'
+            : inspection.state === 'active' ? 'ready' : 'failed';
+          return [id, {
+            phase: contributionFailures.has(id) ? 'failed' : phase,
+            ...(inspection === undefined ? {} : { fiber: inspection }),
+            ...(contributionFailures.has(id) ? { error: contributionFailures.get(id) } : {}),
+          }];
+        })),
     } : {}) });
     const stop = async () => {
       if (failure) throw new Error(`${failure.code}: ${failure.hint}`);
       sessionEpoch += 1;
+      activationController?.abort(new Error('View activation cancelled by stop'));
       openAbort?.abort();
       openAbort = undefined;
       workspaceCore = undefined;
-      try { await serverEffect?.(); await server?.close(); await fiber?.dispose(); }
+      try {
+        await server?.close();
+        await activation;
+        const results = await Promise.allSettled(
+          [...contributions.values()].toReversed().map((contribution) => disposePluginFiber(contribution)),
+        );
+        const cleanupErrors = results.flatMap((result) => result.status === 'rejected'
+          ? [result.reason]
+          : result.value.cleanup === 'completed' ? [] : [result.value.cause ?? new Error(`View contribution cleanup ${result.value.cleanup}`)]);
+        if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, 'View capability cleanup failed');
+        await serverEffect?.(); await fiber?.dispose();
+      }
       catch (error) { failure = failed(error); throw error; }
       fiber = undefined;
       server = undefined;
+      activePlan = undefined;
+      contributions.clear();
+      contributionFailures.clear();
+      activation = undefined;
+      activationController = undefined;
       return status();
     };
     const start = async (args: LifecycleArgs = {}) => {
       if (failure) throw new Error(`${failure.code}: ${failure.hint}`);
       const project = resolveProjectIntent(args.project === undefined ? [] : ['--project', args.project], ctx.devkitBackend.root);
-      if (fiber) return withProjectIntent(status(), project);
+      if (fiber) return project === undefined ? status() : admitProject(project);
       const token = randomUUID();
       const workspaceClient = { clientId: 'view-frontend', token, resourceBrowser: true };
       const layout = args.frontendConfig?.layout ?? config.frontendConfig?.layout;
@@ -146,16 +184,20 @@ export default {
         backendConfig: { workspaceAccessToken: token, packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots) },
         frontendConfig,
       });
+      activePlan = plan;
       const installation = {
         name: 'forgeax.view.product',
         provide: ['devkitWorkspaceFrontend'],
         async apply(owner: Context) {
-          for (const component of plan.backend) {
+          const loadComponent = (component: (typeof plan.backend)[number]) => {
             const record = VIEW_PRODUCT_BACKEND_CATALOG.get(component.module);
             if (!record) throw new Error(`View backend program is missing: ${component.module}`);
-            const module = await record.load();
-            await (await owner.plugin(module.default, component.config)).await();
-          }
+            return record.load();
+          };
+          const coreComponent = plan.backend.find(({ module }) => module === VIEW_WORKSPACE_CORE.BACKEND_MODULE);
+          if (!coreComponent) throw new Error('View product has no workspace capability');
+          const coreModule = await loadComponent(coreComponent);
+          await (await owner.plugin(coreModule.default, coreComponent.config)).await();
           const builtRoot = config.staticRoot ? undefined : installedViewStaticRoot(
             ctx.devkitBackend.hostPackageRoot ?? ctx.devkitBackend.root,
           );
@@ -169,7 +211,9 @@ export default {
             ...(config.port === undefined ? {} : {port: config.port}),
             backendHost: host,
             accessToken: token,
-            staticRoot: config.staticRoot ?? builtRoot,
+            ...(ctx.devkitBackend.viewBootstrap === undefined
+              ? { staticRoot: config.staticRoot ?? builtRoot }
+              : {}),
             engineRoot: installedEngineRoot(),
             frontendConfig,
             ...(core === undefined ? {} : {
@@ -181,10 +225,14 @@ export default {
             return () => ownedServer.close();
           });
           await serverEffect;
+          ctx.devkitBackend.viewBootstrap?.publishSource(server!.bootstrapUrl);
           Object.assign(workspaceClient, { endpoint: server!.frontendEndpoint, frontendTicket: server!.frontendTicket });
-          const frontendRoot = viewFrontendRoot(frontendConfig, plan.disabledPages);
+          const frontendRoot = viewFrontendRoot(frontendConfig, plan.disabledPages, 'shell');
           const assembly = createHostAssembly({ root: frontendRoot });
-          const targetAssembly = config.frontend ? createHostAssembly({ root: { ...frontendRoot, ...config.frontend.root, config: frontendRoot.config } }) : assembly;
+          const projectRoot = viewFrontendRoot(frontendConfig, plan.disabledPages, 'project-document');
+          const targetAssembly = createHostAssembly({ root: config.frontend
+            ? { ...projectRoot, ...config.frontend.root, config: projectRoot.config }
+            : projectRoot });
           owner.provide('devkitWorkspaceFrontend', { assembly: targetAssembly, module: config.frontend?.module ?? VIEW_FRONTEND_MODULE });
           const removeAdmission = host.transport.onClientConnect(caller => {
             if (caller.kind === 'frontend' && caller.sourceId === 'view-frontend') {
@@ -202,7 +250,77 @@ export default {
         throw Object.assign(new Error(`${started.error.code}: ${started.error.hint}`), started.error);
       }
       fiber = started.value;
-      return withProjectIntent(status(), project);
+      const activationOwner = fiber.ctx;
+      const activationEpoch = sessionEpoch;
+      activationController = new AbortController();
+      const signal = activationController.signal;
+      activation = (async () => {
+        for (const component of plan.backend) {
+          if (component.module === VIEW_WORKSPACE_CORE.BACKEND_MODULE) continue;
+          if (activationEpoch !== sessionEpoch || signal.aborted) return;
+          try {
+            const record = VIEW_PRODUCT_BACKEND_CATALOG.get(component.module);
+            if (!record) throw new Error(`View backend program is missing: ${component.module}`);
+            const module = await record.load();
+            if (activationEpoch !== sessionEpoch || signal.aborted) return;
+            const result = await startNativePlugin(activationOwner, module.default, component.config, {
+              signal,
+              onFiber: (contribution) => contributions.set(component.id, contribution),
+            });
+            if (!result.ok) throw Object.assign(new Error(result.error.hint), result.error);
+          } catch (error) {
+            if (signal.aborted || activationEpoch !== sessionEpoch) return;
+            contributionFailures.set(component.id, failed(error));
+            ctx.logger.error(error);
+          }
+        }
+      })();
+      return project === undefined ? status() : admitProject(project);
+    };
+
+    /** Admit the project on Engine's resident workspace before exposing View's URL. */
+    const admitProject = async (root: string) => {
+      if (!workspaceCore) return projectFailure(viewProjectOpenError(
+        'view-workspace-unavailable',
+        'View could not access Engine’s resident workspace owner.',
+      ));
+      try {
+        const current = workspaceCore.snapshot();
+        const sameProject = current.project?.root === root;
+        if (sameProject && current.projectStatus?.phase !== 'failed') {
+          return {
+            ...status(),
+            project: current.project,
+            projectStatus: current.projectStatus,
+          };
+        }
+        if (sameProject && current.projectStatus?.phase === 'failed'
+          && current.projectStatus.failure.code !== 'engine-workspace-page-lost')
+          return projectFailure(current.projectStatus.failure);
+        const expectedProject = current.project
+          ? current.projectStatus && 'sessionId' in current.projectStatus
+            ? { kind: 'session' as const, sessionId: current.projectStatus.sessionId, generation: current.projectStatus.generation,
+              ...(sameProject ? { recovery: 'lost' as const } : {}) }
+            : undefined
+          : { kind: 'empty' as const };
+        if (!expectedProject) return projectFailure(viewProjectOpenError(
+          'view-project-session-identity-unavailable',
+          'The current project session to expose its Engine session identity before replacement.',
+          { root: current.project?.root ?? null },
+        ));
+        const opened = await workspaceCore.openProject({
+          root,
+          tabId: VIEW_WORKSPACE_TAB_ID,
+          expectedProject,
+        });
+        return {
+          ...status(),
+          project: opened.project,
+          projectStatus: opened.projectStatus,
+        };
+      } catch (error) {
+        return projectFailure(error);
+      }
     };
 
     const openProject = async (args: LifecycleArgs = {}, epoch = sessionEpoch) => {
@@ -225,7 +343,7 @@ export default {
         if (epoch !== sessionEpoch || controller.signal.aborted) return stopped();
         const body = await openViewProject(workspaceCore, project, {
           signal: controller.signal,
-          viewerUrl: server.viewerUrl,
+          ...(viewerUrl() === undefined ? {} : { viewerUrl: viewerUrl() }),
         });
         if (epoch !== sessionEpoch || controller.signal.aborted) return stopped();
         return projectSuccess(body);

@@ -43,10 +43,9 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     expect(ownerSource).toContain(
       'resource.filter = commitProbeFilterStep(resource.filter, true);',
     );
-    expect(ownerSource).toContain('resource.active = resource.candidate;');
-    expect(ownerSource).toContain(
-      'resource.candidate = resource.spare ?? previous ?? resource.candidate;',
-    );
+    expect(ownerSource).toContain('const pmrem = resource.pmrem;');
+    expect(ownerSource).toContain('pmrem.active = pmrem.candidate;');
+    expect(ownerSource).toContain('pmrem.candidate = pmrem.spare ?? previous ?? pmrem.candidate;');
   });
 
   it('discards failed completion and preserves incremental filter state', () => {

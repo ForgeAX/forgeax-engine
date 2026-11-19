@@ -2923,13 +2923,25 @@ export function createWaterInfoCaptureDeferralProbe() {
   });
 }
 
-export function createWaterInfoFeature(): RenderFeature<WaterInfoFeatureFrame> {
+interface WaterInfoFeature extends RenderFeature<WaterInfoFeatureFrame> {
+  plan(
+    data: WaterInfoFeatureFrame | WaterInfoPublicationInput,
+    context: RenderFeaturePlanContext,
+  ): Result<RenderFeaturePlan, RenderError>;
+  onFrameSubmitted(
+    data: WaterInfoFeatureFrame | WaterInfoPublicationInput,
+    submission?: RenderFeatureSubmission,
+  ): void;
+  onFrameAborted(data: WaterInfoFeatureFrame | WaterInfoPublicationInput): void;
+}
+
+export function createWaterInfoFeature(): WaterInfoFeature {
   return createWaterInfoFeatureOwned();
 }
 
 function createWaterInfoFeatureOwned(
   deferCapture?: (observation: WaterInfoCaptureDeferralObservation) => boolean,
-): RenderFeature<WaterInfoFeatureFrame> {
+): WaterInfoFeature {
   const inactiveSourceData: WaterInfoFeatureFrame = Object.freeze({
     kind: 'forgeax-water-info-frame',
     views: Object.freeze([]),
@@ -2955,7 +2967,7 @@ function createWaterInfoFeatureOwned(
       candidate: WaterMeshCandidateView;
     }>[]
   >();
-  const feature: RenderFeature<WaterInfoFeatureFrame> = {
+  const feature: WaterInfoFeature = {
     identity: WATER_INFO_FEATURE_IDENTITY,
     inactiveSourceData,
     source: createWaterInfoSourceFeature() as RenderFeature<unknown>,

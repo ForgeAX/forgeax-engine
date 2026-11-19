@@ -2,9 +2,9 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { type CommandBuffer, createCommandBuffer, flushCommands } from './commands';
 import type { Component } from './component';
 import {
-  CyclicDependencyError,
+  createCyclicDependencyError,
+  createSystemFailedError,
   ScheduleMutationError,
-  SystemFailedError,
   type SystemSetNotRegisteredError,
   systemSetNotRegistered,
 } from './errors';
@@ -143,6 +143,7 @@ export interface SetRecord {
 }
 export interface Schedule {
   readonly token: ScheduleToken;
+  readonly suspendIf: ((world: World) => boolean) | undefined;
   readonly systems: Map<SystemToken, SystemRecord>;
   readonly sets: Map<SystemSet, SetRecord>;
   nextIndex: number;
@@ -154,9 +155,13 @@ export interface Schedule {
   deferredCommands: boolean;
   referencesValidated: boolean;
 }
-export function createSchedule(token: ScheduleToken): Schedule {
+export function createSchedule(
+  token: ScheduleToken,
+  suspendIf?: (world: World) => boolean,
+): Schedule {
   return {
     token,
+    suspendIf,
     systems: new Map(),
     sets: new Map(),
     nextIndex: 0,
@@ -260,19 +265,16 @@ export function buildSchedule(schedule: Schedule): ScheduleNode[] {
   if (schedule.token === Update) nodes.push(FixedUpdate);
   const present = new Set(nodes);
   const adjacent = new Map<ScheduleNode, Set<ScheduleNode>>();
-  const predecessors = new Map<ScheduleNode, Set<ScheduleNode>>();
-  const degree = new Map<ScheduleNode, number>();
+  const predecessors = new Map<ScheduleNode, ScheduleNode[]>();
   for (const node of nodes) {
     adjacent.set(node, new Set());
-    predecessors.set(node, new Set());
-    degree.set(node, 0);
+    predecessors.set(node, []);
   }
   const edge = (from: ScheduleNode, to: ScheduleNode): void => {
     const outgoing = adjacent.get(from);
     if (outgoing === undefined || outgoing.has(to)) return;
     outgoing.add(to);
-    predecessors.get(to)?.add(from);
-    degree.set(to, (degree.get(to) ?? 0) + 1);
+    predecessors.get(to)?.push(from);
   };
   const first = new Set<SystemToken>();
   const last = new Set<SystemToken>();
@@ -321,7 +323,14 @@ export function buildSchedule(schedule: Schedule): ScheduleNode[] {
   const registration = (node: ScheduleNode): number =>
     systems.get(node as SystemToken)?.registrationIndex ?? Number.MAX_SAFE_INTEGER;
   const compare = (a: ScheduleNode, b: ScheduleNode): number => registration(a) - registration(b);
-  const queue = nodes.filter((node) => degree.get(node) === 0).sort(compare);
+  const degree = new Map<ScheduleNode, number>();
+  const queue = nodes
+    .filter((node) => {
+      const incoming = predecessors.get(node)?.length ?? 0;
+      degree.set(node, incoming);
+      return incoming === 0;
+    })
+    .sort(compare);
   const sorted: ScheduleNode[] = [];
   while (queue.length > 0) {
     const node = queue.shift();
@@ -337,10 +346,10 @@ export function buildSchedule(schedule: Schedule): ScheduleNode[] {
   }
   if (sorted.length !== nodes.length) {
     const unfinished = nodes.filter((node) => !sorted.includes(node));
-    throw new CyclicDependencyError(findCyclePath(unfinished, adjacent).map((node) => node.name));
+    throw createCyclicDependencyError(findCyclePath(unfinished, adjacent).map((node) => node.name));
   }
   schedule.sortedOrder = sorted;
-  schedule.predecessors = new Map([...predecessors].map(([node, before]) => [node, [...before]]));
+  schedule.predecessors = predecessors;
   schedule.systemToSets = memberships;
   schedule.plain =
     ![...schedule.sets.values()].some((set) => set.runIf !== undefined) &&
@@ -350,7 +359,7 @@ export function buildSchedule(schedule: Schedule): ScheduleNode[] {
         record !== undefined &&
         record.descriptor.queries.length === 0 &&
         record.descriptor.runIf === undefined &&
-        (predecessors.get(node)?.size ?? 0) === 0
+        (predecessors.get(node)?.length ?? 0) === 0
       );
     });
   schedule.deferredCommands = sorted.some(
@@ -416,6 +425,23 @@ function flushCommandForWorld(this: World, commands: ReturnType<typeof createCom
   flushCommands(commands, this);
 }
 
+/** A final boundary drains the live ledger, including callback-enqueued buffers. */
+function drainScheduleCommands(
+  world: World,
+  scheduleName: string,
+  commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>>,
+): void {
+  const observation = beginScheduleCommandDrain(world, scheduleName);
+  try {
+    commandsBySystem.forEach(flushCommandForWorld, world);
+  } catch (error) {
+    abortOutstandingCommands(commandsBySystem);
+    throw error;
+  } finally {
+    observation?.end();
+  }
+}
+
 /** Apply only buffers that have an explicit graph edge into the next system. */
 function flushPredecessorCommands(
   predecessors: readonly ScheduleNode[] | undefined,
@@ -478,14 +504,14 @@ function invokeSystem(
   } catch (error) {
     abortOutstandingCommands(commandsBySystem);
     poisonSystemFailure(world, name, error);
-    throw new SystemFailedError(name, scheduleName, error);
+    throw createSystemFailedError(name, scheduleName, error);
   }
   if (returnValue && typeof returnValue === 'object' && 'ok' in returnValue) {
     const result = returnValue as { ok: boolean; error?: unknown };
     if (result.ok === false && result.error !== undefined) {
       abortOutstandingCommands(commandsBySystem);
       poisonSystemFailure(world, name, result.error);
-      throw new SystemFailedError(name, scheduleName, result.error);
+      throw createSystemFailedError(name, scheduleName, result.error);
     }
   }
 }
@@ -534,23 +560,14 @@ function runScheduleBody(
             outcome = 'failed-invoke';
             throw cause;
           }
-          if (schedule.token.name === 'FixedUpdate' && fixedStepIsDeferred(world))
+          if (schedule.suspendIf?.(world))
             return schedule.sortedOrder.slice(schedule.sortedOrder.indexOf(name) + 1);
         } finally {
           observation?.end(outcome);
         }
       }
-      if (finalDrain && commandsBySystem !== undefined) {
-        const observation = beginScheduleCommandDrain(world, schedule.token.name);
-        try {
-          commandsBySystem.forEach(flushCommandForWorld, world);
-        } catch (error) {
-          abortOutstandingCommands(commandsBySystem);
-          throw error;
-        } finally {
-          observation?.end();
-        }
-      }
+      if (finalDrain && commandsBySystem !== undefined)
+        drainScheduleCommands(world, schedule.token.name, commandsBySystem);
       return undefined;
     };
     return runPlainSchedule();
@@ -560,6 +577,22 @@ function runScheduleBody(
   // Per-frame set runIf cache (D-5). Discarded at frame end — no cross-frame state.
   // Created on the first gated set so ungated schedules allocate nothing here.
   let setRunIfCache: Map<SystemSet, boolean> | undefined;
+  const setConditionsPass = (system: SystemToken): boolean => {
+    const sets = systemToSets.get(system);
+    if (sets === undefined) return true;
+    for (const set of sets) {
+      const record = schedule.sets.get(set);
+      if (!record?.runIf) continue;
+      setRunIfCache ??= new Map();
+      let allowed = setRunIfCache.get(set);
+      if (allowed === undefined) {
+        allowed = record.runIf(world);
+        setRunIfCache.set(set, allowed);
+      }
+      if (!allowed) return false;
+    }
+    return true;
+  };
 
   for (let index = start; index < end; index++) {
     const name = order[index] as SystemToken;
@@ -585,32 +618,7 @@ function runScheduleBody(
           return result.value;
         });
       }
-      const evaluateSetConditions = () => {
-        // ── Set-level runIf AND gate (D-5) ──
-        // before system-level runIf. Each set's runIf is lazily cached per frame. ──
-        const setNames = systemToSets.get(name);
-        let allSetConditionsPass = true;
-        if (setNames) {
-          for (const setName of setNames) {
-            const setRecord = schedule.sets.get(setName);
-            if (setRecord?.runIf) {
-              setRunIfCache ??= new Map();
-              let cached = setRunIfCache.get(setName);
-              if (cached === undefined) {
-                cached = setRecord.runIf(world);
-                setRunIfCache.set(setName, cached);
-              }
-              if (!cached) {
-                allSetConditionsPass = false;
-                break;
-              }
-            }
-          }
-        }
-        return allSetConditionsPass;
-      };
-      const allSetConditionsPass = evaluateSetConditions();
-      if (!allSetConditionsPass) continue;
+      if (!setConditionsPass(name)) continue;
 
       // ── Run condition (runIf) — evaluated after query preparation, before
       // query iteration. false -> skip silently (no query, no fn, no cursor advance). ──
@@ -635,7 +643,7 @@ function runScheduleBody(
         outcome = 'failed-invoke';
         throw cause;
       }
-      if (schedule.token.name === 'FixedUpdate' && fixedStepIsDeferred(world))
+      if (schedule.suspendIf?.(world))
         return schedule.sortedOrder
           .slice(schedule.sortedOrder.indexOf(name) + 1)
           .filter((candidate) => selected === undefined || selected.has(candidate));
@@ -648,22 +656,8 @@ function runScheduleBody(
     // void return is treated as successful execution.
   }
 
-  const drainScheduleBoundary = () => {
-    if (finalDrain && commandsBySystem !== undefined) {
-      // A schedule boundary drains every remaining buffer, including commands
-      // enqueued by lifecycle hooks while another command is being applied.
-      const observation = beginScheduleCommandDrain(world, schedule.token.name);
-      try {
-        commandsBySystem.forEach(flushCommandForWorld, world);
-      } catch (error) {
-        abortOutstandingCommands(commandsBySystem);
-        throw error;
-      } finally {
-        observation?.end();
-      }
-    }
-  };
-  drainScheduleBoundary();
+  if (finalDrain && commandsBySystem !== undefined)
+    drainScheduleCommands(world, schedule.token.name, commandsBySystem);
 
   return undefined;
 }
@@ -718,5 +712,3 @@ export function runSchedule(
       abortOutstandingCommands(commandsBySystem);
   }
 }
-
-import { fixedStepIsDeferred } from './fixed-step-barrier';

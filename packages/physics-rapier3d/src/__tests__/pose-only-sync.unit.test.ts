@@ -22,6 +22,55 @@ const cases = shapes.flatMap((shape) =>
   (['static', 'kinematic'] as const).map((bodyType) => ({ shape, bodyType })),
 );
 
+test.each([
+  'cuboid',
+  'sphere',
+] as const)('static %s skips zero-scale collision at startup and restores it on the same body', (shape) => {
+  const world = new World();
+  world.components.register(Transform).unwrap();
+  world.components.register(GlobalTransform).unwrap();
+  registerPhysicsComponents(world);
+  const entity = world
+    .spawn(
+      { component: Transform, data: { scale: [0, 0, 0] } },
+      { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
+      { component: Collider, data: { shape: ColliderShapeValue[shape] } },
+    )
+    .unwrap();
+  const physics = createRapier3DPhysicsWorld(rapier);
+  const syncAndStep = () => {
+    physics._syncFromEcs(world, Transform, GlobalTransform);
+    physics.step(1 / 60);
+  };
+  const hit = () => physics.raycast(vec3.create(0, 5, 0), vec3.create(0, -1, 0), 10);
+  try {
+    syncAndStep();
+    let nativeBody: NativeBody | undefined;
+    (physics.raw as NativeWorld).forEachRigidBody((body) => {
+      if (body.userData === entity) nativeBody = body;
+    });
+    expect(nativeBody?.numColliders()).toBe(0);
+    expect(hit()).toBeUndefined();
+
+    world.set(entity, Transform, { scale: [1, 1, 1] }).unwrap();
+    syncAndStep();
+    expect(nativeBody?.numColliders()).toBe(1);
+    expect(hit()?.entity).toBe(entity);
+
+    world.set(entity, Transform, { scale: [1, 0, 1] }).unwrap();
+    syncAndStep();
+    expect(nativeBody?.numColliders()).toBe(0);
+    expect(hit()).toBeUndefined();
+
+    world.set(entity, Transform, { scale: [-1, 1, 1] }).unwrap();
+    syncAndStep();
+    expect(nativeBody?.numColliders()).toBe(1);
+    expect(hit()?.entity).toBe(entity);
+  } finally {
+    physics.dispose();
+  }
+});
+
 test('pose writeback does not decode unchanged body, collider or controller inputs', () => {
   const world = new World();
   world.components.register(Transform).unwrap();

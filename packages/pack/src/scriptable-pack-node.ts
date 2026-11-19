@@ -30,7 +30,13 @@ import {
   type SnapshotTranspileText,
   validSnapshotTranspileText,
 } from './scriptable-pack-transpile-text.js';
-import { projectFailure, type StructuredFailure } from './scriptable-pack-wire.js';
+import {
+  projectFailure,
+  type ScriptablePackPackageBinding,
+  type StructuredFailure,
+} from './scriptable-pack-wire.js';
+
+export type { ScriptablePackPackageBinding } from './scriptable-pack-wire.js';
 
 // Weak ownership ends with the existing snapshot; no worker/module realm is retained.
 const snapshotTranspiles = new WeakMap<
@@ -241,7 +247,11 @@ class WorkerScriptablePackExecutor
     sourcePath: string,
     sources?: Readonly<Record<string, string>>,
     transpiles?: readonly SnapshotTranspileText[],
-    options: { readonly staticOnly?: boolean; readonly stageJson?: boolean } = {},
+    options: {
+      readonly staticOnly?: boolean;
+      readonly stageJson?: boolean;
+      readonly packageBinding?: ScriptablePackPackageBinding;
+    } = {},
   ): Promise<unknown> {
     const activeDisposal = this.disposal;
     if (activeDisposal !== undefined) {
@@ -294,6 +304,9 @@ class WorkerScriptablePackExecutor
           sources: prepared.sources,
           jsonInputs: prepared.jsonInputs,
           transpiles,
+          ...(options.packageBinding === undefined
+            ? {}
+            : { packageBinding: options.packageBinding }),
           ...(options.staticOnly === true ? { staticOnly: true } : {}),
         });
       } catch (error) {
@@ -532,6 +545,8 @@ export function createScriptablePackModuleExecutorPool(
 }
 
 export interface LoadScriptablePackOptions {
+  /** Host-selected authored package; absent preserves resolution from the author module. */
+  readonly packageBinding?: ScriptablePackPackageBinding;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly buildTimeoutMs?: number;
@@ -587,6 +602,7 @@ export function createLazyScriptablePackDefinition(input: {
   readonly sourceSnapshot: ScriptablePackSourceSnapshot;
   /** Initial publication uses production bounds; live replacements retain loader bounds. */
   readonly executionBudget?: 'production' | 'interactive';
+  readonly packageBinding?: ScriptablePackPackageBinding;
 }): AnyScriptablePackDefinition {
   const expected = new Map(input.sourceClosure.map((entry) => [entry.path, entry.digest]));
   return {
@@ -626,6 +642,7 @@ export function createLazyScriptablePackDefinition(input: {
       const executor = await input.executors.acquire();
       const loaded = await loadScriptablePack(input.sourcePath, {
         executor,
+        ...(input.packageBinding === undefined ? {} : { packageBinding: input.packageBinding }),
         sourceSnapshot: input.sourceSnapshot,
         ...(input.executionBudget === 'interactive'
           ? {}
@@ -683,6 +700,7 @@ export function loadScriptablePack(
 ): Promise<ScriptablePackLoadResult> {
   const snapshot = options.sourceSnapshot;
   if (
+    options.packageBinding !== undefined ||
     options.metadataOnly !== true ||
     snapshot === undefined ||
     options.executor !== undefined ||
@@ -754,7 +772,13 @@ async function loadScriptablePackFresh(
           captured === undefined ||
           sources === undefined
         )
-          return executor.load(captured?.entry ?? sourcePath, sources);
+          return executor instanceof WorkerScriptablePackExecutor
+            ? executor.load(captured?.entry ?? sourcePath, sources, undefined, {
+                ...(options.packageBinding === undefined
+                  ? {}
+                  : { packageBinding: options.packageBinding }),
+              })
+            : executor.load(captured?.entry ?? sourcePath, sources);
         const entries = [
           ...(snapshotTranspiles.get(options.sourceSnapshot)?.values() ?? []),
         ].filter((entry) => Object.hasOwn(sources, entry.filename));
@@ -763,6 +787,9 @@ async function loadScriptablePackFresh(
         return executor.load(captured.entry, sources, entries, {
           staticOnly: options.metadataOnly === true && options.executor === undefined,
           stageJson: true,
+          ...(options.packageBinding === undefined
+            ? {}
+            : { packageBinding: options.packageBinding }),
         });
       })(),
       new Promise<typeof timeoutSignal>((resolve) => {

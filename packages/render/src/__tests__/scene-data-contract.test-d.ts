@@ -2,6 +2,7 @@ import { expectTypeOf } from 'vitest';
 import type { RenderFeatureWorkPlan } from '../features/plan';
 import type { RenderFeaturePlanView, SceneDataTarget } from '../index';
 import {
+  type SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
@@ -20,6 +21,7 @@ expectTypeOf(normal.coverage).toEqualTypeOf<'opaque-alpha-mask'>();
 expectTypeOf(depth.format).toEqualTypeOf<'depth32float-stencil8'>();
 expectTypeOf(depth.encoding).toEqualTypeOf<'rhi-zero-to-one'>();
 expectTypeOf<SceneDataSchemaId>().toEqualTypeOf<
+  | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
   | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
   | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
   | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA

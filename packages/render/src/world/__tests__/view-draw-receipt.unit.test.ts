@@ -399,13 +399,15 @@ describe('view draw receipt systems', () => {
     endRenderFrame(world);
     expect(draws.waterBakedDraws).toHaveLength(1);
 
+    if (first.sources === undefined)
+      throw new Error('The detached Water receipt requires its source roster');
     beginRenderFrame(world, 3);
     draws.stageWaterBakedDraw(
       3,
       {
         ...first,
         frameId: 3,
-        sources: first.sources?.map((source, index) =>
+        sources: first.sources.map((source, index) =>
           index === 0
             ? { ...source, lineage: { ...lineage('history', 0), textureGuid: '' } }
             : source,

@@ -23,7 +23,11 @@ const { Hash } = (
   globalThis as unknown as { process: { getBuiltinModule(id: string): unknown } }
 ).process.getBuiltinModule('node:crypto') as { Hash: { prototype: NativeHash } };
 
-async function fixture(colorAttachmentBytes?: number, lost?: Promise<GPUDeviceLostInfo>) {
+async function fixture(
+  colorAttachmentBytes?: number,
+  lost?: Promise<GPUDeviceLostInfo>,
+  vertexOnlyRenderBundles?: boolean,
+) {
   const gpu = createMockGpu(),
     adapter = await gpu.requestAdapter();
   const raw = (await adapter?.requestDevice()) as unknown as GPUDevice;
@@ -38,7 +42,10 @@ async function fixture(colorAttachmentBytes?: number, lost?: Promise<GPUDeviceLo
   if (colorAttachmentBytes !== undefined)
     Object.assign(raw.limits, { maxColorAttachmentBytesPerSample: colorAttachmentBytes });
   const sync = vi.spyOn(raw, 'createRenderPipeline');
-  const device = makeRhiDevice(raw).device;
+  const device = makeRhiDevice(
+    raw,
+    vertexOnlyRenderBundles === undefined ? {} : { vertexOnlyRenderBundles },
+  ).device;
   const module = (code = 'shader source', label = 'module') =>
     createShaderModuleImmediate(device, { code, label }).unwrap();
   const descriptor = (code?: string): RenderPipelineDescriptor => ({
@@ -66,6 +73,41 @@ async function fixture(colorAttachmentBytes?: number, lost?: Promise<GPUDeviceLo
     descriptor,
   };
 }
+
+it.each([
+  true,
+  false,
+])('keeps a portable depth recipe when vertex-only bundles are supported: %s', async (supported) => {
+  const f = await fixture(undefined, undefined, supported);
+  expect(f.device.caps.nativeVertexOnlyRenderBundles).toBe(supported);
+  const { fragment: authored, ...render } = f.descriptor();
+  const depth = {
+    ...render,
+    depthStencil: {
+      format: 'depth32float' as const,
+      depthWriteEnabled: true,
+      depthCompare: 'always' as const,
+    },
+  };
+  expect(f.device.createRenderPipeline(depth).ok).toBe(true);
+  expect((await f.device.createRenderPipelineAsync(depth)).ok).toBe(true);
+  const native = f.sync.mock.lastCall?.[0].fragment;
+  expect(native).toEqual(
+    supported ? undefined : { module: expect.anything(), entryPoint: 'depth_only', targets: [] },
+  );
+  expect(f.render.mock.lastCall?.[0].fragment).toBe(native);
+
+  expect((await f.device.createRenderPipelineAsync({ ...depth, fragment: authored })).ok).toBe(
+    true,
+  );
+  expect(f.render.mock.lastCall?.[0].fragment).toEqual(authored);
+
+  const manifest = f.device.pipelineLibrary.export().unwrap();
+  expect(manifest.renderPipelines).toHaveLength(2);
+  expect(
+    manifest.renderPipelines.filter((pipeline) => pipeline.fragment === undefined),
+  ).toHaveLength(1);
+});
 
 it.each([
   [1, 'vertex'],

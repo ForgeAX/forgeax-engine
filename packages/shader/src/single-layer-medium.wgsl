@@ -869,5 +869,3 @@ fn fs_main(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(
   }
   return composeColor(surfaceInput, surface, frame, frontFacing, input.clipPosition, input.probeIdentity);
 }
-
-

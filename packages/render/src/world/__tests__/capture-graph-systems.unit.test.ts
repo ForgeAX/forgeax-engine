@@ -61,7 +61,7 @@ it('has no fallback compilation if the capture compiler is removed', async () =>
 
 it('stores missing component inputs as failure data without poisoning the World', async () => {
   const f = await fixture();
-  const identityCapture = { entries: [], complete: true };
+  const identityCapture = { entries: [], complete: true, instrumentationAccepted: false };
   f.internals.renderPassCpuIdentityCapture = identityCapture;
   expect(f.record().ok).toBe(true);
   expect(identityCapture.complete).toBe(false);

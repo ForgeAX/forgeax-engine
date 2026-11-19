@@ -23,6 +23,7 @@ import type {
   PreparedGraphicsResolvedResource,
   PreparedGraphicsResolvedSnapshot,
 } from '../prepare/prepared-graphics-resolver';
+import { addBeforePassDepthSnapshot } from '../record/scene-depth-snapshot';
 import type { SceneDataTarget } from '../temporal/scene-data';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeatureResolvedGpuBuffer } from './prepared-gpu-work';
@@ -359,31 +360,16 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           );
         // A material may sample existing scene depth and still write its own
         // depth. Keep both author facts without a same-pass texture feedback loop.
-        const texture = this.builder.createTextureLike(`${name}.sampled-depth`, target.texture);
-        if (!texture.ok) return texture;
-        const view = this.builder.view(texture.value);
-        if (!view.ok) return view;
-        sampledDepth = { texture: texture.value, view: view.value };
-        originalDepth = target;
-        const copied = this.builder.addCopyPass(`${name}.sampled-depth-copy`, {
-          accesses: [
-            { resource: target.view, usage: 'copy-src' },
-            { resource: view.value, usage: 'copy-dst' },
-          ],
-          executeIf: (frame) =>
-            currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
-          encodeDirect: (encoder, _graphframe, resources) => {
-            const source = resources.texture(target.texture).unwrap();
-            const destination = resources.texture(texture.value).unwrap();
-            const extent = resources.textureViewExtent(target.view).unwrap();
-            encoder.copyTextureToTexture(
-              { texture: source, aspect: 'all' },
-              { texture: destination, aspect: 'all' },
-              { ...extent, depthOrArrayLayers: 1 },
-            );
-          },
-        });
+        const copied = addBeforePassDepthSnapshot(
+          this.builder,
+          target,
+          `${name}.sampled-depth`,
+          `${name}.sampled-depth-copy`,
+          (frame) => currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
+        );
         if (!copied.ok) return copied;
+        sampledDepth = copied.value;
+        originalDepth = target;
       }
       const readOnly = sampled && !writesDepth;
       accesses.push({

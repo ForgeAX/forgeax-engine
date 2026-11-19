@@ -98,6 +98,8 @@ export interface CloudLayerInspection {
     };
   };
   readonly status: CloudLayerInspectionStatus;
+  /** Renderer requirement that the selected view or device cannot satisfy. */
+  readonly unavailableReason?: string;
   readonly resourceStage: CloudLayerResourceStage;
   readonly sourceKey: string | undefined;
   readonly generation: number | undefined;
@@ -129,6 +131,7 @@ export interface CloudLayerInspectionInput {
   readonly resourceFacts?: CloudLayerResourceFacts;
   readonly capability?: Partial<CloudLayerInspection['capability']>;
   readonly degraded?: boolean;
+  readonly unavailableReason?: string;
   readonly budget?: Partial<CloudLayerBudgetObservation>;
 }
 
@@ -166,7 +169,10 @@ export function inspectCloudLayer(input: CloudLayerInspectionInput): CloudLayerI
   // `available` from compute/storage alone lets inspection lie while the graph
   // admission correctly disables the feature on LDR-only adapters.
   const available =
-    capability.compute && capability.storageBuffer && capability.rgba16floatRenderable;
+    input.unavailableReason === undefined &&
+    capability.compute &&
+    capability.storageBuffer &&
+    capability.rgba16floatRenderable;
   return Object.freeze({
     status: !input.authored
       ? 'off'
@@ -175,6 +181,9 @@ export function inspectCloudLayer(input: CloudLayerInspectionInput): CloudLayerI
         : input.degraded === true
           ? 'degraded'
           : 'available',
+    ...(input.unavailableReason === undefined
+      ? {}
+      : { unavailableReason: input.unavailableReason }),
     resourceStage: resourceStage(input),
     sourceKey: input.sourceKey,
     generation: input.generation,

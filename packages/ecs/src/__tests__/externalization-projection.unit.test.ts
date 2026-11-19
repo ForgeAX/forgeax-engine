@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest';
 import { type Component, defineComponent } from '../component';
 import {
   classifyEntityField,
-  createEntityRemap,
   projectComponentData,
   remapEntityFieldValue,
 } from '../externalization/index';
@@ -65,11 +64,11 @@ const EnumComp = defineComponent('TestEnumComp', {
 });
 
 const BufferComp = defineComponent('TestBufferComp', {
-  data: { type: 'buffer', default: 0 },
+  data: { type: 'array<u8>', default: 0 },
 });
 
 const FixedBufferComp = defineComponent('TestFixedBufferComp', {
-  data: { type: 'buffer<256>', default: 0 },
+  data: { type: 'array<u8, 256>', default: 0 },
 });
 
 const FixedArrayComp = defineComponent('TestFixedArrayComp', {
@@ -275,32 +274,6 @@ describe('m3 — projection kernel: entity field classification (arrayMeta-drive
     const variableKind = classifyEntityField(VariableArrayEntity as Component, 'items');
     expect(fixedKind?.isArray).toBe(true);
     expect(variableKind?.isArray).toBe(true);
-  });
-});
-
-describe('m3 — remap: createEntityRemap from mapping table', () => {
-  it('(a) creates a remap function that translates source ids to target ids', () => {
-    const mapping = new Uint32Array([0, 100, 200, 300]);
-    const remap = createEntityRemap(mapping);
-    expect(remap(0)).toBe(0);
-    expect(remap(1)).toBe(100);
-    expect(remap(2)).toBe(200);
-    expect(remap(3)).toBe(300);
-  });
-
-  it('(b) out-of-range indices return identity', () => {
-    const mapping = new Uint32Array([0, 10]);
-    const remap = createEntityRemap(mapping);
-    expect(remap(5)).toBe(5);
-    expect(remap(999)).toBe(999);
-  });
-
-  it('(c) works with plain number arrays', () => {
-    const mapping = [0, 10, 20];
-    const remap = createEntityRemap(mapping);
-    expect(remap(0)).toBe(0);
-    expect(remap(1)).toBe(10);
-    expect(remap(2)).toBe(20);
   });
 });
 

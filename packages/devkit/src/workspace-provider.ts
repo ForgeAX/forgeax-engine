@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import {
   createEngineWorkspaceProvider,
   ENGINE_WORKSPACE_COMMAND_TOPIC,
@@ -8,6 +9,7 @@ import {
   type EngineWorkspacePlay,
   type EngineWorkspacePreview,
   type EngineWorkspaceProject,
+  type EngineWorkspaceProjectDocument,
   type EngineWorkspaceProjectSession,
   type EngineWorkspaceProvider,
   type EngineWorkspaceTarget,
@@ -17,7 +19,7 @@ import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
 import type { HostCallerIdentity } from '@forgeax/engine-host/transport';
 import { encodePackData } from '@forgeax/engine-pack/runtime';
-import { PACK_DRAFT_CHANGED_TOPIC } from '@forgeax/engine-pack/source';
+import { PACK_DRAFT_CHANGED_TOPIC, type PackDraftReply } from '@forgeax/engine-pack/source';
 import { createScriptablePackMetadataCache } from '@forgeax/engine-pack/source-node';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 import type { RuntimeAssetBinding } from '@forgeax/engine-types';
@@ -25,7 +27,8 @@ import { createServer as createViteServer, type InlineConfig, type ViteDevServer
 import { assetInspectCommand } from './assets.js';
 import { prepareRuntimePackProgram } from './build/pack-program.js';
 import { createViteConfig, materializeViteDevPort } from './host.js';
-import type { DevKitHostBinding } from './host-binding.js';
+import { type DevKitHostBinding, DevKitProjectPages } from './host-binding.js';
+import { rememberKnownProject } from './known-projects.js';
 import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
 import { createWorkspacePackAuthoring } from './workspace-pack-authoring.js';
@@ -36,6 +39,30 @@ const DEFAULT_HEIGHT = 720;
 // Cold shader initialization shares the GPU with already running targets.
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted)
+    return Promise.reject(signal.reason ?? new DOMException('Operation cancelled', 'AbortError'));
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => signal.removeEventListener('abort', aborted);
+    const aborted = () => {
+      cleanup();
+      reject(signal.reason ?? new DOMException('Operation cancelled', 'AbortError'));
+    };
+    signal.addEventListener('abort', aborted, { once: true });
+    void promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
 
 export interface DevKitWorkspaceProviderOptions {
   readonly width?: number;
@@ -579,11 +606,12 @@ export function createDevKitWorkspaceProvider(
   }
   const serverFactory =
     options.viteServerFactory ?? ((config: InlineConfig) => createViteServer(config));
-  let currentClose: (() => Promise<void>) | undefined;
   let disposed = false;
   // Every Play re-reads and digests sources; unchanged closures skip metadata Workers.
   const scriptablePackMetadata = createScriptablePackMetadataCache();
   const openings = new Set<Promise<unknown>>();
+  const activeProjectSessions = new Set<() => Promise<void>>();
+  let failedCleanup: unknown;
   const trackOpening = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = operation();
     openings.add(pending);
@@ -597,20 +625,65 @@ export function createDevKitWorkspaceProvider(
   type BrowserSession = EngineWorkspaceProjectSession & {
     readonly phase: EngineWorkspacePlay['phase'];
     readonly browserGeneration: number;
-    borrowTarget(): EngineWorkspacePreview;
+    borrowTarget(
+      signal?: AbortSignal,
+    ): Promise<
+      Omit<EngineWorkspacePreview, 'target'> & { readonly target: EngineWorkspacePlay['target'] }
+    >;
     ready(signal?: AbortSignal): Promise<void>;
   };
-  const openSession = async (
-    input: { root: string; signal?: AbortSignal },
-    parent?: BackendHost,
-  ): Promise<BrowserSession> => {
+  type SessionCapabilities = {
+    readonly borrowTarget: BrowserSession['borrowTarget'];
+    readonly ready: BrowserSession['ready'];
+    readonly runtimePack: (
+      input: Parameters<NonNullable<BrowserSession['runtimePack']>>[0],
+      admitted?: WorkspaceReadyResult,
+    ) => ReturnType<NonNullable<BrowserSession['runtimePack']>>;
+    readonly inspectAsset: (
+      input: Parameters<NonNullable<BrowserSession['inspectAsset']>>[0],
+      admitted?: WorkspaceReadyResult,
+    ) => ReturnType<NonNullable<BrowserSession['inspectAsset']>>;
+    readonly listAssets: (
+      input: Parameters<NonNullable<BrowserSession['listAssets']>>[0],
+      admitted?: WorkspaceReadyResult,
+    ) => ReturnType<NonNullable<BrowserSession['listAssets']>>;
+    readonly openPreview: (
+      input: Parameters<NonNullable<BrowserSession['openPreview']>>[0],
+      admitted?: WorkspaceReadyResult,
+    ) => ReturnType<NonNullable<BrowserSession['openPreview']>>;
+    readonly startPlay?: (
+      input: { signal?: AbortSignal },
+      admitted?: WorkspaceReadyResult,
+    ) => Promise<EngineWorkspacePlay>;
+  };
+  type ProjectServer = {
+    readonly backend: BackendHost;
+    readonly server: ViteDevServer;
+    readonly pages: DevKitProjectPages;
+    readonly catalogReady: Promise<void>;
+  };
+  const createBrowserSession = async (
+    input: {
+      root: string;
+      generation: number;
+      startupController: AbortController;
+      onAuthoringReady?: (
+        execute: NonNullable<EngineWorkspaceProjectSession['authorPack']>,
+      ) => void;
+      publishStatus: (status: EngineWorkspaceProjectSession['status']) => void;
+      publishFailure: (cause: unknown) => void;
+      publishCapabilities: (capabilities: SessionCapabilities) => void;
+      publishCleanup: (close: () => Promise<void>) => void;
+      publishBrowserAdmission: (read: () => WorkspaceReadyResult | undefined) => void;
+      onBackendDisposed: () => void;
+    },
+    parent: ProjectServer | undefined,
+    facts: ProjectFacts,
+    sessionId: string,
+    targetId: string,
+  ): Promise<void> => {
     const startupAt = performance.now();
     let lastStageAt = startupAt;
-    const facts = await readProjectFacts(input.root);
-    if (!facts.ok) {
-      const error = facts.error;
-      throw new DevKitWorkspaceError(error.code, error.expected, error.hint, error.detail);
-    }
     if (disposed) {
       throw new DevKitWorkspaceError(
         'engine-workspace-provider-disposed',
@@ -619,8 +692,6 @@ export function createDevKitWorkspaceProvider(
         {},
       );
     }
-    const sessionId = `workspace-${randomUUID()}`;
-    const targetId = `target-${randomUUID()}`;
     const timing = (stage: string): void => {
       const game = parent !== undefined;
       if (!game && process.env.FORGEAX_WORKSPACE_TIMING !== '1') return;
@@ -628,7 +699,7 @@ export function createDevKitWorkspaceProvider(
       console.error(
         game ? '[forgeax.play]' : '[forgeax.workspace.timing]',
         JSON.stringify({
-          root: facts.value.root,
+          root: facts.root,
           sessionId,
           targetId,
           execution: game ? 'game' : 'preview',
@@ -649,76 +720,18 @@ export function createDevKitWorkspaceProvider(
       headed,
     } satisfies DevKitWorkspaceTargetOptions;
     const ownsBackend = parent === undefined && options.hostBinding === undefined;
-    const backend = parent ?? options.hostBinding?.backend ?? (await backendFactory());
-    if (disposed) {
-      if (ownsBackend) await backend.dispose().catch(() => {});
-      throw new DevKitWorkspaceError(
-        'engine-workspace-provider-disposed',
-        'the Engine workspace provider to remain active',
-        'Create a new workspace provider before opening another project.',
-        { sessionId, targetId },
-      );
-    }
-    timing('backend-bound');
-    let authoring: ReturnType<typeof createWorkspacePackAuthoring> | undefined;
-    const binding = {
-      ...(parent ? { backend } : (options.hostBinding ?? { backend })),
-      // A child keeps its own execution root while retaining realm preparation.
-      ...(parent && options.hostBinding?.frontendModule?.prepare
-        ? { frontendModule: options.hostBinding.frontendModule }
-        : {}),
-      workspace: { sessionId, targetId, admissionToken, execution: parent ? 'game' : 'preview' },
-      ...(parent
-        ? {}
-        : { authoringSourceChanged: (path: string) => authoring?.sourceChanged(path) ?? false }),
-    } satisfies DevKitHostBinding;
-    const pending = new Map<string, PendingResult>();
-    let ready: WorkspaceReadyResult | undefined;
-    let readyFailure: unknown;
-    let pageLost = false;
-    let browserDetached = false;
-    let browserGeneration = 0;
-    let browserRetirement = Promise.resolve();
-    let resultRegistration: (() => void) | undefined;
-    let removePresentation: (() => void) | undefined;
-    let acceptedCaller: HostCallerIdentity | undefined;
-    const expectedCallerSource = workspaceCallerSource(sessionId, targetId);
-    const removeClientConnect = backend.transport.onClientConnect((caller) => {
-      if (caller.kind === 'frontend' && caller.sourceId === expectedCallerSource) {
-        if (acceptedCaller && acceptedCaller.connectionId !== caller.connectionId) {
-          const previous = acceptedCaller;
-          acceptedCaller = undefined;
-          void settleResult({
-            kind: 'lost',
-            id: `replaced:${previous.connectionId}`,
-            sessionId,
-            targetId,
-          });
-        }
-        acceptedCaller = caller;
-      }
-    });
-    const removeClientDisconnect = backend.transport.onClientDisconnect((caller) => {
-      if (acceptedCaller?.connectionId === caller.connectionId) {
-        acceptedCaller = undefined;
-        void settleResult({
-          kind: 'lost',
-          id: `disconnect:${caller.connectionId}`,
-          sessionId,
-          targetId,
-        });
-      }
-    });
-    let removeBackendDispose: (() => void) | undefined;
+    let backend!: BackendHost;
+    let backendBound = false;
     let server: ViteDevServer | undefined;
-    let serverClosed = false;
-    let sessionClosed = false;
-    let sessionClosePromise: Promise<void> | undefined;
+    const pages = parent?.pages ?? new DevKitProjectPages();
+    let revokePage: (() => void) | undefined;
     const previews = new Map<string, EngineWorkspacePreview & { failure?: DevKitWorkspaceError }>();
+    const queuedDraftChanges: { readonly sessionId: string; readonly reply: PackDraftReply }[] = [];
+    let authoring: ReturnType<typeof createWorkspacePackAuthoring> | undefined;
     if (!parent)
       authoring = createWorkspacePackAuthoring({
-        root: facts.value.root,
-        sourceRoots: facts.value.assetRoots,
+        root: facts.root,
+        sourceRoots: facts.assetRoots,
         prepareContent: async (input) => {
           const cooker = server?.config.plugins.find(
             (entry) => entry.name === 'forgeax:workspace-pack-cook',
@@ -730,7 +743,13 @@ export function createDevKitWorkspaceProvider(
           const pack = server?.config.plugins.find((entry) => entry.name === 'forgeax:pack') as
             | import('@forgeax/engine-vite-plugin-pack').PluginPack
             | undefined;
-          if (!pack) throw new Error('The project asset producer is unavailable');
+          if (!pack)
+            throw new DevKitWorkspaceError(
+              'engine-workspace-capability-unavailable',
+              'The project Pack catalog publisher',
+              'The source draft is saved; retry publication after its project server is prepared.',
+              { sessionId, targetId, capability: 'catalog-publisher' },
+            );
           if (await pack.rebuildCatalogInPlace([sourcePath]))
             backend.context.get('engineWorkspaceCatalog')?.notePublished();
         },
@@ -753,17 +772,112 @@ export function createDevKitWorkspaceProvider(
         },
         preview: (id) => previews.get(id),
         changed: (reply) => {
-          backend.transport.publish(PACK_DRAFT_CHANGED_TOPIC, { sessionId, reply });
+          if (backend) backend.transport.publish(PACK_DRAFT_CHANGED_TOPIC, { sessionId, reply });
+          else queuedDraftChanges.push({ sessionId, reply });
         },
       });
+    if (authoring) input.onAuthoringReady?.(authoring.execute);
+    let binding!: DevKitHostBinding;
+    const pending = new Map<string, PendingResult>();
+    let ready: WorkspaceReadyResult | undefined;
+    let readyFailure: unknown;
+    let pageLost = false;
+    let browserDetached = false;
+    let browserGeneration = 0;
+    let browserRetirement = Promise.resolve();
+    input.publishBrowserAdmission(() => (browserDetached ? undefined : ready));
+    let resultRegistration: (() => void) | undefined;
+    let removePresentation: (() => void) | undefined;
+    let acceptedCaller: HostCallerIdentity | undefined;
+    const statusListeners = new Set<() => void>();
+    const expectedCallerSource = workspaceCallerSource(sessionId, targetId);
+    let removeClientConnect = (): void => {};
+    let removeClientDisconnect = (): void => {};
+    const installClientListeners = (): void => {
+      removeClientConnect = backend.transport.onClientConnect((caller) => {
+        if (caller.kind === 'frontend' && caller.sourceId === expectedCallerSource) {
+          if (acceptedCaller && acceptedCaller.connectionId !== caller.connectionId) {
+            const previous = acceptedCaller;
+            acceptedCaller = undefined;
+            void settleResult({
+              kind: 'lost',
+              id: `replaced:${previous.connectionId}`,
+              sessionId,
+              targetId,
+            });
+          }
+          acceptedCaller = caller;
+        }
+      });
+      removeClientDisconnect = backend.transport.onClientDisconnect((caller) => {
+        if (acceptedCaller?.connectionId === caller.connectionId) {
+          acceptedCaller = undefined;
+          void settleResult({
+            kind: 'lost',
+            id: `disconnect:${caller.connectionId}`,
+            sessionId,
+            targetId,
+          });
+        }
+      });
+    };
+    let removeBackendDispose: (() => void) | undefined;
+    let serverClosed = false;
+    let sessionClosed = false;
+    let sessionClosePromise: Promise<void> | undefined;
+    let catalogReady: Promise<void> = Promise.resolve();
     let play: EngineWorkspacePlay | undefined;
-    let currentTarget: EngineWorkspaceTarget = {
-      targetId,
-      sessionId,
-      worldId: `pending:${sessionId}`,
-      headed,
-      width,
-      height,
+    let currentTarget: EngineWorkspaceTarget | undefined;
+    let projectDocument: EngineWorkspaceProjectDocument | undefined;
+    const requireCurrentTarget = (): EngineWorkspaceTarget => {
+      if (currentTarget === undefined)
+        throw new DevKitWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'An authenticated Engine World target',
+          'Wait for this exact project document to authenticate and publish its real World.',
+          { sessionId, targetId },
+        );
+      return currentTarget;
+    };
+    const publishStatus = (): void => {
+      const target = currentTarget;
+      if (pageLost || readyFailure !== undefined) {
+        input.publishStatus({
+          phase: 'failed',
+          sessionId,
+          generation: input.generation,
+          ...(projectDocument === undefined ? {} : { document: projectDocument }),
+          ...(target === undefined ? {} : { target }),
+          failure:
+            readyFailure ??
+            new DevKitWorkspaceError(
+              'engine-workspace-page-lost',
+              'the Engine workspace browser page to remain connected',
+              'Reopen the project in the same View session.',
+            ),
+          ...(browserGeneration === 0 ? {} : { browserGeneration }),
+        });
+      } else if (ready !== undefined && projectDocument !== undefined) {
+        input.publishStatus({
+          phase: 'running',
+          sessionId,
+          generation: input.generation,
+          document: projectDocument,
+          target: requireCurrentTarget(),
+          browserGeneration,
+        });
+      } else if (projectDocument !== undefined) {
+        input.publishStatus({
+          phase: 'starting',
+          sessionId,
+          generation: input.generation,
+          document: projectDocument,
+          ...(browserGeneration > 0 && target !== undefined ? { target } : {}),
+          browserGeneration,
+        });
+      } else {
+        input.publishStatus({ phase: 'preparing', sessionId, generation: input.generation });
+      }
     };
 
     const inactiveError = (): DevKitWorkspaceError =>
@@ -784,16 +898,20 @@ export function createDevKitWorkspaceProvider(
       if (disposed || sessionClosed) throw inactiveError();
     };
     const closeIfInactive = async (): Promise<void> => {
-      if (!disposed && !sessionClosed) return;
-      if (server !== undefined && !serverClosed) {
-        serverClosed = true;
-        await server.close().catch(() => {});
-      }
+      if (!disposed && !sessionClosed && !input.startupController.signal.aborted) return;
       await closeResources();
       throw inactiveError();
     };
 
     const notifyTargetChanged = async (): Promise<void> => {
+      publishStatus();
+      for (const listener of statusListeners) {
+        try {
+          listener();
+        } catch {
+          // Observers do not own session progress or resource cleanup.
+        }
+      }
       try {
         await options.onTargetChanged?.();
       } catch (error) {
@@ -810,87 +928,45 @@ export function createDevKitWorkspaceProvider(
       }
     };
 
-    const settleResult = async (payload: WorkspaceResult): Promise<void> => {
-      if (
-        payload.sessionId !== sessionId ||
-        (payload.kind !== 'result' &&
-          payload.targetId !== targetId &&
-          !previews.has(payload.targetId))
-      )
-        return;
-      if (payload.kind === 'failed' && payload.targetId !== targetId) {
-        const preview = previews.get(payload.targetId);
-        if (!preview || preview.failure) return;
-        preview.failure = wireError(payload.error, 'target execution');
-        for (const [id, waiter] of pending) {
-          if (waiter.targetId !== payload.targetId) continue;
-          pending.delete(id);
-          clearTimeout(waiter.timer);
-          waiter.signal?.removeEventListener('abort', waiter.onAbort);
-          waiter.reject(preview.failure);
-        }
-        await notifyTargetChanged();
+    const settlePreviewFailure = async (payload: WorkspacePageLostResult): Promise<void> => {
+      const preview = previews.get(payload.targetId);
+      if (!preview || preview.failure) return;
+      preview.failure = wireError(payload.error, 'target execution');
+      for (const [id, waiter] of pending) {
+        if (waiter.targetId !== payload.targetId) continue;
+        pending.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.signal?.removeEventListener('abort', waiter.onAbort);
+        waiter.reject(preview.failure);
+      }
+      await notifyTargetChanged();
+    };
+    const settleLost = async (payload: WorkspacePageLostResult): Promise<void> => {
+      if (payload.targetId !== targetId || (pageLost && acceptedCaller !== undefined)) return;
+      const cleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)?.detail
+        ?.cleanup;
+      if (cleanup === 'failed' || cleanup === 'timeout') return;
+      // A disconnect must not erase the failure that made the live realm terminal.
+      if (!sessionClosed && readyFailure !== undefined) {
+        pageLost = true;
         return;
       }
-      if (payload.kind === 'lost') {
-        if (payload.targetId !== targetId || (pageLost && acceptedCaller !== undefined)) return;
-        const cleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)?.detail
-          ?.cleanup;
-        if (cleanup === 'failed' || cleanup === 'timeout') return;
-        // A close already owns this session. Keep the terminal lost-target
-        // record so a later reopen can prove the old page will not answer.
-        if (sessionClosed || readyFailure !== undefined) {
-          pageLost = true;
-          browserDetached = false;
-          timing('browser-lost');
-          readyFailure = new DevKitWorkspaceError(
-            'engine-workspace-page-lost',
-            'the Engine workspace browser page to remain connected',
-            'The headed page was destroyed or navigated away; reopen the project instead of replaying commands.',
-            { sessionId, targetId },
-          );
-          for (const [id, waiter] of pending) {
-            pending.delete(id);
-            clearTimeout(waiter.timer);
-            waiter.signal?.removeEventListener('abort', waiter.onAbort);
-            waiter.reject(readyFailure);
-          }
-          await notifyTargetChanged();
-          return;
-        }
-        // A refresh destroys the browser realm, not the Vite server or the
-        // accepted catalog. Fail commands already sent to the old page, and
-        // let the replacement page's ready resume new ones.
-        browserDetached = true;
-        ready = undefined;
-        timing('browser-detached');
-        const detached = new DevKitWorkspaceError(
-          'engine-workspace-browser-detached',
-          'the replacement Engine workspace page to become ready',
-          'The headed page is reloading. Wait for it instead of replaying commands or reopening the project.',
-          { sessionId, targetId },
-        );
-        for (const [id, waiter] of pending) {
-          if (waiter.operation === 'workspace readiness') continue;
-          pending.delete(id);
-          clearTimeout(waiter.timer);
-          waiter.signal?.removeEventListener('abort', waiter.onAbort);
-          waiter.reject(detached);
-        }
-        browserRetirement = Promise.all([browserRetirement, notifyTargetChanged()]).then(
-          () => undefined,
-        );
-        return;
-      }
-      if (payload.kind === 'failed') {
-        if (payload.targetId !== targetId || pageLost) return;
-        const cleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)?.detail
-          ?.cleanup;
-        if (cleanup === 'failed' || cleanup === 'timeout') return;
+      // A close already owns this session. Keep the terminal lost-target
+      // record so a later reopen can prove the old page will not answer.
+      if (sessionClosed || readyFailure !== undefined) {
         pageLost = true;
         browserDetached = false;
-        timing('browser-failed');
-        readyFailure = wireError(payload.error, 'target execution');
+        timing('browser-lost');
+        readyFailure = new DevKitWorkspaceError(
+          'engine-workspace-page-lost',
+          'the Engine workspace browser page to remain connected',
+          'The headed page was destroyed or navigated away; reopen the project instead of replaying commands.',
+          {
+            sessionId,
+            targetId,
+            ...(sessionClosed ? { cleanup: 'unconfirmed', reason: 'transport-lost' } : {}),
+          },
+        );
         for (const [id, waiter] of pending) {
           pending.delete(id);
           clearTimeout(waiter.timer);
@@ -900,59 +976,99 @@ export function createDevKitWorkspaceProvider(
         await notifyTargetChanged();
         return;
       }
+      // A refresh destroys the browser realm, not the Vite server or the
+      // accepted catalog. Fail commands already sent to the old page, and
+      // let the replacement page's ready resume new ones.
+      browserDetached = true;
+      // pagehide precedes socket closure. Its retiring realm must no longer
+      // publish readiness or teardown failures into the replacement's session.
+      acceptedCaller = undefined;
+      ready = undefined;
+      timing('browser-detached');
+      const detached = new DevKitWorkspaceError(
+        'engine-workspace-browser-detached',
+        'the replacement Engine workspace page to become ready',
+        'The headed page is reloading. Wait for it instead of replaying commands or reopening the project.',
+        { sessionId, targetId },
+      );
+      for (const [id, waiter] of pending) {
+        if (waiter.operation === 'workspace readiness') continue;
+        pending.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.signal?.removeEventListener('abort', waiter.onAbort);
+        waiter.reject(detached);
+      }
+      browserRetirement = Promise.all([browserRetirement, notifyTargetChanged()]).then(
+        () => undefined,
+      );
+    };
+    const settleFailure = async (payload: WorkspacePageLostResult): Promise<void> => {
+      if (payload.targetId !== targetId || pageLost) return;
+      const cleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)?.detail
+        ?.cleanup;
+      if (cleanup === 'failed' || cleanup === 'timeout') return;
+      pageLost = true;
+      browserDetached = false;
+      timing('browser-failed');
+      readyFailure = wireError(payload.error, 'target execution');
+      for (const [id, waiter] of pending) {
+        pending.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.signal?.removeEventListener('abort', waiter.onAbort);
+        waiter.reject(readyFailure);
+      }
+      await notifyTargetChanged();
+    };
+    const settleReady = async (
+      payload: Extract<WorkspaceResult, { kind: 'ready' }>,
+    ): Promise<void> => {
+      if (payload.targetId !== targetId || pageLost || (ready !== undefined && !browserDetached))
+        return;
+      const caller = acceptedCaller;
+      let retirement: Promise<void>;
+      do {
+        retirement = browserRetirement;
+        await retirement;
+      } while (retirement !== browserRetirement);
       if (
-        pageLost &&
-        !(payload.kind === 'result' && pending.get(payload.id)?.operation === 'closeWorkspace')
+        sessionClosed ||
+        pageLost ||
+        caller !== acceptedCaller ||
+        (ready !== undefined && !browserDetached)
       )
         return;
-      if (payload.kind === 'ready') {
-        if (payload.targetId !== targetId || pageLost || (ready !== undefined && !browserDetached))
-          return;
-        const caller = acceptedCaller;
-        let retirement: Promise<void>;
-        do {
-          retirement = browserRetirement;
-          await retirement;
-        } while (retirement !== browserRetirement);
-        if (
-          sessionClosed ||
-          pageLost ||
-          caller !== acceptedCaller ||
-          (ready !== undefined && !browserDetached)
-        )
-          return;
-        try {
-          const project = assertProject(payload.project, facts.value);
-          const target = assertTarget(payload.target, dimensions);
-          ready = { ...payload, project, target };
-          browserDetached = false;
-          browserGeneration += 1;
-          timing('browser-ready');
-          currentTarget = {
-            ...target,
-            ...(target.url === undefined && currentTarget.url === undefined
-              ? {}
-              : { url: target.url ?? currentTarget.url }),
-          };
-        } catch (error) {
-          readyFailure = error;
-        }
-        // Readiness is a session-level event, not a request result. Every
-        // caller that was waiting for this one browser page must settle from
-        // the same event; using sessionId as a pending-map key would let
-        // concurrent callers overwrite one another.
-        for (const [id, waiter] of pending) {
-          if (waiter.operation !== 'workspace readiness') continue;
-          pending.delete(id);
-          clearTimeout(waiter.timer);
-          waiter.signal?.removeEventListener('abort', waiter.onAbort);
-          if (readyFailure !== undefined) waiter.reject(readyFailure);
-          else waiter.resolve(ready);
-        }
-        await notifyTargetChanged();
-        return;
+      try {
+        const project = assertProject(payload.project, facts);
+        const target = assertTarget(payload.target, dimensions);
+        ready = { ...payload, project, target };
+        browserDetached = false;
+        browserGeneration += 1;
+        if (projectDocument !== undefined)
+          projectDocument = { ...projectDocument, browserGeneration };
+        timing('browser-ready');
+        const url = target.url ?? currentTarget?.url ?? projectDocument?.url;
+        currentTarget = {
+          ...target,
+          ...(url === undefined ? {} : { url }),
+        };
+      } catch (error) {
+        readyFailure = error;
       }
-      if (payload.kind !== 'result') return;
+      // Readiness is a session-level event, not a request result. Every
+      // caller that was waiting for this one browser page must settle from
+      // the same event; using sessionId as a pending-map key would let
+      // concurrent callers overwrite one another.
+      for (const [id, waiter] of pending) {
+        if (waiter.operation !== 'workspace readiness') continue;
+        pending.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.signal?.removeEventListener('abort', waiter.onAbort);
+        if (readyFailure !== undefined) waiter.reject(readyFailure);
+        else waiter.resolve(ready);
+      }
+      await notifyTargetChanged();
+    };
+    const settleCommandResult = (payload: Extract<WorkspaceResult, { kind: 'result' }>): void => {
       const waiter = pending.get(payload.id);
       if (
         waiter === undefined ||
@@ -965,51 +1081,83 @@ export function createDevKitWorkspaceProvider(
       if (payload.ok) waiter.resolve(payload.value);
       else {
         const error = wireError(payload.error, waiter.operation);
-        if (error.detail.cleanup === 'failed' || error.detail.cleanup === 'timeout')
+        if (error.detail.cleanup === 'failed' || error.detail.cleanup === 'timeout') {
           readyFailure = error;
+          publishStatus();
+          for (const listener of statusListeners) {
+            try {
+              listener();
+            } catch {
+              // Status observers do not own the command result.
+            }
+          }
+        }
         waiter.reject(error);
       }
     };
 
-    // A headed target samples one presentation lease. Replacing that provider
-    // retires its frontend identity; independent game sessions have no such lease.
-    if (!parent && binding.frontendAssembly !== undefined) {
-      removePresentation = backend.context.on(
-        'internal/service',
-        (name) => {
-          if (
-            name !== 'devkitWorkspaceFrontend' ||
-            sessionClosed ||
-            pageLost ||
-            options.hostBinding?.frontendAssembly === binding.frontendAssembly
-          )
-            return;
-          settleResult({
-            kind: 'failed',
-            id: `presentation:${targetId}`,
-            sessionId,
-            targetId,
-            error: {
-              code: 'engine-workspace-page-lost',
-              expected: 'the sampled frontend presentation lease to remain active',
-              hint: 'The presentation provider changed. Reopen this exact lost target without replaying writes.',
-              detail: { sessionId, targetId, stage: 'presentation' },
-            },
-          });
-        },
-        { global: true },
-      );
-    }
+    const settleResult = async (payload: WorkspaceResult): Promise<void> => {
+      if (
+        payload.sessionId !== sessionId ||
+        (payload.kind !== 'result' &&
+          payload.targetId !== targetId &&
+          !previews.has(payload.targetId))
+      )
+        return;
+      if (payload.kind === 'failed' && payload.targetId !== targetId)
+        return settlePreviewFailure(payload);
+      if (payload.kind === 'lost') return settleLost(payload);
+      if (payload.kind === 'failed') return settleFailure(payload);
+      if (
+        pageLost &&
+        !(payload.kind === 'result' && pending.get(payload.id)?.operation === 'closeWorkspace')
+      )
+        return;
+      if (payload.kind === 'ready') return settleReady(payload);
+      if (payload.kind === 'result') settleCommandResult(payload);
+    };
 
-    resultRegistration = backend.transport.register(
-      engineWorkspaceResultService(targetId),
-      async ({ payload, caller }) => {
-        assertWorkspaceCaller(caller, sessionId, targetId, acceptedCaller);
-        if (payload !== null && typeof payload === 'object')
-          await settleResult(payload as WorkspaceResult);
-        return { accepted: true };
-      },
-    );
+    const installBackendListeners = (): void => {
+      // A headed target samples one presentation lease. Replacing that provider
+      // retires its frontend identity; independent game sessions have no such lease.
+      if (!parent && binding.frontendAssembly !== undefined) {
+        removePresentation = backend.context.on(
+          'internal/service',
+          (name) => {
+            if (
+              name !== 'devkitWorkspaceFrontend' ||
+              sessionClosed ||
+              pageLost ||
+              options.hostBinding?.frontendAssembly === binding.frontendAssembly
+            )
+              return;
+            settleResult({
+              kind: 'failed',
+              id: `presentation:${targetId}`,
+              sessionId,
+              targetId,
+              error: {
+                code: 'engine-workspace-page-lost',
+                expected: 'the sampled frontend presentation lease to remain active',
+                hint: 'The presentation provider changed. Reopen this exact lost target without replaying writes.',
+                detail: { sessionId, targetId, stage: 'presentation' },
+              },
+            });
+          },
+          { global: true },
+        );
+      }
+
+      resultRegistration = backend.transport.register(
+        engineWorkspaceResultService(targetId),
+        async ({ payload, caller }) => {
+          assertWorkspaceCaller(caller, sessionId, targetId, acceptedCaller);
+          if (payload !== null && typeof payload === 'object')
+            await settleResult(payload as WorkspaceResult);
+          return { accepted: true };
+        },
+      );
+    };
 
     const cancel = (id: string, connectionId?: string): void => {
       if (!connectionId) return;
@@ -1101,9 +1249,19 @@ export function createDevKitWorkspaceProvider(
       operation: string,
       commandPayload: unknown,
       signal?: AbortSignal,
+      admitted?: WorkspaceReadyResult,
     ): Promise<T> => {
       const handshake =
-        operation === 'closeWorkspace' ? { target: currentTarget } : await waitReady(signal);
+        operation === 'closeWorkspace'
+          ? { target: currentTarget }
+          : (admitted ?? (await waitReady(signal)));
+      if (handshake.target === undefined)
+        throw new DevKitWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'An authenticated Engine World target',
+          'Wait for this exact project document to authenticate and publish its real World.',
+          { sessionId, targetId, operation },
+        );
       if (handshake.target.targetId !== targetId) {
         throw new DevKitWorkspaceError(
           'engine-workspace-target-mismatch',
@@ -1159,10 +1317,10 @@ export function createDevKitWorkspaceProvider(
           waiter.reject(cause);
         }
       }
-      const response = await result;
-      if (operation === 'entity.inspect')
+      const value = await result;
+      if (operation !== 'closeWorkspace')
         assertCurrentBrowser(handshake as WorkspaceReadyResult, operation);
-      return response;
+      return value;
     };
 
     const closePreview = async (preview: EngineWorkspacePreview): Promise<void> => {
@@ -1181,29 +1339,30 @@ export function createDevKitWorkspaceProvider(
         'The session is retired; native cleanup is unconfirmed. Do not replay its commands.',
         { targetId, sessionId, cleanup: 'unconfirmed', reason: 'transport-lost' },
       );
+      publishStatus();
     };
     const closeResources = async (): Promise<void> => {
-      authoring?.dispose();
       if (sessionClosePromise !== undefined) {
-        return sessionClosePromise.catch((error) => {
-          if (
-            acceptedCaller !== undefined ||
-            !(readyFailure instanceof DevKitWorkspaceError) ||
-            readyFailure.code !== 'engine-workspace-page-lost'
-          )
-            throw error;
-          retireLost();
-          removeClientDisconnect();
-          if (currentClose === closeResources) currentClose = undefined;
-          sessionClosePromise = Promise.resolve();
-        });
+        return sessionClosePromise;
       }
+      input.startupController.abort(new Error('Project session closed'));
       sessionClosed = true;
       removePresentation?.();
       removePresentation = undefined;
       removeClientConnect();
       sessionClosePromise = (async () => {
-        await play?.close?.();
+        const cleanupFailures: unknown[] = [];
+        const attemptCleanup = async (operation: () => void | Promise<void>): Promise<void> => {
+          try {
+            await operation();
+          } catch (cause) {
+            cleanupFailures.push(cause);
+          }
+        };
+        if (authoring !== undefined) await attemptCleanup(() => authoring?.dispose());
+        const playToClose = play;
+        const closePlay = playToClose?.close;
+        if (playToClose && closePlay) await attemptCleanup(() => closePlay.call(playToClose));
         play = undefined;
         removeBackendDispose?.();
         removeBackendDispose = undefined;
@@ -1221,86 +1380,155 @@ export function createDevKitWorkspaceProvider(
             ),
           );
         }
-        for (const preview of [...previews.values()]) await closePreview(preview).catch(() => {});
-        let cleanupFailure: unknown;
-        const priorCleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)?.detail
-          ?.cleanup;
-        if (priorCleanup === 'failed' || priorCleanup === 'timeout') {
-          cleanupFailure = readyFailure;
-        } else if (ready !== undefined && acceptedCaller === undefined) {
-          retireLost();
-        } else if (ready !== undefined) {
-          try {
-            const cleanup = await command<{ cleanup?: string }>('closeWorkspace', { targetId });
-            if (cleanup?.cleanup !== 'completed')
-              throw new DevKitWorkspaceError(
-                'engine-workspace-cleanup-incomplete',
-                'The old Workspace plugin scopes to report completed cleanup',
-                'Inspect the old browser session before considering project closure complete.',
-                { targetId, cleanup },
-              );
-          } catch (cause) {
-            const reportedCleanup = (cause as { detail?: { cleanup?: string } } | undefined)?.detail
-              ?.cleanup;
-            if (!acceptedCaller && reportedCleanup !== 'failed' && reportedCleanup !== 'timeout')
-              retireLost();
-            else {
-              cleanupFailure = cause;
-              readyFailure = cause;
+        for (const preview of [...previews.values()])
+          await attemptCleanup(() => closePreview(preview));
+        const retireBrowser = async () => {
+          let cleanupFailure: unknown;
+          const priorCleanup = (readyFailure as { detail?: { cleanup?: string } } | undefined)
+            ?.detail?.cleanup;
+          if (priorCleanup === 'failed' || priorCleanup === 'timeout') {
+            cleanupFailure = readyFailure;
+          } else if (ready !== undefined && acceptedCaller === undefined) {
+            retireLost();
+          } else if (ready !== undefined) {
+            try {
+              const cleanup = await command<{ cleanup?: string }>('closeWorkspace', { targetId });
+              if (cleanup?.cleanup !== 'completed')
+                throw new DevKitWorkspaceError(
+                  'engine-workspace-cleanup-incomplete',
+                  'The old Workspace plugin scopes to report completed cleanup',
+                  'Inspect the old browser session before considering project closure complete.',
+                  { targetId, cleanup },
+                );
+            } catch (cause) {
+              const reportedCleanup = (cause as { detail?: { cleanup?: string } } | undefined)
+                ?.detail?.cleanup;
+              if (!acceptedCaller && reportedCleanup !== 'failed' && reportedCleanup !== 'timeout')
+                retireLost();
+              else {
+                cleanupFailure = cause;
+                readyFailure = cause;
+              }
             }
           }
-        }
-        if (server !== undefined && !serverClosed) {
+          return cleanupFailure;
+        };
+        const cleanupFailure = await retireBrowser();
+        revokePage?.();
+        revokePage = undefined;
+        if (!parent && server !== undefined && !serverClosed) {
           serverClosed = true;
-          await server.close().catch(() => {});
+          const serverToClose = server;
+          await attemptCleanup(() => serverToClose.close());
         }
+        // Finish an accepted cleanup response before invalidating its result service.
+        await setImmediate();
         resultRegistration?.();
         resultRegistration = undefined;
+        statusListeners.clear();
         const failedCleanup = (cleanupFailure as { detail?: { cleanup?: string } } | undefined)
           ?.detail?.cleanup;
         // A missing acknowledgment may still become a lost connection. Keep
         // observing that connection, without admitting a replacement caller.
         if (!cleanupFailure || failedCleanup === 'failed' || failedCleanup === 'timeout')
           removeClientDisconnect();
-        if (ownsBackend) await backend.dispose().catch(() => {});
-        if (cleanupFailure) throw cleanupFailure;
-        if (currentClose === closeResources) currentClose = undefined;
+        if (ownsBackend && backendBound) await attemptCleanup(() => backend.dispose());
+        if (cleanupFailure !== undefined) cleanupFailures.unshift(cleanupFailure);
+        if (cleanupFailures.length === 1) throw cleanupFailures[0];
+        if (cleanupFailures.length > 1)
+          throw new AggregateError(cleanupFailures, 'Project resource cleanup failed');
       })();
       return sessionClosePromise;
     };
-    if (!parent) currentClose = closeResources;
-    if (!ownsBackend) {
-      removeBackendDispose = backend.subscribeDispose(() => closeResources());
-    }
+    input.publishCleanup(closeResources);
 
     try {
       assertSessionActive();
-      const config = await createViteConfig(facts.value, 'serve', '/', {
-        server: {
-          port: await materializeViteDevPort(options.port ?? 0),
-          strictPort: true,
-        },
-        host: binding,
-        scriptablePackMetadata,
+      backend = parent?.backend ?? options.hostBinding?.backend ?? (await backendFactory());
+      backendBound = true;
+      throwIfAborted(input.startupController.signal);
+      if (disposed)
+        throw new DevKitWorkspaceError(
+          'engine-workspace-provider-disposed',
+          'the Engine workspace provider to remain active',
+          'Create a new workspace provider before opening another project.',
+          { sessionId, targetId },
+        );
+      timing('backend-bound');
+      const browserHostBinding = (): DevKitHostBinding => ({
+        ...(parent ? { backend } : (options.hostBinding ?? { backend })),
+        ...(parent && options.hostBinding?.frontendModule?.prepare
+          ? { frontendModule: options.hostBinding.frontendModule }
+          : {}),
+        workspace: { sessionId, targetId, admissionToken, execution: parent ? 'game' : 'preview' },
+        pages,
+        ...(parent
+          ? {}
+          : {
+              authoringSourceChanged: (path: string) => authoring?.sourceChanged(path) ?? false,
+            }),
       });
-      timing('vite-config');
-      await closeIfInactive();
-      server = await serverFactory(config);
-      timing('vite-server-created');
-      await closeIfInactive();
-      assertSessionActive();
-      await server.listen();
-      timing('vite-listening');
-      await closeIfInactive();
+      binding = browserHostBinding();
+      const workspacePage = binding.workspace;
+      if (!workspacePage) throw new TypeError('Workspace page identity missing');
+      installClientListeners();
+      installBackendListeners();
+      for (const change of queuedDraftChanges)
+        backend.transport.publish(PACK_DRAFT_CHANGED_TOPIC, change);
+      queuedDraftChanges.length = 0;
+      if (!ownsBackend) removeBackendDispose = backend.subscribeDispose(input.onBackendDisposed);
+      const prepareServer = async () => {
+        if (parent) {
+          server = parent.server;
+          catalogReady = parent.catalogReady;
+          const assembly = await pages.prepareGame?.();
+          await closeIfInactive();
+          revokePage = pages.register({ ...workspacePage, ...(assembly ? { assembly } : {}) });
+          timing('project-server-reused');
+        } else {
+          revokePage = pages.register(workspacePage);
+          const config = await createViteConfig(facts, 'serve', '/', {
+            server: {
+              port: await materializeViteDevPort(options.port ?? 0),
+              strictPort: true,
+            },
+            host: binding,
+            scriptablePackMetadata,
+          });
+          timing('vite-config');
+          await closeIfInactive();
+          server = await serverFactory(config);
+          timing('vite-server-created');
+          await closeIfInactive();
+          assertSessionActive();
+          await server.listen();
+          timing('vite-listening');
+          await closeIfInactive();
+        }
+      };
+      await prepareServer();
+      if (!server) throw new TypeError('Workspace project server missing');
       const serverUrl = localServerUrl(server);
       // Unit providers may intentionally supply a transport-only fake
       // server. A real Vite server exposes httpServer; only that production
       // path waits for the accepted catalog before publishing the page URL.
-      if (server.httpServer !== undefined) {
-        await awaitCatalogReady(server, serverUrl, facts.value.id, readyTimeoutMs, input.signal);
-      }
-      timing('catalog-ready');
-      const workspaceUrl = new URL(serverUrl);
+      const prepareCatalogReadiness = () => {
+        if (!parent && server?.httpServer !== undefined) {
+          catalogReady = awaitCatalogReady(
+            server,
+            serverUrl,
+            facts.id,
+            readyTimeoutMs,
+            input.startupController.signal,
+          );
+          // Cancellation may arrive synchronously during the initial probe.
+          // Join its eventual rejection even when admission stops before publication.
+          void catalogReady.catch(() => {});
+        }
+      };
+      prepareCatalogReadiness();
+      throwIfAborted(input.startupController.signal);
+      const workspaceUrl = new URL(parent ? 'game.html' : './', serverUrl);
       workspaceUrl.searchParams.set('forgeaxWorkspace', parent ? 'game' : '1');
       workspaceUrl.searchParams.set('forgeaxWorkspaceSession', sessionId);
       workspaceUrl.searchParams.set('forgeaxWorkspaceTarget', targetId);
@@ -1308,7 +1536,8 @@ export function createDevKitWorkspaceProvider(
       workspaceUrl.searchParams.set('forgeaxWorkspaceWidth', String(width));
       workspaceUrl.searchParams.set('forgeaxWorkspaceHeight', String(height));
       workspaceUrl.searchParams.set('forgeaxWorkspaceHeaded', headed ? '1' : '0');
-      currentTarget = { ...currentTarget, url: workspaceUrl.href };
+      projectDocument = { sessionId, targetId, url: workspaceUrl.href, browserGeneration };
+      publishStatus();
       timing('target-url-published');
 
       const assertSessionOpen = (): void => {
@@ -1371,7 +1600,20 @@ export function createDevKitWorkspaceProvider(
             (parent || ownerBrowserGeneration === Math.max(1, browserGeneration))
               ? command('closePreview', { targetId: previewTargetId, previewOwner }, undefined)
               : Promise.resolve()
-          ).then(() => undefined);
+          ).then(
+            () => undefined,
+            (error: unknown) => {
+              // Page retirement also interrupts a close already sent by the
+              // Shell. It owns no resource in the replacement browser realm.
+              if (
+                error instanceof DevKitWorkspaceError &&
+                error.code === 'engine-workspace-browser-detached' &&
+                (browserDetached || ownerBrowserGeneration !== Math.max(1, browserGeneration))
+              )
+                return;
+              throw error;
+            },
+          );
           return previewClosePromise;
         };
         const assertPreviewOpen = (): void => {
@@ -1434,7 +1676,7 @@ export function createDevKitWorkspaceProvider(
           },
 
           get target() {
-            return parent ? currentTarget : previewTarget;
+            return parent ? requireCurrentTarget() : previewTarget;
           },
           ...(previewAsset ? { asset: previewAsset } : {}),
           ...(value.assetBinding === undefined ? {} : { assetBinding: value.assetBinding }),
@@ -1632,20 +1874,62 @@ export function createDevKitWorkspaceProvider(
         previews.set(previewTargetId, preview);
         return preview;
       };
-      const session: BrowserSession = {
-        ...(authoring ? { authorPack: authoring.execute } : {}),
-        get failure() {
-          return readyFailure;
+      const capabilities: SessionCapabilities = {
+        borrowTarget: async () => {
+          if (!parent)
+            return proxyTarget({ previewOwner: sessionId, target: requireCurrentTarget() });
+          let live: EngineWorkspacePreview | undefined;
+          const runtime = async () => {
+            assertSessionOpen();
+            if (browserDetached)
+              throw new DevKitWorkspaceError(
+                'engine-workspace-browser-detached',
+                'The replacement game page to authenticate',
+                'Wait for the reloaded Play page.',
+                { sessionId, targetId },
+              );
+            await waitReady();
+            live ??= proxyTarget({
+              previewOwner: sessionId,
+              target: requireCurrentTarget(),
+            });
+            return live;
+          };
+          const document = projectDocument;
+          if (!document) throw new TypeError('Game document missing');
+          const tools = async () => {
+            const targetTools = (await runtime()).tools;
+            if (!targetTools) throw new TypeError('Game target tools missing');
+            return targetTools;
+          };
+          return {
+            get target() {
+              return currentTarget ?? { ...dimensions, url: document.url };
+            },
+            getCamera: async (value) => (await runtime()).getCamera(value),
+            beginCameraInteraction: async (value) =>
+              (await runtime()).beginCameraInteraction?.(value),
+            updateCameraDraft: async (value) => (await runtime()).updateCameraDraft?.(value),
+            commitCamera: async (value) => (await runtime()).commitCamera?.(value),
+            abortCameraInteraction: async (value) =>
+              (await runtime()).abortCameraInteraction?.(value),
+            revokeConnection: async (value) => live?.revokeConnection?.(value),
+            setControl: async (value) => (await runtime()).setControl?.(value),
+            resize: async (value) => {
+              const resize = (await runtime()).resize;
+              if (!resize) throw new TypeError('Game resize missing');
+              return resize(value);
+            },
+            capture: async (value) => (await runtime()).capture?.(value),
+            tools: {
+              tree: async (value) => (await tools()).tree(value),
+              inspect: async (value) => (await tools()).inspect(value),
+              pick: async (value) => (await tools()).pick?.(value),
+              highlight: async (value) => (await tools()).highlight?.(value),
+              focus: async (value) => (await tools()).focus?.(value),
+            },
+          };
         },
-        get phase() {
-          if (pageLost || readyFailure) return 'failed';
-          if (browserDetached || ready === undefined) return 'starting';
-          return 'running';
-        },
-        get browserGeneration() {
-          return browserGeneration;
-        },
-        borrowTarget: () => proxyTarget({ previewOwner: sessionId, target: currentTarget }),
         ready: async (signal) => {
           if (parent) timing('game-ready-wait');
           await waitReady(signal);
@@ -1653,14 +1937,17 @@ export function createDevKitWorkspaceProvider(
         },
         ...(!parent
           ? {
-              async startPlay({ signal }: { signal?: AbortSignal }) {
+              async startPlay(
+                { signal }: { signal?: AbortSignal },
+                admitted?: WorkspaceReadyResult,
+              ) {
                 assertSessionOpen();
                 const playStarted = performance.now();
                 const playLog = (stage: string): void => {
                   console.error(
                     '[forgeax.play]',
                     JSON.stringify({
-                      root: facts.value.root,
+                      root: facts.root,
                       sessionId,
                       targetId,
                       execution: 'editor',
@@ -1670,7 +1957,7 @@ export function createDevKitWorkspaceProvider(
                   );
                 };
                 playLog('editor-ready-wait');
-                const editorBrowser = await waitReady(signal);
+                const editorBrowser = admitted ?? (await waitReady(signal));
                 playLog('editor-ready');
                 assertCurrentBrowser(editorBrowser);
                 if (play)
@@ -1683,15 +1970,21 @@ export function createDevKitWorkspaceProvider(
                 try {
                   throwIfAborted(signal);
                   playLog('game-session-open');
+                  const projectServer = server;
+                  if (!projectServer) throw new TypeError('Project server missing');
                   game = await openSession(
-                    { root: facts.value.root, ...(signal ? { signal } : {}) },
-                    backend,
+                    {
+                      root: facts.root,
+                      generation: input.generation,
+                      ...(signal ? { signal } : {}),
+                    },
+                    { backend, server: projectServer, pages, catalogReady },
                   );
+                  const target = await game.borrowTarget(signal);
                   playLog('game-session-opened');
                   throwIfAborted(signal);
                   assertSessionOpen();
                   assertCurrentBrowser(editorBrowser);
-                  const target = game.borrowTarget();
                   const owned = game;
                   let closing: Promise<void> | undefined;
                   const next: EngineWorkspacePlay = {
@@ -1723,25 +2016,19 @@ export function createDevKitWorkspaceProvider(
               },
             }
           : {}),
-        project: {
-          id: facts.value.id,
-          root: facts.value.root,
-          name: facts.value.name,
-          assetRoots: facts.value.assetRoots,
-        },
-        get target() {
-          return currentTarget;
-        },
-        runtimePack: async (input) => {
+        runtimePack: async (input, admitted) => {
           assertSessionOpen();
-          await waitReady(input.signal);
+          await catalogReady;
+          const handshake = admitted ?? (await waitReady(input.signal));
           assertSessionOpen();
-          if (input.targetId !== targetId || input.worldId !== currentTarget.worldId)
+          assertCurrentBrowser(handshake);
+          const target = requireCurrentTarget();
+          if (input.targetId !== targetId || input.worldId !== target.worldId)
             throw new DevKitWorkspaceError(
               'engine-workspace-target-stale',
               'The current project App and World',
               'Refresh engine.workspace.get before submitting runtime content.',
-              { target: currentTarget },
+              { target },
             );
           return command(
             'runtimePack',
@@ -1752,18 +2039,21 @@ export function createDevKitWorkspaceProvider(
               ...(input.connectionId ? { connectionId: input.connectionId } : {}),
             },
             input.signal,
+            handshake,
           );
         },
-        inspectAsset: async ({ guid, signal }) => {
+        inspectAsset: async ({ guid, signal }, admitted) => {
           assertSessionOpen();
-          return command('inspectAsset', { targetId, guid }, signal);
+          return command('inspectAsset', { targetId, guid }, signal, admitted);
         },
-        listAssets: async ({ signal } = {}) => {
+        listAssets: async ({ signal } = {}, admitted) => {
           assertSessionOpen();
+          await catalogReady;
           const result = await command<readonly EngineWorkspaceAsset[]>(
             'listAssets',
             { targetId },
             signal,
+            admitted,
           );
           if (!Array.isArray(result)) {
             throw new DevKitWorkspaceError(
@@ -1775,9 +2065,13 @@ export function createDevKitWorkspaceProvider(
           }
           return result;
         },
-        openPreview: async ({ asset, width: previewWidth, height: previewHeight, signal }) => {
+        openPreview: async (
+          { asset, width: previewWidth, height: previewHeight, signal },
+          admitted,
+        ) => {
           assertSessionOpen();
-          const editorBrowser = await waitReady(signal);
+          await catalogReady;
+          const editorBrowser = admitted ?? (await waitReady(signal));
           assertCurrentBrowser(editorBrowser);
           // Scene editing owns the project surface. Type previews always get
           // their own surface, including the first asset opened in a project.
@@ -1787,6 +2081,7 @@ export function createDevKitWorkspaceProvider(
             'openPreview',
             { targetId, previewTargetId, asset, width: previewWidth, height: previewHeight },
             signal,
+            editorBrowser,
           );
           assertCurrentBrowser(editorBrowser);
           if (
@@ -1811,21 +2106,267 @@ export function createDevKitWorkspaceProvider(
               : {}),
           });
         },
-        close: closeResources,
       };
-      return session;
+      input.publishCapabilities(capabilities);
+      await catalogReady;
+      timing('catalog-ready');
     } catch (cause) {
-      await closeResources();
+      input.publishFailure(cause);
+      try {
+        await closeResources();
+      } catch (cleanupCause) {
+        throw new AggregateError([cause, cleanupCause], 'Project startup and cleanup failed', {
+          cause,
+        });
+      }
       throw cause;
     }
   };
+  const openSession = async (
+    input: { root: string; generation: number; signal?: AbortSignal },
+    parent?: ProjectServer,
+  ): Promise<BrowserSession> => {
+    throwIfAborted(input.signal);
+    if (failedCleanup !== undefined) throw failedCleanup;
+    const facts = await readProjectFacts(input.root);
+    if (!facts.ok) {
+      const error = facts.error;
+      throw new DevKitWorkspaceError(error.code, error.expected, error.hint, error.detail);
+    }
+    const registered = await rememberKnownProject(facts.value);
+    if (!registered.ok)
+      throw new DevKitWorkspaceError(
+        registered.error.code,
+        registered.error.expected,
+        registered.error.hint,
+        registered.error.detail,
+      );
+    throwIfAborted(input.signal);
+    const sessionId = `workspace-${randomUUID()}`;
+    const targetId = `target-${randomUUID()}`;
+    const project = {
+      id: facts.value.id,
+      root: facts.value.root,
+      name: facts.value.name,
+      assetRoots: facts.value.assetRoots,
+    };
+    const startupController = new AbortController();
+    const listeners = new Set<() => void>();
+    type AuthorPack = NonNullable<EngineWorkspaceProjectSession['authorPack']>;
+    let resolveAuthoring!: (execute: AuthorPack) => void;
+    let rejectAuthoring!: (cause: unknown) => void;
+    let authoringReady = false;
+    const authoring = new Promise<AuthorPack>((resolve, reject) => {
+      resolveAuthoring = resolve;
+      rejectAuthoring = reject;
+    });
+    void authoring.catch(() => {});
+    let resolveCapabilities!: (value: SessionCapabilities) => void;
+    let rejectCapabilities!: (cause: unknown) => void;
+    let capabilitiesReady = false;
+    const capabilitiesPromise = new Promise<SessionCapabilities>((resolve, reject) => {
+      resolveCapabilities = resolve;
+      rejectCapabilities = reject;
+    });
+    void capabilitiesPromise.catch(() => {});
+    let capabilities: SessionCapabilities | undefined;
+    let cleanupOwner: (() => Promise<void>) | undefined;
+    let failure: unknown;
+    let readBrowserAdmission: () => WorkspaceReadyResult | undefined = () => undefined;
+    let closing: Promise<void> | undefined;
+    let status: EngineWorkspaceProjectSession['status'] = {
+      phase: 'preparing',
+      sessionId,
+      generation: input.generation,
+    };
+    const notify = (): void => {
+      for (const listener of listeners) {
+        try {
+          listener();
+        } catch {
+          // Observers cannot stop the session owner from publishing to others.
+        }
+      }
+    };
+    const publishStatus = (next: EngineWorkspaceProjectSession['status']): void => {
+      if (next.sessionId !== sessionId || next.generation !== input.generation)
+        throw new TypeError('Project status publication changed its session owner identity');
+      status = next;
+      notify();
+    };
+    const publishFailure = (cause: unknown): void => {
+      failure = cause;
+      const prior = status;
+      publishStatus({
+        phase: 'failed',
+        sessionId,
+        generation: input.generation,
+        ...('document' in prior && prior.document ? { document: prior.document } : {}),
+        ...('target' in prior && prior.target ? { target: prior.target } : {}),
+        failure: cause,
+        ...('browserGeneration' in prior && prior.browserGeneration !== undefined
+          ? { browserGeneration: prior.browserGeneration }
+          : {}),
+      } as EngineWorkspaceProjectSession['status']);
+      if (!authoringReady) rejectAuthoring(cause);
+      if (!capabilitiesReady) rejectCapabilities(cause);
+    };
+    const publishCapabilities = (next: SessionCapabilities): void => {
+      capabilities = next;
+      capabilitiesReady = true;
+      resolveCapabilities(next);
+    };
+    const closedError = (): DevKitWorkspaceError =>
+      new DevKitWorkspaceError(
+        'engine-workspace-session-closed',
+        'the admitted project session to remain open',
+        'Open a new project session before using its capabilities.',
+        { sessionId, targetId },
+      );
+    const requireCapabilities = async (signal?: AbortSignal): Promise<SessionCapabilities> => {
+      throwIfAborted(signal);
+      if (startupController.signal.aborted) throw failure ?? closedError();
+      const resolved = capabilities ?? (await abortable(capabilitiesPromise, signal));
+      if (startupController.signal.aborted) throw failure ?? closedError();
+      return resolved;
+    };
+    let startup!: Promise<void>;
+    const close = (): Promise<void> =>
+      (closing ??= (async () => {
+        startupController.abort(new Error('Project session closed'));
+        if (!authoringReady && failure === undefined) {
+          const error = new DevKitWorkspaceError(
+            'engine-workspace-session-closed',
+            'The Engine workspace session to remain open',
+            'Reopen the project before issuing another workspace operation.',
+            { sessionId, targetId },
+          );
+          rejectAuthoring(error);
+        }
+        await startup.catch(() => {});
+        try {
+          await cleanupOwner?.();
+        } catch (cause) {
+          const cleanup = (cause as { detail?: { cleanup?: string } })?.detail?.cleanup;
+          if (cleanup === 'failed' || cleanup === 'timeout') failedCleanup = cause;
+          throw cause;
+        }
+        listeners.clear();
+        activeProjectSessions.delete(close);
+      })());
+    // The returned preparing session owns its continuing startup. A ToolRun
+    // ends its execution signal even on success; only session close/disposal
+    // may cancel work after this admission boundary.
+    activeProjectSessions.add(close);
+    startup = createBrowserSession(
+      {
+        root: facts.value.root,
+        generation: input.generation,
+        startupController,
+        publishStatus,
+        publishFailure,
+        publishCapabilities,
+        publishBrowserAdmission: (read) => {
+          readBrowserAdmission = read;
+        },
+        publishCleanup: (close) => {
+          cleanupOwner = close;
+        },
+        onBackendDisposed: () => {
+          void close().catch(() => {});
+        },
+        onAuthoringReady: (execute) => {
+          authoringReady = true;
+          resolveAuthoring(execute);
+        },
+      },
+      parent,
+      facts.value,
+      sessionId,
+      targetId,
+    ).catch((cause: unknown) => {
+      if (failure === undefined) publishFailure(cause);
+      throw cause;
+    });
+    void startup.catch(() => {});
+
+    const session: BrowserSession = {
+      project,
+      get status() {
+        return status;
+      },
+      subscribeStatus(listener) {
+        if (closing) return () => {};
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      get phase() {
+        return status.phase === 'failed'
+          ? 'failed'
+          : status.phase === 'running'
+            ? 'running'
+            : 'starting';
+      },
+      get browserGeneration() {
+        return 'browserGeneration' in status ? (status.browserGeneration ?? 0) : 0;
+      },
+      async borrowTarget(signal) {
+        return (await requireCapabilities(signal)).borrowTarget(signal);
+      },
+      async ready(signal) {
+        await (await requireCapabilities(signal)).ready(signal);
+      },
+      async runtimePack(operation) {
+        const admitted = readBrowserAdmission();
+        return (await requireCapabilities(operation.signal)).runtimePack(operation, admitted);
+      },
+      async inspectAsset(operation) {
+        const admitted = readBrowserAdmission();
+        return (await requireCapabilities(operation.signal)).inspectAsset(operation, admitted);
+      },
+      async listAssets(operation = {}) {
+        const admitted = readBrowserAdmission();
+        return (await requireCapabilities(operation.signal)).listAssets(operation, admitted);
+      },
+      async openPreview(operation) {
+        const admitted = readBrowserAdmission();
+        return (await requireCapabilities(operation.signal)).openPreview(operation, admitted);
+      },
+      async close() {
+        await close();
+      },
+      ...(!parent
+        ? {
+            async authorPack(
+              operation: Parameters<NonNullable<EngineWorkspaceProjectSession['authorPack']>>[0],
+            ) {
+              const execute = await abortable(authoring, operation.signal);
+              if (startupController.signal.aborted)
+                throw startupController.signal.reason ?? new Error('Project session is closed');
+              return execute(operation);
+            },
+            async startPlay(operation: { readonly signal?: AbortSignal }) {
+              const admitted = readBrowserAdmission();
+              const prepared = await requireCapabilities(operation.signal);
+              if (!prepared.startPlay)
+                throw new DevKitWorkspaceError(
+                  'engine-workspace-capability-unavailable',
+                  'Play from this project session',
+                  'Open a headed editor project before starting Play.',
+                  { sessionId, targetId },
+                );
+              return prepared.startPlay(operation, admitted);
+            },
+          }
+        : {}),
+    };
+    return session;
+  };
   const provider = createEngineWorkspaceProvider({
-    openProjectSession: (input) =>
+    openProjectSession: (input: { root: string; generation: number; signal?: AbortSignal }) =>
       trackOpening(async () => {
         if (disposed) throw new Error('Engine workspace provider is disposed');
         throwIfAborted(input.signal);
-        await currentClose?.();
-        if (disposed) throw new Error('Engine workspace provider is disposed');
         return openSession(input);
       }),
   });
@@ -1916,18 +2457,26 @@ export function createDevKitWorkspaceProvider(
       };
     },
     async dispose() {
-      if (disposed) {
-        await currentClose?.();
-        return;
-      }
+      const cleanupFailures: unknown[] = [];
+      const closeOwned = async (owners: readonly (() => Promise<void>)[]): Promise<void> => {
+        const results = await Promise.allSettled(owners.map((close) => close()));
+        for (const result of results) {
+          if (result.status !== 'rejected' || cleanupFailures.includes(result.reason)) continue;
+          cleanupFailures.push(result.reason);
+        }
+      };
       disposed = true;
       const opening = [...openings];
       try {
-        await currentClose?.();
+        await closeOwned([...activeProjectSessions]);
       } finally {
         await Promise.allSettled(opening);
+        await closeOwned([...activeProjectSessions]);
         scriptablePackMetadata.clear();
       }
+      if (cleanupFailures.length === 1) throw cleanupFailures[0];
+      if (cleanupFailures.length > 1)
+        throw new AggregateError(cleanupFailures, 'DevKit project resource cleanup failed');
     },
   });
 }

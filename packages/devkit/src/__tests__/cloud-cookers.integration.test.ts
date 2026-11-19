@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
+import { AssetGuid, definePackageId, PackageId } from '@forgeax/engine-pack/source';
+import { loadScriptablePack } from '@forgeax/engine-pack/source-node';
 import { afterEach, expect, it } from 'vitest';
 import { createDefaultCloudCookers } from '../cloud-cookers.js';
 import { createViteConfig } from '../host.js';
@@ -29,8 +30,12 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-it('assembles cloud cooking in the ordinary dev host without a project build root', async () => {
-  const { root, sourcePath } = await fixture();
+it('cooks the shipped Render example in the ordinary dev host without a project build root', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-cloud-example-')));
+  roots.push(root);
+  const example = resolve(import.meta.dirname, '../../../render/examples/volumetric-clouds');
+  await cp(example, root, { recursive: true });
+  const sourcePath = resolve(root, 'cloud.pack.ts');
   await symlink(
     resolve(import.meta.dirname, '../../../..', 'node_modules'),
     resolve(root, 'node_modules'),
@@ -38,13 +43,15 @@ it('assembles cloud cooking in the ordinary dev host without a project build roo
   );
   const packageJson = { type: 'module', dependencies: { '@forgeax/engine': 'workspace:*' } };
   await writeFile(resolve(root, 'package.json'), JSON.stringify(packageJson));
-  await writeFile(
-    sourcePath,
-    `import {definePack,definePackageId} from '@forgeax/engine/pack/source';
-import {ok} from '@forgeax/engine/types';
-export default definePack({schemaVersion:'2.0.0',packageId:definePackageId('${packageId}'),
-build:()=>ok({cloud:{kind:'cloud-material',execution:'cooked',source:${JSON.stringify(source)}}})});`,
-  );
+  const definition = (await loadScriptablePack(sourcePath)).unwrap();
+  const built = await definition.build({
+    packageId: definition.packageId,
+    values: {},
+    readByGuid: async () => {
+      throw new Error('The cloud example is self-contained');
+    },
+  });
+  if (!built.ok) throw built.error;
   const config = await createViteConfig(
     {
       root,
@@ -66,16 +73,25 @@ build:()=>ok({cloud:{kind:'cloud-material',execution:'cooked',source:${JSON.stri
       (plugin) => plugin.name === 'forgeax:workspace-pack-cook',
     ) as WorkspacePackCookPlugin;
     const content = await cook.prepareContent({
-      packageId,
+      packageId: PackageId.format(definition.packageId),
       sourcePath,
       dependencies: {},
       signal: new AbortController().signal,
-      outputs: { cloud: { kind: 'cloud-material', execution: 'cooked', source } },
+      outputs: built.value,
     });
     if (!('assets' in content.source)) throw new Error('Expected direct Pack');
-    expect(content.source.assets.cloud?.payload).toMatchObject({
-      variants: [{ renderer: expect.any(Object) }],
+    const assets = content.source.assets;
+    expect(assets.cloud?.payload).toMatchObject({
+      variants: [
+        { staticValues: { detail: false }, renderer: expect.any(Object) },
+        { staticValues: { detail: true }, renderer: expect.any(Object) },
+      ],
     });
+    const materialGuid = AssetGuid.format(AssetGuid.derive(definition.packageId, 'cloud'));
+    expect(assets.light?.refs).toContain(materialGuid);
+    expect(assets.light?.payload).toMatchObject({ overrides: { density: 0.00022, detail: false } });
+    expect(assets.dense?.refs).toContain(materialGuid);
+    expect(assets.dense?.payload).toMatchObject({ overrides: { density: 0.0012, detail: true } });
   } finally {
     await plugins.find((plugin) => plugin.name === 'forgeax:project-session')?.closeBundle?.();
   }

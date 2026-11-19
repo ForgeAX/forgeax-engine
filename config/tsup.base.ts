@@ -56,6 +56,11 @@ export const baseTsupConfig: Options = {
   target: 'es2022',
   platform: 'neutral',
   sourcemap: true,
+  // Source files are published separately. Keep stack mappings without a second
+  // embedded copy of generated material payloads and ordinary package sources.
+  esbuildOptions(options) {
+    options.sourcesContent = false;
+  },
   clean: false,
   plugins: [
     {

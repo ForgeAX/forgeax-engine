@@ -22,7 +22,10 @@ describe('recording-owned shared texture imports', () => {
       .createTexture('info', { format: 'rgba16float', size: { width: 8, height: 8 } })
       .unwrap();
     const view = builder.view(texture).unwrap();
-    const descriptor = { format: 'rgba16float' as const, size: { width: 8, height: 8 } };
+    const descriptor = {
+      format: 'rgba16float' as const,
+      size: { width: 8, height: 8, depthOrArrayLayers: 1 },
+    };
     const alias = () =>
       createRenderFeatureGraphTextureTarget({
         kind: 'graph-texture',

@@ -1886,7 +1886,7 @@ if (selected('project')) {
     }),
   );
   // Partitioned release gates retain installed diagnostics with npm. The ZIP
-  // still exercises its installed View through both complete language chains.
+  // checks both installed View languages and reopens a saved JavaScript publication.
   // A standalone, unpartitioned archive verification keeps full diagnostics.
   if (group === 'all')
     await sdkGpuStage('verifyPairedViewTool', () =>
@@ -1929,7 +1929,7 @@ if (selected('project')) {
     );
 }
 
-// Keep each language's complete live-to-saved-to-cold chain on one Runner.
+// Keep the live TypeScript publication alongside the JavaScript recovery witness.
 // Default release qualification retains the original complete serial order.
 if (selected('project')) {
   await sdkStage('verifyInstalledViewRuntime', () =>

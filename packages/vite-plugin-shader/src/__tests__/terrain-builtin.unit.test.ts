@@ -1,15 +1,13 @@
 import {
   createShaderProgramCompiler,
   materialVertexInputs,
+  prepareEngineShaderSource,
   standardMaterialDefines,
   terrainProgramSource,
 } from '@forgeax/engine-shader-compiler';
 import { expect, it } from 'vitest';
 import { loadEngineShaderEntries } from '../engine-inputs/load-engine-shader-entries';
-import {
-  engineMaterialParamSchema,
-  lowerEngineSurfaceEntry,
-} from '../engine-inputs/prepare-engine-shader-source';
+import { engineMaterialParamSchema } from '../engine-inputs/prepare-engine-shader-source';
 import { publishedVariantDefines } from '../index';
 
 it('publishes fixed Terrain programs without Water variants from the shared Pack composition', async () => {
@@ -52,7 +50,12 @@ it.each([
       STORAGE_BUFFER_AVAILABLE: storage,
       ...file.defines,
     };
-    const prepared = lowerEngineSurfaceEntry(file, engine.imports, engine.imports, defines);
+    const prepared = prepareEngineShaderSource(
+      file,
+      engine.imports,
+      engine.imports,
+      defines,
+    ).unwrap();
     const compiled = await compile(prepared.source, {
       id: file.id,
       imports: prepared.imports,

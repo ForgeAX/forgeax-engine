@@ -421,7 +421,8 @@ test('repaired owners derive their loop budgets and preserve independent samplin
   );
   assert.match(source('hello/boss-lightning'), /frameLimit = benchmarkMode \? 90 : TARGET_FRAMES/);
   assert.match(source('hello/bloom'), /const SMOKE_MIN_FRAMES = 60;/);
-  assert.match(source('hello/bloom'), /if \(!CAPTURE_GPU_TIMINGS && !FALSIFY_BLOOM\)/);
+  assert.match(source('hello/bloom'), /Math\.max\(SMOKE_MIN_FRAMES, REQUESTED_FRAMES\)/);
+  assert.match(source('hello/bloom'), /if \(!FALSIFY_BLOOM\)\s*emitSmokeReceipt/);
   assert.match(source('hello/fxaa'), /Math\.min\(framesNone, framesFxaa\)/);
 });
 

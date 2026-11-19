@@ -174,6 +174,7 @@ function admitCameraConfiguration(
     camera,
     lane,
     singleLayerWater,
+    internals.requestedStandardProfile?.renderPath,
   );
   if (!configuration.ok) {
     const failureKey = JSON.stringify([configuration.error.code, configuration.error.detail]);
@@ -189,6 +190,7 @@ function admitCameraConfiguration(
       { antialias: camera?.antialias, screenSpaceReflection: camera?.screenSpaceReflection },
       lane,
       singleLayerWater,
+      internals.requestedStandardProfile?.renderPath,
     );
   } else {
     install.cameraFailure = '';

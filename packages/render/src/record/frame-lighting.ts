@@ -1,5 +1,4 @@
-﻿import { recordContext } from '../world/view-record-context';
-// @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
+﻿// @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
 
@@ -87,6 +86,7 @@ import {
   ShadowAtlas,
 } from '../shadow-atlas';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
+import { ssaoUsesLighting } from '../ssao-config';
 import { buildSsaoUniformPayload } from '../ssao-uniform';
 import type { ViewLights } from '../world/render-lights';
 import {
@@ -206,7 +206,7 @@ function stockClusterMembership(
     : undefined;
 }
 
-interface ViewBindGroupTargets {
+export interface ViewBindGroupTargets {
   readonly viewBindGroupLayout?: BindGroupLayout | undefined;
   readonly sceneDepth?: TextureView | undefined;
   /** Prepared auto layouts are identified by their pipeline and layout accessor. */
@@ -1591,14 +1591,12 @@ function buildClusterUniformPayload(
   reflectedAbi: StandardClusterReflectedAbi,
 ): Uint8Array {
   const clusterSsaoConfig = frameState.installedPipelineConfig?.ssao;
-  const clusterSsaoIntensity =
-    clusterSsaoConfig !== undefined && clusterSsaoConfig.enabled === true
-      ? (clusterSsaoConfig.intensity ?? 1.0)
-      : 0;
-  const clusterDirectAoStrength =
-    clusterSsaoConfig !== undefined && clusterSsaoConfig.enabled === true
-      ? (clusterSsaoConfig.directLightingStrength ?? 0)
-      : 0;
+  const clusterSsaoIntensity = ssaoUsesLighting(clusterSsaoConfig)
+    ? (clusterSsaoConfig?.intensity ?? 1.0)
+    : 0;
+  const clusterDirectAoStrength = ssaoUsesLighting(clusterSsaoConfig)
+    ? (clusterSsaoConfig?.directLightingStrength ?? 0)
+    : 0;
   return new Uint8Array(
     packClusterUniform({
       grid: prepared.layout.grid,
@@ -1865,7 +1863,7 @@ export function resolveSkyboxActive(
   if (skybox !== undefined && tonemapActive) {
     const featureSource = skybox.featureEnvironment;
     const cubemapView = featureSource
-      ? recordContext(internals).sharedFeatureGpuWork?.resolveTextureCube(
+      ? internals.viewOwner?.preparedResolver.gpuWork.resolveTextureCube(
           featureSource.feature,
           featureSource.sky,
         )

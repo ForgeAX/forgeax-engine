@@ -1,4 +1,13 @@
 import type { ColorValueDomain } from '@forgeax/engine-render-graph';
+import type { RenderPipelineAsset } from '@forgeax/engine-types';
+
+export type StandardOutputContract = NonNullable<
+  NonNullable<RenderPipelineAsset['config']>['outputContract']
+>;
+
+export function isStandardOutputContract(value: unknown): value is StandardOutputContract {
+  return value === 'standard-output-v1' || value === 'standard-output-v2';
+}
 
 const STANDARD_OUTPUT_LOGICAL_STAGES = [
   'temporal',
@@ -10,10 +19,13 @@ const STANDARD_OUTPUT_LOGICAL_STAGES = [
   'exposure-white-balance',
   'tone',
   'lut',
+  'vignette',
   'outline',
   'barrel-distortion',
   'fxaa',
   'lens-effects',
+  'sharpen',
+  'grain',
   'smaa',
   'output-encoding',
 ] as const;
@@ -21,6 +33,8 @@ const STANDARD_OUTPUT_LOGICAL_STAGES = [
 export type StandardOutputLogicalStage = (typeof STANDARD_OUTPUT_LOGICAL_STAGES)[number];
 
 export interface StandardOutputRequest {
+  /** Omission retains the saved V1 contract, independently of new renderer defaults. */
+  readonly contract?: StandardOutputContract;
   readonly temporal: boolean;
   readonly meter: boolean;
   readonly bloom: boolean;
@@ -39,15 +53,18 @@ export interface StandardOutputRequest {
   readonly lensEffects?: boolean;
   readonly fxaa: boolean;
   readonly smaa?: boolean;
+  readonly sharpen?: boolean;
 }
 
-export interface StandardOutputPhysicalStage {
+/** Logical value-domain boundaries, not physical passes or GPU work counts. */
+export interface StandardOutputStageDomain {
   readonly name: StandardOutputLogicalStage;
   readonly input: ColorValueDomain;
   readonly output: ColorValueDomain;
 }
 
 export interface StandardOutputPlan {
+  readonly contract: StandardOutputContract;
   readonly features: Readonly<
     Pick<
       StandardOutputRequest,
@@ -68,7 +85,7 @@ export interface StandardOutputPlan {
     >
   >;
   readonly logicalStages: readonly StandardOutputLogicalStage[];
-  readonly physicalStages: readonly StandardOutputPhysicalStage[];
+  readonly stageDomains: readonly StandardOutputStageDomain[];
   readonly incrementalResources: readonly string[];
   readonly incrementalBindings: number;
 }

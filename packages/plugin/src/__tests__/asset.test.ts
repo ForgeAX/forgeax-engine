@@ -10,7 +10,12 @@ import {
   pluginAssetOrigin,
 } from '../asset.js';
 import { registerAssetTools } from '../register-tools.js';
-import { disposePluginFiber, startNativePlugin, startPluginAsset } from '../startup.js';
+import {
+  disposePluginFiber,
+  inspectPluginFiber,
+  startNativePlugin,
+  startPluginAsset,
+} from '../startup.js';
 import { createToolApiPlugin } from '../tool-api.js';
 
 const left = '00000000-0000-4000-8000-000000000001';
@@ -694,6 +699,67 @@ describe('plugin asset native installation', () => {
     expect(result.ok).toBe(false);
     expect(applied).not.toHaveBeenCalled();
     expect([...ctx.registry.values()].flatMap((runtime) => runtime.fibers)).toHaveLength(0);
+    await ctx.fiber.dispose();
+  });
+
+  it('exposes the native Fiber while startup is still pending', async () => {
+    const ctx = new Context();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let observed: import('../startup.js').PluginFiberInspection | undefined;
+    const starting = startNativePlugin(
+      ctx,
+      {
+        async apply() {
+          await gate;
+        },
+      },
+      undefined,
+      {
+        timeoutMs: null,
+        onFiber(fiber) {
+          observed = inspectPluginFiber(fiber);
+        },
+      },
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(observed?.state).toMatch(/pending|loading/);
+    release();
+    expect((await starting).ok).toBe(true);
+    await ctx.fiber.dispose();
+  });
+
+  it('cleans up the installed Fiber when its observer throws', async () => {
+    const ctx = new Context();
+    const events: string[] = [];
+    let fiber: import('@deepseek-ai/cordis').Fiber | undefined;
+    const result = await startNativePlugin(
+      ctx,
+      {
+        apply(owner: Context) {
+          owner.effect(() => () => {
+            events.push('disposed');
+          });
+        },
+      },
+      undefined,
+      {
+        onFiber(value) {
+          fiber = value;
+          throw new Error('observer failed');
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected observer failure');
+    expect(result.error.detail).toMatchObject({ cleanup: 'completed' });
+    expect((result.error.detail as { observerCause?: unknown }).observerCause).toMatchObject({
+      message: 'observer failed',
+    });
+    expect(events).toEqual(['disposed']);
+    expect(fiber && inspectPluginFiber(fiber).state).toBe('disposed');
     await ctx.fiber.dispose();
   });
 

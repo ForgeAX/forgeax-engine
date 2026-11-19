@@ -28,8 +28,32 @@ async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-thumbnails-'));
   roots.push(root);
   const runtime = {
-    project: { project: { id: 'p', root }, target: { url: 'http://localhost:1234' } },
-  } as Pick<EngineWorkspaceRuntime, 'project'>;
+    project: {
+      project: { id: 'p', root },
+      status: {
+        phase: 'running' as const,
+        sessionId: 'thumbnail-session',
+        generation: 1,
+        browserGeneration: 1,
+        document: {
+          sessionId: 'thumbnail-session',
+          targetId: 'thumbnail-target',
+          url: 'http://localhost/',
+          browserGeneration: 1,
+        },
+        target: {
+          sessionId: 'thumbnail-session',
+          targetId: 'thumbnail-target',
+          worldId: 'thumbnail-world',
+          url: 'http://localhost/',
+          headed: true,
+          width: 320,
+          height: 240,
+        },
+      },
+      subscribeStatus: () => () => {},
+    },
+  } satisfies Pick<EngineWorkspaceRuntime, 'project'>;
   const inputs = { producer: 'renderer-1', entries: [row('first'), row('second')] };
   const capture = vi.fn(
     async (_asset: { guid: string; kind: string }, _input: string, _signal: AbortSignal) => image,

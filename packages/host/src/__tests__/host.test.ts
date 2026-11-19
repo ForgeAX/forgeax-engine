@@ -167,6 +167,23 @@ describe('native root Host assembly', () => {
 });
 
 describe('Host cancellation ownership', () => {
+  it('retains the transport failure when disconnect is observed during frontend construction', async () => {
+    const backend = await createBackendHost();
+    const client = backend.transport.connect();
+    client.close('disconnected before frontend admission');
+    try {
+      await expect(
+        createFrontendHost({
+          assembly: createHostAssembly(),
+          transport: client,
+          autoActivate: false,
+        }),
+      ).rejects.toMatchObject({ code: 'host-transport-failure' });
+    } finally {
+      await backend.dispose();
+    }
+  });
+
   it.each([
     undefined,
     null,

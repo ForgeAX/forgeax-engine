@@ -3,10 +3,7 @@ import { Time, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack';
-import {
-  serializeCookedMaterialRecord,
-  validateCookedMaterialRecord,
-} from '@forgeax/engine-pack/material-cook';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type BindGroup, type Buffer, type Result, RhiError } from '@forgeax/engine-rhi';
 import {
@@ -81,6 +78,7 @@ import {
 } from './gpu-driven-production-fixture';
 import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 import {
+  nativeOutputShaderFixture,
   renderLifecycleManifestUrl,
   standardPbrFixtureVariants,
   waterInfoShaderFixture,
@@ -270,6 +268,7 @@ function manifestDataUrl(
         { hash: 'unlit000', wgsl: unlitWgsl, glsl: '', bindings: '' },
         { hash: 'tonemap0', wgsl: tonemapWgsl, glsl: '', bindings: '' },
         ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
       ],
       materialShaders: [
         materialShader(
@@ -284,6 +283,7 @@ function manifestDataUrl(
         ),
         materialShader('forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, unlitWgsl),
         ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
       ],
     }),
   )}`;
@@ -590,11 +590,14 @@ describe('GPU-driven production projection', () => {
       specular: 0.63,
       staticSwitches: { alphaClipping: false, alphaHash: false, displacement: false },
     });
-    const cooked = await createMaterialPackCooker().cook({ guid, source: authored });
+    // Both geometry lanes use the same storage-capable WebGPU device.
+    const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
+      guid,
+      source: authored,
+    });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
-    const wire = JSON.parse(serializeCookedMaterialRecord(record));
     const identity = { source: 'static-shadow-publication', epoch: 1 };
     const manifest = renderLifecycleManifestUrl();
     const queue = new RecordingQueue();
@@ -627,7 +630,7 @@ describe('GPU-driven production projection', () => {
     renderer.onError((error) => errors.push(error));
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      const publishedMaterial = { ...authored, cooked: wire };
+      const publishedMaterial = { ...authored, cooked: record };
       publishRuntimeAssets(assets, [{ guid, asset: publishedMaterial }]);
       const parsed = AssetGuid.parse(guid);
       if (!parsed.ok) throw parsed.error;
@@ -657,8 +660,13 @@ describe('GPU-driven production projection', () => {
         'position',
         'normal',
       ]);
-      // Equal layouts share ABI receipts; distinct pass programs retain their artifacts.
-      expect(shadow?.abi?.receiptIdentity).toBe(forward?.abi?.receiptIdentity);
+      // The shared vertex/material layout remains equal, while only the color writer
+      // certifies the versioned GBuffer contract. Shadow cannot inherit that proof.
+      expect(shadow?.abi?.vertexInputs).toEqual(forward?.abi?.vertexInputs);
+      expect(shadow?.abi?.materialRow).toEqual(forward?.abi?.materialRow);
+      expect(shadow?.abi?.gbuffer).toBeUndefined();
+      expect(forward?.abi?.gbuffer).toBe('standard-gbuffer/2');
+      expect(shadow?.abi?.receiptIdentity).not.toBe(forward?.abi?.receiptIdentity);
       const programDigest = (selection: typeof forward) =>
         record.programs.find((program) => program.selections.some((item) => item === selection))
           ?.artifact.digest;
@@ -1895,6 +1903,35 @@ describe('GPU-driven production projection', () => {
       }),
     );
     expect(retried.ok).toBe(true);
+    retried.unwrap()?._commitResourceReplacement();
+
+    // GPU-generated vertices can publish Surface rows without an indirect batch.
+    const directTopology = new BatchTopology();
+    directTopology.rebuild([]);
+    const direct = production
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: directTopology.query(directTopology.sourcePlan(), undefined),
+            slots: [],
+            slotAt: () => undefined,
+            sourceIdentity: 'world-a',
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          viewBindGroupLayout: viewLayout,
+          probeBlendRecordBuffer,
+          hdrp: false,
+          surfaceDynamicInput: { page, ranges: stableRanges, projectionRevision: 3, frameTime: 3 },
+          directSurface: { artifact, ranges: stableRanges },
+          deviceGeneration: 1,
+        }),
+      )
+      .unwrap();
+    expect(direct?.standardPbrFrameResources.surfaceDirectInstances).toBeTypeOf('function');
+    expect(direct?._consumeSurfaceDynamicInput?.(33)).toMatchObject({ ok: true });
+
     production.dispose();
     availability.scene.dispose();
   });
@@ -3132,15 +3169,12 @@ describe('GPU-driven production projection', () => {
     world.update(1 / 60).unwrap();
     await draw();
     expect(renderer.perFramePassNames).toEqual(
-      expect.arrayContaining(['cluster-membership-producer', 'main', 'output-transform']),
+      expect.arrayContaining(['cluster-membership-producer', 'main', 'standard-grade']),
     );
-    expect(renderer.perFramePassNames).toContain('output-transform');
-    // Storage-buffer LDR frames keep the scene linear until the one output
-    // transform writes the encoded surface. The ordinary unprepared mesh
-    // remains the CPU residual under common visibility projection, while the
-    // clustered Standard graph and output transform stay active. The residual
-    // also draws in the Forward depth prepass, which one draw seeds into `main`.
-    expect(device.totalDrawCount).toBe(4);
+    expect(renderer.perFramePassNames).not.toContain('output-transform');
+    // Main shades the residual, and Native Grade performs the output transform.
+    // This camera requests no separate scene-surface or presentation draw.
+    expect(device.totalDrawCount).toBe(2);
     expect(renderer.renderScene).toMatchObject({
       worldEntitiesScanned: 0,
       fullRebuilds: 1,

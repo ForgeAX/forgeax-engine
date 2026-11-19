@@ -33,6 +33,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
+import type { Table } from '../storage/table';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
@@ -200,12 +201,10 @@ describe('M5 -- wide table versus sparse tag-flip trend', () => {
     return defineComponent(`M1WideFlip${width}`, schema);
   }
 
-  function bytesIn(table: {
-    storage: Map<number, { fields: Map<string, { buffer: ArrayBufferLike }> }>;
-  }): number {
+  function bytesIn(table: Pick<Table, 'storage'>): number {
     let bytes = 0;
     for (const { fields } of table.storage.values()) {
-      for (const column of fields.values()) bytes += column.buffer.byteLength;
+      for (const column of fields.values()) bytes += column.view.buffer.byteLength;
     }
     return bytes;
   }
@@ -217,17 +216,17 @@ describe('M5 -- wide table versus sparse tag-flip trend', () => {
       const wide = makeWideComponent(width);
       const tableWorld = new World();
       const tableEntity = tableWorld.spawn({ component: wide, data: {} as never }).unwrap();
-      const tableBefore = tableWorld[worldInternal].getGraph().tables[0];
+      const tableBefore = tableWorld[worldInternal].graph.tables[0];
       if (tableBefore === undefined) throw new Error('source table missing');
       tableCopiedBytes.push(bytesIn(tableBefore));
       tableWorld.addComponent(tableEntity, { component: TableFlipTag, data: {} }).unwrap();
 
       const sparseWorld = new World();
       const sparseEntity = sparseWorld.spawn({ component: wide, data: {} as never }).unwrap();
-      const sparseBefore = sparseWorld[worldInternal].getGraph().tables[0];
+      const sparseBefore = sparseWorld[worldInternal].graph.tables[0];
       if (sparseBefore === undefined) throw new Error('source table missing');
       sparseWorld.addComponent(sparseEntity, { component: SparseFlipTag, data: {} }).unwrap();
-      const sparseAfter = sparseWorld[worldInternal].getGraph().tables[0];
+      const sparseAfter = sparseWorld[worldInternal].graph.tables[0];
       sparseCopiedBytes.push(sparseAfter === sparseBefore ? 0 : bytesIn(sparseBefore));
     }
 

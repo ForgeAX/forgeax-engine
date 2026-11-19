@@ -63,6 +63,7 @@ import {
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
 import { renderExtentSize, temporalAnalysisCapacity } from './render-extent';
+import { addSsaoSceneColorPass, type SceneColorAo } from './ssao-scene-color';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 import {
   addAutoExposureExposurePass,
@@ -70,6 +71,7 @@ import {
 } from './standard-output/auto-exposure/gpu';
 import { createStandardOutputPlan } from './standard-output/graph';
 import { addStandardColorLutPass } from './standard-output/lut-gpu';
+import { addNativeOutputParameters, addNativeOutputPass } from './standard-output/native-gpu';
 import { addStandardToneLutPass } from './standard-output/tone-lut';
 import type { StandardOutputPlan } from './standard-output/types';
 import { addStandardPostProcessDepth } from './standard-post-depth';
@@ -249,6 +251,69 @@ function hasPassAccesses(
   );
 }
 
+function bloomOutputSize(
+  graph: CompiledRenderGraphInfo,
+  compositedResource: CompiledRenderGraphInfo['resources'][number] | undefined,
+  nativeGrade: CompiledRenderGraphInfo['passes'][number] | undefined,
+): StandardBloomLevelDimensions | undefined {
+  const gradeOutput = graph.resources.find(
+    (resource) =>
+      resource.label ===
+      nativeGrade?.accesses.find((access) => access.usage === 'color-attachment')?.resource,
+  )?.descriptor;
+  return compositedResource === undefined
+    ? gradeOutput?.kind === 'texture' &&
+      gradeOutput.sampleCount === 1 &&
+      gradeOutput.domain === 'display-encoded'
+      ? { width: gradeOutput.width, height: gradeOutput.height }
+      : undefined
+    : resourceSize(compositedResource);
+}
+
+function hasBloomPassTopology(
+  graph: CompiledRenderGraphInfo,
+  passes: CompiledRenderGraphInfo['passes'],
+  orderedHorizontal: CompiledRenderGraphInfo['resources'],
+  expectedVerticalLabels: readonly string[],
+  composited: CompiledRenderGraphInfo['resources'],
+  nativeGrade: CompiledRenderGraphInfo['passes'][number] | undefined,
+): boolean {
+  const sceneLabel = passes[0]?.accesses[0]?.resource;
+  return (
+    sceneLabel !== undefined &&
+    !sceneLabel.startsWith('bloom-') &&
+    graph.resources.some((resource) => resource.label === sceneLabel) &&
+    orderedHorizontal.every(
+      (_, level) =>
+        hasPassAccesses(passes[level * 2], [
+          {
+            resource: level === 0 ? sceneLabel : `bloom-vertical-${level - 1}`,
+            usage: 'sampled-read',
+          },
+          { resource: `bloom-horizontal-${level}`, usage: 'color-attachment' },
+        ]) &&
+        hasPassAccesses(passes[level * 2 + 1], [
+          { resource: `bloom-horizontal-${level}`, usage: 'sampled-read' },
+          { resource: `bloom-vertical-${level}`, usage: 'color-attachment' },
+        ]),
+    ) &&
+    (composited.length === 0
+      ? nativeGrade !== undefined &&
+        nativeGrade.kind === 'raster' &&
+        nativeGrade.executionIndex > (passes.at(-1)?.executionIndex ?? Infinity) &&
+        [sceneLabel, ...expectedVerticalLabels].every(
+          (label, index) =>
+            nativeGrade.accesses.filter((access) => access.usage === 'sampled-read')[index]
+              ?.resource === label,
+        )
+      : hasPassAccesses(passes.at(-1), [
+          { resource: sceneLabel, usage: 'sampled-read' },
+          ...expectedVerticalLabels.map((resource) => ({ resource, usage: 'sampled-read' })),
+          { resource: STANDARD_BLOOM_TARGET_SPEC.composited.label, usage: 'color-attachment' },
+        ]))
+  );
+}
+
 /** Derive Bloom target/pass facts solely from the compiled Standard graph. */
 export function inspectStandardBloomGraph(
   graph: CompiledRenderGraphInfo | undefined,
@@ -264,6 +329,7 @@ export function inspectStandardBloomGraph(
     .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.verticalPrefix))
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
   const targets = [...composited, ...horizontal, ...vertical];
+  const nativeGrade = graph.passes.find((pass) => pass.name === 'standard-grade');
   const passes = graph.passes
     .filter(
       (pass) =>
@@ -273,10 +339,10 @@ export function inspectStandardBloomGraph(
     )
     .sort((left, right) => left.executionIndex - right.executionIndex);
   if (targets.length === 0 && passes.length === 0) return emptyBloomGraphInspection();
-  if (composited.length !== 1) return invalidBloomGraphInspection();
+  if (composited.length > 1 || (composited.length === 0 && nativeGrade === undefined))
+    return invalidBloomGraphInspection();
   const compositedResource = composited[0];
-  if (compositedResource === undefined) return invalidBloomGraphInspection();
-  const compositedSize = resourceSize(compositedResource);
+  const compositedSize = bloomOutputSize(graph, compositedResource, nativeGrade);
   if (compositedSize === undefined) return invalidBloomGraphInspection();
 
   const expected = standardBloomTargetSpecs(compositedSize.width, compositedSize.height);
@@ -289,7 +355,8 @@ export function inspectStandardBloomGraph(
     left.label.localeCompare(right.label, undefined, { numeric: true }),
   );
   const completeTargetSet =
-    targets.length === 1 + expectedHorizontalLabels.length + expectedVerticalLabels.length &&
+    targets.length ===
+      composited.length + expectedHorizontalLabels.length + expectedVerticalLabels.length &&
     orderedHorizontal.length === expectedHorizontalLabels.length &&
     orderedVertical.length === expectedVerticalLabels.length &&
     orderedHorizontal.every(
@@ -310,35 +377,20 @@ export function inspectStandardBloomGraph(
     label,
     expectedVerticalLabels[level],
   ]);
-  expectedPassNames.push(TYPED_BLOOM_PASS_NAMES.composite);
+  if (composited.length !== 0) expectedPassNames.push(TYPED_BLOOM_PASS_NAMES.composite);
   const completePassSet =
     passes.length === expectedPassNames.length &&
     passes.every((pass, index) => pass.name === expectedPassNames[index]);
-  const sceneLabel = passes[0]?.accesses[0]?.resource;
   const passTopology =
     completePassSet &&
-    sceneLabel !== undefined &&
-    !sceneLabel.startsWith('bloom-') &&
-    graph.resources.some((resource) => resource.label === sceneLabel) &&
-    orderedHorizontal.every(
-      (_, level) =>
-        hasPassAccesses(passes[level * 2], [
-          {
-            resource: level === 0 ? sceneLabel : `bloom-vertical-${level - 1}`,
-            usage: 'sampled-read',
-          },
-          { resource: `bloom-horizontal-${level}`, usage: 'color-attachment' },
-        ]) &&
-        hasPassAccesses(passes[level * 2 + 1], [
-          { resource: `bloom-horizontal-${level}`, usage: 'sampled-read' },
-          { resource: `bloom-vertical-${level}`, usage: 'color-attachment' },
-        ]),
-    ) &&
-    hasPassAccesses(passes.at(-1), [
-      { resource: sceneLabel, usage: 'sampled-read' },
-      ...expectedVerticalLabels.map((resource) => ({ resource, usage: 'sampled-read' })),
-      { resource: STANDARD_BLOOM_TARGET_SPEC.composited.label, usage: 'color-attachment' },
-    ]);
+    hasBloomPassTopology(
+      graph,
+      passes,
+      orderedHorizontal,
+      expectedVerticalLabels,
+      composited,
+      nativeGrade,
+    );
   if (!completeTargetSet || !passTopology) {
     return invalidBloomGraphInspection();
   }
@@ -505,6 +557,9 @@ function standardOutputFeatures(
   const camera = topology.camera;
   const postProcessing = !clearOnly && camera.postProcessing !== false;
   return createStandardOutputPlan({
+    ...(topology.config?.outputContract === undefined
+      ? {}
+      : { contract: topology.config.outputContract }),
     temporal: postProcessing && isTemporalAntialias(camera.antialias),
     meter: postProcessing && topology.output?.autoExposure === true,
     bloom: postProcessing && standardBloomAdmitted(topology.camera),
@@ -921,6 +976,7 @@ function addSceneObservation(
   return addTypedFrameObservationPass(context.graph, scene);
 }
 
+/** Apply depth of field before scene post-processing and output. */
 function addDepthOfFieldStage(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
@@ -929,7 +985,6 @@ function addDepthOfFieldStage(
   input: RenderPipelineTarget,
   postTemporal: RenderPipelineTarget | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  let postInput = input;
   if (route.features.dof) {
     const taa = topology.temporal?.taa === true;
     const dof = addDepthOfFieldPasses(
@@ -940,17 +995,16 @@ function addDepthOfFieldStage(
         msaaActive: depth.sampleCount === 4,
         ...(topology.extent === undefined ? {} : { extent: topology.extent }),
       },
-      postInput,
+      input,
       depth,
       taa ? postTemporal : undefined,
     );
     if (!dof.ok) return dof;
-    postInput = dof.value;
+    return dof;
   }
-  return ok(postInput);
+  return ok(input);
 }
 
-/** Bloom and flare read the image after depth of field and motion blur. */
 function addHdrLensStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
@@ -1004,7 +1058,7 @@ function addChromaticAberrationStage(
   return ok(fringed.value);
 }
 
-function addStandardBloom(
+export function addStandardBloom(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
@@ -1014,19 +1068,34 @@ function addStandardBloom(
   const bloomSpecs = standardBloomTargetSpecs(outputWidth, outputHeight);
   const composited = target(context, bloomSpecs.composited.label, bloomSpecs.composited);
   if (!composited.ok) return composited;
+  const filters = addStandardBloomFilters(context, topology, scene, composited.value);
+  if (!filters.ok) return filters;
+  return ok(composited.value);
+}
+
+function addStandardBloomFilters(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  scene: RenderPipelineTarget,
+  composited?: RenderPipelineTarget,
+): Result<readonly RenderPipelineTarget[], RenderPipelineBuildError> {
+  const bloomSpecs = standardBloomTargetSpecs(
+    topology.extent?.outputWidth ?? topology.surface.width,
+    topology.extent?.outputHeight ?? topology.surface.height,
+  );
   const horizontal = declareBloomLevels(context, bloomSpecs.horizontal);
   if (!horizontal.ok) return horizontal;
   const vertical = declareBloomLevels(context, bloomSpecs.vertical);
   if (!vertical.ok) return vertical;
   const bloom = addTypedBloomPasses(context.graph, {
     scene,
-    composited: composited.value,
+    ...(composited === undefined ? {} : { composited }),
     horizontal: horizontal.value,
     vertical: vertical.value,
     levelDimensions: bloomSpecs.levels,
   });
   if (!bloom.ok) return bloom;
-  return ok(composited.value);
+  return ok(vertical.value);
 }
 
 function declareBloomLevels(
@@ -1131,6 +1200,18 @@ function addLinearLdrStages(
     if (!lut.ok) return lut;
     postInput = lut.value;
   }
+  return addLinearLdrExtensions(context, route, depth, featureTargets, postInput, waterInfoTargets);
+}
+
+function addLinearLdrExtensions(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  route: StandardPostRoute,
+  depth: RenderPipelineTarget,
+  featureTargets: StandardFeatureTargets,
+  input: RenderPipelineTarget,
+  waterInfoTargets?: WaterInfoGraphTargets,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  let postInput = input;
   if (route.features.outline) {
     const outlined = addOutlinePasses(
       context.graph,
@@ -1470,6 +1551,142 @@ function addStandardPresentStages(
   return ok(undefined);
 }
 
+/** A real linear-LDR consumer retains its own seam; the ordinary core needs none. */
+function nativeOutputNeedsLinearLdr(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  route: StandardPostRoute,
+): boolean {
+  return (
+    route.features.outline ||
+    route.editorAssistance ||
+    route.editorOutline ||
+    route.features.barrelDistortion ||
+    route.features.smaa ||
+    context.observationCaptureDomains?.includes('linear-ldr') === true
+  );
+}
+
+/** Fused default core, with explicitly selected spatial extensions in linear LDR. */
+function addNativeStandardOutput(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+  input: RenderPipelineTarget,
+  autoExposure: StandardAutoExposure | undefined,
+  finalPresent: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  featureTargets: StandardFeatureTargets,
+  waterInfoTargets?: WaterInfoGraphTargets,
+): Result<void, RenderPipelineBuildError> {
+  // A flare samples the Bloom-composited HDR neighborhood. Retain that
+  // explicit producer and disable its already-applied Grade inputs.
+  const flareInput = route.features.lensFlare
+    ? addHdrLensStages(context, topology, route, input)
+    : ok(input);
+  if (!flareInput.ok) return flareInput;
+  const fusedBloom = route.features.bloom && !route.features.lensFlare;
+  const filters = fusedBloom
+    ? addStandardBloomFilters(context, topology, flareInput.value)
+    : ok(undefined);
+  if (!filters.ok) return filters;
+  const lut = context.standardOutput?.colorLut;
+  if (route.features.lut && lut === undefined)
+    return err(
+      new RenderGraphError({
+        code: 'resource-resolution-failed',
+        expected: 'the selected native Grade LUT has a prepared graph projection',
+        hint: 'prepare the selected Camera color LUT before compiling its output graph',
+      }),
+    );
+  const linearSeam = nativeOutputNeedsLinearLdr(context, route);
+  const parameters = addNativeOutputParameters(context.graph, {
+    bloom: fusedBloom,
+    lutStrength: route.features.lut ? (lut?.strength ?? 0) : 0,
+    sharpen: 0,
+    dither: route.outputDither,
+    finishInGrade: !route.features.fxaa,
+    linearGrade: linearSeam,
+    chromaticAberration: !route.features.lensFlare,
+  });
+  if (!parameters.ok) return parameters;
+  const gradeOutput = linearSeam
+    ? target(context, 'standard-grade-linear', {
+        format: 'rgba16float',
+        size: 'surface',
+        domain: 'linear-ldr',
+      })
+    : route.features.fxaa
+      ? target(context, 'standard-grade-output', {
+          format: 'rgba16float',
+          size: 'surface',
+          usage: GPU_TEXTURE_USAGE_COPY_SRC,
+          domain: 'display-encoded',
+        })
+      : ok(finalPresent);
+  if (!gradeOutput.ok) return gradeOutput;
+  const graded = addNativeOutputPass(
+    context.graph,
+    'standard-grade',
+    flareInput.value,
+    gradeOutput.value,
+    parameters.value,
+    {
+      kind: 'grade',
+      exposure: route.features.exposure ? autoExposure?.candidate : undefined,
+      bloom: filters.value,
+      lut: route.features.lut ? lut : undefined,
+    },
+  );
+  if (!graded.ok) return graded;
+  const encodeLinearSeam = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
+    if (!linearSeam) return ok(gradeOutput.value);
+    const extended = addLinearLdrExtensions(
+      context,
+      route,
+      depth,
+      featureTargets,
+      gradeOutput.value,
+      waterInfoTargets,
+    );
+    if (!extended.ok) return extended;
+    if (context.observationCaptureDomains?.includes('linear-ldr')) {
+      const captured = addObservationCapturePass(context.graph, extended.value, 'linear-ldr');
+      if (!captured.ok) return captured;
+    }
+    const output = route.features.fxaa
+      ? target(context, 'standard-grade-output', {
+          format: 'rgba16float',
+          size: 'surface',
+          usage: GPU_TEXTURE_USAGE_COPY_SRC,
+          domain: 'display-encoded',
+        })
+      : ok(finalPresent);
+    if (!output.ok) return output;
+    const encode = addNativeOutputPass(
+      context.graph,
+      'standard-encode',
+      extended.value,
+      output.value,
+      parameters.value,
+      { kind: 'encode' },
+    );
+    if (!encode.ok) return encode;
+    return ok(output.value);
+  };
+  const encoded = encodeLinearSeam();
+  if (!encoded.ok) return encoded;
+  return route.features.fxaa
+    ? addNativeOutputPass(
+        context.graph,
+        'standard-final',
+        encoded.value,
+        finalPresent,
+        parameters.value,
+        { kind: 'final', fxaa: true },
+      )
+    : ok(undefined);
+}
+
 /**
  * Build the one Standard post chain shared by direct and clustered lighting.
  * Bloom is admitted before any Bloom target is declared, keeping the disabled
@@ -1490,6 +1707,7 @@ export function addStandardPost(
   waterInfoTargets?: WaterInfoGraphTargets,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   waterFoamSimulation?: GraphTextureView,
+  sceneAo?: SceneColorAo,
 ): Result<void, RenderPipelineBuildError> {
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
@@ -1523,11 +1741,39 @@ export function addStandardPost(
   const outputColor = declareOutputColor();
   if (!outputColor.ok) return outputColor;
   const finalPresent = outputColor.value;
+  const applySceneColorAo = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
+    if (
+      !route.clearOnly &&
+      topology.config?.ssao?.enabled === true &&
+      topology.config.ssao.application === 'scene-color'
+    ) {
+      if (sceneAo === undefined)
+        return err(
+          new RenderGraphError({
+            code: 'resource-resolution-failed',
+            expected: 'filtered visibility and matching depth for scene-color AO',
+            hint: 'project the selected AO producer into Standard post',
+          }),
+        );
+      const composed = addSsaoSceneColorPass(
+        context.graph,
+        topology,
+        scene,
+        sceneAo,
+        route.features.exposure ? context.standardOutput?.autoExposure?.state : undefined,
+      );
+      if (!composed.ok) return composed;
+      return composed;
+    }
+    return ok(scene);
+  };
+  const hdrScene = applySceneColorAo();
+  if (!hdrScene.ok) return hdrScene;
   const preTemporal = addPreTemporalEffects(
     context,
     topology,
     route.preTemporalEffects,
-    scene,
+    hdrScene.value,
     depth,
   );
   if (!preTemporal.ok) return preTemporal;
@@ -1603,61 +1849,13 @@ export function addStandardPost(
   if (!featured.ok) return featured;
   const observed = addSceneObservation(context, route, scene);
   if (!observed.ok) return observed;
-  const addSelectionHighlight = () => {
-    let highlighted = featured.value;
-    if (route.features.outline) {
-      const outlined = addDistanceOutlinePasses(context.graph, highlighted, depth);
-      if (!outlined.ok) return outlined;
-      highlighted = outlined.value;
-    }
-    return addHdrLensStages(context, topology, route, highlighted);
-  };
-  const lensed = addSelectionHighlight();
-  if (!lensed.ok) return lensed;
-  const exposed = addExposureWhiteBalance(
-    context,
-    topology,
-    route,
-    lensed.value,
-    autoExposure.value,
-  );
-  if (!exposed.ok) return exposed;
-  const addLinearAndEncodedPostStages = (
-    checkedExposure: Extract<typeof exposed, { ok: true }>,
-    checkedRawInput: Extract<typeof rawOnlyPostInput, { ok: true }>,
-  ) => {
-    const ldr = addLinearLdrStages(
-      context,
-      route,
-      depth,
-      featureTargets,
-      checkedExposure.value,
-      finalPresent,
-      waterInfoTargets,
-    );
-    if (!ldr.ok) return ldr;
-    const encoded = addOutputEncodingStages(
-      context,
-      route,
-      ldr.value,
-      finalPresent,
-      checkedRawInput.value,
-    );
-    if (!encoded.ok) return encoded;
-    const effects = addEncodedPostEffects(
-      context,
-      topology,
-      route,
-      depth,
-      route.rawOnly ? checkedRawInput.value : surface.storage,
-      finalPresent,
-    );
-    if (!effects.ok) return effects;
-    return undefined;
-  };
-  const encodedStagesFailure = addLinearAndEncodedPostStages(exposed, rawOnlyPostInput);
-  if (encodedStagesFailure !== undefined) return encodedStagesFailure;
-  const publishAfterTonemap = () => {
+  let highlighted = featured.value;
+  if (route.features.outline) {
+    const outlined = addDistanceOutlinePasses(context.graph, highlighted, depth);
+    if (!outlined.ok) return outlined;
+    highlighted = outlined.value;
+  }
+  const publishStandardOutput = (selectedRoute: StandardPostRoute = route) => {
     if (afterTonemap) {
       const features = context.contributeFeatures({
         placement: 'after-tonemap',
@@ -1675,9 +1873,88 @@ export function addStandardPost(
       });
       if (!copied.ok) return copied;
     }
-    return undefined;
+    return addStandardPresentStages(context, selectedRoute, surface, present, observedOutput.value);
   };
-  const afterTonemapFailure = publishAfterTonemap();
-  if (afterTonemapFailure !== undefined) return afterTonemapFailure;
-  return addStandardPresentStages(context, route, surface, present, observedOutput.value);
+  const addSelectedColorOutput = () => {
+    const nativeOutput =
+      topology.config?.outputContract === 'standard-output-v2' &&
+      !route.rawOnly &&
+      !route.clearOnly;
+    if (nativeOutput) {
+      const native = addNativeStandardOutput(
+        context,
+        topology,
+        route,
+        highlighted,
+        autoExposure.value,
+        finalPresent,
+        depth,
+        featureTargets,
+        waterInfoTargets,
+      );
+      if (!native.ok) return native;
+      const effects = addEncodedPostEffects(
+        context,
+        topology,
+        route,
+        depth,
+        surface.storage,
+        finalPresent,
+      );
+      if (!effects.ok) return effects;
+      // V2's encoded debug overlay follows the shared feature/output publication.
+      return publishStandardOutput({
+        ...route,
+        debugOverlayBeforePost:
+          nativeOutputNeedsLinearLdr(context, route) && route.debugOverlayBeforePost,
+      });
+    }
+    const lensed = addHdrLensStages(context, topology, route, highlighted);
+    if (!lensed.ok) return lensed;
+    const exposed = addExposureWhiteBalance(
+      context,
+      topology,
+      route,
+      lensed.value,
+      autoExposure.value,
+    );
+    if (!exposed.ok) return exposed;
+    const addLinearAndEncodedPostStages = (
+      checkedExposure: Extract<typeof exposed, { ok: true }>,
+      checkedRawInput: Extract<typeof rawOnlyPostInput, { ok: true }>,
+    ) => {
+      const ldr = addLinearLdrStages(
+        context,
+        route,
+        depth,
+        featureTargets,
+        checkedExposure.value,
+        finalPresent,
+        waterInfoTargets,
+      );
+      if (!ldr.ok) return ldr;
+      const encoded = addOutputEncodingStages(
+        context,
+        route,
+        ldr.value,
+        finalPresent,
+        checkedRawInput.value,
+      );
+      if (!encoded.ok) return encoded;
+      const effects = addEncodedPostEffects(
+        context,
+        topology,
+        route,
+        depth,
+        route.rawOnly ? checkedRawInput.value : surface.storage,
+        finalPresent,
+      );
+      if (!effects.ok) return effects;
+      return undefined;
+    };
+    const encodedStagesFailure = addLinearAndEncodedPostStages(exposed, rawOnlyPostInput);
+    if (encodedStagesFailure !== undefined) return encodedStagesFailure;
+    return publishStandardOutput();
+  };
+  return addSelectedColorOutput();
 }

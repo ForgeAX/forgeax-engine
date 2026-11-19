@@ -52,9 +52,7 @@ function fixture(intent: 'once' | 'on-change' | 'continuous') {
     },
     rawFaceCursor: 6,
     raw: { size: 64, faceViews: new Array(6) },
-    active: {},
-    candidate: {},
-    spare: undefined,
+    pmrem: { kind: 'atlas', active: {}, candidate: {}, spare: undefined, scratch: {} },
   } as unknown as NonNullable<ReturnType<(typeof owner)['resourceFor']>>;
   owner.resources.set('1', resource);
   return { owner, fact, resource, writes, scope, getCubemapIbl };

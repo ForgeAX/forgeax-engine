@@ -109,7 +109,6 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
   begin(): void {
     if (this.active) throw new Error('resource preparation is already active');
     this.active = true;
-    this.epoch++;
   }
 
   /** Explicit init retains a source until dispose; ordinary frame discovery still sweeps unused leases. */
@@ -118,12 +117,17 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     if (entry !== undefined) entry.retained = true;
   }
 
+  /** Unswept passes share usage until the next output/readback boundary. */
   commit(sweep = true): void {
     if (!this.active) throw new Error('resource preparation has not begun');
     for (const [source, variants] of this.entries) {
       for (const [variant, entry] of variants) {
         const pending = this.pending.get(source)?.get(variant);
-        if (pending !== undefined || (sweep && !entry.retained && entry.seen !== this.epoch)) {
+        if (
+          pending !== undefined ||
+          entry.dirty ||
+          (sweep && !entry.retained && entry.seen !== this.epoch)
+        ) {
           disposable(source)?.removeEventListener('dispose', entry.invalidate);
           if (pending?.handle !== entry.handle) this.assets.release(entry.handle).unwrap();
           variants.delete(variant);
@@ -141,6 +145,7 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     }
     this.pending.clear();
     this.active = false;
+    if (sweep) this.epoch++;
   }
 
   abort(): void {
@@ -152,6 +157,7 @@ export class SharedAssets<Source extends object, Payload extends Asset> {
     }
     this.pending.clear();
     this.active = false;
+    this.epoch++;
   }
 
   dispose(): void {

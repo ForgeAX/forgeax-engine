@@ -428,6 +428,7 @@ export interface SpotLightSnapshot extends IesProfileSnapshot {
   readonly color: Vec3;
   readonly intensity: number;
   readonly invRangeSquared: number;
+  readonly decay?: number;
   readonly cosInner: number;
   readonly cosOuter: number;
   /** Shared asset identities projected from the authored modifier fields. */
@@ -643,6 +644,7 @@ export interface LightRoster {
  * pipeline; no independent ECS system).
  */
 export interface SkylightSnapshot {
+  readonly targetEnvironment?: import('./components/render-target-environment').RenderTargetEnvironmentSource;
   readonly featureEnvironment?: import('./components/render-feature-environment').RenderFeatureEnvironmentSource;
   /** Direction-independent diffuse irradiance; independent of IBL color/intensity. */
   readonly ambientIrradiance?: readonly [number, number, number];

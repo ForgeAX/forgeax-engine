@@ -33,6 +33,7 @@ export type PluginStartupError =
         readonly guid: string;
         readonly reason: 'failed' | 'disposed' | 'timeout' | 'cancelled';
         readonly fibers: readonly PluginFiberInspection[];
+        readonly observerCause?: unknown;
       };
     };
 
@@ -41,6 +42,12 @@ export interface PluginStartupOptions {
   readonly timeoutMs?: number | null;
   readonly cleanupTimeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Observe the native root as soon as installation creates it, before activation settles. */
+  readonly onFiber?: (fiber: Fiber) => void;
+}
+
+function startupFailureReason(expired: boolean, aborted: boolean, root: Fiber | undefined) {
+  return expired ? 'timeout' : aborted ? 'cancelled' : root?.uid === null ? 'disposed' : 'failed';
 }
 
 function descendant(fiber: Fiber, root: Fiber): boolean {
@@ -235,6 +242,38 @@ async function startPluginTree(
     ]);
     if (mounted && !mounted.ok) return mounted;
     root = mounted?.value;
+    if (root && options.onFiber) {
+      const observedRoot = root;
+      const failObserver = async (cause: unknown) => {
+        controller.abort();
+        const tree = [...observed].filter((fiber) => descendant(fiber, observedRoot));
+        if (!tree.includes(observedRoot)) tree.push(observedRoot);
+        const snapshots = tree.map(inspectPluginFiber);
+        const cleanup = await settlePluginDisposal(
+          observedRoot,
+          tree,
+          cleanupObservation.failures,
+          cleanupTimeoutMs,
+        );
+        return err<PluginStartupError>({
+          code: 'plugin-startup-failed',
+          expected: 'the native Fiber observer to accept the installed root',
+          hint: 'repair the observer and start a new plugin session',
+          detail: {
+            guid,
+            reason: 'failed',
+            fibers: snapshots,
+            observerCause: cause,
+            ...cleanup,
+          },
+        });
+      };
+      try {
+        options.onFiber(root);
+      } catch (cause) {
+        return await failObserver(cause);
+      }
+    }
     const mountedRoot = root;
     while (root && !controller.signal.aborted) {
       const tree = [...observed].filter((fiber) => descendant(fiber, mountedRoot ?? fiber));
@@ -257,13 +296,7 @@ async function startPluginTree(
       ? [...observed].filter((fiber) => descendant(fiber, mountedRoot ?? fiber))
       : [];
     const snapshots = tree.map(inspectPluginFiber);
-    const reason = expired
-      ? 'timeout'
-      : controller.signal.aborted
-        ? 'cancelled'
-        : root?.uid === null
-          ? 'disposed'
-          : 'failed';
+    const reason = startupFailureReason(expired, controller.signal.aborted, root);
     controller.abort();
     const { cleanup, cause } = root
       ? await settlePluginDisposal(root, tree, cleanupObservation.failures, cleanupTimeoutMs)

@@ -152,10 +152,11 @@ export function createAppObservation(
     if (observationEntity === undefined) gameCameraEntity = source;
     if (observationEntity !== undefined) {
       if (observationEntity !== source) {
+        gameCameraEntity = source;
         world.set(observationEntity, Camera, cameraValue(source) as never).unwrap();
         world.set(observationEntity, Transform, transformValue(source) as never).unwrap();
       }
-      setActiveCamera(world, observationEntity);
+      setActiveCamera(world, observationEntity, gameCameraEntity);
       return observationEntity;
     }
     observationEntity = world
@@ -164,7 +165,7 @@ export function createAppObservation(
         { component: Transform, data: transformValue(source) as never },
       )
       .unwrap();
-    setActiveCamera(world, observationEntity);
+    setActiveCamera(world, observationEntity, gameCameraEntity);
     return observationEntity;
   };
 
@@ -210,7 +211,7 @@ export function createAppObservation(
             world.set(active, Transform, { quat: orientation }).unwrap();
           }
         }
-        setActiveCamera(world, active);
+        setActiveCamera(world, active, gameCameraEntity);
       },
     });
     world.addSystem(Update, observationSystem).unwrap();
@@ -430,7 +431,7 @@ export function createAppObservation(
     prepareFrame() {
       if (observationEntity !== undefined) {
         rememberGameCamera();
-        setActiveCamera(world, observationEntity);
+        setActiveCamera(world, observationEntity, gameCameraEntity);
       }
     },
     async focus(value) {

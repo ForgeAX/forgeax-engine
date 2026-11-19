@@ -27,7 +27,7 @@ export interface GameplayChangeDetectionHandle {
   snapshot(): GameplayChangeDetectionWitness;
 }
 
-type ScoreResource = { value: number };
+type ScoreResource = { value: number; revision: number };
 
 /** Compose ECS change detection with the existing target-range hit lifecycle. */
 export function installGameplayChangeDetection(args: {
@@ -43,8 +43,12 @@ export function installGameplayChangeDetection(args: {
     score: 0,
   });
   const witness = world.getResource(GAME_DEFAULT_CHANGE_DETECTION_WITNESS);
-  world.insertResource<ScoreResource>(GAME_DEFAULT_SCORE_RESOURCE, { value: 0 });
-  let lastResourceChangeTick = -1;
+  let nextScoreRevision = 0;
+  const writeScore = (value: number): void => {
+    world.insertResource(GAME_DEFAULT_SCORE_RESOURCE, { value, revision: nextScoreRevision++ });
+  };
+  writeScore(0);
+  let lastScoreRevision = -1;
 
   const systemToken1 = defineSystem({
     name: 'game-score-added-targets',
@@ -65,11 +69,10 @@ world.addSystem(Update, systemToken2).unwrap();
   const systemToken3 = defineSystem({
     name: 'game-score-resource-probe',
     queries: [],
-    fn: (_world) => {
-      const ticks = _world.getResourceChange(GAME_DEFAULT_SCORE_RESOURCE);
-      if (ticks !== undefined && ticks.changed > lastResourceChangeTick) {
-        lastResourceChangeTick = ticks.changed;
-        const score = _world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
+    fn: (world) => {
+      const { value: score, revision } = world.getResource(GAME_DEFAULT_SCORE_RESOURCE);
+      if (revision > lastScoreRevision) {
+        lastScoreRevision = revision;
         witness.resourceChanges += 1;
         witness.score = score;
         hud.setScore(score);
@@ -86,14 +89,14 @@ world.addSystem(Update, systemToken3).unwrap();
       const current = world.get(entity, TargetHitState).unwrap();
       world.set(entity, TargetHitState, { hits: current.hits + 1 }).unwrap();
       const score = world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
-      world.insertResource(GAME_DEFAULT_SCORE_RESOURCE, { value: score + points });
+      writeScore(score + points);
     },
     readScore() {
       return world.getResource(GAME_DEFAULT_SCORE_RESOURCE).value;
     },
     reset() {
       for (const entity of scoringTargetEntities(targetQuery)) world.set(entity, TargetHitState, { hits: 0 }).unwrap();
-      world.insertResource(GAME_DEFAULT_SCORE_RESOURCE, { value: 0 });
+      writeScore(0);
       witness.score = 0;
       hud.setScore(0);
     },

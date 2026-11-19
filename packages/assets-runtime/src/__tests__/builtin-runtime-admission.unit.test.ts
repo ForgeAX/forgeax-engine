@@ -29,7 +29,11 @@ const cases: readonly {
   },
   {
     contribution: renderPipelineContribution,
-    valid: { kind: 'render-pipeline', pipelineId: 'forgeax::standard' },
+    valid: {
+      kind: 'render-pipeline',
+      pipelineId: 'forgeax::standard',
+      config: { outputContract: 'standard-output-v1' },
+    },
     invalid: [
       { renderPath: 'unknown' },
       { config: { clusterGrid: { x: 1, y: 0, z: 1 } } },

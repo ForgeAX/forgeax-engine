@@ -1,7 +1,3 @@
-import {
-  DEFAULT_VERTEX_ATTRIBUTE_MAP,
-  deriveVertexLayoutProjection,
-} from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-rhi';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { PointShapeValue, PointSizeUnitsValue } from '../components/points';
@@ -28,6 +24,7 @@ import {
 } from './prepare';
 import {
   createPointsLinesLaneAdapter,
+  POINTS_LINES_VERTEX_LAYOUT,
   type PointsLinesBackend,
   type PointsLinesLane,
 } from './record';
@@ -64,6 +61,20 @@ export function pointsLinesRowKey(source: Pick<RenderableSnapshot, 'entityKey'>)
   return `${source.entityKey}`;
 }
 
+function admissionStyle(
+  style: PointsLinesPreparedSnapshot['style'],
+): Pick<Parameters<typeof admitPointsLines>[0], 'points' | 'lines'> {
+  if (style?.kind !== 'points') return { lines: style ?? {} };
+  return {
+    points: {
+      size: style.size,
+      minPixelSize: style.minPixelSize ?? 0,
+      sizeUnits: PointSizeUnitsValue[style.sizeUnits],
+      shape: PointShapeValue[style.shape],
+    },
+  };
+}
+
 /**
  * The Standard renderer's single Points/Lines prepare owner.
  *
@@ -80,7 +91,6 @@ export class StandardPointsLinesOwner {
   /** What this view's current attempt prepared; promoted by `commit`, dropped by `discard`. */
   private pending = new Map<string, PointsLinesInspection>();
   private published = new Map<string, PointsLinesInspection>();
-  private readonly layoutProjection = deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP);
   /** The RenderPrepare outcome of the Renderer frame it names; recording takes it. */
   private frameOutcome: { frame: number; outcome: PointsLinesFrameOutcome } | undefined;
 
@@ -187,15 +197,7 @@ export class StandardPointsLinesOwner {
       entity: snapshot.entityKey,
       mesh: meshResult.value,
       material: materialResult.value,
-      ...(snapshot.style?.kind === 'points'
-        ? {
-            points: {
-              size: snapshot.style.size,
-              sizeUnits: PointSizeUnitsValue[snapshot.style.sizeUnits],
-              shape: PointShapeValue[snapshot.style.shape],
-            },
-          }
-        : { lines: snapshot.style ?? {} }),
+      ...admissionStyle(snapshot.style),
     });
     if (!admission.ok) {
       this.publishRefusal(inspections, snapshot, admission.error);
@@ -262,7 +264,7 @@ export class StandardPointsLinesOwner {
           plan: lkgPlan,
           vertexBuffer: lkg.resource.vertexBuffer,
           indexBuffer: lkg.resource.indexBuffer,
-          layoutProjection: this.layoutProjection,
+          layoutProjection: POINTS_LINES_VERTEX_LAYOUT,
         };
       }
       this.publishRefusal(inspections, snapshot, prepared.error);
@@ -297,7 +299,7 @@ export class StandardPointsLinesOwner {
       plan,
       vertexBuffer: prepared.value.resource.vertexBuffer,
       indexBuffer: prepared.value.resource.indexBuffer,
-      layoutProjection: this.layoutProjection,
+      layoutProjection: POINTS_LINES_VERTEX_LAYOUT,
     };
   }
 

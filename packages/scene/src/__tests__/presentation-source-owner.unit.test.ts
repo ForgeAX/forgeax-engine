@@ -38,7 +38,7 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     world as unknown as Record<
       symbol,
       {
-        getSchedules(): ReadonlyMap<
+        readonly schedules: ReadonlyMap<
           unknown,
           {
             systems: Map<
@@ -51,7 +51,7 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     >
   )[Symbol.for('forgeax.ecs.worldInternal')];
   if (internal === undefined) throw new Error('Expected the World schedule owner');
-  const capture = Array.from(internal.getSchedules().values())
+  const capture = Array.from(internal.schedules.values())
     .flatMap((schedule) => [...schedule.systems])
     .find(([system]) => system.name === 'captureTransformCurrent')?.[1];
   if (capture === undefined) throw new Error('Expected the Scene capture owner');

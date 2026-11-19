@@ -1,7 +1,5 @@
 import { defineComponent } from '@forgeax/engine/ecs';
 import {
-  createEntityRemap,
-  isFieldPortable,
   projectComponentData,
   validateProfileComponents,
 } from '@forgeax/engine/ecs/externalization';
@@ -22,12 +20,20 @@ export default defineFeature({
       hp: 'f32',
       cache: { type: 'f32', transient: true },
     });
-    const Mesh = defineComponent('FLExtMesh', { mesh: 'asset<mesh>' });
+    const Mesh = defineComponent('FLExtMesh', {
+      mesh: 'asset<mesh>',
+      peers: 'array<shared<Mesh>>',
+    });
     const Scratch = defineComponent('FLExtScratch', { t: 'f32' }, { transient: true });
-    const remap = createEntityRemap([100, 101, 102, 103]);
-    const out = projectComponentData(Link, { target: 2, group: [1, 3], hp: 7, cache: 9 }, remap);
+    const mapping = [100, 101, 102, 103];
+    const remap = (entity: number) => mapping[entity] ?? entity;
+    const out = projectComponentData(Link, { target: 2, group: [1, 3, 9], hp: 7, cache: 9 }, remap);
     checks.equal('entity remapped', out.target, 102);
-    checks.equal('entity array remapped', out.group, [101, 103]);
+    checks.equal(
+      'mapped entries change and missing entries retain identity',
+      out.group,
+      [101, 103, 9],
+    );
     checks.equal('plain value kept', out.hp, 7);
     checks.ok('transient field removed', !('cache' in out));
     checks.equal(
@@ -35,23 +41,12 @@ export default defineFeature({
       projectComponentData(Scratch, { t: 1 }),
       {},
     );
-    checks.equal('missing mapping keeps identity by default', remap(9), 9);
-    let missing = 'none';
-    try {
-      createEntityRemap([0], { missing: 'error' })(5);
-    } catch {
-      missing = 'thrown';
-    }
-    checks.equal('missing mapping error mode', missing, 'thrown');
-    checks.ok('f32 portable', isFieldPortable('f32'));
-    checks.ok('shared<> not portable', !isFieldPortable('asset<mesh>'));
-    checks.ok('array<shared<>> not portable', !isFieldPortable('array<asset<mesh>>'));
     const verdict = validateProfileComponents([Link, Mesh, Scratch]);
     checks.ok('profile invalid', !verdict.valid);
     checks.equal(
       'profile error codes',
-      verdict.errors.map((e) => `${e.component}:${e.code}`),
-      ['FLExtMesh:field-not-portable', 'FLExtScratch:component-fully-transient'],
+      verdict.errors.map((e) => `${e.component}:${e.field ?? e.code}`),
+      ['FLExtMesh:mesh', 'FLExtMesh:peers', 'FLExtScratch:component-fully-transient'],
     );
   },
 });

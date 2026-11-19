@@ -54,7 +54,7 @@ export function contributeStandardAfterDepthFeatures(
 
 /** Internal acceptance selection; only GTAO on a compute-capable lane may select this entry. */
 export function resolveStandardGtaoExecution(
-  algorithm: 'ssao' | 'gtao',
+  algorithm: 'ssao' | 'gtao' | 'spiral-ssao',
   computeAvailable: boolean,
   override: StandardPipelineBuildContext['gtaoExecutionOverride'],
 ): Result<'fragment' | 'compute', RenderGraphError> {

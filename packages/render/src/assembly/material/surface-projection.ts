@@ -26,7 +26,6 @@ export interface StandardSurfaceProjectionOptions {
   readonly queue?: number;
   readonly geometryVariant?: StandardSurfaceGeometryVariant;
   readonly lightingLane?: StandardSurfaceLightingLane;
-  readonly alphaClip?: boolean;
   readonly surfaceKind?: StandardSurfaceKind;
   readonly declaredPasses?: readonly StandardSurfacePassName[];
   readonly layerPlan?: StandardLayerPlan;
@@ -65,7 +64,6 @@ function pass(
               SurfaceKind: options.surfaceKind ?? 'standard',
               GeometryVariant: options.geometryVariant ?? 'rigid',
               LightingLane: options.lightingLane ?? 'direct',
-              AlphaClip: options.alphaClip === true ? 'enabled' : 'disabled',
             },
       ...(options.queue === undefined ? {} : { queue: options.queue }),
     },

@@ -403,6 +403,7 @@ export function addWaterSlwPasses(
           height,
           depth: noWaterDepthView.value,
           normal: input.opaqueNormal.view,
+          gbufferV2: input.opaqueNormal.format === 'rg32uint',
           scene: color.view,
           ...(input.opaqueFallback === undefined ? {} : { fallback: input.opaqueFallback.view }),
           ...(input.opaqueTemporal === undefined

@@ -11,6 +11,7 @@ import type {
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { addAtmosphereComposition } from '../environment/compose';
 import type { GraphAtmosphere } from '../environment/luts';
@@ -22,6 +23,7 @@ import {
 } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
+import { registerScenePipelinePreparation } from '../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type {
   RenderPipelineFrame,
@@ -29,6 +31,7 @@ import type {
   RenderPipelineTopology,
 } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { addAuthoredVolumetricFogPasses } from '../volume/passes';
 import { renderInternalCopySize } from './render-extent';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
@@ -45,9 +48,9 @@ export function analyticFogSampleCountError(): RenderGraphError {
   });
 }
 
-function analyticFogModule(frame: RenderPipelineFrame): ShaderModule {
+function analyticFogModule(frame: RenderPipelineFrame): Result<ShaderModule, RhiError> {
   const source = frame.runtime.lookupPostProcess?.(ANALYTIC_FOG_POST_PROCESS_ID)?.source;
-  const factory = frame.runtime.shaderModuleFactory;
+  const factory = frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
   if (source === undefined || factory === undefined) {
     throw new RenderGraphError({
       code: 'resource-resolution-failed',
@@ -56,9 +59,7 @@ function analyticFogModule(frame: RenderPipelineFrame): ShaderModule {
       detail: { resourceLabel: 'analytic-fog' },
     });
   }
-  return factory
-    .createShaderModule({ code: source, label: postProcessShaderModuleLabel(source) })
-    .unwrap();
+  return factory.createShaderModule({ code: source, label: postProcessShaderModuleLabel(source) });
 }
 
 /**
@@ -88,6 +89,67 @@ export function addAnalyticFogPass(
   let bindings:
     | { readonly depth: TextureView; readonly uniform: Buffer; readonly group: BindGroup }
     | undefined;
+  const prepare = (frame: RenderPipelineFrame) => {
+    if (pipeline === undefined || layout === undefined) {
+      const result = analyticFogModule(frame);
+      if (!result.ok) {
+        if (result.error.code !== 'rhi-not-available') throw result.error;
+        return undefined;
+      }
+      const module = result.value;
+      const device = frame.runtime.device;
+      layout = device
+        .createBindGroupLayout({
+          label: 'analytic-fog.bind-group-layout',
+          entries: [
+            { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
+            {
+              binding: multisampled ? 2 : 1,
+              visibility: GPU_SHADER_STAGE_FRAGMENT,
+              texture: { sampleType: 'depth', viewDimension: '2d', multisampled },
+            },
+          ],
+        })
+        .unwrap();
+      const pipelineLayout = device
+        .createPipelineLayout({ label: 'analytic-fog.layout', bindGroupLayouts: [layout] })
+        .unwrap();
+      pipeline = device
+        .createRenderPipeline({
+          label: 'analytic-fog',
+          layout: pipelineLayout,
+          vertex: { module, entryPoint: 'vs_main', buffers: [] },
+          fragment: {
+            module,
+            entryPoint: multisampled ? 'fs_msaa' : 'fs_main',
+            targets: [
+              {
+                format: input.color.format,
+                // Premultiplied fog over the opaque scene: rgb = scene * T + inscatter.
+                // Alpha keeps the scene's coverage lane untouched.
+                blend: {
+                  color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+                  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+                },
+              },
+            ],
+          },
+          primitive: { topology: 'triangle-list' },
+          multisample: { count: input.color.sampleCount },
+        })
+        .unwrap();
+    }
+    return { pipeline, layout };
+  };
+  registerScenePipelinePreparation(
+    graph,
+    (context) => {
+      if (prepare(context) === undefined)
+        markPipelinePreparationPending(context.frameState, { code: 'scene-pipeline-preparation' });
+      return false;
+    },
+    'utility',
+  );
   const pass = graph.addRasterPass(SkyPass.analyticFog, {
     accesses: [
       { resource: input.depth, usage: 'sampled-read' },
@@ -107,50 +169,13 @@ export function addAnalyticFogPass(
       },
     ],
     encodeDirect: (pass, frame, resources) => {
-      if (pipeline === undefined || layout === undefined) {
-        const module = analyticFogModule(frame);
-        const device = frame.runtime.device;
-        layout = device
-          .createBindGroupLayout({
-            label: 'analytic-fog.bind-group-layout',
-            entries: [
-              { binding: 0, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
-              {
-                binding: multisampled ? 2 : 1,
-                visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: { sampleType: 'depth', viewDimension: '2d', multisampled },
-              },
-            ],
-          })
-          .unwrap();
-        const pipelineLayout = device
-          .createPipelineLayout({ label: 'analytic-fog.layout', bindGroupLayouts: [layout] })
-          .unwrap();
-        pipeline = device
-          .createRenderPipeline({
-            label: 'analytic-fog',
-            layout: pipelineLayout,
-            vertex: { module, entryPoint: 'vs_main', buffers: [] },
-            fragment: {
-              module,
-              entryPoint: multisampled ? 'fs_msaa' : 'fs_main',
-              targets: [
-                {
-                  format: input.color.format,
-                  // Premultiplied fog over the opaque scene: rgb = scene * T + inscatter.
-                  // Alpha keeps the scene's coverage lane untouched.
-                  blend: {
-                    color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-                    alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-                  },
-                },
-              ],
-            },
-            primitive: { topology: 'triangle-list' },
-            multisample: { count: input.color.sampleCount },
-          })
-          .unwrap();
-      }
+      const prepared = prepare(frame);
+      if (prepared === undefined)
+        throw new RhiError({
+          code: 'rhi-not-available',
+          expected: 'the graph-owned analytic fog pipeline is prepared before encoding',
+          hint: 'complete scene pipeline preparation before submitting this graph',
+        });
       const depth = resources.textureView(input.depth);
       const uniform = resources.buffer(view.value);
       if (!depth.ok) throw depth.error;
@@ -159,7 +184,7 @@ export function addAnalyticFogPass(
         const group = frame.runtime.device
           .createBindGroup({
             label: 'analytic-fog.bind-group',
-            layout,
+            layout: prepared.layout,
             entries: [
               {
                 binding: 0,
@@ -177,7 +202,7 @@ export function addAnalyticFogPass(
           .unwrap();
         bindings = { depth: depth.value, uniform: uniform.value, group };
       }
-      pass.setPipeline(pipeline);
+      pass.setPipeline(prepared.pipeline);
       pass.setBindGroup(0, bindings.group);
       pass.draw(3);
     },
@@ -223,24 +248,55 @@ function addFogDepthResolve(
     usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
   });
   if (!target.ok) return target;
+  return addMultisampleDepthResolve(graph, depth, target.value, 'fog-depth-resolve');
+}
+
+export function addMultisampleDepthResolve(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  depth: RenderPipelineTarget,
+  target: RenderPipelineTarget,
+  label: string,
+  executeIf?: (frame: RenderPipelineFrame) => boolean,
+): Result<GraphTextureView, RenderGraphError> {
+  const source = graph.view(depth.texture, {
+    label: `${label}.source`,
+    dimension: '2d',
+    aspect: 'depth-only',
+  });
+  if (!source.ok) return source;
+  const attachment = graph.view(target.texture, { label: `${label}.attachment` });
+  if (!attachment.ok) return attachment;
   let state: { pipeline: RenderPipeline; layout: BindGroupLayout } | undefined;
   let binding: { depth: TextureView; group: BindGroup } | undefined;
-  const resolved = graph.addRasterPass('fog-depth-resolve', {
+  const resolved = graph.addRasterPass(label, {
+    ...(executeIf === undefined ? {} : { executeIf }),
     accesses: [
       { resource: source.value, usage: 'sampled-read' },
-      { resource: target.value.view, usage: 'depth-stencil-write' },
+      { resource: attachment.value, usage: 'depth-stencil-write' },
     ],
     colorAttachments: [],
     depthStencilAttachment: {
-      view: target.value.view,
+      view: attachment.value,
       depthClearValue: 0,
       depthLoadOp: 'clear',
       depthStoreOp: 'store',
+      ...(target.format.includes('stencil')
+        ? {
+            stencilLoadOp: 'clear' as const,
+            stencilStoreOp: 'store' as const,
+            stencilClearValue: 0,
+          }
+        : {}),
     },
     encodeDirect(pass, frame, resources) {
       const device = frame.runtime.device;
       if (state === undefined) {
-        const module = analyticFogModule(frame);
+        const result = analyticFogModule(frame);
+        if (!result.ok) {
+          if (result.error.code !== 'rhi-not-available') throw result.error;
+          return undefined;
+        }
+        const module = result.value;
         const layout = device
           .createBindGroupLayout({
             entries: [
@@ -262,7 +318,7 @@ function addFogDepthResolve(
               fragment: { module, entryPoint: 'fs_resolve_depth', targets: [] },
               primitive: { topology: 'triangle-list' },
               depthStencil: {
-                format: 'depth32float',
+                format: target.format,
                 depthWriteEnabled: true,
                 depthCompare: 'always',
               },
@@ -286,7 +342,7 @@ function addFogDepthResolve(
       pass.draw(3);
     },
   });
-  return resolved.ok ? ok(target.value.view) : resolved;
+  return resolved.ok ? ok(target.view) : resolved;
 }
 
 /**

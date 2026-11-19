@@ -1,4 +1,6 @@
+import { isShaderTemplateManifestRow } from '@forgeax/engine-shader';
 import type { ManifestEntry } from '@forgeax/engine-types';
+import { deferredPostProcessEntry } from '../../assembly/deferred-post-process-entry';
 import type {
   PostProcessReadEntry,
   PostProcessShaderEntry,
@@ -7,8 +9,8 @@ import type { DepthOfFieldInspection } from '../../inspection-types';
 import { DEPTH_OF_FIELD_POST_PROCESS_IDS } from './depth-of-field-feature';
 
 interface DepthOfFieldShaderSources {
-  readonly singleSample?: string;
-  readonly multisampled?: string;
+  readonly singleSample?: string | (() => string);
+  readonly multisampled?: string | (() => string);
 }
 
 export function dofInspection(inspection: DepthOfFieldInspection | undefined): {
@@ -59,15 +61,20 @@ export function registerDepthOfFieldBuiltins(
 ): void {
   const register = (
     baseId: DepthOfFieldPostProcessId,
-    source: string,
+    source: string | (() => string),
     suffix: DepthOfFieldVariantSuffix,
   ): void => {
     const id = `${baseId}${suffix}`;
-    renderSystem.registerBuiltinPostProcess(id, {
-      source,
+    const descriptor = {
       params: { byteSize: 64, defaultValue: new Uint8Array(64) },
       reads: DEPTH_OF_FIELD_READS[baseId],
-    });
+    };
+    renderSystem.registerBuiltinPostProcess(
+      id,
+      typeof source === 'string'
+        ? { ...descriptor, source }
+        : deferredPostProcessEntry(descriptor, source),
+    );
   };
   if (entries.singleSample !== undefined) {
     for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) register(id, entries.singleSample, '');
@@ -86,6 +93,11 @@ export async function prewarmDepthOfField(
   let singleSample: ManifestEntry | undefined;
   let multisampled: ManifestEntry | undefined;
   for (const entry of manifestEntries) {
+    if (isShaderTemplateManifestRow(entry)) {
+      if (entry.identifier === 'forgeax_view::depth_of_field') singleSample ??= entry;
+      if (entry.identifier === 'forgeax_view::depth_of_field_msaa') multisampled ??= entry;
+      continue;
+    }
     if (!entry.wgsl.includes('DepthOfFieldParams')) continue;
     if (entry.wgsl.includes('texture_depth_multisampled_2d')) {
       multisampled ??= entry;
@@ -93,10 +105,14 @@ export async function prewarmDepthOfField(
       singleSample ??= entry;
     }
   }
-  for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(singleSample, id);
-  for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(multisampled, `${id}.msaa`);
+  if (singleSample !== undefined && !isShaderTemplateManifestRow(singleSample))
+    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(singleSample, id);
+  if (multisampled !== undefined && !isShaderTemplateManifestRow(multisampled))
+    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(multisampled, `${id}.msaa`);
+  const single = singleSample,
+    multi = multisampled;
   register({
-    ...(singleSample === undefined ? {} : { singleSample: singleSample.wgsl }),
-    ...(multisampled === undefined ? {} : { multisampled: multisampled.wgsl }),
+    ...(single === undefined ? {} : { singleSample: () => single.wgsl }),
+    ...(multi === undefined ? {} : { multisampled: () => multi.wgsl }),
   });
 }

@@ -14,6 +14,7 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import {
   type ProjectedRasterClass,
+  rasterClassFor,
   selectRasterPipeline,
 } from '../gpu-driven/production-raster-classes';
 import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
@@ -63,6 +64,25 @@ it('selects the typed AO input pipeline for material-normal rasterization', () =
 
   expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
   expect(selectRasterPipeline(batch, 'fs_ao_input_msaa', false)).toBe(aoInputMsaaPipelineFor);
+});
+
+it('keeps an authored Forward program without AO entries out of the GPU scene prepasses', () => {
+  const cls = {
+    artifact: {
+      material: 'game::filmic',
+      program: { entryPoints: [{ name: 'fs_main', stage: 'fragment', bindings: [] }] },
+    },
+  } as unknown as ProjectedRasterClass;
+  const live = {
+    classKey: 'test',
+    recordingClassKey: 'test',
+    batch: { visibleCapacity: 1, batchId: 0, key: {} },
+  } as unknown as import('../gpu-driven/live-raster').LiveRasterBatch;
+  const classes = new Map([['test', cls]]);
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_ao_input')).toBeUndefined();
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_ao_input_msaa')).toBeUndefined();
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_main')).toBe(cls);
+  expect(rasterClassFor(classes, false, live, undefined, 'fs_ao_input')).toBe(cls);
 });
 
 it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {
@@ -1139,8 +1159,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   }
 });
 
-it('omits side-effect-free no-output Unlit recording without changing GPU ownership', async () => {
-  const { rasterClassFor } = await import('../gpu-driven/production-raster-classes');
+it('omits side-effect-free no-output Unlit recording without changing GPU ownership', () => {
   const cls = {
     artifact: { material: 'forgeax::default-unlit', pass: 'forward' },
     renderState: { colorWriteMask: 0, depthWriteEnabled: false },

@@ -191,7 +191,9 @@ if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserve
 if (errors.length > 0) failures.push(`(c) Renderer.onError fired ${errors.length} times: [${errors.map((err) => err.code).join(', ')}]`);
 if (drawErrors > 0) failures.push(`(c) draw returned ${drawErrors} errors`);
 if (distinctModes < 2) failures.push(`(d) fewer than 2 antialias modes changed pixels: ${distinctModes}`);
-if (!passNames.includes('fxaa')) failures.push(`(e) missing fxaa pass; actual=${passNames.join(',')}`);
+const finalPass = passNames.indexOf('standard-final');
+const gradePass = passNames.indexOf('standard-grade');
+if (gradePass < 0 || finalPass <= gradePass) failures.push(`(e) missing FXAA Final after Grade; actual=${passNames.join(',')}`);
 
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);

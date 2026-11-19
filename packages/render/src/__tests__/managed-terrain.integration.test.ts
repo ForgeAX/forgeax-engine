@@ -168,7 +168,7 @@ it.each([
     beginRecordAttempt(
       {
         scene: f.scene,
-        internals: {},
+        internals: {} as Parameters<typeof beginRecordAttempt>[0]['internals'],
         recording: { directFrameId: 0 },
       } as Parameters<typeof beginRecordAttempt>[0],
       { mode: 'capture', profileSession: undefined } as Parameters<typeof beginRecordAttempt>[1],

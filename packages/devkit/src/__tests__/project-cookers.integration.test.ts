@@ -135,6 +135,7 @@ describe('native build root process', () => {
         textureMipSkip: 2,
         standardProfile,
         time,
+        execution: { workers: { engine: false, render: false, kernels: false } },
         startupUi,
         wechat: { maxRenderShortSide: 0 },
         loadingLabels: {
@@ -151,6 +152,7 @@ describe('native build root process', () => {
       textureMipSkip: 2,
       standardProfile,
       time,
+      execution: { workers: { engine: false, render: false, kernels: false } },
       startupUi,
       wechat: { maxRenderShortSide: 0 },
       loadingLabels: {
@@ -192,6 +194,10 @@ describe('native build root process', () => {
     '{ [Symbol("extra")]: 1 }',
     '{ standardProfile: null }',
     '{ time: null }',
+    '{ execution: null }',
+    '{ execution: [] }',
+    '{ execution: { bootstrap: "private.js" } }',
+    '{ execution: { workers: { engine: "false" } } }',
     '{ loadingLabels: { unknown: "text" } }',
     '{ loadingLabels: { lang: 3 } }',
     '{ loadingLabels: { host: null } }',

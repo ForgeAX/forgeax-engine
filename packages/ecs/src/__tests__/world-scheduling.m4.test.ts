@@ -1,6 +1,6 @@
 import { err } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { SystemFailedError } from '../errors';
+import { isEcsFault, type SystemFailedError } from '../errors';
 import { FixedUpdate, Update, World } from '../index';
 import { defineSystem } from '../schedule';
 import { Time } from '../time';
@@ -19,7 +19,7 @@ describe('M4 world scheduling failure boundary', () => {
 
     const result = world.update(1 / 60);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBeInstanceOf(SystemFailedError);
+    if (!result.ok) expect(isEcsFault(result.error, 'system-failed')).toBe(true);
     expect(world.execution.health).toBe('poisoned');
     expect(world.update(1 / 60).ok).toBe(false);
   });
@@ -37,7 +37,7 @@ describe('M4 world scheduling failure boundary', () => {
     const result = world.update();
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBeInstanceOf(SystemFailedError);
+      expect(isEcsFault(result.error, 'system-failed')).toBe(true);
       expect((result.error as SystemFailedError).detail.cause).toBe(failure);
     }
     expect(world.execution.health).toBe('poisoned');

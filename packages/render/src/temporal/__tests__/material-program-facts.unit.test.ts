@@ -4,7 +4,7 @@ import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-sys
 import { retainedMaterialProgramFacts } from '../material-program-facts';
 
 function snapshot(entry: string): MaterialSnapshot {
-  return Object.freeze({
+  const snapshot: MaterialSnapshot = {
     ...defaultMaterialSnapshot(31),
     passes: Object.freeze([
       Object.freeze({
@@ -20,9 +20,12 @@ function snapshot(entry: string): MaterialSnapshot {
         ]),
       }),
     }),
-    materialPublication: undefined,
-    materialContext: undefined,
+  };
+  Object.defineProperties(snapshot, {
+    materialPublication: { value: undefined, enumerable: true },
+    materialContext: { value: undefined, enumerable: true },
   });
+  return Object.freeze(snapshot);
 }
 
 it('retains the accepted program inputs across parameter writes and replaces changed entry reads', () => {

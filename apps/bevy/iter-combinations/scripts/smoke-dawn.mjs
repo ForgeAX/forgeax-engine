@@ -6,7 +6,7 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-iter-combinations headless dawn smoke — reproduces the app's N-body World in
 // node-dawn and asserts a real lit render THAT MOVES + CLUMPS: a ring of bodies
-// attract each other (each unordered pair's force applied once via Query.combinations)
+// attract each other (each unordered pair's force applied once)
 // and fall toward the central star, so (1) frames differ over time (motion) and
 // (2) the bodies' spread (max distance from origin) SHRINKS from an early frame to
 // a late one (the pairwise gravity actually pulls them together).
@@ -28,7 +28,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 //       delta > MOTION_THRESHOLD) — a static render (broken Time wiring) is identical.
 //   (e) CLUMP: the bodies' spread (max distance from origin) at the LATE capture is a
 //       clear fraction of its spread at the EARLY capture — the iter_combinations
-//       proof: Query.combinations pairwise gravity actually pulls the ring inward. A
+//       proof: pairwise gravity actually pulls the ring inward. A
 //       no-op combinations iterator (or frozen bodies) would keep the spread ~constant.
 //   (f) Renderer.onError fired 0 times.
 //

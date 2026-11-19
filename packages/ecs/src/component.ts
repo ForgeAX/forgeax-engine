@@ -1,3 +1,7 @@
+import {
+  createManagedArrayElementTypeNotAllowedError,
+  createSparseStorageRequiresTagError,
+} from './errors';
 // @forgeax/engine-ecs — Component schema + opaque token.
 //
 // `defineComponent(name, fields, options?)` returns a frozen token carrying
@@ -10,26 +14,18 @@
 //
 // ComponentId is used by archetype storage, bitmask matching, and edges cache.
 
-import { type AssetHandle, err, type Handle, ok, type Result } from '@forgeax/engine-types';
 import {
-  assertComponentStorage,
-  deepFreeze,
-  type FieldKind,
-  type FieldPlan,
-  registerComponentDefinition,
-} from './component-schema';
+  type AssetHandle,
+  err,
+  type Handle,
+  ok,
+  type Result,
+  type ResultOk,
+} from '@forgeax/engine-types';
 import type { EntityHandle } from './entity-handle';
-import {
-  ManagedArrayElementTypeNotAllowedError,
-  SchemaUnsupportedFieldError,
-  SparseStorageRequiresTagError,
-} from './errors';
+import { SchemaUnsupportedFieldError } from './errors';
+import type { RelationshipRole } from './relationship-index';
 import type { ManagedColumnReader } from './storage/column';
-
-// The internal package subpath reuses this owner module so the source budget
-// does not grow a second forwarding module. Root exports remain curated in
-// index.ts; this re-export is only reached through `@forgeax/engine-ecs/internal`.
-export { componentDefinition } from './component-schema';
 
 /** Native constructors own scalar conversion and byte width. */
 const VIEW_CTORS = {
@@ -48,39 +44,17 @@ const VIEW_CTORS = {
 /** Numeric scalar field types backed by TypedArray storage. */
 export type ScalarFieldType = keyof typeof VIEW_CTORS;
 
-/**
- * Legal element-type whitelist for the `array<T,N>` / `array<T>` vocab
- * keywords (AC-03). T must be a scalar field type, `entity`, or a
- * `shared\<X\>` template with a non-empty tag; reference / buffer / nested
- * array element types are forbidden (OOS-08 / OOS-03).
- *
- * Legal: every member of `ScalarFieldType` plus `entity` plus
- * `shared\<X\>` and `asset\<kind\>` with non-empty tags. Unique handles
- * cannot be array elements.
- */
+/** Array elements are numeric scalars, entity handles, shared handles, or asset handles.
+ * Unique handles, buffers, and nested arrays are excluded. */
 export type ManagedArrayElementType =
   | ScalarFieldType
   | 'entity'
   | `shared<${string}>`
   | `asset<${string}>`;
 
-/**
- * Schema-vocab keywords beyond the scalar tier (AC-01).
- *
- * Each pattern is a template-literal type so a literal schema like
- * `{ mat: 'unique<MaterialAsset>' }` types the value as
- * `Handle<'MaterialAsset','unique'>` end-to-end. Runtime acceptance is
- * gated by the internal `isSchemaVocabKeyword` check — the SSOT for parser fail-fast.
- *
- * angle-bracket generic shapes `'buffer'` (variable byte slot) and
- * `'buffer<N>'` (fixed byte slot). With `'array<T>'` / `'array<T, N>'` they
- * form a 4-keyword closed surface across two orthogonal axes (element-type
- * x capacity contract).
- */
+/** Managed and reference field vocabulary. Registration validates tags and positive fixed lengths. */
 export type SchemaVocabKeyword =
   | 'string'
-  | 'buffer'
-  | `buffer<${number}>`
   | `unique<${string}>`
   | `shared<${string}>`
   | `asset<${string}>`
@@ -98,16 +72,7 @@ export type SchemaVocabKeyword =
  */
 export type SchemaFieldType = ScalarFieldType | SchemaVocabKeyword;
 
-/**
- * Producer-owned semantic shape tags for authoring/schema consumers.
- *
- * The ECS storage vocabulary remains the source of truth for bytes and
- * runtime values. These tags capture the semantic shape that storage alone
- * cannot express (for example an optional entity reference or a nested
- * unique payload). The tag is deliberately closed so downstream consumers
- * can exhaustively handle the representative field-shape vocabulary without
- * creating a second component registry.
- */
+/** Producer-owned semantic shapes for reflection; physical layout still follows the storage type. */
 export type FieldShapeKind =
   | 'scalar'
   | 'boolean'
@@ -119,102 +84,12 @@ export type FieldShapeKind =
   | 'array'
   | 'asset-ref';
 
-/**
- * Normalize any field-type keyword to its TYPE_METADATA key.
- *
- * The 10 scalars round-trip their own key. The 6 vocab families normalize
- * their parametric shapes to the family key:
- *   - `unique<T>` / `shared<T>` — strip `<T>`    → `'unique'` / `'shared'`
- *   - `buffer<N>`             — strip `<N>`       → `'buffer'`
- *   - `array<T>` / `array<T,N>` — strip `<...>`   → `'array'`
- *   - `entity` / `string` / `buffer` are identity.
- *
- * Returns `null` for an unrecognised keyword so callers can skip column
- * allocation.
- */
-export function fieldTypeToMetaKey(fieldType: string): string | null {
-  if (fieldType === 'entity' || fieldType === 'string' || fieldType === 'buffer') {
-    return fieldType;
-  }
-  if (fieldType.startsWith('unique<') && fieldType.endsWith('>')) return 'unique';
-  if (fieldType.startsWith('asset<') && fieldType.endsWith('>')) return 'asset';
-  if (fieldType.startsWith('shared<') && fieldType.endsWith('>')) return 'shared';
-  if (fieldType.startsWith('buffer<') && fieldType.endsWith('>')) return 'buffer';
-  if (fieldType.startsWith('array<') && fieldType.endsWith('>')) return 'array';
-  // Scalar — the 10 types are keys in TYPE_METADATA.
-  if (Object.hasOwn(TYPE_METADATA, fieldType)) return fieldType;
-  return null;
+/** Native scalar keys are closed; inherited object properties are never field types. */
+export function isScalarFieldType(type: string): type is ScalarFieldType {
+  return Object.hasOwn(VIEW_CTORS, type);
 }
 
-/**
- * `true` when the schema field type is a managed-store slot - i.e. should be
- * routed through `UniqueRefStore` (or `SharedRefStore` for `'shared<T>'`)
- * for alloc / resolve / release. Derived from TYPE_METADATA[].isManaged
- * column (feat-20260611-ecs-storage-naming-ssot D-3).
- *
- * Naming note (D-6 whitelist): `managed = ECS-tracked`. The prefix here is
- * about column-side lifecycle ownership (the ECS releases the slot on
- * despawn / overwrite). Both `'unique<T>'` and `'shared<T>'` schema fields satisfy
- * `isManagedField` because both are ECS-tracked; the dispatcher in
- * `releaseManagedFieldOnRow` picks the right store per field type.
- */
-export function isManagedField(fieldType: string): boolean {
-  return TYPE_METADATA[fieldTypeToMetaKey(fieldType) ?? '']?.isManaged ?? false;
-}
-
-/**
- * `true` when the schema field type is a managed-buffer slot - i.e. should be
- * released by the M2 BufferPool release loop. Derived from
- * TYPE_METADATA[].isBuffer column (feat-20260611-ecs-storage-naming-ssot D-3/D-4).
- *
- * D-4 semantic widening accepted: `buffer<abc>` resolves to metaKey 'buffer'
- * (isBuffer=true) while the old regex-based impl rejected the non-integer N.
- * This is a dead path — `defineComponent` rejects `buffer<abc>` via
- * `isSchemaVocabKeyword` before the predicate fires.
- *
- * Naming note (D-6 whitelist): `managed = ECS-tracked`. Same semantic as
- * `isManagedField` — the variable `'buffer'` keyword is one whose
- * BufferPool slot the ECS releases at despawn / overwrite time.
- */
-export function isManagedBufferField(fieldType: string): boolean {
-  return TYPE_METADATA[fieldTypeToMetaKey(fieldType) ?? '']?.isBuffer ?? false;
-}
-
-/**
- * `true` when the schema field type is the single-entity reference keyword
- * `'entity'`. Derived from TYPE_METADATA[].isEntityRef column
- * (feat-20260611-ecs-storage-naming-ssot D-3).
- */
-export function isEntityField(fieldType: string): boolean {
-  return TYPE_METADATA[fieldTypeToMetaKey(fieldType) ?? '']?.isEntityRef ?? false;
-}
-
-/**
- * `true` when the schema field type is an `array<T,N>` / `array<T>` vocab
- * keyword. Derived from TYPE_METADATA[].isArray column
- * (feat-20260611-ecs-storage-naming-ssot D-3).
- *
- * Naming note (D-6 whitelist): `managed = ECS-tracked`. Variable
- * `array<T>` storage routes through BufferPool (slot lifecycle owned by
- * the ECS); fixed `array<T,N>` is inline stride-N and has no separate
- * slot to release, but both share this predicate as they share the
- * `'array'` meta key.
- */
-export function isManagedArrayField(fieldType: string): boolean {
-  return TYPE_METADATA[fieldTypeToMetaKey(fieldType) ?? '']?.isArray ?? false;
-}
-
-/**
- * Set of legal element types for the `array<T,N>` / `array<T>` keywords
- * (AC-03). Runtime mirror of `ManagedArrayElementType`.
- *
- * Naming note (D-6 whitelist): `MANAGED_ARRAY_ELEMENT_TYPES` keeps the
- * `MANAGED` prefix because `managed = ECS-tracked` here — the Set is the
- * static-whitelist arm of `isValidArrayElementType`, which gates which
- * element types the ECS array dispatch knows how to retain / release.
- * The `'shared<X>'` template family rides the `startsWith('shared<')`
- * special case (D-8) rather than living in this Set.
- */
+/** Non-parametric array element vocabulary. Tagged asset/shared elements use the same registration validator. */
 export const MANAGED_ARRAY_ELEMENT_TYPES: ReadonlySet<ManagedArrayElementType> =
   new Set<ManagedArrayElementType>([...(Object.keys(VIEW_CTORS) as ScalarFieldType[]), 'entity']);
 
@@ -233,25 +108,8 @@ function isValidArrayElementType(elementType: string): elementType is ManagedArr
   return false;
 }
 
-/**
- * Parse an `array<T,N>` / `array<T>` schema string into its element type and
- * optional fixed length. Returns `null` if the string is not a managed-array
- * keyword or its element type is not in the whitelist (AC-03 runtime
- * fail-safe).
- *
- * Examples:
- *   parseManagedArraySchema('array<entity>')                => { elementType: 'entity', length: undefined }
- *   parseManagedArraySchema('array<f32, 16>')               => { elementType: 'f32',    length: 16 }
- *   parseManagedArraySchema('array<asset<material>>') => { elementType: 'asset<material>', length: undefined }
- *   parseManagedArraySchema('array<shared<>>')              => null (empty tag rejection)
- *   parseManagedArraySchema('array<unique<X>>')             => null (illegal element)
- *   parseManagedArraySchema('array<array<f32,4>>')          => null (nested rejected)
- *
- * Naming note (D-6 whitelist): `parseManagedArraySchema` keeps the
- * `Managed` infix because `managed = ECS-tracked` — every legal output
- * shape this parser returns is one whose lifecycle the ECS knows how to
- * retain / release on overwrite, despawn, or archetype migration.
- */
+/** Parse a valid array element and optional positive fixed length.
+ * Returns null for invalid elements, nested arrays, or malformed lengths. */
 export function parseManagedArraySchema(
   fieldType: string,
 ): { readonly elementType: ManagedArrayElementType; readonly length: number | undefined } | null {
@@ -273,44 +131,10 @@ export function parseManagedArraySchema(
   return { elementType: head as ManagedArrayElementType, length: Number.parseInt(tail, 10) };
 }
 
-/**
- * Parse the byte count out of a `buffer<N>` schema keyword. Returns NaN if
- * the input does not match the keyword pattern - callers that already gated
- * via `isManagedBufferField` get a guaranteed-positive integer for the
- * fixed-byte form. The bare `'buffer'` keyword (variable byte capacity)
- * returns NaN and callers must check `fieldType === 'buffer'` separately.
- */
-export function bufferFieldByteLength(fieldType: string): number {
-  if (!fieldType.startsWith('buffer<') || !fieldType.endsWith('>')) return Number.NaN;
-  const tail = fieldType.slice(7, -1);
-  if (!/^[1-9]\d*$/.test(tail)) return Number.NaN;
-  return Number.parseInt(tail, 10);
-}
-
-/**
- * Runtime check for a schema-vocab keyword (the tier-2 surface).
- *
- * Pure-function regex match — kept off the hot path; only invoked by
- * `defineComponent` once per field at registration time. The match patterns
- * are the runtime mirror of `SchemaVocabKeyword` template literals.
- *
- * - `'string'` is exact-match (bare literal, no `<>`).
- * - `'buffer'` is exact-match (variable-byte capacity).
- * - `buffer<N>` requires `N` to be a positive base-10 integer (`/^[1-9]\d*$/`).
- *   Forms like `buffer<abc>` / `buffer<0>` / `buffer<>` are rejected.
- * - `unique<T>` / `shared<T>` require a non-empty target tag (`/^\w+$/`).
- * - `entity` is exact-match.
- * - `array<T,N>` / `array<T>` accept only the whitelist element types
- *   (`MANAGED_ARRAY_ELEMENT_TYPES`); illegal inner types fall through and
- *   the caller surfaces `managed-array-element-type-not-allowed`.
- */
+/** Registration-time vocabulary validator; row operations consume compiled FieldPlans. */
 export function isSchemaVocabKeyword(s: string): s is SchemaVocabKeyword {
   if (s === 'string') return true;
   if (s === 'entity') return true;
-  if (s === 'buffer') return true;
-  if (s.startsWith('buffer<') && s.endsWith('>')) {
-    return !Number.isNaN(bufferFieldByteLength(s));
-  }
   if (s.startsWith('unique<') && s.endsWith('>')) {
     return /^\w+$/.test(s.slice(7, -1));
   }
@@ -324,152 +148,61 @@ export function isSchemaVocabKeyword(s: string): s is SchemaVocabKeyword {
   return false;
 }
 
-/**
- * Maps each field-type keyword to the JS value type read/written by it.
- *
- * Tier-1 (scalars) widens to `boolean | number`; tier-2 (schema-vocab)
- * resolves to the corresponding handle / entity / buffer / array / string
- * shape via the `infer T` template-literal extraction pattern. Conditional
- * types resolve top-down --- the `'string'` arm sits BEFORE the array<...> /
- * `buffer<N>` arms so the precise literal wins template-literal resolution
- * (R-P5: prevents `'string'` from being shadowed by a wider template-literal
- * pattern). The fixed-capacity `array<T,N>` arm matches before the
- * variable-capacity `array<T>` arm by the same rule.
- *
- * The 4 buffer/array keywords (`'buffer'` / `'buffer<N>'` / `'array<T>'` /
- * `'array<T, N>'`) all resolve directly to a concrete TypedArray (or
- * Uint8Array for the byte-only buffer family). At the public `world.get`
- * boundary, a relationship-target `array<entity>` is a detached `Uint32Array`
- * snapshot. Other public array fields retain their existing transient live
- * TypedArray alias: fixed `buffer<N>` / `array<T,N>` values alias the inline
- * column buffer (feat-20260602), while variable `buffer` / `array<T>` values
- * alias the BufferPool slot bytes. Internal `readRow`, `_getArrayView`, and
- * `materializeArrayView` paths always use the live zero-copy alias. Mutation
- * flows through `world.set` / `world.push` / `world.pop`, not direct
- * assignment to a returned TypedArray.
- *
- * The `'string'` arm resolves to a native JS `string` (D-R1 / AC-13): the
- * dispatch routes the column u32 through `UniqueRefStore.resolve(handle)`
- * which returns the immutable string payload by reference.
- */
+/** Public field value. Numeric arrays borrow TypedArray storage; asset arrays and
+ * relationship target arrays are detached on read. String fields resolve to native strings.
+ * Borrowed arrays must be re-read after structural changes; mutation uses World APIs. */
+type ArrayElementOf<T extends SchemaFieldType> =
+  T extends `array<${infer E extends ManagedArrayElementType}, ${number}>`
+    ? E
+    : T extends `array<${infer E extends ManagedArrayElementType}>`
+      ? E
+      : never;
+
+type ArrayFieldValue<E extends ManagedArrayElementType> = E extends `asset<${infer Target}>`
+  ? readonly AssetHandle<Target>[]
+  : E extends `shared<${infer Target}>`
+    ? readonly Handle<Target, 'shared'>[]
+    : TypedArrayFor<E extends 'entity' ? 'u32' : E>;
+
 export type FieldValueType<T extends SchemaFieldType> = T extends `asset<${infer Target}>`
   ? AssetHandle<Target>
-  : T extends `array<asset<${infer Target}>, ${number}>` | `array<asset<${infer Target}>>`
-    ? readonly AssetHandle<Target>[]
-    : T extends 'bool'
-      ? boolean
-      : T extends 'entity'
-        ? EntityHandle | null
-        : T extends 'string'
-          ? string
-          : T extends 'buffer'
-            ? Uint8Array
-            : T extends `buffer<${number}>`
-              ? Uint8Array
-              : T extends `array<shared<${infer Target}>, ${number}>`
-                ? readonly Handle<Target, 'shared'>[]
-                : T extends `array<shared<${infer Target}>>`
-                  ? readonly Handle<Target, 'shared'>[]
-                  : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                    ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
-                    : T extends `array<${infer Elem extends ManagedArrayElementType}>`
-                      ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
-                      : T extends `unique<${infer Target}>`
-                        ? Handle<Target, 'unique'>
-                        : T extends `shared<${infer Target}>`
-                          ? Handle<Target, 'shared'>
-                          : T extends ScalarFieldType
-                            ? number
-                            : never;
-
-/**
- * Input-side counterpart of {@link FieldValueType} for write paths
- * (`world.spawn` / `world.addComponent` / `world.set`).
- *
- * Asymmetric on `array<scalar, N>` / `array<scalar>` ONLY: the read side
- * surfaces zero-copy `Float32Array` / `Uint32Array` / etc views; the write
- * side ALSO accepts `readonly number[]` because writeArrayField copies bytes
- * verbatim from either shape (TypedArray subarray() OR per-element pack via
- * DataView). Plain literals like `times: [0.5]` reach the same code path
- * with no Float32Array wrapper boilerplate at the call site, and short
- * prefixes pad the row tail with zero (writeArrayField D-3 contract).
- *
- * Asymmetric on `buffer` / `buffer<N>`: the read side returns `Uint8Array`,
- * but the write side accepts any `AllowSharedBufferSource` (Float32Array /
- * ArrayBuffer / Uint8Array / any TypedArray). The ECS buffer-write ingestion
- * point (`World.writeRow` / `World.set`) normalizes any view to `Uint8Array`
- * over its raw bytes before storing (feat-20260621 V2 / AC-A4). This lets AI
- * users write typed param payloads directly, e.g.
- * `world.set(e, PostProcessParams, { data: Float32Array.of(exposure,0,0,0) })`,
- * without manual byte-reinterpret boilerplate at the call site.
- *
- * Every other arm matches FieldValueType verbatim (no widening): handles
- * are already arrays-of-handle, scalars stay number, etc.
- */
-export type FieldInputType<T extends SchemaFieldType> = T extends 'buffer' | `buffer<${number}>`
-  ? AllowSharedBufferSource
-  :
-      | FieldValueType<T>
-      | (T extends `array<${string}>`
-          ? FieldValueType<T> extends ArrayBufferView
-            ? readonly number[]
-            : never
-          : never);
-
-/**
- * Maps a SchemaFieldType to its zero-copy query-column view type.
- *
- * Three storage shapes share the keyword space:
- *
- * 1. Scalar / fixed-inline columns -- the column buffer is the data, written
- *    in place. The bundle entry is a concrete writable TypedArray of the
- *    correct ctor (`f32` -> `Float32Array`, `'buffer<N>'` -> `Uint8Array`,
- *    `'array<T,N>'` -> the T-typed array). Direct index assignment is
- *    fine -- the column owns the bytes.
- *
- * 2. `shared\<X\>` (reference-counted shared value) -- the column carries
- *    a u32 handle id; SharedRefStore owns the rc lifecycle. The bundle
- *    entry is a `ManagedColumnReader<T>` (D-4 / D-7) -- read-only, walk
- *    via `.get(i)`. Consumers route through `assets.get(handle)` to
- *    materialise the asset payload.
- *
- * 3. The 4 managed-vocab keywords -- `'string'` / `` `unique<T>` `` / variable
- *    `'buffer'` / variable `` `array<T>` `` -- the column carries a u32 slot
- *    id; the payload lives in `UniqueRefStore` / `BufferPool`. The bundle
- *    entry is a `ManagedColumnReader<T>` (D-4 / D-7) -- read-only by
- *    construction, no index signature. Mutation MUST flow through the
- *    public dispatch (`world.set` / `world.push` / `world.allocUniqueRef`).
- *
- * The `extends SchemaFieldType` upper bound matches `ComponentSchema[K]`
- * so query bundle types do not have to pre-filter.
- */
-export type TypedArrayFor<T extends SchemaFieldType> = T extends
-  | `array<asset<${string}>, ${number}>`
-  | `array<asset<${string}>>`
-  ? ManagedColumnReader<T>
-  : T extends ScalarFieldType
-    ? (typeof VIEW_CTORS)[T]['prototype']
+  : T extends 'bool'
+    ? boolean
     : T extends 'entity'
-      ? Uint32Array
+      ? EntityHandle | null
       : T extends 'string'
-        ? ManagedColumnReader<'string'>
-        : T extends `unique<${string}>`
-          ? ManagedColumnReader<T>
-          : T extends `shared<${string}>` | `asset<${string}>`
-            ? ManagedColumnReader<T>
-            : T extends 'buffer'
-              ? ManagedColumnReader<'buffer'>
-              : T extends `buffer<${number}>`
-                ? Uint8Array
-                : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                  ? TypedArrayFor<
-                      Elem extends 'entity' | `shared<${string}>` | `asset<${string}>`
-                        ? 'u32'
-                        : Elem
-                    >
-                  : T extends `array<${string}>`
-                    ? ManagedColumnReader<T>
-                    : never;
+        ? string
+        : T extends `array<${string}>`
+          ? ArrayFieldValue<ArrayElementOf<T>>
+          : T extends `unique<${infer Target}>`
+            ? Handle<Target, 'unique'>
+            : T extends `shared<${infer Target}>`
+              ? Handle<Target, 'shared'>
+              : T extends ScalarFieldType
+                ? number
+                : never;
+
+/** Numeric array inputs accept their declared TypedArray or numeric literals.
+ * Raw bytes are explicit Uint8Array views stored as array<u8>. */
+export type FieldInputType<T extends SchemaFieldType> =
+  | FieldValueType<T>
+  | (T extends `array<${string}>`
+      ? FieldValueType<T> extends ArrayBufferView
+        ? readonly number[]
+        : never
+      : never);
+
+/** Query column shape: scalar/fixed numeric fields expose typed storage, while
+ * managed fields expose a read-only slot reader. Fixed asset arrays also retain managed access. */
+export type TypedArrayFor<T extends SchemaFieldType> = T extends ScalarFieldType
+  ? (typeof VIEW_CTORS)[T]['prototype']
+  : T extends 'entity'
+    ? Uint32Array
+    : T extends `array<${infer E extends ManagedArrayElementType}, ${number}>`
+      ? E extends `asset<${string}>`
+        ? ManagedColumnReader<T>
+        : TypedArrayFor<E extends 'entity' | `shared<${string}>` ? 'u32' : E>
+      : ManagedColumnReader<T>;
 
 /** A schema is a record of field-name → field-type keyword. */
 export type ComponentSchema = Record<string, SchemaFieldType>;
@@ -491,9 +224,18 @@ export type InputShapeOf<S extends ComponentSchema> = {
   [K in keyof S]: FieldInputType<S[K]>;
 };
 
-// ────────────────────────────────────────────────────────────────────────────
+/** Component token and partial initial values. Spawn/add resolve omitted fields
+ * from definition/type defaults; write inputs accept plain numeric arrays and declared typed views. */
+export interface ComponentData<S extends ComponentSchema = ComponentSchema> {
+  component: Component<string, S>;
+  data: Partial<InputShapeOf<S>>;
+}
+
+/** Shared fieldless values; canonical inputs bind their own component token. */
+export const EMPTY_COMPONENT_VALUES: Readonly<Record<string, never>> = Object.freeze(
+  Object.create(null) as Record<string, never>,
+);
 // ComponentId
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Numeric identity is an ECS-owner fact, not component authoring data. Keep it
@@ -501,48 +243,40 @@ export type InputShapeOf<S extends ComponentSchema> = {
  * `name`/`fields`/`storage`.
  */
 /** Component owner identity shared by independently bundled ECS entry points. */
-const COMPONENT_OWNER_REGISTRY = Symbol.for('forgeax.ecs.componentOwnerRegistry');
-interface ComponentOwnerRegistry {
+const COMPONENT_REGISTRY = Symbol.for('forgeax.ecs.componentRegistry.v3');
+interface ComponentRegistry {
   nextId: number;
-  readonly ids: WeakMap<object, ComponentId>;
-  readonly schemas: WeakMap<object, Readonly<Record<string, SchemaFieldType>>>;
+  readonly definitions: WeakMap<object, ComponentDefinition>;
+  readonly relationships: WeakMap<Component, RelationshipRole>;
 }
-const ownerSymbols = globalThis as typeof globalThis & { [key: symbol]: unknown };
+const componentSymbols = globalThis as typeof globalThis & { [key: symbol]: unknown };
 const ownerRegistry =
-  (ownerSymbols[COMPONENT_OWNER_REGISTRY] as ComponentOwnerRegistry | undefined) ??
+  (componentSymbols[COMPONENT_REGISTRY] as ComponentRegistry | undefined) ??
   (() => {
-    const registry: ComponentOwnerRegistry = {
+    const registry: ComponentRegistry = {
       nextId: 1,
-      ids: new WeakMap<object, ComponentId>(),
-      schemas: new WeakMap<object, Readonly<Record<string, SchemaFieldType>>>(),
+      definitions: new WeakMap(),
+      relationships: new WeakMap(),
     };
-    ownerSymbols[COMPONENT_OWNER_REGISTRY] = registry;
+    componentSymbols[COMPONENT_REGISTRY] = registry;
     return registry;
   })();
-
-let entityDefinitionSeen = false;
-let componentDefinedBeforeEntity = false;
-
-/** @internal Barrel-only check for the id=0 Entity import-order invariant. */
-export function isComponentDefinitionOrderValid(): boolean {
-  return !componentDefinedBeforeEntity;
-}
 
 /** @internal Read the owner-assigned identity for storage/archetype code. */
 /** @internal Identity probe for content keys; unregistered components are `undefined`. */
 export function registeredComponentId(component: Component): ComponentId | undefined {
-  return ownerRegistry.ids.get(component);
+  return ownerRegistry.definitions.get(component)?.id;
 }
 
 export function componentId(component: Component): ComponentId {
-  const id = ownerRegistry.ids.get(component);
+  const id = registeredComponentId(component);
   if (id === undefined) throw new Error(`Component identity missing for '${component.name}'.`);
   return id;
 }
 
 /** @internal Derive the flat type map from the fields SSOT. */
 export function componentSchema<const C extends Component>(component: C): Readonly<SchemaOf<C>> {
-  const schema = ownerRegistry.schemas.get(component);
+  const schema = ownerRegistry.definitions.get(component)?.schema;
   if (schema === undefined) throw new Error(`Component schema missing for '${component.name}'.`);
   return schema as Readonly<SchemaOf<C>>;
 }
@@ -550,24 +284,12 @@ export function componentSchema<const C extends Component>(component: C): Readon
 /** Numeric identifier for a component type, used by bitmask matching and archetype edges. */
 export type ComponentId = number;
 export type ComponentStorage = 'table' | 'sparse';
-
-// ────────────────────────────────────────────────────────────────────────────
 // Token
-// ────────────────────────────────────────────────────────────────────────────
 
 declare const __componentBrand: unique symbol;
 
-/**
- * Opaque component token. Carries the component name `N` as a string-literal
- * type parameter (lifted from the `defineComponent` call site via `<const N>`)
- * and the schema-shape `S` as a phantom brand so `world.get(e, Comp)` can
- * return `Result<ShapeOf<S>, EcsError>` precisely.
- *
- * When inferred from a
- * `defineComponent('Position', ...)` call, `N` is the literal `'Position'`,
- * which lets query row/span mapped types resolve `{ [K in N]: ... }` to a
- * concrete keyed object instead of a degraded index signature (KD-1).
- */
+/** Opaque token carrying a literal name and phantom schema for precise World/query inference.
+ * Its runtime surface is exactly name, fields, and storage; identity belongs to the ECS owner. */
 export interface Component<N extends string = string, S extends ComponentSchema = ComponentSchema> {
   readonly name: N;
   /** The one schema projection: type, default, and enum labels per field. */
@@ -576,26 +298,8 @@ export interface Component<N extends string = string, S extends ComponentSchema 
   readonly [__componentBrand]: ShapeOf<S>;
 }
 
-// Column storage metadata. Parametric field types normalize to these keys;
-// managed families store u32 handles while retaining distinct lifecycle flags.
-
-/**
- * One row of the global type-metadata table. Carries the type-intrinsic
- * properties a field type has regardless of which component declares it.
- *
- * - `byteSize` — element byte width, derived from the native constructor.
- * - `viewCtor` — TypedArray constructor for the column storage. Managed
- *   families store u32 handles; their payload size is a separate concern.
- * - `storage` — the column-storage scalar type this field routes to (every
- *   vocab family stores a u32 slot id / handle).
- * - `isScalar` — member of the 11 concrete scalar types
- *   (`f32`/`f64`/`i32`/`u32`/`i16`/`u16`/`i8`/`u8`/`bool`/`enum`).
- * - `isManaged` — routed through `UniqueRefStore` (string / unique<T>).
- * - `isBuffer` — a `buffer` / `buffer<N>` managed-byte slot.
- * - `isEntityRef` — the single-entity `entity` reference keyword.
- * - `isArray` — an `array<T>` / `array<T,N>` keyword.
- */
-export interface TypeMetadataRow {
+/** Physical scalar layout. FieldPlan owns field semantics and lifecycle. */
+export interface ScalarLayout {
   readonly byteSize: number;
   readonly viewCtor: {
     new (
@@ -606,57 +310,30 @@ export interface TypeMetadataRow {
     new (length: number): TypedArrayFor<ScalarFieldType>;
   };
   readonly storage: ScalarFieldType;
-  readonly isScalar: boolean;
-  readonly isManaged: boolean;
-  readonly isBuffer: boolean;
-  readonly isEntityRef: boolean;
-  readonly isArray: boolean;
 }
 
-/** Build a scalar row from the concrete scalar type. */
-function scalarRow(t: ScalarFieldType): TypeMetadataRow {
-  return {
-    byteSize: VIEW_CTORS[t].BYTES_PER_ELEMENT,
-    viewCtor: VIEW_CTORS[t],
-    storage: t,
-    isScalar: true,
-    isManaged: false,
-    isBuffer: false,
-    isEntityRef: false,
-    isArray: false,
-  };
+function scalarLayout(storage: ScalarFieldType): ScalarLayout {
+  return Object.freeze({
+    storage,
+    viewCtor: VIEW_CTORS[storage],
+    byteSize: VIEW_CTORS[storage].BYTES_PER_ELEMENT,
+  });
 }
 
-/**
- * Physical scalar storage and broad field-family traits. `unique<T>` maps
- * to the `unique` key; `asset<T>` and `shared<T>` both store u32
- * references, but use different lifetime owners. Exact lifecycle dispatch
- * comes from the component's definition-time FieldPlan, not these flags.
- */
-export const TYPE_METADATA: Readonly<Record<string, TypeMetadataRow>> = Object.freeze({
-  f32: scalarRow('f32'),
-  f64: scalarRow('f64'),
-  i32: scalarRow('i32'),
-  u32: scalarRow('u32'),
-  i16: scalarRow('i16'),
-  u16: scalarRow('u16'),
-  i8: scalarRow('i8'),
-  u8: scalarRow('u8'),
-  bool: scalarRow('bool'),
-  enum: scalarRow('enum'),
-  unique: { ...scalarRow('u32'), isScalar: false, isManaged: true },
-  entity: { ...scalarRow('u32'), isScalar: false, isEntityRef: true },
-  string: { ...scalarRow('u32'), isScalar: false, isManaged: true },
-  buffer: { ...scalarRow('u32'), isScalar: false, isBuffer: true },
-  asset: { ...scalarRow('u32'), isScalar: false, isManaged: true },
-  shared: { ...scalarRow('u32'), isScalar: false, isManaged: true },
-  array: { ...scalarRow('u32'), isScalar: false, isArray: true },
+export const SCALAR_LAYOUTS = Object.freeze({
+  f32: scalarLayout('f32'),
+  f64: scalarLayout('f64'),
+  i32: scalarLayout('i32'),
+  u32: scalarLayout('u32'),
+  i16: scalarLayout('i16'),
+  u16: scalarLayout('u16'),
+  i8: scalarLayout('i8'),
+  u8: scalarLayout('u8'),
+  bool: scalarLayout('bool'),
+  enum: scalarLayout('enum'),
 });
-
-// ────────────────────────────────────────────────────────────────────────────
 // FieldDescriptor — input field-descriptor object + per-field reflection
 // (feat-20260602 M1 / D-A1 / D-A3)
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Pre-parsed `array<T>` / `array<T,N>` reflection. Bare length sentinel
@@ -671,35 +348,9 @@ export interface ArrayMeta {
   readonly length?: number;
 }
 
-/**
- * The second `defineComponent` argument declares each field as a type keyword
- * or a descriptor with `type`, `default`, semantic `shape`, and field-level `meta`.
- *
- * - `type` — the schema field-type keyword (a parametrized string such as
- *   `'array<f32,3>'` / `'unique<MaterialAsset>'` is used verbatim, D-A2).
- * - `default` — layer-2 default value; retained in the field reflection row.
- * - `shape` — producer-owned semantic shape tag for schema consumers; it does
- *   not change ECS storage or runtime value semantics.
- * - `meta` — field-level open namespace; aggregated into `component.meta`. The
- *   infra gives no key special meaning (open map, OOS-1).
- * - `transient` — when `true`, scene collect skips this field (D-5). Same word,
- *   same meaning as the component-level `transient` flag, with granularity sunk
- *   to the field level: a field that is derived/reconstructable (e.g. a resolved
- *   world mat4) is excluded from serialization while its component's persisted
- *   fields still round-trip. Absent (the common case) means the field is
- *   serialized.
- * - `labels` — for an `enum` field ONLY: the label→numeric-value map (e.g.
- *   `{ static: 0, dynamic: 1, kinematic: 2 }`). An `enum` field stores a bare
- *   `u32` variant index; the human-readable names historically lived in a
- *   SEPARATE per-package const map (`RigidBodyTypeValue`) + comment table, so no
- *   schema consumer could read them and the two could drift. Declaring `labels`
- *   attaches that map to the field itself (SSOT-adjacent): it is aggregated into
- *   `component.fields[field].labels` and surfaced by reflection consumers (the
- *   editor's `describeComponent`, inspector UIs, validation hints) so a
- *   docs-only user learns the legal variants + their integers from the schema
- *   alone. Pass the EXISTING `*Value` const map here (Derive, don't Duplicate —
- *   one object, two consumers). Absent for non-enum fields / enums that opt out.
- */
+/** Field authoring descriptor. Type selects storage; default fills omitted input.
+ * Shape, transient, labels, and metadata serve reflection/serialization consumers.
+ * Component metadata overrides field metadata with the same key. */
 export interface FieldDescriptor<T extends SchemaFieldType = SchemaFieldType> {
   readonly type: T;
   readonly default?: FieldValueType<T>;
@@ -710,21 +361,8 @@ export interface FieldDescriptor<T extends SchemaFieldType = SchemaFieldType> {
   readonly labels?: Readonly<Record<string, number>>;
 }
 
-/**
- * Per-field reflection produced at registration time and read off
- * `component.fields[fieldName]` (D-A3). Carries the pre-parsed facts: the
- * field `type`, its `default` (if any), semantic `shape` (if declared), — for
- * `array<...>` fields only — the pre-parsed `arrayMeta` (parse happens once at
- * registration, AC-03c), and the field-level `transient` flag (D-5) when
- * declared.
- *
- * `transient` mirrors the component-level `Component.transient` (same word,
- * same meaning): scene collect skips a `transient` field just as it skips a
- * `transient` component. Granularity is sunk to the field level so a component
- * can persist most of its fields while excluding a derived/reconstructable one
- * (e.g. `GlobalTransform.world`). Absent means the field participates in
- * serialization.
- */
+/** Frozen field reflection produced at registration. Optional properties are absent
+ * when undeclared; arrayMeta caches element type and optional fixed length. */
 export interface FieldReflection {
   readonly type: SchemaFieldType;
   readonly default?: unknown;
@@ -772,10 +410,7 @@ export type SchemaOf<F extends FieldsInput | Component> =
               : never;
         }
       : never;
-
-// ────────────────────────────────────────────────────────────────────────────
 // defineComponent
-// ────────────────────────────────────────────────────────────────────────────
 
 /** Optional configuration for `defineComponent` (w4, M3 consumer; w21 layer-2 defaults). */
 export interface DefineComponentOptions {
@@ -823,83 +458,58 @@ function fieldSpecType(fieldName: string, spec: FieldSpec): SchemaFieldType {
   return t as SchemaFieldType;
 }
 
-const NUMERIC_SCALARS: ReadonlySet<string> = new Set([
-  'f32',
-  'f64',
-  'i32',
-  'u32',
-  'i16',
-  'u16',
-  'i8',
-  'u8',
-  'enum',
-]);
-
-/** Classify one validated field type once, at definition time. */
+/** Compile the validated field into its physical layout and lifecycle route once. */
 function deriveFieldPlan(field: FieldReflection): FieldPlan {
   const type = field.type;
-  const arrayMeta = field.arrayMeta;
-  if (arrayMeta !== undefined) {
-    const element = arrayMeta.elementType;
-    const reference = element.startsWith('shared<') || element.startsWith('asset<');
-    const fixed = arrayMeta.length !== undefined;
+  const array = field.arrayMeta;
+  const elementType = array?.elementType ?? type;
+  const reference = elementType.startsWith('shared<')
+    ? 'shared'
+    : elementType.startsWith('asset<')
+      ? 'asset'
+      : undefined;
+  const referencePlan: Pick<PhysicalFieldPlan, 'reference' | 'target'> =
+    reference === undefined
+      ? {}
+      : { reference, target: elementType.slice(reference.length + 1, -1) };
+  if (array !== undefined) {
+    const element = SCALAR_LAYOUTS[isScalarFieldType(elementType) ? elementType : 'u32'];
+    const variable = array.length === undefined;
     return Object.freeze({
-      kind: fixed ? 'fixed-array' : 'array',
-      releases: !fixed || reference,
+      kind: variable ? 'array' : 'fixed-array',
+      storage: variable ? 'u32' : element.storage,
+      arity: array.length ?? 3,
+      releases: variable || reference !== undefined,
+      element,
+      array,
+      ...referencePlan,
     });
   }
-  const plan = (kind: FieldKind, releases = false): FieldPlan => Object.freeze({ kind, releases });
-  if (NUMERIC_SCALARS.has(type)) return plan('number');
-  if (type === 'bool') return plan('bool');
-  if (type === 'entity') return plan('entity');
-  if (type === 'string') return plan('string', true);
-  if (type === 'buffer') return plan('buffer', true);
-  if (type.startsWith('buffer<')) return plan('fixed-buffer');
-  if (type.startsWith('shared<')) return plan('shared', true);
-  if (type.startsWith('asset<')) return plan('asset', true);
-  // The remaining validated family is an exclusively owned unique handle.
-  return plan('unique', true);
+  return deriveSingularFieldPlan(type, referencePlan);
 }
 
-/**
- * Define a component. Returns a frozen opaque token with exactly three runtime
- * facts: `.name`, `.fields`, and `.storage`. Numeric identity, flat schema,
- * and defaults are owner projections held outside the token.
- *
- * The second argument accepts each field either as a bare type keyword
- * ('f32', 'array<entity>', ...) or as a field-descriptor object
- * `{ type, default?, meta? }` (D-A3). The single `FieldsInput` overload
- * handles both forms — bare keywords are identity through `SchemaOf<F>`.
- *
- * The `<const N>` modifier lifts `name` to its string-literal type so the
- * returned `Component<N, SchemaOf<S>>` drives precise key-based mapped types
- * downstream (for example QueryRow and QuerySpan projections). At runtime `name` is a plain
- * string.
- *
- * Schema-field validation accepts both the scalar tier
- * (`ScalarFieldType`, 10 keywords) and the schema-vocab tier
- * (`SchemaVocabKeyword`, 8 patterns including `array<T,N>` / `array<T>` /
- * `buffer` / `buffer<N>`). Mismatched values raise
- * `SchemaUnsupportedFieldError`. Illegal `array<...>` element types
- * (e.g. `array<unique<X>>`) raise `ManagedArrayElementTypeNotAllowedError`
- * (AC-03 runtime fail-safe).
- *
- * Relationship roles are declared through `defineRelationship`; component
- * definitions contain only schema vocabulary and no mirror metadata.
- *
- * @throws SchemaUnsupportedFieldError for any field type not in the supported
- *   set, or a field-descriptor object missing its `type`.
- * @throws ManagedArrayElementTypeNotAllowedError when an `array<...>`
- *   keyword carries an illegal element type.
- * @throws RelationshipMirrorComponentNotRegisteredError when
- *   `relationship.mirror` names a component not yet defined.
- * @throws RelationshipMirrorFieldTypeMismatchError when the mirror's
- *   `relationship.field` is missing or not typed `'array<entity>'`.
- */
-// Single signature post-M4 (w12) — bare-keyword field specs are valid
-// FieldSpec<T> values (identity through SchemaOf<F>), so flat-string schemas
-// work without a separate overload. tweak-20260612-ecs-concept-compression
-// dropped the redundant byte-identical overload declaration.
+/** Scalars and handles; sequences use the same element layout above. */
+function deriveSingularFieldPlan(
+  type: string,
+  referencePlan: Pick<PhysicalFieldPlan, 'reference' | 'target'>,
+): FieldPlan {
+  let kind: Exclude<FieldKind, 'array' | 'fixed-array'>;
+  if (type === 'bool' || type === 'entity' || type === 'string') kind = type;
+  else if (referencePlan.reference !== undefined) kind = referencePlan.reference;
+  else if (type.startsWith('unique<')) kind = 'unique';
+  else kind = 'number';
+  return Object.freeze({
+    kind,
+    storage: isScalarFieldType(type) ? type : 'u32',
+    arity: 1,
+    releases: kind === 'string' || kind === 'unique' || referencePlan.reference !== undefined,
+    ...referencePlan,
+  });
+}
+
+/** Define a frozen token from bare keywords or field descriptors.
+ * Literal names and SchemaOf preserve query and mutation inference.
+ * Invalid types fail at registration; relationships are declared with defineRelationship. */
 export function defineComponent<const N extends string, const S extends FieldsInput>(
   name: N,
   fields: S,
@@ -908,7 +518,7 @@ export function defineComponent<const N extends string, const S extends FieldsIn
   const storage = options?.storage ?? 'table';
   assertComponentStorage(storage);
   if (storage === 'sparse' && Object.keys(fields).length !== 0) {
-    throw new SparseStorageRequiresTagError(name);
+    throw createSparseStorageRequiresTagError(name);
   }
   const schema: Record<string, SchemaFieldType> = {};
   const reflectedFields: Record<string, FieldReflection> = {};
@@ -922,15 +532,11 @@ export function defineComponent<const N extends string, const S extends FieldsIn
     // Validate the field type — same fail-fast as before, now over the
     // normalized keyword.
     let arrayMeta: ArrayMeta | undefined;
-    if (TYPE_METADATA[fieldType]?.isScalar === true) {
-      // scalar — ok
-    } else if (fieldType === 'string') {
-      // string vocab — ok
-    } else if (fieldType.startsWith('array<') && fieldType.endsWith('>')) {
+    if (fieldType.startsWith('array<') && fieldType.endsWith('>')) {
       const parsed = parseManagedArraySchema(fieldType);
       if (parsed === null) {
         const elementType = fieldType.slice(6, -1);
-        throw new ManagedArrayElementTypeNotAllowedError(fieldName, elementType);
+        throw createManagedArrayElementTypeNotAllowedError(fieldName, elementType);
       }
       // Pre-parse once at registration (AC-03c): array fields cache arrayMeta.
       // Bare length sentinel {elementType, length?} (D-A1): drop `length` when
@@ -940,7 +546,7 @@ export function defineComponent<const N extends string, const S extends FieldsIn
           ? { elementType: parsed.elementType }
           : { elementType: parsed.elementType, length: parsed.length },
       );
-    } else if (!isSchemaVocabKeyword(fieldType)) {
+    } else if (!isScalarFieldType(fieldType) && !isSchemaVocabKeyword(fieldType)) {
       throw new SchemaUnsupportedFieldError(fieldName, fieldType);
     }
 
@@ -948,14 +554,7 @@ export function defineComponent<const N extends string, const S extends FieldsIn
 
     // Per-field reflection row — only attach arrayMeta / default when present
     // (exactOptionalPropertyTypes: never set an explicit `undefined`).
-    const row: {
-      type: string;
-      default?: unknown;
-      shape?: FieldShapeKind;
-      arrayMeta?: ArrayMeta;
-      transient?: boolean;
-      labels?: Readonly<Record<string, number>>;
-    } = {
+    const row: { -readonly [Property in keyof FieldReflection]: FieldReflection[Property] } = {
       type: fieldType,
     };
     if (typeof spec !== 'string') {
@@ -975,14 +574,9 @@ export function defineComponent<const N extends string, const S extends FieldsIn
       if (desc.labels !== undefined) row.labels = deepFreeze({ ...desc.labels });
     }
     if (arrayMeta !== undefined) row.arrayMeta = arrayMeta;
-    reflectedFields[fieldName] = Object.freeze(row) as FieldReflection;
+    reflectedFields[fieldName] = Object.freeze(row);
   }
 
-  if (name === 'Entity') {
-    entityDefinitionSeen = true;
-  } else if (!entityDefinitionSeen) {
-    componentDefinedBeforeEntity = true;
-  }
   const id = name === 'Entity' ? 0 : ownerRegistry.nextId++;
 
   // Derived defaults projection (D-A8): pure from `fields[k].default`.
@@ -999,27 +593,43 @@ export function defineComponent<const N extends string, const S extends FieldsIn
   }
   const frozenSchema = deepFreeze(schema);
   const frozenFields = deepFreeze(reflectedFields);
-  const meta = collectedMeta;
   const token = Object.freeze({ name, fields: frozenFields, storage }) as Component<N, SchemaOf<S>>;
-  ownerRegistry.ids.set(token, id);
-  ownerRegistry.schemas.set(token, frozenSchema);
   const fieldPlans: Record<string, FieldPlan> = {};
   for (const [fieldName, field] of Object.entries(reflectedFields))
     fieldPlans[fieldName] = deriveFieldPlan(field);
-  registerComponentDefinition(
+  const fieldNames = Object.freeze(Object.keys(frozenFields));
+  const plans = Object.values(fieldPlans);
+  const plan: ComponentPlan = Object.freeze({
+    fields: Object.freeze({ ...fieldPlans }),
+    releaseFields: Object.freeze(fieldNames.filter((name) => fieldPlans[name]?.releases === true)),
+    hasAssetField: plans.some((field) => field.reference === 'asset'),
+    hasArrayField: Object.values(frozenFields).some((field) => field.arrayMeta !== undefined),
+    hasSharedField: plans.some((field) => field.reference === 'shared'),
+    hasLabeledEnum: Object.values(frozenFields).some(
+      (field) => field.type === 'enum' && field.labels !== undefined,
+    ),
+    scalarOnly: plans.every(
+      (field) => field.kind === 'number' || field.kind === 'bool' || field.kind === 'entity',
+    ),
+  });
+  ownerRegistry.definitions.set(
     token,
-    {
+    Object.freeze({
+      id,
+      schema: frozenSchema,
       fields: frozenFields,
       defaults: frozenDefaults,
       policy: {
         transient: options?.transient ?? false,
-        meta,
+        meta: collectedMeta,
         requires: Object.freeze([...(options?.requires ?? [])]),
       },
-    },
-    fieldPlans,
+      fieldNames,
+      plan,
+      emptyInput: fieldNames.length === 0 ? createEmptyComponentInput(token) : undefined,
+    }),
   );
-  return Object.freeze(token);
+  return token;
 }
 
 export class ComponentInUseError extends Error {
@@ -1108,5 +718,199 @@ export class ComponentCatalog {
     return new Map(
       [...this.registrations].map(([name, registration]) => [name, registration.component]),
     );
+  }
+}
+
+/**
+ * Serialization facts owned beside schema registration, not carried by the
+ * public component token. Queries and storage only need the token's schema
+ * vocabulary; domain validation and lifecycle belong to their owners.
+ */
+export interface ComponentPolicy {
+  readonly transient: boolean;
+  readonly meta: Record<string, unknown>;
+  /** Components that are materialized whenever this component is added. */
+  readonly requires: readonly Component[];
+}
+
+/**
+ * Storage dispatch derived once from a field's type keyword, so write, read
+ * and release paths never re-parse schema strings per row.
+ */
+export type FieldKind =
+  | 'number'
+  | 'bool'
+  | 'entity'
+  | 'string'
+  | 'unique'
+  | 'shared'
+  | 'asset'
+  | 'array'
+  | 'fixed-array';
+
+interface PhysicalFieldPlan {
+  readonly storage: ScalarFieldType;
+  readonly arity: number;
+  readonly reference?: 'asset' | 'shared';
+  readonly target?: string;
+  readonly releases: boolean;
+}
+
+export interface ArrayFieldPlan extends PhysicalFieldPlan {
+  readonly kind: 'array' | 'fixed-array';
+  readonly element: ScalarLayout;
+  readonly array: ArrayMeta;
+}
+
+export type FieldPlan =
+  | ArrayFieldPlan
+  | (PhysicalFieldPlan & {
+      readonly kind: Exclude<FieldKind, 'array' | 'fixed-array'>;
+      readonly element?: never;
+      readonly array?: never;
+    });
+
+/** Component-level answers derived from its field plans. */
+export interface ComponentPlan {
+  readonly fields: Readonly<Record<string, FieldPlan>>;
+  /** Fields whose row value must be released before removal or overwrite. */
+  readonly releaseFields: readonly string[];
+  readonly hasAssetField: boolean;
+  readonly hasArrayField: boolean;
+  readonly hasSharedField: boolean;
+  readonly hasLabeledEnum: boolean;
+  /** Every field is a numeric, bool or entity scalar column. */
+  readonly scalarOnly: boolean;
+}
+
+/** Immutable schema reflection plus non-token policy projection. */
+export interface ComponentDefinition {
+  readonly id: ComponentId;
+  readonly schema: Readonly<ComponentSchema>;
+  readonly fieldNames: readonly string[];
+  readonly fields: Readonly<Record<string, FieldReflection>>;
+  readonly defaults: Readonly<Record<string, unknown>> | undefined;
+  readonly policy: ComponentPolicy;
+  readonly plan: ComponentPlan;
+  readonly emptyInput?: ResultOk<Readonly<ComponentData>> | undefined;
+}
+
+/** One identity shares definition and relationship facts across bundled entries. */
+export const componentRelationshipRoles = ownerRegistry.relationships;
+
+/** Read the definition-time schema/policy projection for a component token. */
+export function componentDefinition(component: Component): ComponentDefinition {
+  const definition = ownerRegistry.definitions.get(component);
+  if (definition === undefined) {
+    throw new Error(`Component definition missing for '${component.name}'.`);
+  }
+  return definition;
+}
+
+function createEmptyComponentInput(component: Component): ResultOk<Readonly<ComponentData>> {
+  return Object.freeze(ok(Object.freeze({ component, data: EMPTY_COMPONENT_VALUES })));
+}
+
+/** Read a canonical fieldless input, without adding work to general metadata lookup. */
+export function componentEmptyInput(
+  component: Component,
+): ResultOk<Readonly<ComponentData>> | undefined {
+  const definition = componentDefinition(component);
+  if (definition.fieldNames.length !== 0) return undefined;
+  if (definition.emptyInput !== undefined) return definition.emptyInput;
+  // A same-v2 bundle may have registered this frozen definition before the cache existed.
+  // Preserve its schema, plan and numeric identity; enrich it once in the existing owner.
+  const emptyInput = createEmptyComponentInput(component);
+  ownerRegistry.definitions.set(component, Object.freeze({ ...definition, emptyInput }));
+  return emptyInput;
+}
+
+/** Read the generic structural requirements declared by one component. */
+export function componentRequirements(component: Component): readonly Component[] {
+  // Keep invalid/foreign tokens on the ordinary preflight error path. The
+  // expansion helper runs before validation, so it must not turn a structured
+  // `component-not-defined` Result into an uncaught registry exception.
+  return ownerRegistry.definitions.get(component)?.policy.requires ?? [];
+}
+
+type ComponentDataLike = {
+  readonly component: Component;
+  readonly data: Partial<Record<string, unknown>>;
+};
+
+/**
+ * Expand component requirements once at the structural boundary.
+ *
+ * Explicit component data wins and is never duplicated. Requirements are
+ * appended in declaration order, and the same identity set also terminates a
+ * malformed dependency cycle without a per-frame scan.
+ */
+export function expandComponentRequirements<T extends ComponentDataLike>(
+  componentDatas: readonly T[],
+): T[] {
+  let hasRequirements = false;
+  for (const entry of componentDatas) {
+    if (componentRequirements(entry.component).length !== 0) {
+      hasRequirements = true;
+      break;
+    }
+  }
+  // Most structural operations use components without dependencies. Preserve
+  // that path without copying or allocating a Set. The returned list retains
+  // caller ownership when no expansion is needed.
+  if (!hasRequirements) return componentDatas as T[];
+
+  const expanded = [...componentDatas];
+  const seen = new Set<Component>(expanded.map((entry) => entry.component));
+  for (let index = 0; index < expanded.length; index++) {
+    const component = expanded[index]?.component;
+    if (component === undefined) continue;
+    for (const required of componentRequirements(component)) {
+      if (seen.has(required)) continue;
+      seen.add(required);
+      expanded.push({ component: required, data: {} } as T);
+    }
+  }
+  return expanded;
+}
+
+/** Ordered implicit additions for one structural insertion. */
+export function implicitComponentInputs(
+  entry: ComponentData,
+): readonly ComponentData[] | undefined {
+  if (componentRequirements(entry.component).length === 0) return undefined;
+  const expanded = expandComponentRequirements([entry]);
+  expanded.shift();
+  return expanded;
+}
+
+/**
+ * Freeze a schema value recursively.  Component descriptors are authored data,
+ * so nested defaults and enum label maps must not become mutation channels.
+ */
+export function deepFreeze<T>(value: T): Readonly<T> {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return value as Readonly<T>;
+  }
+  // Non-empty TypedArrays reject Object.freeze and their indexed elements
+  // remain writable even when the wrapper is frozen. Treat binary views as
+  // immutable leaf projections; the authored descriptor around them is still
+  // recursively frozen by this function.
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    return value as Readonly<T>;
+  }
+  const object = value as object;
+  for (const key of Reflect.ownKeys(object)) {
+    const child = (object as Record<PropertyKey, unknown>)[key];
+    if (child !== null && (typeof child === 'object' || typeof child === 'function')) {
+      deepFreeze(child);
+    }
+  }
+  return Object.freeze(value) as Readonly<T>;
+}
+
+export function assertComponentStorage(value: string): asserts value is ComponentStorage {
+  if (value !== 'table' && value !== 'sparse') {
+    throw new Error(`Unsupported component storage '${value}'. Expected 'table' or 'sparse'.`);
   }
 }

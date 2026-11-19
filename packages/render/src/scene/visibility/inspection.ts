@@ -40,11 +40,28 @@ export type LodOcclusionAttribution =
   | { readonly status: 'unavailable'; readonly reason: 'projection-only' }
   | { readonly status: 'same-submit'; readonly submit: LodOcclusionInspectionSubmit };
 
+/** Whole GPU selector, independent of the inspection's optional LOD subset. */
+export interface LodOcclusionGpuSelection {
+  readonly candidateCount: number;
+  /** Submitted instances; a LOD crossfade may submit a candidate twice. */
+  readonly visible: number;
+  readonly frustumCulled: number;
+  readonly texelCulled: number;
+  readonly cameraCulled: number;
+  readonly overflow: boolean;
+  readonly geometryWork: number;
+  readonly rootGeometryWork: number;
+  /** Late pyramid tests, including early draws; not an exclusive partition. */
+  readonly occlusion?: { readonly culled: number; readonly late: number };
+}
+
 export interface LodOcclusionInspection extends LodOcclusionInspectionRow {
   readonly schema: typeof LOD_OCCLUSION_INSPECTION_SCHEMA;
   /** Atomic identity for the submit that produced every row below. */
   readonly submit: LodOcclusionInspectionSubmit;
   readonly attribution: LodOcclusionAttribution;
+  /** Absent for CPU projections and producers without same-submit GPU facts. */
+  readonly gpu?: LodOcclusionGpuSelection;
 }
 
 export type LodOcclusionInspectionInput = Omit<
@@ -135,6 +152,36 @@ function copyRow(row: LodOcclusionInspectionRow): LodOcclusionInspectionRow {
   });
 }
 
+function copyGpuSelection(gpu: LodOcclusionGpuSelection): LodOcclusionGpuSelection {
+  for (const name of [
+    'candidateCount',
+    'visible',
+    'frustumCulled',
+    'texelCulled',
+    'cameraCulled',
+    'geometryWork',
+    'rootGeometryWork',
+  ] as const)
+    nonNegativeInteger(`inspection.gpu.${name}`, gpu[name]);
+  if (typeof gpu.overflow !== 'boolean') throw new Error('inspection.gpu.overflow must be boolean');
+  const occlusion = gpu.occlusion;
+  if (occlusion !== undefined) {
+    nonNegativeInteger('inspection.gpu.occlusion.culled', occlusion.culled);
+    nonNegativeInteger('inspection.gpu.occlusion.late', occlusion.late);
+  }
+  return Object.freeze({
+    candidateCount: gpu.candidateCount,
+    visible: gpu.visible,
+    frustumCulled: gpu.frustumCulled,
+    texelCulled: gpu.texelCulled,
+    cameraCulled: gpu.cameraCulled,
+    overflow: gpu.overflow,
+    geometryWork: gpu.geometryWork,
+    rootGeometryWork: gpu.rootGeometryWork,
+    ...(occlusion === undefined ? {} : { occlusion: Object.freeze({ ...occlusion }) }),
+  });
+}
+
 export function inspectLodOcclusion(input: LodOcclusionInspectionInput): LodOcclusionInspection {
   const row = copyRow(input);
   const submit = input.submit ?? {
@@ -148,6 +195,8 @@ export function inspectLodOcclusion(input: LodOcclusionInspectionInput): LodOccl
     throw new Error('inspection.submit.build must be a non-empty string');
   }
   const attribution = copyAttribution(input.attribution);
+  if (input.gpu !== undefined && attribution.status !== 'same-submit')
+    throw new Error('GPU selection requires same-submit attribution');
   if (
     attribution.status === 'same-submit' &&
     (attribution.submit.frameId !== submit.frameId ||
@@ -160,6 +209,7 @@ export function inspectLodOcclusion(input: LodOcclusionInspectionInput): LodOccl
     ...row,
     submit: Object.freeze({ ...submit }),
     attribution,
+    ...(input.gpu === undefined ? {} : { gpu: copyGpuSelection(input.gpu) }),
   });
   if (JSON.stringify(inspection).length > LOD_OCCLUSION_INSPECTION_MAX_BYTES) {
     throw new Error(`LOD occlusion inspection exceeds ${LOD_OCCLUSION_INSPECTION_MAX_BYTES} bytes`);

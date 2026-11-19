@@ -75,7 +75,7 @@ import { MAX_RENDER_FRAMES_IN_FLIGHT } from './frame-limits';
 import { EntityMaterialLists } from './material-lists';
 import { PublishedMaterialProjections, ReceivingMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
-import { publicationMaterialProgramKeys } from './programs';
+import { capturePublicationProgram, publicationMaterialProgramKeys } from './programs';
 import {
   encodeRenderPublication,
   type RenderPublicationMessage,
@@ -105,7 +105,7 @@ const EMPTY_MATERIAL_RESOURCES: readonly (MaterialResource | undefined)[] = Obje
 const STORAGE_SHRINK_FLOOR = 64 * 1024;
 const STORAGE_SHRINK_RATIO = 8;
 
-interface SourceFeatureAcknowledgment {
+export interface SourceFeatureAcknowledgment {
   readonly identity: string;
   readonly feedback: unknown;
   readonly submission?: RenderFeatureSubmission | undefined;
@@ -527,34 +527,10 @@ export function createRenderPublisher(
 
     private publishProgram(key: string): void {
       if (publishedPrograms.has(key) || this.programs.has(key)) return;
-      const declaration = assets.shaderRegistry.materialArtifactDeclaration(key);
-      const artifact = assets.getMaterialArtifact(key);
-      if (declaration?.kind === 'bytes' && artifact?.digest !== undefined) {
-        const { kind: _kind, ...metadata } = declaration;
-        assets.shaderRegistry
-          .validateMaterialArtifactBytes(key, {
-            ...metadata,
-            bytes: artifact.bytes,
-            digest: artifact.digest,
-          })
-          .unwrap();
-        this.programs.set(key, { key, shader: { sourceEncoding: 'utf8', ...metadata }, artifact });
-        return;
-      }
-      const shader = assets.shaderRegistry.findMaterialArtifact(key);
-      if (!shader.ok) throw shader.error;
-      this.programs.set(key, {
-        key,
-        shader: {
-          source: shader.value.source,
-          ...(shader.value.program.entryPoints === undefined
-            ? {}
-            : { entryPoints: shader.value.program.entryPoints }),
-          paramSchema: shader.value.paramSchema,
-          ...(shader.value.receipt === undefined ? {} : { receipt: shader.value.receipt }),
-        },
-        ...(artifact === undefined ? {} : { artifact }),
-      });
+      const row = capturePublicationProgram(assets, key);
+      this.programs.set(key, row);
+      for (const reference of row.shader.variantReferences ?? [])
+        this.publishProgram(reference.identifier);
     }
 
     /**

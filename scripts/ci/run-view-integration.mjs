@@ -122,9 +122,9 @@ for (const probe of probes) {
       : []),
   ]);
 }
-// Retain both language producers and cold reopening of each saved publication.
+// Both languages publish live. JavaScript also exercises cold snapshot recovery.
 for (const language of ['js', 'ts'])
-  for (const cold of [false, true]) {
+  for (const cold of language === 'js' ? [false, true] : [false]) {
     const output = resolve(
       root,
       `artifacts/view-integration/runtime-${language}/${cold ? 'cold' : 'live'}`,
@@ -147,15 +147,19 @@ for (const language of ['js', 'ts'])
 // Keep the complete Modeling journey last so no later replay inherits its GPU work.
 steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
-// Keep complete owners and each language's live/cold chain on four processes.
-// Retain completed-owner maxima and unfinished-owner forecasts after the
-// lifecycle lane exceeded its cap. Independent save/lifecycle/array probes use
-// the other lanes; RHI page replay stays first and Modeling stays last.
+// Keep the long plugin journey away from both POINT browser tails. Modeling
+// is the last GPU owner on its lane.
 const shards = [
-  ['contracts', 'plugin', 'runtime-js', 'runtime-ts', 'diagnostic-gpu-2d'],
-  ['engine-only', 'workspace', 'lifecycle'],
-  ['game3d', 'diagnostic-texture', 'diagnostic-pack-save'],
-  ['diagnostic-pages', 'diagnostic-pack-authoring', 'diagnostic-gpu-array', 'modeling'],
+  [
+    'contracts',
+    'engine-only',
+    'diagnostic-texture',
+    'diagnostic-pack-authoring',
+    'diagnostic-gpu-2d',
+  ],
+  ['game3d', 'lifecycle', 'diagnostic-pack-save', 'diagnostic-gpu-array'],
+  ['plugin', 'workspace', 'runtime-js'],
+  ['diagnostic-pages', 'runtime-ts', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));

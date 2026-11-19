@@ -43,6 +43,7 @@ export type RenderFeatureMaterialShaderBindingContract =
   import('@forgeax/engine-types').MaterialProgramBindingContract;
 
 export interface RenderFeatureMaterialShaderContract {
+  readonly forwardFog?: 'height-vertex/1';
   readonly bindings: RenderFeatureMaterialShaderBindingContract;
   readonly sceneDepth?: import('@forgeax/engine-types').MaterialSceneDepth;
   readonly systemInputs?: import('@forgeax/engine-types').MaterialProgramSystemInputs;
@@ -54,6 +55,8 @@ export type RenderFeatureFullscreenRead =
   | {
       readonly key: string;
       readonly sampleType?: 'depth' | 'float-3d-repeat' | 'unfilterable-float';
+      /** Use binding 0 for the sole depth input. */
+      readonly primary?: true;
     };
 
 /** A named graph target or an authorized semantic sampled-read target. */

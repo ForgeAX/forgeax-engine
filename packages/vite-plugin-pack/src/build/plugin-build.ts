@@ -51,6 +51,9 @@ async function scanBuildInventory(
     scriptablePack: {
       ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
       metadataOnly: true,
+      ...(context.opts.enginePackageRoot === undefined
+        ? {}
+        : { enginePackageRoot: context.opts.enginePackageRoot }),
       sourceSnapshot,
     },
     ...(context.opts.ignorePath === undefined ? {} : { ignorePath: context.opts.ignorePath }),
@@ -89,6 +92,9 @@ async function buildProduction(
     cwd: process.cwd(),
     basePrefix,
     generation: 1,
+    ...(context.opts.enginePackageRoot === undefined
+      ? {}
+      : { enginePackageRoot: context.opts.enginePackageRoot }),
     cookers: context.opts.cookers ?? [],
     importerRegistry: context.importerRegistry,
     fsForImport: context.fsForImport,

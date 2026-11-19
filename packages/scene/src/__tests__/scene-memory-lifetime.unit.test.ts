@@ -13,11 +13,11 @@ describe('Scene owned propagation memory', () => {
         { component: ChildOf, data: { parent } },
       )
       .unwrap();
-    const before = world.memoryStats().buffers.liveSlots;
+    const before = world.memoryStats().buffers.liveBuffers;
     const unregister = registerPropagateTransforms(world);
     world.update(1 / 60).unwrap();
     expect(world.get(child, GlobalTransform).unwrap().world[12]).toBe(5);
-    expect(world.memoryStats().buffers.liveSlots).toBeGreaterThanOrEqual(before);
+    expect(world.memoryStats().buffers.liveBuffers).toBeGreaterThanOrEqual(before);
     const warm = world.memoryStats().buffers.backingAllocations;
     world.set(parent, Transform, { pos: [4, 0, 0] }).unwrap();
     world.update(1 / 60).unwrap();
@@ -25,7 +25,7 @@ describe('Scene owned propagation memory', () => {
     expect(world.memoryStats().buffers.backingAllocations).toBe(warm);
     unregister();
     unregister();
-    expect(world.memoryStats().buffers.liveSlots).toBe(before);
+    expect(world.memoryStats().buffers.liveBuffers).toBe(before);
     world.trimMemory().unwrap();
     const again = registerPropagateTransforms(world);
     world.update(1 / 60).unwrap();

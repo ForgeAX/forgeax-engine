@@ -23,7 +23,12 @@ import { resolveFoldInstanceBuffer, retainedFoldInstanceKeys } from '../fold-ins
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../frame-snapshot';
 import { computeProjectionMatrix } from '../helpers';
 import { selectMainPassDispatch, selectMainPassMaterials } from '../main-pass';
-import { prepareScenePasses, type ScenePassRequest, scenePassContext } from '../scene-pass-work';
+import {
+  CaptureScenePasses,
+  prepareScenePasses,
+  type ScenePassRequest,
+  scenePassContext,
+} from '../scene-pass-work';
 
 function material(
   handle: number,
@@ -357,19 +362,15 @@ it('sorts each requested camera before folding its CPU draws', () => {
   }
   const camera = (z: number) => ({ position: new Float32Array([0, 0, z]) }) as never;
   const display = request('Forward', { gpu: false, recordMode: 'transparent' });
-  const capture = request('Forward', {
-    gpu: false,
-    recordMode: 'transparent',
-    capture: true,
-    camera: () => camera(20),
-  });
+  const captureView = new CaptureScenePasses(camera(20));
+  const capture = captureView.transparent;
   const folding = vi.fn((_dispatch: import('../../render-system-extract').DispatchList) => []);
   // The Pass edit changed the shared material's batch class: its rows moved batches.
   const plan = f.topology.query(f.topology.sourcePlan(), undefined);
   const mesh = f.meshes.values().next().value;
   assert(mesh);
   const meshes = new Map(plan.batches.map((batch) => [batch.binding ?? assert.fail(), mesh]));
-  const work = prepareScenePasses([display, capture], {
+  const inputs: Parameters<typeof prepareScenePasses>[1] = {
     phases: new ViewDrawPhases(),
     scene: {
       plan,
@@ -388,8 +389,12 @@ it('sorts each requested camera before folding its CPU draws', () => {
     lod: (rows) => rows,
     world: { transparentSort: { mode: 3, yzAlpha: 1 } } as never,
     camera: camera(0),
-  });
+  };
+  const work = prepareScenePasses([display, capture], inputs);
   expect(work.dispatch.map((entry) => entry.entityIndex)).toEqual([1, 0, 0, 1]);
+  captureView.camera = camera(0);
+  const moved = prepareScenePasses([display, capture], inputs);
+  expect(moved.dispatch.map((entry) => entry.entityIndex)).toEqual([1, 0, 1, 0]);
   expect(folding.mock.calls[0]?.[0].map((entry) => entry.entityIndex)).toEqual([1, 0]);
 });
 
@@ -641,6 +646,54 @@ it('uses current camera admission before CPU validation while captures keep thei
   });
   expect(prepared.rows.map((row) => row.source.entityKey)).toEqual([1, 0, 1, 2]);
   expect(visible).toHaveBeenCalledTimes(3);
+});
+
+it('culls direct capture rows with their own camera instead of the display admission', () => {
+  const f = fixture(2);
+  for (const record of f.scene.slotsSnapshot()) {
+    const source = {
+      ...record.snapshot,
+      localAabb: new Float32Array([-0.1, -0.1, -0.1, 0.1, 0.1, 0.1]),
+      transform: { world: new Float32Array(record.snapshot.transform.world) },
+    };
+    source.transform.world[14] = record.entityKey === 1 ? 5 : -5;
+    f.topology.apply(
+      f.scene.apply([{ kind: 'update', entityKey: record.entityKey, snapshot: source }]),
+    );
+  }
+  const capture = new CaptureScenePasses(makeZeroCameraFallbackSnapshot());
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const prepared = prepareScenePasses([capture.opaque], {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan,
+      draws: {
+        slots: f.scene.slotsSnapshot(),
+        meshes: f.scene.meshFrame(),
+        unavailable: new FrameSet(),
+        probe: new ProbeBlendSceneProjection().recordBufferProjection(),
+        temporal: undefined,
+      },
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: f.dispatch.materials(),
+    gpu: f.gpu,
+    meshes: f.meshes,
+    sourceScope: f.world,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+    cameraVisible: () => false,
+    boundsOf: (_source, out, record) =>
+      record !== undefined && f.scene.writeCullingWorldBoundsAt(record, out),
+  });
+  expect(prepared.rows.map((row) => row.source.entityKey)).toEqual([0, 2]);
 });
 
 it('retains separate live fold buffers across cleanup and retires absent graph work', async () => {
@@ -911,6 +964,73 @@ it('retains combined Scene Pass work until a selected phase output or request ro
   expect(quiet.dispatch).toBe(first.dispatch);
   expect(quiet.buckets).toBe(first.buckets);
   const deferred = request('Deferred', { gpu: false });
+  const changed = prepareScenePasses([deferred, forward], inputs);
+  expect(changed.rows).not.toBe(first.rows);
+  expect(changed.dispatch).not.toBe(first.dispatch);
+  expect(changed.rows.every((row, index) => row.renderableIndex === index)).toBe(true);
+  expect(prepareScenePasses([deferred, forward], inputs).rows).toBe(changed.rows);
+  const source = f.scene.slotAt(0)?.snapshot;
+  assert(source);
+  const pose = new Float32Array(source.transform.world);
+  pose[12] = 23;
+  f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 0, world: pose }]));
+  const moved = prepareScenePasses([deferred, forward], {
+    ...inputs,
+    scene: {
+      ...inputs.scene,
+      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      draws: { ...draws, slots: f.scene.slotsSnapshot() },
+    },
+  });
+  // A pose edit may retain the phase roster; its live row must carry the new source.
+  expect(moved.rows.length).toBe(changed.rows.length);
+  expect(moved.rows.find((row) => row.source.entityKey === 0)?.source.transform.world[12]).toBe(23);
+});
+
+it('keeps capture phases warm while applying source pose changes', () => {
+  const f = fixture(2);
+  const phases = new ViewDrawPhases();
+  const capture = new CaptureScenePasses(makeZeroCameraFallbackSnapshot());
+  const forward = capture.opaque;
+  const draws = {
+    slots: f.scene.slotsSnapshot(),
+    meshes: f.scene.meshFrame(),
+    unavailable: new FrameSet(),
+    probe: new ProbeBlendSceneProjection().recordBufferProjection(),
+    temporal: undefined,
+  };
+  const inputs: Parameters<typeof prepareScenePasses>[1] = {
+    phases,
+    scene: {
+      draws,
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: f.dispatch.materials(),
+    gpu: f.gpu,
+    meshes: f.meshes,
+    sourceScope: f.world,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const first = prepareScenePasses([forward], inputs);
+  expect(first.rows.length).toBeGreaterThan(0);
+  const phase = phases.of(forward);
+  const prepared = { ...phase.work };
+  const quiet = prepareScenePasses([forward], inputs);
+  expect(phase.work.rebuilt).toBe(prepared.rebuilt);
+  expect(phase.work.cold).toBe(prepared.cold);
+  expect(quiet.rows).toBe(first.rows);
+  expect(quiet.dispatch).toBe(first.dispatch);
+  expect(quiet.buckets).toBe(first.buckets);
+  const deferred = capture.transparent;
   const changed = prepareScenePasses([deferred, forward], inputs);
   expect(changed.rows).not.toBe(first.rows);
   expect(changed.dispatch).not.toBe(first.dispatch);

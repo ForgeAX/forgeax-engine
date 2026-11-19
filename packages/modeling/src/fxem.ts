@@ -84,20 +84,7 @@ function align(n: number): number {
  * bytes regardless of edit history; holes, free lists and generations never persist.
  */
 export function encodeSnapshot(source: EditMesh): Uint8Array {
-  return encodeSnapshotWithMaps(source).bytes;
-}
-
-/** Keep provenance remaps tied to the exact canonical bytes from one compaction. */
-export function encodeSnapshotWithMaps(source: EditMesh): {
-  bytes: Uint8Array;
-  vertexMap: Int32Array;
-  faceMap: Int32Array;
-} {
-  const { mesh, vertexMap, faceMap } = source.compact();
-  return { bytes: encodeCanonical(mesh), vertexMap, faceMap };
-}
-
-function encodeCanonical(mesh: EditMesh): Uint8Array {
+  const mesh = source.compact().mesh;
   const v = mesh.vertexHighWater;
   const h = mesh.halfHighWater;
   const f = mesh.faceHighWater;

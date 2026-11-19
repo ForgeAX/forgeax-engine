@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::diffuse_reconstruct
 #import forgeax_view::common::{View}
-#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness, decodeStandardGBufferNormal, standardGBufferValid}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1, sceneViewZ}
 
 // Linear, receiver-independent D. Weight/age are history statistics, never ray counts.
@@ -56,6 +56,7 @@ fn preparePixel(p: vec2i, extent: vec2u) -> DiffuseHistoryPixel {
   let i = indexAt(p, extent);
   let address = textureLoad(identity, p, 0);
   let z = textureLoad(depth, p, 0);
+  if (!standardGBufferValid(textureLoad(normal, p, 0).rg)) { return result; }
   if (all(address == vec4u(0)) && z == 0.0) { return result; }
   result.surface.z = 2u;
   if (address.x == 0u || address.x > arrayLength(&records) / 4u ||
@@ -95,8 +96,8 @@ fn supportReject(a: DiffuseHistoryPixel, b: DiffuseHistoryPixel) -> u32 {
   if (any(a.identityA != b.identityA) || any(a.identityB != b.identityB)) { return 2u; }
   let ag = decodeStandardNormalRoughness(a.surface.y).xyz;
   let bg = decodeStandardNormalRoughness(b.surface.y).xyz;
-  let an = decodeStandardNormalRoughness(a.surface.x).xyz;
-  let bn = decodeStandardNormalRoughness(b.surface.x).xyz;
+  let an = decodeStandardGBufferNormal(vec2u(a.surface.x,0u)).xyz;
+  let bn = decodeStandardGBufferNormal(vec2u(b.surface.x,0u)).xyz;
   if (dot(ag,bg) < config.thresholds.z || dot(an,bn) < config.thresholds.w) { return 8u; }
   let delta = a.positionFootprint.xyz - b.positionFootprint.xyz;
   let scale = max(max(abs(a.positionFootprint.x),abs(a.positionFootprint.y)),abs(a.positionFootprint.z));

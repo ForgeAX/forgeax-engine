@@ -137,7 +137,7 @@ for (const pass of [
   'bloom-vertical-3',
   'bloom-horizontal-4',
   'bloom-vertical-4',
-  'bloom-composite',
+  'standard-grade',
 ]) if (!passNames.includes(pass)) failures.push(`missing=${pass}`);
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.join('; ')}`);

@@ -234,15 +234,21 @@ function validateObservationSurface(
   return undefined;
 }
 
+/** Recognize complete committed output routes while retaining the float-intermediate oracle. */
+export function isDarkGradientFxaaGraph(observation: {
+  readonly passNames: readonly string[];
+  readonly standardOutputColor?: { readonly format: string; readonly domain?: string };
+}): boolean {
+  return DARK_GRADIENT_FIXTURE.outputGraphs.some((route) =>
+    route.passes.every((pass) => observation.passNames.includes(pass)) &&
+    observation.standardOutputColor?.format === route.format &&
+    observation.standardOutputColor.domain === route.domain,
+  );
+}
+
 function validateFxaaObservationGraph(observation: DarkGradientObservationRef): FixtureCheck {
-  if (!observation.passNames.includes('output-transform') || !observation.passNames.includes('fxaa')) {
-    return failure('observation.passNames', observation.passNames, 'output-transform and fxaa');
-  }
-  if (
-    observation.standardOutputColor?.format !== 'rgba16float' ||
-    observation.standardOutputColor.domain !== 'display-encoded'
-  ) {
-    return failure('observation.standardOutputColor', observation.standardOutputColor, 'rgba16float/display-encoded');
+  if (!isDarkGradientFxaaGraph(observation)) {
+    return failure('observation output graph', observation, 'a committed FXAA route with rgba16float/display-encoded input');
   }
   return undefined;
 }

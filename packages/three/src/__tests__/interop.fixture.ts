@@ -17,6 +17,7 @@ import { createRenderer, defaultAssetDecoderContributions } from '@forgeax/engin
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { AssetKind } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { displayPixels, SIZE, verifyReplay } from './render.fixture';
 
 function greenReceiverShadows(actual: Uint8Array, unshadowed: Uint8Array, minimum = 0) {
@@ -254,6 +255,9 @@ export async function createInteropJourney(
       world.set(entity, MeshFilter, { assetHandle: cube }).unwrap();
       world.set(entity, MeshRenderer, { materials: [material] }).unwrap();
       world.set(entity, Transform, { pos: [0, 1, 0] }).unwrap();
+      // The software driver can finish its first shadow PSOs on the first GPU
+      // fence. Complete that admission before the 60-frame stability window.
+      await completeReadyFrame(frame, { timeoutMs: 45_000 });
       await ready(60);
       const on = await capture();
       world.set(entity, ShadowParticipation, { cast: false }).unwrap();

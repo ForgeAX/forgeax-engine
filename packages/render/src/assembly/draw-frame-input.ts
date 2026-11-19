@@ -55,6 +55,9 @@ export function frameDrawOptions(frameRequest: RenderFrameInput): DrawOptions {
       ? {}
       : { cameraEntityKey: frameRequest.camera.entityKey }),
     ...motionBlurDrawOptions(frameRequest),
+    ...(frameRequest.targetWrite === undefined
+      ? {}
+      : { targetWrite: { ...frameRequest.targetWrite } }),
   };
   // Read and detach the borrowed token at its original spread position. Keeping
   // this in the same result object avoids probing the request a second time or

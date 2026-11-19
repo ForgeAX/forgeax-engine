@@ -184,6 +184,52 @@ test('aborts a stalled artifact endpoint so transport retry can recover', async 
   }
 });
 
+test('a stalled archive body yields to a fresh route within the acceleration window', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-artifact-body-retry-'));
+  const destination = join(root, 'archive.zip');
+  const archive = Buffer.from('complete artifact after a stalled route');
+  const digest = `sha256:${createHash('sha256').update(archive).digest('hex')}`;
+  const previousFetch = globalThis.fetch;
+  const previousToken = process.env.GITHUB_TOKEN;
+  let archiveRequests = 0;
+  let aborted = false;
+  try {
+    process.env.GITHUB_TOKEN = 'test-token';
+    globalThis.fetch = async (url, { signal }) => {
+      if (String(url).endsWith('/actions/artifacts/42'))
+        return new Response(JSON.stringify({ expired: false, digest }));
+      if (++archiveRequests > 1) return new Response(archive);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(archive.subarray(0, 4));
+            signal.addEventListener(
+              'abort',
+              () => {
+                aborted = true;
+                controller.error(new Error('stalled route aborted'));
+              },
+              { once: true },
+            );
+          },
+        }),
+      );
+    };
+    const result = await retryArtifact(
+      () => downloadArtifact('owner/repo', '42', destination, { idleTimeoutMs: 20 }),
+      { sleepFn: async () => {} },
+    );
+    assert.equal(aborted, true);
+    assert.equal(result.attempt, 2);
+    assert.deepEqual(await readFile(destination), archive);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previousToken;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('aborts and classifies an idle response body instead of hanging forever', async () => {
   let cancelled = false;
   const body = new ReadableStream({

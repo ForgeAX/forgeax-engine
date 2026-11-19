@@ -768,16 +768,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
   });
 
-  // feat-20260602 M2 / w7: relationship-mirror validation moved into
-  // `defineComponent` (define-time fail-fast). The runtime ChildOf holder
-  // declares `mirror: 'Children'`, so the component barrel must export Children
-  // (the mirror) before ChildOf (the holder) -- otherwise `defineComponent`
-  // throws RelationshipMirrorComponentNotRegisteredError while the package is
-  // being evaluated. This block is the load-bearing guard for that barrel
-  // ordering: a clean dynamic import proves the module-evaluation order
-  // satisfies the mirror-before-holder define-time contract.
-  describe('relationship-migration-regression (feat-20260602 M2 / w7 barrel order)', () => {
-    it('imports @forgeax/engine-runtime without throwing on module evaluation', async () => {
+  // The scene barrel exposes the source and the generated target together.
+  describe('scene relationship exports', () => {
+    it('imports @forgeax/engine-scene without throwing on module evaluation', async () => {
       const mod = await import('@forgeax/engine-scene');
       expect(mod.Children).toBeDefined();
       expect(mod.ChildOf).toBeDefined();

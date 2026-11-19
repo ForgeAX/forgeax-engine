@@ -53,6 +53,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   DARK_GRADIENT_FIXTURE,
+  isDarkGradientFxaaGraph,
   resolveDarkGradientBrowserBackend,
   type DarkGradientBackend,
   type DarkGradientRhiBackendKind,
@@ -156,10 +157,7 @@ function publishDarkGradientObservation(
       missingFacts.push('webkit-raw-only-surface-profile');
     }
     if (observation.rgba16floatRenderable !== true) missingFacts.push('rgba16float-renderable');
-    if (!passNames.includes('output-transform')) missingFacts.push('output-transform-pass');
-    if (!passNames.includes('fxaa')) missingFacts.push('fxaa-pass');
-    if (standardOutputColor?.format !== 'rgba16float') missingFacts.push('standard-output-color-format');
-    if (standardOutputColor?.domain !== 'display-encoded') missingFacts.push('standard-output-color-domain');
+    if (!isDarkGradientFxaaGraph({ passNames, ...(standardOutputColor === undefined ? {} : { standardOutputColor }) })) missingFacts.push('fxaa-output-graph');
   }
   const ready = missingFacts.length === 0;
   const result: DarkGradientBrowserObservation = {

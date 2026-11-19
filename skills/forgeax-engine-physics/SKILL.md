@@ -111,6 +111,12 @@ and cannot be spread and read after iteration.
 
 Physics consumes resolved world TRS, so child colliders follow parent translation, rotation, and scale. Cuboid half-extents use absolute per-axis scale. Spheres conservatively use the largest absolute scale. Capsules scale half-height along Y and cross-section by max(X,Z) in 3D or X in 2D. Negative scale uses its magnitude, without mirrored collision shapes. 2D projects only Z rotation into Rapier's scalar angle.
 
+Use render `Visibility` to hide a mesh while keeping collision. When replacing a
+starter prop, remove its scene entry with its body and collider. Rapier 3D
+suspends an ordinary static Collider at zero world scale and restores it on
+the next valid fixed sync. For `invalid-body-config`, check authored dimensions
+and resolved scale, including the parent chain. See [Transform Pose Projection](../../packages/physics/README.md#transform-pose-projection).
+
 > [!IMPORTANT]
 > Use enum constants such as `RigidBodyTypeValue.dynamic` / `ColliderShapeValue.sphere`, not raw numbers. Component fields/defaults: `packages/physics/README.md`, Component Schemas. Read `PhysicsErrorCode` from `packages/types/src/index.ts`; do not duplicate its members.
 

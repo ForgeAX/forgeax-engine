@@ -12,6 +12,8 @@ function publication(source: string) {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
     receipts: [{ bindings: [] }],
     entryPoints: [],
+    reflections: [],
+    reflectionBindings: [],
     fragments,
     sources: { [sourceDigest]: [0, 1] },
     entries: [],

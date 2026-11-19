@@ -8,7 +8,7 @@ export const viewStartFrontendConfigSchema = {
 
 const properties = {
   root: { type: 'string' },
-  project: { type: 'string', description: 'Project to open when the returned URL is visited; defaults to the backend root when it contains forge.json.' },
+  project: { type: 'string', description: 'Project to admit on the Engine backend before returning the View URL; defaults to the backend root when it contains forge.json.' },
   frontendConfig: viewStartFrontendConfigSchema,
 };
 const ownerProperties = {

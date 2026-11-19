@@ -47,8 +47,8 @@ export function selectSceneWorkspacePreview(previews: readonly WorkspacePreview[
 }
 
 /**
- * Viewport overlay target. Dock claim can render before scenePreview is
- * classified; only a Scene-bound preview can supply the scene world.
+ * Viewport overlay target. Project-document anchoring is a separate owning
+ * presentation path; only admitted Scene surfaces become Engine targets here.
  */
 export function selectWorkspaceSceneSurfaceTarget(state: WorkspaceState | null | undefined) {
   if (state?.scenePreview?.target) return state.scenePreview.target;

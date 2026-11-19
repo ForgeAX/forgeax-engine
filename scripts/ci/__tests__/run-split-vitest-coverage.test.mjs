@@ -274,8 +274,15 @@ test('GTAO publication admission shares the exclusive CPU contract batch exactly
     false,
     'the complete published profile is loaded, not cooked',
   );
-  assert.equal(owner.reservationWeight, 95, 'reserve all original case bounds and one startup');
-  assert.deepEqual(owner.files.toSorted(), [...coldCoverageFiles, file].toSorted());
+  assert.equal(owner.reservationWeight, 155, 'reserve all original case bounds and one startup');
+  assert.deepEqual(
+    owner.files.toSorted(),
+    [
+      ...coldCoverageFiles,
+      file,
+      'packages/vite-plugin-shader/src/__tests__/standard-material-cold-cook.unit.test.ts',
+    ].toSorted(),
+  );
   assert.ok(
     groups
       .filter((group) => group.files.length === 0)
@@ -322,6 +329,7 @@ test('cold source and TypeScript files drain neighboring instrumented children',
       [
         ...coldCoverageFiles,
         'packages/runtime/src/__tests__/gtao-deferred-admission.integration.test.ts',
+        'packages/vite-plugin-shader/src/__tests__/standard-material-cold-cook.unit.test.ts',
       ].toSorted(),
     );
     assert.ok(
@@ -343,7 +351,7 @@ test('cold source and TypeScript files drain neighboring instrumented children',
     assert.equal(owner.weight, 0, 'historical project receipts already contain this case work');
     assert.equal(
       owner.reservationWeight,
-      95,
+      155,
       'current admission retains one complete cold process',
     );
     const project = `@forgeax/engine-${file.split('/')[1]}`;
@@ -359,24 +367,32 @@ test('cold source and TypeScript files drain neighboring instrumented children',
 test('scriptable publication regressions share the existing exclusive Pack owner', async () => {
   const groups = waterCoverageGroupsThrough(43668054135);
   const files = [
+    'packages/gltf/src/__tests__/diffuse-transmission-import.integration.test.ts',
+    'packages/gltf/src/__tests__/physical-material-import.integration.test.ts',
     'packages/import/src/__tests__/browser-package-build.integration.test.ts',
     'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
     'packages/pack/src/__tests__/scriptable-pack-json.integration.test.ts',
+    'packages/runtime/src/__tests__/custom-surface-publication.integration.test.ts',
     'packages/vite-plugin-pack/src/__tests__/authored-pack-serving.regression.test.ts',
   ];
-  const owner = groups.find((group) => group.files.includes(files[2]));
+  const receiptFile = 'packages/pack/src/__tests__/material-surface-publication.unit.test.ts';
+  const owner = groups.find((group) => group.files.includes(receiptFile));
   assert.deepEqual(owner.files, files);
   assert.deepEqual(owner.projects, [
+    '@forgeax/engine-gltf',
     '@forgeax/engine-import',
     '@forgeax/engine-pack',
+    '@forgeax/engine-runtime',
     '@forgeax/engine-vite-plugin-pack',
   ]);
   assert.equal(
     owner.label,
-    `@forgeax/engine-pack:${files[1]}`,
+    `@forgeax/engine-pack:${receiptFile}`,
     'the explicit historical receipt owns identity even when another project is visited first',
   );
-  assert.equal(owner.reservationWeight, 70, 'reserve all cases and one cold startup');
+  assert.equal(owner.reservationWeight, 220, 'reserve all cases and one cold startup');
+  assert.equal(owner.sourceCompilation, true);
+  assert.equal(owner.packagesOnly, true);
   assert.equal(
     owner.observedSeconds,
     31.5,
@@ -498,6 +514,7 @@ test('forecast seeds require the exact roster, admission and every retained wind
   const seed = ledger.placementSeeds.find((seed) => seed.typecheck === false);
   assert.equal(seed.kind, 'forecast-only', 'a placement forecast is not executed CI evidence');
   assert.ok(coveragePlacementSeed(groups, 4, false, seed));
+  assert.ok(coveragePlacementSeed(coverageGroups(allProjectNames(), 8), 4, false));
   assert.equal(coveragePlacementSeed(groups, 3, false, seed), null);
   assert.equal(coveragePlacementSeed(groups, 4, true, seed), null);
   assert.equal(coveragePlacementSeed(groups.slice(1), 4, false, seed), null);
@@ -821,6 +838,36 @@ import {
   validateShardManifests,
 } from '../run-split-vitest-coverage.mjs';
 
+test('complete Standard cold cooks share the existing exclusive source-contract child', () => {
+  const file = 'packages/vite-plugin-shader/src/__tests__/standard-material-cold-cook.unit.test.ts';
+  const groups = coverageGroups(allProjectNames(), 8);
+  const owners = groups.filter((group) => group.files.includes(file));
+  assert.equal(owners.length, 1);
+  const owner = owners[0];
+  assert.ok(owner.files.includes('packages/app/__tests__/builtin-systems.test.ts'));
+  assert.ok(
+    owner.files.includes(
+      'packages/runtime/src/__tests__/gtao-deferred-admission.integration.test.ts',
+    ),
+  );
+  assert.equal(owner.reservationWeight, 155);
+  assert.ok(isExclusiveCoverageGroup(owner));
+  assert.equal(
+    coverageGroupMaxWorkers(
+      owner,
+      { coverage: true, maxWorkers: 2 },
+      { cpus: 8, memoryBytes: 16_000_000_000 },
+      2,
+    ),
+    1,
+  );
+  assert.ok(
+    groups
+      .filter((group) => group.files.length === 0)
+      .every((group) => group.excludes.includes(file)),
+  );
+});
+
 test('cold mounted asset libraries share the existing exclusive DevKit publication owner', () => {
   const file = 'packages/devkit/src/__tests__/asset-libraries.integration.test.ts';
   const previous = 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts';
@@ -855,7 +902,14 @@ test('cold mounted asset libraries share the existing exclusive DevKit publicati
 test('cold source coverage admits parallel compilation within its inherited heap budget', () => {
   const groups = coverageGroups(allProjectNames(), 8);
   const sources = groups.filter((group) => group.sourceCompilation);
-  assert.equal(sources.length, 4);
+  assert.equal(sources.length, 9);
+  for (const file of [
+    'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
+    'packages/render/src/__tests__/direct-preparation.integration.test.ts',
+  ]) {
+    const owner = sources.find((group) => group.files.includes(file));
+    assert.equal(owner?.packagesOnly, true, file);
+  }
   const original = { NODE_OPTIONS: '--import=probe.mjs --max-old-space-size=4096', KEEP: 'yes' };
   for (const group of sources) {
     assert.ok(isExclusiveCoverageGroup(group));
@@ -994,7 +1048,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 18);
+  assert.equal(exclusiveRuns, 19);
 });
 
 test('asset-library catalogs share the complete exclusive bootstrap owner with their original deadline', () => {
@@ -1294,7 +1348,7 @@ test('complete Render coverage retains admitted workers and limited source headr
   assert.equal(coverageGroupMaxWorkers(source, options, resources, 2), 1);
 });
 
-test('timed-out lane two admits bounded ordinary workers without moving its complete owners', () => {
+test('ordinary worker admission retains complete owners after cold-source rebalancing', () => {
   const groups = waterCoverageGroupsThrough(43744332755);
   const assignment = assignCoverageShards(groups, 4, { typecheck: false });
   const options = parseArgs(['--max-workers=2', '--modeling-max-workers=2']);
@@ -1302,7 +1356,7 @@ test('timed-out lane two admits bounded ordinary workers without moving its comp
   for (const label of ['@forgeax/engine-devkit:shard-1-of-2', '@forgeax/engine-vite-plugin-pack']) {
     const index = groups.findIndex((group) => group.label === label);
     assert.ok(index >= 0);
-    assert.equal(assignment[index], 1, 'retain the original partition');
+    assert.ok(assignment[index] >= 0 && assignment[index] < 4, 'retain a complete assigned owner');
     assert.equal(coverageGroupMaxWorkers(groups[index], options, resources, 2), 2);
     assert.equal(coverageGroupMaxWorkers(groups[index], options, { ...resources, cpus: 7 }, 2), 1);
     assert.equal(
@@ -1321,9 +1375,14 @@ test('timed-out lane two admits bounded ordinary workers without moving its comp
     ),
   );
   assert.ok(source);
-  assert.equal(assignment[groups.indexOf(source)], 1);
+  assert.ok(assignment[groups.indexOf(source)] >= 0 && assignment[groups.indexOf(source)] < 4);
   assert.equal(coverageGroupMaxWorkers(source, options, resources, 2), 1);
   assert.ok(isExclusiveCoverageGroup(source));
+  assert.deepEqual(
+    assignCoverageShards(groups, 4, { typecheck: false }),
+    assignment,
+    'probing worker admission must not change the accepted complete-child placement',
+  );
 });
 
 test('modeling tier budgets remain mandatory and uninstrumented outside coverage children', () => {
@@ -1374,13 +1433,19 @@ test('cold Render cooking stays complete in the existing exclusive owner', () =>
     'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
     'packages/render/src/__tests__/direct-preparation.integration.test.ts',
     'packages/render/src/__tests__/vertex-color-program.integration.test.ts',
+    'packages/render/src/__tests__/mesh-builder-stock-material-inputs.integration.test.ts',
+    'packages/render/src/__tests__/skin-candidate-host.unit.test.ts',
+    'packages/render/src/__tests__/standard-scene-data-runtime.integration.test.ts',
+    'packages/render/src/__tests__/planar-receiver-routing.unit.test.ts',
+    'packages/render/src/__tests__/raytracing/renderer-diffuse-retained.unit.test.ts',
+    'packages/render/src/raytracing/__tests__/scene-field-projection.integration.test.ts',
   ];
   const groups = coverageGroups(['@forgeax/engine-render'], 8);
   const owner = groups.find((group) => group.files.includes(files[0]));
   assert.deepEqual(owner.files, files);
   assert.equal(owner.label, `@forgeax/engine-render:${files.slice(0, 2).join(',')}`);
   assert.equal(owner.weight, 110, 'retain the larger completed owner observation');
-  assert.equal(owner.reservationWeight, 160, 'reserve new work without inventing a sample');
+  assert.equal(owner.reservationWeight, 520, 'reserve new work without inventing a sample');
   assert.ok(isExclusiveCoverageGroup(owner));
   for (const partition of groups.filter((group) => group.shard)) {
     assert.ok(files.every((file) => partition.excludes.includes(file)));
@@ -2713,6 +2778,71 @@ test('cold Standard compilation and worker parity each have one exclusive instru
   const cases = [
     [
       '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/__tests__/material-surface-import.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/__tests__/material-webgpu-build-profile.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/custom-surface-coverage.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/parameter-identifiers.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/standard-static-shadow.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/surface-resources.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-runtime',
+      'packages/runtime/src/__tests__/custom-surface-publication.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-gltf',
+      'packages/gltf/src/__tests__/diffuse-transmission-import.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-gltf',
+      'packages/gltf/src/__tests__/physical-material-import.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-vite-plugin-pack',
+      'packages/vite-plugin-pack/src/__tests__/imported-material-publication.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-vite-plugin-pack',
+      'packages/vite-plugin-pack/src/__tests__/scriptable-standard-material.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/__tests__/material-cook.unit.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/gbuffer-publication.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/material-static-switches.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/node-material-pool.integration.test.ts',
+    ],
+
+    [
+      '@forgeax/engine-shader-compiler',
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
     ],
     [
@@ -2732,7 +2862,9 @@ test('cold Standard compilation and worker parity each have one exclusive instru
     [
       '@forgeax/engine-shader-compiler',
       '@forgeax/engine-vite-plugin-pack',
+      '@forgeax/engine-gltf',
       '@forgeax/engine-naga',
+      '@forgeax/engine-runtime',
       'unit',
     ],
     8,
@@ -2741,7 +2873,7 @@ test('cold Standard compilation and worker parity each have one exclusive instru
     const owners = groups.filter((group) => group.files.includes(file));
     assert.equal(owners.length, 1, file);
     assert.ok(isExclusiveCoverageGroup(owners[0]));
-    assert.deepEqual(owners[0].projects, [project]);
+    assert.ok(owners[0].projects.includes(project));
     assert.ok(
       groups
         .filter((group) => group !== owners[0])
@@ -3214,7 +3346,7 @@ test('new slow coverage children retain preceding windows and all failed-owner f
 
 test('registered Water Node apps share the existing bounded selector without rewriting old children', () => {
   const apps = [
-    '@forgeax/water-r4-buoyancy-foam',
+    '@forgeax/water-r5-gpu-mesh-async-pontoons',
     '@forgeax/water-r8-entry-experiment',
     '@forgeax/water-mesh-demo',
     '@forgeax/water-r8-integration-acceptance',

@@ -3,7 +3,7 @@ import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { halfFloat } from '@forgeax/engine/math';
 import { PointLight, RectAreaLight } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
-import { toShared } from '@forgeax/engine/types';
+import type { AssetHandle } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 import { spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
 
@@ -76,7 +76,7 @@ export default defineFeature({
         for (const lamp of lamps)
           world
             .set(lamp.entity, lamp.component, {
-              iesProfile: on ? profile : toShared<'IesProfileAsset'>(0),
+              iesProfile: on ? profile : (0 as AssetHandle<'ies-profile'>),
             })
             .unwrap();
       },

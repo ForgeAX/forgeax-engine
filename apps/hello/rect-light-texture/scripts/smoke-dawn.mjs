@@ -134,7 +134,7 @@ const manifest = readShaderManifestText(resolve(here, '..', 'dist', 'shaders', '
 const constructed = await constructRuntimeRendererHost(
   mockCanvas,
   { standardProfile: DEFAULT_STANDARD_PROFILE },
-  { shaderManifestUrl: `data:application/octet-stream;base64,${manifest.toString('base64')}` },
+  { shaderManifestUrl: `data:application/octet-stream;base64,${Buffer.from(manifest).toString('base64')}` },
 ).catch((err) => fail(`renderer host threw: ${err instanceof Error ? err.message : String(err)}`));
 gpu.requestAdapter = originalRequestAdapter;
 if (!constructed.ok) fail(`renderer host: ${constructed.error.code} - ${constructed.error.hint}`);

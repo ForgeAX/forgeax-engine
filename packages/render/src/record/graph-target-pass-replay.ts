@@ -442,7 +442,16 @@ export function createGraphTargetReplayRunner(
     prefixCallbackCount: 0,
   };
   return {
-    runner: (pass, encode) => recordSelectedPass(state, pass, encode),
+    runner: Object.assign(
+      (pass: RenderGraphPassExecution, encode: () => void) =>
+        recordSelectedPass(state, pass, encode),
+      {
+        requiresPassBoundary: (name: string) =>
+          input.runPass?.requiresPassBoundary?.(name) === true ||
+          (input.capture?.onPassEncoded !== undefined && input.requestedPassNames.has(name)) ||
+          name === input.capture?.observeAfterPassName,
+      },
+    ),
     replayedPassNames: state.replayedPassNames,
     prefixCallbackCount: () => state.prefixCallbackCount,
   };

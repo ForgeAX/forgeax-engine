@@ -337,7 +337,6 @@ function createRenderOwner(
 ): RendererState | ViewSettlementOwner {
   const recordingState: ViewRecordingState = {
     preparedSourceScope: undefined,
-    directFrameId: 0,
     dispatchCounts: { unlit: 0 },
     pendingFeatureErrors: new Map<string, PendingRenderFeatureErrorReport>(),
   };
@@ -590,12 +589,13 @@ function createRenderOwner(
             ),
         } satisfies import('./pipeline-builder').PipelineBuilderShaderModuleFactory),
     });
-  let featureGpuWork =
-    recordContext(internals).sharedFeatureGpuWork ?? createFeatureGpuWorkOwner(internals);
+  let ownedFeatureGpuWork =
+    recordContext(internals).sharedFeatureGpuWork === undefined
+      ? createFeatureGpuWorkOwner(internals)
+      : undefined;
   const disposeFeatureGpuWork = (): void => {
-    if (recordContext(internals).sharedFeatureGpuWork !== undefined) return;
-    const disposed = featureGpuWork.dispose();
-    if (!disposed.ok) internals.errorRegistry.fire(disposed.error);
+    const disposed = ownedFeatureGpuWork?.dispose();
+    if (disposed?.ok === false) internals.errorRegistry.fire(disposed.error);
   };
   // Per-RendererState frame state: closure-internal frameNumber + the
   // per-entity instance GPU buffer cache (feat-20260514 M3 / w15: the
@@ -747,13 +747,13 @@ function createRenderOwner(
   };
   const postProcessOwner = createPostProcessParamsOwner(internals, (id, moduleLabel) => {
     clearPostProcessPipelineCache(id);
-    recordContext(internals).invalidateShaderModule?.(moduleLabel);
+    if (moduleLabel !== undefined) recordContext(internals).invalidateShaderModule?.(moduleLabel);
   });
   const lookupPostProcess = postProcessOwner.lookup;
   const invalidatePostProcessModule = (id: string): void => {
     const entry = lookupPostProcess(id);
     if (entry !== undefined) {
-      recordContext(internals).invalidateShaderModule?.(postProcessShaderModuleLabel(entry.source));
+      recordContext(internals).invalidateShaderModule?.(postProcessShaderModuleLabel(entry));
     }
   };
   // feat-20260609 M4 / T-10-a: post-process pipeline cache (declaration|colorFormat -> RhiRenderPipeline).
@@ -777,12 +777,7 @@ function createRenderOwner(
     if (cached !== undefined) return cached;
     const factory = internals.buildPostProcessPipeline;
     if (factory === undefined) return null;
-    const built = factory(
-      entry,
-      bgl,
-      colorFormats,
-      postProcessShaderPipelineLabel(id, entry.source),
-    );
+    const built = factory(entry, bgl, colorFormats, postProcessShaderPipelineLabel(id, entry));
     if (built === null) return null;
     postProcessPipelineCache.set(key, built);
     return built;
@@ -828,7 +823,10 @@ function createRenderOwner(
     preparedResolver: {
       runtime: internals,
       get gpuWork() {
-        return featureGpuWork;
+        const gpuWork = ownedFeatureGpuWork ?? recordContext(internals).sharedFeatureGpuWork;
+        if (gpuWork === undefined)
+          throw new Error('View recording requires its renderer-owned Feature GPU work');
+        return gpuWork;
       },
       caches: activePreparedResolverCaches,
       builtinPostProcessEntries: postProcessOwner.builtinEntries,
@@ -1030,7 +1028,8 @@ function createRenderOwner(
           frameNumber: internals.rendererFrameNumber ?? frameState.frameNumber,
         })
         .unwrap();
-      featureGpuWork = createFeatureGpuWorkOwner(internals);
+      if (ownedFeatureGpuWork !== undefined)
+        ownedFeatureGpuWork = createFeatureGpuWorkOwner(internals);
       reflectionProbeOwner.dispose();
       frameState.ssrHistoryOwner?.dispose();
       frameState.waterSsrHistoryOwner?.dispose();

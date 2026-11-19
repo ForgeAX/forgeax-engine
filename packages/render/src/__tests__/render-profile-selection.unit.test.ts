@@ -5,6 +5,7 @@ import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-p
 import { createRenderProfileSelection } from '../pipeline/render-profile-selection';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import type { RenderProfile } from '../render-contract';
+import { getSsaoParameters } from '../ssao-config';
 import { DEFERRED_ATTACHMENT_BYTES } from '../standard-attachments';
 
 const profile: RenderProfile = Object.freeze({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'auto' });
@@ -15,6 +16,19 @@ const device = (storageBuffer = true, attachments = 8, bytes = 64) =>
   }) as Pick<RhiDevice, 'caps' | 'limits'>;
 
 describe('device-owned automatic Standard path', () => {
+  it('admits the native AO parameter vocabulary through the public profile boundary', () => {
+    const ssao = getSsaoParameters({ algorithm: 'spiral-ssao', application: 'scene-color' });
+    expect(validateRenderProfile({ ...profile, ssao })).toBeUndefined();
+    expect(
+      validateRenderProfile({ ...profile, ssao: { ...ssao, resolutionScale: 0.1 } }),
+    ).toBeDefined();
+    expect(
+      validateRenderProfile({
+        ...profile,
+        ssao: { ...ssao, misspelledRadius: 1 },
+      } as unknown as RenderProfile),
+    ).toContain('unsupported parameter');
+  });
   it.each([
     [true, 8, 64, 'deferred'],
     [true, 6, DEFERRED_ATTACHMENT_BYTES.surface, 'deferred'],

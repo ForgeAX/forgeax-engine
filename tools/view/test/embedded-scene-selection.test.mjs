@@ -10,8 +10,14 @@ test('an embedded canvas selection reaches its owning Shell without changing ind
   const api = createToolApi();
   const project = { id: 'game', root: '/game' };
   const target = { sessionId: 'session', targetId: 'scene', worldId: 'world', generation: 1, headed: true, width: 800, height: 600 };
-  const runtime = { project: { project, target, phase: 'running' }, preview: { target, asset: { guid: 'scene-asset', kind: 'scene' } } };
-  const other = { project: { project, target: { ...target, sessionId: 'other-session', targetId: 'other-scene' }, phase: 'running' } };
+  const runtime = { project: { project, target,
+    get status() { return { phase: 'running', sessionId: this.target.sessionId, generation: 1, target: this.target, browserGeneration: 1 }; } },
+    get projectStatus() { return { phase: 'running', sessionId: this.project.target.sessionId, generation: 1, target: this.project.target, browserGeneration: 1 }; },
+    subscribeProjectStatus() { return () => {}; }, preview: { target, asset: { guid: 'scene-asset', kind: 'scene' } } };
+  const other = { project: { project, target: { ...target, sessionId: 'other-session', targetId: 'other-scene' },
+    get status() { return { phase: 'running', sessionId: this.target.sessionId, generation: 1, target: this.target, browserGeneration: 1 }; } },
+    get projectStatus() { return { phase: 'running', sessionId: this.project.target.sessionId, generation: 1, target: this.project.target, browserGeneration: 1 }; },
+    subscribeProjectStatus() { return () => {}; } };
   const schema = toolJsonSchema({ type: 'object' });
   const provider = api.registerProvider({ sourceId: 'engine-workspace', providerId: 'engine', realm: 'engine', tools:
     ['target.pick', 'entity.inspect', 'entity.highlight'].map(operation => defineTool({ id: `engine.${operation}`, title: operation,

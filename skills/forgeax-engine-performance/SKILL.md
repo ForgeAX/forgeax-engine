@@ -282,6 +282,13 @@ loop alone does not qualify the lifecycle or persistent floor.
 
 ## Drive the optimization
 
+For App, Worker and direct Renderer profiling, use the capture-owned
+`session.beginFrame()` identity instead of independent frame counters. Check that
+the expected App and Render phases are actually present before attributing CPU
+cost: a capture started during Update must recover App phases on the next frame;
+missing phases do not mean zero work. Explicit imported frame identities retain
+their strict increasing-order contract.
+
 For slow dev startup, separate product-DDC warmth from a new browser and runtime.
 Use the DevKit workspace-timing request records and actual watcher snapshot spans
 to attribute first-frame waiting. Request durations overlap; compare their
@@ -391,6 +398,29 @@ controls as well as the ordinary route and preserve any slower-path tradeoff.
 
 A GPU-bound frame is attributed from a capture first; see
 [Optimize GPU frames from a capture](#optimize-gpu-frames-from-a-capture).
+
+## Qualify mobile frame measurements
+
+- Pin the physical device, OS, browser or embedded WebView, Engine build,
+  backend, execution realms, orientation, and drawing-buffer extent. Capture
+  actual scene geometry during the measurement window. A HUD, an increasing
+  frame counter, or a completed sky-only frame cannot qualify a scene sample.
+- Start with ordinary foreground gameplay and sample real frame completions.
+  Record the GPU queue completion interval and the physical canvas size
+  separately from JavaScript frame cadence and reported FPS. Queue completion
+  also includes queued work and scheduling latency. Compare both stationary
+  and moving windows when the reported slowdown occurs in play.
+- For pass attribution, use the existing
+  [GPU pass timing route](../../packages/devkit/README.md#opt-in-gpu-timing-in-a-generated-host) in
+  the actual Render Worker or local Renderer. Preserve skipped timings.
+  If inspection changes startup, loses the context, or selects another
+  backend, retain that run as failed evidence and repeat the ordinary workload
+  with the probe disabled before drawing a performance conclusion.
+- Change one condition per phone comparison and keep the original quality
+  window. Recheck pixels and the active backend after each change. Label
+  lower resolution and disabled work as diagnostic ablations. When removing a
+  pass isolates the cost, test alternate native recording of the same draws
+  with the feature enabled before changing the quality settings.
 
 ## Optimize GPU frames from a capture
 

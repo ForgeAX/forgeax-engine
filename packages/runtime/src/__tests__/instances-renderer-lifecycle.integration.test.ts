@@ -6,6 +6,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import {
+  nativeOutputShaderFixture,
   standardPbrManifestRow,
   waterInfoShaderFixture,
 } from '../../../render/src/__tests__/shader-manifest-fixture';
@@ -25,12 +26,14 @@ const manifest = `data:application/json,${encodeURIComponent(
   JSON.stringify({
     entries: [
       ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr00000', wgsl: 'f_schlick(', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: 'unlit', glsl: '', bindings: '' },
       { hash: 'tonemap0', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
     ],
     materialShaders: [
       ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       {
         identifier: 'forgeax::default-unlit',
         sourcePath: 'unlit.wgsl',

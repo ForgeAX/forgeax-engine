@@ -10,7 +10,7 @@
 // Structural-only smoke: 1 frame render, shadow factor sampling confirms
 // semantic expectations.
 
-import { readFileSync } from 'node:fs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
@@ -48,7 +48,7 @@ async function loadManifestDataUrl(): Promise<string | null> {
       here,
       '../../../../../apps/hello/shadow-opt-out/dist/shaders/manifest.json',
     );
-    const text = readFileSync(manifestPath, 'utf8');
+    const text = readShaderManifestText(manifestPath);
     return `data:application/json,${encodeURIComponent(text)}`;
   } catch {
     return null;

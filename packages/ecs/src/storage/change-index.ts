@@ -1,12 +1,10 @@
-/** Current-state epochs over the 24-bit entity-slot space, without a history queue. */
+/** Latest structural change per 24-bit entity slot, including retired slots. */
 interface Branch {
   max: number;
-  size: number;
   readonly children: Array<Node | undefined>;
 }
 interface Leaf {
   max: number;
-  size: number;
   readonly epochs: Float64Array;
 }
 type Node = Branch | Leaf;
@@ -14,154 +12,40 @@ const ROOT_SHIFT = 18;
 const WIDTH = 64;
 const MASK = WIDTH - 1;
 
-/** Emptied nodes parked for reuse; bounded so a mass removal releases memory. */
-const SPARE_LIMIT = 64;
-interface Spares {
-  readonly leaves: Leaf[];
-  readonly branches: Branch[];
-}
-
-function write(
-  node: Node | undefined,
-  key: number,
-  epoch: number,
-  shift: number,
-  spares: Spares,
-): Node {
+function write(node: Node | undefined, key: number, epoch: number, shift: number): Node {
   if (shift === 0) {
-    const leaf = (node ??
-      spares.leaves.pop() ?? { max: 0, size: 0, epochs: new Float64Array(WIDTH) }) as Leaf;
+    const leaf = (node ?? { max: 0, epochs: new Float64Array(WIDTH) }) as Leaf;
     const lane = key & MASK;
-    if (leaf.epochs[lane] === 0) leaf.size++;
     leaf.epochs[lane] = epoch;
     if (epoch > leaf.max) leaf.max = epoch;
     return leaf;
   }
-  const branch = (node ??
-    spares.branches.pop() ?? {
-      max: 0,
-      size: 0,
-      children: new Array<Node | undefined>(WIDTH),
-    }) as Branch;
+  const branch = (node ?? {
+    max: 0,
+    children: new Array<Node | undefined>(WIDTH),
+  }) as Branch;
   const lane = (key >>> shift) & MASK;
-  const previous = branch.children[lane];
-  const previousSize = previous?.size ?? 0;
-  const child = write(previous, key, epoch, shift - 6, spares);
-  branch.children[lane] = child;
-  branch.size += child.size - previousSize;
+  branch.children[lane] = write(branch.children[lane], key, epoch, shift - 6);
   if (epoch > branch.max) branch.max = epoch;
   return branch;
 }
 
-// `max` stays exact so reads prune every clean path. A node rescans its lanes
-// only when the erased entry held its maximum; an emptied node is detached
-// (and parked for reuse) rather than rescanned.
-function erase(
-  node: Node | undefined,
-  key: number,
-  shift: number,
-  spares: Spares,
-): Node | undefined {
-  if (node === undefined) return undefined;
-  const lane = (key >>> shift) & MASK;
-  if (shift === 0) {
-    const leaf = node as Leaf;
-    const previous = leaf.epochs[lane] ?? 0;
-    if (previous === 0) return leaf;
-    leaf.size--;
-    leaf.epochs[lane] = 0;
-    if (leaf.size === 0) {
-      leaf.max = 0;
-      if (spares.leaves.length < SPARE_LIMIT) spares.leaves.push(leaf);
-      return undefined;
-    }
-    if (previous === leaf.max) {
-      let max = 0;
-      for (let index = 0; index < WIDTH; index++) {
-        const epoch = leaf.epochs[index] ?? 0;
-        if (epoch > max) max = epoch;
-      }
-      leaf.max = max;
-    }
-    return leaf;
-  }
-  const branch = node as Branch;
-  const previous = branch.children[lane];
-  if (previous === undefined) return branch;
-  const previousSize = previous.size;
-  const previousMax = previous.max;
-  const child = erase(previous, key, shift - 6, spares);
-  branch.children[lane] = child;
-  branch.size += (child?.size ?? 0) - previousSize;
-  if (branch.size === 0) {
-    branch.max = 0;
-    if (spares.branches.length < SPARE_LIMIT) spares.branches.push(branch);
-    return undefined;
-  }
-  if (previousMax === branch.max && (child?.max ?? 0) < previousMax) {
-    let max = 0;
-    for (let index = 0; index < WIDTH; index++) {
-      const epoch = branch.children[index]?.max ?? 0;
-      if (epoch > max) max = epoch;
-    }
-    branch.max = max;
-  }
-  return branch;
-}
-
-/**
- * Live component leaves are removed with membership; structural leaves coalesce
- * by recyclable World slot. Neither reads nor writes enumerate consumers.
- * Existing paths mutate in place, and emptied nodes are reused, so repeated
- * writes and membership churn allocate no node.
- */
 export class ChangeIndex {
   private root: Node | undefined;
-  private readonly spares: Spares = { leaves: [], branches: [] };
   private readEntries = 0;
-  private readLeafKey = -1;
-  private readLeaf: Float64Array | undefined;
   // Writes arrive in slot runs; the last written leaf skips the descent.
-  // Only `delete` can detach (and park) a leaf, so it alone clears this.
   private writeLeafKey = -1;
   private writeLeaf: Leaf | undefined;
 
-  get size(): number {
-    return this.root?.size ?? 0;
-  }
   get checkedEntries(): number {
     return this.readEntries;
   }
 
-  /** Current epoch for one known identity; no row copy or discovery walk. */
-  get(key: number): number {
-    const leafKey = key >>> 6;
-    if (leafKey !== this.readLeafKey) {
-      let node = this.root;
-      for (let shift = ROOT_SHIFT; shift > 0 && node !== undefined; shift -= 6)
-        node = (node as Branch).children[(key >>> shift) & MASK];
-      this.readLeafKey = leafKey;
-      this.readLeaf = node === undefined ? undefined : (node as Leaf).epochs;
-    }
-    return this.readLeaf?.[key & MASK] ?? 0;
-  }
-
   set(key: number, epoch: number): void {
-    const leafKey = this.readLeafKey;
-    const leaf = this.readLeaf;
-    this.readLeafKey = -1;
-    this.readLeaf = undefined;
-    if (!this.overwrite(key, epoch))
-      this.root = write(this.root, key, epoch, ROOT_SHIFT, this.spares);
-    // Writes mutate existing leaves in place, so a cached leaf stays valid
-    // once the write succeeded; a cached miss may now be a new leaf.
-    if (leaf !== undefined) {
-      this.readLeafKey = leafKey;
-      this.readLeaf = leaf;
-    }
+    if (!this.overwrite(key, epoch)) this.root = write(this.root, key, epoch, ROOT_SHIFT);
   }
 
-  /** Overwrite an occupied lane along its existing path; sizes are unchanged. */
+  /** Overwrite an occupied lane along its existing path. */
   private overwrite(key: number, epoch: number): boolean {
     if (epoch === 0) return false;
     const leafKey = key >>> 6;
@@ -187,14 +71,6 @@ export class ChangeIndex {
       node = (node as Branch).children[(key >>> shift) & MASK];
     }
     return true;
-  }
-
-  delete(key: number): void {
-    this.readLeafKey = -1;
-    this.readLeaf = undefined;
-    this.writeLeafKey = -1;
-    this.writeLeaf = undefined;
-    this.root = erase(this.root, key, ROOT_SHIFT, this.spares);
   }
 
   /** Synchronous owner callback, in stable slot order; no borrowed values escape. */

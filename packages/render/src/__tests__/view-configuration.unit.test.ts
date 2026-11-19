@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
+import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { configureViewStandard, seedViewConfiguration } from '../view-configuration';
 import type { ViewSettlementOwner } from '../world/view-settlement';
 
@@ -52,5 +53,18 @@ describe('view configuration', () => {
     expect(target.registerBuiltinPostProcess).toHaveBeenCalledWith('forgeax.fxaa', entry);
     expect(target.bag.frameState.standardInstall.configured).toEqual({ outputDither: false });
     expect(target.bag.ssrFormats.get(device)).toBe(receipt);
+  });
+});
+
+it('uses native V2 for a new Standard view and retains explicit saved V1', () => {
+  const f = owner();
+  Object.assign(f.bag.internals, { standardProfile: DEFAULT_STANDARD_PROFILE });
+  configureViewStandard(f.view, undefined);
+  expect(f.bag.frameState.installedPipelineConfig).toMatchObject({
+    outputContract: 'standard-output-v2',
+  });
+  configureViewStandard(f.view, { outputContract: 'standard-output-v1' });
+  expect(f.bag.frameState.installedPipelineConfig).toMatchObject({
+    outputContract: 'standard-output-v1',
   });
 });

@@ -1,6 +1,7 @@
 #define_import_path forgeax_material::points_lines
+#import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_clipping::planes::{applyViewClipping}
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog}
 #import forgeax_view::common::{view}
 
 // Portable triangle expansion for square/circle/soft points and independent
@@ -17,6 +18,7 @@ struct PointsLinesView {
   worldViewProj : mat4x4<f32>,
   model : mat4x4<f32>,
   physicalViewport : vec2<f32>,
+  pointMinPixelSize : f32,
   style : vec4<f32>,
   dash : vec4<f32>,
 };
@@ -48,7 +50,7 @@ struct PointsLinesFragment {
   @location(3) @interpolate(flat) segmentPixels : vec4<f32>,
   @location(5) @interpolate(flat) segmentDistances : vec4<f32>,
   @location(4) @interpolate(flat) dash : vec3<f32>,
-  @location(2) clippingPositionWS : vec3<f32>,
+  @location(2) clippingPositionWS : vec4<f32>,
   @builtin(position) position : vec4<f32>,
   @location(0) @interpolate(flat) shape : f32,
   // Point corners share clip.w, so perspective interpolation keeps the
@@ -73,7 +75,8 @@ fn rasterPixels(clip : vec4<f32>, extent : f32) -> f32 {
 
 fn expandPoint(position : vec3<f32>, corner : vec2<f32>, size : f32) -> vec4<f32> {
   let clip = pointsLinesView.worldViewProj * pointsLinesView.model * vec4<f32>(position, 1.0);
-  let offset = clipPixelDelta(clip, corner * (rasterPixels(clip, size) * 0.5));
+  let pixels = max(rasterPixels(clip, size), pointsLinesView.pointMinPixelSize);
+  let offset = clipPixelDelta(clip, corner * (pixels * 0.5));
   return vec4<f32>(clip.xy + offset, clip.z, clip.w);
 }
 
@@ -187,7 +190,8 @@ fn vs_main(input : PointsLinesVertex) -> PointsLinesFragment {
     output.segmentDistances = vec4<f32>(startDistance + line.fractions * length, line.start.w, line.end.w);
     output.capRadii = vec2<f32>(lineHalfWidthPx(line.start), lineHalfWidthPx(line.end));
   }
-  output.clippingPositionWS = (pointsLinesView.model * vec4<f32>(clippingPosition, 1.0)).xyz;
+  let world = (pointsLinesView.model * vec4<f32>(clippingPosition, 1.0)).xyz;
+  output.clippingPositionWS = vec4<f32>(world, vertex_height_fog(view, world));
   output.dash = select(vec3<f32>(1.0, 0.0, 0.0), pointsLinesView.dash.xyz, isLine);
   // -1 marks a line; points carry their shape label (0 square, 1 circle, 2 soft).
   output.shape = select(pointsLinesView.style.z, -1.0, isLine);
@@ -196,7 +200,7 @@ fn vs_main(input : PointsLinesVertex) -> PointsLinesFragment {
 }
 
 fn shadePointsLines(input : PointsLinesFragment) -> vec4<f32> {
-  applyViewClipping(input.clippingPositionWS, false);
+  applyViewClipping(input.clippingPositionWS.xyz, false);
   if input.dash.y > 0.0 {
     let period = input.dash.x + input.dash.y;
     // Project the fragment onto the centerline, not the miter's diagonal edge.
@@ -216,9 +220,13 @@ fn shadePointsLines(input : PointsLinesFragment) -> vec4<f32> {
   let falloff = 1.0 - min(radiusSquared, 1.0);
   let coverage = select(1.0, falloff * falloff, input.shape > 1.5);
   // Points map the texture across the sprite (Three.js PointsMaterial.map).
+  let transform = material.baseColorTextureCoordinatesTransform;
+  let spriteUv = materialUvLinear(
+    input.sampleCenter * 0.5 + vec2<f32>(0.5), transform, material.baseColorTextureCoordinatesRotation,
+  ) + transform.xy;
   let uv = select(
     material.baseColorTextureCoordinatesMetadata.xy,
-    input.sampleCenter * 0.5 + vec2<f32>(0.5, 0.5),
+    spriteUv,
     input.shape > -0.5,
   );
   let textureColor = textureSample(baseColorTexture, baseColorSampler, uv);
@@ -227,7 +235,7 @@ fn shadePointsLines(input : PointsLinesFragment) -> vec4<f32> {
   if material.alphaCutoff > 0.0 && color.a < material.alphaCutoff {
     discard;
   }
-  return vec4<f32>(translucent_fog(view, input.clippingPositionWS, color.rgb, color.a), color.a);
+  return vec4<f32>(forward_fog(view, input.clippingPositionWS.xyz, input.clippingPositionWS.w, color.rgb, color.a), color.a);
 }
 
 @fragment

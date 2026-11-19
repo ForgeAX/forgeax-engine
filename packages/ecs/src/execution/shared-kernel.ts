@@ -1,10 +1,10 @@
-import type { Component, SchemaFieldType } from '../component';
-import { componentId, componentSchema } from '../component';
+import { componentDefinition, componentId } from '../component';
 import {
-  SharedKernelEligibilityError,
-  SharedKernelFailureError,
-} from '../errors/shared-kernel-errors';
-import type { QueryDescriptor, QuerySpan } from '../query/query';
+  createSharedKernelEligibilityError,
+  createSharedKernelFailureError,
+  isEcsFault,
+} from '../errors';
+import { DESCRIPTOR_ROLES, type QueryDescriptor, type QuerySpan } from '../query/query';
 import { defineResource } from '../resource';
 import { defineSystem, type System, type SystemOrderReference } from '../schedule';
 import { worldInternal } from '../world-internal';
@@ -124,32 +124,6 @@ export interface SharedKernelHandle<
 > extends System<Qs>,
     SharedKernelDispatch<Qs> {}
 
-const NUMERIC_FIELDS = new Set<SchemaFieldType>([
-  'f32',
-  'f64',
-  'i32',
-  'u32',
-  'i16',
-  'u16',
-  'i8',
-  'u8',
-  'bool',
-  'enum',
-  'entity',
-]);
-
-function components(descriptor: QueryDescriptor): readonly Component[] {
-  return [
-    ...(descriptor.read ?? []),
-    ...(descriptor.write ?? []),
-    ...(descriptor.optional ?? []),
-    ...(descriptor.with ?? []),
-    ...(descriptor.without ?? []),
-    ...(descriptor.changed ?? []),
-    ...(descriptor.added ?? []),
-  ];
-}
-
 function descriptorReason(descriptor: QueryDescriptor): SharedKernelEligibilityReason | undefined {
   if ((descriptor.read?.length ?? 0) + (descriptor.write?.length ?? 0) === 0) {
     return 'missing-access-declaration';
@@ -162,12 +136,15 @@ function descriptorReason(descriptor: QueryDescriptor): SharedKernelEligibilityR
     return 'span-unavailable';
   }
   const seen = new Set<number>();
-  for (const component of components(descriptor)) {
-    if (seen.has(componentId(component))) return 'descriptor-conflict';
-    seen.add(componentId(component));
-    if (component.storage === 'sparse') return 'span-unavailable';
-    if (Object.values(componentSchema(component)).some((field) => !NUMERIC_FIELDS.has(field))) {
-      return 'object-field';
+  for (const role of DESCRIPTOR_ROLES) {
+    const components = descriptor[role];
+    if (components === undefined) continue;
+    for (const component of components) {
+      const id = componentId(component);
+      if (seen.has(id)) return 'descriptor-conflict';
+      seen.add(id);
+      if (component.storage === 'sparse') return 'span-unavailable';
+      if (!componentDefinition(component).plan.scalarOnly) return 'object-field';
     }
   }
   return undefined;
@@ -201,7 +178,7 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
   definition: SharedKernelDefinition<Qs>,
 ): SharedKernelHandle<Qs> {
   const reason = sharedKernelEligibility(moduleUrl, definition);
-  if (reason !== undefined) throw new SharedKernelEligibilityError(definition.name, reason);
+  if (reason !== undefined) throw createSharedKernelEligibilityError(definition.name, reason);
 
   const descriptor = {
     ...(definition.sets === undefined ? {} : { sets: definition.sets }),
@@ -217,7 +194,8 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
       const dispatchSpans: KernelDispatchSpan[] = [];
       for (const [queryIndex, query] of queries.entries()) {
         const result = query.spans();
-        if (!result.ok) throw new SharedKernelEligibilityError(definition.name, 'span-unavailable');
+        if (!result.ok)
+          throw createSharedKernelEligibilityError(definition.name, 'span-unavailable');
         for (const span of result.value) dispatchSpans.push({ queryIndex, span });
       }
       const spans = dispatchSpans.map((entry) => entry.span);
@@ -227,15 +205,13 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
           totalRows < (definition.minimumRows ?? 16_384) ||
           !world.hasResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY)
         ) {
-          definition.run(spans);
-          return;
+          return definition.run(spans);
         }
         const executor = world.getResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY);
         const result = executor.execute(handle, dispatchSpans);
         if (isKernelDispatchFailure(result)) {
           if (!result.partialWrite) {
-            definition.run(spans);
-            return;
+            return definition.run(spans);
           }
           world[worldInternal].poisonExecution({
             code: 'shared-kernel-failed',
@@ -244,7 +220,7 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
             partialWrite: result.partialWrite,
             retryable: false,
           });
-          throw new SharedKernelFailureError(
+          throw createSharedKernelFailureError(
             definition.name,
             world.execution.identity,
             result.cause,
@@ -259,8 +235,13 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
           partialWrite: true,
           retryable: false,
         });
-        if (cause instanceof SharedKernelFailureError) throw cause;
-        throw new SharedKernelFailureError(definition.name, world.execution.identity, cause, true);
+        if (isEcsFault(cause, 'shared-kernel-failed')) throw cause;
+        throw createSharedKernelFailureError(
+          definition.name,
+          world.execution.identity,
+          cause,
+          true,
+        );
       }
     },
   };

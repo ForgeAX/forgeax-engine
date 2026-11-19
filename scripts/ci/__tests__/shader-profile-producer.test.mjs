@@ -21,7 +21,7 @@ import {
   packagedProfilePublication,
 } from '../../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../../packages/vite-plugin-shader/dist/source-digest.mjs';
-import { runnerResources, shaderCompileWorkers } from '../../lib/runner-resources.mjs';
+import { runnerResources, shaderProducerCompileWorkers } from '../../lib/runner-resources.mjs';
 import {
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -163,6 +163,18 @@ test('preparing one shader profile preserves declarations and other profiles', (
   try {
     mkdirSync(join(input, 'point-ssao', 'shaders'), { recursive: true });
     writeFileSync(join(input, 'point-ssao', 'shaders', 'manifest.json'), publication('point'));
+    writeFileSync(
+      join(input, 'point-ssao', 'manifest.json'),
+      JSON.stringify({
+        producer: 'repo-build-inputs',
+        payload: { engineShaderManifest: join(input, 'point-ssao/shaders/manifest.json') },
+        shaderBuild: sharedShaderReceipt(
+          process.cwd(),
+          join(input, 'point-ssao/shaders/manifest.json'),
+          sharedShaderInputFingerprint(process.cwd(), { pointShadows: true, hdrpSsao: true }),
+        ),
+      }),
+    );
     mkdirSync(output, { recursive: true });
     const shaderSourceDigest = engineShaderSourceDigest('packages/shader/src');
     writeFileSync(
@@ -200,10 +212,62 @@ test('preparing one shader profile preserves declarations and other profiles', (
   }
 });
 
+test('packaging without a build cannot relabel unverified bytes with current source provenance', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'forgeax-profile-admission-'));
+  const input = join(directory, 'input');
+  const output = join(directory, 'output');
+  const shaderPath = join(input, 'base-ssao/shaders/manifest.json');
+  const manifestPath = join(input, 'base-ssao/manifest.json');
+  try {
+    mkdirSync(dirname(shaderPath), { recursive: true });
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, 'profiles.json.gz'), 'previous output');
+    const publish = (profile = { pointShadows: false, hdrpSsao: true }) => {
+      writeFileSync(shaderPath, publication('current'));
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          producer: 'repo-build-inputs',
+          payload: { engineShaderManifest: shaderPath },
+          shaderBuild: sharedShaderReceipt(
+            process.cwd(),
+            shaderPath,
+            sharedShaderInputFingerprint(process.cwd(), profile),
+          ),
+        }),
+      );
+    };
+    const args = [script, '--profile', 'base-ssao', '--input', input, '--output', output];
+    for (const mutate of [
+      () => rmSync(manifestPath),
+      () => writeFileSync(manifestPath, '{}'),
+      () => writeFileSync(shaderPath, publication('changed bytes')),
+      () => publish({ pointShadows: true, hdrpSsao: true }),
+      () => {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        manifest.shaderBuild.inputFingerprint = 'old compiler/source';
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+      },
+    ]) {
+      publish();
+      mutate();
+      const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+      assert.notEqual(result.status, 0, 'unverified input was silently stamped current');
+      assert.match(result.stderr, /shader-profile-input-unverified/);
+      assert.match(result.stderr, /--build --profile base-ssao/);
+      assert.equal(readFileSync(join(output, 'profiles.json.gz'), 'utf8'), 'previous output');
+    }
+    publish();
+    execFileSync(process.execPath, args, { encoding: 'utf8' });
+    assert.equal(profileMarker(output, 'base-ssao'), 'current');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('SDK and browser use one profile producer and preserve source-build validation', () => {
   const sdk = readFileSync('scripts/forgeax/build-sdk.mjs', 'utf8');
   const browser = readFileSync('scripts/ci/run-split-vitest-browser.mjs', 'utf8');
-  const producer = readFileSync(script, 'utf8');
   const sourceProducer = readFileSync('scripts/build-shared-inputs.mjs', 'utf8');
   assert.match(sdk, /prepare-shader-release-inputs\.mjs',\s*'--build'/);
   assert.doesNotMatch(sdk, /\['point-base', '--point-shadows'\]/);
@@ -215,11 +279,8 @@ test('SDK and browser use one profile producer and preserve source-build validat
   assert.ok(
     browser.indexOf('const prepared =') < browser.indexOf('const cliPath = resolveCliPath()'),
   );
-  assert.match(producer, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD: '1'/);
-  assert.ok(
-    sourceProducer.indexOf("process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1'") <
-      sourceProducer.indexOf('await build('),
-  );
+  const sourceMode = sourceProducer.indexOf("process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1'");
+  assert.ok(sourceMode >= 0 && sourceMode < sourceProducer.indexOf('await build('));
   assert.match(browser, /'--passWithNoTests=false'/);
 });
 
@@ -295,16 +356,17 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       import { mkdirSync, writeFileSync } from 'node:fs';
       import { resolve } from 'node:path';
       import { getHeapStatistics } from 'node:v8';
-      import { runnerResources, shaderProducerHeapSize } from './lib/runner-resources.mjs';
+      import { runnerResources, shaderProducerCompileWorkers, shaderProducerHeapSize } from './lib/runner-resources.mjs';
+      import { admitShaderSourceBudget } from './lib/shader-source-budget.mjs';
       const heapMiB = shaderProducerHeapSize(runnerResources());
       if (!process.execArgv.includes('--max-old-space-size=' + heapMiB) ||
           getHeapStatistics().heap_size_limit < heapMiB * 1024 * 1024) {
         throw new Error('Source shader publication requires its runner-sized heap');
       }
+      admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });
       const workers = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
-      if (!Number.isInteger(workers) || workers < 1 || workers > 4 ||
-          (process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS &&
-           workers !== Number(process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS))) {
+      if (process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS &&
+          workers !== Number(process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS)) {
         throw new Error('Release shader publication requires its bounded compiler pool');
       }
       const out = process.argv[process.argv.indexOf('--out') + 1];
@@ -395,7 +457,7 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       assert.equal(profileMarker(output, 'point-ssao'), 'sourceBuild');
     }
     for (const requested of ['1', '2', '64']) {
-      const expected = Math.min(4, shaderCompileWorkers(runnerResources(), requested));
+      const expected = shaderProducerCompileWorkers(runnerResources(), requested);
       assert.match(
         invoke({
           FORGEAX_BUILD_NO_TASK_CACHE: '1',

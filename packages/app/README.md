@@ -1558,6 +1558,12 @@ reports `control: game | observer`; `release()` removes observation control and
 restores a live game camera. Focus unions the selected entity subtree bounds from the Renderer and fits the observation camera projection. Plain transform targets retain point focus. A mesh whose renderer bounds are unavailable is rejected before camera acquisition; explicit position, target and distance remain overrides. All changes remain
 runtime-only and disappear when the World is replaced.
 
+An observer borrows its source camera's declared `CameraView` and companion
+effects through the native ActiveCamera viewpoint selection. It replaces that
+one composition slot, preserves other views and restores the original roster on
+release. The source camera's transform, view budget and effect components are
+never rewritten; lens-dependent effects resolve against the observer's lens.
+
 ## Project plugin roots
 
 DevKit supplies one plugin asset root and program table per realm. The existing asset provider owns `pluginPrograms` and the optional `runtimePacks` capability. `activateExecutionRoot` only mounts the selected root through the native startup barrier, after game Host readiness. Engine main and Worker use the same contract; `PreparedExecutionBootstrap.pluginPrograms` and `.runtimePacks` are constructed inside the target realm, never cloned over MessagePort, while `.root` only selects its GUID. Host DOM/audio plugins use the Host root and existing POD bridges. Code/config changes replace the session; World state is not restored by a failed replacement.

@@ -39,9 +39,14 @@ import type {
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
 import { clippingCapRenderState, reflectedRenderState } from '../material-render-state';
-import { standardSurfaceDiscardMask } from '../material-stage-constants';
+import {
+  applySurfaceDiscardAxis,
+  materialAbiRasterConstants,
+  standardSurfaceDiscardMask,
+} from '../material-stage-constants';
 import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
+import { PREDEPTH_FRAGMENT_ENTRY, predepthCoversMaterial } from '../predepth-coverage';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { GpuDrawSummary } from '../record/gpu-draw-receipts';
@@ -382,6 +387,11 @@ export interface GpuDrivenPrepareInput {
   readonly deviceGeneration?: number;
   /** Renderer-owned generic read-only Surface page and instance ranges. */
   readonly surfaceDynamicInput?: SurfaceDynamicInputFrame;
+  /** Direct GPU-vertex draws borrowing the same renderer-owned Surface page. */
+  readonly directSurface?: {
+    readonly artifact: MaterialShaderArtifact;
+    readonly ranges: NonNullable<SurfaceDynamicInputFrame['ranges']>;
+  };
   /** Optional profiler seam for the `record/gpu-driven-prepare/*` phases. */
   readonly profilePhase?: RecordProfileRunner;
 }
@@ -503,6 +513,7 @@ function rasterSampleCount(value: number): 1 | 4 {
 }
 
 function hasSurfaceArtifact(input: GpuDrivenPrepareInput): boolean {
+  if (input.directSurface !== undefined) return true;
   if (input.materialArtifact?.receipt?.surface !== undefined) return true;
   if (input.materialSkinArtifact?.receipt?.surface !== undefined) return true;
   if (input.materialArtifacts === undefined) return false;
@@ -1209,7 +1220,11 @@ export class GpuDrivenProduction {
     });
     const shadowFiltered =
       input.shadowViews === true ? this.shadowFilteredPlan(input, scene, materials) : undefined;
-    if (filtered.batches.length === 0 && (shadowFiltered?.batches.length ?? 0) === 0)
+    if (
+      filtered.batches.length === 0 &&
+      (shadowFiltered?.batches.length ?? 0) === 0 &&
+      input.directSurface === undefined
+    )
       return undefined;
     const admission = this.submissionAdmission(input, scene);
     this.admissionCache = admission;
@@ -1310,9 +1325,9 @@ export class GpuDrivenProduction {
     materialPipelineState: PipelineState,
     { preparedPlan, filtered, admission, shadowFiltered }: FilteredFrame,
   ): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
-    const surfaceArtifact = filtered.materialBatches.find(({ artifact }) =>
-      isSingleLayerMediumArtifact(artifact),
-    )?.artifact;
+    const surfaceArtifact =
+      filtered.materialBatches.find(({ artifact }) => isSingleLayerMediumArtifact(artifact))
+        ?.artifact ?? input.directSurface?.artifact;
     this.surfaceArtifactInspection = surfaceArtifactInspection(surfaceArtifact);
     if (surfaceArtifact !== undefined) {
       const admitted = this.admitSurfaceSubmission(surfaceArtifact, input);
@@ -1514,7 +1529,9 @@ export class GpuDrivenProduction {
     visibleBuffer: Buffer,
   ): Result<MaterialAbiRasterAdapter, RhiError | GpuDrivenPreparationError> {
     const representativeArtifact =
-      filtered.materialBatches[0]?.artifact ?? shadowFiltered?.materialBatches[0]?.artifact;
+      filtered.materialBatches[0]?.artifact ??
+      shadowFiltered?.materialBatches[0]?.artifact ??
+      input.directSurface?.artifact;
     if (representativeArtifact === undefined) {
       return err(
         new RhiError({
@@ -1599,7 +1616,13 @@ export class GpuDrivenProduction {
     skinRaster: MaterialAbiRasterAdapter | undefined,
     layout: MaterialDynamicInputLayout | undefined,
   ): Result<void, RhiError> {
-    const projection = this.surfaceFrames.resolve(filtered, input.surfaceDynamicInput, scene);
+    const directRanges = input.directSurface?.ranges;
+    const projection = this.surfaceFrames.resolve(
+      filtered,
+      input.surfaceDynamicInput,
+      scene,
+      directRanges,
+    );
     if (!projection.ok) return projection;
     const capacity = Math.max(scene.scene.rowCapacity, projection.value.capacity);
     const frameTime = input.surfaceDynamicInput?.frameTime ?? input.frameTime ?? 0;
@@ -1631,7 +1654,13 @@ export class GpuDrivenProduction {
       const skinCommitted = skinRaster.commitSurfaceDynamicInput();
       if (!skinCommitted.ok) return skinCommitted;
     }
-    this.surfaceFrames.remember(filtered, input.surfaceDynamicInput, scene, projection.value);
+    this.surfaceFrames.remember(
+      filtered,
+      input.surfaceDynamicInput,
+      scene,
+      projection.value,
+      directRanges,
+    );
     return ok(undefined);
   }
 
@@ -1974,7 +2003,7 @@ export class GpuDrivenProduction {
       !this.projectLateRasterClass(projected, live)
     )
       return undefined;
-    return rasterClassFor(
+    const selected = rasterClassFor(
       projected.rasterClasses,
       projected.target.rendererRecording,
       live,
@@ -1982,6 +2011,9 @@ export class GpuDrivenProduction {
       fragmentEntryPoint,
       coverageOnly,
     );
+    return fragmentEntryPoint === PREDEPTH_FRAGMENT_ENTRY && selected?.predepthCovered !== true
+      ? undefined
+      : selected;
   }
 
   private projectLateRasterClass(projected: ProjectedRasterGraph, live: LiveRasterBatch): boolean {
@@ -2063,6 +2095,7 @@ export class GpuDrivenProduction {
     }
     const { artifact } = prepared;
     const rasterClass: ProjectedRasterClass = {
+      predepthCovered: shape.predepthCovered,
       renderState: prepared.renderState,
       artifact,
       mesh: prepared.mesh,
@@ -2087,7 +2120,24 @@ export class GpuDrivenProduction {
     const { artifact, batch, mesh } = prepared;
     const recording = target.rendererRecording;
     const pipelineState = frame.materialPipelineState;
+    const discardMask = standardSurfaceDiscardMask(
+      lodCoverageMayFade(batch),
+      frame.viewClippingLive,
+    );
+    const proofArtifact =
+      frame.input.materialArtifactResolver?.(artifact.material, {
+        deformation,
+        address: 'scene-index',
+        variantSet:
+          applySurfaceDiscardAxis(
+            artifact.variantSet,
+            materialAbiRasterConstants(undefined, discardMask),
+          ).variantSet ?? '',
+        vertexColorAvailable:
+          artifact.receipt?.vertexInputs.some((input) => input.semantic === 'color') === true,
+      }) ?? (discardMask === 0 ? artifact : undefined);
     return {
+      predepthCovered: predepthCoversMaterial(proofArtifact, prepared.renderState),
       raster,
       prepared,
       artifact,
@@ -2297,6 +2347,8 @@ export class GpuDrivenProduction {
           opaqueDepthPrimed,
           visibleSurface: frame.input.visibleSurface !== undefined,
           viewClipping: frame.viewClippingLive,
+          directionalShadowSimple: frame.input.directionalShadowSimple === true,
+          leanLighting: frame.input.leanLighting === true,
           ...(onPending === undefined ? {} : { onPending }),
         })
       )
@@ -3884,15 +3936,24 @@ export class GpuDrivenProduction {
           lodHistogram.set(row.level, (lodHistogram.get(row.level) ?? 0) + row.count);
         }
       }
+      const candidateCount = lodCandidateCount > 0 ? lodCandidateCount : projectedCandidateCount;
+      const visible = lodCandidateCount > 0 ? lodVisible : selection.visible;
       return {
         ...selection,
-        candidateCount: lodCandidateCount > 0 ? lodCandidateCount : projectedCandidateCount,
-        visible: lodCandidateCount > 0 ? lodVisible : selection.visible,
-        occluded: Math.max(
-          0,
-          (lodCandidateCount > 0 ? lodCandidateCount : projectedCandidateCount) -
-            (lodCandidateCount > 0 ? lodVisible : selection.visible),
-        ),
+        gpuSelection: Object.freeze({
+          candidateCount: selection.candidateCount,
+          visible: selection.visible,
+          frustumCulled: selection.frustumCulled,
+          texelCulled: selection.texelCulled,
+          cameraCulled: selection.cameraCulled,
+          overflow: selection.overflow,
+          geometryWork: selection.geometryWork,
+          rootGeometryWork: selection.rootGeometryWork,
+          ...(selection.occlusion === undefined ? {} : { occlusion: selection.occlusion }),
+        }),
+        candidateCount,
+        visible,
+        occluded: Math.max(0, candidateCount - visible),
         lodHistogram: Object.freeze(
           [...lodHistogram.entries()]
             .sort(([left], [right]) => left - right)

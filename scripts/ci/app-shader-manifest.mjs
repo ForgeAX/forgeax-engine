@@ -2,6 +2,10 @@
 
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import {
+  admitShaderTemplateManifest,
+  SHADER_TEMPLATE_MANIFEST_VERSION,
+} from '@forgeax/engine-shader';
 import { isShaderEntryPointReads } from '@forgeax/engine-types';
 import { SHADER_MANIFEST_PUBLICATION_VERSION } from '../../packages/shader/src/manifest-publication.ts';
 import { readShaderManifestText } from '../lib/shader-manifest.mjs';
@@ -58,7 +62,48 @@ const compactPools = [
     label: 'entry reads',
     valid: isShaderEntryPointReads,
   },
+  {
+    table: 'reflections',
+    reference: 'reflectionIndex',
+    inline: 'reflection',
+    label: 'reflection',
+    valid: (value) =>
+      value !== null && typeof value === 'object' && Array.isArray(value.bindingIndices),
+  },
 ];
+const compactTablesWithBindings = [
+  ...compactPools,
+  {
+    table: 'reflectionBindings',
+    label: 'reflection binding',
+    valid: (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
+  },
+];
+
+function mapReflection(row, binding, reads) {
+  return {
+    ...row,
+    bindingIndices: row.bindingIndices.map(binding),
+    ...(row.entryPointsIndex === undefined
+      ? {}
+      : { entryPointsIndex: reads(row.entryPointsIndex) }),
+  };
+}
+
+function poolValue(publication, table, value) {
+  if (table !== 'reflections') return value;
+  const read = (name, index) => {
+    const item = publication[name]?.[index];
+    if (!Number.isSafeInteger(index) || index < 0 || item === undefined)
+      fail(`compact shader reflection ${name} reference is missing: ${index}`);
+    return item;
+  };
+  return mapReflection(
+    value,
+    (index) => read('reflectionBindings', index),
+    (index) => read('entryPoints', index),
+  );
+}
 
 function remapPoolRows(rows, indices) {
   return rows.map((row) => {
@@ -81,14 +126,14 @@ function remapPoolRows(rows, indices) {
 
 function poolKeys(publication) {
   return Object.fromEntries(
-    compactPools.map((pool) => {
+    compactTablesWithBindings.map((pool) => {
       if (!Array.isArray(publication[pool.table]))
         fail(`compact shader manifest is missing ${pool.table}`);
       return [
         pool.table,
         publication[pool.table].map((value, index) => {
           if (!pool.valid(value)) fail(`compact shader ${pool.label} is invalid: ${String(index)}`);
-          return JSON.stringify(value);
+          return JSON.stringify(poolValue(publication, pool.table, value));
         }),
       ];
     }),
@@ -146,8 +191,17 @@ function compactTables(publication, entries, materialShaders) {
   const keys = poolKeys(publication);
   const tables = {};
   const indices = {};
-  for (const pool of compactPools) {
-    const used = new Set(rows.map((row) => row[pool.reference]));
+  for (const pool of compactTablesWithBindings) {
+    const used = new Set(
+      pool.reference === undefined ? [] : rows.map((row) => row[pool.reference]),
+    );
+    const reflections = rows
+      .filter((row) => row.reflectionIndex !== undefined)
+      .map((row) => publication.reflections[row.reflectionIndex]);
+    if (pool.table === 'entryPoints')
+      for (const row of reflections) used.add(row?.entryPointsIndex);
+    if (pool.table === 'reflectionBindings')
+      for (const row of reflections) for (const index of row?.bindingIndices ?? []) used.add(index);
     const values = [];
     const byKey = new Map();
     indices[pool.table] = keys[pool.table].map((key, original) => {
@@ -162,6 +216,13 @@ function compactTables(publication, entries, materialShaders) {
     });
     tables[pool.table] = values;
   }
+  tables.reflections = tables.reflections.map((row) =>
+    mapReflection(
+      row,
+      (index) => indices.reflectionBindings[index],
+      (index) => indices.entryPoints[index],
+    ),
+  );
   return {
     fragments,
     sources,
@@ -237,6 +298,14 @@ export function readSharedShaderManifest(root, requestedManifest) {
  * runtime manifest before any smoke or browser process starts.
  */
 export function projectAppShaderManifest(appManifest, sharedManifest, sourcePath = 'app manifest') {
+  // Native source publications already share their module library. A compiled
+  // Core profile cannot be the base of their different source representation.
+  if (appManifest?.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION) {
+    const admitted = admitShaderTemplateManifest(appManifest);
+    if (!admitted.ok)
+      fail(`invalid source shader publication: ${sourcePath}: ${admitted.error.message}`);
+    return appManifest;
+  }
   const compact = compactPair(appManifest, sharedManifest, sourcePath);
   const appEntries = manifestRows(appManifest, sourcePath, 'entries');
   const appMaterialShaders = manifestRows(appManifest, sourcePath, 'materialShaders');
@@ -373,6 +442,20 @@ export function mergeAppShaderManifest(sharedManifest, deltaManifest, sourcePath
         sources: mergedSources,
         receipts: [...sharedManifest.receipts, ...deltaManifest.receipts],
         entryPoints: [...sharedManifest.entryPoints, ...deltaManifest.entryPoints],
+        reflectionBindings: [
+          ...sharedManifest.reflectionBindings,
+          ...deltaManifest.reflectionBindings,
+        ],
+        reflections: [
+          ...sharedManifest.reflections,
+          ...deltaManifest.reflections.map((row) =>
+            mapReflection(
+              row,
+              (index) => index + sharedManifest.reflectionBindings.length,
+              (index) => index + sharedManifest.entryPoints.length,
+            ),
+          ),
+        ],
       },
       entries,
       materialShaders,

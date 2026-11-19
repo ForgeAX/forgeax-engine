@@ -8,6 +8,7 @@ export default defineConfig({
   environments: { client: { consumer: 'server' } },
   test: {
     name: '@forgeax/engine-devkit',
+    setupFiles: ['src/__tests__/fixtures/catalogue-store.ts'],
     environment: 'node',
     include: ['src/**/__tests__/**/*.test.ts'],
     // `*.dawn.test.ts` belongs to the root `dawn` project, which injects the GPU,

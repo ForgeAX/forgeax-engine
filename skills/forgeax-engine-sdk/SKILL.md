@@ -17,12 +17,16 @@ Reach a first correct edit with this short path, not by reading large skills up 
    each game need to its engine capability and lists what the engine does not do.
 1. Signatures and import paths: the API index before
    searching `node_modules` READMEs or `.d.ts` files.
-2. Effect recipes for an `empty` project: the effects cookbook (~2 KB index: water -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
+2. Effect recipes for an `empty` project: the effects cookbook (~2 KB index: water-looking surface -> stock `single-layer-medium`, fog/beam -> `beam-pillar`, indoor emissive ->
    `runtime-light-emissive`, rain/snow/fire/sparks -> `particles-*`). Open ONLY the file you need.
 3. Commands: the **Quick contract** at the top of
    [`forgeax-engine-cli`](../forgeax-engine-cli/SKILL.md); camera, lights and post
    effects: the Quick contract of
    [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md).
+   For optional interactive project/asset review, read
+   `skills/forgeax-view-start/SKILL.md` from the game root, or the installed copy at
+   `node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.md`.
+   View owns its file launcher; it is not discovered through cold CLI help.
 4. Deeper needs: pick one row in the capability table below and read only that skill's
    relevant section. Project layout, assets and setup live in the
    game project guide; acceptance, release and
@@ -170,7 +174,9 @@ the plan to save time is the usual cause of hand-rolled replacements and of capa
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
 | Code-authored props, hard-surface parts and kit meshes | `forgeax-engine-modeling` | `m.validate()` closed/volume facts, exported MeshAsset, browser pixels |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
+| Lake, waves, water queries or buoyancy (explicit opt-in) | [Water](../forgeax-engine-render-pipeline/SKILL.md#water) | Verify the lake in a completed browser frame before adding interactions |
 | Lighting, shadows, sky, fog, AA, post effects, custom passes | `forgeax-engine-render-pipeline` | Requested pipeline active and real GPU/browser evidence |
+| Programmable volumetric clouds, cloud material instances, moving cloud shadows | [Volumetric clouds](../forgeax-engine-render-pipeline/SKILL.md#volumetric-clouds) | Completed material adoption, visible clouds and shadows, temporal motion and fallback |
 | Particles: rain, snow, sparks, dust, fire (`Points`, effects/particles-core.md); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
 | Bodies, colliders, character motion | `forgeax-engine-physics` | Fixed-step/collision test plus playable behavior |
 | BGM, SFX, spatial audio | `forgeax-engine-audio` | Host playback, intent/cleanup evidence, user gesture handling |
@@ -211,11 +217,12 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 ## SDK production and publication
 
-For PR source cancellation after the complete View journey emits `ok: true`,
-retain the cold source build and every browser/case assertion. The source
-consumer's 35-minute job envelope includes final exit and uploads; the seed
-and other consumers keep 30 minutes. Preserve actual cancelled evidence and
-qualify the complete next run; this calibration does not prove a speedup.
+For a PR source cancellation, inspect shader admission and both cold profile
+durations separately from the browser journey and uploads. Dedicated manifest
+producers admit their Worker budget after reserving V8 heap and native memory.
+The profile packager preserves the requested parallelism for those children.
+Retain the 40-minute source job, 30-minute seed and peer consumers, both cold
+profile publications and every browser assertion. Qualify the complete next run.
 
 For a PR seed canceled during `build:engine`, inspect its live stage output and
 the separate same-head core base/shared point admission prerequisite. Producer
@@ -235,7 +242,7 @@ For a cold SDK heap failure after shader compilation completes, inspect the
 profile-container and declaration children separately. Their own heaps must
 inherit the runner budget; a compiler child's explicit heap does not propagate
 to its parent. Follow the [CI memory policy](../../scripts/ci/README.md), retain
-one SDK compiler worker and the bounded publication verification subprocess.
+one compiler worker for SDK seed packaging and the bounded publication verification subprocess.
 Publication verification inherits the same runner-derived child heap for JSON
 admission. Its separate 128 MiB retained-heap assertion after GC and complete
 source/count/digest checks remain mandatory; an explicit 512 MiB Node argument

@@ -3,6 +3,7 @@ import {
   directDfgLutBytes,
   STANDARD_PHYSICAL_BINDING_START,
 } from '@forgeax/engine-shader';
+import { materialLightingInputBindings } from '@forgeax/engine-types';
 import { PLANAR_REFLECTION_UNIFORM_SIZE } from '../record/view-ubo';
 
 // Skylight resources share the Standard material bind group. Solid environments
@@ -275,33 +276,7 @@ export function assembleMaterialWithSkylightEntries(
   // mirrors the BGL-side `appendInjection(userRegion, 'ibl')` (D-1 / D-8),
   // which likewise reads `bgl.length`.
   const iblStart = materialEntries.length;
-  const result: BindGroupEntry[] = [
-    ...materialEntries,
-    {
-      binding: iblStart,
-      resource: { kind: 'textureView', value: skylight.irradianceView },
-    },
-    {
-      binding: iblStart + 1,
-      resource: { kind: 'sampler', value: skylight.irradianceSampler },
-    },
-    {
-      binding: iblStart + 2,
-      resource: { kind: 'textureView', value: skylight.prefilterView },
-    },
-    {
-      binding: iblStart + 3,
-      resource: { kind: 'sampler', value: skylight.prefilterSampler },
-    },
-    {
-      binding: iblStart + 4,
-      resource: { kind: 'textureView', value: skylight.brdfLutView },
-    },
-    {
-      binding: iblStart + 5,
-      resource: { kind: 'buffer', value: { buffer: skylight.intensityBuffer } },
-    },
-  ];
+  const result = [...materialEntries, ...materialSkylightEntries(iblStart, skylight)];
   // A null transmission omits the unavailable backdrop slots. Otherwise the
   // existing Skylight resources fill unused slots without changing their ABI.
   // Physical injections below keep their fixed binding numbers in either case.
@@ -536,4 +511,55 @@ export function createSkylightFallback(
     sampler,
     intensityBuffer,
   };
+}
+
+function materialSkylightEntries(
+  iblStart: number,
+  skylight: SkylightBindGroupResources,
+): BindGroupEntry[] {
+  return [
+    {
+      binding: iblStart,
+      resource: { kind: 'textureView', value: skylight.irradianceView },
+    },
+    {
+      binding: iblStart + 1,
+      resource: { kind: 'sampler', value: skylight.irradianceSampler },
+    },
+    {
+      binding: iblStart + 2,
+      resource: { kind: 'textureView', value: skylight.prefilterView },
+    },
+    {
+      binding: iblStart + 3,
+      resource: { kind: 'sampler', value: skylight.prefilterSampler },
+    },
+    {
+      binding: iblStart + 4,
+      resource: { kind: 'textureView', value: skylight.brdfLutView },
+    },
+    {
+      binding: iblStart + 5,
+      resource: { kind: 'buffer', value: { buffer: skylight.intensityBuffer } },
+    },
+  ];
+}
+
+export function assembleLitMaterialEntries(
+  materialEntries: readonly BindGroupEntry[],
+  skylight: SkylightBindGroupResources,
+  userRegionBindingEnd: number,
+): BindGroupEntry[] {
+  const slots = materialLightingInputBindings(userRegionBindingEnd);
+  return [
+    ...materialEntries,
+    ...materialSkylightEntries(userRegionBindingEnd, skylight),
+    {
+      binding: slots.skylightPrefilterMap,
+      resource: {
+        kind: 'textureView',
+        value: skylight.skylightPrefilterView ?? skylight.prefilterView,
+      },
+    },
+  ];
 }

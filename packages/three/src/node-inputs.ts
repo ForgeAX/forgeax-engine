@@ -15,6 +15,7 @@ import {
   type ReferenceInput,
   referenceValue,
 } from './node-reference';
+import { boundSurfaceRoot } from './node-surface';
 
 // One fixed contract for admission, value reads and replaced image slots.
 export const SURFACE_INPUTS = {
@@ -319,6 +320,7 @@ export function surfaceInput(material: Material, field: InputField): Input | nul
   return (material as unknown as Record<InputField, Input | null>)[field] ?? null;
 }
 export function surfaceTexture(material: Material, field: InputField): Texture | null {
+  if (boundSurfaceRoot(material, field)) return null;
   const input = surfaceInput(material, field);
   return input !== null && 'isTextureNode' in input && input.isTextureNode === true
     ? (input.value as Texture)
@@ -329,14 +331,20 @@ export function surfaceTexture(material: Material, field: InputField): Texture |
 export function surfaceColor(
   material: Material & { color?: Color },
 ): [number, number, number, number] {
-  const colorInput = surfaceInput(material, 'colorNode');
-  const opacityInput = surfaceInput(material, 'opacityNode');
-  const alpha =
-    opacityInput === null
+  const colorInput = boundSurfaceRoot(material, 'colorNode')
+    ? null
+    : surfaceInput(material, 'colorNode');
+  const opacityInput = boundSurfaceRoot(material, 'opacityNode')
+    ? null
+    : surfaceInput(material, 'opacityNode');
+  const alpha = boundSurfaceRoot(material, 'opacityNode')
+    ? 1
+    : opacityInput === null
       ? material.opacity
       : opacityInput.constructor === TextureNode
         ? 1
         : (inputValue(material, opacityInput) as number);
+  if (boundSurfaceRoot(material, 'colorNode')) return [1, 1, 1, alpha];
   if (colorInput === null)
     return [material.color?.r ?? 1, material.color?.g ?? 1, material.color?.b ?? 1, alpha];
   if (colorInput.constructor === TextureNode) return [1, 1, 1, alpha];
@@ -360,6 +368,7 @@ function uniformValue(material: Material, field: InputField): unknown {
   return inputValue(material, input);
 }
 export function surfaceScalar(material: Material, field: InputField, fallback: number): number {
+  if (boundSurfaceRoot(material, field)) return field === 'roughnessNode' ? 1 : 0;
   const value = uniformValue(material, field);
   return typeof value === 'number' ? value : fallback;
 }
@@ -369,6 +378,7 @@ export function surfaceRgb(
   fallback: Color,
   factor = 1,
 ): [number, number, number] {
+  if (boundSurfaceRoot(material, field)) return [0, 0, 0];
   const input = surfaceInput(material, field);
   if (input === null) return [fallback.r * factor, fallback.g * factor, fallback.b * factor];
   const value = inputValue(material, input);

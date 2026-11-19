@@ -30,11 +30,13 @@ import {
   createLazyScriptablePackDefinition,
   createScriptablePackModuleExecutorPool,
   createScriptablePackSourceSnapshot,
+  type LoadScriptablePackOptions,
   loadScriptablePack,
   type ScriptablePackSourceSnapshot,
 } from '@forgeax/engine-pack/source-node';
 import { err, type PluginAsset, type PluginAssetDefinition } from '@forgeax/engine-types';
 import ts from 'typescript';
+import { projectEngineSourceOptions } from '../engine-binding.js';
 import {
   filesystemPathKey,
   filesystemPathSegments,
@@ -279,7 +281,9 @@ export async function discoverPluginAssets(
   scannedInventory?: ScanInventory,
   sourceSnapshot?: ScriptablePackSourceSnapshot,
   productCache?: ScriptablePackBuildProductCache,
+  options?: Pick<LoadScriptablePackOptions, 'packageBinding'>,
 ): Promise<PluginSourceInventory> {
+  const engineOptions = await projectEngineSourceOptions(facts.root, options);
   const retainedInventory = scannedInventory !== undefined && sourceSnapshot === undefined;
   const capturedSources = sourceSnapshot ?? createScriptablePackSourceSnapshot();
   const sourceRoots = facts.assetRoots.map((path) => resolve(facts.root, path));
@@ -302,6 +306,7 @@ export async function discoverPluginAssets(
         scriptablePack: {
           ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
           metadataOnly: true,
+          ...engineOptions,
           sourceSnapshot: capturedSources,
         },
       },
@@ -456,6 +461,7 @@ export async function discoverPluginAssets(
           definition: declaration.definition,
           sourceClosure: declaration.sourceClosure,
           sourceSnapshot: capturedSources,
+          ...engineOptions,
           executors,
         });
   try {
@@ -507,7 +513,7 @@ export async function discoverPluginAssets(
       if (instance.root.definition.plugins !== true) continue;
       await capturePluginSourceInput(capturedSources, sourcePath, instance.sourceRevision);
       const definition = retainedInventory
-        ? (await loadScriptablePack(instance.root.sourcePath)).unwrap()
+        ? (await loadScriptablePack(instance.root.sourcePath, engineOptions)).unwrap()
         : definitionFor(instance.root);
       const outputs = await evaluate(
         instance.root.sourcePath,

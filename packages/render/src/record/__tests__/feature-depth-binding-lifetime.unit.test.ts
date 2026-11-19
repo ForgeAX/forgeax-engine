@@ -13,7 +13,7 @@ import { worldRenderResources } from '../../publication/resource-scope';
 import { createPreparedResolverCaches } from '../prepared-material-bindings';
 import type { RenderSystemInternals } from '../render-context';
 import { resolveTargetBindings } from '../typed-frame-graph-bindings';
-import { translucentViewOffset } from '../view-ubo';
+import { translucentViewOffset, UNFOGGED_VIEW_UNIFORM_OFFSET } from '../view-ubo';
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -71,6 +71,27 @@ async function fixture() {
     resolve: () => resolveTargetBindings(input),
   };
 }
+
+it('requires an explicit native fog contract and selects the unfogged slot for material features', async () => {
+  const f = await fixture();
+  Object.assign(f.frame, { vertexHeightFog: true });
+  expect(() => f.resolve()).toThrow('forwardFog: height-vertex/1');
+  Object.assign(f.input.binding, { forwardFog: 'height-vertex/1', fogComposition: 'straight' });
+  const fogged = f.resolve();
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  Object.assign(f.input.binding, { fog: false });
+  const unfogged = f.resolve();
+  expect(unfogged).not.toBe(fogged);
+  const viewBinding = Array.from(groups.mock.calls[0]?.[0].entries ?? []).find(
+    (entry) => entry.binding === 0,
+  );
+  expect(viewBinding?.resource).toMatchObject({
+    kind: 'buffer',
+    value: { offset: UNFOGGED_VIEW_UNIFORM_OFFSET },
+  });
+  Object.assign(f.input.binding, { fog: undefined });
+  expect(f.resolve()).toBe(fogged);
+});
 
 it.each([
   'view-and-scene-depth',
@@ -155,6 +176,7 @@ it.each([
 it.each([
   'view-and-scene-depth',
   'render-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
   'render-standard-material-and-scene-depth',
 ] as const)('carries the selected material binding contract through preparation: %s', async (bindings) => {
   const f = await fixture();
@@ -218,8 +240,10 @@ it.each([
   resolver.release().unwrap();
 });
 
-it('retains the Standard material depth contract and its dynamic View offsets', async () => {
-  const bindingContract = 'render-standard-material-and-scene-depth';
+it.each([
+  'render-standard-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
+] as const)('retains full lighting/depth and dynamic View offsets: %s', async (bindingContract) => {
   const f = await fixture();
   const sampler = f.device.createSampler({ compare: 'greater-equal' }).unwrap();
   Object.assign(f.state, {

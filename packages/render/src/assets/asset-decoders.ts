@@ -20,7 +20,7 @@ import {
   resolveMaterialTextureCoordinates,
   type SamplerAsset,
 } from '@forgeax/engine-types';
-
+import { isStandardOutputContract } from '../pipeline/standard-output/types';
 import { resolveSsaoParameters } from '../ssao-config';
 
 function invalid(guid: string, expected: string, reason: string) {
@@ -466,6 +466,8 @@ function validRenderPipelineConfig(value: unknown): value is Record<string, unkn
     return false;
   const outputDither = value.outputDither;
   if (outputDither !== undefined && typeof outputDither !== 'boolean') return false;
+  if (value.outputContract !== undefined && !isStandardOutputContract(value.outputContract))
+    return false;
   const gpuOcclusion = value.gpuOcclusion;
   if (gpuOcclusion !== undefined && typeof gpuOcclusion !== 'boolean') return false;
   const postEffects = value.postEffects;
@@ -490,9 +492,10 @@ function renderPipelineDescriptor(value: Record<string, unknown>): RenderPipelin
     kind: 'render-pipeline',
     pipelineId,
     ...(renderPath === undefined ? {} : { renderPath }),
-    ...(config === undefined
-      ? {}
-      : { config: config as NonNullable<RenderPipelineAsset['config']> }),
+    config: {
+      outputContract: 'standard-output-v1',
+      ...(config as NonNullable<RenderPipelineAsset['config']> | undefined),
+    },
   };
 }
 

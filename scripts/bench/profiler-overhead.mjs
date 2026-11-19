@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { openShaderManifestPublication } from '../lib/shader-manifest.mjs';
+import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 import { createSmokePlatform } from '../smoke-platform.mjs';
 
 const GROUP_COUNT = 15;
@@ -184,6 +186,29 @@ function makeCanvas() {
 }
 
 async function makeShaderManifest() {
+  // The runner already admitted the BASE+SSAO producer. Use its original
+  // checked bytes directly instead of repackaging and opening the same shader
+  // records again before the timed workload starts.
+  if (
+    process.env.FORGEAX_BUILD_NO_TASK_CACHE !== '1' &&
+    !process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST
+  ) {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const receipt = fileURLToPath(
+      new URL(
+        '../../packages/vite-plugin-shader/dist/engine-inputs/ci/base-ssao/manifest.json',
+        import.meta.url,
+      ),
+    );
+    if (existsSync(receipt)) {
+      const input = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
+      const shader = reusableSharedShader(root, receipt, input);
+      if (shader !== null) {
+        console.info('[profiler-overhead] using verified core base-ssao shader bytes');
+        return openShaderManifestPublication(shader);
+      }
+    }
+  }
   execFileSync(
     process.execPath,
     [
@@ -196,7 +221,10 @@ async function makeShaderManifest() {
   );
   const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   const manifest = await buildEngineShaderManifest();
-  return URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
+  );
+  return { url, dispose: () => URL.revokeObjectURL(url) };
 }
 
 function makeScheduler() {
@@ -248,12 +276,12 @@ async function createWorkload() {
   });
   // Shader admission is initialization, outside every measured frame window.
   // Null RHI skips GPU compilation but still consumes the reflected Cluster ABI.
-  const shaderManifestUrl = await makeShaderManifest();
+  const shader = await makeShaderManifest();
   const rendererResult = await createRenderer(
     makeCanvas(),
     { rhi, profiler },
-    { shaderManifestUrl },
-  ).finally(() => URL.revokeObjectURL(shaderManifestUrl));
+    { shaderManifestUrl: shader.url },
+  ).finally(shader.dispose);
   if (!rendererResult.ok)
     throw new Error(`Renderer workload failed to assemble: ${rendererResult.error.code}`);
   const renderer = rendererResult.value;

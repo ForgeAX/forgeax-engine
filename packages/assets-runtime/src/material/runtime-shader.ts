@@ -7,6 +7,7 @@ import {
   type MaterialArtifactConflictError,
   type MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
+  type MaterialShaderVariantReference,
   materialArtifactConflict,
   retainMaterialRuntimeArtifact,
   type ShaderRegistry,
@@ -316,6 +317,56 @@ function conflictError(error: MaterialArtifactConflictError): Error {
   return Object.assign(new Error(`${error.code}: ${error.detail.key}`), error);
 }
 
+/** Group coverage contexts with identical pass, output, address and vertex-color ABI. */
+function materialSurfaceCoverageFamilies(
+  record: CookedMaterialRecord,
+): ReadonlyMap<string, readonly MaterialShaderVariantReference[]> {
+  const groups = new Map<string, Map<number, string>>();
+  for (const program of record.programs)
+    for (const selection of program.selections) {
+      if (selection.context.pipeline === 'ray') continue;
+      const { viewClipping, lodCoverage, ...context } = selection.context;
+      const key = JSON.stringify([
+        selection.pass,
+        materialProgramContextKey(context),
+        selection.address ?? 'direct',
+        selection.entry,
+        selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === true,
+      ]);
+      let group = groups.get(key);
+      if (group === undefined) {
+        group = new Map();
+        groups.set(key, group);
+      }
+      const mask = Number(lodCoverage === true) | (Number(viewClipping === true) << 1);
+      const previous = group.get(mask);
+      if (previous !== undefined && previous !== program.specializationKey)
+        throw new Error('MaterialReady contains ambiguous surface-coverage programs');
+      group.set(mask, program.specializationKey);
+    }
+  const families = new Map<string, readonly MaterialShaderVariantReference[]>();
+  for (const group of groups.values()) {
+    const plain = group.get(0);
+    if (plain === undefined || group.size < 2) continue;
+    const hasLod = [...group.keys()].some((mask) => (mask & 1) !== 0);
+    const hasClipping = [...group.keys()].some((mask) => (mask & 2) !== 0);
+    const references = [...group]
+      .sort(([a], [b]) => a - b)
+      .map(([mask, identifier]) => ({
+        identifier,
+        defines: {
+          ...(hasClipping ? { CLIPPING_PLANES: (mask & 2) !== 0 } : {}),
+          ...(hasLod ? { LOD_DITHER: (mask & 1) !== 0 } : {}),
+        },
+      }));
+    const previous = families.get(plain);
+    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(references))
+      throw new Error('MaterialReady contains conflicting surface-coverage families');
+    families.set(plain, references);
+  }
+  return families;
+}
+
 /** Preflight the complete set before mutating either runtime registry. */
 export function installMaterialReadyShaders(
   shaderRegistry: ShaderRegistry,
@@ -339,6 +390,7 @@ export function installMaterialReadyShaders(
   const programs = readiness.record.programs.filter(
     (program) => artifactRegistry.get(program.specializationKey)?.metadata?.module === undefined,
   );
+  const families = materialSurfaceCoverageFamilies(readiness.record);
   const admissions = programs.map((program) => {
     if (program.artifact.bytes.byteLength === 0)
       throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
@@ -363,7 +415,9 @@ export function installMaterialReadyShaders(
     const artifact: MaterialRuntimeArtifact =
       previous === undefined ? retainMaterialRuntimeArtifact(candidate) : previous;
     if (previous === undefined) pending.set(key, artifact);
+    const variantReferences = families.get(key);
     const input = {
+      ...(variantReferences === undefined ? {} : { variantReferences }),
       bytes: artifact.bytes,
       digest,
       paramSchema,

@@ -52,8 +52,9 @@ function readNodePublication(
   const fragmentDigests = expanded.fragmentTable.map((fragment) =>
     createHash('sha256').update(fragment).digest(),
   );
-  for (const [digest] of expanded.sourceFragments) {
-    const indices = expanded.sourceIndices.get(digest) as readonly number[];
+  // Diagnostic projections snapshot the complete table on every read. Traverse
+  // one index snapshot instead of rebuilding it once per admitted source.
+  for (const [digest, indices] of expanded.sourceIndices) {
     const actual = createHash('sha256')
       .update(shaderSourceDigestInput(indices.map((index) => fragmentDigests[index] as Buffer)))
       .digest('hex');
@@ -314,7 +315,10 @@ export function loadPackagedEngineShaderInputs(
     };
   }
   const publication = packagedProfilePublication(container, profile);
-  if (publication === undefined) return null;
+  if (publication === undefined) {
+    reportUnavailableProfile(label, profile, 'requested profile is absent');
+    return null;
+  }
   if (
     publication.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION ||
     !Array.isArray(publication.receipts)
@@ -326,7 +330,14 @@ export function loadPackagedEngineShaderInputs(
   }
   const manifest = readNodePublication(publication);
   const imports = container.imports;
-  if (!hasCompleteEngineShaderProfile(manifest)) return null;
+  if (!hasCompleteEngineShaderProfile(manifest)) {
+    reportUnavailableProfile(
+      label,
+      profile,
+      'publication is incomplete or has stale compiler facts',
+    );
+    return null;
+  }
   if (typeof imports[SURFACE_SLOT_MODULE] !== 'string') {
     throw new Error(`packaged engine shader imports are missing ${SURFACE_SLOT_MODULE}: ${label}`);
   }
@@ -338,6 +349,15 @@ export function loadPackagedEngineShaderInputs(
     imports,
     publication: manifest.publication,
   };
+}
+
+function reportUnavailableProfile(label: string, profile: string, reason: string): void {
+  const key = `${label}:${reason}`;
+  if (reportedStaleProfiles.has(key)) return;
+  reportedStaleProfiles.add(key);
+  console.warn(
+    `[forgeax-shader] packaged engine shader profile ${label}: ${reason}; compiling engine shaders from source. Prepare it from the Engine checkout with: node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile ${profile}`,
+  );
 }
 
 /** The source producer adds SSAO as one independent fullscreen utility. */

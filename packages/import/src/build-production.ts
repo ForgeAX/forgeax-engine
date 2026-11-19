@@ -92,6 +92,7 @@ export interface BuildProductionOptions {
   readonly authoredCookedCurrentProjection: Record<string, unknown>;
   readonly runtimeBinding?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>;
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
+  readonly enginePackageRoot?: string;
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
   readonly producerIdentity?: string;
@@ -206,6 +207,9 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
       definition: source.definition,
       sourceClosure: source.sourceClosure,
       sourceSnapshot,
+      ...(context.enginePackageRoot === undefined
+        ? {}
+        : { packageBinding: { name: '@forgeax/engine', root: context.enginePackageRoot } }),
       executors,
     });
   try {

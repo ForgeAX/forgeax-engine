@@ -127,7 +127,7 @@ describe('camera LensEffects', () => {
       'lens-effects',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.find((stage) => stage.name === 'lens-effects')).toEqual({
+    expect(plan.stageDomains.find((stage) => stage.name === 'lens-effects')).toEqual({
       name: 'lens-effects',
       input: 'linear-ldr',
       output: 'linear-ldr',
@@ -159,7 +159,7 @@ describe('camera LensEffects', () => {
       'lens-effects',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.find((stage) => stage.name === 'chromatic-aberration')).toEqual({
+    expect(plan.stageDomains.find((stage) => stage.name === 'chromatic-aberration')).toEqual({
       name: 'chromatic-aberration',
       input: 'linear-hdr',
       output: 'linear-hdr',

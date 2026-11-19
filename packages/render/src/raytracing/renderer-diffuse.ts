@@ -277,8 +277,12 @@ export class RendererRayDiffuse {
     const transportLutSource = transportPublication?.variants.find(
       (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
     )?.composedWgsl;
-    const rasterSource = requirePublishedKernel(entries, 'generateRasterRays');
-    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse');
+    const rasterSource = requirePublishedKernel(
+      entries,
+      'generateRasterRays',
+      'standard-gbuffer/2',
+    );
+    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse', 'standard-gbuffer/2');
     const owned: Buffer[] = [];
     const textures: TexturePreparation[] = [];
     let transport: RayPathTracer | undefined;
@@ -366,7 +370,7 @@ export class RendererRayDiffuse {
               (
                 await compile(device, {
                   label: 'ray-diffuse.reconstruct',
-                  code: requirePublishedKernel(entries, 'reconstructDiffuse'),
+                  code: requirePublishedKernel(entries, 'reconstructDiffuse', 'standard-gbuffer/2'),
                 })
               ).unwrap(),
               pixelCount,
@@ -386,7 +390,7 @@ export class RendererRayDiffuse {
                 (
                   await compile(device, {
                     label,
-                    code: requirePublishedKernel(entries, entryPoint),
+                    code: requirePublishedKernel(entries, entryPoint, 'standard-gbuffer/2'),
                   })
                 ).unwrap(),
               allocate: buffer,

@@ -9,12 +9,7 @@ it('validates in a host that forbids runtime code generation', () => {
       '--disallow-code-generation-from-strings',
       '--input-type=module',
       '-e',
-      `import {registerHooks} from 'node:module';
-       registerHooks({resolve(specifier,context,nextResolve){
-         // Native type stripping retains .js specifiers in the source entry.
-         return nextResolve(specifier==='./material-program-wire.js'&&context.parentURL?.endsWith('/schema-compiled.ts')
-           ?new URL('./material-program-wire.ts',context.parentURL).href:specifier,context);
-       }});
+      `await import(${JSON.stringify(new URL('./native-source.fixture.mjs', import.meta.url).href)});
        for (const path of ['./src/schema-compiled.ts', './dist/schema.mjs']) {
          const module = await import(path);
          if (module.validateMeta({}) || module.validatePack({})) throw new Error('invalid input accepted');

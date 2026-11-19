@@ -1,4 +1,5 @@
 // @perf-budget-skip: intentional real file:// browser integration gate covering the full runtime closure.
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,13 +26,44 @@ function browserExecutable(): string | undefined {
   );
 }
 
+/** Use the real portable compiler payload to exercise a standalone Zstd view. */
+async function writeCompilerFixture(dist: string, enabled: boolean) {
+  if (!enabled) return undefined;
+  const bytes = await readFile(
+    resolve(import.meta.dirname, '../../../wgpu-wasm/pkg/wgpu_wasm_bg.wasm'),
+  );
+  await writeFile(resolve(dist, 'compiler.wasm'), bytes);
+  return { byteLength: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
 describe('single HTML runtime closure', () => {
-  it('runs dynamic import, module worker, nested worker, WASM, JSON, and WGSL from file://', async () => {
+  it.each([
+    false,
+    true,
+  ])('runs dynamic import, workers, WASM, JSON and WGSL from file:// with shared archive=%s', async (sharedArchive) => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-runtime-e2e-'));
     const dist = resolve(root, 'dist');
     const output = resolve(root, 'release', 'runtime.html');
     await mkdir(resolve(dist, 'assets'), { recursive: true });
     try {
+      const compiler = await writeCompilerFixture(dist, sharedArchive);
+      const compilerHash = compiler?.sha256;
+      if (sharedArchive) {
+        const bytes = Buffer.allocUnsafe(600000);
+        let state = 123456789;
+        for (let index = 0; index < bytes.length; index++) {
+          state ^= state << 13;
+          state ^= state >>> 17;
+          state ^= state << 5;
+          bytes[index] = state & 255;
+        }
+        const comment = bytes.toString('base64');
+        for (const [name, value] of [
+          ['archive-a.js', 42],
+          ['archive-b.js', 43],
+        ] as const)
+          await writeFile(resolve(dist, name), `export const value = ${value}; /*${comment}*/`);
+      }
       await Promise.all([
         writeFile(
           resolve(dist, 'index.html'),
@@ -46,7 +78,16 @@ const context = canvas.getContext('2d');
 context.fillStyle = '#14283d'; context.fillRect(0, 0, 64, 64);
 context.fillStyle = '#f4c542'; context.fillRect(8, 8, 48, 48);
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-worker.onmessage = (event) => {
+worker.onerror = event => {document.documentElement.dataset.workerFailure = event.message || 'worker-error';};
+worker.onmessage = async (event) => {
+  ${
+    sharedArchive
+      ? `const bytes = await fetch(new URL('./archive-a.js', import.meta.url)).then(response => response.arrayBuffer());
+  new Uint8Array(bytes)[0] = 0;
+  const fresh = await fetch(new URL('./archive-a.js', import.meta.url)).then(response => response.text());
+  if (!fresh.startsWith('export')) throw new Error('Shared transport was mutated or detached');`
+      : ''
+  }
   if (event.data?.kind !== 'worker-ready') return;
   document.documentElement.dataset.workerReady = JSON.stringify(event.data);
 };
@@ -60,10 +101,19 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
           resolve(dist, 'worker.js'),
           `self.onmessage = async () => {
   const data = await fetch(new URL('./data.json', import.meta.url)).then((response) => response.json());
+  ${sharedArchive ? `const archived = await fetch(new URL('./archive-b.js', import.meta.url)).then(response => response.text()); if (!archived.startsWith('export')) throw new Error('Worker archive transfer failed');` : ''}
+  ${
+    sharedArchive
+      ? `const compiler = await fetch(new URL('./compiler.wasm', import.meta.url)).then(response=>response.arrayBuffer());
+  if (compiler.byteLength !== ${compiler?.byteLength}) throw new Error('Worker transfer byte length: ' + compiler.byteLength);
+  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256',compiler))].map(v=>v.toString(16).padStart(2,'0')).join('');
+  if (hash !== ${JSON.stringify(compilerHash)}) throw new Error('Worker transfer digest mismatch');`
+      : ''
+  }
   const shader = await fetch(new URL('./shader.wgsl', import.meta.url)).then((response) => response.text());
   const wasm = await WebAssembly.instantiate(await fetch(new URL('./sample.wasm', import.meta.url)).then((response) => response.arrayBuffer()));
   const nested = new Worker(new URL('./nested-worker.js', import.meta.url), { type: 'module' });
-  nested.onmessage = (event) => postMessage({ kind: 'worker-ready', data: data.value, shader: shader.trim(), wasm: Object.keys(wasm.instance.exports).length, nested: event.data.value });
+  nested.onmessage = (event) => postMessage({ kind: 'worker-ready', data: data.value, shader: shader.trim(), wasm: Object.keys(wasm.instance.exports).length, nested: event.data.value, nodeVersion: globalThis.process?.versions?.node ?? null });
   nested.postMessage({ run: true });
 };
 `,
@@ -84,7 +134,7 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
         writeFile(resolve(dist, 'sample.wasm'), MINIMAL_WASM),
         writeFile(resolve(dist, 'forgeax-dist.json'), '{}\n'),
       ]);
-      const artifacts: DistManifest['artifacts'] = [
+      const artifacts: Array<DistManifest['artifacts'][number]> = [
         { path: 'main.js', mediaType: 'text/javascript', bytes: 0, sha256: '' },
         { path: 'lazy.js', mediaType: 'text/javascript', bytes: 0, sha256: '' },
         { path: 'worker.js', mediaType: 'text/javascript', bytes: 0, sha256: '' },
@@ -98,6 +148,16 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
           sha256: '',
         },
       ];
+      if (compiler !== undefined)
+        artifacts.push({
+          path: 'compiler.wasm',
+          mediaType: 'application/wasm',
+          bytes: compiler.byteLength,
+          sha256: compilerHash ?? '',
+        });
+      if (sharedArchive)
+        for (const path of ['archive-a.js', 'archive-b.js'])
+          artifacts.push({ path, mediaType: 'text/javascript', bytes: 0, sha256: '' });
       const manifest: DistManifest = {
         schemaVersion: '1.0.0',
         project: { id: 'single-html-runtime-e2e', name: 'Single HTML Runtime E2E' },
@@ -118,6 +178,7 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
       expect(packaged.ok).toBe(true);
       if (!packaged.ok) return;
 
+      if (sharedArchive) expect(await readFile(output, 'utf8')).toContain('"encoding":"zstd"');
       const executablePath = browserExecutable();
       const browser = await chromium.launch({
         headless: true,
@@ -151,7 +212,9 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
         await page.goto(pathToFileURL(output).href, { waitUntil: 'load', timeout: 120_000 });
         try {
           await page.waitForFunction(
-            () => document.documentElement.dataset.workerReady !== undefined,
+            () =>
+              document.documentElement.dataset.workerReady !== undefined ||
+              document.documentElement.dataset.workerFailure !== undefined,
             undefined,
             { timeout: 15_000 },
           );
@@ -168,7 +231,12 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
             `worker fixture did not become ready: ${cause instanceof Error ? cause.message : String(cause)}; state=${JSON.stringify(state)}; consoleErrors=${JSON.stringify(consoleErrors)}; pageErrors=${JSON.stringify(pageErrors)}`,
           );
         }
+        const workerFailure = await page.evaluate(
+          () => document.documentElement.dataset.workerFailure,
+        );
+        expect(workerFailure).toBeUndefined();
         const witness = await page.evaluate(() => ({
+          nodeVersion: globalThis.process?.versions?.node ?? null,
           lazy: document.documentElement.dataset.lazyValue,
           ready: document.documentElement.dataset.forgeaxSingleHtmlReady,
           gameReady: document.documentElement.dataset.forgeaxGameReady,
@@ -192,6 +260,7 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
           ).__forgeaxSingleHtml?.witness?.(),
         }));
         expect(witness.lazy).toBe('42');
+        expect(witness.nodeVersion).toBeNull();
         expect(witness.ready).toBe('true');
         expect(witness.gameReady).toBe('true');
         expect(witness.worker).toMatchObject({
@@ -199,6 +268,7 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
           shader: expect.stringContaining('@fragment'),
           wasm: 0,
           nested: 'pack-ready',
+          nodeVersion: null,
         });
         expect(witness.canvas).toMatchObject({ width: 64, height: 64 });
         expect(witness.canvas.varying).toBeGreaterThan(2);
@@ -612,7 +682,20 @@ self.onmessage = async (event) => {
         ),
         writeFile(
           resolve(dist, 'assets/shared.js'),
-          "export const sharedMarker = (value) => 'shared:' + String(value);\n",
+          `import {readCount} from './cycle.js';
+globalThis.sharedEvaluations = (globalThis.sharedEvaluations ?? 0) + 1;
+export let count = 0;
+export const increment = () => { count++; };
+export const sharedMarker = value => 'shared:' + String(value) + ':' + readCount() + ':' + globalThis.sharedEvaluations;
+`,
+        ),
+        writeFile(
+          resolve(dist, 'assets/cycle.js'),
+          "import {count} from './shared.js'; export const readCount = () => count;",
+        ),
+        writeFile(
+          resolve(dist, 'assets/bootstrap.js'),
+          "import {sharedMarker} from './shared.js'; export default () => sharedMarker('bootstrap');",
         ),
         writeFile(
           resolve(dist, 'assets/physics-core.js'),
@@ -631,11 +714,13 @@ export const gravity = 10;
         ),
         writeFile(
           resolve(dist, 'assets/main.js'),
-          `import { sharedMarker } from './shared.js';
+          `import { sharedMarker, increment } from './shared.js';
+increment();
 const worker = new Worker(new URL('./engine-worker-runtime.js', import.meta.url), { type: 'module' });
 worker.onmessage = (event) => {
   document.documentElement.dataset.splitWorkerReady = sharedMarker('main') + '|' + event.data;
 };
+worker.postMessage({bootstrap:new URL('./bootstrap.js', import.meta.url).href});
 worker.onerror = (event) => {
   document.documentElement.dataset.splitWorkerError = event.message || 'worker-error';
 };
@@ -643,8 +728,12 @@ worker.onerror = (event) => {
         ),
         writeFile(
           resolve(dist, 'assets/engine-worker-runtime.js'),
-          `import { sharedMarker } from './shared.js';
-import('./physics-2d.js').then(({ world2d }) => self.postMessage(sharedMarker(world2d)));
+          `import { sharedMarker, increment } from './shared.js';
+increment();
+self.onmessage = async event => {
+const [{world2d},shared,bootstrap] = await Promise.all([import('./physics-2d.js'), import('./shared.js'), import(event.data.bootstrap)]);
+self.postMessage(sharedMarker(world2d) + ':' + shared.count + '|' + bootstrap.default());
+};
 `,
         ),
       ]);
@@ -701,8 +790,13 @@ import('./physics-2d.js').then(({ world2d }) => self.postMessage(sharedMarker(wo
           { timeout: 15_000 },
         );
         const result = await page.evaluate(() => ({ ...document.documentElement.dataset }));
-        expect(result.splitWorkerError).toBeUndefined();
-        expect(result.splitWorkerReady).toBe('shared:main|shared:20');
+        expect(
+          result.splitWorkerError,
+          JSON.stringify({ consoleErrors, pageErrors, failed }),
+        ).toBeUndefined();
+        expect(result.splitWorkerReady).toBe(
+          'shared:main:1:1|shared:20:1:1:1|shared:bootstrap:1:1',
+        );
         expect(requests.filter((url) => /^https?:/i.test(url))).toEqual([]);
         expect(failed).toEqual([]);
         expect(consoleErrors).toEqual([]);

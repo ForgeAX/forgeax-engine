@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { computeDarkGradientMetrics, createDarkGradientFixtureReport, createInsufficientEvidenceReport, failedRouteGates, pixelSourceForBackend, runDarkGradientFalsifiers, runDarkGradientRouteFalsifiers } from '../../scripts/dark-gradient-fixture.mjs';
+import { isDarkGradientFxaaGraph, computeDarkGradientMetrics, createDarkGradientFixtureReport, createInsufficientEvidenceReport, failedRouteGates, pixelSourceForBackend, runDarkGradientFalsifiers, runDarkGradientRouteFalsifiers } from '../../scripts/dark-gradient-fixture.mjs';
 import { createDarkGradientTexture, gradientValue } from '../../scripts/dark-gradient-scene.mjs';
 import { applyRuntimeEvent, createRuntimeCache, snapshotRuntimeCache } from '../../scripts/smoke-browser-runtime-cache.mjs';
 
@@ -306,4 +306,13 @@ describe('dark-gradient paired pixel metric contract', () => {
       overlayStage: 'after-output-transform',
     })).toEqual([]);
   });
+});
+
+it('admits complete legacy and native float FXAA graphs, rejecting mixed passes and quantized inputs', () => {
+  for (const passNames of [['output-transform', 'fxaa'], ['standard-grade', 'standard-final']]) {
+    expect(isDarkGradientFxaaGraph({ passNames, standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' } })).toBe(true);
+    expect(isDarkGradientFxaaGraph({ passNames, standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' } })).toBe(false);
+    expect(isDarkGradientFxaaGraph({ passNames, standardOutputColor: { format: 'rgba16float', domain: 'linear-ldr' } })).toBe(false);
+  }
+  expect(isDarkGradientFxaaGraph({ passNames: ['standard-grade', 'fxaa'], standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' } })).toBe(false);
 });

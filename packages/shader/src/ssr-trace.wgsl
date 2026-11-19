@@ -1,5 +1,5 @@
 #define_import_path forgeax_ssr::trace
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardNormalRoughness, loadStandardSceneSurfaceValid}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
 #import forgeax_depth_pyramid::sample::{
   DEPTH_PYRAMID_EMPTY_DEPTH,
@@ -202,6 +202,7 @@ fn ssrShadingNormalVaries(pixel : vec2<u32>, normal : vec3<f32>) -> bool {
       if (any(tap < vec2<i32>(0)) || any(tap >= size)) { continue; }
       if (textureLoad(sceneDepth, tap, 0) <= 0.0 ||
           textureLoad(reflectionFallback, tap, 0).a <= 0.5) { continue; }
+      if (!loadStandardSceneSurfaceValid(sceneNormal, tap)) { continue; }
       let neighbor = loadStandardNormalRoughness(sceneNormal, tap).xyz;
       let delta = neighbor - normal;
       let agreement = dot(neighbor, normal) * inverseSqrt(max(dot(neighbor, neighbor) * dot(normal, normal), 1e-8));
@@ -227,6 +228,7 @@ fn ssrGeometricNormal(pixel : vec2<u32>, normal : vec3<f32>) -> vec3<f32> {
       let tap = vec2<i32>(pixel) + offset;
       if (any(tap < vec2<i32>(0)) || any(tap >= vec2<i32>(size))) { continue; }
       let depth = textureLoad(sceneDepth, tap, 0);
+      if (!loadStandardSceneSurfaceValid(sceneNormal, tap)) { continue; }
       let tapNormal = loadStandardNormalRoughness(sceneNormal, tap).xyz;
       if (depth <= 0.0 || dot(normal, tapNormal) < 0.9) { continue; }
       let point = reconstructWorldPosition((vec2<f32>(tap) + 0.5) / vec2<f32>(size), depth);
@@ -267,6 +269,7 @@ fn ssrIntersectSurface(origin : vec3<f32>, direction : vec3<f32>, maxDistance : 
   let hitUv = projectWorldPosition(intersection);
   if (any(hitUv < vec2<f32>(0.0)) || any(hitUv >= vec2<f32>(1.0))) { return candidate; }
   let hitPixel = min(vec2<u32>(hitUv * vec2<f32>(fullSize)), fullSize - vec2<u32>(1u));
+  if (!loadStandardSceneSurfaceValid(sceneNormal, vec2<i32>(hitPixel))) { return candidate; }
   let hitDepth = textureLoad(sceneDepth, vec2<i32>(hitPixel), 0);
   let hitNormal = loadStandardNormalRoughness(sceneNormal, vec2<i32>(hitPixel)).xyz;
   if (hitDepth <= 0.0 || dot(hitNormal, -direction) <= 0.0 ||
@@ -520,6 +523,7 @@ fn traceScreenRay(
 }
 
 fn ssrHitTapAdmitted(pixel : vec2<i32>, rayDirection : vec3<f32>) -> bool {
+  if (!loadStandardSceneSurfaceValid(sceneNormal, pixel)) { return false; }
   let normal = loadStandardNormalRoughness(sceneNormal, pixel).xyz;
   return textureLoad(reflectionFallback, pixel, 0).a > 0.5 && dot(normal, -rayDirection) > 0.0;
 }
@@ -623,7 +627,7 @@ fn waterCameraForward() -> vec3<f32> {
 fn waterSsrReceiver(pixel: vec2<i32>, size: vec2<u32>) -> WaterSsrReceiver {
   var result: WaterSsrReceiver;
   let depth = textureLoad(waterOriginDepth, pixel, 0);
-  let normal = loadStandardNormalRoughness(waterOriginNormal, pixel);
+  let normal = decodeStandardNormalRoughness(textureLoad(waterOriginNormal, pixel, 0).r);
   let normalLength = length(normal.xyz);
   if (textureLoad(waterOriginCoverage, pixel, 0).r <= 0.0 || !isFinite(depth) || depth <= 0.0 ||
       !isFinite(normalLength) || normalLength < 1e-6 || !isFinite(normal.a) ||
@@ -867,6 +871,7 @@ fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
   }
   output.reactivity = 0.0;
   let fullPixel = min(vec2<u32>((vec2<f32>(globalId.xy) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), fullSize - vec2<u32>(1u));
+  if (!loadStandardSceneSurfaceValid(sceneNormal, vec2<i32>(fullPixel))) { return output; }
   let coarsestLevel = ssrDepthPyramidLevelCount() - 1u;
   let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
   let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);

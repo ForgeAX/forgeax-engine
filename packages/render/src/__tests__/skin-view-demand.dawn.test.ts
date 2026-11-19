@@ -14,6 +14,7 @@ import {
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
 } from './gpu-driven-view-gpu-evidence';
+import { verifyGpuViewSkinDemandBoundary } from './gpu-view-skin-demand.fixture';
 import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { skinTaskFixture } from './skin-task-fixture';
@@ -422,3 +423,8 @@ it('resolves the true Skin slot when two preceding rigid draws share another ins
     primitiveIndex: 0,
   });
 });
+
+it(
+  'does not run Skin preparation for rigid views of a Scene with Skin input',
+  verifyGpuViewSkinDemandBoundary,
+);

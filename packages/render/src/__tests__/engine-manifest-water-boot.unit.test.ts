@@ -1,4 +1,5 @@
 import type { ShaderCatalog } from '@forgeax/engine-shader';
+import type { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { resolveMaterialShaderArtifact } from '../assembly/material/assembly';
 import { resolveMaterialShaderVariantSet } from '../assembly/material-shader-policy';
@@ -46,8 +47,8 @@ describe('Engine manifest Water boot selection', () => {
     const shader = {
       findMaterialArtifact: () => ({ ok: true, value: entry }),
       materialShaderManifestEntry: () => manifest,
-      materialProgram: (source: string) => {
-        throw new Error(source);
+      materialProgram: (source: ShaderSource) => {
+        throw new Error(source.read());
       },
     } as unknown as Parameters<typeof resolveMaterialShaderArtifact>[1];
     expect(() =>
@@ -75,7 +76,13 @@ describe('Engine manifest Water boot selection', () => {
         })),
       ),
     );
-    const entry = { variants } as Parameters<typeof selectSkinPrewarmVariants>[0];
+    const entry: Parameters<typeof selectSkinPrewarmVariants>[0] = {
+      variants,
+      identifier: 'fixture::water-selection',
+      sourcePath: 'fixture/water-selection.wgsl',
+      composedWgsl: 'fixture selector roster',
+      paramSchema: '[]',
+    };
     for (const selected of [
       selectSkinPrewarmVariants(entry, true),
       selectHdrpPbrPrewarmVariants(entry, true),

@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiDevice, RhiRenderPassEncoder, ShaderModule } from '@forgeax/engine-rhi';
@@ -8,6 +9,7 @@ import { GpuDrawSelection } from '../../gpu-driven/draw-selection';
 import { GpuBuffer } from '../../gpu-resource';
 import { disposeInstanceBufferChunks, disposeInstanceBuffers } from '../../instance-buffer-cache';
 import { MaterialResource } from '../../material-resource';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
 import { recordGeometryDraws } from '../main-pass-geometry';
@@ -169,7 +171,9 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
   };
   const receipts: { entity: number; submesh: number | undefined }[] = [];
   const errors: unknown[] = [];
+  const world = new World();
   const c = {
+    world: worldRenderResources(world),
     runtime: {
       device,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },

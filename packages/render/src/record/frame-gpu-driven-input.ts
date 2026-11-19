@@ -1,5 +1,6 @@
 import type { Buffer } from '@forgeax/engine-rhi';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { CollectedMaterialArtifacts } from '../gpu-driven/material-artifacts';
 import type { GpuDrivenPrepareInput } from '../gpu-driven/production-raster';
@@ -9,7 +10,6 @@ import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import { dispatchCasterMaterials } from '../scene/material-dispatch';
 import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { ViewLights } from '../world/render-lights';
@@ -58,6 +58,45 @@ export interface FrameGpuDrivenInput {
   readonly shadowViews: boolean;
   readonly request: GpuDrivenPrepareInput | undefined;
   readonly materialBindingClasses: ReadonlyMap<string, string>;
+}
+
+/** GPU-generated vertices use direct draws but share the retained Surface input page. */
+function resolveDirectSurface(
+  internals: RenderSystemInternals,
+  renderables: FrameList<RenderableSnapshot>,
+  frame: GpuDrivenRecordInput,
+  standard: StandardTopologyInputValue,
+): GpuDrivenPrepareInput['directSurface'] {
+  const ranges = frame.surfaceDynamicInput?.ranges;
+  if (!ranges?.length || !internals.getMaterialShaderArtifact) return undefined;
+  const owners = new Map<number, RenderableSnapshot>();
+  const keys = new Set(ranges.map((range) => range.member.entityKey));
+  for (const source of renderables) {
+    if (source.gpuVertexSource !== undefined && keys.has(source.entityKey))
+      owners.set(source.entityKey, source);
+  }
+  let artifact: NonNullable<GpuDrivenPrepareInput['directSurface']>['artifact'] | undefined;
+  const directRanges = ranges.filter(({ member }) => {
+    const source = owners.get(member.entityKey);
+    if (!source) return false;
+    const draw = source.gpuDrivenDraws?.find(
+      (draw, index) => gpuDrivenSourceDrawItemIndex(draw, index) === member.drawItemIndex,
+    );
+    const slot =
+      draw?.materialSlot ??
+      (member.drawItemIndex === 0 && source.materials.length === 1 ? 0 : undefined);
+    if (slot === undefined) return false;
+    const material = source.materials[slot]?.snapshot;
+    if (material?.surfaceModel !== 'single-layer-medium' || material.materialShaderId === undefined)
+      return false;
+    artifact ??= internals.getMaterialShaderArtifact?.(material.materialShaderId, {
+      address: 'scene-index',
+      pass: 'forward',
+      clustered: standard.kind === 'clustered',
+    });
+    return true;
+  });
+  return artifact?.receipt?.surface === undefined ? undefined : { artifact, ranges: directRanges };
 }
 
 /** Build once after lane admission, before any validation retains resident handles. */
@@ -111,9 +150,7 @@ export function buildFrameGpuDrivenInput(
       meshes,
       shadowMaterials,
       undefined,
-      shadowCasterProjection === undefined
-        ? undefined
-        : dispatchCasterMaterials(shadowCasterProjection.dispatch),
+      shadowCasterProjection,
     );
   const probeBuffer = gpuProbeBlendBufferFor(
     internals,
@@ -122,6 +159,7 @@ export function buildFrameGpuDrivenInput(
     deferredProbeBuffer,
     frame.scene,
   );
+  const directSurface = resolveDirectSurface(internals, renderables, frame, standard);
   const request = gpuDrivenPrepareRequest(
     internals,
     frame,
@@ -140,6 +178,7 @@ export function buildFrameGpuDrivenInput(
     standard.prepared.renderPath === 'deferred',
     directionalShadowSimple(sources.lights),
     sources.leanLighting === true,
+    directSurface,
   );
   return {
     meshes,

@@ -2,6 +2,7 @@ import {
   encodeMipmaps,
   getOrCreateMipmapPipeline,
   type MipmapShaderModuleFactory,
+  mipmapTemporaryByteLength,
 } from '@forgeax/engine-assets-runtime';
 import {
   type CompiledRenderGraph,
@@ -44,7 +45,7 @@ import { type ResidencyLease, ResidencyLifetime } from './residency-lifetime';
 import type { GpuResourceNamespace } from './scoped-gpu-resources';
 import { ScopedGpuResources } from './scoped-gpu-resources';
 
-// GPU mip blits copy their scratch attachment into each destination level.
+// GPU mip preparation remains in the physical frame submission transaction.
 const USAGE = 0x10 | 0x04 | 0x02 | 0x01;
 const MAX_RESIDENT_BYTES = 256 * 1024 * 1024;
 
@@ -381,6 +382,9 @@ export class TextureGenerators {
             releases.push(
               encodeMipmaps(device, encoder(), allocation.texture.handle, {
                 format: allocation.descriptor.format,
+                ...(allocation.descriptor.mipFilter === undefined
+                  ? {}
+                  : { filter: allocation.descriptor.mipFilter }),
                 ...shape.extent,
                 arrayLayerCount: shape.viewDimension === '2d-array' ? shape.extent.layers : 1,
               }).unwrap(),
@@ -500,18 +504,37 @@ export class TextureGenerators {
     const builder = new RenderGraphBuilder<RenderGraphFrame>();
     const buffers: Buffer[] = [];
     validateDeviceTargets(device, recipe);
-    const bytes = [...Object.values(recipe.outputs), ...Object.values(recipe.transient)].reduce(
-      (sum, source) =>
+    const mipBytes = Object.values(recipe.outputs).reduce(
+      (sum, output) =>
         sum +
-        deriveTextureLayout({
-          ...source,
-          mips:
-            'mips' in source
-              ? (source.mips as GeneratedTextureDescriptor['mips'])
-              : { kind: 'none' },
-        }).unwrap().byteLength,
+        (output.mips.kind === 'generate'
+          ? mipmapTemporaryByteLength(
+              {
+                ...output.shape.extent,
+                format: output.format,
+                ...(output.mipFilter === undefined ? {} : { filter: output.mipFilter }),
+                arrayLayerCount:
+                  output.shape.viewDimension === '2d-array' ? output.shape.extent.layers : 1,
+              },
+              device.caps.backendKind,
+            )
+          : 0),
       0,
     );
+    const bytes =
+      mipBytes +
+      [...Object.values(recipe.outputs), ...Object.values(recipe.transient)].reduce(
+        (sum, source) =>
+          sum +
+          deriveTextureLayout({
+            ...source,
+            mips:
+              'mips' in source
+                ? (source.mips as GeneratedTextureDescriptor['mips'])
+                : { kind: 'none' },
+          }).unwrap().byteLength,
+        0,
+      );
     if (this.bytes + bytes > MAX_RESIDENT_BYTES)
       throw failure(
         'GPU generator old/candidate/transient allocations fit the 256 MiB residency budget',
@@ -612,6 +635,15 @@ function writeMember(
 }
 
 function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset): void {
+  if (
+    Object.values(recipe.outputs).some((output) => output.mipFilter === 'normal-roughness') &&
+    (!device.caps.rgba16floatRenderable ||
+      device.caps.maxColorAttachments < 2 ||
+      (device.limits.maxColorAttachmentBytesPerSample ?? 32) < 12)
+  )
+    throw failure(
+      'normal-roughness mips require renderable half-float and two MRTs within 12 bytes/sample',
+    );
   for (const source of [...Object.values(recipe.outputs), ...Object.values(recipe.transient)]) {
     if (
       source.format === 'r32float' &&
@@ -740,7 +772,14 @@ async function allocateTargets(
         retain: () => lifetime.retain(() => {}),
       });
       if (descriptor.mips.kind === 'generate')
-        (await getOrCreateMipmapPipeline(device, descriptor.format, mipFactory)).unwrap();
+        (
+          await getOrCreateMipmapPipeline(
+            device,
+            descriptor.format,
+            mipFactory,
+            descriptor.mipFilter,
+          )
+        ).unwrap();
     }
   }
 }

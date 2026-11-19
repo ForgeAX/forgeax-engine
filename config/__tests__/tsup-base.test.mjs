@@ -166,6 +166,47 @@ test('chunk cleanup refuses a linked output root and its parent segments', async
   assert.equal(readFileSync(join(root, 'outside/nested/chunk-12345678.mjs'), 'utf8'), 'outside');
 });
 
+test('source maps retain runtime stack positions without duplicating published source payloads', (t) => {
+  mkdirSync(fixtureRoot, { recursive: true });
+  const root = mkdtempSync(join(fixtureRoot, 'tsup-source-map-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  write(root, 'package.json', '{"type":"module"}');
+  write(
+    root,
+    'tsup.config.ts',
+    `import { baseTsupConfig } from ${JSON.stringify(baseConfig)};
+export default { ...baseTsupConfig, entry: ['src/index.ts'] };`,
+  );
+  const payload = Buffer.from(Array.from({ length: 65536 }, (_, i) => (i * 71) & 255)).toString(
+    'base64',
+  );
+  write(
+    root,
+    'src/index.ts',
+    `export const payload = ${JSON.stringify(payload)};\nexport function fail() {\n  throw new Error('source-map-regression');\n}\n`,
+  );
+  build(root);
+  const map = JSON.parse(readFileSync(join(root, 'dist/index.mjs.map'), 'utf8'));
+  assert.ok(map.mappings.length > 0);
+  assert.ok(map.sources.some((file) => file.endsWith('/src/index.ts')));
+  assert.ok(!map.sourcesContent || map.sourcesContent.every((source) => source == null));
+  assert.ok(readFileSync(join(root, 'dist/index.mjs.map')).byteLength < payload.length / 8);
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--enable-source-maps',
+      '--input-type=module',
+      '-e',
+      `import {payload,fail} from ${JSON.stringify(pathToFileURL(join(root, 'dist/index.mjs')).href)};
+     if (payload.length !== ${payload.length}) throw new Error('payload changed');
+     try { fail(); } catch (error) { console.log(error.stack); }`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /src[/\\]index\.ts:3:/);
+});
+
 test('Water JS production preserves complete tsc declarations and incremental state', (t) => {
   mkdirSync(fixtureRoot, { recursive: true });
   const root = mkdtempSync(join(fixtureRoot, 'water-output-'));

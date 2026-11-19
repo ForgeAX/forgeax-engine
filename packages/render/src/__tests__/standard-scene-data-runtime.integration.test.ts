@@ -38,6 +38,7 @@ import { Materials } from '../materials';
 import { extractSource } from '../render-system-extract-tail';
 import { SceneSlotFrame } from '../scene/scene-slots';
 import {
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataTarget,
@@ -144,6 +145,9 @@ function sceneDataConsumer(
   onTarget: (target: object) => void,
   onPlannedView: (view: { readonly identity: string; readonly render: boolean }) => void,
   options: {
+    readonly schema?:
+      | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
+      | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA;
     readonly onCatalog?: (catalog: SceneDataCatalog) => void;
     readonly onRequireError?: (error: unknown) => void;
     readonly priorTarget?: () => SceneDataTarget | undefined;
@@ -163,7 +167,9 @@ function sceneDataConsumer(
       if (previous !== undefined) options.onPriorValidation?.(view.sceneData.validate(previous));
       let target: SceneDataTarget;
       try {
-        target = view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+        target = view.sceneData.require(
+          options.schema ?? SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+        );
       } catch (error) {
         options.onRequireError?.(error);
         throw error;
@@ -536,7 +542,7 @@ async function completeSceneDataFrame(
 
 type SceneDataRuntimeFixture = Awaited<ReturnType<typeof createSceneDataRuntime>>;
 type SceneDataAoTargetName =
-  | 'standard-scene-surface-depth'
+  | 'scene-depth'
   | 'gbuffer-normal-roughness'
   | 'ssao-raw'
   | 'ssao-blurred';
@@ -571,7 +577,7 @@ function sceneDataAoGraphSnapshot(
     sceneDataAoTargetSnapshot(
       fixture.host,
       // Forward SSAO reads a depth-only prepass (normals reconstructed from depth).
-      renderPath === 'deferred' ? 'gbuffer-normal-roughness' : 'standard-scene-surface-depth',
+      renderPath === 'deferred' ? 'gbuffer-normal-roughness' : 'scene-depth',
     ),
     sceneDataAoTargetSnapshot(fixture.host, 'ssao-raw'),
     sceneDataAoTargetSnapshot(fixture.host, 'ssao-blurred'),
@@ -1503,6 +1509,10 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
   }
   manifest.entries.push({
     hash: 'fixture-ssao',
+    programContract: {
+      schemaVersion: 'shader-program-contract/1' as const,
+      gbuffer: 'standard-gbuffer/2',
+    },
     wgsl: `
       @vertex fn vs_ssao(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
         return vec4<f32>(f32(index), 0.0, 0.0, 1.0);
@@ -1516,6 +1526,10 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
   });
   manifest.entries.push({
     hash: 'fixture-gtao-compute',
+    programContract: {
+      schemaVersion: 'shader-program-contract/1' as const,
+      gbuffer: 'standard-gbuffer/2',
+    },
     wgsl: '@compute @workgroup_size(1) fn cs_gtao_calc() {}',
     glsl: '',
     bindings: '[]',
@@ -1796,12 +1810,13 @@ it.each([
     });
     expect(producerIndex).toBeGreaterThanOrEqual(0);
     expect(consumerIndex).toBeGreaterThan(producerIndex);
-    // Forward keeps its depth prepass and seeds `main` with AO off (UE
-    // ShouldForceFullDepthPass); only the AO passes drop out.
+    // Forward keeps one exact scene-depth attachment from the prepass to
+    // read-only main shading with AO off; no depth-seed copy remains.
     expect(passNames).toContain('standard-scene-surface-data');
-    expect(passNames.indexOf('forward-depth-seed')).toBeGreaterThan(
+    expect(passNames.indexOf('main')).toBeGreaterThan(
       passNames.indexOf('standard-scene-surface-data'),
     );
+    expect(passNames).not.toContain('forward-depth-seed');
     expect(passNames).not.toContain('ssao-calc');
     expect(passNames).not.toContain('ssao-blur');
     expect(passNames).not.toContain('gtao-calc');
@@ -2285,6 +2300,7 @@ it.each([
         () => {},
         () => {},
         {
+          schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
           onCatalog: (catalog) => catalogs.push(catalog),
           onRequireError: (error) => requireErrors.push(error),
         },
@@ -2317,12 +2333,12 @@ it.each([
       .find(
         (error: unknown) =>
           error instanceof SceneDataUnavailableError &&
-          error.detail.schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+          error.detail.schema === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
       );
     expect(unavailable).toBeInstanceOf(SceneDataUnavailableError);
     if (!(unavailable instanceof SceneDataUnavailableError)) return;
     expect(unavailable.detail).toMatchObject({
-      schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+      schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
       reason: 'coverage-incomplete',
       recovery: 'next-frame',
     });
@@ -2338,8 +2354,8 @@ it.each([
       rejectedField: 'authored-shader-id',
     });
     if (consumesSurface) {
-      expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
-        schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+      expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA)).toMatchObject({
+        schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
         status: 'unavailable',
         reason: 'coverage-incomplete',
         missingContributorIds: expect.arrayContaining([JSON.stringify(missing?.sourceTuple)]),

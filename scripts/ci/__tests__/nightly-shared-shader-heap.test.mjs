@@ -16,10 +16,9 @@ test('Linux nightly orchestration retains its cap and admits a runner-budgeted c
     assert.equal(step.env.NODE_OPTIONS, '--max-old-space-size=4096');
   }
   const producer = readFileSync('scripts/build-shared-inputs.mjs', 'utf8');
-  assert.ok(
-    producer.indexOf('admitShaderSourceBudget();') > producer.indexOf('reusableSharedShader(root,'),
+  const admission = producer.indexOf(
+    'admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });',
   );
-  assert.ok(
-    producer.indexOf('admitShaderSourceBudget();') < producer.indexOf("await import('vite')"),
-  );
+  assert.ok(admission > producer.indexOf('reusableSharedShader(root,'));
+  assert.ok(admission < producer.indexOf("await import('vite')"));
 });

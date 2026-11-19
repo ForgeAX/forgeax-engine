@@ -195,6 +195,12 @@ same GUID, and verify receipt, artifact, and provenance.
 
 ## Three source authoring
 
+The root `UniformsUtils.clone/merge` export retains the original r187 CPU semantics
+and constructor family. It does not enable GPU addons. Custom
+`Material.onBeforeCompile` hooks fail with `three-migration-required` and a material
+UUID: migrate their surface logic to cooked WGSL/MaterialAsset authoring and
+lighting/pass logic to the native owner. Ordinary default hooks remain admitted.
+
 Use `@forgeax/engine/three` and its public addon subpaths together so CPU geometry,
 skeleton cloning and surface sampling retain one constructor family. The 88 CPU
 addon subpaths also include rounded/parametric/convex/text geometry, Font/STL/PLY/

@@ -8,6 +8,7 @@ import { RenderFeatureInputUnavailableError } from './errors/render';
 import { reportPendingRenderFeatureErrors } from './features/error-reporting';
 import type { RenderFeatureFrameInput } from './features/host';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './gpu-driven/draw-selection';
+import { materialUsesLitSceneInputs } from './pbr-pipeline';
 import { discardStandardOutputStates } from './pipeline/standard-output/resources';
 import { DEFAULT_STANDARD_PROFILE } from './pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from './publication/resource-scope';
@@ -141,7 +142,10 @@ export function beginGeometryObservation(owner: ViewSettlementOwner, attempt: Re
 }
 
 /** Reset per-attempt publication facts; returns whether this call owns the profiler frame. */
-export function beginRecordAttempt(owner: ViewSettlementOwner, attempt: RecordAttempt): boolean {
+export function beginRecordAttempt(
+  owner: Pick<ViewSettlementOwner, 'internals'>,
+  attempt: RecordAttempt,
+): boolean {
   // A failed draw cannot publish a startup completion fact. Reset the
   // projection before extraction so a later receipt never reuses an old
   // scene's readiness.
@@ -154,7 +158,7 @@ export function beginRecordAttempt(owner: ViewSettlementOwner, attempt: RecordAt
   const profileSession = attempt.profileSession;
   if (profileSession === undefined || attempt.opts.profileFrame !== undefined) return false;
   try {
-    return profileSession.beginFrame(++owner.recording.directFrameId).ok;
+    return profileSession.beginFrame().ok;
   } catch {
     return false;
   }
@@ -591,6 +595,16 @@ export function stageViewPassPlan(
   const { projection } = scene.visibility;
   const cameraless = view.cameras.length === 0;
   const renderables = cameraless ? [] : projection.renderables;
+  const dispatch = cameraless ? [] : projection.dispatch;
+  const shaderRegistry = owner.internals.shaderRegistry;
+  const checkedShaders = new Set<string>();
+  const materialSceneDepth =
+    shaderRegistry !== undefined &&
+    dispatch.some(({ materialShaderId }) => {
+      if (materialShaderId === undefined || checkedShaders.has(materialShaderId)) return false;
+      checkedShaders.add(materialShaderId);
+      return materialUsesLitSceneInputs(shaderRegistry, materialShaderId);
+    });
   const shadowCasterProjection = scene.shadowCasterProjection;
   const { materials, manualSubsurface } = resolveFrameMaterials(
     shadowCasterProjection,
@@ -601,7 +615,8 @@ export function stageViewPassPlan(
     requested: view.cameras[0]?.transparency ?? 'sorted',
     rgba16floatRenderable: owner.internals.device.caps.rgba16floatRenderable,
     renderables,
-    dispatch: cameraless ? [] : projection.dispatch,
+    dispatch,
+    ...(materialSceneDepth ? { materialSceneDepth: true } : {}),
     phaseSorted: phaseSorted && !cameraless,
     materials,
     sceneTransmission: owner.scene.transmissionTopologyDemand(),

@@ -7,7 +7,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { hashFiles, hashText, walkFiles } from '../build-task-cache.mjs';
 
 // One input identity for local and transferred shader outputs. Generated release
@@ -57,6 +57,16 @@ export function sharedShaderInputFingerprint(root, engineEntries) {
     .filter(
       (path) => !path.startsWith(join(root, 'packages/vite-plugin-shader/dist/engine-inputs/')),
     );
+  const shaderRoot = join(root, 'packages/shader/src');
+  // The producer loads executable dependencies from dist. Test code under this
+  // source root is outside that graph. Keep every raw shader and other input.
+  const shaderSources = walkFiles(shaderRoot).filter(
+    (path) =>
+      !(
+        /\.(?:[cm]?[jt]sx?)$/.test(path) &&
+        relative(shaderRoot, path).split(sep).includes('__tests__')
+      ),
+  );
   return hashText(
     JSON.stringify({
       bytes: hashFiles(root, [
@@ -71,7 +81,7 @@ export function sharedShaderInputFingerprint(root, engineEntries) {
             /\.(?:[cm]?js|wasm)$/.test(path) ||
             path === join(root, 'packages/wgpu-wasm/pkg/package.json'),
         ),
-        ...walkFiles(join(root, 'packages/shader/src')),
+        ...shaderSources,
         join(root, 'packages/vfx-render/package.json'),
         ...walkFiles(join(root, 'packages/vfx-render/src/shaders')),
         join(root, 'package.json'),

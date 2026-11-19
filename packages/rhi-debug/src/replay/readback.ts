@@ -7,7 +7,8 @@ import type {
 } from '@forgeax/engine-rhi';
 import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import { err, isCompressedFormat, mipDimension, ok, type Result } from '@forgeax/engine-types';
-import { createRhiDebugError, type RhiDebugError } from '../errors';
+import { createRhiDebugError, type RhiDebugError, type RhiDebugErrorFor } from '../errors';
+import { readbackTexturePixelsBatch, type TextureReadbackBatchRequest } from '../readback';
 import { isDepth32FloatCopySource, readbackDepthTexture } from '../readback-depth';
 import type { CreateShaderModuleFn } from '../recorder';
 import { projectTextureExtent } from '../texel-layout';
@@ -63,12 +64,94 @@ export interface ReplayReadbackResult {
 
 type ReplayReadbackPayload = Omit<ReplayReadbackResult, 'provenance'>;
 
+type TextureCopyReader = (
+  source: Texture,
+  copy: Parameters<typeof copyTextureBytes>[3],
+) => Promise<Result<Uint8Array, RhiDebugError>>;
+
+/** Read one post-work state; compatible texture copies share the existing staging owner. */
+export async function readReplayResources(
+  device: RhiDevice,
+  table: ResourceTable,
+  requests: readonly {
+    readonly resourceId: string;
+    readonly subresource?: ReadbackSubresource | undefined;
+  }[],
+  createShaderModule: CreateShaderModuleFn,
+): Promise<readonly Result<ReplayReadbackResult, RhiDebugError>[]> {
+  const copies: TextureReadbackBatchRequest[] = [];
+  const completions: ((result: Result<Uint8Array, RhiDebugError>) => void)[] = [];
+  const copy: TextureCopyReader = (texture, slice) =>
+    new Promise((resolve) => {
+      copies.push({
+        handleId: String(copies.length),
+        texture,
+        aspect: slice.aspect,
+        bytesPerBlock: slice.rowBytes / slice.width,
+        blockWidth: 1,
+        blockHeight: 1,
+        totalBytes: slice.rowBytes * slice.height,
+        slices: [
+          {
+            layer: slice.arrayLayer,
+            mip: slice.mipLevel,
+            width: slice.width,
+            height: slice.height,
+            byteOffset: 0,
+            byteLength: slice.rowBytes * slice.height,
+          },
+        ],
+      });
+      completions.push(resolve);
+    });
+  // Copyable texture plans enqueue synchronously before their first await.
+  // Buffer/depth fallbacks retain their existing independent readback paths.
+  const pending = Promise.all(
+    requests.map(async (request) => {
+      try {
+        return await readReplayResource(
+          device,
+          table,
+          request.resourceId,
+          request.subresource,
+          createShaderModule,
+          copy,
+        );
+      } catch (cause) {
+        return readbackFailure(
+          `resource ${request.resourceId} readback failed: ${messageOf(cause)}`,
+        );
+      }
+    }),
+  );
+  if (copies.length > 0) {
+    let batch: Awaited<ReturnType<typeof readbackTexturePixelsBatch>>;
+    try {
+      batch = await readbackTexturePixelsBatch(device, copies);
+    } catch (cause) {
+      batch = readbackFailure(`texture batch failed: ${messageOf(cause)}`);
+    }
+    completions.forEach((complete, index) => {
+      const bytes = batch.ok ? batch.value.get(String(index)) : undefined;
+      complete(
+        !batch.ok
+          ? batch
+          : bytes === undefined
+            ? readbackFailure(`texture batch omitted slot ${index}`)
+            : ok(new Uint8Array(bytes)),
+      );
+    });
+  }
+  return pending;
+}
+
 export async function readReplayResource(
   device: RhiDevice,
   table: ResourceTable,
   resourceId: string,
   subresource: ReplayReadbackRequest | undefined,
   createShaderModule: CreateShaderModuleFn,
+  copyReader?: TextureCopyReader,
 ): Promise<Result<ReplayReadbackResult, RhiDebugError>> {
   const entry = table.get(resourceId);
   if (entry === undefined)
@@ -88,9 +171,17 @@ export async function readReplayResource(
       resourceId,
       sourceSubresource.value,
       createShaderModule,
+      copyReader,
     );
   } else if (entry.resource.kind === 'texture') {
-    result = await readTexture(device, entry, resourceId, subresource, createShaderModule);
+    result = await readTexture(
+      device,
+      entry,
+      resourceId,
+      subresource,
+      createShaderModule,
+      copyReader,
+    );
   } else if (entry.resource.kind === 'buffer') {
     result = await readBuffer(device, entry, resourceId, subresource);
   } else {
@@ -212,8 +303,13 @@ async function readTexture(
   resourceId: string,
   subresource: ReplayReadbackRequest | undefined,
   createShaderModule: CreateShaderModuleFn,
+  copyReader?: TextureCopyReader,
 ): Promise<Result<ReplayReadbackPayload, RhiDebugError>> {
   const descriptor = recordField(entry.descriptor, 'desc');
+  const readCopy = (...args: Parameters<typeof copyTextureBytes>) =>
+    copyReader === undefined || ((numberField(descriptor, 'usage') ?? 0) & 1) === 0
+      ? copyTextureBytes(...args)
+      : copyReader(args[1], args[3]);
   const format = stringField(descriptor, 'format');
   const dimension = stringField(descriptor, 'dimension') ?? '2d';
   if (format === undefined) return readbackFailure(`texture ${resourceId} has no recorded format`);
@@ -264,20 +360,15 @@ async function readTexture(
         blockHeight: 1,
         bytesPerBlock: 1,
       });
-      const bytes = await copyTextureBytes(
-        device,
-        entry.resource.value as Texture,
-        layout.byteLength,
-        {
-          mipLevel,
-          arrayLayer,
-          aspect: 'stencil-only',
-          width,
-          height,
-          bytesPerRow: layout.bytesPerRow,
-          rowBytes: width,
-        },
-      );
+      const bytes = await readCopy(device, entry.resource.value as Texture, layout.byteLength, {
+        mipLevel,
+        arrayLayer,
+        aspect: 'stencil-only',
+        width,
+        height,
+        bytesPerRow: layout.bytesPerRow,
+        rowBytes: width,
+      });
       if (!bytes.ok) return bytes;
       return ok({ resourceId, kind: 'texture', format, width, height, bytes: bytes.value });
     }
@@ -306,7 +397,7 @@ async function readTexture(
     blockHeight: 1,
     bytesPerBlock: texelBytes,
   });
-  const bytes = await copyTextureBytes(device, entry.resource.value as Texture, byteLength, {
+  const bytes = await readCopy(device, entry.resource.value as Texture, byteLength, {
     mipLevel,
     arrayLayer,
     aspect: requestedAspect,
@@ -443,7 +534,7 @@ function copyTextureBytes(
   );
 }
 
-function readbackFailure(cause: string): Result<never, RhiDebugError> {
+function readbackFailure(cause: string): Result<never, RhiDebugErrorFor<'readback-failed'>> {
   return err(createRhiDebugError('readback-failed', { stage: 'readback', cause }));
 }
 

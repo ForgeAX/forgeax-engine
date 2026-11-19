@@ -1,6 +1,9 @@
 // Node-only font producer used by DevKit’s unified asset command and build integrations.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { encodePng } from '@forgeax/engine-image/png';
 import { type FontAsset, FontError } from '@forgeax/engine-types';
@@ -56,10 +59,129 @@ export interface BakeResult {
   readonly sidecarPath: string;
 }
 
+/** Machine font folders searched for a system font, per platform, in priority order. */
+export function systemFontDirs(platform: NodeJS.Platform = process.platform): readonly string[] {
+  if (platform === 'darwin')
+    return [
+      '/System/Library/Fonts/Supplemental',
+      '/System/Library/Fonts',
+      '/Library/Fonts',
+      join(homedir(), 'Library', 'Fonts'),
+    ];
+  if (platform === 'win32') {
+    const root = process.env.SystemRoot ?? 'C:\\Windows';
+    const local = process.env.LOCALAPPDATA;
+    return local === undefined
+      ? [join(root, 'Fonts')]
+      : [join(root, 'Fonts'), join(local, 'Microsoft', 'Windows', 'Fonts')];
+  }
+  return [
+    '/usr/share/fonts',
+    '/usr/local/share/fonts',
+    join(homedir(), '.local', 'share', 'fonts'),
+    join(homedir(), '.fonts'),
+  ];
+}
+
+const normalizeFontName = (name: string) =>
+  name
+    .replace(/\.ttf$/i, '')
+    .replace(/[\s_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+/**
+ * Resolve a machine-installed font by its name (`DIN Condensed Bold`, with or
+ * without the `.ttf` suffix) to a TrueType file path. Returns undefined when no
+ * installed file matches. Node-only: reads the standard system font folders.
+ */
+export async function resolveSystemFont(
+  name: string,
+  dirs: readonly string[] = systemFontDirs(),
+): Promise<string | undefined> {
+  const wanted = normalizeFontName(name);
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const file of await readdir(dir)) {
+      if (!/\.ttf$/i.test(file)) continue;
+      if (normalizeFontName(file) === wanted) return join(dir, file);
+    }
+  }
+  return undefined;
+}
+
+/** Run a command and return its trimmed stdout, or undefined on any failure. */
+function runQuery(
+  file: string,
+  args: readonly string[],
+  timeout = 120_000,
+): Promise<string | undefined> {
+  return new Promise((resolve) =>
+    execFile(file, args, { timeout, windowsHide: true }, (error, stdout) =>
+      resolve(error ? undefined : stdout.trim() || undefined),
+    ),
+  );
+}
+
+/** macOS: CoreText's system UI font (SF) via a tiny Swift script in a temp folder. */
+async function darwinDefaultFont(): Promise<string | undefined> {
+  const dir = await mkdtemp(join(tmpdir(), 'forgeax-default-font-'));
+  const script = join(dir, 'default-font.swift');
+  try {
+    await writeFile(
+      script,
+      'import CoreText\nimport Foundation\nlet f = CTFontCreateUIFontForLanguage(.system, 13, nil)!\nprint((CTFontCopyAttribute(f, kCTFontURLAttribute) as? URL)?.path ?? "")\n',
+    );
+    return await runQuery('swift', [script]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Linux: fontconfig's default sans-serif match (`fc-match`). */
+async function linuxDefaultFont(): Promise<string | undefined> {
+  return runQuery('fc-match', ['-f', '%{file}', 'sans-serif']);
+}
+
+/** Windows: the Segoe UI face that the shell uses for UI text. */
+function windowsDefaultFont(): string | undefined {
+  const root = process.env.SystemRoot ?? 'C:\\Windows';
+  return join(root, 'Fonts', 'segoeui.ttf');
+}
+
+/**
+ * The machine's default UI font file, asked of the OS on each platform
+ * (macOS: CoreText system font; Linux: fontconfig sans-serif; Windows: Segoe UI).
+ * Nothing is hard-coded per game. Returns undefined when the query fails or
+ * yields no existing TrueType file; callers then pass an explicit path or name.
+ */
+export async function resolveDefaultSystemFont(
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | undefined> {
+  let path: string | undefined;
+  if (platform === 'darwin') path = await darwinDefaultFont();
+  else if (platform === 'win32') path = windowsDefaultFont();
+  else if (platform === 'linux') path = await linuxDefaultFont();
+  return path !== undefined && existsSync(path) && /\.ttf$/i.test(path) ? path : undefined;
+}
+
+/** Resolve a bake source: an existing file path first, then an installed font name. */
+export async function resolveFontSource(source: string): Promise<string> {
+  if (existsSync(source)) return source;
+  const found = await resolveSystemFont(source);
+  if (found !== undefined) return found;
+  throw new FontError({
+    code: 'unsupported-font-format',
+    expected: 'a .ttf path or an installed font name',
+    hint: `no file at "${source}" and no installed TrueType font with that name; pass a .ttf path or an installed font name`,
+    detail: { source },
+  });
+}
+
 /**
  * Bake an MSDF atlas + glyph-metrics sidecar from a TTF.
  *
- * @param ttfPath path to the TrueType source.
+ * @param source TrueType path, or an installed font name (see resolveFontSource).
  * @param outDir output directory (created if missing).
  * @param generatorFactory yields the MSDF generator (real: @zappar; tests: mock).
  * @returns `Result`-style: throws a {@link FontError} on every failure mode
@@ -69,10 +191,11 @@ export interface BakeResult {
  *   (charter P3).
  */
 export async function bakeFont(
-  ttfPath: string,
+  source: string,
   outDir: string,
   generatorFactory?: () => Promise<MsdfGenerator>,
 ): Promise<BakeResult> {
+  const ttfPath = await resolveFontSource(source);
   const ttf = await readFile(ttfPath);
   const ttfBytes = new Uint8Array(ttf.buffer, ttf.byteOffset, ttf.byteLength);
   if (!isSupportedFontMagic(ttfBytes)) {

@@ -204,7 +204,7 @@ describe('package material program sharing', () => {
     expect(encoded.programs).toHaveLength(1);
     const result = decodeMaterialProgramWire(encoded);
     if (!result.ok) throw result.error;
-    expect(result.value).toEqual(expected);
+    expect(transport(result.value)).toEqual(expected);
     expect(transport(source)).toEqual(expected);
   });
 
@@ -225,7 +225,7 @@ describe('package material program sharing', () => {
     expect(encoded.programs).toHaveLength(2);
     const result = decodeMaterialProgramWire(encoded);
     if (!result.ok) throw result.error;
-    expect(result.value).toEqual(transport(source));
+    expect(transport(result.value)).toEqual(transport(source));
   });
 
   it('distinguishes binary locations from literal metadata and escaped property paths', () => {
@@ -251,7 +251,7 @@ describe('package material program sharing', () => {
     expect(encoded.programs).toHaveLength(3);
     const result = decodeMaterialProgramWire(encoded);
     if (!result.ok) throw result.error;
-    expect(result.value).toEqual(transport(source));
+    expect(transport(result.value)).toEqual(transport(source));
   });
 
   it('retains ordinary typed metadata fields outside the artifact byte slot', () => {
@@ -267,7 +267,7 @@ describe('package material program sharing', () => {
     expect(encoded.programs).toHaveLength(2);
     const result = decodeMaterialProgramWire(encoded);
     if (!result.ok) throw result.error;
-    expect(result.value).toEqual(JSON.parse(JSON.stringify(source)));
+    expect(JSON.parse(JSON.stringify(result.value))).toEqual(JSON.parse(JSON.stringify(source)));
   });
 
   it('cannot mistake a slash-containing metadata key for actual artifact bytes', () => {
@@ -281,7 +281,7 @@ describe('package material program sharing', () => {
     expect(encoded.programs).toHaveLength(2);
     const result = decodeMaterialProgramWire(encoded);
     if (!result.ok) throw result.error;
-    expect(result.value).toEqual(transport(source));
+    expect(transport(result.value)).toEqual(transport(source));
   });
 
   it('retains native JSON serialization for already-JSON artifact payloads', () => {
@@ -301,4 +301,43 @@ describe('package material program sharing', () => {
     expect(replacers.length).toBeGreaterThan(0);
     expect(replacers.every((replacer) => replacer === undefined)).toBe(true);
   });
+});
+
+it('stores native artifact byte views as bounded binary transport before JSON serialization', () => {
+  const source = fixture();
+  const bytes = Uint8Array.from({ length: 32768 }, (_, i) => i % 251);
+  for (const asset of source.assets.slice(0, 2))
+    Object.assign(required(required(asset.payload.cooked).programs[0]).artifact, { bytes });
+  const expanded = JSON.stringify(transport(source));
+  const encoded = transport(encodeMaterialProgramWire(source));
+  expect(encoded.schemaVersion).toBe('pack-material-programs/3');
+  expect(JSON.stringify(encoded).length).toBeLessThan(expanded.length / 2);
+  const before = structuredClone(encoded);
+  const decoded = decodeMaterialProgramWire(encoded).unwrap() as ReturnType<typeof fixture>;
+  expect(transport(decoded)).toEqual(transport(source));
+  const restored = required(required(required(decoded.assets[0]).payload.cooked).programs[0])
+    .artifact as { bytes?: unknown };
+  expect(restored.bytes).toBeInstanceOf(Uint8Array);
+  expect(restored.bytes).toEqual(bytes);
+  expect(encoded).toEqual(before);
+});
+
+it.each([
+  'path',
+  'length',
+  'extra',
+  'buffer',
+])('rejects malformed native binary %s before Pack/material validation', (fault) => {
+  const source = fixture();
+  for (const asset of source.assets.slice(0, 2))
+    Object.assign(required(required(asset.payload.cooked).programs[0]).artifact, {
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+  const encoded = transport(encodeMaterialProgramWire(source));
+  const view = encoded.binary.views[0];
+  if (fault === 'path') view.path = ['pack', 'digest'];
+  if (fault === 'length') view.length = 10000;
+  if (fault === 'extra') encoded.unrecognised = true;
+  if (fault === 'buffer') encoded.binary.buffers.push('AQID');
+  expect(decodeMaterialProgramWire(encoded).ok).toBe(false);
 });

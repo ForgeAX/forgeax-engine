@@ -20,9 +20,23 @@ const nodeCrypto = (
  * Deterministic synchronous SHA-256 hex for runtime contract identities. Text
  * hashes its UTF-8 encoding, so `sha256(text)` equals `sha256(utf8Bytes(text))`.
  */
-export function sha256(input: string | Uint8Array): string {
-  if (nodeCrypto !== undefined) return nodeCrypto.createHash('sha256').update(input).digest('hex');
-  return bytesToHex(digest(typeof input === 'string' ? new TextEncoder().encode(input) : input));
+export function sha256(input: string | Uint8Array | Iterable<string | Uint8Array>): string {
+  if (typeof input === 'string' || ArrayBuffer.isView(input)) {
+    if (nodeCrypto !== undefined)
+      return nodeCrypto.createHash('sha256').update(input).digest('hex');
+    return bytesToHex(digest(typeof input === 'string' ? new TextEncoder().encode(input) : input));
+  }
+  // Canonical publication producers stream chunks rather than joining a body
+  // that may exceed the JavaScript string limit. Original byte identities stay intact.
+  if (nodeCrypto !== undefined) {
+    const hash = nodeCrypto.createHash('sha256');
+    for (const chunk of input) hash.update(chunk);
+    return hash.digest('hex');
+  }
+  const hash = digest.create();
+  const encoder = new TextEncoder();
+  for (const chunk of input) hash.update(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+  return bytesToHex(hash.digest());
 }
 
 /** Deterministic synchronous SHA-256 for raw runtime readback bytes. */

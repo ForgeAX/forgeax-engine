@@ -61,6 +61,10 @@ const evidenceSourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
 const evidenceBuildId = `vitest-browser-${evidenceSourceSha.slice(0, 12)}`;
 const templateAssetRoot = resolve(rootDir, 'apps/game-capability-lab/assets');
 const templatePackRoots = gameCapabilityAssetRoots(templateAssetRoot);
+const waterVisibilityPackRoot = resolve(
+  rootDir,
+  'packages/runtime/src/__tests__/fixtures/water-mesh-visibility.pack.ts',
+);
 const surfaceEvidencePackRoots = [
   resolve(rootDir, 'templates/game-3d/assets/materials.pack.ts'),
   resolve(rootDir, 'apps/preview/assets/surface-standard-evidence.pack.ts'),
@@ -146,6 +150,16 @@ function browserLaunchOptions() {
   return browserGpuLaunchOptions(browserLaunch);
 }
 
+function browserFixtureSources(include: readonly string[]): string[] {
+  return [
+    ...include,
+    ...(include.some((file) => file.startsWith('apps/preview/')) ? [templateAssetRoot] : []),
+    ...(include.some((file) => file.startsWith('packages/runtime/src/__tests__/subsurface'))
+      ? [resolve(rootDir, 'apps/hello/foliage-transmission/src')]
+      : []),
+  ];
+}
+
 export function createBrowserProject() {
   const runEntityVisibilityBrowserTest = process.env.FORGEAX_BROWSER_ENTITY_VISIBILITY === '1';
   // Vitest's Browser server calls globTestFiles without CLI filters when
@@ -159,21 +173,25 @@ export function createBrowserProject() {
   const parityComparison = include.some(
     (file) => file.includes('*') || file.startsWith('apps/parity/color-lighting/'),
   );
-  const fixtureSources = [
-    ...include,
-    ...(include.some((file) => file.startsWith('apps/preview/')) ? [templateAssetRoot] : []),
-    ...(include.some((file) => file.startsWith('packages/runtime/src/__tests__/subsurface'))
-      ? [resolve(rootDir, 'apps/hello/foliage-transmission/src')]
-      : []),
-  ];
+  const fixtureSources = browserFixtureSources(include);
   const materialPackages = browserFixtureInputs(
     rootDir,
     materialContractInventory.materialPackages,
     fixtureSources,
   ).map((file: string) => resolve(rootDir, file));
+  // This fixture compiles its real selector WGSL through RHI. Keep Engine
+  // source publication available without eagerly cooking unrelated profiles.
+  const gpuViewOnly =
+    include.length === 1 &&
+    include[0] === 'packages/render/src/__tests__/gpu-driven-view.browser.test.ts';
   // These owners either reuse their demo closure or author all assets through
   // the fixture Catalog or direct URLs. Unknown/broad/mixed selectors keep the full Catalog.
   const ownerPackRoots = new Map<string, readonly string[]>([
+    ['packages/render/src/__tests__/gpu-driven-view.browser.test.ts', []],
+    [
+      'packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts',
+      [waterVisibilityPackRoot],
+    ],
     [
       'apps/learn-render/5.advanced-lighting/6.hdr/src/__tests__/onerror-gate.browser.test.ts',
       hdrAssetRoots,
@@ -220,6 +238,7 @@ export function createBrowserProject() {
               'forgeax-engine-assets/khronos-gltf-samples/Sponza/Sponza.gltf.meta.json',
             ),
             ...templatePackRoots,
+            waterVisibilityPackRoot,
             ...surfaceEvidencePackRoots,
             ...previewExternalRoots,
           ],
@@ -233,7 +252,11 @@ export function createBrowserProject() {
     externalTextureMaterialFixture(),
     weaponSpiritMaterialFixture(),
     weaponSpiritMaterialFixture(true),
-    forgeaxShader({ engineEntries: { pointShadows: true, hdrpSsao: true }, materialPackages }),
+    forgeaxShader({
+      ...(gpuViewOnly ? { publication: 'source' as const } : {}),
+      engineEntries: { pointShadows: true, hdrpSsao: true },
+      materialPackages,
+    }),
     pluginPack({
       runtimeBinding: createStandaloneRuntimeAssetBinding('browser-tests'),
       producerReadiness: surfaceOnly ? 'before-consume' : producerReadiness,
@@ -263,6 +286,10 @@ export function createBrowserProject() {
     }),
   ];
   return {
+    // Browser transpilation shares compiler options, not the composite build graph.
+    // An explicit native owner also keeps optimizer scanning and OXC in agreement.
+    tsconfig: resolve(rootDir, 'tsconfig.base.json'),
+    oxc: { tsconfig: resolve(rootDir, 'tsconfig.base.json') },
     // A live Host or another selected roster must not replace this optimizer's files.
     cacheDir: resolve(browserProcessCacheDir(rootDir, process.pid), 'renderer'),
     // Resolve nested dependencies through their installed workspace owners.
@@ -270,6 +297,7 @@ export function createBrowserProject() {
     // Vitest adds its normal entries; the selected Parity source also exposes
     // the comparison imports before serialized Browser callbacks execute.
     optimizeDeps: {
+      rolldownOptions: { tsconfig: resolve(rootDir, 'tsconfig.base.json') },
       include: [
         // Vitest's browser command transport discovers ws after startup.
         // Preload it so optimization cannot invalidate running test imports.

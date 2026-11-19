@@ -13,7 +13,7 @@ export type {
   StartupUiTemplate,
 } from './host/startup-ui.js';
 
-import type { CreateAppOptions } from '@forgeax/engine-app';
+import type { CreateAppOptions, ExecutionWorkersOptions } from '@forgeax/engine-app';
 import type { ImporterRegistry } from '@forgeax/engine-import';
 import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type { LoadProgressLabelInput } from '@forgeax/engine-types';
@@ -32,6 +32,8 @@ export type DevKitAppOptions = Pick<
   | 'backgroundPipelineLibraryConcurrency'
   | 'time'
 > & {
+  /** Authored App placement; explicit CLI worker keys override these project defaults. */
+  readonly execution?: { readonly workers?: ExecutionWorkersOptions };
   /** Project-owned factories constructed before Renderer in every execution realm.
    * Each named export returns { features, plugin? }; config is data-only. */
   readonly renderFeatures?: readonly {

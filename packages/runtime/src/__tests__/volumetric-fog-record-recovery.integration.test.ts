@@ -16,6 +16,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { err, type Result, type TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
+  nativeOutputShaderFixture,
   renderLifecycleManifestUrl,
   standardPbrManifestRow,
   waterInfoShaderFixture,
@@ -28,7 +29,7 @@ function required<T>(
     | { readonly ok: true; readonly value: T }
     | { readonly ok: false; readonly error: unknown },
 ): T {
-  if (!result.ok) throw result.error;
+  if (!result.ok) throw new Error(JSON.stringify(result.error), { cause: result.error });
   return result.value;
 }
 
@@ -36,6 +37,7 @@ const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
   JSON.stringify({
     entries: [
       ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr', wgsl: 'f_schlick', glsl: '', bindings: '' },
       { hash: 'unlit', wgsl: 'unlit', glsl: '', bindings: '' },
       { hash: 'tonemap', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
@@ -46,6 +48,7 @@ const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
     ],
     materialShaders: [
       ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       standardPbrManifestRow('f_schlick'),
     ],
   }),
@@ -231,7 +234,7 @@ describe('volumetric fog record recovery projection', () => {
     if (!lease.ok) return;
     const request = { source: lease.value } as const;
 
-    expect(renderer.draw(request).ok).toBe(true);
+    expect(required(renderer.draw(request))).toBeDefined();
     const accepted = renderer.inspect().volumetricFog;
     expect(accepted).toMatchObject({
       status: 'available',
@@ -262,7 +265,7 @@ describe('volumetric fog record recovery projection', () => {
       resourceFacts: expectedResourceFacts,
     });
 
-    expect(renderer.draw(request).ok).toBe(true);
+    expect(required(renderer.draw(request))).toBeDefined();
     expect(renderer.inspect().volumetricFog).toMatchObject({
       status: 'available',
       resourceStage: 'accepted',
@@ -274,7 +277,7 @@ describe('volumetric fog record recovery projection', () => {
       candidateFailure: undefined,
     });
 
-    expect(renderer.draw(request).ok).toBe(true);
+    expect(required(renderer.draw(request))).toBeDefined();
     expect(renderer.inspect().volumetricFog).toMatchObject({
       status: 'available',
       resourceStage: 'accepted',
@@ -288,7 +291,7 @@ describe('volumetric fog record recovery projection', () => {
 
     expect(world.removeComponent(fogEntity, VolumetricFog).ok).toBe(true);
     expect(world.update(1 / 60).ok).toBe(true);
-    expect(renderer.draw(request).ok).toBe(true);
+    expect(required(renderer.draw(request))).toBeDefined();
     expect(renderer.inspect().volumetricFog).toMatchObject({
       status: 'off',
       passCount: 0,
@@ -397,7 +400,7 @@ it.each([
     expect(retry?.barrelDistortion?.width).toBe(96);
     expect(renderer.inspect().perFramePassNames).not.toContain('volume-composite');
     expect(renderer.inspect().perFramePassNames).not.toContain('dof-composite');
-    expect(renderer.draw(request).ok).toBe(true);
+    expect(required(renderer.draw(request))).toBeDefined();
   } finally {
     await renderer.dispose();
   }

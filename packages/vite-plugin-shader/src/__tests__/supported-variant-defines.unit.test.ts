@@ -40,12 +40,12 @@ it('retains the exact Standard matrix and all four maintained lean Water lanes',
     match[1] === undefined ? [] : [match[1]],
   );
   const rows = supportedVariantDefines(axes);
-  expect(rows).toHaveLength(7632);
+  expect(rows).toHaveLength(17632);
   expect(rows.every(isSupportedVariantDefines)).toBe(true);
   const added = rows.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
   const legacy = rows.filter((row) => !added.includes(row));
   expect(added).toHaveLength(320);
-  expect(legacy).toHaveLength(7312);
+  expect(legacy).toHaveLength(17312);
   const legacyKeys = new Set(legacy.map((row) => JSON.stringify(row)));
   for (const row of added)
     expect(legacyKeys.has(JSON.stringify({ ...row, DIRECTIONAL_SHADOW_SIMPLE: true }))).toBe(true);
@@ -55,9 +55,9 @@ it('retains the exact Standard matrix and all four maintained lean Water lanes',
       const lane = lean.filter(
         (row) => row.WATER_WAVES_AVAILABLE === waves && row.WATER_INFO_RGBA16 === rgba16,
       );
-      expect(lane).toHaveLength(320);
+      expect(lane).toHaveLength(640);
       expect(lane.filter((row) => added.includes(row))).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(288);
+      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
     }
   }
 });

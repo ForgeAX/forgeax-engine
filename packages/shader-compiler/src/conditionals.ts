@@ -130,6 +130,12 @@ function projectConditionalLine(
   directiveLine: string,
   state: ConditionalProjection,
 ): void {
+  // Ordinary WGSL dominates a module. Only directive lines enter the
+  // conditional grammar; an inactive parent's body still disappears exactly.
+  if (!/^\s*#/.test(directiveLine)) {
+    if (!hasDisabledParent(state.stack)) state.output.push(line);
+    return;
+  }
   if (openKnownConditional(line, directiveLine, state)) return;
   if (/^\s*#if\s+/.test(directiveLine)) {
     openOpaqueConditional(line, state);
@@ -152,6 +158,10 @@ export function projectShaderConditionals(
   flattenTrueAxes: FlattenedAxes = [],
 ): string {
   if (flattenTrueAxes !== 'all' && Object.keys(defines).length === 0) return source;
+  // Import-path / define-only helpers have no conditional state to interpret.
+  // Preserve the established line-ending normalization on this active route.
+  if (!/^[^\S\r\n]*#(?:if(?:n?def)?|else|endif)\b/m.test(source))
+    return source.replace(/\r\n/g, '\n');
   const state: ConditionalProjection = {
     defines,
     flattenTrueAxes,

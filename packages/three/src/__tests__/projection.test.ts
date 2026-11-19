@@ -1170,16 +1170,16 @@ describe('Three source to native World', () => {
     changes.dispose();
   });
 
-  it('ignores the WebGL compile hook as r187 WebGPU does', () => {
+  it('diagnoses a custom WebGL compile hook instead of silently losing its effect', () => {
     const f = fixture();
     const material = new MeshStandardMaterial();
     f.mesh.material = material;
     expect(f.sync).not.toThrow();
     material.onBeforeCompile = () => {};
-    expect(f.sync).not.toThrow();
+    expect(f.sync).toThrow('Material.onBeforeCompile');
   });
 
-  it('projects spot target, cone, power, finite range and camera layers into native light state', () => {
+  it('projects spot target, cone, power, decay, finite range and camera layers into native light state', () => {
     const f = fixture();
     const light = new SpotLight(0xffffff, 20, 0, Math.PI / 3, 0.25, 2);
     light.position.set(0, 0, 3);
@@ -1193,19 +1193,27 @@ describe('Three source to native World', () => {
     expect(read()).toMatchObject({
       intensity: 20,
       range: Infinity,
+      decay: 2,
       outerConeDeg: 60,
       innerConeDeg: 45,
       castShadow: false,
     });
     light.target.position.x = 3;
     light.power = 30 * Math.PI;
+    light.decay = 0;
     light.distance = 7;
     light.angle = Math.PI / 4;
     light.penumbra = 0;
     f.sync();
     expect(read().direction[0]).toBeCloseTo(Math.SQRT1_2);
     expect(read().direction[2]).toBeCloseTo(-Math.SQRT1_2);
-    expect(read()).toMatchObject({ intensity: 30, range: 7, outerConeDeg: 45, innerConeDeg: 45 });
+    expect(read()).toMatchObject({
+      intensity: 30,
+      range: 7,
+      decay: 0,
+      outerConeDeg: 45,
+      innerConeDeg: 45,
+    });
     light.layers.set(2);
     f.sync();
     expect(read().intensity).toBe(0);

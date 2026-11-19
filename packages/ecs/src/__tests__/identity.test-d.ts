@@ -11,7 +11,6 @@ test('identity APIs reject names, structural tokens and incorrect resource value
   const inspectEither = (key: typeof count | typeof text) => {
     world.hasResource(key);
     world.removeResource(key);
-    world.getResourceChange(key);
   };
   expectTypeOf(inspectEither).toBeFunction();
   const system = defineSystem({ name: 'system', queries: [], fn: () => {} });

@@ -95,7 +95,10 @@ describe('WaterInfo canonical mesh snapshots', () => {
   ] as const)('rejects an invalid canonical %s', (failure) => {
     const mesh = interleavedMesh(createPlaneGeometry(8, 6).unwrap());
     if (failure === 'position') mesh.vertices[0] = Number.NaN;
-    if (failure === 'index') mesh.indices[0] = 4;
+    if (failure === 'index') {
+      if (mesh.indices === undefined) throw new Error('Indexed plane fixture requires indices');
+      mesh.indices[0] = 4;
+    }
     const source = snapshot(
       failure === 'stride' ? { ...mesh, vertices: mesh.vertices.slice(1) } : mesh,
     );

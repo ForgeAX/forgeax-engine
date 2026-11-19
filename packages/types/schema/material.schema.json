@@ -73,6 +73,8 @@
       "required": ["module"],
       "properties": {
         "bindings": { "enum": ["group-0", "group-0-resource", "view-only", "view-and-scene-depth", "render-material-with-scene-depth", "render-material-and-scene-depth", "render-material"], "default": "render-material" },
+        "forwardFog": { "const": "height-vertex/1" },
+        "gbuffer": { "const": "standard-gbuffer/2" },
         "sceneDepth": { "enum": ["read-only", "before-pass"] },
         "module": {
           "type": "string",

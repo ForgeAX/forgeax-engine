@@ -73,8 +73,11 @@ const solarAtmosphereBrowserFiles = [
   'packages/runtime/src/__tests__/solar-atmosphere-transparent-forward.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-transparent-deferred.browser.test.ts',
 ];
-const surfaceProvenanceBrowserFile =
+const surfacePipelineBrowserFile =
   'packages/runtime/src/__tests__/surface-standard-pipeline.browser.test.ts';
+const surfaceLifecycleBrowserFile =
+  'packages/runtime/src/__tests__/surface-standard-lifecycle.browser.test.ts';
+const surfaceProvenanceBrowserFiles = [surfacePipelineBrowserFile, surfaceLifecycleBrowserFile];
 const generatedLodBrowserFile = 'packages/runtime/src/__tests__/generated-lod.browser.test.ts';
 const lightingChannelReplayFiles = new Set(
   ['world', 'publication'].flatMap((mode) =>
@@ -125,7 +128,12 @@ const pixelParityCaptureBrowserFile =
   'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
 const dynamicGeometryBrowserFile =
   'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
+const threeSurfaceExpressionBrowserFile =
+  'packages/three/src/__tests__/surface-expression.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 44402862972 exceeded the original Standard Surface case budget
+  // beside another live browser. Keep its existing group and drain neighbors.
+  threeSurfaceExpressionBrowserFile,
   // Run 43810781689 crossed cold SSR preparation beside another heavy
   // Renderer owner. The same four cases pass in their existing process alone.
   'packages/runtime/src/__tests__/morph-surface.browser.test.ts',
@@ -171,6 +179,10 @@ const exclusiveRunnerBrowserFiles = new Set([
   // Run 42292831412 exhausted the unchanged 240 s Spot case while a
   // lighting-channel group competed with its fresh-device replay work.
   'packages/three/src/__tests__/shadow-spot.browser.test.ts',
+  // The mixed native/Three shadow proof missed its 20 s readiness bound
+  // alongside GTAO and lighting-channel groups in run 44271875944.
+  // Drain neighbors and isolate its process from the interfaces GPU tests.
+  'packages/three/src/__tests__/interop.browser.test.ts',
   // Independent alpha material journeys keep every original pixel/replay
   // control in separate exclusive processes under the same 300 s bound.
   'packages/three/src/__tests__/shadow-alpha.browser.test.ts',
@@ -214,6 +226,7 @@ const browserProcessIsolatedFiles = new Set([
   'packages/runtime/src/__tests__/point-light-shadow.browser.test.ts',
   'packages/runtime/src/__tests__/point-sprites.browser.test.ts',
   'packages/three/src/__tests__/render.browser.test.ts',
+  'packages/three/src/__tests__/interop.browser.test.ts',
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
   'packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts',
@@ -232,7 +245,7 @@ const browserProcessIsolatedFiles = new Set([
   'apps/learn-render/1.getting-started/2.hello-triangle/src/__tests__/onerror-gate.browser.test.ts',
   ...solarAtmosphereBrowserFiles,
   'packages/runtime/src/__tests__/volumetric-fog-world-time.browser.test.ts',
-  surfaceProvenanceBrowserFile,
+  ...surfaceProvenanceBrowserFiles,
   'packages/runtime/src/__tests__/framebuffer-snapshot.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
@@ -453,6 +466,8 @@ function estimatedBrowserFileSeconds(file) {
     return 240;
   if (solarAtmosphereBrowserFiles.includes(file)) return file.includes('transparent-') ? 240 : 180;
   if (renderWorkerBrowserFile.test(file)) return 75;
+  // Reserve both device-loss journeys and a cold Surface publication.
+  if (file === surfaceLifecycleBrowserFile) return 120;
   if (file.startsWith('packages/runtime/src/__tests__/')) return 20;
   if (file.startsWith(colorLightingCasePrefix)) return colorLightingCaseSeconds;
   return 5;
@@ -473,7 +488,12 @@ export function browserGroupWeight(
     fileWeight === browserFileWeight
       ? measuredCoreBrowserGroups.get(group.join('\n'))
       : undefined;
-  return measured ?? group.reduce((seconds, file) => seconds + fileWeight(file), 0);
+  const seconds = measured ?? group.reduce((sum, file) => sum + fileWeight(file), 0);
+  // Run 44387085437 completed the paired group's full work in 222.118 s.
+  // Reserve the rounded cost for dispatch without changing group construction.
+  if (fileWeight === browserFileWeight && group.includes(threeSurfaceExpressionBrowserFile))
+    return Math.max(seconds, 225);
+  return seconds;
 }
 
 export function browserGroupRunOrder(
@@ -584,6 +604,15 @@ function chunk(values, size, fileWeight) {
     seconds += cost;
   }
   if (group.length) groups.push(group);
+  const previous = groups.at(-2);
+  const last = groups.at(-1);
+  if (previous?.length > 2 && last?.length === 1) {
+    const neighbor = previous.at(-1);
+    if (fileWeight(neighbor) + fileWeight(last[0]) <= browserGroupTimeoutMs / 2000) {
+      previous.pop();
+      last.unshift(neighbor);
+    }
+  }
   return groups;
 }
 
@@ -656,7 +685,7 @@ export function withBrowserHeapLimit(environment) {
 export function browserProducerReadiness(group, requestedReadiness) {
   const previewGroup = group.some((file) => file.startsWith('apps/preview/'));
   return previewGroup ||
-    group.includes(surfaceProvenanceBrowserFile) ||
+    group.some((file) => surfaceProvenanceBrowserFiles.includes(file)) ||
     requestedReadiness === 'before-consume'
     ? 'before-consume'
     : 'on-demand';
@@ -695,6 +724,7 @@ export function browserConfigForGroup(group) {
 export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWorkers }) {
   const hostOnly = browserGroupIsHostOnly(group);
   const foreground = browserGroupRequiresForeground(group);
+  const surfaceProvenance = group.some((file) => surfaceProvenanceBrowserFiles.includes(file));
   process.stderr.write(`[vitest] browser group ${groupIndex}/${groupCount}: ${group.join(', ')}\n`);
   if (browserGroupRequiresExclusiveRunner(group))
     process.stderr.write('[vitest] browser group owns the runner exclusively\n');
@@ -702,7 +732,7 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
     ? instancingStaticBrowserGroupTimeoutMs
     : group.includes(directLightBrowserFile)
       ? directLightBrowserGroupTimeoutMs
-      : group.includes(surfaceProvenanceBrowserFile)
+      : surfaceProvenance
         ? surfaceProvenanceBrowserGroupTimeoutMs
         : group.includes(generatedLodBrowserFile)
           ? generatedLodBrowserGroupTimeoutMs
@@ -747,7 +777,7 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
     FORGEAX_BROWSER_PREVIEW_ONLY: group.every((file) => file.startsWith('apps/preview/'))
       ? '1'
       : '0',
-    FORGEAX_BROWSER_SURFACE_ONLY: group.includes(surfaceProvenanceBrowserFile) ? '1' : '0',
+    FORGEAX_BROWSER_SURFACE_ONLY: surfaceProvenance ? '1' : '0',
     FORGEAX_BROWSER_PACK_READINESS: producerReadiness,
     FORGEAX_TOOL_PREVIEW: '1',
   });

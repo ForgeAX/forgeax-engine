@@ -676,7 +676,7 @@ describe('Standard transmission Dawn ROI', () => {
     });
 
     expect(clustered.passNames).toEqual(
-      expect.arrayContaining(['cluster-membership-producer', 'main', 'output-transform']),
+      expect.arrayContaining(['cluster-membership-producer', 'main', 'standard-grade']),
     );
     expect(clustered.observation).toBe(true);
     expect(clustered.errors).toEqual([]);

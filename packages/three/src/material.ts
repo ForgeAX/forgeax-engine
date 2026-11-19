@@ -35,7 +35,7 @@ import {
 } from 'three/src/Three.Core.js';
 import { projectBlending } from './blending';
 import { defaultMatcap } from './default-matcap';
-import { invalid, migration, unsupported } from './errors';
+import { invalid, migration, ThreeCompatibilityError, unsupported } from './errors';
 import {
   isBasicMaterial,
   isLambertMaterial,
@@ -57,6 +57,13 @@ import {
   usesTransmission,
 } from './node-inputs';
 import { admitNodeMaterial } from './node-materials';
+import {
+  boundSurfaceRoot,
+  hasSurfaceBinding,
+  projectThreeSurface,
+  threeSurfaceRevisions,
+  threeSurfaceTextures,
+} from './node-surface';
 import { projectStencil } from './stencil';
 
 export type SupportedMaterial =
@@ -110,6 +117,7 @@ export function materialTextures(material: SupportedMaterial): (readonly [string
   if (opacityTexture !== null) result.push(['alphaTexture', opacityTexture]);
   if (isMatcapMaterial(material) && material.matcap === null)
     result.push(['baseColorTexture', defaultMatcap]);
+  result.push(...threeSurfaceTextures(material));
   return result;
 }
 
@@ -151,7 +159,23 @@ function admitMaterialKind(material: Material): Result<SupportedMaterial, Error>
     return unsupported(material.type, material.uuid);
   if (material.onBeforeRender !== Material.prototype.onBeforeRender)
     return unsupported('Material.onBeforeRender', material.uuid);
+  if (material.onBeforeCompile !== Material.prototype.onBeforeCompile)
+    return err(
+      new ThreeCompatibilityError(
+        'three-migration-required',
+        'Material.onBeforeCompile',
+        'Forgeax does not execute WebGL GLSL compile hooks. Move surface edits to cooked Forgeax WGSL/MaterialAsset authoring and lighting or pass edits to their native owners before rendering this material.',
+        material.uuid,
+      ),
+    );
   return ok(material as SupportedMaterial);
+}
+
+function validCoverage(material: SupportedMaterial): boolean {
+  return [
+    boundSurfaceRoot(material, 'opacityNode') ? 1 : material.opacity,
+    boundSurfaceRoot(material, 'alphaTestNode') ? 1 : material.alphaTest,
+  ].every((value) => Number.isFinite(value) && value >= 0 && value <= 1);
 }
 
 export function validateMaterial(material: Material): Result<SupportedMaterial, Error> {
@@ -191,12 +215,7 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
     ].some((value) => value === source.depthFunc)
   )
     return unsupported('Material.depthFunc', source.uuid);
-  if (
-    ![source.opacity, source.alphaTest].every(
-      (value) => Number.isFinite(value) && value >= 0 && value <= 1,
-    )
-  )
-    return invalid('Material.opacity/alphaTest', source.uuid);
+  if (!validCoverage(source)) return invalid('Material.opacity/alphaTest', source.uuid);
   if (
     Object.values(surfaceValues(source))
       .flat()
@@ -313,7 +332,7 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.version,
     material.type,
     material.transparent,
-    material.alphaTest,
+    boundSurfaceRoot(material, 'alphaTestNode') ? 1 : material.alphaTest,
     material.side,
     material.shadowSide,
     material.forceSinglePass,
@@ -344,6 +363,7 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.stencilZFail,
     material.stencilZPass,
     ...Object.values(surfaceValues(material)).flat(),
+    ...threeSurfaceRevisions(material),
   ];
 }
 
@@ -351,11 +371,7 @@ function projectFog(material: Material): { readonly fog?: false } {
   return 'fog' in material && material.fog === false ? { fog: false } : {};
 }
 
-function projectSurface(
-  material: SupportedMaterial,
-  textures: Readonly<Record<string, MaterialTextureValue>>,
-  flatShading: boolean,
-): Result<MaterialAsset, Error> {
+function projectSurfaceState(material: SupportedMaterial): Result<MaterialRenderState, Error> {
   const comparisons: Readonly<Record<number, GPUCompareFunction>> = {
     [NeverDepth]: 'never',
     [AlwaysDepth]: 'always',
@@ -385,22 +401,34 @@ function projectSurface(
     ...(blend === undefined ? {} : { blend }),
     ...projectFog(material),
   };
+  return ok(renderState);
+}
+
+function surfaceAlphaMode(material: SupportedMaterial): 'opaque' | 'premultiplied' | 'preserve' {
+  if (!material.transparent && material.blending === NormalBlending && !material.alphaToCoverage)
+    return 'opaque';
+  return material.premultipliedAlpha ? 'premultiplied' : 'preserve';
+}
+
+function projectSurface(
+  material: SupportedMaterial,
+  textures: Readonly<Record<string, MaterialTextureValue>>,
+  flatShading: boolean,
+  planarReflection: boolean,
+): Result<MaterialAsset, Error> {
+  const state = projectSurfaceState(material);
+  if (!state.ok) return state;
+  const renderState = state.value;
   const values = surfaceValues(material);
   const opts = {
     renderState,
     queue: material.transparent || usesTransmission(material) ? 3000 : 2000,
-    alphaCutoff: material.alphaTest,
+    alphaCutoff: boundSurfaceRoot(material, 'alphaTestNode') ? 1 : material.alphaTest,
     // r187 MaterialNode.OPACITY converts its texture expression to float (red).
     alphaChannel: 0,
     alphaHash: material.alphaHash,
     shadowAlphaMode: 'texture' as const,
-    alphaMode: (!material.transparent &&
-    material.blending === NormalBlending &&
-    !material.alphaToCoverage
-      ? 'opaque'
-      : material.premultipliedAlpha
-        ? 'premultiplied'
-        : 'preserve') as 'opaque' | 'premultiplied' | 'preserve',
+    alphaMode: surfaceAlphaMode(material),
   };
   try {
     if (isNormalMaterial(material))
@@ -413,7 +441,11 @@ function projectSurface(
       isPointsMaterial(material) ||
       isSpriteMaterial(material)
     )
-      return ok(Materials.unlit(values.baseColor, { ...opts, ...textures }));
+      return ok(
+        hasSurfaceBinding(material)
+          ? Materials.standard({ ...opts, baseColor: values.baseColor, specular: 0, ...textures })
+          : Materials.unlit(values.baseColor, { ...opts, ...textures }),
+      );
     const options = {
       ...values,
       flatShading,
@@ -424,7 +456,9 @@ function projectSurface(
         : {}),
     };
     return ok(
-      isLambertMaterial(material) ? Materials.lambert(options) : Materials.standard(options),
+      isLambertMaterial(material)
+        ? Materials.lambert(options)
+        : Materials.standard({ ...options, ...(planarReflection ? { planarReflection } : {}) }),
     );
   } catch (cause) {
     return err(cause instanceof Error ? cause : new Error(String(cause)));
@@ -466,8 +500,9 @@ export function projectMaterial(
   textures: Readonly<Record<string, MaterialTextureValue>>,
   flatShading = usesFlatShading(material),
   varianceShadow = false,
+  planarReflection = false,
 ): Result<MaterialAsset, Error> {
-  const projected = projectSurface(material, textures, flatShading);
+  const projected = projectSurface(material, textures, flatShading, planarReflection);
   if (!projected.ok || projected.value.passes === undefined) return projected;
   const passes = projected.value.passes.flatMap((pass) => {
     const shadow = pass.name === 'shadow-caster';
@@ -511,5 +546,11 @@ export function projectMaterial(
   });
   const [first, ...rest] = passes;
   if (first === undefined) return unsupported('Material has no render passes', material.uuid);
-  return ok({ ...projected.value, passes: [first, ...rest] });
+  try {
+    return ok(
+      projectThreeSurface(material, { ...projected.value, passes: [first, ...rest] }, textures),
+    );
+  } catch (cause) {
+    return err(cause instanceof Error ? cause : new Error(String(cause)));
+  }
 }

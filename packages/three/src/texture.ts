@@ -71,7 +71,9 @@ export function textureCoordinates(
     return invalid('Texture UV transform scale', texture.uuid);
   return ok({
     set: texture.channel,
-    transform: { offset: [x, y], scale: [scaleX, scaleY], rotation },
+    transform: texture.isRenderTargetTexture
+      ? { offset: [x, 1 - y], scale: [scaleX, -scaleY], rotation: -rotation || 0 }
+      : { offset: [x, y], scale: [scaleX, scaleY], rotation },
   });
 }
 

@@ -1,4 +1,7 @@
-import type { PreparedGraphicsResolvedSnapshot } from '../prepare/prepared-graphics-resolver';
+import type {
+  PreparedGraphicsResolvedResource,
+  PreparedGraphicsResolvedSnapshot,
+} from '../prepare/prepared-graphics-resolver';
 import { sceneDataTargetOwner } from '../temporal/scene-data';
 import type { RenderFeaturePlanExecution, RenderFeaturePlanExecutionPass } from './host';
 import type {
@@ -169,6 +172,13 @@ function sameGraphics(
   );
 }
 
+function samePreparedFog(
+  a: Extract<PreparedGraphicsResolvedResource, { kind: 'pipeline' | 'bindings' }>,
+  b: Extract<PreparedGraphicsResolvedResource, { kind: 'pipeline' | 'bindings' }>,
+): boolean {
+  return a.fog === b.fog && a.forwardFog === b.forwardFog && a.fogComposition === b.fogComposition;
+}
+
 function sameResolvedReference(
   left: PreparedGraphicsResolvedSnapshot,
   right: PreparedGraphicsResolvedSnapshot,
@@ -189,11 +199,11 @@ function sameResolvedReference(
       a.handle === b.handle &&
       a.standardLighting === b.standardLighting &&
       a.writesDepth === b.writesDepth &&
-      a.fogComposition === b.fogComposition
+      samePreparedFog(a, b)
     );
   }
   if (a.kind === 'bindings' && b.kind === 'bindings') {
-    if (a.fogComposition !== b.fogComposition) return false;
+    if (!samePreparedFog(a, b)) return false;
     const storageA = a.descriptor?.values.bufferBindings;
     const storageB = b.descriptor?.values.bufferBindings;
     if (storageA === undefined || storageB === undefined) {

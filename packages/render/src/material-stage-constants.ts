@@ -59,9 +59,24 @@ export function colorlessFragmentEntry(
   surfaceDiscards: number | undefined,
   fragmentEntry: string | undefined,
   program?: MaterialShaderArtifact['program'],
+  alphaToCoverageEnabled = false,
 ): string | null | undefined {
   if (!colorless) return fragmentEntry;
+  const effects = program?.entryPoints?.find(
+    (entry) => entry.stage === 'fragment' && entry.name === (fragmentEntry ?? 'fs_main'),
+  )?.effects;
+  // Missing legacy facts are not proof that a stage can be removed. Keep
+  // authored depth/mask/storage effects and fixed-function alpha coverage.
   if (
+    effects === undefined ||
+    effects.writesDepth ||
+    effects.writesSampleMask ||
+    effects.writesStorage ||
+    alphaToCoverageEnabled
+  )
+    return fragmentEntry;
+  if (
+    !effects.mayDiscard &&
     variantSet?.includes('ALPHA_MASK=false') === true &&
     receipt !== undefined &&
     receipt.surface === undefined &&
@@ -121,15 +136,13 @@ export function applySurfaceDiscardAxis(
     return { variantSet, constants };
   const { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: requested, ...rest } = constants;
   const mask = requested ?? 0;
-  let selected = variantSet;
+  let selected =
+    variantSet ??
+    `${STANDARD_SURFACE_DISCARD_CLIPPING_AXIS}=false+${STANDARD_SURFACE_DISCARD_LOD_AXIS}=false`;
   if (selected !== undefined) {
     if ((mask & STANDARD_SURFACE_DISCARD_LOD_COVERAGE) !== 0)
       selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_LOD_AXIS);
-    // LOD cross-fade programs are published as lod+clip (merged states).
-    if (
-      (mask & (STANDARD_SURFACE_DISCARD_VIEW_CLIPPING | STANDARD_SURFACE_DISCARD_LOD_COVERAGE)) !==
-      0
-    )
+    if ((mask & STANDARD_SURFACE_DISCARD_VIEW_CLIPPING) !== 0)
       selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_CLIPPING_AXIS);
     // LOD cross-fade programs keep the general vertex inputs (permutation rules).
     selected = withSupportedLeanInputs(selected);

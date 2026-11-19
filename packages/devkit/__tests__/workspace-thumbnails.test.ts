@@ -117,7 +117,7 @@ it('captures transparent previews progressively and reopens from DDC without a G
     stages.inputsReadyMs = performance.now() - started;
     const assets = inputs.entries.filter(row => /subjects\.pack\.ts|particles\.pack\.json/.test(row.sourcePath));
     expect(assets).toHaveLength(11 + extra);
-    const runtime = { project: { project: { id: facts.value.id, root }, target: { url } } } as Pick<EngineWorkspaceRuntime, 'project'>;
+    const runtime = { project: { project: { id: facts.value.id, root }, status: { phase: 'running', target: { url } } } } as Pick<EngineWorkspaceRuntime, 'project'>;
     let launches = 0;
     const changes: { ms: number; ready: number }[] = [];
     const start = performance.now();

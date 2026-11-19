@@ -1,5 +1,5 @@
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=10):
 //   - packages/ecs/src/__tests__/archetype-storage.test.ts
@@ -16,22 +16,12 @@
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BufferPool, SIZE_CLASSES } from '../buffer-pool';
-import type { ScalarFieldType } from '../component';
-import {
-  componentId,
-  componentSchema,
-  defineComponent,
-  fieldTypeToMetaKey,
-  isEntityField,
-  isManagedArrayField,
-  isManagedBufferField,
-  isManagedField,
-  TYPE_METADATA,
-} from '../component';
+import type { Component, ScalarFieldType } from '../component';
+import { componentId, componentSchema, defineComponent } from '../component';
 import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import { type Archetype, archetypeKey } from '../storage/archetype';
+import { OwnedBuffers } from '../owned-buffers';
+import type { Archetype } from '../storage/archetype';
 import {
   createArchetypeGraph,
   getAddEdge,
@@ -42,14 +32,17 @@ import { createColumn, growColumn, HAS_TRANSFER } from '../storage/column';
 import type { EntityRecords } from '../storage/entity-records';
 import {
   appendTableRow,
-  createTable as createArchetype,
   growTable as growArchetype,
   removeTableRow as removeEntity,
   type Table,
 } from '../storage/table';
 import { World } from '../world';
-
 import { worldInternal } from '../world-internal';
+import { columnLayout } from './__fixtures__/column-layout';
+
+function tableFor(components: readonly Component[]): Table {
+  return getOrCreateArchetype(createArchetypeGraph(), components).table;
+}
 
 function tableColumns(table: Table) {
   return new Map(
@@ -66,29 +59,27 @@ function appendEntity(table: Table, entity: number): number {
 
 {
   // ─── from archetype-storage.test.ts ───
-  /** Auto-incrementing archetype ID for test isolation. */
-  let testArchId = 0;
 
   describe('archetype-storage.test.ts', () => {
     describe('Archetype creation', () => {
       it('creates archetype with sorted component-set key', () => {
         const B = defineComponent('B', { b: { type: 'f32' } });
         const A = defineComponent('A', { a: { type: 'f32' } });
-        const arch = createArchetype([B, A], testArchId++);
+        const arch = tableFor([B, A]);
         const ids = [componentId(Entity), componentId(A), componentId(B)].sort((a, b) => a - b);
         expect(arch.key).toBe(ids.join('+'));
       });
 
       it('creates archetype with correct initial capacity', () => {
         const C = defineComponent('Cap', { x: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         expect(arch.capacity).toBeGreaterThanOrEqual(1);
         expect(arch.size).toBe(0);
       });
 
       it('creates columns for each component field', () => {
         const Pos = defineComponent('Pos', { x: { type: 'f32' }, y: { type: 'f32' } });
-        const arch = createArchetype([Pos], testArchId++);
+        const arch = tableFor([Pos]);
         expect(tableColumns(arch).has(componentId(Pos))).toBe(true);
         // biome-ignore lint/style/noNonNullAssertion: test setup guarantees componentId(Pos) exists in columns
         const compCols = tableColumns(arch).get(componentId(Pos))!;
@@ -98,7 +89,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('tag component creates archetype with no data columns', () => {
         const Tag = defineComponent('ArchetypeStorageTag', {});
-        const arch = createArchetype([Tag], testArchId++);
+        const arch = tableFor([Tag]);
         const compCols = tableColumns(arch).get(componentId(Tag));
         expect(compCols === undefined || compCols.size === 0).toBe(true);
       });
@@ -107,7 +98,7 @@ function appendEntity(table: Table, entity: number): number {
     describe('appendEntity / removeEntity (swap-pop)', () => {
       it('appends entity and increments size', () => {
         const C = defineComponent('SwapTest', { v: { type: 'i32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         const row = appendEntity(arch, 42);
         expect(row).toBe(0);
         expect(arch.size).toBe(1);
@@ -118,7 +109,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('swap-pop removes entity correctly', () => {
         const C = defineComponent('SwapPop', { v: { type: 'i32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
 
         appendEntity(arch, 10);
         appendEntity(arch, 20);
@@ -151,7 +142,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('swap-pop on last row does not swap', () => {
         const C = defineComponent('LastRow', { v: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         appendEntity(arch, 10);
         appendEntity(arch, 20);
 
@@ -167,7 +158,7 @@ function appendEntity(table: Table, entity: number): number {
     describe('growArchetype', () => {
       it('doubles capacity and preserves data', () => {
         const C = defineComponent('Grow', { x: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         const initialCap = arch.capacity;
 
         for (let i = 0; i < initialCap; i++) {
@@ -190,7 +181,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('increments version on grow', () => {
         const C = defineComponent('GrowVer', { x: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         const v0 = arch.version;
         growArchetype(arch, arch.capacity * 2);
         expect(arch.version).toBe(v0 + 1);
@@ -198,7 +189,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('growArchetype is a no-op when targetCapacity <= current capacity', () => {
         const C = defineComponent('GrowNoop', { x: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
         const capBefore = arch.capacity;
         const versionBefore = arch.version;
         growArchetype(arch, capBefore);
@@ -215,10 +206,17 @@ function appendEntity(table: Table, entity: number): number {
         const graph = createArchetypeGraph();
         const A = defineComponent('GA', { a: { type: 'f32' } });
         const B = defineComponent('GB', { b: { type: 'f32' } });
+        const Tag = defineComponent('GTag', {}, { storage: 'sparse' });
 
-        const arch1 = getOrCreateArchetype(graph, [componentId(A), componentId(B)], [A, B]);
-        const arch2 = getOrCreateArchetype(graph, [componentId(B), componentId(A)], [B, A]);
+        const roster = Object.freeze([B, Tag, A, B]);
+        const arch1 = getOrCreateArchetype(graph, roster);
+        const arch2 = getOrCreateArchetype(graph, [Tag, A, B]);
         expect(arch1).toBe(arch2);
+        expect(roster).toEqual([B, Tag, A, B]);
+        expect(arch1.components).toEqual([Entity, A, B, Tag]);
+        const dense = getOrCreateArchetype(graph, [B, A]);
+        expect(arch1.table).toBe(dense.table);
+        expect(dense.table.components).toEqual([Entity, A, B]);
       });
 
       it('getAddEdge caches edge (O(1) on second call)', () => {
@@ -226,7 +224,7 @@ function appendEntity(table: Table, entity: number): number {
         const A = defineComponent('EA', { a: { type: 'f32' } });
         const B = defineComponent('EB', { b: { type: 'f32' } });
 
-        const archA = getOrCreateArchetype(graph, [componentId(A)], [A]);
+        const archA = getOrCreateArchetype(graph, [A]);
         const archAB1 = getAddEdge(graph, archA, componentId(B), B);
         const archAB2 = getAddEdge(graph, archA, componentId(B), B);
         expect(archAB1).toBe(archAB2);
@@ -237,7 +235,7 @@ function appendEntity(table: Table, entity: number): number {
         const A = defineComponent('RA', { a: { type: 'f32' } });
         const B = defineComponent('RB', { b: { type: 'f32' } });
 
-        const archAB = getOrCreateArchetype(graph, [componentId(A), componentId(B)], [A, B]);
+        const archAB = getOrCreateArchetype(graph, [A, B]);
         const archA1 = getRemoveEdge(graph, archAB, componentId(B));
         const archA2 = getRemoveEdge(graph, archAB, componentId(B));
         expect(archA1).toBe(archA2);
@@ -249,26 +247,11 @@ function appendEntity(table: Table, entity: number): number {
         const B = defineComponent('MB', { b: { type: 'f32' } });
         const C = defineComponent('MC', { c: { type: 'f32' } });
 
-        const arch = getOrCreateArchetype(
-          graph,
-          [componentId(A), componentId(B), componentId(C)],
-          [A, B, C],
-        );
+        const arch = getOrCreateArchetype(graph, [A, B, C]);
         const ids = [componentId(Entity), componentId(A), componentId(B), componentId(C)].sort(
           (a, b) => a - b,
         );
         expect(arch.key).toBe(ids.join('+'));
-      });
-
-      it('increments global archetype generation on new archetype creation', () => {
-        const graph = createArchetypeGraph();
-        const gen0 = graph.generation;
-        const X = defineComponent('GenX', { x: { type: 'f32' } });
-        getOrCreateArchetype(graph, [componentId(X)], [X]);
-        expect(graph.generation).toBe(gen0 + 1);
-
-        getOrCreateArchetype(graph, [componentId(X)], [X]);
-        expect(graph.generation).toBe(gen0 + 1);
       });
     });
 
@@ -277,10 +260,10 @@ function appendEntity(table: Table, entity: number): number {
         const graph = createArchetypeGraph();
         const Position = defineComponent('M1StoragePosition', { x: 'f32', y: 'f32' });
         const Tag = defineComponent('M1StorageTag', {});
-        const source = getOrCreateArchetype(graph, [componentId(Position)], [Position]);
+        const source = getOrCreateArchetype(graph, [Position]);
         const target = getAddEdge(graph, source, componentId(Tag), Tag);
         const back = getRemoveEdge(graph, target, componentId(Tag));
-        const sourceTable = graph.tables[source.tableId];
+        const sourceTable = source.table;
         if (sourceTable === undefined) throw new Error('source table missing');
 
         expect(back).toBe(source);
@@ -288,8 +271,8 @@ function appendEntity(table: Table, entity: number): number {
         expect(sourceTable.storage.has(componentId(Position))).toBe(true);
         for (const { fields } of sourceTable.storage.values()) {
           for (const column of fields.values()) {
-            expect(column.capacity).toBe(sourceTable.capacity);
-            expect(column.arity).toBe(1);
+            expect(column.view.length / column.layout.arity).toBe(sourceTable.capacity);
+            expect(column.layout.arity).toBe(1);
           }
         }
 
@@ -300,7 +283,8 @@ function appendEntity(table: Table, entity: number): number {
         expect(sourceTable.version).toBe(initialVersion + 1);
         expect(sourceTable.size).toBe(1);
         for (const { fields } of sourceTable.storage.values()) {
-          for (const column of fields.values()) expect(column.capacity).toBe(sourceTable.capacity);
+          for (const column of fields.values())
+            expect(column.view.length / column.layout.arity).toBe(sourceTable.capacity);
         }
       });
     });
@@ -308,142 +292,123 @@ function appendEntity(table: Table, entity: number): number {
 }
 
 {
-  // ─── from buffer-pool.test.ts ───
-  describe('buffer-pool.test.ts', () => {
-    describe('w10 - BufferPool size-class allocation', () => {
-      it('alloc(128) returns a view of byteLength === 128 (bucket 256B)', () => {
-        const pool = new BufferPool();
-        const r = pool.alloc(128);
-        expect(r.ok).toBe(true);
-        if (!r.ok) throw new Error('expected ok');
-        expect(r.value.view.byteLength).toBe(128);
-        expect(r.value.id).toBeGreaterThan(0);
-      });
-
-      it('alloc(0) is legal and returns a zero-length view (no bucket)', () => {
-        const pool = new BufferPool();
-        const r = pool.alloc(0);
-        expect(r.ok).toBe(true);
-        if (!r.ok) throw new Error('expected ok');
-        expect(r.value.view.byteLength).toBe(0);
-      });
-
-      it('release then alloc(128) reuses a slot from the free-list', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        if (!a.ok) throw new Error('expected ok a');
-        const idA = a.value.id;
-        const rel = pool.release(idA);
-        expect(rel.ok).toBe(true);
-        const b = pool.alloc(128);
-        if (!b.ok) throw new Error('expected ok b');
-        expect(b.value.id).toBe(idA);
-        expect(b.value.view.byteLength).toBe(128);
+  describe('owned buffer capacity and resize', () => {
+    it('allocates128 logical bytes in a256-byte slab cell', () => {
+      const buffers = new OwnedBuffers();
+      const handle = buffers.alloc(Uint8Array, 128).unwrap();
+      expect(buffers.view(handle).unwrap().byteLength).toBe(128);
+      expect(buffers.memoryStats().liveCapacityBytes).toBe(256);
+    });
+    it('allocates zero without backing or physical work', () => {
+      const buffers = new OwnedBuffers();
+      const handle = buffers.alloc(Uint8Array, 0).unwrap();
+      expect(buffers.view(handle).unwrap().byteLength).toBe(0);
+      expect(buffers.memoryStats()).toMatchObject({
+        liveBuffers: 1,
+        logicalBytes: 0,
+        liveCapacityBytes: 0,
+        committedBytes: 0,
+        backingAllocations: 0,
+        copiedBytes: 0,
+        zeroedBytes: 0,
       });
     });
-
-    describe('w10 - BufferPool.grow (D-6 Result semantics, D-7 no-shrink)', () => {
-      it('grow preserves prior content byte-equal across same-bucket growth', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        if (!a.ok) throw new Error('expected ok a');
-        const view0 = a.value.view;
-        for (let i = 0; i < 128; i++) view0[i] = (i * 7) & 0xff;
-        const r = pool.grow(a.value.id, 200);
-        expect(r.ok).toBe(true);
-        if (!r.ok) throw new Error('expected ok grow');
-        const view1 = r.value;
-        expect(view1.byteLength).toBe(200);
-        for (let i = 0; i < 128; i++) expect(view1[i]).toBe((i * 7) & 0xff);
-      });
-
-      it('grow(view, byteLength === current) returns ok no-op view', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        if (!a.ok) throw new Error('expected ok a');
-        const r = pool.grow(a.value.id, 128);
-        expect(r.ok).toBe(true);
-        if (!r.ok) throw new Error('expected ok grow');
-        expect(r.value.byteLength).toBe(128);
-      });
-
-      it('grow(view, smaller) returns err(managed-buffer-shrink-not-supported)', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        if (!a.ok) throw new Error('expected ok a');
-        const r = pool.grow(a.value.id, 100);
-        expect(r.ok).toBe(false);
-        if (r.ok) throw new Error('expected err grow');
-        expect(r.error.code).toBe('managed-buffer-shrink-not-supported');
-        if (r.error.code !== 'managed-buffer-shrink-not-supported') throw new Error('narrow');
-        expect(r.error.detail.requested).toBe(100);
-        expect(r.error.detail.current).toBe(128);
-      });
-
-      it('cross-bucket grow (128 -> 4096) preserves prior content byte-equal', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        if (!a.ok) throw new Error('expected ok a');
-        const view0 = a.value.view;
-        for (let i = 0; i < 128; i++) view0[i] = (i + 1) & 0xff;
-        const r = pool.grow(a.value.id, 4096);
-        expect(r.ok).toBe(true);
-        if (!r.ok) throw new Error('expected ok grow');
-        const view1 = r.value;
-        expect(view1.byteLength).toBe(4096);
-        for (let i = 0; i < 128; i++) expect(view1[i]).toBe((i + 1) & 0xff);
-        const refreshed = pool.view(a.value.id);
-        expect(refreshed.byteLength).toBe(4096);
-      });
-
-      it('allocates beyond the pooled classes without retaining a large free bucket', () => {
-        const pool = new BufferPool();
-        const bytes = 20_000 * 64;
-        const large = pool.alloc(bytes).unwrap();
-        expect(large.view.byteLength).toBe(bytes);
-        expect(pool.byteCapacity(large.id)).toBe(bytes);
-        large.view[0] = 42;
-        pool.grow(large.id, bytes * 2).unwrap();
-        expect(pool.view(large.id)[0]).toBe(42);
-        pool.setLogicalLength(large.id, 0).unwrap();
-        expect(pool.byteCapacity(large.id)).toBe(bytes * 2);
-        pool.release(large.id).unwrap();
-        expect(pool.byteCapacity(large.id)).toBe(0);
-        expect(pool.view(large.id)).toHaveLength(0);
-        expect(pool.alloc(bytes).unwrap().id).toBe(large.id);
-        expect(SIZE_CLASSES.at(-1)).toBe(262_144);
-      });
-
-      it('grows from a small pooled field into a dedicated large field', () => {
-        const pool = new BufferPool();
-        const small = pool.alloc(128).unwrap();
-        small.view[127] = 71;
-        const grown = pool.grow(small.id, 20_000 * 64).unwrap();
-        expect(grown[127]).toBe(71);
-        expect(grown[128]).toBe(0);
-        expect(pool._liveCount()).toBe(1);
-        pool.release(small.id).unwrap();
-        expect(pool._liveCount()).toBe(0);
-      });
-
-      it.each([
-        -1,
-        1.5,
-        Number.NaN,
-        Number.POSITIVE_INFINITY,
-      ])('rejects invalid allocation size %s', (bytes) => {
-        const result = new BufferPool().alloc(bytes);
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error.code).toBe('managed-buffer-out-of-bounds');
-      });
-
-      it('M4 prelude: distinct ids on consecutive alloc with no release in between', () => {
-        const pool = new BufferPool();
-        const a = pool.alloc(128);
-        const b = pool.alloc(128);
-        if (!a.ok || !b.ok) throw new Error('expected ok x2');
-        expect(a.value.id).not.toBe(b.value.id);
-      });
+    it('reuses released backing while keeping grants distinct', () => {
+      const buffers = new OwnedBuffers();
+      const a = buffers.alloc(Uint8Array, 128).unwrap();
+      const view = buffers.view(a).unwrap();
+      buffers.release(a).unwrap();
+      const b = buffers.alloc(Uint8Array, 128).unwrap();
+      expect(b).not.toBe(a);
+      expect(buffers.view(b).unwrap().buffer).toBe(view.buffer);
+      expect(buffers.view(b).unwrap().byteOffset).toBe(view.byteOffset);
+      expect(buffers.view(b).unwrap().byteLength).toBe(128);
+    });
+    it('preserves prior bytes during same-bucket growth', () => {
+      const buffers = new OwnedBuffers();
+      const h = buffers.alloc(Uint8Array, 128).unwrap();
+      const before = buffers.view(h).unwrap();
+      for (let i = 0; i < 128; i++) before[i] = (i * 7) & 0xff;
+      buffers.resize(h, 200).unwrap();
+      const after = buffers.view(h).unwrap();
+      expect(after.byteLength).toBe(200);
+      for (let i = 0; i < 128; i++) expect(after[i]).toBe((i * 7) & 0xff);
+    });
+    it('accepts an unchanged logical length', () => {
+      const buffers = new OwnedBuffers();
+      const h = buffers.alloc(Uint8Array, 128).unwrap();
+      expect(buffers.resize(h, 128).ok).toBe(true);
+      expect(buffers.view(h).unwrap().byteLength).toBe(128);
+    });
+    it('shrinks within retained capacity and clears discarded bytes', () => {
+      const buffers = new OwnedBuffers();
+      const h = buffers.alloc(Uint8Array, 128).unwrap();
+      buffers.view(h).unwrap().fill(7);
+      buffers.resize(h, 100).unwrap();
+      expect(buffers.view(h).unwrap().byteLength).toBe(100);
+      expect(buffers.memoryStats().liveCapacityBytes).toBe(256);
+      buffers.resize(h, 128).unwrap();
+      expect([...buffers.view(h).unwrap()]).toEqual([...Array(100).fill(7), ...Array(28).fill(0)]);
+    });
+    it('preserves bytes across128 ->4096 growth and refreshes the logical view', () => {
+      const buffers = new OwnedBuffers();
+      const h = buffers.alloc(Uint8Array, 128).unwrap();
+      const before = buffers.view(h).unwrap();
+      for (let i = 0; i < 128; i++) before[i] = (i + 1) & 0xff;
+      buffers.resize(h, 4096).unwrap();
+      const after = buffers.view(h).unwrap();
+      expect(after.byteLength).toBe(4096);
+      for (let i = 0; i < 128; i++) expect(after[i]).toBe((i + 1) & 0xff);
+      expect(buffers.view(h).unwrap()).toBe(after);
+    });
+    it('allocates beyond pooled classes without caching oversized backing', () => {
+      const buffers = new OwnedBuffers();
+      const bytes = 20000 * 64;
+      const h = buffers.alloc(Uint8Array, bytes).unwrap();
+      expect(buffers.view(h).unwrap().byteLength).toBe(bytes);
+      expect(buffers.memoryStats().liveCapacityBytes).toBe(bytes);
+      buffers.view(h).unwrap()[0] = 42;
+      buffers.resize(h, bytes * 2).unwrap();
+      expect(buffers.view(h).unwrap()[0]).toBe(42);
+      buffers.resize(h, 0).unwrap();
+      expect(buffers.memoryStats().liveCapacityBytes).toBe(bytes * 2);
+      buffers.release(h).unwrap();
+      expect(buffers.view(h).ok).toBe(false);
+      expect(buffers.memoryStats().committedBytes).toBe(0);
+      const replacement = buffers.alloc(Uint8Array, bytes).unwrap();
+      expect(replacement).not.toBe(h);
+      const boundary = new OwnedBuffers();
+      const pooled = boundary.alloc(Uint8Array, 262144).unwrap();
+      boundary.release(pooled).unwrap();
+      expect(boundary.memoryStats().idleBytes).toBe(262144);
+    });
+    it('grows a slab-backed owner into an oversized exact allocation', () => {
+      const buffers = new OwnedBuffers();
+      const h = buffers.alloc(Uint8Array, 128).unwrap();
+      buffers.view(h).unwrap()[127] = 71;
+      buffers.resize(h, 20000 * 64).unwrap();
+      const view = buffers.view(h).unwrap();
+      expect(view[127]).toBe(71);
+      expect(view[128]).toBe(0);
+      expect(buffers.memoryStats().liveBuffers).toBe(1);
+      buffers.release(h).unwrap();
+      expect(buffers.memoryStats().liveBuffers).toBe(0);
+    });
+    it.each([
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ])('rejects invalid allocation size%s', (bytes) => {
+      const result = new OwnedBuffers().alloc(Uint8Array, bytes);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('memory-request-invalid');
+    });
+    it('issues distinct live grants', () => {
+      const buffers = new OwnedBuffers();
+      expect(buffers.alloc(Uint8Array, 128).unwrap()).not.toBe(
+        buffers.alloc(Uint8Array, 128).unwrap(),
+      );
     });
   });
 }
@@ -451,39 +416,25 @@ function appendEntity(table: Table, entity: number): number {
 {
   // ─── from buffer-vocab-fixup.test.ts ───
   describe('buffer-vocab-fixup.test.ts', () => {
-    describe('verify round 1 fix-up — B1: world.set on buffer<N> validates byteLength', () => {
-      it('returns Result.err with code "fixed-size-mismatch" when M < N', () => {
-        const Print = defineComponent('Print', { fp: { type: 'buffer<16>' } });
-        const w = new World();
-        const e = w.spawn({ component: Print, data: { fp: new Uint8Array(16) } }).unwrap();
-        const r = w.set(e, Print, { fp: new Uint8Array(12) });
-        expect(r.ok).toBe(false);
-        if (!r.ok) {
-          expect(r.error.code).toBe('fixed-size-mismatch');
-          if (r.error.code === 'fixed-size-mismatch') {
-            expect(r.error.detail).toEqual({ expected: 16, actual: 12 });
-            expect(r.error.hint).toContain('buffer<16>');
-            expect(r.error.hint).toContain('byteLength 12');
-          }
-        }
-      });
-
-      it('returns Result.err with code "fixed-size-mismatch" when M > N', () => {
-        const PrintBuf8 = defineComponent('PrintBuf8', { fp: { type: 'buffer<8>' } });
-        const w = new World();
-        const e = w.spawn({ component: PrintBuf8, data: { fp: new Uint8Array(8) } }).unwrap();
-        const r = w.set(e, PrintBuf8, { fp: new Uint8Array(20) });
-        expect(r.ok).toBe(false);
-        if (!r.ok) {
-          expect(r.error.code).toBe('fixed-size-mismatch');
-          if (r.error.code === 'fixed-size-mismatch') {
-            expect(r.error.detail).toEqual({ expected: 8, actual: 20 });
-          }
-        }
+    describe('verify round 1 fix-up — B1: fixed byte-array patches truncate and initialize their tail', () => {
+      it.each([
+        [12, 16],
+        [20, 8],
+      ])('writes %i bytes into a fixed %i-byte array', (length, capacity) => {
+        const Print = defineComponent('FixedByteArrayPatch', { fp: `array<u8, ${capacity}>` });
+        const world = new World();
+        const entity = world
+          .spawn({ component: Print, data: { fp: new Uint8Array(capacity).fill(99) } })
+          .unwrap();
+        const input = Uint8Array.from({ length }, (_, i) => i + 1);
+        world.set(entity, Print, { fp: input }).unwrap();
+        expect(Array.from(world.get(entity, Print).unwrap().fp)).toEqual(
+          Array.from({ length: capacity }, (_, i) => (i < length ? i + 1 : 0)),
+        );
       });
 
       it('matching byteLength still succeeds and writes through to world.get snapshot', () => {
-        const Print = defineComponent('PrintBuf4', { fp: { type: 'buffer<4>' } });
+        const Print = defineComponent('PrintBuf4', { fp: { type: 'array<u8, 4>' } });
         const w = new World();
         const e = w.spawn({ component: Print, data: { fp: new Uint8Array(4) } }).unwrap();
         const r = w.set(e, Print, { fp: new Uint8Array([1, 2, 3, 4]) });
@@ -496,7 +447,7 @@ function appendEntity(table: Table, entity: number): number {
 
     describe('verify round 1 fix-up — B2: bare "buffer" (variable) spawn + set round-trip', () => {
       it('spawn with payload bytes round-trips through world.get without data loss', () => {
-        const Blob = defineComponent('BlobVocab', { b: { type: 'buffer' } });
+        const Blob = defineComponent('BlobVocab', { b: { type: 'array<u8>' } });
         const w = new World();
         const payload = new Uint8Array([7, 8, 9]);
         const e = w.spawn({ component: Blob, data: { b: payload } }).unwrap();
@@ -506,7 +457,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('world.set after spawn replaces variable-buffer bytes (no fixed-size constraint)', () => {
-        const Blob = defineComponent('BlobVocab2', { b: { type: 'buffer' } });
+        const Blob = defineComponent('BlobVocab2', { b: { type: 'array<u8>' } });
         const w = new World();
         const e = w.spawn({ component: Blob, data: { b: new Uint8Array([1]) } }).unwrap();
         const r = w.set(e, Blob, { b: new Uint8Array([10, 20, 30, 40, 50]) });
@@ -517,7 +468,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('spawn with an empty Uint8Array yields a zero-length live view (no error)', () => {
-        const Blob = defineComponent('BlobVocab3', { b: { type: 'buffer' } });
+        const Blob = defineComponent('BlobVocab3', { b: { type: 'array<u8>' } });
         const w = new World();
         const e = w.spawn({ component: Blob, data: { b: new Uint8Array(0) } }).unwrap();
         const snapshot = w.get(e, Blob).unwrap().b;
@@ -525,7 +476,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('ManagedBufferOutOfBoundsError hint references the new buffer keyword forms (no legacy "buffer:<bytes>")', () => {
-        const Blob = defineComponent('BlobVocab4', { b: { type: 'buffer' } });
+        const Blob = defineComponent('BlobVocab4', { b: { type: 'array<u8>' } });
         const w = new World();
         const oversized = new Uint8Array(262_145);
         const result = w.spawn({ component: Blob, data: { b: oversized } });
@@ -592,8 +543,8 @@ function appendEntity(table: Table, entity: number): number {
   describe('column.test.ts', () => {
     describe('Column.arity', () => {
       it('scalar column arity defaults to 1 (AC-01)', () => {
-        const col = createColumn('f32', 64);
-        expect(col.arity).toBe(1);
+        const col = createColumn(columnLayout('f32'), 64);
+        expect(col.layout.arity).toBe(1);
       });
 
       it('all scalar field types default arity to 1', () => {
@@ -610,35 +561,35 @@ function appendEntity(table: Table, entity: number): number {
           'enum',
         ];
         for (const t of types) {
-          const col = createColumn(t, 16);
-          expect(col.arity, `Column.arity for ${t} should be 1`).toBe(1);
+          const col = createColumn(columnLayout(t), 16);
+          expect(col.layout.arity, `Column.arity for ${t} should be 1`).toBe(1);
         }
       });
 
       it('empty column (capacity=0) growColumn does not divide by zero', () => {
-        const col = createColumn('f32', 0, 1);
-        expect(col.capacity).toBe(0);
-        expect(col.arity).toBe(1);
+        const col = createColumn(columnLayout('f32'), 0);
+        expect(col.view.length / col.layout.arity).toBe(0);
+        expect(col.layout.arity).toBe(1);
         const grown = growColumn(col, 8);
-        expect(grown.capacity).toBe(8);
-        expect(grown.arity).toBe(1);
-        expect(grown.buffer.byteLength).toBe(32);
+        expect(grown.view.length / grown.layout.arity).toBe(8);
+        expect(grown.layout.arity).toBe(1);
+        expect(grown.view.buffer.byteLength).toBe(32);
       });
     });
 
     describe('createColumn', () => {
       it('creates a column with correct capacity', () => {
-        const col = createColumn('f32', 64);
-        expect(col.capacity).toBe(64);
+        const col = createColumn(columnLayout('f32'), 64);
+        expect(col.view.length / col.layout.arity).toBe(64);
       });
 
       it('creates an ArrayBuffer of correct byte length', () => {
-        const col = createColumn('f32', 64);
-        expect(col.buffer.byteLength).toBe(64 * 4);
+        const col = createColumn(columnLayout('f32'), 64);
+        expect(col.view.buffer.byteLength).toBe(64 * 4);
       });
 
       it('creates a TypedArray view of correct type for f32', () => {
-        const col = createColumn('f32', 16);
+        const col = createColumn(columnLayout('f32'), 16);
         expect(col.view).toBeInstanceOf(Float32Array);
         expect(col.view.length).toBe(16);
       });
@@ -657,41 +608,41 @@ function appendEntity(table: Table, entity: number): number {
           enum: Uint32Array,
         };
         for (const [fieldType, ViewCtor] of Object.entries(typeToView)) {
-          const col = createColumn(fieldType as ScalarFieldType, 8);
+          const col = createColumn(columnLayout(fieldType as ScalarFieldType), 8);
           // biome-ignore lint/complexity/noBannedTypes: ViewCtor is a constructor from Object.entries, Function is the correct generic type here
           expect(col.view).toBeInstanceOf(ViewCtor as Function);
         }
       });
 
       it('each field has an independent ArrayBuffer (not shared)', () => {
-        const col1 = createColumn('f32', 16);
-        const col2 = createColumn('f32', 16);
-        expect(col1.buffer).not.toBe(col2.buffer);
+        const col1 = createColumn(columnLayout('f32'), 16);
+        const col2 = createColumn(columnLayout('f32'), 16);
+        expect(col1.view.buffer).not.toBe(col2.view.buffer);
       });
     });
 
     describe('growColumn', () => {
       it('grows an ArrayBuffer column when SharedArrayBuffer is unavailable', () => {
-        const col = createColumn('f32', 4);
+        const col = createColumn(columnLayout('f32'), 4);
         col.view[0] = 7;
         vi.stubGlobal('SharedArrayBuffer', undefined);
         try {
           const grown = growColumn(col, 8);
           expect(grown.view[0]).toBe(7);
-          expect(grown.capacity).toBe(8);
+          expect(grown.view.length / grown.layout.arity).toBe(8);
         } finally {
           vi.unstubAllGlobals();
         }
       });
 
       it('grows column to new capacity with data intact', () => {
-        const col = createColumn('f32', 4);
+        const col = createColumn(columnLayout('f32'), 4);
         col.view[0] = 1.5;
         col.view[1] = 2.5;
         col.view[2] = 3.5;
 
         const grown = growColumn(col, 8);
-        expect(grown.capacity).toBe(8);
+        expect(grown.view.length / grown.layout.arity).toBe(8);
         expect(grown.view[0]).toBeCloseTo(1.5);
         expect(grown.view[1]).toBeCloseTo(2.5);
         expect(grown.view[2]).toBeCloseTo(3.5);
@@ -699,13 +650,13 @@ function appendEntity(table: Table, entity: number): number {
 
       it('old column is not affected by grow (fallback path)', () => {
         if (HAS_TRANSFER) {
-          const col = createColumn('i32', 4);
+          const col = createColumn(columnLayout('i32'), 4);
           col.view[0] = 42;
           const grown = growColumn(col, 8);
           expect(grown.view[0]).toBe(42);
-          expect(col.buffer.byteLength).toBe(0);
+          expect(col.view.buffer.byteLength).toBe(0);
         } else {
-          const col = createColumn('i32', 4);
+          const col = createColumn(columnLayout('i32'), 4);
           col.view[0] = 42;
           const grown = growColumn(col, 8);
           grown.view[0] = 99;
@@ -727,11 +678,11 @@ function appendEntity(table: Table, entity: number): number {
           'enum',
         ];
         for (const t of types) {
-          const col = createColumn(t, 4);
+          const col = createColumn(columnLayout(t), 4);
           col.view[0] = 1;
           const grown = growColumn(col, 8);
           expect(grown.view[0]).toBe(1);
-          expect(grown.capacity).toBe(8);
+          expect(grown.view.length / grown.layout.arity).toBe(8);
         }
       });
     });
@@ -739,21 +690,18 @@ function appendEntity(table: Table, entity: number): number {
     describe('growColumn transfer() / fallback equivalence', () => {
       function fallbackGrow(
         col: {
-          buffer: ArrayBufferLike;
-          fieldType: ScalarFieldType;
-          capacity: number;
-          view: { BYTES_PER_ELEMENT: number };
+          view: { BYTES_PER_ELEMENT: number; buffer: ArrayBufferLike };
         },
         newCapacity: number,
       ) {
         const byteLen = col.view.BYTES_PER_ELEMENT * newCapacity;
         const buf = new ArrayBuffer(byteLen);
-        new Uint8Array(buf).set(new Uint8Array(col.buffer));
+        new Uint8Array(buf).set(new Uint8Array(col.view.buffer));
         return buf;
       }
 
       it('both paths produce identical data for f32', () => {
-        const col = createColumn('f32', 4);
+        const col = createColumn(columnLayout('f32'), 4);
         col.view[0] = 1.5;
         col.view[1] = -3.14;
         col.view[2] = 0;
@@ -762,7 +710,7 @@ function appendEntity(table: Table, entity: number): number {
         const fallbackBuf = fallbackGrow(col, 8);
 
         const grown = growColumn(col, 8);
-        const grownBytes = new Uint8Array(grown.buffer, 0, 16);
+        const grownBytes = new Uint8Array(grown.view.buffer, 0, 16);
         const fallbackBytes = new Uint8Array(fallbackBuf, 0, 16);
         expect(Array.from(grownBytes)).toEqual(Array.from(fallbackBytes));
         expect(grown.view[0]).toBeCloseTo(1.5);
@@ -771,7 +719,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('both paths produce identical data for i32', () => {
-        const col = createColumn('i32', 4);
+        const col = createColumn(columnLayout('i32'), 4);
         col.view[0] = -2147483648;
         col.view[1] = 2147483647;
         col.view[2] = 0;
@@ -780,7 +728,7 @@ function appendEntity(table: Table, entity: number): number {
         const fallbackBuf = fallbackGrow(col, 8);
 
         const grown = growColumn(col, 8);
-        const grownBytes = new Uint8Array(grown.buffer, 0, 16);
+        const grownBytes = new Uint8Array(grown.view.buffer, 0, 16);
         const fallbackBytes = new Uint8Array(fallbackBuf, 0, 16);
         expect(Array.from(grownBytes)).toEqual(Array.from(fallbackBytes));
         expect(grown.view[0]).toBe(-2147483648);
@@ -789,7 +737,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('both paths produce identical data for u8 (bool backing)', () => {
-        const col = createColumn('u8', 4);
+        const col = createColumn(columnLayout('u8'), 4);
         col.view[0] = 0;
         col.view[1] = 1;
         col.view[2] = 255;
@@ -798,13 +746,13 @@ function appendEntity(table: Table, entity: number): number {
         const fallbackBuf = fallbackGrow(col, 16);
 
         const grown = growColumn(col, 16);
-        const grownBytes = new Uint8Array(grown.buffer, 0, 4);
+        const grownBytes = new Uint8Array(grown.view.buffer, 0, 4);
         const fallbackBytes = new Uint8Array(fallbackBuf, 0, 4);
         expect(Array.from(grownBytes)).toEqual(Array.from(fallbackBytes));
       });
 
       it('data is not lost after growing to 2x, 4x, 8x capacity', () => {
-        let col = createColumn('f64', 2);
+        let col = createColumn(columnLayout('f64'), 2);
         col.view[0] = Math.PI;
         col.view[1] = Math.E;
 
@@ -819,11 +767,11 @@ function appendEntity(table: Table, entity: number): number {
         col = growColumn(col, 16);
         expect(col.view[0]).toBeCloseTo(Math.PI, 14);
         expect(col.view[1]).toBeCloseTo(Math.E, 14);
-        expect(col.capacity).toBe(16);
+        expect(col.view.length / col.layout.arity).toBe(16);
       });
 
       it('new capacity region is zeroed', () => {
-        const col = createColumn('i32', 4);
+        const col = createColumn(columnLayout('i32'), 4);
         col.view[0] = 100;
         col.view[1] = 200;
 
@@ -854,23 +802,23 @@ function appendEntity(table: Table, entity: number): number {
         for (let i = 0; i < ARITY; i++) {
           const expected = PATTERN[i];
           if (expected === undefined) throw new Error('unexpected');
-          expect(col.view[i], `row[0][${i}] after capacity ${col.capacity}`).toBeCloseTo(
-            expected,
-            6,
-          );
+          expect(
+            col.view[i],
+            `row[0][${i}] after capacity ${col.view.length / col.layout.arity}`,
+          ).toBeCloseTo(expected, 6);
         }
       }
 
       it('grow 0->4->8->16->32->64 preserves row 0 stride-16 data', () => {
-        let col = createColumn('f32', 0, ARITY);
-        expect(col.arity).toBe(ARITY);
-        expect(col.capacity).toBe(0);
+        let col = createColumn(columnLayout('f32', ARITY), 0);
+        expect(col.layout.arity).toBe(ARITY);
+        expect(col.view.length / col.layout.arity).toBe(0);
 
         const stages = [4, 8, 16, 32, 64];
         for (const cap of stages) {
           col = growColumn(col, cap);
-          expect(col.capacity).toBe(cap);
-          expect(col.arity).toBe(ARITY);
+          expect(col.view.length / col.layout.arity).toBe(cap);
+          expect(col.layout.arity).toBe(ARITY);
 
           if (cap === 4) {
             writeRow0(col, PATTERN);
@@ -881,22 +829,22 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('grow from nonzero capacity preserves row 0 for arity=16', () => {
-        let col = createColumn('f32', 8, ARITY);
+        let col = createColumn(columnLayout('f32', ARITY), 8);
         writeRow0(col, PATTERN);
 
         const stages = [16, 32, 64, 128];
         for (const cap of stages) {
           col = growColumn(col, cap);
-          expect(col.capacity).toBe(cap);
-          expect(col.arity).toBe(ARITY);
+          expect(col.view.length / col.layout.arity).toBe(cap);
+          expect(col.layout.arity).toBe(ARITY);
           expectRow0Unchanged(col);
         }
       });
 
       it('grow from capacity 1 preserves arity=4 f64 row', () => {
         const f64pattern = [Math.PI, Math.E, Math.LN2, Math.SQRT2];
-        let col = createColumn('f64', 1, 4);
-        expect(col.arity).toBe(4);
+        let col = createColumn(columnLayout('f64', 4), 1);
+        expect(col.layout.arity).toBe(4);
         for (let i = 0; i < 4; i++) {
           const v = f64pattern[i];
           if (v === undefined) throw new Error('unexpected');
@@ -916,7 +864,7 @@ function appendEntity(table: Table, entity: number): number {
 
       it('new capacity tail rows are zeroed for arity>1', () => {
         const AR = 3;
-        const col = createColumn('u32', 2, AR);
+        const col = createColumn(columnLayout('u32', AR), 2);
         col.view[0] = 0xdeadbeef;
         col.view[1] = 0xcafebabe;
         col.view[2] = 0x12345678;
@@ -949,7 +897,7 @@ function appendEntity(table: Table, entity: number): number {
     const archId = records.archetypeId[indexSlot] ?? -1;
     const arch = graph.archetypes[archId];
     if (!arch) throw new Error('archetype not found for entity');
-    const table = graph.tables[arch.tableId];
+    const table = arch.table;
     if (!table) throw new Error('table not found for entity');
     return table;
   }
@@ -966,18 +914,24 @@ function appendEntity(table: Table, entity: number): number {
       });
     });
 
-    describe('Entity barrel forced-registration fail-fast (AC-01)', () => {
+    describe('Entity barrel reserved identity (AC-01)', () => {
       afterEach(() => {
         vi.resetModules();
       });
 
-      it('throws at barrel eval when a component registers before Entity', async () => {
+      it('keeps Entity zero when component authoring precedes the root entry', async () => {
         vi.resetModules();
-        const { defineComponent: freshDefine } = await import('../component');
-        freshDefine('TamperOrderDummy', { x: 'f32' });
-        await expect(import('../index')).rejects.toThrow(
-          /Entity invariant violated.*expected id=0/,
-        );
+        const authoring = await import('../component');
+        const Early = authoring.defineComponent('EarlyComponentDefinitionIdentity', {
+          value: 'u32',
+        });
+        expect(authoring.componentId(Early)).toBeGreaterThan(0);
+        const ecs = await import('../index');
+        expect(ecs.componentDefinition(ecs.Entity).id).toBe(0);
+        const world = new ecs.World();
+        const entity = world.spawn({ component: Early, data: { value: 73 } }).unwrap();
+        expect(world.get(entity, Early).unwrap().value).toBe(73);
+        expect(world.get(entity, ecs.Entity).unwrap().self).toBe(entity);
       });
 
       it('does not throw at barrel eval under the normal import order', async () => {
@@ -1142,7 +1096,7 @@ function appendEntity(table: Table, entity: number): number {
 
     describe('fixed buffer<64> inline column (AC-03 / w6)', () => {
       it('spawn->get round-trips all 64 bytes', () => {
-        const Blob = defineComponent('Blob64', { b: 'buffer<64>' });
+        const Blob = defineComponent('Blob64', { b: 'array<u8, 64>' });
         const world = new World();
         const bytes = Uint8Array.from({ length: 64 }, (_, i) => (i * 7 + 3) & 0xff);
         const e = world.spawn({ component: Blob, data: { b: bytes } }).unwrap();
@@ -1238,7 +1192,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('buffer<64>-only spawn->get->despawn never touches the pool', () => {
-        const Blob = defineComponent('Blob64Pool', { b: 'buffer<64>' });
+        const Blob = defineComponent('Blob64Pool', { b: 'array<u8, 64>' });
         const world = new World();
         expect(liveCount(world)).toBe(0);
 
@@ -1257,7 +1211,7 @@ function appendEntity(table: Table, entity: number): number {
       const liveCount = (world: World): number => world.memoryStats().arrays.liveArrays;
 
       it('variable buffer spawn->set->get round-trip works', () => {
-        const C = defineComponent('VarBuf', { blob: 'buffer' });
+        const C = defineComponent('VarBuf', { blob: 'array<u8>' });
         const world = new World();
         expect(liveCount(world)).toBe(0);
 
@@ -1273,7 +1227,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('variable buffer grows via set with larger payload', () => {
-        const C = defineComponent('VarBuf2', { blob: 'buffer' });
+        const C = defineComponent('VarBuf2', { blob: 'array<u8>' });
         const world = new World();
         const small = Uint8Array.of(0x01, 0x02);
         const e = world.spawn({ component: C, data: { blob: small } }).unwrap();
@@ -1290,7 +1244,7 @@ function appendEntity(table: Table, entity: number): number {
       });
 
       it('variable buffer release path: despawn returns slot to pool', () => {
-        const C = defineComponent('VarBuf3', { blob: 'buffer' });
+        const C = defineComponent('VarBuf3', { blob: 'array<u8>' });
         const world = new World();
         expect(liveCount(world)).toBe(0);
 
@@ -1329,25 +1283,23 @@ function appendEntity(table: Table, entity: number): number {
 }
 
 describe('Entity in storage identity', () => {
-  it('uses the same key for implicit and explicit Entity without changing input', () => {
-    const C = defineComponent('EntityKeyComponent', { value: 'f32' });
-    const ids = Object.freeze([componentId(C), componentId(C)]);
-    expect(archetypeKey(ids)).toBe(archetypeKey([componentId(Entity), componentId(C)]));
-    expect(ids).toEqual([componentId(C), componentId(C)]);
-    expect(archetypeKey([])).toBe(String(componentId(Entity)));
+  it('keeps physical Entity storage when a sparse token uses its id', () => {
+    const sparseEntity = defineComponent('Entity', {}, { storage: 'sparse' });
+    const arch = getOrCreateArchetype(createArchetypeGraph(), [sparseEntity]);
+    expect(arch.components).toEqual([sparseEntity]);
+    expect(arch.table.components).toEqual([Entity]);
   });
 
   it('shares one archetype and table for implicit and repeated explicit Entity', () => {
     const graph = createArchetypeGraph();
-    const bare = getOrCreateArchetype(graph, [], []);
-    const explicit = getOrCreateArchetype(
-      graph,
-      [componentId(Entity), componentId(Entity)],
-      [Entity, Entity],
-    );
+    const bare = getOrCreateArchetype(graph, []);
+    const roster = Object.freeze([Entity, Entity]);
+    const explicit = getOrCreateArchetype(graph, roster);
+    expect(roster).toEqual([Entity, Entity]);
+    expect(bare.key).toBe(String(componentId(Entity)));
     expect(explicit).toBe(bare);
     expect(bare.components).toEqual([Entity]);
-    const table = graph.tables[bare.tableId];
+    const table = bare.table;
     expect(table?.key).toBe(bare.key);
     expect(table?.components).toEqual([Entity]);
     expect(table?.storage.size).toBe(1);
@@ -1446,12 +1398,10 @@ describe('Entity in storage identity', () => {
   //       getRemoveEdge still works with only src.components.filter.
 
   describe('swap-pop-self-column-removeEdge-filter.test.ts', () => {
-    let testArchId = 0;
-
     describe('removeEntity swap-pop reads entity from id=0 self column', () => {
       it('2+ entities swap-pop: removed entity index comes from self column, not entities array', () => {
         const C = defineComponent('SwapSelfCol', { v: { type: 'i32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
 
         // Populate 3 entities. appendEntity writes to the id=0 self column.
         appendEntity(arch, 0x42);
@@ -1477,7 +1427,7 @@ describe('Entity in storage identity', () => {
 
       it('single entity last-row swap-pop returns null (row === lastRow, no entities read needed)', () => {
         const C = defineComponent('SwapSelfLastRow', { v: { type: 'f32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
 
         appendEntity(arch, 0xab);
 
@@ -1488,7 +1438,7 @@ describe('Entity in storage identity', () => {
 
       it('swap-pop self column data correctly migrated (column-level swap)', () => {
         const C = defineComponent('SwapSelfColData', { v: { type: 'i32' } });
-        const arch = createArchetype([C], testArchId++);
+        const arch = tableFor([C]);
 
         appendEntity(arch, 0x10);
         appendEntity(arch, 0x20);
@@ -1529,11 +1479,7 @@ describe('Entity in storage identity', () => {
         const B = defineComponent('RemoveEdgeFilter_B', { b: { type: 'f32' } });
         const C = defineComponent('RemoveEdgeFilter_C', { c: { type: 'f32' } });
 
-        const archABC = getOrCreateArchetype(
-          graph,
-          [componentId(A), componentId(B), componentId(C)],
-          [A, B, C],
-        );
+        const archABC = getOrCreateArchetype(graph, [A, B, C]);
 
         // After w5: componentRegistry field deleted; getRemoveEdge derives
         // component list from src.components.filter(c => componentId(c) !== removedId).
@@ -1555,219 +1501,12 @@ describe('Entity in storage identity', () => {
         const graph = createArchetypeGraph();
         const A = defineComponent('RemoveEdgeLast_A', { a: { type: 'f32' } });
 
-        const archA = getOrCreateArchetype(graph, [componentId(A)], [A]);
+        const archA = getOrCreateArchetype(graph, [A]);
         const archEmpty = getRemoveEdge(graph, archA, componentId(A));
 
         expect(archEmpty.components.length).toBe(1);
         expect(archEmpty.components[0]?.name).toBe('Entity');
         expect(archEmpty.components.map((c) => componentId(c))).toEqual([componentId(Entity)]);
-      });
-    });
-  });
-}
-
-{
-  // ─── from isManaged-column-4-predicate-equivalence.test.ts (feat-20260611-ecs-storage-naming-ssot M-3 / w6) ───
-  //
-  // Verifies:
-  //   1. Every TYPE_METADATA row has an `isManaged` boolean column.
-  //   2. The 4 `isXxxField` predicates produce the same boolean result as the
-  //      new TYPE_METADATA[].isXxx single-column lookups.
-  //   3. `isManagedField` recognizes `'string'` and `'unique<T>'` (both isManaged).
-  //
-  // tweak-20260612-ecs-concept-compression dropped the redundant per-vocab
-  // managed-ref predicate column (100% identical to `isManaged`); the
-  // equivalence assertion below now reads `isManaged` directly.
-  //
-  // Plan-strategy D-3 (approach A): TYPE_METADATA gains an `isManaged` column;
-  // 4 predicates are 1:1 derivations from TYPE_METADATA columns, zero OR.
-  //
-  // Plan-strategy D-4: `isManagedBufferField` semantic widening accepted —
-  // `buffer<abc>` resolves to metaKey 'buffer', `isBuffer` returns true; the
-  // upstream `isSchemaVocabKeyword` gate already rejects malformed keywords.
-  //
-  // TDD: these tests are RED before w7 (isManaged column does not yet exist on
-  // TypeMetadataRow). They turn GREEN after w7 adds the column + rewrites
-  // predicates.
-
-  describe('isManaged-column-4-predicate-equivalence.test.ts', () => {
-    describe('isManaged column exists on every TYPE_METADATA row', () => {
-      it('every TYPE_METADATA row has a boolean isManaged property', () => {
-        for (const [key, row] of Object.entries(TYPE_METADATA)) {
-          expect(
-            typeof (row as unknown as Record<string, unknown>).isManaged,
-            `TYPE_METADATA['${key}'].isManaged must be boolean`,
-          ).toBe('boolean');
-        }
-      });
-
-      it('isManaged === true exactly for the managed-ref vocab + scalar rows (string, unique, shared and asset)', () => {
-        // Managed metadata selects the matching ownership-specific release path.
-        for (const [key, row] of Object.entries(TYPE_METADATA)) {
-          const im = (row as unknown as Record<string, unknown>).isManaged as boolean;
-          const expected =
-            key === 'string' || key === 'unique' || key === 'shared' || key === 'asset';
-          expect(im, `TYPE_METADATA['${key}'].isManaged`).toBe(expected);
-        }
-      });
-
-      it('"string" row has isManaged === true', () => {
-        const stringRow = TYPE_METADATA.string;
-        if (stringRow === undefined) throw new Error('string row missing');
-        const im = (stringRow as unknown as Record<string, unknown>).isManaged;
-        expect(im).toBe(true);
-      });
-
-      it('"unique" row has isManaged === true (shared scalar + vocab row)', () => {
-        const refRow = TYPE_METADATA.unique;
-        if (refRow === undefined) throw new Error('unique row missing');
-        const im = (refRow as unknown as Record<string, unknown>).isManaged;
-        expect(im).toBe(true);
-      });
-
-      it('non-managed rows (entity, buffer, array, scalars) have isManaged === false', () => {
-        const nonManagedKeys = [
-          'entity',
-          'buffer',
-          'array',
-          'f32',
-          'f64',
-          'i32',
-          'u32',
-          'i16',
-          'u16',
-          'i8',
-          'u8',
-          'bool',
-          'enum',
-        ];
-        for (const key of nonManagedKeys) {
-          const row = TYPE_METADATA[key];
-          if (row === undefined) throw new Error(`row ${key} missing`);
-          const im = (row as unknown as Record<string, unknown>).isManaged as boolean;
-          expect(im, `TYPE_METADATA['${key}'].isManaged`).toBe(false);
-        }
-      });
-    });
-
-    describe('4 predicate equivalence (old impl vs new TYPE_METADATA column)', () => {
-      // Legal SchemaFieldType samples: all scalars (keywords) +
-      // 6 vocab-family parametric representatives. Every sample is a
-      // syntactically valid keyword accepted by `defineComponent`.
-      //
-      // Deliberately excluded: 'buffer<0>' (invalid N, /^[1-9]\d*$/ rejects
-      // 0), 'buffer<abc>' (non-integer N), 'handle<>' (empty tag). These
-      // are never accepted by `defineComponent` (gated via `isSchemaVocabKeyword`),
-      // so they never flow through the runtime predicates. The D-4 semantic
-      // widening only affects invalid inputs — a dead path.
-      const SAMPLE_FIELD_TYPES: string[] = [
-        // scalar keys
-        'f32',
-        'f64',
-        'i32',
-        'u32',
-        'i16',
-        'u16',
-        'i8',
-        'u8',
-        'bool',
-        'enum',
-        // 6 vocab-family parametric reps
-        'entity',
-        'string',
-        'buffer',
-        'buffer<64>',
-        'unique<MaterialAsset>',
-        'asset<material>',
-        'array<f32>',
-        'array<f32, 16>',
-        'array<entity>',
-        'array<entity, 4>',
-        'array<asset<material>>',
-        'unknown-field-type',
-      ];
-
-      it('isManagedField: equivalence between current impl and TYPE_METADATA[].isManaged', () => {
-        for (const t of SAMPLE_FIELD_TYPES) {
-          const oldResult = isManagedField(t);
-          const metaKey = fieldTypeToMetaKey(t) ?? '';
-          const newResult =
-            ((TYPE_METADATA[metaKey] as unknown as Record<string, unknown>)
-              ?.isManaged as boolean) ?? false;
-          expect(newResult, `isManagedField('${t}'): old=${oldResult} new=${newResult}`).toBe(
-            oldResult,
-          );
-        }
-      });
-
-      it('isManagedBufferField: equivalence between current impl and TYPE_METADATA[].isBuffer', () => {
-        for (const t of SAMPLE_FIELD_TYPES) {
-          const oldResult = isManagedBufferField(t);
-          const metaKey = fieldTypeToMetaKey(t) ?? '';
-          const newResult = TYPE_METADATA[metaKey]?.isBuffer ?? false;
-          expect(newResult, `isManagedBufferField('${t}'): old=${oldResult} new=${newResult}`).toBe(
-            oldResult,
-          );
-        }
-      });
-
-      it('isEntityField: equivalence between current impl and TYPE_METADATA[].isEntityRef', () => {
-        for (const t of SAMPLE_FIELD_TYPES) {
-          const oldResult = isEntityField(t);
-          const metaKey = fieldTypeToMetaKey(t) ?? '';
-          const newResult = TYPE_METADATA[metaKey]?.isEntityRef ?? false;
-          expect(newResult, `isEntityField('${t}'): old=${oldResult} new=${newResult}`).toBe(
-            oldResult,
-          );
-        }
-      });
-
-      it('isManagedArrayField: equivalence between current impl and TYPE_METADATA[].isArray', () => {
-        for (const t of SAMPLE_FIELD_TYPES) {
-          const oldResult = isManagedArrayField(t);
-          const metaKey = fieldTypeToMetaKey(t) ?? '';
-          const newResult = TYPE_METADATA[metaKey]?.isArray ?? false;
-          expect(newResult, `isManagedArrayField('${t}'): old=${oldResult} new=${newResult}`).toBe(
-            oldResult,
-          );
-        }
-      });
-    });
-
-    describe('isManagedBufferField semantic widening (D-4 acceptance)', () => {
-      it("'buffer<abc>' maps to metaKey 'buffer' so isBuffer returns true", () => {
-        // D-4 states this widening is acceptable: defineComponent rejects
-        // 'buffer<abc>' via isSchemaVocabKeyword (non-integer N), so it
-        // never reaches the runtime predicate. The column-based predicate
-        // unavoidably returns true via metaKey 'buffer'.isBuffer === true.
-        const metaKey = fieldTypeToMetaKey('buffer<abc>') ?? '';
-        expect(metaKey).toBe('buffer');
-        expect(TYPE_METADATA[metaKey]?.isBuffer ?? false).toBe(true);
-        // The new column-based predicate returns true for this dead path
-        // (old regex impl returned false). Accepted per D-4.
-        expect(isManagedBufferField('buffer<abc>')).toBe(true);
-      });
-    });
-
-    describe('isManagedField coverage: string and unique<T>', () => {
-      it("returns true for 'string' literal", () => {
-        expect(isManagedField('string')).toBe(true);
-      });
-
-      it("returns true for 'unique<Foo>' template", () => {
-        expect(isManagedField('unique<Foo>')).toBe(true);
-      });
-
-      it("returns true for 'shared<X>' (rc-tracked managed scalar)", () => {
-        expect(isManagedField('shared<X>')).toBe(true);
-      });
-
-      it("returns false for 'entity', 'buffer', 'array<T>', and bare scalars", () => {
-        expect(isManagedField('entity')).toBe(false);
-        expect(isManagedField('buffer')).toBe(false);
-        expect(isManagedField('buffer<64>')).toBe(false);
-        expect(isManagedField('array<f32>')).toBe(false);
-        expect(isManagedField('f32')).toBe(false);
       });
     });
   });

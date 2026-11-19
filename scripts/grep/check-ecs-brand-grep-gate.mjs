@@ -18,7 +18,6 @@
 //   - `releaseManagedFieldOnRow`        (world.ts release dispatch)
 //   - `releaseManagedRefsOnRow`         (alias delegate)
 //   - `releaseManagedRefHandle`         (per-handle release)
-//   - `isManagedField` / `isManagedBufferField` / `isManagedArrayField`
 //   - `MANAGED_ARRAY_ELEMENT_TYPES`     (array element type set)
 //   - `parseManagedArraySchema`         (schema parser)
 //   - `managed-array-*`                 (error code family — also gated by
@@ -54,9 +53,6 @@ const WHITELIST_IDENTIFIERS = [
   'releaseManagedFieldOnRow',
   'releaseManagedRefsOnRow',
   'releaseManagedRefHandle',
-  'isManagedField',
-  'isManagedBufferField',
-  'isManagedArrayField',
   'MANAGED_ARRAY_ELEMENT_TYPES',
   'parseManagedArraySchema',
   'ManagedColumnReader',

@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -30,7 +31,7 @@ it('isolates receipt hooks after an accepted submission and attributes every fai
   };
   try {
     prepareFeatureFrame(host, [
-      { identity: 'main', render: true, worlds: [], owner: 1, frameNumber: 1, caps: device.caps },
+      { identity: 'main', render: true, world: new World(), frameNumber: 1, caps: device.caps },
     ]);
     submitFeatureFrame(host);
     expect(renderSubmission(host.world).accepted).toBe(true);

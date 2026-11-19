@@ -40,51 +40,56 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
       'storage-buffer',
       'storage-buffer-atmosphere',
     ]) {
-      for (const visibleSurface of [false, true]) {
-        for (const address of ['direct', 'scene-index'] as const) {
-          const keys = new Set<string>();
-          for (const color of [false, true]) {
-            const matches = record.programs.filter((p) =>
-              p.selections.some(
-                (s) =>
-                  s.address === address &&
-                  s.context.pipeline !== 'ray' &&
-                  s.context.capability === capability &&
-                  (s.context.visibleSurface === true) === visibleSurface &&
-                  s.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
-              ),
-            );
-            expect(matches).toHaveLength(1);
-            const artifact = matches[0];
-            if (artifact === undefined) throw new Error('missing cooked variant');
-            keys.add(artifact.specializationKey);
-            expect(artifact).toBeDefined();
-            const wgsl = new TextDecoder().decode(artifact?.artifact.bytes);
-            // Packed tangent words also use location 14, with a uint32 input.
-            // Color still requires its float input and interpolated vec4 output.
-            expect(/@location\(13\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
-            expect(/@location\(14\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
+      for (const viewClipping of [false, true])
+        for (const lodCoverage of [false, true])
+          for (const visibleSurface of [false, true]) {
+            for (const address of ['direct', 'scene-index'] as const) {
+              const keys = new Set<string>();
+              for (const color of [false, true]) {
+                const matches = record.programs.filter((p) =>
+                  p.selections.some(
+                    (s) =>
+                      s.address === address &&
+                      s.context.pipeline !== 'ray' &&
+                      (s.context.lodCoverage === true) === lodCoverage &&
+                      s.context.capability === capability &&
+                      (s.context.visibleSurface === true) === visibleSurface &&
+                      (s.context.viewClipping === true) === viewClipping &&
+                      s.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+                  ),
+                );
+                expect(matches).toHaveLength(1);
+                const artifact = matches[0];
+                if (artifact === undefined) throw new Error('missing cooked variant');
+                keys.add(artifact.specializationKey);
+                expect(artifact).toBeDefined();
+                const wgsl = new TextDecoder().decode(artifact?.artifact.bytes);
+                // Packed tangent input may also use location 14; identify actual color fields.
+                expect(/@location\(13\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
+                expect(/@location\(14\)\s+color\s*:\s*vec4<f32>/.test(wgsl)).toBe(color);
+              }
+              expect(keys.size).toBe(2);
+            }
           }
-          expect(keys.size).toBe(2);
-        }
-      }
     }
     // Both portable contexts retain distinct plain/color selections. Their
     // shared capability must not collapse the backend-owned compilation.
-    for (const backend of ['webgpu', 'webgl2']) {
-      for (const color of [false, true]) {
-        const matches = record.programs.filter((program) =>
-          program.selections.some(
-            (selection) =>
-              selection.address === 'direct' &&
-              selection.context.backend === backend &&
-              selection.context.capability === 'uniform-fallback' &&
-              selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
-          ),
-        );
-        expect(matches).toHaveLength(1);
+    for (const viewClipping of [false, true])
+      for (const backend of ['webgpu', 'webgl2']) {
+        for (const color of [false, true]) {
+          const matches = record.programs.filter((program) =>
+            program.selections.some(
+              (selection) =>
+                selection.address === 'direct' &&
+                selection.context.backend === backend &&
+                selection.context.capability === 'uniform-fallback' &&
+                (selection.context.viewClipping === true) === viewClipping &&
+                selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+            ),
+          );
+          expect(matches).toHaveLength(1);
+        }
       }
-    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -179,6 +184,7 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
         p.selections.some(
           (s) =>
             s.context.pipeline !== 'ray' &&
+            s.context.lodCoverage !== true &&
             s.abi?.vertexInputs.some((input) => input.semantic === 'color') === true,
         ),
       ),

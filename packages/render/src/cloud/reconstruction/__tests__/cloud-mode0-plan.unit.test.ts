@@ -83,6 +83,44 @@ function fixture() {
   return { feature, data, params, context };
 }
 
+it('skips clouds with a clear reason when the backend cannot run the cloud trace', () => {
+  const { feature, context, data } = fixture();
+  const frame = data();
+  const plan = feature.plan(frame, {
+    ...context,
+    caps: { ...context.caps, backendKind: 'wgpu-webgl2' },
+  });
+  expect(plan.unwrap().work).toEqual([]);
+  expect(frame.inspection.camera).toMatchObject({
+    status: 'unavailable',
+    resourceStage: 'none',
+    unavailableReason: 'WebGPU backend',
+  });
+  expect(frame.inspection.camera?.mode0).toBeUndefined();
+});
+
+it('isolates cloud capability rejection to the affected view', () => {
+  const { feature, context, data } = fixture();
+  const frame = data();
+  const [camera] = context.views;
+  if (camera === undefined) throw new Error('Missing fixture view');
+  const msaa = {
+    ...camera,
+    identity: 'msaa',
+    targets: camera.targets.map((target) =>
+      target.name === 'depth' ? { ...target, sampleCount: 4 as const } : target,
+    ),
+  };
+  const mixed = { ...frame, layers: { ...frame.layers, msaa: frame.layers.camera } };
+  const plan = feature.plan(mixed, { ...context, views: [camera, msaa] });
+  expect(plan.unwrap().work.map(({ scope }) => scope)).toEqual([{ view: 'camera' }]);
+  expect(mixed.inspection.camera?.status).toBe('available');
+  expect(mixed.inspection.msaa).toMatchObject({
+    status: 'unavailable',
+    unavailableReason: 'single-sample depth (select FXAA or disable MSAA)',
+  });
+});
+
 it('stages phase and history only after all real resolve work is submitted', () => {
   const { feature, data, params } = fixture();
   const first = data();

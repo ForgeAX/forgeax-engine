@@ -48,6 +48,50 @@ describe('fullscreen RenderFeature plan', () => {
     }
   });
 
+  it('shares the admitted source digest with module and pipeline labels', () => {
+    const entry = { source: `${'// padding\n'.repeat(10_000)}fn fs_main() {}` };
+    const signature = postProcessShaderEntrySignature(entry);
+    const moduleLabel = postProcessShaderModuleLabel(entry.source);
+    const pipelineLabel = postProcessShaderPipelineLabel('test::digest', entry.source);
+    const scan = vi.spyOn(String.prototype, 'charCodeAt');
+    try {
+      for (let frame = 0; frame < 300; frame++) {
+        expect(postProcessShaderModuleLabel(entry)).toBe(moduleLabel);
+        expect(postProcessShaderPipelineLabel('test::digest', entry)).toBe(pipelineLabel);
+        expect(postProcessShaderEntrySignature(entry)).toBe(signature);
+      }
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      scan.mockRestore();
+    }
+  });
+
+  it('updates labels on same-length source replacement and ignores non-source changes', () => {
+    const entry = {
+      source: 'fn fs_main() { let value = 1; }',
+      params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+      reads: ['scene-color'],
+    };
+    const before = postProcessShaderModuleLabel(entry);
+    entry.source = 'fn fs_main() { let value = 2; }';
+    const after = postProcessShaderModuleLabel(entry);
+    expect(after).not.toBe(before);
+    expect(after).toBe(postProcessShaderModuleLabel(entry.source));
+    expect(postProcessShaderModuleLabel({ source: entry.source })).toBe(after);
+    const signature = postProcessShaderEntrySignature(entry);
+    entry.params.defaultValue[0] = 1;
+    entry.reads[0] = 'other-color';
+    const scan = vi.spyOn(String.prototype, 'charCodeAt');
+    try {
+      expect(postProcessShaderModuleLabel(entry)).toBe(after);
+      expect(postProcessShaderEntrySignature(entry)).not.toBe(signature);
+      expect(postProcessShaderModuleLabel(entry)).toBe(after);
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      scan.mockRestore();
+    }
+  });
+
   it('invalidates source and nested declaration changes without relying on object identity', () => {
     const entry = {
       source: 'fn fs_main() { let value = 1; }',

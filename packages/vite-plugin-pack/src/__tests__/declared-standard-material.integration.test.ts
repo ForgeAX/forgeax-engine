@@ -31,11 +31,14 @@ import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
 // The observing realm's compiler is selected at import time. Restore ordinary
 // Worker admission before each case; only the call-count case opts back in.
 vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
-beforeEach(() => vi.unstubAllEnvs());
 
-// These cases admit declared WebGPU publications. Portable backend composition
-// remains on the independent cold-cooker contracts below.
-const publicationCooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
+// Create the ordinary publication owner after restoring production admission.
+// Module initialization runs under the observing realm's serial compiler setting.
+let publicationCooker: ReturnType<typeof createMaterialPackCooker>;
+beforeEach(() => {
+  vi.unstubAllEnvs();
+  publicationCooker ??= createMaterialPackCooker([], { profile: 'webgpu-storage' });
+});
 
 function expectWebGpuPublication(record: CookedMaterialRecord) {
   const selections = record.programs.flatMap((program) => program.selections);
@@ -425,7 +428,21 @@ it('retains complete ordinary Standard programs across authored color changes', 
     expect(
       selections.some((selection) => selection.context.capability === 'uniform-fallback'),
     ).toBe(true);
-    expect(record(second).programs).toEqual(record(first).programs);
+    const originalPrograms = record(first).programs;
+    const updatedPrograms = record(second).programs;
+    expect(updatedPrograms).toHaveLength(originalPrograms.length);
+    for (const [index, updated] of updatedPrograms.entries()) {
+      const original = originalPrograms[index];
+      if (original === undefined) throw new Error('compiled program count changed');
+      // Preserve exact byte equality without enumerating every index in Vitest.
+      const { bytes: updatedBytes, ...updatedArtifact } = updated.artifact;
+      const { bytes: originalBytes, ...originalArtifact } = original.artifact;
+      expect(Buffer.compare(updatedBytes, originalBytes)).toBe(0);
+      expect({ ...updated, artifact: updatedArtifact }).toEqual({
+        ...original,
+        artifact: originalArtifact,
+      });
+    }
     expect(record(second).resolved.values.baseColor).not.toEqual(
       record(first).resolved.values.baseColor,
     );

@@ -16,10 +16,10 @@ test('value-only acceptance preserves known membership without re-reading archet
   projection.read().accept();
   world.set(entity, Position, { x: 2 }).unwrap();
   const owner = world[worldInternal];
-  const getGraph = owner.getGraph;
-  Object.defineProperty(owner, 'getGraph', {
+  const graph = owner.graph;
+  Object.defineProperty(owner, 'graph', {
     configurable: true,
-    value: () => {
+    get: () => {
       throw new Error('value-only acceptance rediscovered membership');
     },
   });
@@ -29,7 +29,7 @@ test('value-only acceptance preserves known membership without re-reading archet
     batch.accept();
     expect(projection.read().indices).toEqual([]);
   } finally {
-    Object.defineProperty(owner, 'getGraph', { configurable: true, value: getGraph });
+    Object.defineProperty(owner, 'graph', { configurable: true, value: graph, writable: true });
   }
 });
 
@@ -249,27 +249,17 @@ test('source writes during candidate construction cannot be accepted', () => {
   expect(projection.read().indices).toEqual([]);
 });
 
-test('a local write never enumerates the clean table directory', () => {
+test('a local write skips clean change chunks', () => {
   const world = new World();
   const entities = Array.from({ length: 4096 }, () =>
     world.spawn({ component: Position, data: {} }).unwrap(),
   );
   const projection = createStateProjection(world, [Position]);
   projection.read().accept();
-  const directory = world[worldInternal]
-    .getGraph()
-    .activeTablesByComponent.get(componentId(Position));
-  if (directory === undefined) throw new Error('missing table directory');
-  Object.defineProperty(directory, Symbol.iterator, {
-    configurable: true,
-    value() {
-      throw new Error('clean table directory visited');
-    },
-  });
   world.set(entities[2000] as EntityHandle, Position, { x: 1 }).unwrap();
   const candidate = projection.read();
   expect(candidate.indices).toEqual([entityIndex(entities[2000] as EntityHandle)]);
-  expect(candidate.checkedBlocks).toBe(0);
+  expect(candidate.checkedIndexEntries).toBeLessThan(entities.length / 16);
   candidate.accept();
 });
 
@@ -284,9 +274,8 @@ test('changed span reads do not consult clean block summaries', () => {
   }
   const entity = entities[511] as EntityHandle;
   world.set(entity, Position, { x: 3 }).unwrap();
-  const graph = world[worldInternal].getGraph();
   const archetype = world[worldInternal].getEntityArchetype(entity);
-  const storage = graph.tables[archetype?.tableId ?? -1]?.storage.get(componentId(Position));
+  const storage = archetype?.table.storage.get(componentId(Position));
   if (storage === undefined) throw new Error('missing fixture storage');
   Object.defineProperty(storage, 'epochs', {
     get() {

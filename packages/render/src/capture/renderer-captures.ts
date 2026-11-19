@@ -11,13 +11,15 @@ export function createRendererCaptureOwner(
   const scheduler = createCubeCaptureScheduler({ maxFacesPerFrame: 1 });
   let activeTarget: RenderTarget | undefined;
   let previousEntity: number | undefined;
-  let recorded = false;
+  let encoded = false;
+  let scheduled: CubeCaptureWork | undefined;
   return {
     isPending(target: RenderTarget): boolean {
       return scheduler.inspect(target).candidateGeneration !== undefined;
     },
     prepare(snapshots: readonly CubeCameraSnapshot[]): readonly CubeCaptureWork[] {
-      recorded = false;
+      encoded = false;
+      scheduled = undefined;
       scheduler.beginFrame();
       for (const { target } of snapshots) {
         const physical = getTargetStorage(target);
@@ -52,13 +54,18 @@ export function createRendererCaptureOwner(
         }
       }
       const work = scheduler.nextWork();
-      recorded = work.length > 0;
+      scheduled = work[0];
       return work;
+    },
+    /** Only the executed face may acknowledge the current scheduled generation. */
+    recordEncoded(target: object, candidateGeneration: number): void {
+      if (scheduled?.target === target && scheduled.candidateGeneration === candidateGeneration)
+        encoded = true;
     },
     /** Settle the recorded face work with the frame's submission outcome. */
     complete(submitted: boolean, completion?: Promise<unknown>): RenderResult<void, RenderError> {
-      if (!recorded) return { ok: true, value: undefined };
-      recorded = false;
+      if (scheduled === undefined || !encoded) return { ok: true, value: undefined };
+      scheduled = undefined;
       const result = scheduler.completeSubmission(submitted, completion);
       // A failed outer transaction aborts the candidate; it is already reported
       // by the transaction owner, so only unexpected successful-submit failures surface.

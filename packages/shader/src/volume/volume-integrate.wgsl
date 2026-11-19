@@ -1,7 +1,7 @@
 #define_import_path forgeax_view::volume_integrate
 // forgeax_pbr::lighting_punctual remains the surface contract; the isolated
 // attenuation module below provides its resource-free volume equivalents.
-#import forgeax_pbr::lighting_attenuation::{projectSpotUv, evalDistanceAttenuation, evalSpotCone}
+#import forgeax_pbr::lighting_attenuation::{projectSpotUv, evalDistanceAttenuation, evalSpotCone, decodeSpotDecay}
 #import forgeax_view::common::{DirectLightSlot, View, view_atmosphere_aerial_enabled}
 #import forgeax_atmosphere::optics::{atmosphere_solar_transmittance, atmosphere_position}
 #import forgeax_cloud::layer::{cloud_apply_direct_solar}
@@ -107,13 +107,11 @@ fn ray_box_interval(origin : vec3<f32>, direction : vec3<f32>) -> vec2<f32> {
 
 fn evalSpotAttenuation(
 lightPos : vec3<f32>, lightDir : vec3<f32>, worldPos : vec3<f32>,
-cosInner : f32, cosOuter : f32, invRangeSquared : f32,
+cosInner : f32, cosOuter : f32, invRangeSquared : f32, decay : f32,
 ) -> f32 {
   let toLight = lightPos - worldPos;
   let dSquared = dot(toLight, toLight);
-  let safeDistance = max(dSquared, EPSILON);
-  let window = clamp(1.0 - (safeDistance * invRangeSquared) * (safeDistance * invRangeSquared), 0.0, 1.0);
-  let distance = window * window / safeDistance;
+  let distance = evalDistanceAttenuation(dSquared, invRangeSquared, decay, EPSILON);
   let direction = normalize(select(vec3<f32>(0.0, 0.0, -1.0), toLight, dSquared > EPSILON));
   return distance * evalSpotCone(cosInner, cosOuter, dot(direction, -normalize(lightDir)));
 }
@@ -155,6 +153,7 @@ fn spot_attenuation_at(world_position : vec3<f32>) -> f32 {
   light.colorTimesIntensity.w,
   light.direction.w,
   light.position.w,
+  decodeSpotDecay(light.channels.y),
   );
 }
 
@@ -170,10 +169,10 @@ invRangeSquared : f32, decay : f32, worldPos : vec3<f32>,
 
 fn evalVolumeSpot(
 lightPos : vec3<f32>, lightDir : vec3<f32>, colorTimesIntensity : vec3<f32>,
-cosInner : f32, cosOuter : f32, invRangeSquared : f32, worldPos : vec3<f32>,
+cosInner : f32, cosOuter : f32, invRangeSquared : f32, decay : f32, worldPos : vec3<f32>,
 ) -> vec3<f32> {
   return colorTimesIntensity * evalSpotAttenuation(
-  lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared,
+  lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared, decay,
   );
 }
 
@@ -192,7 +191,7 @@ fn volume_spot_radiance(world_position : vec3<f32>) -> vec3<f32> {
   let spot = light_data[u32(spotSlot)];
   let radiance = evalVolumeSpot(
   spot.position.xyz, spot.direction.xyz, spot.colorTimesIntensity.xyz,
-  spot.colorTimesIntensity.w, spot.direction.w, spot.position.w, world_position,
+  spot.colorTimesIntensity.w, spot.direction.w, spot.position.w, decodeSpotDecay(spot.channels.y), world_position,
   );
   // Only the renderer-selected projector owner may consume the shared map.
   if (spot.metadata.y == 0xffffffffu || (spot.metadata.y & 0x40000000u) == 0u) {
@@ -322,6 +321,21 @@ fn volume_integrate(@builtin(global_invocation_id) id : vec3<u32>) {
   let clipped_far = min(ray_far, scene_distance);
   let owner_layers = textureNumLayers(froxel) / owner_count;
   let visibility_depth = max(owner_layers * 4u, 1u);
+  // A single owner's ray interval and optical coefficients do not change
+  // during quadrature. Keep the multi-owner path local to its active owner.
+  let single_owner = owner_count == 1u;
+  var single_interval = vec2<f32>(0.0);
+  var single_step = 0.0;
+  var single_phase = 0.0;
+  var single_sigma_scale = 0.0;
+  if (single_owner) {
+    volume_params = volume_set.members[0];
+    single_interval = ray_box_interval(origin, ray_direction);
+    single_step = max(min(single_interval.y, volume_params.optics.x) - single_interval.x, EPSILON) / f32(visibility_depth);
+    single_phase = hg(dot(-normalize(volume_params.light_direction.xyz), ray_direction), volume_params.optics.y);
+    single_sigma_scale = max(dot(volume_params.extinction.xyz, vec3<f32>(0.3333333)), 0.0);
+    volume_params = volume_set.scene;
+  }
   let ray_step_count = 96u;
   // Partition at local-volume boundaries so thin, separated volumes cannot
   // disappear between samples of their much larger union. Single-volume
@@ -363,6 +377,9 @@ fn volume_integrate(@builtin(global_invocation_id) id : vec3<u32>) {
     for (var step = 0u; step < ray_step_count; step = step + 1u) {
       let segment_start = interval_start + f32(step) * ray_step;
       let segment_length = clamp(clipped_far - segment_start, 0.0, ray_step);
+      // Later segments are farther away. A zero-length depth-clipped segment
+      // and every following segment contribute nothing, so finish this interval.
+      if (segment_length <= 0.0) { break; }
       if (segment_length > 0.0) {
         // Near a punctual source, inverse-square falloff and the spot cone
         // vary faster than the base interval. Refine only these short segments;
@@ -397,11 +414,17 @@ fn volume_integrate(@builtin(global_invocation_id) id : vec3<u32>) {
             if (any(world_position < volume_params.bounds_min.xyz) ||
             any(world_position > volume_params.bounds_max.xyz) ||
             sample_t > volume_params.optics.x) { continue; }
-            let member_interval = ray_box_interval(origin, ray_direction);
-            let member_far = min(member_interval.y, volume_params.optics.x);
-            let member_step = max(member_far - member_interval.x, EPSILON) / f32(visibility_depth);
-            let phase = hg(dot(-normalize(volume_params.light_direction.xyz), ray_direction), volume_params.optics.y);
-            let sigma_scale = max(dot(volume_params.extinction.xyz, vec3<f32>(0.3333333)), 0.0);
+            var member_interval = single_interval;
+            var member_step = single_step;
+            var phase = single_phase;
+            var sigma_scale = single_sigma_scale;
+            if (!single_owner) {
+              member_interval = ray_box_interval(origin, ray_direction);
+              let member_far = min(member_interval.y, volume_params.optics.x);
+              member_step = max(member_far - member_interval.x, EPSILON) / f32(visibility_depth);
+              phase = hg(dot(-normalize(volume_params.light_direction.xyz), ray_direction), volume_params.optics.y);
+              sigma_scale = max(dot(volume_params.extinction.xyz, vec3<f32>(0.3333333)), 0.0);
+            }
             // The exact Three.js smokeAmount transform can produce negative values
             // from its signed noise domain. Beer-Lambert optical depth is physical
             // extinction, so the renderer clamps only this consumed density while
@@ -419,7 +442,12 @@ fn volume_integrate(@builtin(global_invocation_id) id : vec3<u32>) {
             let slice_group = owner * owner_layers + lower_position / 4u;
             let upper_group = owner * owner_layers + upper_position / 4u;
             let lower_packed = textureSampleLevel(froxel, froxel_sampler, uv, i32(slice_group), 0.0);
-            let upper_packed = textureSampleLevel(froxel, froxel_sampler, uv, i32(upper_group), 0.0);
+            // Four visibility slices share one RGBA texel. Crossing a channel
+            // within that group reuses the identical filtered texture result.
+            var upper_packed = lower_packed;
+            if (upper_group != slice_group) {
+              upper_packed = textureSampleLevel(froxel, froxel_sampler, uv, i32(upper_group), 0.0);
+            }
             let lower_visibility = lower_packed[i32(lower_position % 4u)];
             let upper_visibility = upper_packed[i32(upper_position % 4u)];
             let shadow_visibility = clamp(mix(lower_visibility, upper_visibility, interpolation), 0.0, 1.0);
@@ -431,11 +459,14 @@ fn volume_integrate(@builtin(global_invocation_id) id : vec3<u32>) {
             mix(1.0, shadow_visibility, volume_spot_shadow_intensity()),
             mode == 2u || mode == 3u,
             );
-            let radiance = select(
-            volume_light_radiance(world_position) * visibility,
-            volume_light_radiance_pair(world_position, visibility),
-            mode == 3u,
-            );
+            // select evaluates both radiance producers, including unused light
+            // and projector work. The owner's light mode is uniform here.
+            var radiance = vec3<f32>(0.0);
+            if (mode == 3u) {
+              radiance = volume_light_radiance_pair(world_position, visibility);
+            } else {
+              radiance = volume_light_radiance(world_position) * visibility;
+            }
             let sigma = sigma_scale * density_value;
             extinction += sigma;
             source += radiance * volume_params.albedo.xyz * phase * VOLUME_LIGHT_PHASE_SCALE *

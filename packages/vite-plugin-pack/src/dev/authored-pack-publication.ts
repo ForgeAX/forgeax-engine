@@ -116,6 +116,7 @@ async function packDevInputs(
   sourceIdentityFor: ((sourcePath: string) => string) | undefined,
   executors: ScriptablePackModuleExecutorPool,
   publicationStore: AcceptedPublicationStore,
+  enginePackageRoot: string | undefined,
 ): Promise<
   | {
       readonly ok: true;
@@ -135,6 +136,9 @@ async function packDevInputs(
       definition: subject.definition,
       sourceClosure: subject.sourceClosure,
       sourceSnapshot,
+      ...(enginePackageRoot === undefined
+        ? {}
+        : { packageBinding: { name: '@forgeax/engine', root: enginePackageRoot } }),
       executors,
       executionBudget:
         publicationStore.observe(displaySourcePath).current === undefined
@@ -348,6 +352,7 @@ async function publishWithExecutors(
     context.opts.sourceIdentityFor,
     executors,
     context.publicationStore,
+    context.opts.enginePackageRoot,
   );
   if (!probeInputsResult.ok) throw dynamicPluginError(probeInputsResult.error);
   let packInputs = probeInputsResult.value.inputs;
@@ -418,6 +423,7 @@ async function publishWithExecutors(
         context.opts.sourceIdentityFor,
         executors,
         context.publicationStore,
+        context.opts.enginePackageRoot,
       );
       if (!finalInputsResult.ok) throw dynamicPluginError(finalInputsResult.error);
       packInputs = finalInputsResult.value.inputs;

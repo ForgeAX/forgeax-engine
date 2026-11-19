@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { type ComponentData, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
@@ -1311,6 +1312,7 @@ describe('dynamic geometry ECS publication host', () => {
     });
     publication = {
       candidateId: 'fixture-candidate',
+      inputDigest: createHash('sha256').update(JSON.stringify(sourceMesh)).digest('hex'),
       entity,
       revision: 1,
       fixedStep: 0,

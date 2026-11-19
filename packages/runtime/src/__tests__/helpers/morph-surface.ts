@@ -19,10 +19,15 @@ import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-sc
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import {
+  decodeGBufferNormalXYZ10,
   decodeMaterialNormalX12Y12,
   decodeSsaoRawNormal,
 } from '../../../../render/src/__tests__/gtao-reference';
-import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
+import {
+  captureForwardGtaoTarget,
+  type ForwardGtaoCaptureHost,
+  type ForwardGtaoTargetCapture,
+} from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
 import { observeMorphSubmission, preserveMorphFailure } from './morph-original-frame';
 import {
@@ -157,13 +162,7 @@ export async function verifyMorphSurface(
               : 'standard-scene-surface-normal',
             draw,
           );
-          const at =
-            (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) * 4;
-          const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(
-            at,
-            true,
-          );
-          normal = decodeMaterialNormalX12Y12(packed);
+          normal = centerSurfaceNormal(captured);
           const magnitude = Math.hypot(weight * 0.4, 1);
           expect(normal[0]).toBeCloseTo(
             (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
@@ -216,4 +215,14 @@ function attachForwardMorphScene(renderer: Renderer, world: World) {
     throw profiled.error;
   }
   return attached.value;
+}
+
+function centerSurfaceNormal(captured: ForwardGtaoTargetCapture) {
+  const at =
+    (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) *
+    captured.bytesPerTexel;
+  const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(at, true);
+  return captured.format === 'rg32uint'
+    ? decodeGBufferNormalXYZ10(packed)
+    : decodeMaterialNormalX12Y12(packed);
 }

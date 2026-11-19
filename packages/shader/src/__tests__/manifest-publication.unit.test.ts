@@ -620,3 +620,19 @@ it('keeps lazy source getters detached and publication-local while sharing equal
   expect(materialShaderSource(other)).not.toBe(selected);
   expect(selected.read()).toBe(wgsl);
 });
+
+it('keeps indexed source owners independent of caller and diagnostic array mutations', () => {
+  const input = publication();
+  const expanded = expandShaderManifestPublication(input);
+  const manifest = expanded.manifest as { entries: { wgsl: string }[] };
+  const blocks = expanded.sourceFragments.get(digest) as string[];
+  const indices = expanded.sourceIndices.get(digest) as number[];
+  blocks[0] = 'modified diagnostic text';
+  indices[0] = 999;
+  input.fragments[0] = 'modified caller text';
+  input.sources[digest] = [999];
+  expect(manifest.entries[0]?.wgsl).toBe(wgsl);
+  expect(manifest.entries[0] && manifestShaderSource(manifest.entries[0]).identity).toBe(
+    `published:${digest}`,
+  );
+});

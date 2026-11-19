@@ -76,7 +76,7 @@ if (!await runtimeReady()) {
   if (!await runtimeReady()) { console.error('sdk-tool-runtime-incomplete'); process.exit(1); }
 }
 const argv = process.argv.slice(2);
-if (['backend', 'view'].includes(argv[0]) && !argv.includes('--root')) process.argv.push('--root', runtimeRoot);
+if (argv[0] === 'backend' && !argv.includes('--root')) process.argv.push('--root', runtimeRoot);
 if (argv[0] === 'backend' && argv[1] === 'start' && !argv.includes('--host-pack')) {
  const hostPack = createRequire(resolve(runtimeRoot, 'package.json')).resolve('@forgeax/view/host.pack.json');
  process.argv.push('--host-pack', hostPack);

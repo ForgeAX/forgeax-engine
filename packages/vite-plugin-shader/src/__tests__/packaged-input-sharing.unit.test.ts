@@ -334,5 +334,30 @@ it('rebuilds an obsolete transport even when its WGSL provenance still matches',
 it('compiles from source when the container lacks the requested profile', async () => {
   const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
   expect(loadPackagedEngineShaderInputs(false, true)).not.toBeNull();
-  expect(loadPackagedEngineShaderInputs(true, true)).toBeNull();
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(loadPackagedEngineShaderInputs(true, true)).toBeNull();
+    expect(loadPackagedEngineShaderInputs(true, true)).toBeNull();
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/requested profile is absent.*--build --profile point-ssao/),
+    );
+  } finally {
+    warning.mockRestore();
+  }
+});
+
+it('explains source fallback for an incomplete or stale compiler profile', async () => {
+  const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
+  const manifest = JSON.parse(files.manifest);
+  manifest.materialShaders[0].compilerProfile = { id: 'old compiler' };
+  files.manifest = JSON.stringify(manifest);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(loadPackagedEngineShaderInputs(false, true)).toBeNull();
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringMatching(/incomplete or has stale compiler facts.*--build --profile base-ssao/),
+    );
+  } finally {
+    warning.mockRestore();
+  }
 });

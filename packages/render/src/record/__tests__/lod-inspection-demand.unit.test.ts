@@ -1,4 +1,5 @@
 import { assert, expect, it, vi } from 'vitest';
+import type { GpuDrivenLodSelectionInspection } from '../../gpu-driven/view-gpu';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
@@ -6,6 +7,7 @@ import { FrameProjection, RetainedFrameProjection } from '../../scene/frame-list
 import type { PersistentRenderScene } from '../../scene/render-scene';
 import type { RenderSceneSlot } from '../../scene/render-scene-types';
 import { SceneSlots } from '../../scene/scene-slots';
+import type { SurfaceSubmissionObservationOwner } from '../../surface/submission-observation';
 import * as cpuLod from '../cpu-lod';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { LodInspectionOwner } from '../lod-inspection';
@@ -61,6 +63,53 @@ function fixture(count = 4096, gpu = true) {
     visibility,
   };
 }
+
+it('joins native GPU reasons without changing the LOD subset or inventing legacy attribution', async () => {
+  const f = fixture(8);
+  const gpuSelection = {
+    candidateCount: 8,
+    visible: 4,
+    frustumCulled: 2,
+    texelCulled: 0,
+    cameraCulled: 0,
+    overflow: false,
+    geometryWork: 144,
+    rootGeometryWork: 288,
+    occlusion: { culled: 2, late: 1 },
+  };
+  const surface = { publishGpuMembers: vi.fn() } as unknown as SurfaceSubmissionObservationOwner;
+  for (const withSubmit of [true, false]) {
+    f.owner.inspectFrame(f.camera, f.frame, f.visibility, f.sourceScope, 17);
+    const selection = {
+      candidateCount: 2,
+      visible: 1,
+      occluded: 1,
+      lodHistogram: [{ level: 0, count: 2 }],
+      gpuSelection,
+      ...(withSubmit ? { submit: { frameId: 17, deviceGeneration: 1 } } : {}),
+    } as unknown as GpuDrivenLodSelectionInspection;
+    const observed = await f.owner.observe({ readLodSelection: async () => selection }, surface);
+    expect(observed?.count).toEqual({ candidates: 2, visible: 1, occluded: 1 });
+    expect(observed?.gpu).toEqual(withSubmit ? gpuSelection : undefined);
+    expect(observed?.attribution.status).toBe(withSubmit ? 'same-submit' : 'unavailable');
+  }
+});
+
+it('rejects native GPU reasons from another submit', async () => {
+  const f = fixture(8);
+  f.owner.inspectFrame(f.camera, f.frame, f.visibility, f.sourceScope, 17);
+  const selection = {
+    submit: { frameId: 16, deviceGeneration: 1 },
+  } as GpuDrivenLodSelectionInspection;
+  expect(
+    await f.owner.observe(
+      { readLodSelection: async () => selection },
+      {} as SurfaceSubmissionObservationOwner,
+      { frameId: 17, deviceGeneration: 1 },
+    ),
+  ).toBeUndefined();
+  expect(f.owner.cell?.value().gpu).toBeUndefined();
+});
 
 it('does not sample a sparse-LOD owned roster before an explicit inspection', () => {
   const f = fixture();

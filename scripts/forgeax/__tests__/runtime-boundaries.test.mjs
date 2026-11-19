@@ -544,3 +544,49 @@ test('Node-only Mesh IO workers resolve ESM dependencies while runtime imports s
     );
   }
 });
+
+test('keeps the offline image encoder pool exact and rejects runtime edges to it', () => {
+  const environment = 'export const childEnvironment = {...process.env};';
+  assert.deepEqual(codes(environment, { file: 'packages/image/src/node-encode-pool.ts' }), []);
+  for (const file of ['packages/image/src/index.ts', 'packages/image/src/texture/runtime.ts'])
+    assert.ok(codes(environment, { file }).includes('runtime-host-environment'));
+  for (const specifier of [
+    '@forgeax/engine-image/encode-pool',
+    '@forgeax/engine/image/encode-pool',
+  ])
+    assert.ok(
+      codes(`import {createNodeImageEncoderPool} from "${specifier}";`).includes(
+        'runtime-tool-import',
+      ),
+    );
+  assert.deepEqual(codes('import {parseKtx2} from "@forgeax/engine-image";'), []);
+});
+
+test('admits the portable shader program entry while retaining Node cooker boundaries', () => {
+  for (const specifier of [
+    '@forgeax/engine-shader-compiler/program',
+    '@forgeax/engine/shader-compiler/program',
+  ])
+    assert.deepEqual(codes(`import { prepareShaderCompiler } from '${specifier}';`), []);
+  assert.ok(
+    codes('import { createMaterialPackCooker } from "@forgeax/engine-shader-compiler";').includes(
+      'runtime-tool-import',
+    ),
+  );
+  assert.ok(
+    codes('import { build } from "vite";', {
+      file: 'packages/shader-compiler/src/compile.ts',
+    }).includes('runtime-tool-import'),
+  );
+  assert.ok(
+    codes('export const mode = process.env.MODE;', {
+      file: 'packages/shader-compiler/src/engine-program.ts',
+    }).includes('runtime-host-environment'),
+  );
+  assert.deepEqual(
+    codes('import { readFile } from "node:fs/promises"; export const mode = process.env.MODE;', {
+      file: 'packages/shader-compiler/src/material/pack-cooker.ts',
+    }),
+    [],
+  );
+});

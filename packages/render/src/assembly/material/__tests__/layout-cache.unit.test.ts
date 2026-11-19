@@ -1,4 +1,4 @@
-import { ok } from '@forgeax/engine-rhi';
+import { type BindGroupLayoutEntry, ok } from '@forgeax/engine-rhi';
 import {
   MATERIAL_POST_PROCESS_SCENE_LAYOUT,
   type MaterialProgramBindingContract,
@@ -8,6 +8,10 @@ import {
   type ShaderReflection,
 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import {
+  assembleLitMaterialEntries,
+  type SkylightBindGroupResources,
+} from '../../../ibl/skylight-bind-group';
 import { projectSurfaceMaterialBindings } from '../../../pbr-pipeline';
 import type { RendererPipelineCacheState } from '../../recovery/renderer-recover';
 import { createMaterialLayoutCache } from '../layout-cache';
@@ -211,8 +215,9 @@ it('keeps the complete Standard material prefix for explicit Standard particle s
   owner.setBindings('render-standard-material-and-scene-depth');
   owner.setSchema([]);
   owner.cache.getOrBuildPerShaderMaterialLayout('game::water-sphere', undefined, 'pbr', true);
-  const entries: readonly GPUBindGroupLayoutEntry[] =
-    owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
+  const entries: readonly BindGroupLayoutEntry[] = Array.from(
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [],
+  );
   expect(entries.find((entry) => entry.binding === 0)).toMatchObject({
     binding: 0,
     buffer: { type: 'uniform', hasDynamicOffset: true },
@@ -395,4 +400,80 @@ it('retains reads from every shared Surface variant and stays conservative for m
   expect(projectSurfaceMaterialBindings(entries, owner.shader as never, 'sha256:water')).toEqual(
     entries,
   );
+});
+
+it('keeps custom lit parameters and native IBL slots without Standard tails', () => {
+  const owner = setup();
+  owner.setBindings('render-lit-material-and-scene-depth');
+  const schema: readonly ParamSchemaEntry[] = [
+    { name: 'wetness', type: 'f32' },
+    { name: 'normalTexture', type: 'texture2d' },
+    { name: 'clearcoatNormalTexture', type: 'texture2d' },
+  ];
+  owner.setSchema(schema);
+  expect(owner.cache.getParamSchema('game::wet-hull')).toBe(schema);
+  owner.cache.getOrBuildPerShaderMaterialLayout('game::wet-hull', undefined, 'pbr', true);
+  const entries: readonly GPUBindGroupLayoutEntry[] =
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35]);
+  expect(entries.find((entry) => entry.binding === 5)?.texture?.viewDimension).toBe('cube');
+  expect(entries.find((entry) => entry.binding === 35)?.texture?.viewDimension).toBe('2d');
+  expect(entries.some((entry) => entry.binding === 46 || entry.binding === 47)).toBe(false);
+});
+
+it('binds custom material IBL from the native Skylight resource owner', () => {
+  const skylight = {
+    irradianceView: {},
+    irradianceSampler: {},
+    prefilterView: {},
+    prefilterSampler: {},
+    brdfLutView: {},
+    intensityBuffer: {},
+    skylightPrefilterView: {},
+  } as unknown as SkylightBindGroupResources;
+  const entries = assembleLitMaterialEntries([], skylight, 5);
+  expect(entries.map((entry) => entry.binding)).toEqual([5, 6, 7, 8, 9, 10, 35]);
+  expect(entries.map((entry) => entry.resource.value)).toEqual([
+    skylight.irradianceView,
+    skylight.irradianceSampler,
+    skylight.prefilterView,
+    skylight.prefilterSampler,
+    skylight.brdfLutView,
+    { buffer: skylight.intensityBuffer },
+    skylight.skylightPrefilterView,
+  ]);
+  expect(
+    assembleLitMaterialEntries(
+      [],
+      {
+        irradianceView: skylight.irradianceView,
+        irradianceSampler: skylight.irradianceSampler,
+        prefilterView: skylight.prefilterView,
+        prefilterSampler: skylight.prefilterSampler,
+        brdfLutView: skylight.brdfLutView,
+        intensityBuffer: skylight.intensityBuffer,
+      },
+      1,
+    ).at(-1)?.resource.value,
+  ).toBe(skylight.prefilterView);
+});
+
+it('keeps an empty lit schema free of a user UBO and permits vertex IBL reads', () => {
+  const owner = setup();
+  owner.setBindings('render-lit-material-and-scene-depth');
+  owner.setSchema([]);
+  owner.cache.getOrBuildPerShaderMaterialLayout('game::empty-lit', undefined, 'pbr', true);
+  const entries: readonly GPUBindGroupLayoutEntry[] =
+    owner.createBindGroupLayout.mock.calls[0]?.[0].entries ?? [];
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 30]);
+  expect(entries[0]?.texture?.viewDimension).toBe('cube');
+  expect(entries.every((entry) => entry.visibility === 3)).toBe(true);
+  const layouts = owner.createPipelineLayout.mock.lastCall?.[0].bindGroupLayouts;
+  expect(layouts?.[0]).not.toBe(owner.view);
+  expect(
+    owner.createBindGroupLayout.mock.lastCall?.[0].entries.some(
+      (entry: GPUBindGroupLayoutEntry) =>
+        entry.binding === 1 && entry.texture?.sampleType === 'depth',
+    ),
+  ).toBe(true);
 });

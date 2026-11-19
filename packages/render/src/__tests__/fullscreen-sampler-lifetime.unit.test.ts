@@ -1,7 +1,10 @@
 import { err, RhiError, type RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { buildFullscreenPostProcessPass } from '../fullscreen-post-process-pass';
+import {
+  buildFullscreenPostProcessPass,
+  postProcessShaderEntrySignature,
+} from '../fullscreen-post-process-pass';
 import { SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS } from '../pipeline/single-layer-medium-passes';
 
 it('binds the reserved empty group before fullscreen draws and preserves View bindings', async () => {
@@ -247,4 +250,39 @@ it('derives every matched-surface texture type from the registered fullscreen re
       }),
     ]),
   );
+});
+
+it('binds a sole primary depth read before params and storage', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const layouts = vi.spyOn(device, 'createBindGroupLayout');
+  const context = {
+    device,
+    errorRegistry: {
+      fire: (error: RhiError) => {
+        throw error;
+      },
+    },
+  };
+  const read: { key: string; sampleType: 'depth'; primary?: true } = {
+    key: 'depth',
+    sampleType: 'depth',
+    primary: true,
+  };
+  const entry = {
+    source: '',
+    reads: [read],
+    params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+    storageBindings: [3],
+  };
+  expect(buildFullscreenPostProcessPass(context, entry)).not.toBeNull();
+  const entries = layouts.mock.calls.at(-1)?.[0].entries;
+  expect(Array.from(entries ?? [])).toMatchObject([
+    { binding: 0, texture: { sampleType: 'depth' } },
+    { binding: 1, sampler: { type: 'non-filtering' } },
+    { binding: 2, buffer: { type: 'uniform' } },
+    { binding: 3, buffer: { type: 'read-only-storage' } },
+  ]);
+  const signature = postProcessShaderEntrySignature(entry);
+  delete read.primary;
+  expect(postProcessShaderEntrySignature(entry)).not.toBe(signature);
 });

@@ -21,6 +21,7 @@ import {
   buildFullscreenPostProcessPass,
   createFullscreenBindGroup,
   entryHasDepthRead,
+  entryUsesPrimaryDepth,
 } from './fullscreen-post-process-pass';
 import { buildBeginRenderPassDescriptor } from './pipeline-spec';
 import { PostProcessError } from './post-process-errors';
@@ -245,6 +246,7 @@ function ssaoBindGroupEntries(
  * required views.
  */
 export interface SsaoCalcPassViews {
+  readonly gbufferV2?: boolean;
   readonly output: TextureView;
   readonly normal: TextureView;
   readonly depth: TextureView;
@@ -252,6 +254,7 @@ export interface SsaoCalcPassViews {
 }
 
 export interface GtaoComputePassViews {
+  readonly gbufferV2?: boolean;
   readonly output: TextureView;
   readonly normal: TextureView;
   readonly depth: TextureView;
@@ -267,7 +270,8 @@ export function recordGtaoComputePass(
 ): void {
   const { runtime, pipelineState } = context;
   const pp = pipelineState.perPassResources;
-  const pipeline = pp.gtaoComputePipeline;
+  const pipeline =
+    views.gbufferV2 === true ? pp.gtaoGBufferComputePipeline?.() : pp.gtaoComputePipeline;
   const layout = pp.gtaoComputeBgl;
   if (pipeline == null || layout == null) {
     throw new RhiError({
@@ -311,6 +315,15 @@ export function recordGtaoComputePass(
   pass.dispatchWorkgroups(Math.ceil(views.width / 8), Math.ceil(views.height / 8), 1);
 }
 
+function ssaoSurfacePipeline(
+  resources: _InternalRenderPipelineContext['pipelineState']['perPassResources'],
+  stage: 'calc' | 'blur',
+  gbufferV2: boolean | undefined,
+) {
+  if (gbufferV2 === true) return resources.ssaoGBufferPipelines?.()[stage];
+  return stage === 'calc' ? resources.ssaoCalcPipeline : resources.ssaoBlurPipeline;
+}
+
 export function recordSsaoCalcPass(
   _c: _InternalRenderPipelineContext,
   resolveCtx?: ResolveContext,
@@ -323,7 +336,8 @@ export function recordSsaoCalcPass(
   const { runtime, pipelineState, encoder } = _c;
   const pp = pipelineState.perPassResources;
 
-  if (pp.ssaoCalcPipeline === null || pp.ssaoBgl === null) {
+  const pipeline = ssaoSurfacePipeline(pp, 'calc', graphViews?.gbufferV2);
+  if (pipeline == null || pp.ssaoBgl === null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
       detail: { id: 'forgeax::post::ssao-calc' },
@@ -411,7 +425,7 @@ export function recordSsaoCalcPass(
         'post-process',
       ) as never,
     );
-  pass.setPipeline(pp.ssaoCalcPipeline);
+  pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
   pass.draw(3, 1, 0, 0);
   if (graphPass === undefined) pass.end();
@@ -434,6 +448,8 @@ export interface SsaoDepthPassViews {
   readonly depth: TextureView;
   /** Real AO input for the blur; the calc binds the 1x1 fallback. */
   readonly raw?: TextureView | undefined;
+  readonly linearDepth?: TextureView | undefined;
+  readonly uniform?: Buffer | undefined;
 }
 
 /**
@@ -442,18 +458,72 @@ export interface SsaoDepthPassViews {
  */
 export function recordSsaoDepthPass(
   _c: _InternalRenderPipelineContext,
-  stage: 'calc' | 'blur',
+  stage: 'calc' | 'blur' | 'spiral' | 'blur-x' | 'blur-y',
   pass: RhiRenderPassEncoder,
   views: SsaoDepthPassViews,
 ): void {
   const pp = _c.pipelineState.perPassResources;
-  const pipeline = stage === 'calc' ? pp.ssaoDepthCalcPipeline : pp.ssaoDepthBlurPipeline;
-  const layout = pp.ssaoDepthBgl;
+  const spiral = stage === 'calc' || stage === 'blur' ? undefined : pp.ssaoSpiralPipelines?.();
+  const pipeline =
+    stage === 'spiral'
+      ? spiral?.calc
+      : stage === 'blur-x'
+        ? spiral?.blurX
+        : stage === 'blur-y'
+          ? spiral?.blurY
+          : stage === 'calc'
+            ? pp.ssaoDepthCalcPipeline
+            : pp.ssaoDepthBlurPipeline;
+  const layout = spiral?.layout ?? pp.ssaoDepthBgl;
   if (pipeline == null || layout == null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
       detail: { id: `forgeax::post::ssao-${stage}-depth` },
     });
+  }
+  if (spiral !== undefined) {
+    if (views.uniform === undefined || views.linearDepth === undefined)
+      throw new RhiError({
+        code: 'feature-not-enabled',
+        expected: 'view-owned spiral AO parameters and shared linear depth',
+        hint: 'record the typed spiral AO producer and its full input closure',
+      });
+    pp.ssaoDepthSampler ??= _c.runtime.device
+      .createSampler({
+        label: 'ssao-depth-sampler',
+        minFilter: 'nearest',
+        magFilter: 'nearest',
+        mipmapFilter: 'nearest',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      })
+      .unwrap();
+    const uniform = views.uniform,
+      depth = views.linearDepth,
+      raw = views.raw ?? depth;
+    const group = getOrCreateFromChain(
+      _c.frameState.postProcessBgCache,
+      [raw, depth, uniform],
+      `ssao-${stage}-linear`,
+      () =>
+        _c.runtime.device
+          .createBindGroup({
+            label: `ssao-${stage}-linear`,
+            layout,
+            entries: [
+              { binding: 0, resource: { kind: 'buffer', value: { buffer: uniform } } },
+              { binding: 6, resource: { kind: 'sampler', value: pp.ssaoDepthSampler as Sampler } },
+              { binding: 7, resource: { kind: 'textureView', value: raw } },
+              { binding: 12, resource: { kind: 'textureView', value: depth } },
+            ],
+          })
+          .unwrap(),
+      _c.bindGroupCounts,
+    );
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.draw(3, 1, 0, 0);
+    return;
   }
   const buffers = getOrCreateSsaoBuffers(_c.runtime);
   const companions = ensureSsaoRecordCompanions(_c);
@@ -500,7 +570,8 @@ export function recordSsaoBlurPass(
   const { runtime, pipelineState, encoder } = _c;
   const pp = pipelineState.perPassResources;
 
-  if (pp.ssaoBlurPipeline === null || pp.ssaoBgl === null) {
+  const pipeline = ssaoSurfacePipeline(pp, 'blur', graphViews?.gbufferV2);
+  if (pipeline == null || pp.ssaoBgl === null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
       detail: { id: 'forgeax::post::ssao-blur' },
@@ -578,7 +649,7 @@ export function recordSsaoBlurPass(
         'post-process',
       ) as never,
     );
-  pass.setPipeline(pp.ssaoBlurPipeline);
+  pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
   pass.draw(3, 1, 0, 0);
   if (graphPass === undefined) pass.end();
@@ -904,6 +975,7 @@ function dispatchFullscreenPass(
     paramsBuffer = ctx.runtime.getPostProcessParamsBuffer?.(shader) ?? null;
   }
 
+  const primaryDepth = entryUsesPrimaryDepth(entry);
   const createFullscreenPassBindings = (
     built: NonNullable<ReturnType<typeof buildFullscreenPostProcessPass>>,
     inputView: TextureView,
@@ -911,10 +983,10 @@ function dispatchFullscreenPass(
     const bindGroup = createFullscreenBindGroup(
       ctx.runtime.device,
       built.bindGroupLayout,
-      inputView,
+      primaryDepth ? (depthTexView ?? inputView) : inputView,
       built.sampler,
       paramsBuffer,
-      depthTexView,
+      primaryDepth ? null : depthTexView,
       depthSampler,
       built.extraColorBindings.map((binding, index) => {
         const read = entry.reads?.filter(

@@ -59,11 +59,15 @@ export async function restoreCoreCompiler(root, extracted, options) {
 export function restoreCoreBaseShader(root, extracted, options) {
   assertCoreSource(root, extracted, options);
   const fingerprint = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
-  // A prepared checkout can have recovered only the shared transfer. Both
-  // candidates retain independent BASE receipts; POINT cannot satisfy admission.
+  // Core, shared transfer and paired View builds retain independent BASE
+  // receipts in their producer locations. POINT cannot satisfy admission.
   let admitted;
   const reasons = [];
-  for (const directory of [coreBaseShaderDirectory, 'shared-app-inputs/profiles/base-ssao']) {
+  for (const directory of [
+    coreBaseShaderDirectory,
+    'shared-app-inputs/profiles/base-ssao',
+    'shared-build-inputs-release/base-ssao',
+  ]) {
     const manifest = join(extracted, directory, 'manifest.json');
     if (reusableSharedShader(extracted, manifest, fingerprint, (reason) => reasons.push(reason))) {
       admitted = directory;

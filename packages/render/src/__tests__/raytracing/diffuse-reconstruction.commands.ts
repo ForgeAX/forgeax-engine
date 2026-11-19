@@ -29,7 +29,7 @@ export async function prepareDiffuseReconstructionFixture() {
   const raster = (
     await compileShader(
       `
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardGBufferNormal}
 struct Fixture { motion: vec4f, modes: vec4u }
 @group(0) @binding(0) var<uniform> fixture: Fixture;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -37,15 +37,16 @@ struct Fixture { motion: vec4f, modes: vec4u }
   return vec4f(p[i],0.5,1);
 }
 struct Surface {
-  @location(0) normal: u32,
+  @location(0) normal: vec2u,
   @location(1) identity: vec4u,
   @location(2) motion: vec4f,
   @builtin(frag_depth) depth: f32,
 }
 @fragment fn fs(@builtin(position) p: vec4f) -> Surface {
   let right = p.x >= 8.0;
-  let n = encodeStandardNormalRoughness(vec3f(0,0,select(1.0,-1.0,right && fixture.modes.y==1u)),0.5);
-  return Surface(n,vec4u(select(1u,2u,right && fixture.modes.z==0u),0u,n,3u),
+  let shading = vec3f(0,0,select(1.0,-1.0,right && fixture.modes.y==1u));
+  let n = encodeStandardNormalRoughness(shading,0.5);
+  return Surface(encodeStandardGBufferNormal(shading,0.5,1.0,false),vec4u(select(1u,2u,right && fixture.modes.z==0u),0u,n,3u),
     fixture.motion,select(0.5,0.52,right && fixture.modes.x==1u));
 }`,
       { id: 'diffuse-reconstruction-raster', imports },

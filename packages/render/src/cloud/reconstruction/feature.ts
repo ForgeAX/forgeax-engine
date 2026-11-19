@@ -472,6 +472,27 @@ function removeObsoleteHistory(
   }
 }
 
+function inspectUnavailableViews(
+  states: Map<string, CloudHistoryState<ResourceStamp>>,
+  unavailable: ReadonlyMap<string, string>,
+  context: RenderFeaturePlanContext,
+): Record<string, CloudLayerInspection> {
+  const inspection: Record<string, CloudLayerInspection> = Object.create(null);
+  for (const [id, reason] of unavailable) {
+    const state = states.get(id);
+    if (state !== undefined) {
+      invalidateCloudHistory(state);
+      states.delete(id);
+    }
+    inspection[id] = inspectCloudLayer({
+      authored: true,
+      capability: cloudCapabilitiesFromRhi(context.caps),
+      unavailableReason: reason,
+    });
+  }
+  return inspection;
+}
+
 function mode0TargetSize(
   plannedView: RenderFeaturePlanContext['views'][number],
   facts: RenderFeatureExtractView | undefined,
@@ -562,8 +583,7 @@ export function createMode0CloudFeature(
     inactiveSourceData: INACTIVE_CLOUD_FRAME,
     placement: 'scene',
     extract(context) {
-      const layers = traceFeature.extract(context);
-      if (!layers.ok) return layers;
+      const layers = traceFeature.extract(context).value;
       // Frameless held views can retain accepted history. An explicitly cloud-free
       // source can omit its publication row and invalidate all remaining history.
       const canRetainHistory = context.views.some(
@@ -571,7 +591,7 @@ export function createMode0CloudFeature(
           view.frame?.cloudLayer !== undefined || (!view.render && view.frame === undefined),
       );
       if (!canRetainHistory) return ok(INACTIVE_CLOUD_FRAME);
-      return ok({ layers: layers.value, inspection: {}, views: context.views });
+      return ok({ layers, inspection: {}, views: context.views });
     },
     requiresPreparation: (data) => Object.keys(data.layers).length > 0,
     plan(data, context) {
@@ -579,6 +599,7 @@ export function createMode0CloudFeature(
       if (data === INACTIVE_CLOUD_FRAME) return ok({ work: [] });
       const base = traceFeature.plan(data.layers, context);
       if (!base.ok) return base;
+      data.inspection = inspectUnavailableViews(states, base.value.unavailable, context);
       const works: RenderFeatureWork[] = [];
       const receipts: Pending[] = [];
       for (const work of base.value.work) {

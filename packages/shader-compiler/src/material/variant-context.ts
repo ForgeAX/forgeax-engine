@@ -44,6 +44,8 @@ export function lowerMaterialVariantContext(
     POINT_SHADOW_AVAILABLE: false,
     MATERIAL_VALIDATION_ENABLED: context.instrumentation === 'validation',
     VISIBLE_SURFACE_AVAILABLE: context.visibleSurface === true,
+    CLIPPING_PLANES: context.viewClipping === true,
+    LOD_DITHER: context.lodCoverage === true,
   });
 }
 
@@ -60,7 +62,8 @@ export function materialBindingsCarryClusterGroup(
   return (
     contract === 'render-material' ||
     contract === 'render-material-with-scene-depth' ||
-    contract === 'render-material-and-scene-depth'
+    contract === 'render-material-and-scene-depth' ||
+    contract === 'render-lit-material-and-scene-depth'
   );
 }
 

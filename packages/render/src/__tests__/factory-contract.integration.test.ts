@@ -77,7 +77,8 @@ async function createBloomScenario(
   const canvas = { width: 64, height: 64, getContext: () => null };
   const renderer = await constructRenderer(
     canvas,
-    { rhi },
+    // This fault matrix covers the retained V1 composite resource owner.
+    { rhi, standardProfile: { ...DEFAULT_STANDARD_PROFILE, outputContract: 'standard-output-v1' } },
     { shaderManifestUrl: renderLifecycleManifestUrl() },
   );
   if (!(await renderer.initialization).ok) throw new Error('Bloom renderer initialization failed');
@@ -1556,6 +1557,34 @@ describe('factory contract', () => {
     expect((await explicit.dispose()).ok).toBe(true);
   });
 
+  it.each([
+    'standard-output-v1',
+    'standard-output-v2',
+  ] as const)('prepares only the initially selected %s native output module', async (outputContract) => {
+    const sources: string[] = [];
+    const backend: RhiBackendPack = {
+      rhi,
+      createShaderModule: async (_device, descriptor) => {
+        sources.push(descriptor.code);
+        return ok({} as ShaderModule);
+      },
+    };
+    const renderer = await constructRenderer(
+      { width: 64, height: 64, getContext: () => null },
+      { standardProfile: { ...DEFAULT_STANDARD_PROFILE, outputContract } },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
+      backend,
+    );
+    try {
+      expect((await renderer.initialization).ok).toBe(true);
+      expect(sources.filter((source) => source.includes('fn fs_grade('))).toHaveLength(
+        outputContract === 'standard-output-v2' ? 1 : 0,
+      );
+    } finally {
+      renderer.dispose();
+    }
+  });
+
   it('retains the device-owned prewarmed TAA shader across off and on', async () => {
     const pending: Array<{
       readonly label: string;
@@ -1616,8 +1645,10 @@ describe('factory contract', () => {
     expect([...world.query({ read: [LocalCamera], with: [Transform] }).unwrap()]).toHaveLength(1);
     const frameInput = () => ({ source: attached.value });
 
+    const drawErrors: unknown[] = [];
+    renderer.onError((error) => drawErrors.push(error));
     const first = renderer.draw(frameInput());
-    expect(first.ok, first.ok ? '' : JSON.stringify(first.error)).toBe(true);
+    expect(first.ok, first.ok ? '' : JSON.stringify({ error: first.error, drawErrors })).toBe(true);
     expect(frameBoundary).toHaveBeenCalled();
     expect(pending).toHaveLength(1);
 
@@ -1979,7 +2010,7 @@ describe('factory contract', () => {
           const genericIndex = names.indexOf('generic-post-probe');
           const motionSummaryIndex = names.indexOf('motion-blur-tile-summary');
           const motionIndex = names.indexOf('motion-blur');
-          const outputIndex = names.indexOf('output-transform');
+          const outputIndex = names.indexOf('standard-grade');
           expect(names.filter((name) => name === 'generic-post-probe')).toHaveLength(1);
           expect(names.filter((name) => name === 'motion-blur-tile-summary')).toHaveLength(1);
           expect(names.filter((name) => name === 'motion-blur')).toHaveLength(1);
@@ -2209,13 +2240,15 @@ describe('factory contract', () => {
     expect(on.ok).toBe(true);
     const onInspection = renderer.inspect().bloom;
     expect(onInspection.state).toBe('active');
+    expect(renderer.inspect().perFramePassNames).toContain('standard-grade');
+    expect(renderer.inspect().perFramePassNames).not.toContain('bloom-composite');
     expect(onInspection.graphStatus).toBe('valid');
-    expect(onInspection.targetCount).toBe(11);
-    expect(onInspection.targetBytes).toBe(54_592);
-    expect(onInspection.passCount).toBe(11);
-    expect(onInspection.uploadCount).toBe(11);
-    expect(onInspection.bindGroupCount).toBe(11);
-    expect(onInspection.encodeCount).toBe(11);
+    expect(onInspection.targetCount).toBe(10);
+    expect(onInspection.targetBytes).toBe(21_824);
+    expect(onInspection.passCount).toBe(10);
+    expect(onInspection.uploadCount).toBe(10);
+    expect(onInspection.bindGroupCount).toBe(10);
+    expect(onInspection.encodeCount).toBe(10);
     expect(JSON.parse(JSON.stringify(onInspection))).toEqual(onInspection);
     const firstGeneration = onInspection.generation;
     expect(firstGeneration).toBeGreaterThan(0);
@@ -2236,10 +2269,10 @@ describe('factory contract', () => {
     const recoveredInspection = renderer.inspect().bloom;
     expect(recoveredInspection.state).toBe('active');
     expect(recoveredInspection.resourceCount).toBeGreaterThan(0);
-    expect(recoveredInspection.passCount).toBe(11);
-    expect(recoveredInspection.uploadCount).toBe(11);
-    expect(recoveredInspection.bindGroupCount).toBe(11);
-    expect(recoveredInspection.encodeCount).toBe(11);
+    expect(recoveredInspection.passCount).toBe(10);
+    expect(recoveredInspection.uploadCount).toBe(10);
+    expect(recoveredInspection.bindGroupCount).toBe(10);
+    expect(recoveredInspection.encodeCount).toBe(10);
     expect(recoveredInspection.generation).toBeGreaterThan(firstGeneration);
     await Promise.resolve();
     await Promise.resolve();

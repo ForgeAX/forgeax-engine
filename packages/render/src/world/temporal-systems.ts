@@ -5,7 +5,7 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
@@ -49,7 +49,7 @@ import {
 } from './render-world';
 import { viewStandardLightingOf } from './standard-lighting-systems';
 
-import { EMPTY_VIEW_STATE_UPDATE, readViewField, requireViewField } from './view-field';
+import { readViewField, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 
 import type { ViewSettlementOwner as TemporalOwner } from './view-settlement';
@@ -453,7 +453,7 @@ export function registerTemporalStageSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewGraphSeal, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewGraphSeal).unwrap();
         const state = world
           .resolveUniqueRef<ViewGraphSealState>(
             requireViewField(world, entity, ViewGraphSeal, 'state'),

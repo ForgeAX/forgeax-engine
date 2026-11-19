@@ -211,7 +211,7 @@ for (const pass of [
   'bloom-vertical-3',
   'bloom-horizontal-4',
   'bloom-vertical-4',
-  'bloom-composite',
+  'standard-grade',
 ]) {
   if (!passNames.includes(pass)) failures.push(`(e) missing bloom pass ${pass}; actual=${passNames.join(',')}`);
 }

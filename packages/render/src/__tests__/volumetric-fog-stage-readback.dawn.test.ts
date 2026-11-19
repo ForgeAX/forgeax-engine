@@ -11,8 +11,10 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program-template';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from '../volume/component';
 import { additionalVolumeDensityBinding } from '../volume/passes';
@@ -38,7 +40,27 @@ const MAX_NON_UNIFORM_BEER_ERROR = 0.001;
 const NON_UNIFORM_EXTINCTION = 0.05;
 const MIN_NON_UNIFORM_REFERENCE_SEPARATION = 0.05;
 const MIN_NON_UNIFORM_GPU_SEPARATION = 0.05;
-const engineManifest = await buildEngineShaderManifest();
+// Exercise the ordinary source-template route and prepare only these real
+// production kernels, rather than compiling every unrelated material variant.
+const templateManifest = await buildEngineShaderTemplateManifest();
+const registry = new ShaderRegistry({
+  manifestUrl: undefined,
+  programCompiler: (await prepareShaderProgramCompiler()).unwrap(),
+});
+registry.installProgramTemplates(templateManifest.library).unwrap();
+const volumePrograms = new Set([
+  'forgeax_view::volume_inject',
+  'forgeax_view::volume_temporal',
+  'forgeax_view::volume_integrate',
+]);
+const engineManifest = {
+  entries: templateManifest.entries
+    .filter((entry) => volumePrograms.has(entry.identifier))
+    .map(
+      (entry) =>
+        registry.resolveProgramTemplate(entry.program, entry.selection).unwrap().manifestEntry,
+    ),
+};
 const lightDataBinding = engineManifest.entries
   .find(({ wgsl }) => wgsl.includes('fn volume_inject'))
   ?.reflection?.boundGlobals.find(({ group, binding }) => group === 0 && binding === 7);

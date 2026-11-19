@@ -49,7 +49,7 @@ describe('SMAA authoring and production programs', () => {
       'smaa',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.at(-2)).toEqual({
+    expect(plan.stageDomains.at(-2)).toEqual({
       name: 'smaa',
       input: 'linear-ldr',
       output: 'linear-ldr',

@@ -33,6 +33,7 @@ const WIDTHS = {
 export interface GeometryMaterial {
   readonly slot: number;
   readonly vertexColors: boolean;
+  readonly tangentBasis?: 'normal' | 'uv';
 }
 
 export function geometryValues(geometry: BufferGeometry, grouped: boolean): unknown[] {
@@ -108,7 +109,7 @@ export function projectGeometry(
     geometry.hasAttribute('color') && (materials?.some((m) => m.vertexColors) ?? true);
   const mixedColor = useColor && materials?.some((m) => !m.vertexColors) === true;
   const layout = { sourceCount, count: sourceCount * (mixedColor ? 2 : 1), mixedColor };
-  const projected = projectVertexAttributes(geometry, useColor, layout);
+  const projected = projectVertexAttributes(geometry, useColor, layout, topology);
   if (!projected.ok) return projected;
   const attributes = projected.value;
   if (morphColorWeights !== undefined) {
@@ -127,7 +128,14 @@ export function projectGeometry(
   const count = layout.count;
   completeNormals(attributes, indices, count);
   const nativeIndices = count > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
-  const tangents = completeTangents(geometry, attributes, topology, nativeIndices, count);
+  const tangents = completeTangents(
+    geometry,
+    attributes,
+    topology,
+    nativeIndices,
+    count,
+    materials?.every((material) => material.tangentBasis === 'normal') ?? false,
+  );
   if (!tangents.ok) return tangents;
   const morphTargets = projectMorphTargets(geometry, layout);
   if (!morphTargets.ok) return morphTargets;
@@ -151,11 +159,17 @@ function projectVertexAttributes(
   geometry: BufferGeometry,
   useColor: boolean,
   layout: VertexLayout,
+  topology: Topology,
 ): Result<VertexAttributeMap, Error> {
   const attributes: VertexAttributeMap = {};
   for (const [key, attribute] of Object.entries(geometry.attributes)) {
     // Ordinary Three materials ignore application attributes they never read.
-    if (!Object.hasOwn(WIDTHS, key) || (key === 'color' && !useColor)) continue;
+    if (
+      !Object.hasOwn(WIDTHS, key) ||
+      (key === 'color' && !useColor) ||
+      (topology === 'point-list' && key === 'uv1')
+    )
+      continue;
     const name = key as keyof typeof WIDTHS;
     const width = WIDTHS[name];
     if (
@@ -341,9 +355,11 @@ function completeTangents(
   topology: Topology,
   nativeIndices: Uint16Array | Uint32Array,
   count: number,
+  normalBasis: boolean,
 ): Result<void, Error> {
-  if (attributes.uv === undefined) {
-    attributes.uv = new Float32Array(count * 2);
+  const missingUv = attributes.uv === undefined;
+  if (missingUv) attributes.uv = new Float32Array(count * 2);
+  if (missingUv || normalBasis) {
     if (attributes.tangent === undefined) {
       const tangents = normalPlaneTangents(attributes.normal as Float32Array, count);
       if (tangents === undefined) return invalid('BufferGeometry.normal', geometry.uuid);

@@ -20,6 +20,7 @@ import type { PluginPackInternalOptions } from '../plugin-contract.js';
 import { projectRuntimeDiagnostics } from '../runtime-diagnostics.js';
 import type { DispatcherServer, MiddlewareDispatcher } from './dispatcher.js';
 import { createMiddlewareDispatcher } from './dispatcher.js';
+import type { PreparedMetaImport } from './meta-import.js';
 import {
   createConfigureServer,
   type PluginServerLifecycleState,
@@ -102,6 +103,11 @@ export type PluginServerProjectionState = PluginServerState & {
 };
 
 export interface PluginServerCallbacks {
+  metaImportPreparation?(
+    path: string,
+    declaration: RunImportMeta,
+    signal: AbortSignal,
+  ): (() => Promise<PreparedMetaImport>) | undefined;
   publishAuthoredDevPacks(
     entries: readonly PackIndexEntry[],
     projection: PluginServerProjectionState,
@@ -115,6 +121,7 @@ export interface PluginServerCallbacks {
     signal?: AbortSignal,
     projection?: PluginServerProjectionState,
     runtimeBinding?: RuntimeAssetBinding,
+    prepared?: PreparedMetaImport,
   ): Promise<PackIndexEntry[]>;
   commitGeneration(candidate: PluginServerProjectionState, signal?: AbortSignal): Promise<void>;
   discardPublications(candidates: ReadonlyMap<string, AssetPublicationEnvelope>): void;
@@ -190,6 +197,7 @@ export function createPluginServer(context: PluginServerContext) {
   };
   const productionBridge: ProductionBridge = createProductionBridge({
     producerReadiness: opts.producerReadiness,
+    enginePackageRoot: opts.enginePackageRoot,
     takeInitialSourceSnapshot: opts.takeInitialSourceSnapshot,
     ignorePath: opts.ignorePath,
     sourceIdentityFor: opts.sourceIdentityFor,

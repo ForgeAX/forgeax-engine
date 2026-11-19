@@ -10,7 +10,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const CHANGE_DETECTION_RESOURCE = defineResource<{ value: number }>("bevyChangeDetectionResource");
+export const CHANGE_DETECTION_RESOURCE = defineResource<{ value: number; revision: number }>("bevyChangeDetectionResource");
 const STEP_SECONDS = 0.25;
 const ChangeMarker = defineComponent('ChangeDetectionChangeMarker', { value: 'f32' });
 const AddedMarker = defineComponent('ChangeDetectionAddedMarker', { value: 'f32' });
@@ -52,8 +52,8 @@ export function buildChangeDetectionWorld(world: World): ChangeDetectionState {
   world.spawn({ component: Transform, data: { pos: [0, 0, 100], quat: [0, 0, 0, 1], scale: [1, 1, 1] } }, { component: Camera, data: orthographic({ left: -640, right: 640, bottom: -360, top: 360, near: 0.1, far: 2000 }) });
 
   const state: ChangeDetectionState = { elapsed: 0, changedHits: 0, addedHits: 0, resourceChanged: 0, changeEntity, addedEntity };
-  let lastResourceChangeTick = -1;
-  world.insertResource(CHANGE_DETECTION_RESOURCE, { value: 0 });
+  let lastResourceRevision = -1;
+  world.insertResource(CHANGE_DETECTION_RESOURCE, { value: 0, revision: 0 });
 
   const systemToken1 = defineSystem({
     name: 'change-detection-writer', queries: [],
@@ -63,7 +63,8 @@ export function buildChangeDetectionWorld(world: World): ChangeDetectionState {
       const current = world.get(changeEntity, ChangeMarker).unwrap().value;
       if (value !== current) world.set(changeEntity, ChangeMarker, { value }).unwrap();
       const resource = world.getResource(CHANGE_DETECTION_RESOURCE);
-      if (resource.value !== value) world.insertResource(CHANGE_DETECTION_RESOURCE, { value });
+      if (resource.value !== value)
+        world.insertResource(CHANGE_DETECTION_RESOURCE, { value, revision: resource.revision + 1 });
     },
   });
 world.addSystem(Update, systemToken1).unwrap();
@@ -89,10 +90,10 @@ world.addSystem(Update, systemToken3).unwrap();
   const systemToken4 = defineSystem({
     name: 'change-detection-resource-probe', queries: [],
     fn: (world) => {
-      const ticks = world.getResourceChange(CHANGE_DETECTION_RESOURCE);
-      if (ticks !== undefined && ticks.changed > lastResourceChangeTick) {
+      const { revision } = world.getResource(CHANGE_DETECTION_RESOURCE);
+      if (revision > lastResourceRevision) {
         state.resourceChanged += 1;
-        lastResourceChangeTick = ticks.changed;
+        lastResourceRevision = revision;
       }
     },
   });
@@ -101,11 +102,12 @@ world.addSystem(Update, systemToken4).unwrap();
 }
 
 export function readChangeDetectionState(world: World, state: ChangeDetectionState): ChangeDetectionSnapshot {
+  const resource = world.getResource(CHANGE_DETECTION_RESOURCE);
   return {
     ...state,
     changeValue: world.get(state.changeEntity, ChangeMarker).unwrap().value,
     addedValue: world.get(state.addedEntity, AddedMarker).unwrap().value,
-    resourceValue: world.getResource(CHANGE_DETECTION_RESOURCE).value,
-    changeTick: world.getResourceChange(CHANGE_DETECTION_RESOURCE)?.changed ?? -1,
+    resourceValue: resource.value,
+    changeTick: resource.revision,
   };
 }

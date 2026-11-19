@@ -202,6 +202,8 @@ export function resolveToneOutputContract(tonemap: Tonemap): ToneOutputContract 
 
 /** Stable facts that may change graph topology and therefore its compiled identity. */
 export interface RenderPipelineTopology {
+  /** Renderer-derived ordinary material depth bindings; changes rebuild the view graph. */
+  readonly materialSceneDepth?: boolean | undefined;
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
   readonly preTemporalEffects?: readonly string[];
   readonly subsurface?: { readonly quality: 'low' | 'high' };

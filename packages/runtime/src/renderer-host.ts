@@ -9,7 +9,7 @@ import {
   EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import { RhiError, type RhiErrorCode } from '@forgeax/engine-rhi';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderRegistry, type ShaderRegistryOptions } from '@forgeax/engine-shader';
 import { err } from '@forgeax/engine-types';
 import { installDefaultAssetDecoders } from './asset-contributions';
 import { type BackendPackSelection, loadBackendPack } from './backend-selection';
@@ -19,6 +19,11 @@ export type {
   BundlerOptions,
   RendererHostAssembly,
 } from '@forgeax/engine-render/internal/construct-renderer';
+
+const prepareProgramCompiler: NonNullable<
+  ShaderRegistryOptions['prepareProgramCompiler']
+> = async () =>
+  (await import('@forgeax/engine-shader-compiler/program')).prepareShaderProgramCompiler();
 
 const FALLBACK_ERROR_CODES = new Set<RhiErrorCode>([
   'adapter-unavailable',
@@ -81,8 +86,12 @@ export async function constructRuntimeRendererHost(
   options?: RendererOptions,
   bundler?: BundlerOptions,
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
+  const publication = {
+    ...bundler,
+    prepareShaderProgramCompiler: bundler?.prepareShaderProgramCompiler ?? prepareProgramCompiler,
+  };
   const first = await loadBackendPack(options);
-  let result = await attemptRendererHost(first, canvas, options, bundler);
+  let result = await attemptRendererHost(first, canvas, options, publication);
   if (
     first.kind === 'webgpu' &&
     (options?.renderBackend ?? 'auto') === 'auto' &&
@@ -91,7 +100,7 @@ export async function constructRuntimeRendererHost(
   ) {
     const primary = result.error.detail.webgpuError;
     const fallback = await loadBackendPack(options, 'wgpu-webgl2');
-    result = await attemptRendererHost(fallback, canvas, options, bundler);
+    result = await attemptRendererHost(fallback, canvas, options, publication);
     if (!result.ok && result.error instanceof EngineEnvironmentError) {
       result = err(
         new EngineEnvironmentError(result.error.reason, {
@@ -115,6 +124,7 @@ export async function createPublicationAssets(
 ): Promise<AssetRegistry> {
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
   const shaders = new ShaderRegistry({
+    prepareProgramCompiler: bundler?.prepareShaderProgramCompiler ?? prepareProgramCompiler,
     ...(bundler?.readShaderManifest === undefined ? {} : { readText: bundler.readShaderManifest }),
     manifestUrl:
       bundler !== undefined && 'shaderManifestUrl' in bundler

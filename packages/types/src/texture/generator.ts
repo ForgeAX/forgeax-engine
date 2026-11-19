@@ -5,10 +5,14 @@ import { isShaderReflection, type ManifestEntry } from '../runtime-contracts.js'
 import { sha256 } from '../sha256.js';
 import type { TextureMipPolicy, TextureShape } from './asset.js';
 
+/** GPU-generated RGB unit normals with an alpha roughness floor in generated mips. */
+export type GpuTextureMipFilter = 'box' | 'normal-roughness';
+
 export interface GeneratedTextureDescriptor {
   readonly shape: Exclude<TextureShape, { readonly viewDimension: '3d' }>;
   readonly format: GPUTextureFormat;
   readonly colorSpace: 'srgb' | 'linear';
+  readonly mipFilter?: GpuTextureMipFilter;
   readonly mips: Exclude<TextureMipPolicy, { readonly kind: 'packed' }>;
 }
 
@@ -146,6 +150,19 @@ function validateParameters(
   return ok(undefined);
 }
 
+function validateOutputMipFilter(descriptor: Record<string, unknown>): Result<void, AssetError> {
+  if (
+    descriptor.mipFilter !== undefined &&
+    ((descriptor.mipFilter !== 'box' && descriptor.mipFilter !== 'normal-roughness') ||
+      (descriptor.mipFilter === 'normal-roughness' &&
+        (descriptor.format !== 'rgba8unorm' ||
+          !object(descriptor.mips) ||
+          descriptor.mips.kind !== 'generate')))
+  )
+    return invalid('box mip filtering, or generated linear RGBA8 normal-roughness filtering');
+  return ok(undefined);
+}
+
 function collectResources(
   outputs: Record<string, unknown>,
   transient: Record<string, unknown>,
@@ -159,7 +176,7 @@ function collectResources(
       !only(
         descriptor,
         Object.hasOwn(outputs, name)
-          ? ['shape', 'format', 'colorSpace', 'mips']
+          ? ['shape', 'format', 'colorSpace', 'mips', 'mipFilter']
           : ['shape', 'format'],
       ) ||
       !object(descriptor.shape)
@@ -176,6 +193,10 @@ function collectResources(
         !['none', 'generate'].includes(String(descriptor.mips.kind)))
     )
       return invalid('matching output color space and none/generate mip policy');
+    if (Object.hasOwn(outputs, name)) {
+      const filtering = validateOutputMipFilter(descriptor);
+      if (!filtering.ok) return filtering;
+    }
     resources.set(name, descriptor);
   }
   return ok(resources);

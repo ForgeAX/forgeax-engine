@@ -6,6 +6,8 @@ import { RenderFeaturePreparedStateMismatchError } from '../errors/render';
 export const SCENE_DATA_TEMPORAL_V1_SCHEMA = 'forgeax::scene-data::temporal-v1' as const;
 export const SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA =
   'forgeax::scene-data::standard-surface-normal-v1' as const;
+export const SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA =
+  'forgeax::scene-data::standard-gbuffer-normal-v2' as const;
 export const SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA =
   'forgeax::scene-data::standard-surface-depth-v1' as const;
 const STANDARD_SURFACE_MSAA_NORMAL_OUTPUTS = [{ name: 'normal', format: 'rgba8uint' }] as const;
@@ -17,6 +19,7 @@ export const STANDARD_SURFACE_MSAA_NORMAL = {
 } as const;
 export type SceneDataSchemaId =
   | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
+  | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
   | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
   | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA;
 
@@ -143,6 +146,7 @@ export interface SceneDataTargetOwnerIdentity {
 export interface SceneDataSurfaceBinding {
   readonly schema:
     | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
+    | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA;
   readonly owners: readonly SceneDataTargetOwnerIdentity[];
@@ -196,6 +200,20 @@ export const SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR: SceneDataStandard
     coverage: 'opaque-alpha-mask',
   });
 
+/** Complete Deferred normal/roughness/AO with explicit GBuffer coverage. */
+export const SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR = Object.freeze({
+  schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
+  format: 'rg32uint',
+  sampleCount: 1,
+  extent: 'render-resolution',
+  space: 'world',
+  encoding: 'xyz10-valid30-dfg31-roughness8-occlusion8',
+  coverage: 'opaque-alpha-mask',
+  validity: 'word0-bit30',
+} as const);
+export type SceneDataStandardGBufferNormalV2Descriptor =
+  typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR;
+
 /** Current-view Standard device depth paired with the surface-normal schema. */
 export interface SceneDataStandardSurfaceDepthV1Descriptor {
   readonly schema: typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA;
@@ -233,22 +251,30 @@ interface SceneDataTargetBase<Schema extends SceneDataSchemaId> {
 export type SceneDataTarget<Schema extends SceneDataSchemaId = SceneDataSchemaId> =
   Schema extends typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
     ? SceneDataTargetBase<Schema> & { readonly format: 'rgba16float' }
-    : Schema extends typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
+    : Schema extends typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
       ? SceneDataTargetBase<Schema> & {
-          readonly format: 'r32uint';
-          readonly space: SceneDataStandardSurfaceNormalV1Descriptor['space'];
-          readonly encoding: SceneDataStandardSurfaceNormalV1Descriptor['encoding'];
-          readonly coverage: SceneDataStandardSurfaceNormalV1Descriptor['coverage'];
+          readonly format: 'rg32uint';
+          readonly space: SceneDataStandardGBufferNormalV2Descriptor['space'];
+          readonly encoding: SceneDataStandardGBufferNormalV2Descriptor['encoding'];
+          readonly coverage: SceneDataStandardGBufferNormalV2Descriptor['coverage'];
+          readonly validity: SceneDataStandardGBufferNormalV2Descriptor['validity'];
         }
-      : Schema extends typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA
+      : Schema extends typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
         ? SceneDataTargetBase<Schema> & {
-            readonly format: 'depth32float-stencil8';
-            readonly space: SceneDataStandardSurfaceDepthV1Descriptor['space'];
-            readonly encoding: SceneDataStandardSurfaceDepthV1Descriptor['encoding'];
-            readonly reconstruction: SceneDataStandardSurfaceDepthV1Descriptor['reconstruction'];
-            readonly coverage: SceneDataStandardSurfaceDepthV1Descriptor['coverage'];
+            readonly format: 'r32uint';
+            readonly space: SceneDataStandardSurfaceNormalV1Descriptor['space'];
+            readonly encoding: SceneDataStandardSurfaceNormalV1Descriptor['encoding'];
+            readonly coverage: SceneDataStandardSurfaceNormalV1Descriptor['coverage'];
           }
-        : never;
+        : Schema extends typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA
+          ? SceneDataTargetBase<Schema> & {
+              readonly format: 'depth32float-stencil8';
+              readonly space: SceneDataStandardSurfaceDepthV1Descriptor['space'];
+              readonly encoding: SceneDataStandardSurfaceDepthV1Descriptor['encoding'];
+              readonly reconstruction: SceneDataStandardSurfaceDepthV1Descriptor['reconstruction'];
+              readonly coverage: SceneDataStandardSurfaceDepthV1Descriptor['coverage'];
+            }
+          : never;
 
 const targetOwners = new WeakMap<object, SceneDataCatalogIdentity>();
 
@@ -363,6 +389,17 @@ export function sceneDataTokenMismatch(
   return new RenderFeaturePreparedStateMismatchError(detail);
 }
 
+function hasSceneDataEncoding(
+  candidate: Record<string, unknown>,
+  descriptor: { readonly format: string; readonly space: string; readonly encoding: string },
+): boolean {
+  return (
+    candidate.format === descriptor.format &&
+    candidate.space === descriptor.space &&
+    candidate.encoding === descriptor.encoding
+  );
+}
+
 export function isSceneDataTarget(value: unknown): value is SceneDataTarget {
   if (value === null || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
@@ -377,18 +414,20 @@ export function isSceneDataTarget(value: unknown): value is SceneDataTarget {
   switch (candidate.schema) {
     case SCENE_DATA_TEMPORAL_V1_SCHEMA:
       return candidate.format === 'rgba16float';
+    case SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA:
+      return (
+        hasSceneDataEncoding(candidate, SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR) &&
+        candidate.coverage === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR.coverage &&
+        candidate.validity === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR.validity
+      );
     case SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA:
       return (
-        candidate.format === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format &&
-        candidate.space === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.space &&
-        candidate.encoding === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.encoding &&
+        hasSceneDataEncoding(candidate, SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR) &&
         candidate.coverage === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.coverage
       );
     case SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA:
       return (
-        candidate.format === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format &&
-        candidate.space === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.space &&
-        candidate.encoding === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.encoding &&
+        hasSceneDataEncoding(candidate, SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR) &&
         candidate.reconstruction ===
           SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.reconstruction &&
         candidate.coverage === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.coverage

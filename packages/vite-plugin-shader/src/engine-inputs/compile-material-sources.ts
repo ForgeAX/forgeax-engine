@@ -5,10 +5,10 @@ import {
   type CompileOptions,
   type compileShader,
   createShaderProgramCompiler,
+  prepareEngineShaderSource,
 } from '@forgeax/engine-shader-compiler';
 import { ok } from '@forgeax/engine-types';
 import type { EngineShaderFile } from './load-engine-shader-entries.js';
-import { lowerEngineSurfaceEntry } from './prepare-engine-shader-source.js';
 import {
   type ShaderCompileDiagnostics,
   type ShaderCompileTiming,
@@ -19,8 +19,8 @@ export type MaterialCompileJob = {
   readonly defines: Record<string, boolean> | undefined;
   readonly file: EngineShaderFile;
   readonly options: CompileOptions;
-  /** Project variant inputs only when this job receives a compiler slot. */
-  readonly prepare?: () => Pick<MaterialCompileJob, 'file' | 'options'>;
+  /** Project source/imports only when a serial or Worker lane admits this job. */
+  readonly prepare?: () => MaterialCompileJob;
 };
 
 export type MaterialCompileResult = Awaited<ReturnType<typeof compileShader>>;
@@ -32,12 +32,8 @@ export type MaterialCompileResult = Awaited<ReturnType<typeof compileShader>>;
  * bounded while leaving the runtime compiler single-threaded.
  */
 const shaderCompilerModulePath = import.meta.resolve('@forgeax/engine-shader-compiler');
-const preparationModulePath = new URL(
-  'prepare-engine-shader-source.mjs',
-  import.meta.resolve('@forgeax/engine-vite-plugin-shader'),
-).href;
 const SHADER_COMPILE_WORKER_SOURCE = `
-const preparationPromise = import(${JSON.stringify(preparationModulePath)});
+const preparationPromise = import(${JSON.stringify(shaderCompilerModulePath)});
 const compilerPromise = import(${JSON.stringify(shaderCompilerModulePath)})
   .then(({ createShaderProgramCompiler }) => createShaderProgramCompiler());
 import('node:worker_threads').then(({ parentPort, workerData }) => {
@@ -55,8 +51,8 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
     if (workerData.diagnostics) parentPort.postMessage({ id: message.id, phase: 'preparing' });
     try {
       const compileShader = await compilerPromise;
-      const { lowerEngineSurfaceEntry } = await preparationPromise;
-      const prepared = lowerEngineSurfaceEntry(message.file, message.options.imports ?? {}, workerData.fallbackImports, message.options.defines);
+      const { prepareEngineShaderSource } = await preparationPromise;
+      const prepared = prepareEngineShaderSource(message.file, message.options.imports ?? {}, workerData.fallbackImports, message.options.defines).unwrap();
       if (workerData.diagnostics) {
         compileStartedAt = performance.now();
         parentPort.postMessage({ id: message.id, phase: 'compiling', timing: timing() });
@@ -156,121 +152,179 @@ function runShaderCompileWorkerJob(
 /** Each worker holds its own naga/WASM instance; beyond this, memory outgrows the gain. */
 const MAX_SHADER_COMPILE_WORKERS = 16;
 
-export async function compileMaterialSources(
+export function compileMaterialSources(
   jobs: readonly MaterialCompileJob[],
   fallbackImports: Readonly<Record<string, string>>,
-): Promise<MaterialCompileResult[]> {
+): Promise<MaterialCompileResult[]>;
+export function compileMaterialSources<T>(
+  jobs: readonly MaterialCompileJob[],
+  fallbackImports: Readonly<Record<string, string>>,
+  project: (result: MaterialCompileResult, index: number) => T,
+): Promise<T[]>;
+export async function compileMaterialSources<T>(
+  jobs: readonly MaterialCompileJob[],
+  fallbackImports: Readonly<Record<string, string>>,
+  project?: (result: MaterialCompileResult, index: number) => T,
+): Promise<Array<T | MaterialCompileResult>> {
   const diagnostics = shaderCompileDiagnostics(jobs[0]?.file.id ?? '<empty>', jobs.length);
   let outcome: 'end' | 'error' = 'error';
+  let failedCompilation = false;
   try {
-    const results = await compileMaterialSourceBatch(jobs, fallbackImports, diagnostics);
-    outcome = diagnostics === undefined || results.every((result) => result.ok) ? 'end' : 'error';
-    return results;
+    const requestedWorkers = Number.parseInt(process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '', 10);
+    const workerCount = Math.min(
+      jobs.length,
+      MAX_SHADER_COMPILE_WORKERS,
+      Number.isFinite(requestedWorkers) && requestedWorkers > 0
+        ? requestedWorkers
+        : Math.max(1, availableParallelism() - 1),
+    );
+    // Only this roster owns the table; equal programs share their immutable body
+    // while every variant retains independently mutable metadata and result order.
+    // Whole WGSL Map keys can acquire a second internalized string in V8. Use
+    // the existing short content hash as a bucket and compare complete bytes:
+    // the legacy 32-bit identity is not an integrity or equality proof.
+    const sources = new Map<string, string[]>();
+    const retain = (result: MaterialCompileResult): MaterialCompileResult => {
+      if (!result.ok) return result;
+      const value = result.value;
+      const hash = value.manifestEntry.hash;
+      let bucket = sources.get(hash);
+      if (bucket === undefined) {
+        bucket = [];
+        sources.set(hash, bucket);
+      }
+      let source = bucket.find((held) => held === value.wgsl);
+      if (source === undefined) {
+        source = value.wgsl;
+        bucket.push(source);
+      }
+      return ok({
+        ...value,
+        wgsl: source,
+        manifestEntry: { ...value.manifestEntry, wgsl: source },
+      });
+    };
+    if (workerCount <= 1) {
+      const compileShader = createShaderProgramCompiler();
+      const results: Array<T | MaterialCompileResult> = [];
+      for (const [index, descriptor] of jobs.entries()) {
+        diagnostics?.start(index);
+        const startedAt = diagnostics === undefined ? 0 : performance.now();
+        const job = descriptor.prepare?.() ?? descriptor;
+        const prepared = prepareEngineShaderSource(
+          job.file,
+          job.options.imports ?? {},
+          fallbackImports,
+          job.options.defines,
+        ).unwrap();
+        diagnostics?.prepared(index, performance.now() - startedAt);
+        diagnostics?.phase(index, 'compiling');
+        const compileStartedAt = diagnostics === undefined ? 0 : performance.now();
+        const result = await compileShader(prepared.source, {
+          ...job.options,
+          imports: prepared.imports,
+        });
+        diagnostics?.complete(index, {
+          preparationWallMs: 0,
+          compileWallMs: performance.now() - compileStartedAt,
+        });
+        failedCompilation ||= !result.ok;
+        results.push(project === undefined ? retain(result) : project(result, index));
+      }
+      outcome = failedCompilation ? 'error' : 'end';
+      return results;
+    }
+
+    const workers = Array.from(
+      { length: workerCount },
+      () =>
+        new Worker(SHADER_COMPILE_WORKER_SOURCE, {
+          eval: true,
+          workerData: {
+            fallbackImports,
+            ...(diagnostics === undefined ? {} : { diagnostics: true }),
+          },
+        } as never),
+    );
+    const results: Array<{ value: T | MaterialCompileResult } | undefined> = Array.from(
+      { length: jobs.length },
+      () => undefined,
+    );
+    const ready = new Map<number, MaterialCompileResult>();
+    const waiting = new Set<() => void>();
+    let nextJob = 0;
+    let nextProjection = 0;
+    let failed = false;
+    const wake = () => {
+      for (const resolve of waiting) resolve();
+      waiting.clear();
+    };
+    const complete = (index: number, result: MaterialCompileResult) => {
+      failedCompilation ||= !result.ok;
+      if (project === undefined) {
+        results[index] = { value: retain(result) };
+        return;
+      }
+      // A small ordered window bounds complete native bodies even when one
+      // variant compiles slowly. Publication table indices remain deterministic.
+      ready.set(index, result);
+      while (ready.has(nextProjection)) {
+        const result = ready.get(nextProjection) as MaterialCompileResult;
+        ready.delete(nextProjection);
+        const value = result.ok
+          ? ok({
+              ...result.value,
+              manifestEntry: { ...result.value.manifestEntry, wgsl: result.value.wgsl },
+            })
+          : result;
+        results[nextProjection] = { value: project(value, nextProjection) };
+        nextProjection++;
+      }
+      wake();
+    };
+    const tasks = workers.map(async (worker) => {
+      try {
+        while (!failed && nextJob < jobs.length) {
+          while (!failed && project !== undefined && nextJob >= nextProjection + workerCount * 2)
+            await new Promise<void>((resolve) => waiting.add(resolve));
+          if (failed || nextJob >= jobs.length) break;
+          const jobIndex = nextJob++;
+          const descriptor = jobs[jobIndex] as MaterialCompileJob;
+          diagnostics?.start(jobIndex);
+          const startedAt = diagnostics === undefined ? 0 : performance.now();
+          const job = descriptor.prepare?.() ?? descriptor;
+          diagnostics?.prepared(jobIndex, performance.now() - startedAt);
+          complete(jobIndex, await runShaderCompileWorkerJob(worker, jobIndex, job, diagnostics));
+        }
+      } catch (error) {
+        failed = true;
+        wake();
+        throw error;
+      }
+    });
+    const settled = await Promise.allSettled(tasks);
+    // All jobs have settled before ports close, so native/WASM teardown is not
+    // interrupted. Keep the original job failure ahead of any shutdown failure.
+    const closed = await Promise.allSettled(
+      workers.map(async (worker) => {
+        if (worker.threadId === -1) return;
+        const exited = once(worker, 'exit');
+        worker.postMessage(null);
+        const [code] = await exited;
+        if (code !== 0) throw new Error(`shader compile worker shutdown failed: ${code}`);
+      }),
+    );
+    const rejected = [...settled, ...closed].find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (rejected !== undefined) throw rejected.reason;
+    const projected = results.map((result, index) => {
+      if (result === undefined) throw new Error(`shader compile worker missed job ${index}`);
+      return result.value;
+    });
+    outcome = failedCompilation ? 'error' : 'end';
+    return projected;
   } finally {
     diagnostics?.finish(outcome);
   }
-}
-
-async function compileMaterialSourceBatch(
-  jobs: readonly MaterialCompileJob[],
-  fallbackImports: Readonly<Record<string, string>>,
-  diagnostics?: ShaderCompileDiagnostics,
-): Promise<MaterialCompileResult[]> {
-  const requestedWorkers = Number.parseInt(process.env.FORGEAX_SHADER_COMPILE_WORKERS ?? '', 10);
-  const workerCount = Math.min(
-    jobs.length,
-    MAX_SHADER_COMPILE_WORKERS,
-    Number.isFinite(requestedWorkers) && requestedWorkers > 0
-      ? requestedWorkers
-      : Math.max(1, availableParallelism() - 1),
-  );
-  // Only this roster owns the table; equal programs share their immutable body
-  // while every variant retains independently mutable metadata and result order.
-  const sources = new Map<string, string>();
-  const retain = (result: MaterialCompileResult): MaterialCompileResult => {
-    if (!result.ok) return result;
-    const value = result.value;
-    const source = sources.get(value.wgsl) ?? value.wgsl;
-    sources.set(source, source);
-    return ok({ ...value, wgsl: source, manifestEntry: { ...value.manifestEntry, wgsl: source } });
-  };
-  if (workerCount <= 1) {
-    const compileShader = createShaderProgramCompiler();
-    const results: MaterialCompileResult[] = [];
-    for (const [id, job] of jobs.entries()) {
-      diagnostics?.start(id);
-      const startedAt = diagnostics === undefined ? 0 : performance.now();
-      const input = job.prepare?.() ?? job;
-      const prepared = lowerEngineSurfaceEntry(
-        input.file,
-        input.options.imports ?? {},
-        fallbackImports,
-        input.options.defines,
-      );
-      diagnostics?.prepared(id, performance.now() - startedAt);
-      diagnostics?.phase(id, 'compiling');
-      const compileStartedAt = diagnostics === undefined ? 0 : performance.now();
-      results.push(
-        retain(
-          await compileShader(prepared.source, { ...input.options, imports: prepared.imports }),
-        ),
-      );
-      diagnostics?.complete(id, {
-        preparationWallMs: 0,
-        compileWallMs: performance.now() - compileStartedAt,
-      });
-    }
-    return results;
-  }
-
-  const workers = Array.from(
-    { length: workerCount },
-    () =>
-      new Worker(SHADER_COMPILE_WORKER_SOURCE, {
-        eval: true,
-        workerData: {
-          fallbackImports,
-          ...(diagnostics === undefined ? {} : { diagnostics: true }),
-        },
-      } as never),
-  );
-  const results: Array<MaterialCompileResult | undefined> = Array.from(
-    { length: jobs.length },
-    () => undefined,
-  );
-  // Variant costs differ by an order of magnitude, so workers pull from one
-  // shared cursor instead of a static stride; results stay index-ordered.
-  let nextJob = 0;
-  const tasks = workers.map(async (worker) => {
-    for (let jobIndex = nextJob++; jobIndex < jobs.length; jobIndex = nextJob++) {
-      const job = jobs[jobIndex] as MaterialCompileJob;
-      diagnostics?.start(jobIndex);
-      const startedAt = diagnostics === undefined ? 0 : performance.now();
-      const input = job.prepare?.() ?? job;
-      diagnostics?.prepared(jobIndex, performance.now() - startedAt);
-      results[jobIndex] = retain(
-        await runShaderCompileWorkerJob(worker, jobIndex, { ...job, ...input }, diagnostics),
-      );
-    }
-  });
-  const settled = await Promise.allSettled(tasks);
-  // All jobs have settled before ports close, so native/WASM teardown is not
-  // interrupted. Keep the original job failure ahead of any shutdown failure.
-  const closed = await Promise.allSettled(
-    workers.map(async (worker) => {
-      if (worker.threadId === -1) return;
-      const exited = once(worker, 'exit');
-      worker.postMessage(null);
-      const [code] = await exited;
-      if (code !== 0) throw new Error(`shader compile worker shutdown failed: ${code}`);
-    }),
-  );
-  const rejected = [...settled, ...closed].find(
-    (result): result is PromiseRejectedResult => result.status === 'rejected',
-  );
-  if (rejected !== undefined) throw rejected.reason;
-  return results.map((result, index) => {
-    if (result === undefined) throw new Error(`shader compile worker missed job ${index}`);
-    return result;
-  });
 }

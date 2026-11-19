@@ -199,7 +199,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     try {
-      const batch = prepareFeatureFrame(host, [view('main', [])]);
+      const batch = prepareFeatureFrame(host, [view('main', new World())]);
       expect(batch.frame.errors).toEqual([]);
       expect(batch.views.get('main')?.fullscreenEffects.has(program)).toBe(true);
       expect(batch.views.get('main')?.fullscreenEffects.has(feature.identity)).toBe(false);

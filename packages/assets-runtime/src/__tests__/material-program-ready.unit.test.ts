@@ -624,3 +624,127 @@ it('loads and selects both Surface derivatives atomically through the same compl
     },
   });
 });
+
+it('loads view-clipping programs and installs one lazy family per ordinary pass context', async () => {
+  const { record } = fixture();
+  const base = record.programs[0];
+  if (base === undefined) throw Error('Missing base program');
+  const bytes = new TextEncoder().encode('clipped Forward');
+  const clipped: MaterialCookProgram = {
+    ...base,
+    specializationKey: 'Forward.clipped',
+    artifact: {
+      ...base.artifact,
+      path: 'clipped.wgsl',
+      bytes,
+      digest: createMaterialArtifactDigest(bytes),
+    },
+    selections: pair('Forward', { ...context, viewClipping: true }),
+  };
+  const programs = [...record.programs, clipped];
+  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
+  const complete = {
+    ...record,
+    programs,
+    artifactDigest,
+    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
+  };
+  const artifacts = Object.fromEntries(
+    programs.map(({ artifact }) => [
+      artifact.path,
+      { bytes: artifact.bytes.slice(), digest: artifact.digest },
+    ]),
+  );
+  const ready = await load({ guid: 'material', record: complete, artifacts });
+  expect(ready.status).toBe('Ready');
+  if (ready.status !== 'Ready') throw Error(JSON.stringify(ready));
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const projection = installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
+  expect(selectMaterialPassProgram(projection, 'Forward', context).specializationKey).toBe(
+    'Forward',
+  );
+  expect(
+    selectMaterialPassProgram(projection, 'Forward', { ...context, viewClipping: true })
+      .specializationKey,
+  ).toBe('Forward.clipped');
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  try {
+    const family = shaders.materialShaderManifestEntry('Forward');
+    expect(family?.variants.map((variant) => variant.defines)).toEqual([
+      { CLIPPING_PLANES: false },
+      { CLIPPING_PLANES: true },
+    ]);
+    expect(decode).not.toHaveBeenCalled();
+    expect(shaders.materialShaderManifestEntry('Overlay')).toBeUndefined();
+    installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
+    expect(shaders.materialShaderManifestEntry('Forward')).toBe(family);
+  } finally {
+    decode.mockRestore();
+  }
+});
+
+it('publishes four lazy coverage states without mixing ordinary pass contexts', async () => {
+  const { record } = fixture();
+  const base = record.programs[0];
+  if (base === undefined) throw Error('Missing base program');
+  const states = [1, 2, 3].map((mask): MaterialCookProgram => {
+    const bytes = new TextEncoder().encode(`Forward coverage ${mask}`);
+    return {
+      ...base,
+      specializationKey: `Forward.coverage-${mask}`,
+      artifact: {
+        ...base.artifact,
+        path: `coverage-${mask}.wgsl`,
+        bytes,
+        digest: createMaterialArtifactDigest(bytes),
+      },
+      selections: pair('Forward', {
+        ...context,
+        ...((mask & 1) !== 0 ? { lodCoverage: true as const } : {}),
+        ...((mask & 2) !== 0 ? { viewClipping: true as const } : {}),
+      }),
+    };
+  });
+  const programs = [...record.programs, ...states];
+  const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
+  const ready = await load({
+    guid: 'material',
+    record: {
+      ...record,
+      programs,
+      artifactDigest,
+      receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
+    },
+    artifacts: Object.fromEntries(
+      programs.map(({ artifact }) => [
+        artifact.path,
+        { bytes: artifact.bytes.slice(), digest: artifact.digest },
+      ]),
+    ),
+  });
+  if (ready.status !== 'Ready') throw Error(JSON.stringify(ready));
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const projection = installMaterialReadyShaders(shaders, ready, new MaterialArtifactRegistry());
+  const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+  try {
+    const family = shaders.materialShaderManifestEntry('Forward');
+    expect(family?.variants.map((variant) => variant.defines)).toEqual(
+      [0, 1, 2, 3].map((mask) => ({
+        CLIPPING_PLANES: (mask & 2) !== 0,
+        LOD_DITHER: (mask & 1) !== 0,
+      })),
+    );
+    expect(decode).not.toHaveBeenCalled();
+    expect(shaders.materialShaderManifestEntry('Overlay')).toBeUndefined();
+    for (const mask of [0, 1, 2, 3]) {
+      const selected = selectMaterialPassProgram(projection, 'Forward', {
+        ...context,
+        ...((mask & 1) !== 0 ? { lodCoverage: true as const } : {}),
+        ...((mask & 2) !== 0 ? { viewClipping: true as const } : {}),
+      });
+      expect(selected.specializationKey).toBe(mask === 0 ? 'Forward' : `Forward.coverage-${mask}`);
+    }
+  } finally {
+    decode.mockRestore();
+  }
+});

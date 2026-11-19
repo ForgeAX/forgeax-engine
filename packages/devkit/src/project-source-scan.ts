@@ -4,6 +4,7 @@ import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, scanInventory } from '@forgeax/e
 import type { ScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import { owningAssetLibrary } from './asset-libraries.js';
 import { isPluginAssetSourceIgnoredPath } from './build/plugin-assets.js';
+import { projectEngineSourceOptions } from './engine-binding.js';
 import type { CommandError, ProjectFacts } from './types.js';
 
 /** Project asset roots followed by the read-only roots of mounted asset libraries. */
@@ -18,7 +19,7 @@ export function projectSourceRoots(facts: ProjectFacts): string[] {
  * The one authored-source scan shared by Play, builds and `project check`, so a
  * Pack the live generation contract rejects fails the same way everywhere.
  */
-export function scanProjectSources(
+export async function scanProjectSources(
   facts: ProjectFacts,
   roots: readonly string[],
   options: {
@@ -26,6 +27,7 @@ export function scanProjectSources(
     readonly onSourceFailure?: (path: string, error: PackError) => void;
   } = {},
 ) {
+  const engineOptions = await projectEngineSourceOptions(facts.root);
   return scanInventory(roots, {
     ignorePath: (path) =>
       isPluginAssetSourceIgnoredPath(
@@ -35,6 +37,7 @@ export function scanProjectSources(
     scriptablePack: {
       ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
       metadataOnly: true,
+      ...engineOptions,
       ...(options.sourceSnapshot === undefined ? {} : { sourceSnapshot: options.sourceSnapshot }),
     },
     ...(options.onSourceFailure === undefined ? {} : { onSourceFailure: options.onSourceFailure }),

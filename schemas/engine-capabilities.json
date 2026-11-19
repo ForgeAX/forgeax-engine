@@ -294,6 +294,10 @@
       "form": "built-in"
     },
     {
+      "name": "Volumetric clouds and programmable cloud materials",
+      "form": "opt-in"
+    },
+    {
       "name": "Scene Fog",
       "form": "opt-in"
     },

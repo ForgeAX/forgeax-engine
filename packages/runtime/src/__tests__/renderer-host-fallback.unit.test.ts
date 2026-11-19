@@ -89,7 +89,7 @@ describe('runtime renderer backend fallback boundary', () => {
       2,
       target,
       undefined,
-      undefined,
+      { prepareShaderProgramCompiler: expect.any(Function) },
       fallbackPack,
     );
     expect(target.getContext).toHaveBeenCalledOnce();
@@ -114,7 +114,7 @@ describe('runtime renderer backend fallback boundary', () => {
     expect(mocks.constructRendererHost).toHaveBeenLastCalledWith(
       expect.anything(),
       undefined,
-      undefined,
+      { prepareShaderProgramCompiler: expect.any(Function) },
       fallbackPack,
     );
     assets.dispose();

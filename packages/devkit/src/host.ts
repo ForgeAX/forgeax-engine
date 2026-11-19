@@ -90,6 +90,7 @@ import { type DistManifest, verifyDist, writeDistManifest } from './dist.js';
 import {
   enginePackageRuntimeIdentity,
   inspectEngineWorkspace,
+  localEnginePackageRoot,
   readEngineBinding,
 } from './engine-binding.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
@@ -115,10 +116,11 @@ import { type HostVersions, hostVersions } from './host/versions.js';
 import {
   composeBoundHostAssembly,
   type DevKitHostBinding,
+  type DevKitWorkspacePage,
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
-import { DEFAULT_IMPORTERS } from './importers.js';
+import { createSessionImporters, DEFAULT_IMPORTERS } from './importers.js';
 import { GPU_PASS_TIMING_PARAM, LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
 import { createPlayClock } from './play-clock.js';
 import type { DevKitAppOptions } from './plugin-build.js';
@@ -642,42 +644,59 @@ export function devKitHostBridge(
       const published = backend.assembly.current.revision;
       const sockets = new Set<() => void>();
       const socketServer = new WebSocketServer({ noServer: true });
-      let workspaceSocket: WebSocket | undefined;
-      let admitting = false;
+      const workspaceSockets = new Map<string, WebSocket>();
+      let admitting: HostAssembly | undefined;
       const projections = new Map<string, () => void>();
       const removeConnect = transport.onClientConnect((caller) => {
-        if (admitting && projected)
-          projections.set(caller.connectionId, backend.bindProjection(caller, { assembly }));
+        if (admitting)
+          projections.set(
+            caller.connectionId,
+            backend.bindProjection(caller, { assembly: admitting }),
+          );
       });
       const removeDisconnect = transport.onClientDisconnect((caller) => {
         projections.get(caller.connectionId)?.();
         projections.delete(caller.connectionId);
       });
-      socketServer.on('connection', (socket: WebSocket) => {
-        if (binding?.workspace) {
-          workspaceSocket?.close();
-          workspaceSocket = socket;
-        }
-        const workspace = binding?.workspace;
-        admitting = true;
-        let release: () => void;
-        try {
-          release = attachHostWebSocketServer(
-            socket,
-            transport,
-            workspace
-              ? {
-                  kind: 'frontend',
-                  sourceId: `forgeax-workspace:${workspace.sessionId}:${workspace.targetId}`,
-                }
-              : {},
-          );
-        } finally {
-          admitting = false;
-        }
-        sockets.add(release);
-        socket.once('close', () => sockets.delete(release));
+      const removeRevoke = binding?.pages?.onRevoke((page) => {
+        workspaceSockets.get(page.sessionId)?.close();
+        workspaceSockets.delete(page.sessionId);
       });
+      socketServer.on(
+        'connection',
+        (socket: WebSocket, request: import('node:http').IncomingMessage) => {
+          const url = new URL(request.url ?? '/', 'http://localhost');
+          const workspace: DevKitWorkspacePage | undefined = binding?.pages
+            ? binding.pages.resolve(url.searchParams.get('forgeaxWorkspaceSession'))
+            : binding?.workspace;
+          if (workspace) {
+            workspaceSockets.get(workspace.sessionId)?.close();
+            workspaceSockets.set(workspace.sessionId, socket);
+            socket.once('close', () => {
+              if (workspaceSockets.get(workspace.sessionId) === socket)
+                workspaceSockets.delete(workspace.sessionId);
+            });
+          }
+          admitting = workspace?.assembly ?? (projected ? assembly : undefined);
+          let release: () => void;
+          try {
+            release = attachHostWebSocketServer(
+              socket,
+              transport,
+              workspace
+                ? {
+                    kind: 'frontend',
+                    sourceId: `forgeax-workspace:${workspace.sessionId}:${workspace.targetId}`,
+                  }
+                : {},
+            );
+          } finally {
+            admitting = undefined;
+          }
+          sockets.add(release);
+          socket.once('close', () => sockets.delete(release));
+        },
+      );
       const upgrade = (
         request: import('node:http').IncomingMessage,
         socket: import('node:stream').Duplex,
@@ -685,12 +704,15 @@ export function devKitHostBridge(
       ) => {
         const url = new URL(request.url ?? '/', 'http://localhost');
         if (url.pathname !== '/__forgeax/host') return;
-        const workspace = binding?.workspace;
+        const workspace = binding?.pages
+          ? binding.pages.resolve(url.searchParams.get('forgeaxWorkspaceSession'))
+          : binding?.workspace;
         if (
-          workspace &&
-          (url.searchParams.get('forgeaxWorkspaceSession') !== workspace.sessionId ||
-            url.searchParams.get('forgeaxWorkspaceTarget') !== workspace.targetId ||
-            url.searchParams.get('forgeaxWorkspaceToken') !== workspace.admissionToken)
+          (binding?.pages && !workspace) ||
+          (workspace &&
+            (url.searchParams.get('forgeaxWorkspaceSession') !== workspace.sessionId ||
+              url.searchParams.get('forgeaxWorkspaceTarget') !== workspace.targetId ||
+              url.searchParams.get('forgeaxWorkspaceToken') !== workspace.admissionToken))
         ) {
           socket.destroy();
           return;
@@ -715,6 +737,7 @@ export function devKitHostBridge(
         disposed = true;
         httpEvents.off('upgrade', upgrade);
         removeBackendDispose?.();
+        removeRevoke?.();
         removeConnect();
         removeDisconnect();
         for (const release of projections.values()) release();
@@ -788,6 +811,10 @@ function projectSsrIdentity(
   };
 }
 
+function pluginProgramModule(root: 'engine' | 'frontend', namespace?: string): string {
+  return `virtual:forgeax/plugin-programs/${namespace ? `${namespace}/` : ''}${root}`;
+}
+
 function executionBootstrapSource(
   bootstrapRoot: BootstrapRoot,
   sessionGeneration: number,
@@ -795,11 +822,12 @@ function executionBootstrapSource(
   target?: BuildOptions['target'],
   appOptions: DevKitAppOptions = {},
   staticPrograms = target === 'tauri',
+  programNamespace?: string,
 ): string {
   return `import { audioPlugin } from '@forgeax/engine/audio';
 import type { GameHost } from '@forgeax/engine/app';
 import { skinningPlugin } from '@forgeax/engine/skinning';
-import { root, createPrograms } from 'virtual:forgeax/plugin-programs/engine';
+import { root, createPrograms } from '${pluginProgramModule('engine', programNamespace)}';
 import { runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import { createRuntimePackOptions${staticPrograms ? '' : ', createRuntimePackDeliveryClient'} } from './runtime-packs';
 import { createGameVfx } from './game-vfx';
@@ -916,8 +944,9 @@ function hostSource(
   appOptions: DevKitAppOptions = {},
   materialProfile?: BuildOptions['materialProfile'],
   staticPrograms = target === 'tauri',
+  programNamespace?: string,
 ): string {
-  const deliverySource = nativeProgramSource(staticPrograms);
+  const deliverySource = nativeProgramSource(staticPrograms, appOptions, programNamespace);
   const boundRoot =
     binding?.workspace?.execution === 'game'
       ? undefined
@@ -939,8 +968,8 @@ import { createRuntimePackOptions${deliverySource.importMember} } from './runtim
 ${deliverySource.importBootstrap}
 import { createGameVfx } from './game-vfx';
 import { createGameRenderFeatures } from './game-render-features';
-import { root as engineRoot, createPrograms as enginePrograms } from 'virtual:forgeax/plugin-programs/engine';
-import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from 'virtual:forgeax/plugin-programs/frontend';
+import { root as engineRoot, createPrograms as enginePrograms } from '${pluginProgramModule('engine', programNamespace)}';
+import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from '${pluginProgramModule('frontend', programNamespace)}';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { AssetRegistry, createCatalogSource, createCatalogHotSubscription } from '@forgeax/engine/assets-runtime';
 import {
@@ -994,7 +1023,7 @@ const vfxNativePlanning = query.get('forgeax-vfx-planning') !== 'raw';
 const vfxRetainedResources = query.get('forgeax-vfx-resources') !== 'declarations';
 const resourceValue = query.get('forgeax-resource-preview');
 const resource = resourceValue === null ? undefined : JSON.parse(resourceValue);
-const executionWorkers = ${JSON.stringify(bootstrapRoot === 'resource-bootstrap' || binding !== undefined ? null : environmentExecutionWorkers())};
+const executionWorkers = ${JSON.stringify(bootstrapRoot === 'resource-bootstrap' || binding !== undefined ? null : environmentExecutionWorkers(appOptions.execution?.workers))};
 const animation = ${JSON.stringify(animation)};
 const workerExecution = executionWorkers !== null;
 const previewCameraEntities = new WeakMap();
@@ -1719,10 +1748,7 @@ const appBootstrapPlugin = {
               frameTimeoutMs: ${facts.frameTimeoutMs === undefined ? 'undefined' : JSON.stringify(facts.frameTimeoutMs)},
               // Development includes cold Vite compilation before the native Worker handshake.
               startupTimeoutMs: ${startupTimeout},
-              bootstrap: new URL(
-                './execution-bootstrap.ts',
-                import.meta.url,
-              ),
+              bootstrap: ${deliverySource.bootstrapUrl},
               assetCatalog: {
                 url: import.meta.env.DEV
                   ? runtimeScopeBinding.catalogUrl
@@ -2344,6 +2370,7 @@ function htmlSource(
   projectId = title,
   revision?: string,
   startupUi?: StartupUiOptions,
+  entry = './main.ts',
 ): string {
   const identity =
     versions === undefined
@@ -2367,7 +2394,7 @@ function htmlSource(
       })();
     </script>
     <script type="module">
-      ${startupEntrySource(identity)}
+      ${startupEntrySource(identity, entry)}
     </script>
   </body>`,
     );
@@ -3136,6 +3163,7 @@ function viteBuildOptions(
   realGeneratedRoot: string,
   projectRoot: string,
   output: { readonly sourcemap?: BuildOptions['sourcemap']; readonly outDir?: string },
+  localBootstrap = false,
 ): NonNullable<InlineConfig['build']> {
   return {
     // Syntax capabilities only: lower optional chains/class fields but keep native BigInt.
@@ -3151,7 +3179,9 @@ function viteBuildOptions(
         ? { game: wechat.entry }
         : {
             index: resolve(realGeneratedRoot, 'index.html'),
-            'execution-bootstrap': resolve(realGeneratedRoot, 'execution-bootstrap.ts'),
+            ...(localBootstrap
+              ? {}
+              : { 'execution-bootstrap': resolve(realGeneratedRoot, 'execution-bootstrap.ts') }),
           },
       output: {
         ...(wechat ? { format: 'cjs' as const, chunkFileNames: 'assets/[name]-[hash].js' } : {}),
@@ -3190,15 +3220,48 @@ const projectRebuilds = new WeakMap<ViteDevServer, { tail: Promise<void>; genera
 
 /** Shader build options a project's facts select; point shadows are an explicit opt-in. */
 export function projectShaderOptions(
-  facts: Pick<ProjectFacts, 'pointShadows'>,
+  facts: Pick<ProjectFacts, 'pointShadows' | 'shaderPublication'>,
   materialPackages: readonly string[],
   workspaceRoot?: string,
+  resourcePreview = false,
 ): Parameters<typeof forgeaxShader>[0] {
   return {
+    ...(!resourcePreview && facts.shaderPublication !== 'compiled'
+      ? ({ publication: 'source', publishAuthoredMaterialShaders: false } as const)
+      : {}),
     materialPackages,
     ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     ...(facts.pointShadows === true ? { engineEntries: { pointShadows: true } } : {}),
   };
+}
+
+function executionBootstrapFilename(namespace?: string): string {
+  return `${namespace ? 'game-' : ''}execution-bootstrap.ts`;
+}
+
+function sharedGameBinding(
+  host: DevKitHostBinding | undefined,
+  shared: boolean,
+): DevKitHostBinding | undefined {
+  if (!shared || !host) return undefined;
+  return {
+    backend: host.backend,
+    workspace: {
+      execution: 'game',
+      sessionId: 'generated-game',
+      targetId: 'generated-game',
+      admissionToken: 'generated-game',
+    },
+    ...(host.frontendModule?.prepare ? { frontendModule: host.frontendModule } : {}),
+  };
+}
+
+function sharedProjectPages(
+  host: DevKitHostBinding | undefined,
+  serving: boolean,
+  preview: boolean,
+) {
+  return serving && preview ? host?.pages : undefined;
 }
 
 export async function createViteConfig(
@@ -3258,10 +3321,8 @@ export async function createViteConfig(
       options.initialSources,
       options.scriptablePackMetadata,
     );
-    // Both operations read current disk state and own no shared mutable
-    // preparation. Keep their lifetime within this invocation: a later Play
-    // must discover fresh project and Engine sources even without a watcher.
-    // Only metadata of a byte-identical source closure crosses invocations.
+    // The project server owns one captured revision. Each Play validates current
+    // inputs before borrowing it; changed code requires project replacement.
     timing('project-inventory-start');
     const [scanned, engineWorkspaceResolver] = await Promise.all([
       scanProjectSources(facts, sourceRoots, {
@@ -3322,6 +3383,9 @@ export async function createViteConfig(
     timing('tool-projection');
     const projectTools = toolProjection.tools;
     const assembly = servedHostAssembly(options.host, options.sessionGeneration);
+    const sharedPages = sharedProjectPages(options.host, serving, workspacePreview);
+    const gameAssembly = createHostAssembly({ sessionGeneration: assembly.sessionGeneration });
+    const gameBinding = sharedGameBinding(options.host, sharedPages !== undefined);
     const consumerAliases = await resolveConsumerEngineAliases(facts.root, options.host);
     timing('consumer-aliases');
     const frontendAlias = await hostFrontendModuleAlias(options.host);
@@ -3341,6 +3405,15 @@ export async function createViteConfig(
     );
     timing('project-cookers');
     disposePreparation = () => cookerSession.dispose();
+    const importerSession = createSessionImporters();
+    const disposeSession = async () => {
+      try {
+        await cookerSession.dispose();
+      } finally {
+        await importerSession.dispose();
+      }
+    };
+    disposePreparation = disposeSession;
     const ssrIdentity = projectSsrIdentity(facts, sourceInventory, {
       command,
       base,
@@ -3349,73 +3422,126 @@ export async function createViteConfig(
       animation,
       appOptions: cookerSession.appOptions,
     });
-    await Promise.all([
-      ...(serving ? writePreviewBatchEntry(generated) : []),
-      writePipelineLibrary(generated, cookerSession.appOptions),
-      writeFile(
-        resolve(generated, 'index.html'),
-        htmlSource(
-          facts.name,
-          bootstrapRoot === 'project-bootstrap',
-          resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
-          await hostVersions(facts),
-          htmlHead,
-          facts.id,
-          createHash('sha256')
-            .update(
-              JSON.stringify(
-                [...sourceInventory.sourceSnapshot.inputs]
-                  .map(([path, digest]) => [
-                    relative(facts.root, path).replaceAll('\\', '/'),
-                    digest,
-                  ])
-                  .sort(),
+    const writeHostEntries = async () => {
+      await Promise.all([
+        ...(serving ? writePreviewBatchEntry(generated) : []),
+        writePipelineLibrary(generated, cookerSession.appOptions),
+        writeFile(
+          resolve(generated, 'index.html'),
+          htmlSource(
+            facts.name,
+            bootstrapRoot === 'project-bootstrap',
+            resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
+            await hostVersions(facts),
+            htmlHead,
+            facts.id,
+            createHash('sha256')
+              .update(
+                JSON.stringify(
+                  [...sourceInventory.sourceSnapshot.inputs]
+                    .map(([path, digest]) => [
+                      relative(facts.root, path).replaceAll('\\', '/'),
+                      digest,
+                    ])
+                    .sort(),
+                ),
+              )
+              .digest('hex'),
+            cookerSession.appOptions.startupUi,
+          ),
+        ),
+        writeFile(
+          resolve(generated, 'main.ts'),
+          hostSource(
+            facts,
+            bootstrapRoot,
+            canonicalKit?.guid,
+            options.host,
+            process.env.FORGEAX_ENGINE_RHI_DEBUG === '1',
+            command === 'serve',
+            assembly,
+            ssrIdentity,
+            command === 'serve' && process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1',
+            animation,
+            options.target,
+            cookerSession.appOptions,
+            options.materialProfile,
+            staticPrograms,
+          ),
+        ),
+        writeFile(
+          resolve(generated, 'runtime-packs.ts'),
+          await runtimePacksModuleSource(facts, sourceInventory, staticPrograms),
+        ),
+        ...(gameBinding
+          ? [
+              writeFile(
+                resolve(generated, 'game.html'),
+                htmlSource(
+                  facts.name,
+                  true,
+                  resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
+                  await hostVersions(facts),
+                  htmlHead,
+                  facts.id,
+                  undefined,
+                  cookerSession.appOptions.startupUi,
+                  './game-main.ts',
+                ),
               ),
-            )
-            .digest('hex'),
-          cookerSession.appOptions.startupUi,
+              writeFile(
+                resolve(generated, 'game-main.ts'),
+                hostSource(
+                  facts,
+                  bootstrapRoot,
+                  undefined,
+                  gameBinding,
+                  process.env.FORGEAX_ENGINE_RHI_DEBUG === '1',
+                  true,
+                  gameAssembly,
+                  ssrIdentity,
+                  false,
+                  animation,
+                  options.target,
+                  cookerSession.appOptions,
+                  options.materialProfile,
+                  staticPrograms,
+                  'game',
+                ),
+              ),
+              writeFile(
+                resolve(generated, 'game-execution-bootstrap.ts'),
+                executionBootstrapSource(
+                  bootstrapRoot,
+                  gameAssembly.sessionGeneration,
+                  ssrIdentity,
+                  options.target,
+                  cookerSession.appOptions,
+                  staticPrograms,
+                  'game',
+                ),
+              ),
+            ]
+          : []),
+        writeFile(resolve(generated, 'game-vfx.ts'), gameVfxSource),
+        writeFile(
+          resolve(generated, 'game-render-features.ts'),
+          gameRenderFeaturesSource(facts.root, generated, cookerSession.appOptions.renderFeatures),
         ),
-      ),
-      writeFile(
-        resolve(generated, 'main.ts'),
-        hostSource(
-          facts,
-          bootstrapRoot,
-          canonicalKit?.guid,
-          options.host,
-          process.env.FORGEAX_ENGINE_RHI_DEBUG === '1',
-          command === 'serve',
-          assembly,
-          ssrIdentity,
-          command === 'serve' && process.env.FORGEAX_PREVIEW_RHI_WINDOW === '1',
-          animation,
-          options.target,
-          cookerSession.appOptions,
-          options.materialProfile,
-          staticPrograms,
+        writeFile(
+          resolve(generated, 'execution-bootstrap.ts'),
+          executionBootstrapSource(
+            bootstrapRoot,
+            assembly.sessionGeneration,
+            ssrIdentity,
+            options.target,
+            cookerSession.appOptions,
+            staticPrograms,
+          ),
         ),
-      ),
-      writeFile(
-        resolve(generated, 'runtime-packs.ts'),
-        await runtimePacksModuleSource(facts, sourceInventory, staticPrograms),
-      ),
-      writeFile(resolve(generated, 'game-vfx.ts'), gameVfxSource),
-      writeFile(
-        resolve(generated, 'game-render-features.ts'),
-        gameRenderFeaturesSource(facts.root, generated, cookerSession.appOptions.renderFeatures),
-      ),
-      writeFile(
-        resolve(generated, 'execution-bootstrap.ts'),
-        executionBootstrapSource(
-          bootstrapRoot,
-          assembly.sessionGeneration,
-          ssrIdentity,
-          options.target,
-          cookerSession.appOptions,
-          staticPrograms,
-        ),
-      ),
-    ]);
+      ]);
+    };
+    await writeHostEntries();
     timing('generated-files');
     const wechat =
       options.target === 'wechat'
@@ -3438,6 +3564,7 @@ export async function createViteConfig(
     let initialSourceSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
     const pack = pluginPack({
       roots,
+      enginePackageRoot: await localEnginePackageRoot(facts.root),
       takeInitialSourceSnapshot: () => {
         const taken = initialSourceSnapshot;
         initialSourceSnapshot = undefined;
@@ -3456,24 +3583,102 @@ export async function createViteConfig(
       ...devPackReadinessOptions(facts),
       ddc: devKitDdcRoots(facts.root),
       watch: false,
-      importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers],
+      importers: [...importerSession.importers, ...cookerSession.importers],
       producerIdentity: cookerSession.producerIdentity,
       cookers: cookerSession.cookers,
       ignorePath,
     });
     const delivery = projectProgramDelivery(options.programDelivery, wechat !== undefined);
+    const createGamePreparation = () => {
+      const prepareGameAssembly = sharedPages
+        ? async () => {
+            await options.host?.backend.context.get('devkitBackend')?.assertCurrent();
+            await assertPluginSourceInputs(sourceInventory, facts.root);
+            const freshFacts = await readProjectFacts(facts.root);
+            if (!freshFacts.ok) throw freshFacts.error;
+            if (JSON.stringify(freshFacts.value) !== JSON.stringify(facts))
+              hostBindingError('project inputs changed; reopen the project before Play');
+            const strictScan = await scanProjectSources(facts, sourceRoots, {
+              sourceSnapshot: createScriptablePackSourceSnapshot({
+                metadataCache: options.scriptablePackMetadata,
+              }),
+            });
+            if (!strictScan.ok) throw strictScan.error;
+            await pack.ready();
+            const published = await publishedPluginInventory(facts.root, sourceInventory, pack);
+            const root = facts.roots.frontend
+              ? published.assets.get(facts.roots.frontend)
+              : undefined;
+            if (facts.roots.frontend && !root)
+              hostBindingError('game frontend root has no published definition');
+            const publication = root
+              ? pack.catalogSnapshot().find((row) => row.guid === root.definition.guid)?.publication
+              : undefined;
+            if (root && !publication)
+              hostBindingError('game frontend root has no publication evidence');
+            return createHostAssembly({
+              ...gameAssembly,
+              ...(root && publication
+                ? {
+                    root: pluginRootDescriptor({
+                      ...root.definition,
+                      evidence: {
+                        kind: 'publication',
+                        publication: {
+                          scopeId: runtimeBinding.scopeId,
+                          generation: publication.generation,
+                          digest: publication.digest,
+                          outputSetDigest: publication.outputSetDigest,
+                        },
+                      },
+                    }),
+                  }
+                : {}),
+            });
+          }
+        : undefined;
+      const gamePrograms = sharedPages
+        ? pluginProgramsBuild({
+            namespace: 'game',
+            deferPreparation: true,
+            delivery,
+            projectRoot: facts.root,
+            tools: projectTools,
+            roots: facts.roots,
+            inventory: () => publishedPluginInventory(facts.root, sourceInventory, pack),
+            binding: runtimeBinding,
+            pack,
+          })
+        : undefined;
+      const prepareGame = prepareGameAssembly
+        ? async () => {
+            const assembly = await prepareGameAssembly();
+            await gamePrograms?.prepare();
+            return assembly;
+          }
+        : undefined;
+      return { gamePrograms, prepareGame };
+    };
+    const { gamePrograms, prepareGame } = createGamePreparation();
     const plugins: Plugin[] = [
       startupCacheHttp(),
       ...(serving ? [previewInputsPlugin(pack)] : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
-      executionWorkerEntries(undefined, delivery, realGeneratedRoot),
+      executionWorkerEntries(
+        undefined,
+        delivery,
+        realGeneratedRoot,
+        environmentExecutionWorkers(cookerSession.appOptions.execution?.workers),
+      ),
       executionBootstrapEntry(realGeneratedRoot),
       ...(serving ? [generatedHostOwnerPlugin(generated)] : []),
       ...engineWorkspacePlugins,
 
       ...(serving ? rhiDebugPlugins(facts.root) : []),
-      forgeaxShader(projectShaderOptions(facts, materialPackages, engineWorkspaceRoot)) as Plugin,
+      forgeaxShader(
+        projectShaderOptions(facts, materialPackages, engineWorkspaceRoot, !activatesProjectRoots),
+      ) as Plugin,
       pack,
       ...(serving ? [workspacePackCookPlugin(cookerSession.cookers)] : []),
       ...(serving
@@ -3506,8 +3711,12 @@ export async function createViteConfig(
         binding: runtimeBinding,
         pack,
       }),
+      ...(gamePrograms ? [gamePrograms] : []),
       {
         name: 'forgeax:project-session',
+        configureServer() {
+          if (sharedPages) sharedPages.prepareGame = prepareGame;
+        },
         ...{
           inputPaths: () =>
             [
@@ -3541,7 +3750,9 @@ export async function createViteConfig(
         },
         async closeBundle() {
           sessionClosed = true;
-          await cookerSession.dispose();
+          if (sharedPages?.prepareGame === prepareGame && sharedPages)
+            sharedPages.prepareGame = undefined;
+          await disposeSession();
         },
         async hotUpdate(context) {
           const environment = this.environment;
@@ -3758,23 +3969,38 @@ export async function createViteConfig(
         engineWorkspaceRoot,
         frontendAlias,
       ),
-      build: viteBuildOptions(wechat, realGeneratedRoot, facts.root, options),
+      build: viteBuildOptions(
+        wechat,
+        realGeneratedRoot,
+        facts.root,
+        options,
+        usesLocalEngineBootstrap(delivery === 'native', cookerSession.appOptions),
+      ),
     };
   } catch (cause) {
     return await failProjectPreparation(cause, disposePreparation, serving, generated);
   }
 }
 
-function nativeProgramSource(native: boolean) {
+function usesLocalEngineBootstrap(native: boolean, appOptions: DevKitAppOptions = {}): boolean {
+  return native && environmentExecutionWorkers(appOptions.execution?.workers).engine === false;
+}
+
+function nativeProgramSource(native: boolean, appOptions: DevKitAppOptions, namespace?: string) {
+  const entry = executionBootstrapFilename(namespace);
+  const bootstrapUrl = `new URL('./${entry}', import.meta.url)`;
+  const localOnly = usesLocalEngineBootstrap(native, appOptions);
   const flags = 'isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources';
   if (native)
     return {
       importMember: '',
-      importBootstrap: "import localExecutionBootstrap from './execution-bootstrap';",
+      bootstrapUrl: localOnly ? 'new URL(import.meta.url)' : bootstrapUrl,
+      importBootstrap: `import localExecutionBootstrap from './${entry.slice(0, -3)}';`,
       bootstrapOption: 'localBootstrap: localExecutionBootstrap,',
       bootstrapData: `{ ${flags} }`,
     };
   return {
+    bootstrapUrl,
     importMember: ', serveRuntimePackDelivery',
     importBootstrap: '',
     bootstrapOption: '',

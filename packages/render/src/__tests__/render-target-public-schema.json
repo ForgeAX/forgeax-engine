@@ -20,6 +20,7 @@
         "enum": [
           "CUBE_CAMERA_FACE_ORDER",
           "CubeCamera",
+          "RenderTargetEnvironment",
           "ReflectionProbe",
           "REFLECTION_PROBE_IBL_STAGES",
           "admitReflectionProbe",
@@ -37,6 +38,11 @@
       "items": {
         "enum": [
           "RenderTarget",
+          "RenderTargetEnvironmentCapture",
+          "RenderTargetEnvironmentFace",
+          "RenderTargetWrite",
+          "RenderTargetEnvironmentSource",
+          "RenderTargetEnvironmentLease",
           "RenderTargetDescriptor",
           "RenderTargetShape",
           "RenderTargetLayeredShape",
@@ -70,6 +76,8 @@
         "properties": {
           "name": {
             "enum": [
+              "Renderer.captureRenderTargetEnvironment",
+              "Renderer.prepareRenderTargetEnvironment",
               "Renderer.createRenderTarget",
               "Renderer.resizeRenderTarget",
               "Renderer.createRenderTargetTextureSource",

@@ -2,7 +2,7 @@
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #import forgeax_view::common::{View, view}
-#import forgeax_view::fog::{translucent_fog, ndc_world}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog, ndc_world}
 // View-and-scene-depth layout: the renderer binds the View copy selected by the
 // particle blend, so each billboard fogs itself at its own depth.
 @group(0) @binding(1) var scene_depth: texture_depth_2d;
@@ -16,7 +16,7 @@ struct VertexOutput {
   @location(4) sheet_uv: vec2<f32>,
   @location(5) sheet_frame: f32,
   @location(6) fade_distance: f32,
-  @location(7) clip_position: vec3<f32>,
+  @location(7) clip_position: vec4<f32>,
 };
 
 fn textureSheetFrame(age: f32, frameRate: f32, frameCount: u32) -> u32 {
@@ -80,7 +80,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     input.position.z,
   );
   output.position = vec4<f32>(clipPosition, 1.0);
-  output.clip_position = clipPosition;
+  output.clip_position = vec4<f32>(clipPosition, vertex_height_fog(view, ndc_world(view, clipPosition)));
   output.color = input.particle_color * input.base_color;
   output.local = corner;
   output.emissive_intensity = input.emissive_intensity;
@@ -107,6 +107,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let emissive = input.emissive_intensity.rgb * input.emissive_intensity.a;
   let alpha = softParticle(input.position, input.color.a * edge, input.fade_distance);
   let rgb = input.color.rgb + emissive * (0.35 + core * 0.65) + vec3<f32>(highlight);
-  let fogged = translucent_fog(view, ndc_world(view, input.clip_position), rgb * alpha, alpha);
+  let fogged = forward_fog(view, ndc_world(view, input.clip_position.xyz), input.clip_position.w, rgb * alpha, alpha);
   return vec4<f32>(fogged, alpha);
 }

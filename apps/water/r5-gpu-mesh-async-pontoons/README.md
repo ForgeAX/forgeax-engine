@@ -1,10 +1,9 @@
 # Boat Sailing — Shared R4 / R5 Experience
 
-One native boat experience is served at both R4 (5384, primary entry) and R5
-(5385). R4 imports this implementation and publishes this same asset catalog.
+One native boat experience combines R4 and R5 on port 5384.
 Worker async buoyancy is a readable mode in the shared settings panel, alongside
 synchronous buoyancy and GPU/CPU WaterMesh. The same scene and source authorities
-serve both URLs; both window evidence names reference one object.
+serve this application through its `window.__waterR5` evidence object.
 
 Lake/Ocean materials reuse the Showcase porous foam texture author with real
 Water contact/crest/scene-depth inputs. No white-sphere foam particle consumer
@@ -38,7 +37,7 @@ acceptance; enabling waves is not a claim of full fluid shoreline dynamics.
 pnpm --filter @forgeax/water-r5-gpu-mesh-async-pontoons dev
 ```
 
-The default local URL is `http://127.0.0.1:5385/`. Build Engine inputs with
+The default local URL is `http://127.0.0.1:5384/`. Build Engine inputs with
 `pnpm build:engine` before starting a cold consumer. This app uses the public
 `@forgeax/engine` facades, ordinary Pack/catalog assets and the existing Water
 Scene plugin. It owns no substitute renderer, solver or water registry.

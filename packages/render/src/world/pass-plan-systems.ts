@@ -54,6 +54,7 @@ export interface PassPlanInput {
    * it for the sort plans over the phase order, the dispatch it records.
    */
   readonly dispatch: DispatchList;
+  readonly materialSceneDepth?: true;
   /** Whether this view staged `dispatch` for `render-phase-sort` this attempt. */
   readonly phaseSorted: boolean;
   /** The view's accepted material frame. */
@@ -64,7 +65,7 @@ export interface PassPlanInput {
   readonly preparation: MaterialFrame | undefined;
   /** The view's admitted Standard render path. */
   readonly renderPath: StandardProfile['renderPath'];
-  /** The installed pipeline's GPU occlusion switch; omitted means on. */
+  /** Installed HZB policy; omission is off for Forward and on for Deferred. */
   readonly gpuOcclusion: boolean | undefined;
   /** A Camera-less view records a clear-only frame. */
   readonly clearOnly: boolean;
@@ -100,6 +101,8 @@ export interface OpaquePassPlan {
 export interface ViewPassPlan {
   /** The accepted material frame has opaque draws that opt out of analytic fog. */
   readonly unfoggedOpaque: boolean;
+  /** A visible material samples the renderer-owned scene depth. */
+  readonly materialSceneDepth?: true;
   readonly transparent: TransparencyViewResolution;
   readonly transmission: TransmissionPassPlan;
   /** Undefined only for an unplanned recording, which plans with {@link planOpaque}. */
@@ -108,15 +111,15 @@ export interface ViewPassPlan {
 
 /**
  * The opaque lane of a view. A clear-only frame stays on the Forward lane so
- * Deferred resources cannot introduce work; GPU occlusion is on unless the
- * installed pipeline turns it off.
+ * Deferred resources cannot introduce work. Forward HZB is opt-in; Deferred
+ * keeps its existing default, and explicit pipeline choices remain authoritative.
  */
 export function planOpaque(
   input: Pick<PassPlanInput, 'renderPath' | 'gpuOcclusion' | 'clearOnly'>,
 ): OpaquePassPlan {
   return {
     lane: input.clearOnly ? 'forward' : input.renderPath,
-    lateOcclusion: input.gpuOcclusion !== false,
+    lateOcclusion: !input.clearOnly && (input.gpuOcclusion ?? input.renderPath === 'deferred'),
   };
 }
 
@@ -202,6 +205,7 @@ export class ViewPassPlanQueue {
       transmission,
       opaque,
       unfoggedOpaque: staged.materials.hasUnfoggedOpaque,
+      ...(staged.materialSceneDepth === true ? { materialSceneDepth: true } : {}),
     });
   }
 

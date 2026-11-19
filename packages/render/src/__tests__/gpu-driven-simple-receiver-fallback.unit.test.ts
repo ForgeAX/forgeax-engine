@@ -31,6 +31,7 @@ it.each([
     prepared: { mesh: { layoutProjection: {} }, batch: { key: { topology: 'triangle-list' } } },
     artifact: {
       material: 'forgeax::default-standard-pbr',
+      program: { entryPoints: [] },
       variantSet: 'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false',
     },
     deformation: 'rigid',

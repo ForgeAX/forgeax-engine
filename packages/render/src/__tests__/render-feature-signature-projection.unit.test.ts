@@ -10,11 +10,11 @@ import {
 } from '../features/plan';
 import { ownRenderFeatureProgramData } from '../features/prepared-gpu-work';
 
-function bindingValuePlan(value: RenderFeatureBindingValue): RenderFeatureWorkPlan {
+function bindingValuePlan(value: unknown): RenderFeatureWorkPlan {
+  const values: Record<string, RenderFeatureBindingValue> = {};
+  Object.defineProperty(values, 'probe', { value, enumerable: true });
   return {
-    resources: [
-      { kind: 'graphics-bindings', name: 'state', program: 'program', values: { probe: value } },
-    ],
+    resources: [{ kind: 'graphics-bindings', name: 'state', program: 'program', values }],
     passes: [],
   };
 }

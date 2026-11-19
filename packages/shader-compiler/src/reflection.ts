@@ -48,12 +48,22 @@ export function parseReflection(json: string): ParsedReflection {
   };
 }
 
+function undeclaredMaterialBinding(
+  actual: ShaderReflectionBoundGlobal,
+  group: number,
+  declared: ReadonlySet<number>,
+  engine: ReadonlySet<number>,
+): boolean {
+  return actual.group === group && !declared.has(actual.binding) && !engine.has(actual.binding);
+}
+
 export function compareDerivedMaterialInterface(
   derived: DerivedMaterialInterface,
   reflection: Pick<ParsedReflection, 'boundGlobals'>,
   ignoredParameters: ReadonlySet<string> = new Set(),
   allowEngineResources = false,
   allowSceneRowPadding = false,
+  engineResourceBindings: ReadonlySet<number> = new Set(),
 ): MaterialResult<void, MaterialErrorFor<'material-derived-interface-mismatch'>> {
   const expectedMembers = expectedMaterialMembers(derived);
   const actualByCoordinate = new Map(
@@ -80,7 +90,9 @@ export function compareDerivedMaterialInterface(
   ]);
   if (!allowEngineResources) {
     for (const actual of reflection.boundGlobals) {
-      if (actual.group === derived.group && !admittedBindings.has(actual.binding)) {
+      if (
+        undeclaredMaterialBinding(actual, derived.group, admittedBindings, engineResourceBindings)
+      ) {
         return interfaceMismatch(derived, actual.name ?? '<undeclared-binding>', undefined, {
           group: actual.group,
           binding: actual.binding,

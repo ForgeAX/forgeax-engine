@@ -192,8 +192,8 @@ test('fixture encoding guard follows the current Browser roster and retains prot
 
 test('IES shares only ordinary assembly and retains independent publication and replay devices', () => {
   const owners = [
-    ['ies-local-lights', 9],
-    ['ies-local-lights-publication', 10],
+    ['ies-local-lights', 5],
+    ['ies-local-lights-publication', 6],
   ];
   let cases = 0;
   let devices = 0;
@@ -221,7 +221,7 @@ test('IES shares only ordinary assembly and retains independent publication and 
     devices += budgets[file].minimumDeviceRequests;
   }
   assert.equal(cases, 4);
-  assert.equal(devices, 19);
+  assert.equal(devices, 11);
 });
 
 test('fixed replay workloads reject repeated native queue submissions', () => {

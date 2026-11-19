@@ -5,6 +5,7 @@ import {
   DataTexture,
   DoubleSide,
   FrontSide,
+  Material,
   MeshBasicMaterial,
   MeshLambertMaterial,
   MeshMatcapMaterial,
@@ -15,11 +16,40 @@ import {
 } from 'three/src/Three.Core.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cookPhysicalMaterials, physicalTextureRecipe } from '../build/materials';
+import { ThreeCompatibilityError } from '../errors';
 import { materialTextures, materialValues, projectMaterial, validateMaterial } from '../material';
 import { prepareMaterialPrograms } from '../material-programs';
 import { projectTexture } from '../texture';
 
 describe('Three material projection', () => {
+  it('returns a precise migration diagnostic for custom onBeforeCompile hooks', () => {
+    const source = new MeshStandardMaterial();
+    expect(validateMaterial(source).unwrap()).toBe(source);
+    const hook = () => {};
+    source.onBeforeCompile = hook;
+    const result = validateMaterial(source);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('custom hook was silently accepted');
+    expect(result.error).toBeInstanceOf(ThreeCompatibilityError);
+    expect(result.error).toMatchObject({
+      code: 'three-migration-required',
+      detail: { subject: 'Material.onBeforeCompile', uuid: source.uuid },
+      hint: expect.stringContaining('WGSL'),
+    });
+    expect(source.onBeforeCompile).toBe(hook);
+    source.onBeforeCompile = Material.prototype.onBeforeCompile;
+    expect(validateMaterial(source).unwrap()).toBe(source);
+  });
+
+  it('detects inherited onBeforeCompile overrides without rejecting ordinary subclasses', () => {
+    class Ordinary extends MeshStandardMaterial {}
+    class Customized extends MeshStandardMaterial {
+      override onBeforeCompile() {}
+    }
+    expect(validateMaterial(new Ordinary()).ok).toBe(true);
+    expect(() => validateMaterial(new Customized()).unwrap()).toThrow('Material.onBeforeCompile');
+  });
+
   it('projects r187 iridescence thickness fields and later direct edits', () => {
     const material = new MeshPhysicalMaterial({ iridescence: 1 });
     material.iridescenceThicknessMinimum = 125;
@@ -242,6 +272,6 @@ describe('Three material projection', () => {
     expect(() => validateMaterial(material).unwrap()).toThrow('three-unsupported');
     material.dispersion = 0;
     material.onBeforeCompile = () => {};
-    expect(validateMaterial(material).ok).toBe(true);
+    expect(() => validateMaterial(material).unwrap()).toThrow('three-migration-required');
   });
 });

@@ -665,6 +665,64 @@ describe('Render submission lifecycle', () => {
     expect(history.pendingReason).toEqual({ code: 'compiled-graph-unavailable' });
   });
 
+  it('qualifies a submitted capture from its actual capture work without a display graph', () => {
+    const { world, owner, history, stage } = recordedView();
+    owner.frameState.compiledFrameGraph = null as never;
+    beginRenderFrame(world, 1);
+    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    Object.assign(attempt, { mode: 'capture', sceneSubmitted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    expect(history.pendingReason).toBeUndefined();
+  });
+
+  it('keeps capture pending when no scene work was submitted', () => {
+    const { world, owner, history, stage } = recordedView();
+    owner.frameState.compiledFrameGraph = null as never;
+    beginRenderFrame(world, 1);
+    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    Object.assign(attempt, { mode: 'capture', sceneSubmitted: false });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('pending');
+    expect(history.pendingReason).toEqual({ code: 'compiled-graph-unavailable' });
+  });
+
+  it.each([
+    { mode: 'capture', submitted: false },
+    { mode: 'capture', submitted: true },
+    { mode: true, submitted: false },
+    { mode: true, submitted: true },
+  ] as const)('replaces prior readiness when $mode pipeline preparation holds submission ($submitted)', ({
+    mode,
+    submitted,
+  }) => {
+    const { world, owner, history, stage } = recordedView();
+    beginRenderFrame(world, 1);
+    stage({ frame: 1, accepted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    beginRenderFrame(world, 2);
+    const attempt = stage({ frame: 2, accepted: false, submitted });
+    Object.assign(attempt, { mode });
+    owner.frameState.pipelinePreparationPending = true;
+    accept(world, false);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('pending');
+    expect(history.pendingReason).toEqual({ code: 'pipeline-preparation' });
+    expect(history.submittedFrames).toBe(1);
+    beginRenderFrame(world, 3);
+    owner.frameState.pipelinePreparationPending = false;
+    stage({ frame: 3, accepted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    expect(history.pendingReason).toBeUndefined();
+    expect(history.submittedFrames).toBe(2);
+  });
+
   it('a submitted scene still pending pipeline preparation does not advance temporal history', () => {
     const { world, view, owner, history, stage, order } = recordedView();
     beginRenderFrame(world, 1);

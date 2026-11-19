@@ -468,6 +468,9 @@ Actual encoded artifacts retain independent byte-integrity SHA-256 digests.
 
 Direct Pack JSON cooks consecutive assets in batches of at most four when their
 native cookers declare `concurrency: 'parallel'`. Undeclared cookers run alone.
+Parallel ScriptablePack outputs refill each completed lane within the existing
+four-cook limit. Results publish in authored order through a bounded window;
+serial cookers remain barriers and failures drain already admitted siblings.
 Every admitted batch drains before validation returns its first authored error.
 GUID checks, fingerprints and reference closure retain the existing finalizer.
 

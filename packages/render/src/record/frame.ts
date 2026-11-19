@@ -28,7 +28,7 @@ import { PlanarReflectionInvalidError } from '../components/planar-reflection';
 import type { ProjectedDecalInvalidError } from '../decals/component';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { directMorphGeometry } from '../device/morph-geometry';
-import { viewFogIsActive } from '../environment/frame';
+import { forwardVertexFogIsActive, viewFogIsActive } from '../environment/frame';
 import {
   ObservationUnavailableError,
   type ObservationUnavailableReason,
@@ -1131,7 +1131,11 @@ function uploadAcceptedStandardLighting(
 function cubeCaptureLayerWrites(
   cubeCaptureWork: readonly import('./typed-frame-graph').CubeCaptureGraphWork[],
 ) {
-  return cubeCaptureWork.map((work) => ({ target: work.target, layer: work.layer }));
+  return cubeCaptureWork.map((work) => ({
+    target: work.target,
+    layer: work.layer,
+    ...(work.mipLevel === undefined ? {} : { mipLevel: work.mipLevel }),
+  }));
 }
 
 function captureSwapTarget(
@@ -1358,8 +1362,12 @@ function prepareFramePipelines(
   // Registering work never records a detached graph or acquires a surface.
   if (frameState.compiledFrameGraph?.graph === preflightGraph) {
     const prepare = () => {
-      for (const prepare of frameState.compiledFrameGraph?.scenePipelinePreparations ?? [])
-        if (prepare.kind === 'utility') prepare(passCtx, materialArtifacts ?? new Map());
+      for (const prepare of frameState.compiledFrameGraph?.scenePipelinePreparations ?? []) {
+        // The typed owner requests its selected material and geometry PSOs
+        // without attachments. Waiting for raster recording serializes hidden
+        // material preparation behind unrelated capture/resource readiness.
+        prepare(passCtx, materialArtifacts ?? new Map());
+      }
     };
     const pending = () =>
       markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
@@ -1455,6 +1463,7 @@ function beginShadowRasterTelemetry(
 function submittedFrameInspection(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
+  camera: CameraSnapshot,
   standard: StandardTopologyInputValue,
   lights: ViewLights,
   transparency: TransparencyInspection,
@@ -1462,7 +1471,27 @@ function submittedFrameInspection(
   materials: MaterialFrame,
   capsuleShadowDirectional: boolean,
 ): NonNullable<RenderFrameState['submittedInspection']> {
+  const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
   return {
+    ...(profile === undefined
+      ? {}
+      : {
+          viewConfiguration: {
+            requested: {
+              renderPath: internals.requestedStandardProfile?.renderPath ?? profile.renderPath,
+              antialias: camera.antialias,
+            },
+            effective: {
+              renderPath: profile.renderPath,
+              antialias: camera.antialias,
+              geometrySampleCount:
+                frameState.compiledFrameGraph?.targets.getColorTargetTexture('scene-color-msaa') ===
+                undefined
+                  ? 1
+                  : 4,
+            },
+          },
+        }),
     standardLighting: inspectStandardLighting(standard, {
       config: frameState.installedPipelineConfig?.ssao,
       graph: frameState.compiledFrameGraph?.graph.inspect(),
@@ -2275,6 +2304,20 @@ function standardClusterTextureExtentForGraph(
   };
 }
 
+function frameUsesVertexHeightFog(prepared: PreparedFrameGraph): boolean {
+  const { frameState, analyticFog, standard, internals } = prepared;
+  return (
+    'identity' in frameState.activePipeline &&
+    frameState.activePipeline.identity === standardPipeline.identity &&
+    forwardVertexFogIsActive(
+      analyticFog,
+      frameState.environmentFrame,
+      standard.prepared.renderPath,
+      recordContext(internals).captureView !== undefined,
+    )
+  );
+}
+
 export function sealFrameGraph(
   prepared: PreparedFrameGraph,
   preflightGraph: CompiledFrameGraph,
@@ -2438,6 +2481,7 @@ export function sealFrameGraph(
                 cpuLaneLodRows(internals.device.caps, request.camera?.() ?? camera)(rows),
               world,
               camera,
+              boundsOf: shadowCasterProjection.worldBoundsOf,
               cameraVisible: gpuDriven?.cameraVisible,
               cameraAdmission: gpuDriven?.cameraAdmission,
               geometry: directGeometry,
@@ -2506,6 +2550,7 @@ export function sealFrameGraph(
   const splitLdrSprite = computeSplitLdrSprite(validatedOrdered, tonemapActive, sceneDispatch);
 
   const meshRows = validatedOrdered.length + shadowValidatedOrdered.length > 0;
+  const vertexHeightFog = frameUsesVertexHeightFog(prepared);
   if (
     frameNeedsViewUploads(
       internals,
@@ -2533,7 +2578,9 @@ export function sealFrameGraph(
         temporalView,
         volume.spotLightProjector?.spotIndex,
         cloudShadowProjection,
-        analyticFog,
+        vertexHeightFog && analyticFog !== undefined
+          ? { ...analyticFog, vertexHeight: true }
+          : analyticFog,
         frameState.environmentFrame?.source.kind === 'atmosphere'
           ? frameState.environmentFrame.source.atmosphere
           : undefined,
@@ -2672,6 +2719,7 @@ export function sealFrameGraph(
     skybox,
     splitLdrSprite,
     viewFog: viewFogIsActive(analyticFog, frameState.environmentFrame),
+    vertexHeightFog,
     viewShadows: forwardViewShadowReception(
       internals,
       lights,
@@ -3180,6 +3228,7 @@ export function settlePreparedViewGraph(
   frameState.submittedInspection = submittedFrameInspection(
     internals,
     frameState,
+    prepared.camera,
     standard,
     lights,
     passPlan.transparent.inspection,

@@ -8,7 +8,6 @@ import {
 type SurfaceFixture = StandardSurfaceProjectionOptions & {
   readonly geometryVariant: 'rigid' | 'skinned' | 'instanced';
   readonly lightingLane: 'direct' | 'clustered';
-  readonly alphaClip: boolean;
 };
 
 const fixture = (geometryVariant: SurfaceFixture['geometryVariant']): SurfaceFixture => ({
@@ -16,7 +15,6 @@ const fixture = (geometryVariant: SurfaceFixture['geometryVariant']): SurfaceFix
   values: { ironColor: [0.42, 0.47, 0.5, 1] },
   geometryVariant,
   lightingLane: geometryVariant === 'instanced' ? 'clustered' : 'direct',
-  alphaClip: geometryVariant === 'skinned',
 });
 
 function tagsFor(pass: ReturnType<typeof projectStandardSurfacePasses>[number]) {
@@ -39,7 +37,6 @@ describe('Standard Surface pass projection', () => {
         SurfaceModule: options.surfaceModule,
         GeometryVariant: geometryVariant,
         LightingLane: options.lightingLane,
-        AlphaClip: options.alphaClip ? 'enabled' : 'disabled',
       });
     }
   });

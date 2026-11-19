@@ -1,5 +1,4 @@
 import { World } from '@forgeax/engine-ecs';
-import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it } from 'vitest';
 import {
   ChildOf,
@@ -34,19 +33,14 @@ describe('scene component roster', () => {
     expect(world.get(entity, Name).unwrap().value).toBe('root');
   });
 
-  it('keeps world transform reads on the renderer projection boundary', () => {
+  it('exposes the propagated world transform through a read span', () => {
     const world = new World();
     const entity = world.spawn({ component: Transform, data: { pos: [3, 0, 0] } }).unwrap();
     expect(propagateTransforms(world).ok).toBe(true);
 
-    const lease = createRenderReadLease(world);
-    const projection = lease.querySpans({
-      components: [{ component: GlobalTransform, fields: ['world'] }],
-    });
-    const worldColumn = projection.spans[0]?.fields.world;
-    expect(worldColumn?.[12]).toBeCloseTo(3);
-    expect(lease.generation).toBeGreaterThan(0);
-    lease.dispose();
+    const query = world.query({ read: [GlobalTransform] }).unwrap();
+    const [span] = query.spans().unwrap();
+    expect(span?.get(GlobalTransform).world[12]).toBeCloseTo(3);
     expect(world.get(entity, GlobalTransform).unwrap().world[12]).toBeCloseTo(3);
   });
 

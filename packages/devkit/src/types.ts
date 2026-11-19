@@ -36,6 +36,8 @@ export interface ProjectFacts {
   readonly frameTimeoutMs?: number | null;
   /** `package.json#forgeax.pointShadows`: build Standard shaders with the point-shadow lane. */
   readonly pointShadows?: true;
+  /** Source templates are the default; compiled explicitly requests precomposed programs. */
+  readonly shaderPublication?: 'compiled' | 'source';
   readonly assetRoots: readonly string[];
   readonly assetLibraries: readonly ProjectAssetLibrary[];
   readonly packageJson: Readonly<Record<string, unknown>>;

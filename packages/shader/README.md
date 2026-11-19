@@ -1,5 +1,136 @@
 # @forgeax/engine-shader
 
+## Source-template publications
+
+`programTemplateInspection()` returns preparation counters without listing programs.
+Pass `{ includePrograms: true }` to inspect the already selected program identifiers
+and canonical definition keys for reproducing a workload. This detached inspection
+never compiles an additional selection; equivalent aliases share one row.
+
+`ShaderRegistry` owns source recipes, selected CPU programs and reflection. A
+`7.0.0` manifest publishes a `shader-template-library/1`: verified shared source
+modules, program inputs and feature axes. Admission initializes the host-supplied
+portable compiler but compiles no program. `materialShaderAxes` and
+`findVariantByKey` select declarations without expanding source. Reading the
+selected source prepares its immutable program once; GPU modules remain device-local.
+
+| Boundary | Contract |
+|:--|:--|
+| `installProgramTemplates(library)` | Atomically verify source references and compiler inputs; no GPU objects |
+| `resolveProgramTemplate(id, selection)` | Exact complete selection, structured failures, shared CPU program/reflection |
+| `installMaterialManifestTemplate(id, key)` | Admit the material schema and selected declaration without composition |
+| `materialArtifactDeclaration(id)` | Inspect ready, byte-backed or native-template state without preparing it |
+| `prepareProgramCompiler` | Explicit host service; the Registry never imports file discovery or Node cookers |
+| `forkForDevice(device)` | Reuse prepared CPU programs and create fresh device modules |
+
+Engine recipes own their parameter schema. A family borrows that schema rather
+than publishing a second interface. Stock Engine identifiers reject a changed
+parameter layout with a canonical receipt. Material values and render state do
+not enter the feature selection. Template identity never masquerades as the
+content digest of final WGSL.
+
+`buildEngineShaderTemplateManifest()` in the shader tool package produces this
+source format without composing a Cartesian product. Existing precompiled
+publication versions remain readable. Their producer and consumption contract
+is described below; source templates do not change those wire versions.
+
+## Native Grade and Final kernels
+
+`forgeax::standard-output-v2` is one source recipe with four finite Grade entries
+(plain, LUT, Bloom, LUT plus Bloom) and two Final entries (with or without FXAA).
+Continuous effect controls use `STANDARD_OUTPUT_V2_PARAMS_LAYOUT`, a 160-byte
+uniform block. Grade keeps scene HDR until grading, then stores display-encoded
+UNORM8; Final filters that encoded image. Pointwise-only output can finish inside
+Grade while retaining the same UNORM8 rounding boundary. Coverage alpha is preserved.
+The legacy 32-byte tone ABI remains independent. These kernels are prepared for
+native graph integration; they do not yet change the default frame graph.
+
+## Fragment coverage specialization
+
+The fixed Engine Standard PBR receipt factory publishes generation 6 with the
+`standard-gbuffer/2` writer contract and a matching receipt identity. Its vertex
+layout remains contract 5. Generic/custom receipt construction grants no GBuffer
+version; its actual producer must certify that output through material cook.
+
+Builtin Unlit color and surface-data programs select alpha-mask and camera
+clipping axes from actual material and view demand. Skinned Standard programs
+use the same camera-clipping axis as rigid Standard. Genuine material-local
+clipping remains independent. Unlit coverage helpers return rejection; fragment
+entry points own alpha `discard`, preserving cutoff and hash comparisons without
+introducing another nested-discard path. Temporal keeps its existing exact
+coverage contract independently of the opaque color selection.
+
+Rigid and skinned Forward entries prepare Surface samples and derivatives once,
+then own view/alpha rejection before direct and environment lighting. Pure
+coverage predicates preserve plane counts, union/intersection and alpha boundaries;
+helper-only passes retain their shared coverage wrapper. Arbitrary authored
+Surface side effects and independent local/LOD coverage remain intact. Native
+acceptance uses the actual explicit binding layout and full cooked PBR program,
+because an automatic-layout shader probe can miss a Metal compilation failure.
+
+Selected-entry native effects travel with the same immutable program as binding
+reads. Registry transfer and device forks retain them. A matching native
+publication may enrich legacy reads that omitted effects; later legacy input
+cannot erase known facts. Contradictory effects for identical source are rejected.
+
+## Forward vertex height fog
+
+The shared fog module separates the height integral from blend composition.
+Stock Standard, skinned Standard, Unlit, Sprite, lit Sprite, MSDF and point/line
+vertices carry scalar transmittance in an existing normal or position varying's
+fourth component. Ordinary height fog has a constant view source, so fragments
+recover its in-scatter from that scalar without another varying location.
+Straight, premultiplied, additive and fogged-transmission composition share one
+owner. Full atmosphere retains its RGB transport.
+
+`View.fogSky.y` selects the native vertex-height route for ordinary Forward
+display views. `View.fogSky.z` carries camera-height density computed once per
+view. Full Atmosphere, Deferred and capture views retain their screen transport.
+Data-only and `fog:false` draws use the existing disabled View slot.
+
+Material programs declare `forwardFog: 'height-vertex/1'`. Native stock producers
+publish it automatically; custom WGSL declares it in `MaterialAsset.program`
+and applies `vertex_height_fog` / `forward_fog` before blending, or explicitly
+opts out with `renderState.fog: false`. Cooked ABI, templates and byte-backed
+registrations preserve the contract. Ordinary Forward rejects an undeclared
+color writer instead of silently omitting fog or restoring a screen pass.
+
+## Direct-light components
+
+The internal `DirectLobes` result carries reflected diffuse, non-SSS specular
+(including diffuse transmission), and the combined radiance in its original
+arithmetic order. Point, spot, additional directional, sun and LTC rectangle
+lights own each evaluation once. Range, cone, cookies, projectors, IES and shadow
+factors apply to the same components before one Cluster traversal accumulates them.
+
+Deferred SSS reads diffuse directly instead of shading a second zero-albedo
+material and subtracting HDR values. Forward and existing vector shader imports
+project combined radiance from the same evaluator; unused component outputs can
+be eliminated without additional feature axes, bindings or material variants.
+This transient shader result is not an asset, serialized program IR or CPU cache.
+Direct and environment multiple scattering retain their existing models.
+
+## Volume integration work
+
+The production integrator retains its 96 midpoint schedule, depth clipping,
+local-light refinement and multi-volume overlap. It stops an interval once depth
+clipping leaves a zero-length segment. Single-volume ray and optical invariants
+are computed once per output ray; overlapping volumes keep their per-owner path.
+Adjacent visibility channels reuse one filtered RGBA sample until they cross a
+packed layer boundary. Paired and individual light producers use explicit control
+flow so WGSL `select` does not evaluate both. These are work-reuse rules, not
+quality settings. The production GPU stage readbacks exercise source templates
+and prepare only the three volume kernels they actually dispatch.
+
+## GTAO angular and spatial kernels
+
+GTAO evaluates the same signed primitive across `-pi`, zero and `pi` as a
+cumulative expression rather than a four-segment array loop. The independent
+GPU quadrature covers both sides of the view plane and all three boundaries.
+The 5x5 spatial filter uses fixed Gaussian coefficients and three squarings for
+its eighth-power normal weight. Sampling positions, budgets, radius, intensity,
+depth rejection and filter footprint remain unchanged.
+
 Publication metadata shares immutable facts within one admission. Lossless JSON
 row children are coalesced before recursive interning; signed zero, sparse arrays,
 optional values and nonstandard prototypes retain the original structural path.
@@ -93,15 +224,16 @@ composed strings are borrowed only when a consumer requests them. Selected sourc
 share one publication-local lazy owner per digest without memoizing expanded bodies.
 Rows retain detached enumerable getter capabilities; source ownership does not retain
 other selected sources through a publication-wide closure. ABI receipts are shared immutable facts.
-Failed validation leaves the registry unchanged. The runtime does not compile
-WGSL. Digest verification runs in bounded batches and never skips unselected
+Failed validation leaves the registry unchanged. Precompiled-publication consumers do not compile WGSL. Source-template
+consumers resolve only selected programs through the host service. Digest verification runs in bounded batches and never skips unselected
 sources. Older compact profiles must be rebuilt by their producer.
 
 Compiler-produced `entryPoints` remain immutable facts of each exact composed
 variant. Material receipts, private publication, manifest admission and device
 forks preserve them without loading unselected source strings. Runtime consumers
 may compare only fields read by the selected entries; a source without these
-facts uses conservative invalidation and never invokes the compiler.
+facts uses conservative invalidation; inspecting precompiled metadata never
+invokes the compiler.
 
 Native hosts supply `ShaderRegistryOptions.readText`; App/Renderer forward it as
 `BundlerOptions.readShaderManifest`. The reader returns complete text or rejects.
@@ -119,17 +251,23 @@ cache untouched; a pattern can span any fragment boundary. Literal
 source rows use the same equality rule.
 
 Registries that fetch byte-identical manifest text from the same URL share one
-verified expansion, held weakly so it lives only while a registry retains it;
-renderer hosts that stay alive together therefore do not each hold a copy of
-every composed WGSL source. The cache keeps a SHA-256 identity of the complete
-text, formed from ordered SHA-256 digests of fixed 256 KiB UTF-16 chunks, instead
-of retaining the wire JSON beside the admitted facts. Chunk hashing uses Web
-Crypto when available and the same fallback as source admission. This bounds
-temporary buffers and preserves native readers' unpaired surrogates. Each registry
-still reads the input; changed text is parsed
-and verified again. GPU
-prewarm may subsequently demand device-reachable variants; the admission memory
-budget does not claim that a complete renderer or GPU uses the same memory.
+verified expansion and its read-only lookup indexes. The registry publishes
+the indexes only after the complete document passes validation. A failed
+replacement leaves the previous admission reusable. The cache holds the
+indexes weakly, and each device still owns its compiled modules. The cache
+keeps a SHA-256 identity of the complete
+text, formed from ordered SHA-256 chunk digests, instead of retaining the wire
+JSON beside the admitted facts. Each 128 Ki-code-unit chunk uses ASCII bytes when
+possible, otherwise exact UTF-16, including unpaired surrogates. The root digest
+binds the encoding of every chunk. One 256 KiB working buffer is reused; widening
+a chunk may copy its bounded ASCII prefix (at most 128 KiB). Character reads avoid
+encoding a complete second text. Chunk hashing uses Web Crypto when available and
+the same fallback as source admission. No full encoded text or additional cache
+is retained. Published source identities and wire bytes are
+unchanged. Each registry still reads the input; changed text is parsed and
+verified again. GPU prewarm may subsequently demand device-reachable variants;
+the admission memory budget does not claim that a complete renderer or GPU uses
+the same memory.
 
 `ShaderRegistry.materialProgram(source)` admits one immutable program description
 per composed source within the registry lifetime. The description owns a source reference,
@@ -165,6 +303,19 @@ preparing it. First `materialArtifact()` / `findMaterialArtifact()` lookup decod
 that source and performs the same source analysis and sampled-texture/schema
 checks as direct registration. A failed source never becomes ready. Direct
 `installMaterialArtifact()` stays eager for authored source.
+
+Cooked entries may declare immutable `variantReferences`: boolean selections
+pointing to existing program keys. The Registry projects these owners into its
+ordinary material manifest without decoding source or retaining another Registry.
+Every referenced program must be present in an atomic adoption or already held by
+the receiver; conflicting schemas, axes or key metadata reject the publication.
+
+Selected sources retain their complete decoded WGSL without runtime fragmentation.
+Byte owners
+weakly share pure CPU sources and descriptions across registries;
+registry adoption and device recovery preserve pending declarations without creating
+GPU objects. This does not defer artifact loading, decompression or digest validation,
+reduce delivered variants, or change the existing GPU pipeline compilation policy.
 
 An owned WGSL snapshot delivered in a compressed frame may retain its exact
 private frame with weak decoded views. A cold synchronous byte read restores the
@@ -242,8 +393,8 @@ view-ray direction at orbital coordinates and supports infinite far planes.
 The 1,280-byte View carries six medium vectors and one control vector after the
 existing fog lanes. Material capability `storage-buffer-atmosphere` selects the
 cooked atmosphere bindings; the receiving device must admit the full texture
-budget. Utility program defines are build-time inputs too. Runtime stays compiler
-free, including cloud transport/resolve and custom Surface material programs.
+budget. Utility program defines are build-time inputs too. Precompiled publications stay compiler-free, including cloud transport/resolve
+and custom Surface material programs.
 
 `view_fog` composes extra height fog over physical AP. Straight alpha uses `TC+L`,
 premultiplied alpha uses `TC+alpha*L`, and additive uses `TC`. Transmission keeps
@@ -279,6 +430,12 @@ row. Standard's flat material-address varying carries coverage in its fourth
 lane, and ShadowCaster carries it beside the material row. Forward, Deferred,
 rigid LOD temporal data, and ShadowCaster call the shared
 `forgeax_view::common::applyLodCoverage` predicate before committing fragments.
+`LOD_DITHER` and `CLIPPING_PLANES` are independent compile-time selections.
+Ordinary non-fading writers carry neither rejection; scene-index cross-fade
+writers select LOD coverage without introducing camera clipping. Visible-surface,
+masked and temporal writers use the same demand rather than forcing both sources.
+Shadow pipeline preparation selects LOD coverage from the same batch capability
+as live recording, independently of the receiving camera's `clipShadows` flag.
 The pair uses the same stable pixel-space noise and opposite sides of one
 threshold. Encoding the pair as `+t` / `-t` keeps that threshold identical
 after float32 upload, including near rounding boundaries. This keeps opaque
@@ -888,6 +1045,14 @@ receiver installs immutable artifacts into its existing device-backed registry.
 
 ## Standard deferred lighting contract
 
+`decodeStandardGBufferReflectance` reconstructs mixed F0 with
+`mix(dielectricF0, baseColor, metallic)` from decoded independent fields.
+Deferred lighting and diffuse GI share this decoder. Material AO remains
+`response.a`; independent dielectric F90 remains `dielectricSpecular.a`.
+No inverse near metallic=1 or F90 inference is required. The current complete
+GBuffer writer still retains its redundant mixed RGB until the versioned layout
+migration; this reader change alone does not reduce attachment allocation.
+
 Standard and custom base Surface programs exchange `SurfaceData` with the
 Engine's rigid or skinned material entry. `standard-gbuffer.wgsl` encodes that
 result once; `standard-deferred-lighting.wgsl` resolves its lighting without
@@ -1156,3 +1321,18 @@ MRT outputs. One reconstruction coordinate tuple feeds both cache population and
 evaluation, including f32 phase boundaries. No workgroup memory, barriers, atomics
 or storage-texture declarations enter the fragment modules. Runtime selects the
 execution lane without interpreting macros or importing a compiler.
+
+## Shared reflection publication
+
+Manifest `6.0.0` separates shader source identity from compiler ABI facts and render
+state. `reflectionBindings` stores each bound global once; reflection rows retain
+ordered `bindingIndices` and reference the ordinary `entryPoints` table through
+an optional `entryPointsIndex`. A missing field remains different from an empty
+read set. This transport does not change `shader-reflection/3`, source digests,
+material identities, variant selection or pipeline descriptors.
+
+Admission snapshots borrowed facts before verification yields, rejects invalid or
+unused references, and shares immutable bindings and entry reads. Owned JSON keeps
+selected reflection validation lazy; a malformed selected ABI still fails before
+use. The runtime can read existing `5.0.0` publications. Build-time shared/prepared
+inputs must match the current producer version and rebuild obsolete publications.

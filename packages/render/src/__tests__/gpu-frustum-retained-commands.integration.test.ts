@@ -9,6 +9,7 @@ import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
 import { IndirectPassBindings } from '../gpu-driven/production-raster-encode';
 import { Materials } from '../materials';
+import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it.each([
@@ -30,10 +31,34 @@ it.each([
       );
     }
   }
+  // These structural RhiNull programs declare their pure coverage entries;
+  // actual shader effects are qualified by the native raster fixtures.
+  const coverageEntries = [
+    'fs_main',
+    'fs_opaque',
+    'fs_forward_screen',
+    'fs_ao_input',
+    'fs_depth_masked',
+  ].map((name) => ({
+    name,
+    stage: 'fragment',
+    bindings: [],
+    effects: {
+      mayDiscard: false,
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    },
+  }));
+  for (const entry of manifest.materialShaders) {
+    if (entry.identifier !== 'forgeax::default-standard-pbr') continue;
+    entry.entryPoints = coverageEntries;
+    for (const variant of entry.variants) variant.entryPoints = coverageEntries;
+  }
   const profiler = createProfiler();
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
-    { profiler },
+    { profiler, standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
     {
       rhi,

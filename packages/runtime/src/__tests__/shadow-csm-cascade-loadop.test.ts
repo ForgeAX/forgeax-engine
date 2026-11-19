@@ -19,7 +19,10 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { NULL_LIMITS } from '../../../rhi-null/src/device';
 import { createRenderer } from '../createRenderer';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
@@ -90,6 +93,9 @@ function makeRenderPassEncoder(): Record<string, unknown> {
     setBindGroup: () => undefined,
     setViewport: () => undefined,
     setScissorRect: () => undefined,
+    setBlendConstant: () => undefined,
+    pushDebugGroup: () => undefined,
+    popDebugGroup: () => undefined,
     draw: () => undefined,
     drawIndexed: () => undefined,
     setStencilReference: () => undefined,
@@ -162,6 +168,7 @@ function buildManifestDataUrl(): string {
   const manifest = {
     entries: [
       ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
       {
@@ -173,6 +180,7 @@ function buildManifestDataUrl(): string {
     ],
     materialShaders: [
       ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       materialShaderStub('forgeax::default-standard-pbr'),
       materialShaderStub('forgeax::default-unlit'),
       materialShaderStub(

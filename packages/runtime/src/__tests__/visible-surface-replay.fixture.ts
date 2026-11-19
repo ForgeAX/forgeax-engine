@@ -622,16 +622,27 @@ export async function verifyVisibleSurfaceReplay(
             shadingRead.bytes.byteOffset,
             shadingRead.bytes.byteLength / 4,
           );
-          const normal = (word: number) => {
+          expect(shadingRead.format).toBe('rg32uint');
+          const visibleGeometryNormal = (word: number) => {
             const x = (word & 4095) * (2 / 4095) - 1;
             const y = ((word >>> 12) & 4095) * (2 / 4095) - 1;
             const z = 1 - Math.abs(x) - Math.abs(y);
-            const length = Math.hypot(x, y, z);
-            return [x / length, y / length, z / length];
+            const fold = Math.max(-z, 0);
+            const nx = x + (x >= 0 ? -fold : fold);
+            const ny = y + (y >= 0 ? -fold : fold);
+            const length = Math.hypot(nx, ny, z);
+            return [nx / length, ny / length, z / length];
+          };
+          const shadingNormal = (word: number) => {
+            const xyz = [0, 10, 20].map((shift) => ((word >>> shift) & 1023) * (2 / 1023) - 1);
+            const length = Math.hypot(...xyz);
+            return xyz.map((value) => value / length);
           };
           for (const pixel of covered) {
-            expect(normal(words[pixel * 4 + 2] ?? 0)[2]).toBeGreaterThan(0.999);
-            const actual = normal(shading[pixel] ?? 0);
+            expect(visibleGeometryNormal(words[pixel * 4 + 2] ?? 0)[2]).toBeGreaterThan(0.999);
+            const packed = shading[pixel * 2] ?? 0;
+            expect(packed & 0x40000000).not.toBe(0);
+            const actual = shadingNormal(packed);
             expect(actual[0]).toBeCloseTo(Math.SQRT1_2, 3);
             expect(actual[2]).toBeCloseTo(Math.SQRT1_2, 3);
           }

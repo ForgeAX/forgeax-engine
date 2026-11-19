@@ -49,7 +49,7 @@ export default defineConfig(async ({ command }) => {
           ]
         : []),
     ],
-    server: { port: 5385, strictPort: true, fs: { allow: [root] } },
+    server: { port: 5384, strictPort: true, fs: { allow: [root] } },
     build: { target: 'esnext' },
   };
 });

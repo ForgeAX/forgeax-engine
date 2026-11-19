@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::reflection_composite
 #import forgeax_view::common::{FullscreenOutput, fullscreen_triangle}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid}
 
 // Raw world radiance keeps its 80-byte accumulation ABI; the reconstructed
 // signal is the shared 16-byte diffuse reconstruction output (w == 1 valid).
@@ -35,6 +35,7 @@ fn shadeReflection(pixel: vec2i, radiance: vec4f) -> ReflectionOutput {
   if (any(textureDimensions(normal) != extent) || any(textureDimensions(response) != extent)) {
     return none;
   }
+  if (!loadStandardGBufferValid(normal, pixel)) { return none; }
   let z = textureLoad(depth, pixel, 0);
   if (!(z > 0.0 && z <= 1.0) || radiance.w != 1.0) { return none; }
   if (!all(radiance.xyz >= vec3f(0)) || !all(radiance.xyz < vec3f(1e30))) { return none; }
@@ -61,7 +62,8 @@ fn shadeReflection(pixel: vec2i, radiance: vec4f) -> ReflectionOutput {
   let index = pixel.y * extent.x + pixel.x;
   let raw = rawRadiance(index);
   let filtered = bitcast<vec4f>(reconstructed[index]);
-  let roughness = loadStandardNormalRoughness(normal, vec2i(pixel)).w;
+  if (!loadStandardGBufferValid(normal, vec2i(pixel))) { return ReflectionOutput(vec4f(0), vec4f(0)); }
+  let roughness = loadStandardGBufferNormalRoughness(normal, vec2i(pixel)).w;
   let rawWeight = 1.0 - smoothstep(0.05, 0.15, roughness);
   var radiance = filtered;
   if (rawWeight >= 1.0 || filtered.w != 1.0) {

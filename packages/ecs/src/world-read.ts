@@ -2,7 +2,7 @@
 //
 // This is the only cross-package World capability needed by relationship and
 // scene projections. It exposes semantic scalar/array reads, never the table,
-// archetype, buffer-pool, or mutation stores behind those reads.
+// archetype, backing allocator, or mutation stores behind those reads.
 
 import type { Component, ScalarFieldType, TypedArrayFor } from './component';
 import type { EntityHandle } from './entity-handle';

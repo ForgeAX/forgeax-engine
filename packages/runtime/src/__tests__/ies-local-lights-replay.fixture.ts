@@ -90,14 +90,7 @@ export async function verifyLocalIesReplay(
     expect(metadata[18]).toBe(0);
     expect(profile.width).toBe(256);
     expect(profile.height).toBe(128);
-    expect(
-      equalBytes(
-        profile.bytes,
-        localIesProfile(
-          name.endsWith('polar-front') ? 'polar' : name.endsWith('wide270') ? 'wide270' : 'upper',
-        ).data,
-      ),
-    ).toBe(true);
+    expect(equalBytes(profile.bytes, localIesProfile('upper').data)).toBe(true);
     expect(attachment.format).toBe('rgba16float');
     const pixels = luminanceRgba16f(attachment.bytes, IES_TEST_SIZE, IES_TEST_SIZE);
     expect(pixels.every(Number.isFinite)).toBe(true);

@@ -47,6 +47,7 @@ export type {
 export {
   createCameraProvider,
   createSceneDepthProvider,
+  createStructuredInputProvider,
   createVfxDataInterfaceRegistry,
   createWaterSurfaceProvider,
 } from './host/data-interface-providers.js';

@@ -103,6 +103,8 @@ export interface GpuDrivenViewGpuEvidence {
   readonly recoveredReadbackFrame: number;
   readonly firstVisible: number;
   readonly recoveredVisible: number;
+  readonly firstFrustumCulled: number;
+  readonly recoveredFrustumCulled: number;
 }
 
 export interface GpuDrivenViewLifecycleEvidence {
@@ -1314,6 +1316,8 @@ export async function runGpuDrivenViewGpuEvidence(
     recoveredReadbackFrame: recoveredLodSelection.surfaceReadback.frameId,
     firstVisible: lodSelection.visible,
     recoveredVisible: recoveredLodSelection.visible,
+    firstFrustumCulled: lodSelection.frustumCulled,
+    recoveredFrustumCulled: recoveredLodSelection.frustumCulled,
   };
   view.dispose();
   sceneAvailability.scene.dispose();

@@ -31,6 +31,7 @@ import { PostProcessParams } from './components/post-process-params';
 import { RectAreaLight } from './components/rect-area-light';
 import { ReflectionProbe } from './components/reflection-probe';
 import { RenderFeatureEnvironment } from './components/render-feature-environment';
+import { RenderTargetEnvironment } from './components/render-target-environment';
 import { SceneInstance } from './components/scene-instance';
 import { ScreenSpaceReflection } from './components/screen-space-reflection';
 import { ShadowParticipation } from './components/shadow-participation';
@@ -84,6 +85,7 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   RectAreaLight,
   ReflectionProbe,
   RenderFeatureEnvironment,
+  RenderTargetEnvironment,
   SceneInstance,
   ScreenSpaceReflection,
   SkyboxBackground,

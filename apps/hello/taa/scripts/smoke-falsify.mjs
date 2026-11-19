@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { runCarrier, runCarrierAsync } from './smoke-carrier.mjs';
+import { hasOutputEncoding } from './smoke-browser-observations.mjs';
 
 const SCRIPT_DIR = import.meta.dirname;
 const APP_ROOT = resolve(SCRIPT_DIR, '..');
@@ -165,7 +166,7 @@ const runStaticDawnPair = () => {
       offRoiEnergy: roiEnergyFor(off),
       roiDelta,
       offEnergy: roiEnergyFor(off) + sampleEnergy(off.pixelSamples.corner),
-      offOutputPass: off.passes.includes('output-transform'),
+      offOutputPass: hasOutputEncoding(off.passes),
       threshold: 0.01,
       verdict: 'pass',
     },
@@ -273,7 +274,7 @@ const browserEvidence = (visualCase, label) => {
 const traceOrder = (trace) => {
   const taa = trace.indexOf('taa-resolve');
   const motion = trace.indexOf('motion-blur');
-  return { taaBeforeMotionBlur: taa >= 0 && motion > taa, outputPresent: trace.includes('output-transform') };
+  return { taaBeforeMotionBlur: taa >= 0 && motion > taa, outputPresent: hasOutputEncoding(trace) };
 };
 
 const expected = {

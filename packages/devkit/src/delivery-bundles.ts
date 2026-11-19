@@ -124,7 +124,7 @@ const sha256 = (bytes: Uint8Array | string) => createHash('sha256').update(bytes
 
 async function compressBundleEntry(bytes: Uint8Array, enabled: boolean) {
   if (!enabled || bytes.byteLength < 256) return undefined;
-  return compressZstd(bytes);
+  return compressZstd(bytes, { level: 19 });
 }
 
 /** Group each Pack's non-stream artifacts into Bundles; shared bytes are stored once. */

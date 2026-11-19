@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { projectDocument } from './project-document.mjs';
 const root = resolve(process.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT ?? resolve(import.meta.dirname, '../../..'));
 const { reduceTestProject } = await import(
  pathToFileURL(resolve(root, 'scripts/test/reduce-test-project.mjs'))
@@ -37,7 +38,7 @@ await mkdir(output, { recursive: true });
 const stages = [];
 const errors = [];
 const catalogFailures = [];
-let browser, client, page;
+let browser, client, page, project;
 let independentStarted = false;
 const cli = async (args, cwd = workspaceRoot) => {
  const result = await runUnifiedCli([...args, '--root', cwd, '--json']);
@@ -280,9 +281,9 @@ try {
  }
 
  const opened = await stage('game-3d-open', () => cli(['view','project','open','--project',gameRoot]));
- await page.goto(opened.projectTarget?.url ?? opened.viewerUrl);
- await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 120_000 });
- assert.ok(new URL(page.url()).searchParams.has('forgeaxWorkspaceTarget'));
+ project=await projectDocument(page,120_000);
+ assert.equal(page.url(),new URL(state.url).href);
+ assert.equal(new URL(project.url()).searchParams.get('forgeaxWorkspaceTarget'),opened.projectTarget.targetId);
  const snapshot = await client.getState();
  assert.equal(snapshot.project.root, await realpath(gameRoot));
  const assets = await client.listAssets(manifest.id); assert.ok(assets.assets.length > 0);
@@ -290,7 +291,7 @@ try {
  const scene = assets.assets.find(asset => asset.kind === 'scene'); assert.ok(scene);
  const sceneOpened=await client.openAsset(scene.guid,{projectId:manifest.id});
  await page.bringToFront();
- await page.evaluate(() => {
+ await project.evaluate(() => {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
   globalThis.__diagnosticReadiness.wait={identity,milliseconds:performance.now(),
    completed:globalThis.__diagnosticCompletedFrames[identity]??0,
@@ -299,28 +300,28 @@ try {
  // Cold pipeline/asset preparation and sustained completed pictures are separate
  // bounded phases. Preserve the full Scene, sixty real ready frames and the
  // original ninety-second steady-picture window.
- const waitForReadyPictures=minimum=>page.waitForFunction(minimum=> {
+ const waitForReadyPictures=minimum=>project.waitForFunction(minimum=> {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
   return !!identity && globalThis.__diagnosticReadyCompletedFrames[identity]>=minimum;
  },minimum,{timeout:90000});
  await waitForReadyPictures(1);
- await page.evaluate(() => {
+ await project.evaluate(() => {
   const identity=globalThis.__forgeaxGameInspection?.renderer()?.execution?.world?.identity;
   globalThis.__diagnosticReadiness.steadyWait={identity,milliseconds:performance.now(),
    ready:globalThis.__diagnosticReadyCompletedFrames[identity]??0};
  });
  await waitForReadyPictures(60);
- const sceneCompletedFrames=await page.evaluate(()=>globalThis.__diagnosticCompletedFrames);
+ const sceneCompletedFrames=await project.evaluate(()=>globalThis.__diagnosticCompletedFrames);
  await writeFile(resolve(output,'scene-target.json'),JSON.stringify({
   target:sceneOpened.preview.target,
   camera:await client.getCamera({targetId:sceneOpened.preview.target.targetId,targetGeneration:sceneOpened.preview.target.generation}),
   completedFrames:sceneCompletedFrames,
-  readyCompletedFrames:await page.evaluate(()=>globalThis.__diagnosticReadyCompletedFrames),
-  readiness:await page.evaluate(()=>globalThis.__diagnosticReadiness),
+  readyCompletedFrames:await project.evaluate(()=>globalThis.__diagnosticReadyCompletedFrames),
+  readiness:await project.evaluate(()=>globalThis.__diagnosticReadiness),
  },(key,value)=>key==='url'?undefined:value,2));
  await page.screenshot({path:resolve(output,'game-3d.png')});
- await assertAuthoredSky(await page.locator('canvas').first().screenshot(),'scene');
- const sceneFacts=()=>page.evaluate(()=>({
+ await assertAuthoredSky(await project.locator('canvas#app').screenshot(),'scene');
+ const sceneFacts=()=>project.evaluate(()=>({
   renderer:globalThis.__forgeaxGameInspection?.renderer(),
   canvas:(()=>{const canvas=document.querySelector('canvas');return canvas?{width:canvas.width,height:canvas.height,clientWidth:canvas.clientWidth,clientHeight:canvas.clientHeight,widthLimit:canvas.getAttribute('data-forgeax-render-width-limit'),heightLimit:canvas.getAttribute('data-forgeax-render-height-limit'),visible:canvas.checkVisibility({visibilityProperty:true})}:null;})(),
  }));
@@ -331,8 +332,9 @@ try {
  // GPU-owning game. Keep the completed Scene receipt and its live target.
  await openDiagnosticPage(page);
  const waitForHiddenScene=async()=>{
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('canvas')).every(canvas=>!canvas.checkVisibility({visibilityProperty:true})),undefined,{timeout:10000});
-  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await page.locator('iframe[data-forgeax-project-document]').waitFor({state:'hidden',timeout:10000});
+  // Hidden documents suspend rAF. Let pending submissions drain on the Shell clock.
+  await page.waitForTimeout(1000);
   const before=await sceneFacts();
   await page.waitForTimeout(1000);
   const after=await sceneFacts();
@@ -352,7 +354,7 @@ try {
  // The UI resize still reallocates the real drawing buffer under the shared cap.
  const resizeSceneBuffer=async scale=>{
   if(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT!=='1')return;
-  await page.locator('canvas').evaluateAll((canvases,{width,height})=>{
+  await project.locator('canvas').evaluateAll((canvases,{width,height})=>{
    for(const canvas of canvases){
     canvas.setAttribute('data-forgeax-render-width-limit',String(width));
     canvas.setAttribute('data-forgeax-render-height-limit',String(height));
@@ -360,7 +362,7 @@ try {
   },{width:testQuality.viewport.width*scale,height:testQuality.viewport.height*scale});
  };
  await resizeSceneBuffer(0.5);
- await page.locator('canvas').first().evaluate(canvas=>{
+ await project.locator('canvas#app').evaluate(canvas=>{
   // Native resize delivery and the workspace command may run after App's rAF.
   // Observe every resulting buffer pair so a later frame cannot hide an overwrite.
   const changes=[];
@@ -373,15 +375,16 @@ try {
  });
  await page.setViewportSize({width:1280,height:800});
  await page.locator('[role="tab"][data-page-id="page-scene"]').click();
- await page.waitForFunction(({frame,width,requireResize})=>{
+ await page.locator('iframe[data-forgeax-project-document]').waitFor({state:'visible'});
+ await project.waitForFunction(({frame,width,requireResize})=>{
   const canvas=document.querySelector('canvas');
   const renderer=globalThis.__forgeaxGameInspection?.renderer();
   return canvas?.checkVisibility({visibilityProperty:true})&&canvas.clientWidth>0&&canvas.clientHeight>0&&renderer?.execution.frame.completed>frame&&(!requireResize||canvas.width<width);
  },{frame:scenePresentation.afterCapture.after.renderer.execution.frame.completed,width:scenePresentation.active.canvas.width,requireResize:process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT==='1'},{timeout:90000});
- const resizedExtent=await page.locator('canvas').first().evaluate(canvas=>({width:Math.round(canvas.clientWidth*devicePixelRatio),height:Math.round(canvas.clientHeight*devicePixelRatio)}));
+ const resizedExtent=await project.locator('canvas#app').evaluate(canvas=>({width:Math.round(canvas.clientWidth*devicePixelRatio),height:Math.round(canvas.clientHeight*devicePixelRatio)}));
  await client.resizePreview({targetId:sceneOpened.preview.target.targetId,targetGeneration:sceneOpened.preview.target.generation,...resizedExtent});
  scenePresentation.resumed=await sceneFacts();
- scenePresentation.bufferChanges=await page.evaluate(()=>{
+ scenePresentation.bufferChanges=await project.evaluate(()=>{
   const observation=globalThis.__diagnosticSceneResize;
   observation.disconnect();
   return {sameCanvas:observation.canvas===document.querySelector('canvas'),changes:observation.changes};
@@ -522,14 +525,31 @@ try {
  client=await connectViewWorkspace({endpoint:restoredBootstrap.endpoint,token:restoredBootstrap.token,clientId:'engine-view-integration-restored'});
  const lost=await client.getState();
  assert.equal(lost.projectPhase,'failed','stopped presentation must retire the headed target');
- assert.equal(lost.projectTarget.targetId,snapshot.projectTarget.targetId,'retirement must identify the original target');
+ assert.equal(lost.projectTarget,null,'a failed project must not advertise an admitted live target');
+ assert.equal(lost.projectStatus.target.targetId,snapshot.projectTarget.targetId,'retirement must identify the original target');
  await writeFile(resolve(output,'retired-workspace.json'),JSON.stringify({
-  projectId:lost.project.id,targetId:lost.projectTarget.targetId,phase:lost.projectPhase,
+  projectId:lost.project.id,targetId:lost.projectStatus.target.targetId,phase:lost.projectPhase,
  },null,2));
- const recovered=await client.reopenProject({root:gameRoot,expectedTargetId:snapshot.projectTarget.targetId,expectedTargetState:'lost'});
- assert.notEqual(recovered.projectTarget.targetId,snapshot.projectTarget.targetId);
- await page.goto(recovered.projectTarget.url);
+ await client.reopenProject({root:gameRoot,expectedProject:{kind:'session',sessionId:lost.projectStatus.sessionId,generation:lost.projectStatus.generation,recovery:'lost'}});
+ const awaitRecovery=async predicate=>{
+  const deadline=Date.now()+90000;
+  do {
+   const state=await client.getState();
+   assert.notEqual(state.projectPhase,'failed',JSON.stringify(state.projectStatus));
+   if(predicate(state))return state;
+   await page.waitForTimeout(50);
+  }while(Date.now()<deadline);
+  assert.fail('the recovered project did not publish the required lifecycle phase');
+ };
+ const recovered=await awaitRecovery(state=>!!state.projectDocument);
+ assert.notEqual(recovered.projectDocument.targetId,snapshot.projectTarget.targetId);
+ await page.goto(restored.url);
  await page.waitForFunction(()=>!!globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:90000});
+ project=await projectDocument(page);
+ const admittedRecovery=await awaitRecovery(state=>state.projectPhase==='running');
+ assert.equal(admittedRecovery.projectPhase,'running');
+ assert.equal(admittedRecovery.projectTarget.targetId,recovered.projectDocument.targetId);
+ assert.equal(new URL(project.url()).searchParams.get('forgeaxWorkspaceTarget'),admittedRecovery.projectTarget.targetId);
  await openDiagnosticPage(page);
  await page.goto('about:blank');
  await client.close(); client=undefined;
@@ -568,8 +588,10 @@ try {
  assert.deepEqual(errors, []);
  await writeFile(resolve(output,'browser.json'), JSON.stringify({ok:true,stages,errors,graphics:await page.evaluate(()=>globalThis.__diagnosticGraphics),project: snapshot.project,assetCount:assets.assets.length,profile:expected.value.summary,liveProfile:liveProfileModel.value.summary,liveCapture:{...liveCapture,byteLength:liveBytes,...liveModel},sceneCompletedFrames,independentAfterStop,independentWhileBackendStopped,independentAfterLifecycle,backendBeforeRestart,backendRestart:true,replayPixels,liveReplayWork,liveReplayPixels,presentationRetirementRecovery:true,noWebGpu:true,nativePluginRemoveRestore:true,viewport:page.viewportSize(),platform:process.platform,architecture:process.arch},null,2));
 } catch (error) {
+ const failureDocument=project&&!project.isDetached()?project:page;
+ const shell=await page?.evaluate(()=>({mounted:!!globalThis.__forgeaxViewReady?.mounted,error:globalThis.__forgeaxViewReady?.error})).catch(()=>null);
  // Freeze qualification facts before the diagnostic capture can add frames.
- const readinessAtFailure=await page?.evaluate(()=>({milliseconds:performance.now(),
+ const readinessAtFailure=await failureDocument?.evaluate(()=>({milliseconds:performance.now(),
   completed:{...globalThis.__diagnosticCompletedFrames},
   ready:{...globalThis.__diagnosticReadyCompletedFrames},
   observation:globalThis.__diagnosticReadiness,
@@ -578,15 +600,15 @@ try {
  if (independentStarted) await cp(resolve(gameRoot,'.forgeax/dev.log'),resolve(output,'independent-dev.log')).catch(()=>{});
  const workspace=await client?.getState().then(state=>({projectPhase:state.projectPhase,projectTarget:state.projectTarget?{targetId:state.projectTarget.targetId,worldId:state.projectTarget.worldId}:null,preview:state.preview?{asset:state.preview.asset,target:{targetId:state.preview.target.targetId,worldId:state.preview.target.worldId,generation:state.preview.target.generation}}:null})).catch(()=>null);
  // Serialize in the browser realm: Playwright Error transport drops custom code/detail.
- const failureState=await page?.evaluate(()=>JSON.parse(JSON.stringify({origin:location.origin,ready:{mounted:!!globalThis.__forgeaxViewReady?.mounted,error:globalThis.__forgeaxViewReady?.error},execution:globalThis.__forgeaxGameInspection?.renderer(),bootstrap:globalThis.__forgeaxRendererBootstrap,frameSubmitted:document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId??null,visibleCompletedFrames:globalThis.__diagnosticCompletedFrames,visibility:document.visibilityState,graphics:globalThis.__diagnosticGraphics,canvases:Array.from(document.querySelectorAll('canvas'),c=>({connected:c.isConnected,width:c.width,height:c.height,visible:c.checkVisibility(),rect:{x:c.getBoundingClientRect().x,y:c.getBoundingClientRect().y,width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height}})),plugins:globalThis.__forgeaxPluginProjection?.current?.inspect()?.live?.map(({id,fiberState,requiredServices,providedServices,error})=>({id,fiberState,requiredServices,providedServices,error})),fatal:document.querySelector('#forgeax-fatal-details')?.textContent,text:document.body.innerText},(_key,value)=>value instanceof Error?{...value,name:value.name,message:value.message,stack:value.stack}:value))).catch(()=>null);
- await writeFile(resolve(output,'browser-failure.json'),JSON.stringify({ok:false,stages,errors,catalogFailures,error:String(error),readinessAtFailure,workspace,independent,state:failureState},null,2));
+ const failureState=await failureDocument?.evaluate(()=>JSON.parse(JSON.stringify({origin:location.origin,ready:{mounted:!!globalThis.__forgeaxViewReady?.mounted,error:globalThis.__forgeaxViewReady?.error},execution:globalThis.__forgeaxGameInspection?.renderer(),bootstrap:globalThis.__forgeaxRendererBootstrap,frameSubmitted:document.querySelector('canvas#app, canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId??null,visibleCompletedFrames:globalThis.__diagnosticCompletedFrames,visibility:document.visibilityState,graphics:globalThis.__diagnosticGraphics,canvases:Array.from(document.querySelectorAll('canvas'),c=>({connected:c.isConnected,width:c.width,height:c.height,visible:c.checkVisibility(),rect:{x:c.getBoundingClientRect().x,y:c.getBoundingClientRect().y,width:c.getBoundingClientRect().width,height:c.getBoundingClientRect().height}})),plugins:globalThis.__forgeaxPluginProjection?.current?.inspect()?.live?.map(({id,fiberState,requiredServices,providedServices,error})=>({id,fiberState,requiredServices,providedServices,error})),fatal:document.querySelector('#forgeax-fatal-details')?.textContent,text:document.body.innerText},(_key,value)=>value instanceof Error?{...value,name:value.name,message:value.message,stack:value.stack}:value))).catch(()=>null);
+ await writeFile(resolve(output,'browser-failure.json'),JSON.stringify({ok:false,stages,errors,catalogFailures,error:String(error),shell,readinessAtFailure,workspace,independent,state:failureState},null,2));
  // Preserve the failed ordinary picture before capture can change graph work.
  await page?.screenshot({path:resolve(output,'failure.png')}).catch(()=>{});
  // Preserve the original failure: capture is diagnosis, never a replacement
  // for the ordinary 60 completed frames gate.
  let failingFrame;
- if((error.name==='TimeoutError' || error.name==='AssertionError') && workspace?.preview) {
-  failingFrame=await page.evaluate(async()=> {
+ if((error.name==='TimeoutError' || error.name==='AssertionError') && workspace?.preview && project&&!project.isDetached()) {
+  failingFrame=await project.evaluate(async()=> {
    if(!globalThis.__forgeax?.captureFrame)return {ok:false,code:'capture-unavailable',reason:'the failing App did not expose RHI capture'};
    const controller=new AbortController();let timer;
    try {
@@ -599,7 +621,7 @@ try {
   try { if(failingFrame.ok) {
    const tape=await open(resolve(output,'failing-frame.rhitape'),'w');const hash=createHash('sha256');let offset=0;
    try {
-    while(true){const chunk=await page.evaluate(()=> {const item=globalThis.__diagnosticFailureTape.next();if(item.done)return null;let binary='';for(const byte of item.value.bytes)binary+=String.fromCharCode(byte);return {offset:item.value.offset,base64:btoa(binary)};});if(!chunk)break;
+    while(true){const chunk=await project.evaluate(()=> {const item=globalThis.__diagnosticFailureTape.next();if(item.done)return null;let binary='';for(const byte of item.value.bytes)binary+=String.fromCharCode(byte);return {offset:item.value.offset,base64:btoa(binary)};});if(!chunk)break;
      assert.equal(chunk.offset,offset);const bytes=Buffer.from(chunk.base64,'base64');await tape.writeFile(bytes);hash.update(bytes);offset+=bytes.length;
     }
     assert.equal(offset,failingFrame.byteLength);assert.equal(`sha256:${hash.digest('hex')}`,failingFrame.digest);

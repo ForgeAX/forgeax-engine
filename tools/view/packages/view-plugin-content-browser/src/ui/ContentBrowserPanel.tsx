@@ -103,11 +103,13 @@ type CatalogProjection = {
 };
 
 function catalogBinding(state: WorkspaceState | null) {
-  if (!state?.project || state.workspaceTargetLost) return null;
+  if (!state?.project || state.workspaceTargetLost
+    || (state.projectPhase && state.projectPhase !== 'running')
+    || state.projectDocumentPresentation === 'observer') return null;
   const target = state.projectTarget;
   // Catalog reads can publish a new Catalog epoch without replacing their owner.
   return JSON.stringify([state.project.id, state.project.root, target?.targetId, target?.generation,
-    target?.sessionId, target?.worldId, state.browserGeneration]);
+    target?.sessionId, target?.worldId, state.browserGeneration, state.projectStatus?.sessionId, state.projectDocumentPresentation]);
 }
 
 type BrowserMenuItem =
@@ -315,11 +317,11 @@ export function ContentBrowserPanel({
   useEffect(() => {
     // The initial project identity can precede its accepted Engine catalog.
     // Read once for the ready realm rather than retaining that partial listing.
-    if (!connected || snapshot.projectPhase === 'starting') return;
+    if (!connected || (snapshot.projectPhase && snapshot.projectPhase !== 'running') || snapshot.projectDocumentPresentation === 'observer') return;
     const controller = new AbortController();
     void refresh(controller.signal);
     return () => controller.abort();
-  }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration]);
+  }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration, snapshot.projectDocumentPresentation]);
   const [layout, setLayout] = useState<CBViewMode>('grid');
   const [thumbnailSize, setThumbnailSize] = useState(80);
   const [detailPanelOpen, setDetailPanelOpen] = useState(true);

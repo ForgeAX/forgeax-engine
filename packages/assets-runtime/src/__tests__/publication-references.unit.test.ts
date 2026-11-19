@@ -95,6 +95,23 @@ describe('publication reference traversal', () => {
     expect(visited.length).toBeLessThanOrEqual(3);
   });
 
+  it('checks shared Pack evidence once per traversal while visiting sibling outputs', () => {
+    const dependency = guid(4);
+    const current = publication(
+      [output(1, [guid(2), guid(3)]), output(2), output(3)],
+      [{ guid: dependency, usage: 'reference', digest }],
+    );
+    const external = publication([output(4)]);
+    const visited: string[] = [];
+    const lookup = (key: string) => {
+      visited.push(key);
+      return { publication: key === dependency ? external : current };
+    };
+
+    expect(validatePublicationReferences(guid(1), { publication: current }, lookup).ok).toBe(true);
+    expect(visited).toEqual([dependency, guid(2), guid(3)]);
+  });
+
   it.each([
     'digest',
     'generation',

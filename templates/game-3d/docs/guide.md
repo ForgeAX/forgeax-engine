@@ -25,7 +25,23 @@ can each be deleted as a whole; then remove their GUID references as the table b
 Feature folders import only `shared/` and their own files, so each one can be deleted on its
 own and the project still typechecks. Features talk through port messages and named services;
 the root packs reference feature plugins by GUID. After deleting, remove the GUID references
-listed above, then run `pnpm exec forgeax project check --json` and `pnpm test`.
+listed above, then run `project check` and the adapted playthrough.
+
+## Remove or hide starter content
+
+| Intent | Edit in `assets/scene.pack.ts` |
+|:--|:--|
+| Remove the demo obstacle | Delete the complete `iron-sphere` entry and its `sphere-reflection` probe. The entry owns the mesh, rigid body and collider together. |
+| Replace the floor | Replace the complete `ground` entry. Add collision to the surfaces the player should stand on. |
+| Hide a mesh and keep collision | Add `Visibility: { state: VisibilityStateValue.hidden }` to the entity's components. Import `Visibility` and `VisibilityStateValue` from `@forgeax/engine/render` and add `Visibility` to `sceneComponents`. Keep the transform scale appropriate for the collider. |
+
+Check that the new scene is visible, the replacement floor supports the player, and the space
+cleared by a removed obstacle is traversable.
+
+When switching to a first-person camera, hide `player-body` with the same
+`Visibility` component and keep the controller on `player`. The skinned
+body follows the joint world transforms. A zero scale on the mesh node does
+not hide the body. Check the first completed frame and a mouse-look turn.
 
 ## Behavior Packs
 
@@ -144,12 +160,9 @@ flowchart LR
 
 Plate roles explicitly select bearing bores and shoulder openings; dimensions do not
 identify a part. Surface ornament, colors and local styling offsets remain authored.
-Lightweight tests change all five primary dimensions independently. The default assembly
-owns one adaptive full-motion interference scan and continuous floor checks. Taller-cab
-and longer-guide regressions check actual geometry, connectivity, running fits and floor
-clearance at rest, mid-fold and stowed, plus final forward kinematics. Template tests admit
-at most two files concurrently, reuse models within a suite and bake a 128-pixel map fixture;
-the normal project build separately validates the delivered 1K textures.
+The default assembly runs an adaptive full-motion interference scan and continuous floor checks.
+If you change the assembly dimensions, inspect geometry, clearance and fit at rest, mid-fold and
+stowed. The normal project build bakes the delivered 1K textures.
 
 The automatic low-poly UV atlas covers the armor and wheels. Repeating mechanical hardware
 uses separate brushed-metal and rubber microfinish tiles, preserving atlas space for visible panels.
@@ -185,13 +198,10 @@ The ordinary Modeling assets job builds the complete set once per parameter set.
 bake receives the host compute cache; the Pack product cache stores the finished assets.
 Explicit material-family IDs keep paint, bare metal, glass and rubber independent of
 their display colors. The normal cook requests only the maps the finish consumes;
-standalone AO and height are requested by the small diagnostic test instead.
+request standalone AO and height only when diagnosing those outputs.
 
-The template tests retain closed surfaces, unit normals, a 24,000-triangle budget, rigid plate
-lengths, bind consistency and the closed opposite-limb walk cycle. Additional tests sample the
-continuous native transformation, check clip targets and rest rotations, and bake actual normals,
-AO, height, material response and emission. `scripts/convoy-playthrough.mjs` exercises real keyboard
-transformation, an intermediate pose, driving, reverse transformation and reload.
+`scripts/convoy-playthrough.mjs` exercises real keyboard transformation, an intermediate pose,
+driving, reverse transformation and reload.
 
 ## Coordinate contract
 

@@ -56,11 +56,15 @@ export function createNodeMaterialProgramCompiler(workerLimit?: number): {
   readonly close: () => Promise<void>;
 } {
   const requested = workerLimit ?? Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
+  const cores = availableParallelism();
+  // The material scheduler passes a bounded share of the process-wide budget.
+  // A share of one keeps compilation inline.
   const concurrency = Math.min(
-    4,
+    6,
+    cores,
     Number.isSafeInteger(requested) && requested > 0
       ? requested
-      : Math.max(1, Math.min(2, availableParallelism() - 1)),
+      : Math.max(1, Math.min(2, cores - 1)),
   );
   const serial = createShaderProgramCompiler();
   const workers = new Map<number, CompilerWorker>();

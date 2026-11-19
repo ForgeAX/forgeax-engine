@@ -1,6 +1,9 @@
 import type { RhiDevice, RhiError, Texture, TextureView } from '@forgeax/engine-rhi';
 import type { RenderError } from '../errors/render';
-import { RenderTargetOperationFailedError } from '../errors/render';
+import {
+  RenderTargetDescriptorInvalidError,
+  RenderTargetOperationFailedError,
+} from '../errors/render';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_COPY_SRC,
@@ -11,6 +14,7 @@ import type { RenderResult } from '../render-contract';
 import {
   RENDER_TARGET_DEPTH_ATTACHMENT,
   type RenderTargetDescriptor,
+  renderTargetAllocationBytes,
   renderTargetLayerCount,
   renderTargetMipCount,
 } from './contracts';
@@ -26,6 +30,8 @@ import {
  * clears it, so its contents never outlive one pass.
  */
 export interface RenderTargetPhysical {
+  readonly mipAttachments?: Map<number, RenderTargetPhysical>;
+  readonly allocation?: { bytes: number; readonly limit: number };
   readonly device: RhiDevice;
   readonly sampledDepth?: true;
   readonly generation: number;
@@ -42,11 +48,24 @@ export interface RenderTargetPhysical {
   readonly resolveLayerViews: readonly TextureView[];
 }
 
+function renderTargetTextureUsage(descriptor: RenderTargetDescriptor): number {
+  // COPY_DST admits framebuffer snapshots into renderer-owned 2D targets.
+  return (
+    GPU_TEXTURE_USAGE_COPY_DST |
+    GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
+    (descriptor.sampled ? GPU_TEXTURE_USAGE_TEXTURE_BINDING : 0) |
+    (descriptor.readback || (descriptor.shape === 'cube' && descriptor.sampled)
+      ? GPU_TEXTURE_USAGE_COPY_SRC
+      : 0)
+  );
+}
+
 export function createRenderTargetPhysical(
   device: RhiDevice,
   descriptor: RenderTargetDescriptor,
   generation: number,
   sampledDepth = false,
+  maxBytes = 256 * 1024 * 1024,
 ): RenderResult<RenderTargetPhysical, RenderError> {
   const allocations: Texture[] = [];
   const failed = (cause: RhiError): RenderResult<never, RenderError> => {
@@ -68,12 +87,7 @@ export function createRenderTargetPhysical(
   const layers = renderTargetLayerCount(descriptor);
   const volume = descriptor.shape === '3d';
   const arrayLayers = volume ? 1 : layers;
-  // COPY_DST admits framebuffer snapshots into renderer-owned 2D targets.
-  const usage =
-    GPU_TEXTURE_USAGE_COPY_DST |
-    GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-    (descriptor.sampled ? GPU_TEXTURE_USAGE_TEXTURE_BINDING : 0) |
-    (descriptor.readback ? GPU_TEXTURE_USAGE_COPY_SRC : 0);
+  const usage = renderTargetTextureUsage(descriptor);
   const created = device.createTexture({
     label: `render-target.${generation}`,
     size: { width: descriptor.width, height: descriptor.height, depthOrArrayLayers: layers },
@@ -186,6 +200,8 @@ export function createRenderTargetPhysical(
     ok: true,
     value: {
       device,
+      mipAttachments: new Map(),
+      allocation: { bytes: renderTargetAllocationBytes(descriptor), limit: maxBytes },
       ...(sampledDepth ? { sampledDepth: true as const } : {}),
       generation,
       descriptor,
@@ -213,6 +229,12 @@ export function destroyRenderTargetPhysical(
   if (physical.resolveTexture !== undefined) textures.add(physical.resolveTexture);
   for (const texture of physical.colorTextures) textures.add(texture);
   textures.add(physical.depthTexture);
+  for (const attachment of physical.mipAttachments?.values() ?? []) {
+    for (const texture of attachment.colorTextures)
+      if (texture !== physical.texture) textures.add(texture);
+    textures.add(attachment.depthTexture);
+  }
+  physical.mipAttachments?.clear();
   const failures = destroyTextures(device, textures);
   return failures.length === 0
     ? { ok: true, value: undefined }
@@ -264,4 +286,123 @@ function destroyTextures(device: RhiDevice, textures: Iterable<Texture>): unknow
     }
   }
   return failures;
+}
+
+/** Borrow attachments for an explicit mip write; allocations retire with the parent. */
+export function renderTargetMipPhysical(
+  physical: RenderTargetPhysical,
+  mip: number,
+): RenderResult<RenderTargetPhysical, RenderError> {
+  const invalid = (
+    field: string,
+    value: unknown,
+    expected: string,
+  ): RenderResult<never, RenderError> => ({
+    ok: false,
+    error: new RenderTargetDescriptorInvalidError({ field, value, expected }),
+  });
+  if (
+    !Number.isSafeInteger(mip) ||
+    mip < 0 ||
+    mip >= renderTargetMipCount(physical.descriptor) ||
+    (mip !== 0 && physical.descriptor.shape === '3d')
+  )
+    return invalid('mipLevel', mip, 'an admitted 2D or cube target mip');
+  if (mip === 0) return { ok: true, value: physical };
+  const previous = physical.mipAttachments?.get(mip);
+  if (previous !== undefined) return { ok: true, value: previous };
+  const descriptor = {
+    ...physical.descriptor,
+    width: Math.max(1, physical.descriptor.width >> mip),
+    height: Math.max(1, physical.descriptor.height >> mip),
+    mipLevels: 1 as const,
+  };
+  const device = physical.device,
+    layers = renderTargetLayerCount(descriptor),
+    msaa = descriptor.sampleCount === 4;
+  const extraBytes =
+    descriptor.width *
+    descriptor.height *
+    (8 * descriptor.sampleCount +
+      (msaa ? layers * 4 * (descriptor.format === 'rgba16float' ? 8 : 4) : 0));
+  if (physical.allocation === undefined || physical.mipAttachments === undefined)
+    return invalid('allocation', undefined, 'a renderer-owned physical target');
+  if (physical.allocation.bytes + extraBytes > physical.allocation.limit)
+    return invalid(
+      'bytes',
+      physical.allocation.bytes + extraBytes,
+      `target allocation <= ${physical.allocation.limit}`,
+    );
+  const allocations: Texture[] = [];
+  const get = <T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T => {
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+  const texture = (
+    label: string,
+    format: RenderTargetDescriptor['format'] | 'depth32float-stencil8',
+  ) => {
+    const value = get(
+      device.createTexture({
+        label,
+        format,
+        size: { width: descriptor.width, height: descriptor.height, depthOrArrayLayers: 1 },
+        mipLevelCount: 1,
+        sampleCount: descriptor.sampleCount,
+        dimension: '2d',
+        usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+      }),
+    );
+    allocations.push(value);
+    return value;
+  };
+  try {
+    const depthTexture = texture(`target-mip-${mip}-depth`, 'depth32float-stencil8');
+    const depthView = get(device.createTextureView(depthTexture, { dimension: '2d' }));
+    const colorTextures: Texture[] = [],
+      layerViews: TextureView[] = [],
+      resolveLayerViews: TextureView[] = [];
+    for (let layer = 0; layer < layers; layer++) {
+      const view = get(
+        device.createTextureView(physical.texture, {
+          dimension: '2d',
+          baseMipLevel: mip,
+          mipLevelCount: 1,
+          baseArrayLayer: layer,
+          arrayLayerCount: 1,
+        }),
+      );
+      resolveLayerViews.push(view);
+      const color = msaa
+        ? texture(`target-mip-${mip}-msaa-${layer}`, descriptor.format)
+        : physical.texture;
+      colorTextures.push(color);
+      layerViews.push(msaa ? get(device.createTextureView(color, { dimension: '2d' })) : view);
+    }
+    const selected: RenderTargetPhysical = {
+      ...physical,
+      descriptor,
+      depthTexture,
+      depthView,
+      colorTextures,
+      layerViews,
+      resolveLayerViews,
+      resolveTexture: physical.texture,
+    };
+    physical.allocation.bytes += extraBytes;
+    physical.mipAttachments.set(mip, selected);
+    return { ok: true, value: selected };
+  } catch (cause) {
+    const failures = destroyTextures(device, allocations);
+    return {
+      ok: false,
+      error: new RenderTargetOperationFailedError({
+        operation: 'create',
+        stage: 'allocation',
+        generation: physical.generation,
+        cause: failures.length === 0 ? cause : new AggregateError([cause, ...failures]),
+        recovery: 'retry',
+      }),
+    };
+  }
 }

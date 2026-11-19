@@ -11,7 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { testAssets } from './helpers/runtime-assets';
 import { type IesLightKind, localIesProfile } from './ies-local-lights.fixture';
@@ -103,7 +103,7 @@ export async function measureLocalIes(renderer: Renderer, kind: IesLightKind, co
         for (const [i, entity] of lights.entries()) {
           const profile =
             variant === 'none'
-              ? toShared<'IesProfileAsset'>(0)
+              ? (0 as AssetHandle<'ies-profile'>)
               : handles[variant === 'shared' ? 0 : i % handles.length];
           if (profile === undefined) throw new Error('missing performance profile');
           world.set(entity, component, { iesProfile: profile }).unwrap();

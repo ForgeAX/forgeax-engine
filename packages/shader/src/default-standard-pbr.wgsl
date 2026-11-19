@@ -17,7 +17,7 @@ enable primitive_index;
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
 #import forgeax_material::displacement::{displaceVertex, displacedNormal, parallaxSourceUvOffset}
 #endif
-#import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping, viewClippingCap}
+#import forgeax_clipping::planes::{applyViewClipping, viewClippingRejected, applyLocalClipping, viewClippingCap}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
 #import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
@@ -41,10 +41,11 @@ enable primitive_index;
 #endif
 #import forgeax_scene_temporal::{sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef TRANSMISSION_AVAILABLE
-#import forgeax_view::fog::{translucent_fog_transmission}
+#import forgeax_view::fog::{forward_fog_transmission}
 #else
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog}
 #endif
+#import forgeax_view::fog::{vertex_height_fog}
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_view::common::{spotModifierSampler, iesProfileTexture, cookieTexture, cookieMatrices}
 #endif
@@ -644,11 +645,8 @@ fn frame32Input(input:Frame32Input)->VsIn {
 
 struct VsOut {
   @builtin(position) @invariant clip : vec4<f32>,
-#if WATER_WAVES_AVAILABLE == true
+  // xyz retains the shading normal; w carries ordinary vertex-fog T.
   @location(1) worldNormal : vec4<f32>,
-#else
-  @location(1) worldNormal : vec3<f32>,
-#endif
 #ifndef STANDARD_UV_INPUT_UNUSED
   // Interpolated UV scalars follow the sets the material reads, as UE sizes
   // TexCoords[(NUM_TEX_COORD_INTERPOLATORS+1)/2] from the translator's used
@@ -667,7 +665,16 @@ struct VsOut {
   // fragment stage (UE BasePassVertexCommon.ush:23-31 carries no clip/NDC
   // interpolant; Common.ush:1530-1542 SvPositionToScreenPosition).
 #ifndef STANDARD_OBJECT_POSITION_UNUSED
+#if WATER_WAVES_AVAILABLE == true
+  // Water keeps its mask in normal.w and packs fog into the object-position lane.
+  @location(7) positionOS : vec4<f32>,
+#else
   @location(7) positionOS : vec3<f32>,
+#endif
+#else
+#if WATER_WAVES_AVAILABLE == true
+  @location(7) vertexFog : f32,
+#endif
 #endif
   // Keep mesh and instance storage vertex-only: the flat object basis
   // serves transmission, triplanar object projection and object-space
@@ -859,6 +866,9 @@ fn vs_main_impl(in : VsIn, localToWorld : mat4x4<f32>, previousLocalToWorld : ma
 #endif
 #endif
 #if WATER_WAVES_AVAILABLE == true
+#ifdef STANDARD_OBJECT_POSITION_UNUSED
+  out.vertexFog = vertex_height_fog(view, world.xyz);
+#endif
   out.waterCoverageAndGridXZ = vec4<f32>(waterCoverageXZ, waterMeshVertex.gridXZ);
   out.surfaceData = vec4<u32>(0u, 0u, 0xffffffffu, waterMeshInstanceIndex);
 #endif
@@ -887,20 +897,24 @@ fn vs_main_impl(in : VsIn, localToWorld : mat4x4<f32>, previousLocalToWorld : ma
 #endif
   out.clip = view.worldViewProj * world;
 #ifndef STANDARD_OBJECT_POSITION_UNUSED
+#if WATER_WAVES_AVAILABLE == true
+  out.positionOS = vec4<f32>(localPosition, vertex_height_fog(view, world.xyz));
+#else
   out.positionOS = localPosition;
+#endif
 #endif
   #if TERRAIN_GEOMETRY_AVAILABLE == true
   let terrainN = terrainNormal(in.pos, terrainHeightTexture, material.terrainSection, material.terrainLod, material.terrainNeighbors);
 #if WATER_WAVES_AVAILABLE == true
   out.worldNormal = vec4<f32>(normalize(transformNormal(localToWorld, terrainN)), waterMask);
 #else
-  out.worldNormal = normalize(transformNormal(localToWorld, terrainN));
+  out.worldNormal = vec4<f32>(normalize(transformNormal(localToWorld, terrainN)), vertex_height_fog(view, world.xyz));
 #endif
 #else
 #if WATER_WAVES_AVAILABLE == true
   out.worldNormal = vec4<f32>(normalize(waterWaveNormal), waterMask);
 #else
-  out.worldNormal = normalize(transformNormal(localToWorld, in.normal));
+  out.worldNormal = vec4<f32>(normalize(transformNormal(localToWorld, in.normal)), vertex_height_fog(view, world.xyz));
 #endif
 #endif
   // Tangent transformed by the combined entity*instance chain as a direction
@@ -1280,9 +1294,6 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
   material = selectedMaterial(standardMaterialRow(in));
 #endif
 
-#if CLIPPING_PLANES == true
-  applyViewClipping(standardPositionWS, false);
-#endif
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   applyLocalClipping(standardPositionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif
@@ -1310,7 +1321,11 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
 #ifdef STANDARD_OBJECT_POSITION_UNUSED
   let positionOS = vec3<f32>(0.0);
 #else
+#if WATER_WAVES_AVAILABLE == true
+  let positionOS = in.positionOS.xyz;
+#else
   let positionOS = in.positionOS;
+#endif
 #endif
   var vertexNormal = in.worldNormal.xyz;
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
@@ -1373,7 +1388,10 @@ fn blendLinearTransparent(
 // discard, so Apple TBDR keeps hidden-surface removal for the whole pass. A
 // runtime branch or override does not count; the compiler still sees the
 // discard and the GPU still disables early HSR for the pipeline.
-fn alphaTestSurface(surface : SurfaceData) {
+fn standardSurfaceRejected(surface : SurfaceData) -> bool {
+#if CLIPPING_PLANES == true
+  if (viewClippingRejected(standardPositionWS, false)) { return true; }
+#endif
 #if ALPHA_MASK == true
   // The stock Surface raises the clip threshold only when the material declares
   // alphaCutoff; without it (hash-only or coverage-only) the cutoff test is
@@ -1381,13 +1399,30 @@ fn alphaTestSurface(surface : SurfaceData) {
 #ifdef STANDARD_STOCK_SURFACE_AVAILABLE
 #ifdef ALPHA_CLIPPING_AVAILABLE
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
-    discard;
+    return true;
   }
 #endif
 #else
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
-    discard;
+    return true;
   }
+#endif
+#endif
+  return false;
+}
+
+fn alphaTestSurface(surface : SurfaceData) {
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(surface)) { discard; }
+#endif
 #endif
 #endif
 }
@@ -1402,10 +1437,9 @@ struct StandardPbrOutput {
 #endif
 };
 
-// Lit Standard surface before translucent fog. fs_main fogs it through the
-// View slot it is bound to; fs_opaque serves draws bound to the unfogged slot
-// (fogHeightOpacity.z == 0), where translucent fog is the identity unless the
-// surface transmits, so the fog chain is compiled out of that entry.
+// Lit Standard surface before its camera-to-surface medium. The admitted
+// Forward route applies interpolated height fog to opaque and blended color;
+// other routes retain the existing per-fragment translucent/capture behavior.
 struct StandardForwardLit {
 #ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
   fragmentOutput : vec4<f32>,
@@ -1436,11 +1470,23 @@ fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> Standar
   return output;
 }
 
+fn standardVertexFog(in : VsOut) -> f32 {
+#if WATER_WAVES_AVAILABLE == true
+#ifdef STANDARD_OBJECT_POSITION_UNUSED
+  return in.vertexFog;
+#else
+  return in.positionOS.w;
+#endif
+#else
+  return in.worldNormal.w;
+#endif
+}
+
 fn standardForwardFogged(in : VsOut, lit : StandardForwardLit) -> StandardPbrOutput {
 #ifdef TRANSMISSION_AVAILABLE
-  return standardForwardOutput(lit, translucent_fog_transmission(view, standardPositionWS, lit.color, lit.alpha, lit.transmittedContribution, lit.transmittedCoefficient));
+  return standardForwardOutput(lit, forward_fog_transmission(view, standardPositionWS, standardVertexFog(in), lit.color, lit.alpha, lit.transmittedContribution, lit.transmittedCoefficient));
 #else
-  return standardForwardOutput(lit, translucent_fog(view, standardPositionWS, lit.color, lit.alpha));
+  return standardForwardOutput(lit, forward_fog(view, standardPositionWS, standardVertexFog(in), lit.color, lit.alpha));
 #endif
 }
 
@@ -1509,11 +1555,7 @@ fn standardCappedInput(in : VsOut, frontFacing : bool) -> VsOut {
   standardFragmentCapped = cap.capped;
   if (cap.capped) {
     standardPositionWS = cap.positionWS;
-#if WATER_WAVES_AVAILABLE == true
     capped.worldNormal = vec4<f32>(cap.normalWS, in.worldNormal.w);
-#else
-    capped.worldNormal = cap.normalWS;
-#endif
   }
   return capped;
 }
@@ -1522,13 +1564,18 @@ fn standardCappedFacing(frontFacing : bool) -> bool {
   return frontFacing || standardFragmentCapped;
 }
 
-// Forward shading shared by the sorted (fs_main, fs_opaque) and OIT (fs_oit*) entries.
-fn standardForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardLit {
-  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
-  return standardForwardLitSurface(capped, standardCappedFacing(frontFacing), screenReceiver);
-}
+// Surface sampling and derivatives complete before the entry-owned coverage gate.
+// Rejected fragments never enter direct or environment lighting.
+struct StandardForwardSurface {
+  surface : SurfaceData,
+  rawGeometry : vec3<f32>,
+  receiverNormal : vec3<f32>,
+  geometricNormal : vec3<f32>,
+  normalSpread : f32,
+  useDirectDfgLut : bool,
+};
 
-fn standardForwardLitSurface(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardLit {
+fn prepareStandardForwardSurface(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardSurface {
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   var rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
@@ -1567,7 +1614,16 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool, screenReceiver : bo
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
-  alphaTestSurface(surface);
+  return StandardForwardSurface(surface, rawGeometry, receiverNormal, geometricNormal, normalSpread, useDirectDfgLut);
+}
+
+fn standardForwardLitSurface(in : VsOut, frontFacing : bool, screenReceiver : bool, prepared : StandardForwardSurface) -> StandardForwardLit {
+  let surface = prepared.surface;
+  let rawGeometry = prepared.rawGeometry;
+  let receiverNormal = prepared.receiverNormal;
+  let geometricNormal = prepared.geometricNormal;
+  let normalSpread = prepared.normalSpread;
+  let useDirectDfgLut = prepared.useDirectDfgLut;
   let alpha = materialOutputAlpha(surface.opacity, standardAlphaMode());
   let albedo = surface.baseColor;
   let metallic = clamp(finiteScalar(surface.metallic, 0.0), 0.0, 1.0);
@@ -2192,29 +2248,55 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool, screenReceiver : bo
   return lit;
 }
 
-fn standardForward(in : VsOut, frontFacing : bool) -> StandardPbrOutput {
-  return standardForwardFogged(in, standardForwardLit(in, frontFacing, false));
-}
-
 @fragment
 fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let waterEntryOutput = standardForward(in, frontFacing);
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let facing = standardCappedFacing(frontFacing);
+  let prepared = prepareStandardForwardSurface(capped, facing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardForwardLitSurface(capped, facing, false, prepared);
+  let waterEntryOutput = standardForwardFogged(in, lit);
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
   return waterEntryOutput;
 }
 
-// Forward entry for draws bound to the unfogged View slot (opaque and other
-// draws whose blend the translucent fog lanes do not compose). Identical
-// output to fs_main there: translucent_fog_transmission returns its input
-// when the slot is 0 and transmission is zero, which it always is without
-// TRANSMISSION_AVAILABLE.
+// The base View is fog-free on the screen-fog route. An admitted Forward
+// vertex-height view applies its interpolated T before color blending instead.
 @fragment
 fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let lit = standardForwardLit(in, frontFacing, false);
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let facing = standardCappedFacing(frontFacing);
+  let prepared = prepareStandardForwardSurface(capped, facing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardForwardLitSurface(capped, facing, false, prepared);
 #ifdef TRANSMISSION_AVAILABLE
   let waterEntryOutput = standardForwardFogged(in, lit);
 #if WATER_WAVES_AVAILABLE == true
@@ -2222,11 +2304,8 @@ fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardP
 #endif
   return waterEntryOutput;
 #else
-  let waterEntryOutput = standardForwardOutput(lit, lit.color);
-#if WATER_WAVES_AVAILABLE == true
-  if (!standardWaterCovered) { discard; }
-#endif
-  return waterEntryOutput;
+  if view.fogSky.y > 0.5 { return standardForwardFogged(in, lit); }
+  return standardForwardOutput(lit, lit.color);
 #endif
 }
 
@@ -2234,7 +2313,23 @@ fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardP
 @fragment
 fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let lit = standardForwardLit(in, frontFacing, true);
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let facing = standardCappedFacing(frontFacing);
+  let prepared = prepareStandardForwardSurface(capped, facing, true);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardForwardLitSurface(capped, facing, true, prepared);
 #ifdef TRANSMISSION_AVAILABLE
   let waterEntryOutput = standardForwardFogged(in, lit);
 #if WATER_WAVES_AVAILABLE == true
@@ -2242,11 +2337,8 @@ fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> S
 #endif
   return waterEntryOutput;
 #else
-  let waterEntryOutput = standardForwardOutput(lit, lit.color);
-#if WATER_WAVES_AVAILABLE == true
-  if (!standardWaterCovered) { discard; }
-#endif
-  return waterEntryOutput;
+  if view.fogSky.y > 0.5 { return standardForwardFogged(in, lit); }
+  return standardForwardOutput(lit, lit.color);
 #endif
 }
 
@@ -2254,24 +2346,56 @@ fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> S
 @fragment
 fn fs_oit(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let color = standardForward(in, frontFacing).color;
-  let waterEntryOutput = oitAccumulate(color.rgb * color.a, color.a, distance(standardPositionWS, view.cameraPos));
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let facing = standardCappedFacing(frontFacing);
+  let prepared = prepareStandardForwardSurface(capped, facing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardForwardLitSurface(capped, facing, false, prepared);
+  let color = standardForwardFogged(in, lit).color;
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
-  return waterEntryOutput;
+  return oitAccumulate(color.rgb * color.a, color.a, distance(standardPositionWS, view.cameraPos));
 }
 
 // Weighted blended OIT accumulation for premultiplied blend states.
 @fragment
 fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let color = standardForward(in, frontFacing).color;
-  let waterEntryOutput = oitAccumulate(color.rgb, color.a, distance(standardPositionWS, view.cameraPos));
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let facing = standardCappedFacing(frontFacing);
+  let prepared = prepareStandardForwardSurface(capped, facing, false);
+#if CLIPPING_PLANES == true
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#else
+#if ALPHA_MASK == true
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#else
+  if (standardSurfaceRejected(prepared.surface)) { discard; }
+#endif
+#endif
+#endif
+  let lit = standardForwardLitSurface(capped, facing, false, prepared);
+  let color = standardForwardFogged(in, lit).color;
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
-  return waterEntryOutput;
+  return oitAccumulate(color.rgb, color.a, distance(standardPositionWS, view.cameraPos));
 }
 
 #ifndef DIRECTIONAL_SHADOW_SIMPLE
@@ -2341,7 +2465,7 @@ fn standardGBuffer(in : VsOut, frontFacing : bool
   let specular = standardSurfaceSpecular(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
   var output = encodeStandardGBuffer(surface.normalWS, receiverNormal,
     specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread),
-    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), mix(specular.rgb, surface.baseColor, clamp(surface.metallic, 0.0, 1.0)), specular,
+    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), specular,
     surface.occlusion, surface.emissive, materialOutputAlpha(surface.opacity, standardAlphaMode()), u32(skylight.diffuseScale.w), probeRow,
     standardReceivesShadows(in), standardLightingChannels(in), subsurface,
     useDirectDfgLut,

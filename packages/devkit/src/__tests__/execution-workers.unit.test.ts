@@ -33,3 +33,11 @@ it.each([
 ])('rejects malformed worker settings %j', (value) => {
   expect(() => executionWorkers(value)).toThrow('workers requires an object');
 });
+
+it('uses authored App worker defaults and applies partial explicit overrides', () => {
+  const authored = { engine: false, render: false, kernels: false } as const;
+  vi.stubEnv('FORGEAX_EXECUTION_WORKERS', undefined);
+  expect(environmentExecutionWorkers(authored)).toEqual(authored);
+  vi.stubEnv('FORGEAX_EXECUTION_WORKERS', '{"render":"auto"}');
+  expect(environmentExecutionWorkers(authored)).toEqual({ ...authored, render: 'auto' });
+});

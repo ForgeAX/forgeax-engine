@@ -15,6 +15,7 @@ import {
   Visibility,
   VisibilityStateValue,
 } from '../../components';
+import { createRenderFeatureTextureSource } from '../../features/feature-texture-source';
 import type { RenderResult } from '../../render-contract';
 import {
   projectAuxiliaryCamerasForView,
@@ -45,6 +46,45 @@ const descriptor: RenderTargetDescriptor = {
   sampled: true,
   readback: false,
 };
+
+it('retains a renderer feature texture on a material across Worker publication', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const identity = { source: 'feature-texture-publication', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity);
+  const receiver = new RenderPublicationReceiver(identity);
+  const source = createRenderFeatureTextureSource('game.water', 'foam');
+  try {
+    const mesh = assets.create(BUILTIN_CUBE).unwrap();
+    const material = assets
+      .create({
+        kind: 'material',
+        passes: [{ name: 'Forward', program: { module: 'forgeax::default-standard-pbr' } }],
+        values: { baseColorTexture: { source } },
+      })
+      .unwrap();
+    world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+    world.update(0).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    const entry = receiver.accept(encodeRenderPublication(packet)).unwrap().frame.renderables.at(0);
+    const bound = entry?.materialOverrides?.[0]?.snapshot.textureSources?.get('baseColorTexture');
+    expect(bound).toEqual(source);
+  } finally {
+    publisher.dispose();
+    receiver.dispose();
+    assets.dispose();
+  }
+});
 
 it('maps auxiliary/cube cameras and distinct material targets into the receiver owner, including resize and retirement', () => {
   const assets = new AssetRegistry({
@@ -125,7 +165,7 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
   expect(initial.frame.cubeCameras).toHaveLength(1);
   const bindings = initial.frame.renderables.map((row) => {
     const source = row.material.snapshot.textureSources?.get('baseColorTexture');
-    if (source === undefined || isCanvasTextureSource(source) || isExternalTextureSource(source))
+    if (source === undefined || source.source !== 'target')
       throw new Error('Missing published target source');
     return resolveRenderTargetMaterialSource(source);
   });
@@ -340,7 +380,7 @@ it('keeps a render-target slot override bound when its row is published again', 
   };
   const overrideTarget = (row: RenderableSnapshot | undefined) => {
     const bound = row?.materialOverrides?.[0]?.snapshot.textureSources?.get('baseColorTexture');
-    if (bound === undefined || isCanvasTextureSource(bound) || isExternalTextureSource(bound))
+    if (bound === undefined || bound.source !== 'target')
       throw new Error('Missing published target source');
     return resolveRenderTargetMaterialSource(bound)?.target;
   };

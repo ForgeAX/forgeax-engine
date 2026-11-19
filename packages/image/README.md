@@ -303,3 +303,25 @@ The offline Basis path resolves sidecar controls once with `basisEncodeParamsFor
 A null result keeps the uncompressed import path; otherwise pass those parameters
 to `encodeTextureToKtx2(pixels, width, height, params)`. Encode results and failures
 report the codec mode (`etc1s`, `uastc-ldr`, or `uastc-hdr`) directly.
+
+## Node image encoding workers
+
+Build hosts can own `createNodeImageEncoderPool` from
+`@forgeax/engine-image/encode-pool` and construct `createImageImporter` from
+`@forgeax/engine-image/image-importer` with
+`{ encode: pool.encode.bind(pool), maxInFlight: pool.maxWorkers }`. The default
+importer retains its serial encoder and declares no source concurrency. The
+worker-backed importer exposes only independent-source preparation; publication
+remains ordered by the existing Meta owner. Dispose the pool with its build
+session. Runtime/browser Image exports never load Node worker dependencies.
+
+Admission reserves one GiB per worker, accounts owned source/mip bytes, and uses
+at most four workers within CPU, quarter-machine/container and half-free-memory
+limits. Caller limits only narrow admission. Each worker is an independent Node process with an explicit one-GiB old-space
+limit and an unchanged Basis WASM encoder. Advanced IPC preserves typed bytes;
+`maxObservedHeapBytes` reports the maximum actual V8 heap ceiling observed in
+completed worker responses. Parent `NODE_OPTIONS` cannot override the child
+command-line heap limit. Full dimensions, options and mip bytes are copied
+before transfer; caller buffers remain usable. Cancellation terminates its active
+worker, queued work releases its input budget, and disposal awaits termination.
+Encoding effort, quality, dimensions and container output remain unchanged.

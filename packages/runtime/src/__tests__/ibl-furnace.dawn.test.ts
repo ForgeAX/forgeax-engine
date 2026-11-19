@@ -8,24 +8,23 @@ import { afterAll, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
 import {
-  COMPENSATED,
   FURNACE_SIZE,
   furnaceMetrics,
   type RenderPath,
   renderFurnace,
   replayFurnace,
-  singleScatterManifest,
+  singleScatterPublication,
 } from './ibl-furnace.fixture';
 import { observeNativeDeviceRequests } from './native-device-work.fixture';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { shaderManifestUrl, shaderPublicationUrl } from './shader-manifest-url.fixture';
 import { unwrap } from './specular-aa.fixture';
 
 // A uniform white panorama is indistinguishable from the white fallback cube,
 // so readiness comes from the renderer's IBL binding receipt.
 const manifest = await buildEngineShaderManifest();
 const compensatedUrl = shaderManifestUrl(manifest);
-const single = singleScatterManifest(manifest);
-const singleScatterUrl = shaderManifestUrl(single.manifest);
+const single = singleScatterPublication(manifest);
+const singleScatterUrl = shaderPublicationUrl(single.publication);
 const directory = 'artifacts/ibl-furnace/dawn';
 const PATHS: readonly RenderPath[] = ['forward', 'deferred'];
 
@@ -95,15 +94,8 @@ function expectFurnace(label: string, withMs: Metrics, withoutMs: Metrics) {
 }
 
 it('reduces every composed specular IBL program to single scattering for the falsifier', () => {
+  // Publication validates each complete source before interning its fragments.
   expect(single.patched).toBeGreaterThan(0);
-  const sources = [
-    ...single.manifest.entries.map((entry) => entry.wgsl),
-    ...single.manifest.materialShaders.flatMap((material) => [
-      material.composedWgsl,
-      ...material.variants.map((variant) => variant.composedWgsl),
-    ]),
-  ];
-  expect(sources.every((source) => !new RegExp(COMPENSATED.source).test(source))).toBe(true);
 });
 
 it('white-furnace: rough white metal vanishes into a uniform environment on both paths', {

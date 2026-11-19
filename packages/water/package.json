@@ -22,6 +22,7 @@
     "dist",
     "src",
     "!src/**/__tests__/**",
+    "examples/lake",
     "README.md",
     "LICENSE"
   ],

@@ -112,9 +112,23 @@ async function fixture() {
   await browser.await();
   const runtime = createEngineWorkspaceRuntime(
     createEngineWorkspaceProvider({
-      openProjectSession: () => ({
+      openProjectSession: ({ generation }) => ({
         project,
         target,
+        status: {
+          phase: 'running',
+          sessionId: target.sessionId,
+          generation,
+          document: {
+            sessionId: target.sessionId,
+            targetId: target.targetId,
+            url: 'http://localhost/',
+            browserGeneration: 1,
+          },
+          target,
+          browserGeneration: 1,
+        },
+        subscribeStatus: () => () => {},
         app,
         assets,
         async runtimePack(input) {

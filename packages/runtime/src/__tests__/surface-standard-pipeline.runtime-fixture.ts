@@ -51,7 +51,10 @@ import {
   type SurfaceOpticalParameters,
 } from '../../../../apps/preview/src/surface-optical-evidence';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
-import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+} from '../../../../scripts/test/ready-render-frame.mjs';
 import quality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import {
   assetGuid,
@@ -1725,19 +1728,37 @@ class SurfaceAppLifecycleDrive {
     this.app = app;
   }
 
-  // Freeze the baseline at submission, before later RAF ticks can use the
-  // remaining receipt credit while this frame's GPU completion is pending.
+  // Freeze the App at its first submission. A cold device may only be preparing
+  // pipelines on that receipt, so finish the same baseline at zero World delta.
   async captureBaseline(): Promise<SurfaceAppLifecycleFrameCapture> {
     const { run, app } = this;
-    run.armLifecycleObservation();
-    run.pauseAfterReceiptCount = 1;
-    app.start().unwrap();
-    await run.waitForReceipts(1);
-    app.pause().unwrap();
-    const baselineReceipt = run.receipts[0];
-    if (baselineReceipt === undefined) {
-      throw new Error('surface-app-lifecycle: baseline receipt unavailable');
-    }
+    const baselineReceipt = await completeReadyFrame(
+      async () => {
+        const index = run.receipts.length;
+        run.armLifecycleObservation();
+        if (index === 0) {
+          run.pauseAfterReceiptCount = 1;
+          app.start().unwrap();
+        } else app.stepFrame(0).unwrap();
+        await run.waitForReceiptCount(index + 1);
+        const receipt = run.receipts[index];
+        if (receipt === undefined)
+          throw new Error('surface-app-lifecycle: baseline receipt unavailable');
+        return receipt;
+      },
+      {
+        timeoutMs: 30_000,
+        async onCompleted(receipt) {
+          if (
+            receipt.presentation !== 'ready' &&
+            receipt.observationDomains?.includes('linear-hdr')
+          ) {
+            const observed = await run.renderer.observe(receipt, { include: ['linear-hdr'] });
+            if (!observed.ok) throw observed.error;
+          }
+        },
+      },
+    );
     return run.captureReceipt('baseline', baselineReceipt);
   }
 

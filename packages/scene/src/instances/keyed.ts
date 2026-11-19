@@ -1,10 +1,6 @@
 import type { Component, World } from '@forgeax/engine-ecs';
 import { classifyEntityField, remapEntityFieldValue } from '@forgeax/engine-ecs/externalization';
-import {
-  bufferFieldByteLength,
-  componentDefinition,
-  componentSchema,
-} from '@forgeax/engine-ecs/internal';
+import { componentDefinition, componentSchema } from '@forgeax/engine-ecs/internal';
 import type {
   ComponentValuesMap,
   LocalEntityId,
@@ -131,28 +127,6 @@ export function fieldRemap(
       });
     }
     if (kind === null) {
-      if (fieldType === 'buffer' || fieldType.startsWith('buffer<')) {
-        const bytes = Array.isArray(value)
-          ? value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)
-            ? new Uint8Array(value)
-            : undefined
-          : ArrayBuffer.isView(value)
-            ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-            : value instanceof ArrayBuffer ||
-                (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
-              ? new Uint8Array(value)
-              : undefined;
-        const size = bufferFieldByteLength(fieldType);
-        if (bytes === undefined || (Number.isFinite(size) && bytes.byteLength !== size))
-          return fail('authored buffer violates its declared schema', {
-            component: componentName,
-            field: fieldName,
-            type: fieldType,
-            ...(entityKey === undefined ? {} : { entity: entityKey }),
-          });
-        out[fieldName] = bytes;
-        continue;
-      }
       const primitive = array?.elementType === 'bool' ? 'u8' : (array?.elementType ?? fieldType);
       if (isPrimitiveScalarFieldType(primitive)) {
         const values = array

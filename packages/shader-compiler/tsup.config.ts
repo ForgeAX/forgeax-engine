@@ -4,7 +4,7 @@ import { baseTsupConfig } from '../../config/tsup.base';
 export default defineConfig({
   ...baseTsupConfig,
   // index main entry re-exports errors / reflection; tsup walks the dependency graph and auto-compiles submodules.
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/program.ts'],
   // top-level await + wasm-bindgen ESM loading (plan-strategy §S-5) requires esnext target.
   target: 'esnext',
   external: [

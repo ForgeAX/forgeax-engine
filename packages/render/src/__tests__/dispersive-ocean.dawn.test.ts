@@ -364,7 +364,7 @@ it('elides only exact empty source work outside diagnostic captures while preser
         {
           captureStages,
           reseedSource: frame.reseedSource,
-          bodyGeneration: frame.bodyGeneration,
+          ...(frame.bodyGeneration === undefined ? {} : { bodyGeneration: frame.bodyGeneration }),
         },
       );
       const computeNames = source.passes
@@ -1057,7 +1057,9 @@ it('dissipates free wave energy by elapsed time while preserving mean displaced 
       gpu.write('test-wake-state', seed);
       for (const dt of intervals) {
         const step = work(
-          intervals.length === 1 ? { ...config, waveDampingPerSecond: undefined } : config,
+          intervals.length === 1
+            ? (({ waveDampingPerSecond: _damping, ...rest }) => rest)(config)
+            : config,
           [],
           false,
           dt,

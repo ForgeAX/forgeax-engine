@@ -71,7 +71,7 @@ describe('variant permutation rules', () => {
     ).toBe(false);
   });
 
-  it('publishes the clip-only CPU-direct visible-surface slice the deferred lane requests', () => {
+  it('publishes CPU-direct visible surfaces without inventing a LOD source', () => {
     const direct = (over: Record<string, boolean>) =>
       isSupportedVariantDefines({
         STORAGE_BUFFER_AVAILABLE: true,
@@ -86,18 +86,18 @@ describe('variant permutation rules', () => {
         LOD_DITHER: false,
         ...over,
       });
-    // No scene-index row means no LOD coverage source: the clip-only state is published.
+    // No scene-index row means no LOD source; clipping remains independent.
     expect(direct({})).toBe(true);
     expect(direct({ LOD_DITHER: true })).toBe(false);
-    expect(direct({ CLIPPING_PLANES: false })).toBe(false);
+    expect(direct({ CLIPPING_PLANES: false })).toBe(true);
     // Only the deferred G-buffer slice, not the whole axis product.
     expect(direct({ STORAGE_BUFFER_AVAILABLE: false })).toBe(false);
     expect(direct({ CLUSTER_FORWARD_AVAILABLE: false })).toBe(false);
     expect(direct({ VERTEX_COLOR_AVAILABLE: true })).toBe(false);
     expect(direct({ TRANSMISSION_AVAILABLE: true })).toBe(false);
     expect(direct({ REFLECTION_FALLBACK_AVAILABLE: true })).toBe(false);
-    // Scene-index visible surfaces still carry LOD coverage and clipping.
-    expect(direct({ GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true })).toBe(false);
+    // Scene-index visible surfaces select LOD and clipping from actual demand.
+    expect(direct({ GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true })).toBe(true);
     expect(direct({ GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true, LOD_DITHER: true })).toBe(true);
   });
 
@@ -134,6 +134,7 @@ describe('variant permutation rules', () => {
     expect(simple({ CLIPPING_PLANES: false, LOD_DITHER: false })).toBe(true);
     expect(simple({ CLIPPING_PLANES: true, LOD_DITHER: false })).toBe(false);
     expect(simple({ CLIPPING_PLANES: true, LOD_DITHER: true })).toBe(false);
+    expect(simple({ CLIPPING_PLANES: false, LOD_DITHER: true })).toBe(false);
     // The general receiver row stays published for every profile.
     expect(
       simple({
@@ -244,4 +245,23 @@ describe('variant permutation rules', () => {
     expect(standardLeanInputMaskCompatible(mask('anisotropyTexture'))).toBe(true);
     expect(standardLeanInputMaskCompatible(STANDARD_OBJECT_SPACE_NORMAL_BIT)).toBe(false);
   });
+});
+
+it('publishes the four independent coverage states for scene-index writers', () => {
+  for (const LOD_DITHER of [false, true])
+    for (const CLIPPING_PLANES of [false, true])
+      for (const output of [
+        {},
+        { VISIBLE_SURFACE_AVAILABLE: true },
+        { COVERAGE_ONLY: true },
+        { ALPHA_MASK: true },
+      ])
+        expect(
+          isSupportedVariantDefines({
+            GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+            LOD_DITHER,
+            CLIPPING_PLANES,
+            ...output,
+          }),
+        ).toBe(true);
 });

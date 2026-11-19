@@ -76,40 +76,46 @@ export function addStandardTransparentPasses(
       depth: input.depth,
       ...(input.resolve === undefined ? {} : { resolve: input.resolve }),
       selector: FORWARD_PASS_SELECTOR,
-      executeIf: (frame, request) => {
-        if (input.template.executeIf?.(frame, request) === false) return false;
-        // An empty load/store pass needlessly opens the full-size color/depth
-        // attachments. The recorder's selector is the membership authority;
-        // never infer GPU emptiness from it or discard an attachment resolve.
-        if (
-          input.template.gpuDriven !== undefined ||
-          input.resolve !== undefined ||
-          input.color.resolveTarget !== undefined
-        )
-          return true;
-        const context = scenePassContext(frame as _InternalRenderPipelineContext, request);
-        const selected = selectMainPassMaterials(
-          context,
-          FORWARD_PASS_SELECTOR,
-          recordMode,
-          input.template.excludeSelector,
-        );
-        if (selected?.size !== 0) return true;
-        prepareMainPassPipelines(
-          context,
-          FORWARD_PASS_SELECTOR,
-          {
-            recordMode,
-            transparentDepthWrite: true,
-            ...(input.template.excludeSelector === undefined
-              ? {}
-              : { excludeSelector: input.template.excludeSelector }),
-          },
-          input.color.sampleCount,
-          [input.color.format as GPUTextureFormat],
-        );
-        return false;
-      },
+      executeIf:
+        input.template.executeIf === undefined &&
+        (input.resolve !== undefined ||
+          input.color.resolveTarget !== undefined ||
+          input.template.gpuDriven !== undefined)
+          ? undefined
+          : (frame, request) => {
+              if (input.template.executeIf?.(frame, request) === false) return false;
+              // An empty load/store pass needlessly opens the full-size color/depth
+              // attachments. The recorder's selector is the membership authority;
+              // never infer GPU emptiness from it or discard an attachment resolve.
+              if (
+                input.template.gpuDriven !== undefined ||
+                input.resolve !== undefined ||
+                input.color.resolveTarget !== undefined
+              )
+                return true;
+              const context = scenePassContext(frame as _InternalRenderPipelineContext, request);
+              const selected = selectMainPassMaterials(
+                context,
+                FORWARD_PASS_SELECTOR,
+                recordMode,
+                input.template.excludeSelector,
+              );
+              if (selected?.size !== 0) return true;
+              prepareMainPassPipelines(
+                context,
+                FORWARD_PASS_SELECTOR,
+                {
+                  recordMode,
+                  transparentDepthWrite: true,
+                  ...(input.template.excludeSelector === undefined
+                    ? {}
+                    : { excludeSelector: input.template.excludeSelector }),
+                },
+                input.color.sampleCount,
+                [input.color.format as GPUTextureFormat],
+              );
+              return false;
+            },
       colorLoadOp: 'load',
       depthLoadOp: 'load',
       recordMode,
@@ -157,6 +163,7 @@ export function addStandardTransparentPasses(
   if (!accumulate.ok) return accumulate;
   const composite = addOitCompositePass(graph, {
     color: input.color,
+    colorStoreOp: input.template.colorStoreOp,
     ...(input.resolve === undefined ? {} : { resolve: input.resolve }),
     accum: accum.value.resolveTarget ?? accum.value.view,
     weight: weight.value.resolveTarget ?? weight.value.view,
@@ -194,6 +201,7 @@ function addOitCompositePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: {
     readonly color: RenderPipelineTarget;
+    readonly colorStoreOp?: GPUStoreOp | 'auto' | undefined;
     readonly resolve?: RenderPipelineTarget;
     readonly accum: GraphTextureView;
     readonly weight: GraphTextureView;
@@ -216,7 +224,7 @@ function addOitCompositePass(
         view: input.color.view,
         ...(input.resolve === undefined ? {} : { resolveTarget: input.resolve.view }),
         loadOp: 'load',
-        storeOp: 'store',
+        storeOp: input.colorStoreOp ?? 'store',
       },
     ],
     encodeDirect: (pass, frame, resources) => {

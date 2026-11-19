@@ -413,6 +413,7 @@ describe('RenderFeature plan authority', () => {
               entryPoint: 'simulate',
               bindings: 'texture-bindings',
               resource: 'indirect',
+              offset: 0,
             },
           ],
         },
@@ -429,7 +430,7 @@ describe('RenderFeature plan authority', () => {
           draws: [
             {
               ...draw,
-              indexData: { resource: 'indices' },
+              indexData: { resource: 'indices', format: 'uint32' },
               draw: { kind: 'draw-indexed-indirect', resource: 'indirect' },
             },
           ],

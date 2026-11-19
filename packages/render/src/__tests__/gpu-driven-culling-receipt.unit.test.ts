@@ -18,7 +18,7 @@ import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain
 // Counter bytes are supplied by this structural test, not claimed as GPU execution.
 const texelWord = 2 + GPU_DRIVEN_LOD_LEVEL_CAPACITY + 2;
 const cameraWord = texelWord + 1 + 2 * GPU_DRIVEN_LOD_LEVEL_CAPACITY + 1;
-const stride = (cameraWord + 1) * 4;
+const stride = (cameraWord + 2) * 4;
 const receipt = (): GpuDrivenCullingProducerReceipt => ({
   frameId: 17,
   deviceGeneration: 3,

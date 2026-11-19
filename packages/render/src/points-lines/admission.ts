@@ -29,6 +29,7 @@ import {
 
 export interface PointsStyleInput {
   readonly size?: number;
+  readonly minPixelSize?: number;
   /** `PointSizeUnitsValue` label; decoded and validated at admission. */
   readonly sizeUnits?: number;
   /** `PointShapeValue` label; decoded and validated at admission. */
@@ -122,6 +123,9 @@ function checkPointsStyle(
   if (!Number.isFinite(size) || size <= 0) {
     return invalidStyle(input, 'Points', 'size', size, 'finite size > 0');
   }
+  const minPixelSize = points.minPixelSize ?? 0;
+  if (!Number.isFinite(minPixelSize) || minPixelSize < 0)
+    return invalidStyle(input, 'Points', 'minPixelSize', minPixelSize, 'finite size >= 0');
   if (sizeUnits === undefined) {
     return invalidStyle(
       input,

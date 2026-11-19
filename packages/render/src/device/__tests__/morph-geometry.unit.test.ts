@@ -74,6 +74,63 @@ async function setup(compute = true) {
 }
 
 describe('MorphGeometry', () => {
+  it('prepares the finite morph route without allocating or deforming a mesh', async () => {
+    const { device, input, mesh, base, morph } = await setup();
+    const store = new MorphGeometry();
+    const pipelines = vi.spyOn(device, 'createComputePipeline');
+    const buffers = vi.spyOn(device, 'createBuffer');
+    expect(store.preparePipeline(input)).toBe(true);
+    expect(store.preparePipeline(input)).toBe(true);
+    expect(pipelines).toHaveBeenCalledTimes(1);
+    expect(buffers).not.toHaveBeenCalled();
+    expect(store.size).toBe(0);
+    expect(store.prepare(device, input.reportError)).toBeUndefined();
+    expect(store.stats).toEqual({
+      weightUploads: 0,
+      sourceUploads: 0,
+      outputsCreated: 0,
+      dispatches: 0,
+      cpuDeformations: 0,
+    });
+    expect(store.resolve(input, 1, base, morph(0.5, 0), () => mesh)).toBeDefined();
+    expect(pipelines).toHaveBeenCalledTimes(1);
+    store.dispose(input.reportError);
+  });
+
+  it('keeps preparation pending until the module is available', async () => {
+    const { device, input } = await setup();
+    const store = new MorphGeometry();
+    const factory = input.factory;
+    if (factory === undefined) throw new Error('Missing test shader factory');
+    const createShaderModule = vi.fn(factory.createShaderModule).mockReturnValueOnce(
+      err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'a compiled morph module',
+          hint: 'retry after compilation',
+        }),
+      ),
+    );
+    const pending = { ...input, factory: { createShaderModule } };
+    const pipelines = vi.spyOn(device, 'createComputePipeline');
+    expect(store.preparePipeline(pending)).toBe(false);
+    expect(pipelines).not.toHaveBeenCalled();
+    expect(store.preparePipeline(pending)).toBe(true);
+    expect(pipelines).toHaveBeenCalledOnce();
+    expect(store.size).toBe(0);
+    store.dispose(input.reportError);
+  });
+
+  it('retains the supported CPU fallback without requesting a compute pipeline', async () => {
+    const { device, input } = await setup(false);
+    const store = new MorphGeometry();
+    const pipelines = vi.spyOn(device, 'createComputePipeline');
+    expect(store.preparePipeline(input)).toBe(true);
+    expect(pipelines).not.toHaveBeenCalled();
+    expect(store.size).toBe(0);
+    store.dispose(input.reportError);
+  });
+
   it('uploads targets once per Mesh, weights once per change, and retains stable handles', async () => {
     const { device, input, mesh, base, morph } = await setup();
     const store = new MorphGeometry();

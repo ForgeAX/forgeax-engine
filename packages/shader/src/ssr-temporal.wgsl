@@ -1,5 +1,5 @@
 #define_import_path forgeax_ssr::temporal
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardSceneSurfaceValid, loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardNormalRoughness}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
 
 // SSR temporal resolve keeps history as a renderer-owned consumer resource.
@@ -109,7 +109,7 @@ struct SsrHistorySample {
 fn ssrHistoryTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, footprintWeight : f32) -> SsrHistorySample {
   // The nearest miss state always has positive bilinear weight. Zero-weight
   // taps contribute neither history nor source state, so do not fetch them.
-  if (footprintWeight <= 0.0) { return SsrHistorySample(vec4<f32>(0.0), false, 0.0); }
+  if (footprintWeight <= 0.0 || !loadStandardSceneSurfaceValid(currentNormal, pixel)) { return SsrHistorySample(vec4<f32>(0.0), false, 0.0); }
   let history = textureLoad(previousHistory, pixel, 0);
   let surface = textureLoad(previousSurface, pixel, 0);
   let packedNormalSource = u32(round(surface.g * 255.0));
@@ -157,6 +157,7 @@ fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, foo
   let fullSize = textureDimensions(currentDepth, 0);
   let traceSize = textureDimensions(currentTrace, 0);
   let receiver = min(vec2<i32>((vec2<f32>(pixel) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), vec2<i32>(fullSize) - vec2<i32>(1));
+  if (!loadStandardSceneSurfaceValid(currentNormal, receiver)) { return SsrCurrentSample(vec4<f32>(0.0), 0.0); }
   let sourceNormal = loadStandardNormalRoughness(currentNormal, receiver).xyz;
   let sourceDepth = viewDistance(textureLoad(currentDepth, receiver, 0));
   if (depthReject(expectedDepth, sourceDepth) || normalReject(normal, sourceNormal)) {
@@ -308,7 +309,7 @@ fn resolveSsrAt(uv : vec2<f32>, fullSize : vec2<u32>) -> SsrTemporalSample {
   let normal = loadStandardNormalRoughness(currentNormal, vec2<i32>(fullPixel)).xyz;
   // Empty depth cannot admit a current ray or compatible receiver history.
   // Retire it without reconstructing world position or fetching eight taps.
-  if (currentDepthSample <= 0.0) {
+  if (currentDepthSample <= 0.0 || !loadStandardSceneSurfaceValid(currentNormal, fullPixel)) {
     return SsrTemporalSample(vec4<f32>(0.0), normal, 0.0, 0.0, true, false);
   }
   let sourceUv = (vec2<f32>(fullPixel) + vec2<f32>(0.5)) / vec2<f32>(fullSize);

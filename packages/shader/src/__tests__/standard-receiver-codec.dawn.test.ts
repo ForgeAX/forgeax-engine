@@ -48,7 +48,7 @@ it('receiver X12/Y11 codec preserves all terrain layers, DFG modes and receiver 
     device.queue.writeBuffer(inputs, 0, sourceNormals);
     const code = await composeShader(
       `
-#import forgeax_pbr::gbuffer::{encodeStandardReceiverNormal, decodeStandardReceiverNormal, encodeStandardNormalRoughness, STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT}
+#import forgeax_pbr::gbuffer::{encodeStandardReceiverNormal, decodeStandardReceiverNormal, encodeStandardGBufferNormal, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT}
 #import forgeax_pbr::gbuffer_output::{encodeStandardGBuffer}
 struct Result { normal: vec4f, failures: vec4u }
 @group(0) @binding(0) var<storage, read> normals: array<vec4f>;
@@ -64,16 +64,16 @@ struct Result { normal: vec4f, failures: vec4u }
       // any of the receiver's independent 32-bit channel mask to DFG.
       let channels = select(0xffffffffu ^ (1u << (layer % 32u)), 1u << (layer % 32u), mode == 1u);
       var g = encodeStandardGBuffer(n, n, 0.625, vec3f(0.5), 0.0,
-        vec3f(0.04), vec4f(0.04, 0.04, 0.04, 1.0), 1.0, vec3f(0), 1.0, 255u, 0x7fffffu,
+        vec4f(0.04, 0.04, 0.04, 1.0), 1.0, vec3f(0), 1.0, 255u, 0x7fffffu,
         true, channels, vec4f(0), mode != 0u);
       // The terrain producer owns the existing complete upper byte.
       g.receiver_geometry.x = (g.receiver_geometry.x & 0x00ffffffu) | (layer << 24u);
       let packed = g.receiver_geometry.x;
       failures.x += select(0u, 1u, (packed >> 24u) != layer);
-      failures.y += select(0u, 1u, ((packed & STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT) != 0u) != (mode != 0u));
+      failures.y += select(0u, 1u, ((g.normal_roughness.x & STANDARD_GBUFFER_V2_DIRECT_DFG_BIT) != 0u) != (mode != 0u));
       failures.z += select(0u, 1u, g.receiver_geometry.y != channels || (packed & 0x7fffffu) != pureNormal);
       failures.w += select(0u, 1u, any(decodeStandardReceiverNormal(packed) != decodeStandardReceiverNormal(pureNormal))
-        || g.normal_roughness != encodeStandardNormalRoughness(n, 0.625)
+        || any(g.normal_roughness != encodeStandardGBufferNormal(n, 0.625, 1.0, mode != 0u))
         || g.lighting_context.x != 0xff7fffffu);
     }
   }

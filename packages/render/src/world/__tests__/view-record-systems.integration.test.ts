@@ -20,7 +20,11 @@ import { RenderViewInput } from '../render-views';
 import { RenderPrepare, RenderQueue, RenderRecord, renderSubmission } from '../render-world';
 import { ViewRecordAttempt, type ViewRecordAttemptState } from '../view-record-systems';
 
-async function fixture(published = false, withUi = false, features: readonly RenderFeature[] = []) {
+async function fixture(
+  published = false,
+  withUi = false,
+  features: readonly RenderFeature<unknown>[] = [],
+) {
   const identity = { source: 'view-record-systems', epoch: 1 };
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
@@ -141,14 +145,14 @@ it('submits a pending receipt for Feature preparation and resumes without acknow
       reason: 'asset-dependency-pending',
     });
     expect((await result.value.completed).ok).toBe(true);
-    expect(f.device.framePassNames).not.toContain('main');
+    expect(f.device.framePassNames.flatMap((name) => name.split(' + '))).not.toContain('main');
     expect(submitted).not.toHaveBeenCalled();
     expect(aborted).toHaveBeenCalledTimes(1);
     pending = false;
     const ready = await drawReadyFrame(f.renderer, f.nextInput());
     expect(ready.presentation).toBe('ready');
     expect(submitted).toHaveBeenCalled();
-    expect(f.device.framePassNames).toContain('main');
+    expect(f.device.framePassNames.flatMap((name) => name.split(' + '))).toContain('main');
   } finally {
     await f.dispose();
   }
@@ -311,14 +315,18 @@ it.each([
     if (!first.ok) throw first.error;
     expect((await first.value.completed).ok).toBe(true);
     expect(first.value.presentation).toBe('pending');
-    expect(f.device.framePassNames.slice(initial)).toContain('main');
+    expect(f.device.framePassNames.slice(initial).flatMap((name) => name.split(' + '))).toContain(
+      'main',
+    );
     const before = f.device.framePassNames.length;
     const submitted = f.renderer.draw(f.nextInput());
     if (!submitted.ok) throw submitted.error;
     const barrier = submitted.value;
     expect((await barrier.completed).ok).toBe(true);
     expect(barrier.presentation).toBe('pending');
-    expect(f.device.framePassNames.slice(before)).not.toContain('main');
+    expect(
+      f.device.framePassNames.slice(before).flatMap((name) => name.split(' + ')),
+    ).not.toContain('main');
     if (withUi) expect(f.paint).toHaveBeenCalled();
     pending.mockRestore();
     const input = f.nextInput();
@@ -326,7 +334,9 @@ it.each([
       throw new Error('Expected attached scene input');
     const ready = await drawReadyFrame(f.renderer, input);
     expect(ready.presentation).toBe('ready');
-    expect(f.device.framePassNames.slice(before)).toContain('main');
+    expect(f.device.framePassNames.slice(before).flatMap((name) => name.split(' + '))).toContain(
+      'main',
+    );
     expect(renderSubmission(f.renderWorld).accepted).toBe(true);
   } finally {
     pending.mockRestore();

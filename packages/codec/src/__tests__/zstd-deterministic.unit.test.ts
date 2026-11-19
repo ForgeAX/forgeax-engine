@@ -47,3 +47,20 @@ describe('zstd encode deterministic (w3)', () => {
     expect(r.value.length).toBeLessThan(input.length);
   });
 });
+
+it('preserves the default level and supports validated delivery compression', async () => {
+  const input = makeF32Data(4096);
+  const legacy = await compressZstd(input);
+  const explicit = await compressZstd(input, { level: 3 });
+  expect(explicit).toEqual(legacy);
+  const delivery = await compressZstd(input, { level: 19 });
+  expect(delivery.ok).toBe(true);
+  if (!delivery.ok) throw delivery.error;
+  if (legacy.ok) expect(delivery.value).not.toEqual(legacy.value);
+  const { decompressZstd } = await import('@forgeax/engine-codec');
+  const decoded = await decompressZstd(delivery.value);
+  expect(decoded.ok).toBe(true);
+  if (decoded.ok) expect(decoded.value).toEqual(input);
+  for (const level of [0, 20, NaN, 1.5])
+    expect((await compressZstd(input, { level })).ok).toBe(false);
+});

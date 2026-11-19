@@ -149,7 +149,7 @@ it.each([
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     store: { materialResourceEpoch: 0 },
     world,
-    resourceScopes: [] as never[],
+    resourceScopes: world,
     camera: { entityKey: 1, position: [0, 0, 0] },
     materialFrame: new MaterialDispatch().materials().with(material).with(borrowedMaterial),
     materialSlots: [material.snapshot, borrowedMaterial.snapshot],
@@ -181,8 +181,11 @@ it.each([
     },
     validatedOrdered: entries,
     bindGroupCounts: counts,
-  } as unknown as _InternalRenderPipelineContext;
-  Object.assign(c, { resourceScopes: [c.world] });
+  } as unknown as _InternalRenderPipelineContext & {
+    resourceScopes: NonNullable<_InternalRenderPipelineContext['resourceScopes']>;
+    materialFrame: NonNullable<_InternalRenderPipelineContext['materialFrame']>;
+  };
+  Object.assign(c, { resourceScopes: c.world });
   Object.assign(c, { shadowPipelineSelectionOwner: createShadowPipelineSelectionOwner(c) });
   expect(c.shadowPipelineSelectionOwner).toBeDefined();
   const setBindGroup = vi.fn();

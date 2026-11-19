@@ -99,6 +99,13 @@ const MAX_PACKED_SIZE = 64 * 1024;
 /** Program v3 allocates reflected external resources after managed event bindings (8/9). */
 const DATA_INTERFACE_DEFINITIONS_V5: readonly VfxDataInterfaceRequirement[] = [
   {
+    token: 'vfx:structured-input',
+    kind: 'structured-input',
+    binding: 26,
+    bindingType: 'read-only-storage',
+    lifetime: 'generation',
+  },
+  {
     token: 'vfx:gpu-events',
     kind: 'gpu-events',
     binding: 25,

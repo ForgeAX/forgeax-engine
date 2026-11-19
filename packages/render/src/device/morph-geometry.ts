@@ -142,6 +142,14 @@ export class MorphGeometry {
     return this.entries.size;
   }
 
+  /** Request the finite utility program without allocating or deforming any mesh. */
+  preparePipeline(input: MorphGeometryInput): boolean {
+    if (this.device !== input.device) this.reset(input.device);
+    this.computePipeline(input);
+    // null is the existing permanent CPU fallback; undefined is a pending module.
+    return this.pipeline !== undefined;
+  }
+
   /**
    * Stable handles for one morphed entity, or undefined when the Mesh cannot be
    * morphed (the caller then draws the shared stream, as for zero weights).
@@ -538,6 +546,18 @@ export function resolveMorphGeometry(
   morph: MorphSnapshot,
   mesh: () => MeshAsset | undefined,
 ): MeshGpuHandles | undefined {
+  return internals.gpuStore.morphGeometry.resolve(morphInput(internals), key, base, morph, mesh);
+}
+
+/** Prepare the renderer-owned utility without creating per-entity geometry. */
+export function prepareMorphGeometryPipeline(
+  internals: Omit<MorphGeometryOwner, 'gpuStore'>,
+  geometry: MorphGeometry,
+): boolean {
+  return geometry.preparePipeline(morphInput(internals));
+}
+
+function morphInput(internals: Omit<MorphGeometryOwner, 'gpuStore'>): MorphGeometryInput {
   let input = morphInputs.get(internals);
   if (
     input === undefined ||
@@ -552,7 +572,7 @@ export function resolveMorphGeometry(
     };
     morphInputs.set(internals, input);
   }
-  return internals.gpuStore.morphGeometry.resolve(input, key, base, morph, mesh);
+  return input;
 }
 
 const morphInputs = new WeakMap<object, MorphGeometryInput>();

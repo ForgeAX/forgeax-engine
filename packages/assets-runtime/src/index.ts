@@ -123,6 +123,7 @@ export {
   type MipmapShaderModuleFactory,
   type MipmapTextureDescriptor,
   mipmapCacheSize,
+  mipmapTemporaryByteLength,
   prepareMipmaps,
 } from './mipmap-generator.js';
 // ─── Register-time payload validation ───────────────────────────────────────

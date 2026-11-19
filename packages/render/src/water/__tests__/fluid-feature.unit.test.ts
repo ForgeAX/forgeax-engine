@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
-import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { type PhysicsBodyDynamics, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -12,6 +12,7 @@ import {
   WATER_BUOYANCY_RESOURCE,
   WATER_SYSTEM_RESOURCE,
   WATER_VISUAL_CONTACTS_RESOURCE,
+  type WaterBuoyancyStep,
   type WaterDependencySnapshot,
   type WaterFluidRecipe,
   WaterSystem,
@@ -842,11 +843,80 @@ it('uses explicit hull contact probes ahead of pontoon foam proxies and retains 
       relativeVelocityMps: [2, 0, 0] as const,
     },
   };
+  const unexpectedPhysics = () => {
+    throw new Error('This contact-foam fixture only reads completed body dynamics');
+  };
+  const dynamics: PhysicsBodyDynamics = {
+    entity: root.rootEntity,
+    generation: root.rootGeneration,
+    completedStep: 5,
+    nextFixedStep: 6,
+    massKg: 1,
+    positionM: [0, 0, 0],
+    rotation: [0, 0, 0, 1],
+    centerOfMassM: [0, 0, 0],
+    localCenterOfMassM: [0, 0, 0],
+    linearVelocityMps: [2, 0, 0],
+    angularVelocityRadps: [0, 0, 0],
+    principalInertiaKgM2: [1, 1, 1],
+    principalInertiaLocalRotation: [0, 0, 0, 1],
+  };
   f.world.insertResource(PhysicsWorldResource, {
-    getCommittedBodyDynamics: () => ({ ok: true, value: { generation: 3, completedStep: 5 } }),
+    dispose() {},
+    setGravity: unexpectedPhysics,
+    getGravity: unexpectedPhysics,
+    raycast: unexpectedPhysics,
+    teleport: unexpectedPhysics,
+    synchronizeCharacter: unexpectedPhysics,
+    moveAndSlide: unexpectedPhysics,
+    step: unexpectedPhysics,
+    getBodyCount: unexpectedPhysics,
+    hasBody: unexpectedPhysics,
+    getCommittedBodyDynamics: () => ok(dynamics),
   });
   f.world.insertResource(WATER_BUOYANCY_RESOURCE, {
-    steps: [{ result: { ok: true, value: root } }],
+    asyncEnabled: false,
+    async: {
+      execution: 'disabled',
+      submitted: 0,
+      completed: 0,
+      cancelled: 0,
+      rejected: 0,
+      pending: 0,
+      selections: [],
+    },
+    forceEvents: [],
+    steps: [
+      {
+        entity: root.rootEntity,
+        result: ok<WaterBuoyancyStep>({
+          ...root,
+          physicsStep: 5,
+          dynamics,
+          overlaps: { ...root, completedStep: 5, current: [], entered: [], exited: [], stale: [] },
+          coefficientSolve: {
+            sourceSuccess: true,
+            sourceStatus: 'computed',
+            centerOfMassM: [0, 0, 0],
+            centerPontoonsOnCOM: false,
+            branch: 'inactive',
+            points: [],
+            coefficients: [],
+            diagnostics: [],
+          },
+          coefficientCache: { enabledMask: 0, hit: false },
+          pontoons: [],
+          forceEvents: [],
+          splashWakeEvents: [wake],
+          riverAccelerationMps2: [0, 0, 0],
+          dragAccelerationMps2: [0, 0, 0],
+          angularAccelerationRadps2: [0, 0, 0],
+          angularDragTorqueNm: [0, 0, 0],
+          bodyForceResult: ok(undefined),
+          bodyTorqueResult: ok(undefined),
+        }),
+      },
+    ],
     splashWakeEvents: [wake],
   });
   const probe = { ...root, sourceIdentity: 'native-hull-contact' };

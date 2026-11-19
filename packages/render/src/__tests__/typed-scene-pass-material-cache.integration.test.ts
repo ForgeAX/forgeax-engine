@@ -101,6 +101,61 @@ describe('loaded temporal supplement eligibility', () => {
   });
 
   it.each([
+    1, 4,
+  ] as const)('uses the depth attachment sample count for colorless direct recording (%i)', async (sampleCount) => {
+    const { addTypedScenePass } = await import('../typed-render-graph-primitives');
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    const depth = createRenderPipelineTarget(graph, 'primary-depth', {
+      format: 'depth32float',
+      size: { width: 1, height: 1 },
+      sampleCount,
+    }).unwrap();
+    addTypedScenePass(graph, {
+      name: 'colorless-primary',
+      colorTargets: [],
+      depth,
+      fragmentEntryPoint: 'fs_depth_masked',
+      selector: FORWARD_PASS_SELECTOR,
+    }).unwrap();
+    const frame = frameFor(device, []);
+    const inheritedMsaa = sampleCount !== 4;
+    const rows = { validatedOrdered: [], dispatch: [], materialSlots: [], materialSlotIndices: [] };
+    Object.assign(frame, {
+      msaaActive: inheritedMsaa,
+      scenePassWork: new Map([
+        [
+          scenePassRequests(graph)[0],
+          {
+            ...rows,
+            foldDispatchPlan: null,
+            mainPassMaterialSelection: createMainPassMaterialSelectionOwner(rows),
+          },
+        ],
+      ]),
+    });
+    buildPerFrameBindGroups.mockReturnValue({
+      viewBindGroup: null,
+      meshBindGroup: null,
+      hdrpClusterBindGroup: null,
+      hdrpClusterMembershipBindGroup: null,
+    });
+    encodeMainPass.mockReset();
+    const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    try {
+      compiled.execute(frame).unwrap();
+      expect(encodeMainPass).toHaveBeenCalledTimes(1);
+      const context = encodeMainPass.mock.calls[0]?.[0];
+      expect(context?.msaaActive).toBe(sampleCount === 4);
+      expect(Reflect.get(frame, 'msaaActive')).toBe(inheritedMsaa);
+      expect(encodeMainPass.mock.calls[0]?.[3]?.bundleDescriptor?.sampleCount).toBe(sampleCount);
+    } finally {
+      frame.encoder.finish().unwrap();
+      await compiled.retire();
+    }
+  });
+
+  it.each([
     [false, 'forward-only-opaque', 0],
     [true, 'forward-only-opaque', 1],
     [false, 'opaque', 1],

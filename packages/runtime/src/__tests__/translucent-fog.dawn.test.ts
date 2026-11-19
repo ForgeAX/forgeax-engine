@@ -56,22 +56,30 @@ function expectPixel(actual: readonly number[], expected: readonly number[], lab
 }
 
 /**
- * RHI Debug proof of the composition order: the opaque fog pass runs before
+ * RHI Debug proof of composition: Forward fogs in the opaque writer; Deferred
+ * uses its opaque fog pass. Both run before
  * the pane, the pane binds the straight-alpha View copy, and a fresh-device
  * replay shows the opaque scene fogged at wall depth before the pane blends
  * its own-depth fog over it.
  */
-async function verifyReplay(bytes: Uint8Array, model: FrameModel) {
+async function verifyReplay(bytes: Uint8Array, model: FrameModel, path: TranslucentFogPath) {
   const fogWorks = model.works.filter((work) => fragmentSource(work).includes('fog_view'));
-  expect(fogWorks).toHaveLength(1);
+  expect(fogWorks).toHaveLength(path === 'forward' ? 0 : 1);
   const straight = translucentViewOffset('straight');
   const translucentOffsets = new Set(
     (['straight', 'premultiplied', 'additive'] as const).map(translucentViewOffset),
   );
   const paneWorks = model.works.filter((work) => viewSlotOffsets(work).includes(straight));
   expect(paneWorks).toHaveLength(1);
-  const fogWork = fogWorks[0];
   const paneWork = paneWorks[0];
+  const opaqueWorks = model.works.filter(
+    (work) =>
+      work.workIndex < (paneWork?.workIndex ?? -1) &&
+      viewSlotOffsets(work).includes(0) &&
+      fragmentSource(work).includes('forward_fog'),
+  );
+  if (path === 'forward') expect(opaqueWorks).toHaveLength(1);
+  const fogWork = path === 'forward' ? opaqueWorks[0] : fogWorks[0];
   if (fogWork === undefined || paneWork === undefined) throw new Error('missing fog works');
   expect(fragmentSource(paneWork)).toContain('translucent_fog');
   expect(fogWork.workIndex).toBeLessThan(paneWork.workIndex);
@@ -189,7 +197,7 @@ it.each([
       JSON.stringify({ digest: tape.digest, ...summarizeFrame(model) }, null, 2),
     );
     assertTranslucentFog(sample);
-    const replay = await verifyReplay(tape.bytes, model);
+    const replay = await verifyReplay(tape.bytes, model, path);
     writeFileSync(
       `${directory}/${path}-${material}-evidence.json`,
       JSON.stringify(

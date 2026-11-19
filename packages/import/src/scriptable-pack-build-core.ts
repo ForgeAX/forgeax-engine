@@ -1077,32 +1077,38 @@ export async function buildScriptablePack(
       },
     });
   };
-  // The registry serializes each undeclared cooker key. Overlap complete outputs
-  // so a serial custom cook can feed parallel native material production.
-  // Drain each bounded batch before returning its first authored error.
+  const acceptProducedOutput = (
+    settled: PromiseSettledResult<Awaited<ReturnType<typeof produce>>>,
+  ) => {
+    if (settled.status === 'rejected') throw settled.reason;
+    const result = settled.value;
+    if (!result.ok) return result;
+    if (result.value === undefined) return undefined;
+    const { sourceKey, produced, staged } = result.value;
+    imported.push(produced.imported);
+    for (const path of produced.sourceDependencies ?? []) sourceDependencies.add(path);
+    if (produced.nativeFingerprint !== undefined)
+      nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
+    stagedOutputs.push(staged);
+    return undefined;
+  };
+  // Preserve serial barriers and canonical acceptance. Parallel outputs refill
+  // idle lanes through the same bounded owner as source-package preparation;
+  // failures stop admission and drain every accepted sibling before returning.
   for (let index = 0; index < sourceKeys.length; ) {
     let end = index + 1;
     if (parallel(index)) {
-      while (end < Math.min(index + 4, sourceKeys.length) && parallel(end)) end++;
+      while (end < sourceKeys.length && parallel(end)) end++;
     }
-    const results = await Promise.allSettled(sourceKeys.slice(index, end).map(produce));
-    const acceptProducedOutputs = () => {
-      for (const settled of results) {
-        if (settled.status === 'rejected') throw settled.reason;
-        const result = settled.value;
-        if (!result.ok) return result;
-        if (result.value === undefined) continue;
-        const { sourceKey, produced, staged } = result.value;
-        imported.push(produced.imported);
-        for (const path of produced.sourceDependencies ?? []) sourceDependencies.add(path);
-        if (produced.nativeFingerprint !== undefined)
-          nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
-        stagedOutputs.push(staged);
-      }
-      return undefined;
-    };
-    const outputFailure = acceptProducedOutputs();
-    if (outputFailure !== undefined) return outputFailure;
+    for await (const settled of orderedPackPreparation(
+      sourceKeys.slice(index, end),
+      parallel(index) ? 4 : 1,
+      produce,
+      (result) => !result.ok,
+    )) {
+      const outputFailure = acceptProducedOutput(settled);
+      if (outputFailure !== undefined) return outputFailure;
+    }
     index = end;
   }
 

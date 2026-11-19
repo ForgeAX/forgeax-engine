@@ -32,7 +32,24 @@ aggregate access and partial aggregate stores conservatively retain their source
 structure. Other entries and unreachable helpers do not contribute reads. Missing
 metadata means unknown, never an empty dependency set.
 
+Each newly compiled entry also publishes `effects`: Naga's transitive
+`mayDiscard`, fragment `writesDepth` / `writesSampleMask` outputs and bound
+`writesStorage` (including atomics and storage textures). Private/workgroup
+stores do not count as externally visible storage writes. This is an additive
+field in the existing reflection wire; absent older metadata remains unknown.
+Native validation owns these facts; consumers do not scan shader text to infer
+them or manufacture effect-free defaults.
+The native projection visits validated `Kill` statements and their function
+calls. Naga's `FunctionInfo.may_kill` is a uniformity fact and omits uniform or
+unconditional discard, so it cannot serve as this complete effect contract.
+
 Opaque module handles expose `free()` for deterministic native IR release.
+`composeShader` optionally accepts a source-normalization function. Normalization
+runs inside the checked writer boundary, before its final parse and ABI check.
+The call returns WGSL; the next exact-source native `parse` consumes the bounded
+one-shot checked IR, and `validate` transfers its existing validated information.
+A changed source parses independently. Both asynchronous compilation and the
+prepared synchronous compiler consume this same native ownership path.
 `validate` consumes its parsed handle even on failure; do not free that handle
 again. A successful syntax probe that stops before validation frees its parsed
 handle. Reflection and selected-entry validation borrow the validated handle;
@@ -110,3 +127,25 @@ pnpm build:engine
 Then rebuild or re-cook manifests from their owning source producer. Runtime
 admission rejects old `/2` or inconsistent `/3` publications; bypassing that
 check would let host packing and WGSL disagree.
+
+## Prepared composition and module reuse
+
+`PreparedNagaCompiler.composeProgram` returns final WGSL and an invocation-owned
+validated module. An optional synchronous source normalizer runs before the
+checked writer parses and validates that final source and compares its buffer
+ABI. The Shader compiler passes its existing portability normalizer here, so
+reflection uses exactly the WGSL delivered to the GPU without a second parse.
+The consumer frees the validated module after its last reflection/interface read.
+Both composition APIs use main's one-shot checked-program handoff. The exact
+normalized writer output and validated IR stay in the native owner until the
+matching native parse consumes them. `composeProgram` transfers that owner
+through the same native parse/validate entrypoints; it adds no compiler cache.
+A changed source or an output over the native retention bound follows ordinary
+parsing and validation.
+
+The native composer retains one bounded definition-independent import closure
+and its unchanged registration prefix. Definition-dependent imports and automatic
+bindings use fresh composition. Entry selection, imported padding, normalization,
+validation and writer ABI checks remain authoritative. Reentrant normalization
+uses the same checked native boundary; failed composition cannot publish a
+successful program. ShaderRegistry remains the complete program reuse owner.

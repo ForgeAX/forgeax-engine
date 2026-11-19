@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
+  GPU_TEXTURE_USAGE_STORAGE_BINDING,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import {
@@ -14,7 +15,7 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
-import { gbufferSource } from './standard-gbuffer.fixture';
+import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
 it.each([
   'plane',
@@ -65,6 +66,20 @@ it.each([
       .unwrap();
   const history = texture(),
     surface = texture();
+  const normal = device
+    .createTexture({
+      size: { width: 2, height: 2, depthOrArrayLayers: 1 },
+      format: 'r32uint',
+      usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_STORAGE_BINDING,
+    })
+    .unwrap();
+  writePackedNormals(
+    device,
+    normal,
+    2,
+    2,
+    Array.from({ length: 4 }, () => [0.5, 0.5, 1, 0.5]).flat(),
+  );
   const params = device
     .createBuffer({ size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
     .unwrap();
@@ -118,6 +133,11 @@ it.each([
     const inputs = device
       .createBindGroupLayout({
         entries: [
+          {
+            binding: 2,
+            visibility: GPU_SHADER_STAGE_COMPUTE,
+            texture: { sampleType: 'uint', viewDimension: '2d' },
+          },
           ...[3, 9].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_COMPUTE,
@@ -145,6 +165,10 @@ it.each([
       .createBindGroup({
         layout: inputs,
         entries: [
+          {
+            binding: 2,
+            resource: { kind: 'textureView', value: device.createTextureView(normal, {}).unwrap() },
+          },
           {
             binding: 3,
             resource: {
@@ -195,6 +219,7 @@ it.each([
       expect(value, `${kind} lane ${index}`).toBeCloseTo(target, 5);
     });
   } finally {
+    device.destroyTexture(normal).unwrap();
     device.destroyTexture(history).unwrap();
     device.destroyTexture(surface).unwrap();
     device.destroyBuffer(params).unwrap();

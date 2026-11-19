@@ -3,22 +3,33 @@ import { availableParallelism, freemem } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { ShaderError } from '../errors.js';
 import type { MaterialPackCookProfile, MaterialSourceSnapshot } from './pack-cooker.js';
+import { normalizeMaterialAsset } from './pack-material-contract.js';
 
 const GiB = 1024 ** 3;
 
-/** One process-wide material pool; Pack parallelism never multiplies this limit. */
-function workerCount(): number {
-  if (!isMainThread) return 1;
+/** One process-wide budget for material execution and program compilation. */
+function workerBudget(): { materials: number; programs: number } {
+  if (!isMainThread) return { materials: 1, programs: 1 };
   const requested = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
   const limit = Number.isSafeInteger(requested) && requested > 0 ? requested : undefined;
-  const cpu = Math.max(1, Math.min(4, availableParallelism() - (limit === undefined ? 1 : 0)));
-  const memory = Math.max(
+  const cpu = Math.max(1, availableParallelism() - (limit === undefined ? 1 : 0));
+  const free = process.availableMemory?.() ?? freemem();
+  const memory = Math.max(1, Math.floor((free - 2 * GiB) / (2 * GiB)));
+  const admitted = Math.min(cpu, limit ?? 4);
+  // An explicit budget can reserve up to two slots for programs within the
+  // first material while keeping at least two material slots when available.
+  const materialSlots = limit === undefined ? 4 : Math.min(4, Math.max(2, admitted - 2));
+  const materials = Math.min(memory, admitted, materialSlots);
+  // Only the first material receives spare program slots.
+  const spareMemory = Math.max(0, free - (2 + materials * 2) * GiB);
+  const programs = Math.max(
     1,
-    Math.floor(((process.availableMemory?.() ?? freemem()) - 2 * GiB) / (2 * GiB)),
+    Math.min(6, admitted - materials + 1, Math.floor(spareMemory / (GiB / 2)) + 1),
   );
-  return Math.min(cpu, memory, limit ?? 4);
+  return { materials, programs };
 }
 
 interface Job {
@@ -59,7 +70,16 @@ parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceS
       key = nextKey;
     }
     const draft = await cooker.cook(input);
-    parentPort.postMessage({ draft });
+    // Publication encodes fresh WGSL buffers for this draft. Its retained
+    // compiler cache owns source strings and never reuses the encoded bytes.
+    const buffers = new Set();
+    for (const { bytes } of Object.values(draft.artifacts)) {
+      if (bytes.buffer instanceof ArrayBuffer && !Buffer.isBuffer(bytes) &&
+          bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+        buffers.add(bytes.buffer);
+      }
+    }
+    parentPort.postMessage({ draft }, [...buffers]);
   } catch (error) {
     parentPort.postMessage({ failure: {
       shader: error?.name === 'ShaderError', error: error instanceof Error,
@@ -101,15 +121,26 @@ class MaterialCookPool {
   private readonly lanes: Lane[] = [];
   private readonly queue: Job[] = [];
   private readonly affinity = new Map<string, Lane>();
+  private pumpQueued = false;
 
-  constructor(private readonly limit: number) {
+  constructor(
+    private readonly limit: number,
+    private readonly firstLanePrograms: number,
+  ) {
     // Initialize OpenSSL providers before concurrent Worker imports.
     getCiphers();
   }
 
   run(job: Job): void {
     this.queue.push(job);
-    this.pump();
+    if (this.pumpQueued) return;
+    // See all sibling submissions before assigning a cold contract to a lane
+    // that has warm work in the same batch.
+    this.pumpQueued = true;
+    queueMicrotask(() => {
+      this.pumpQueued = false;
+      this.pump();
+    });
   }
 
   private pump(): void {
@@ -119,17 +150,23 @@ class MaterialCookPool {
       }
       // Spawn another lane only for work no existing lane holds.
       if (this.lanes.length >= this.limit) return;
-      if (selectAffineJob(this.queue, {}, this.affinity) < 0) return;
-      this.spawn();
+      const index = selectAffineJob(this.queue, {}, this.affinity);
+      if (index < 0) return;
+      try {
+        this.spawn();
+      } catch (error) {
+        // A failed Worker start must settle the queued cook even when the
+        // scheduler is draining a batch outside that cook's call stack.
+        this.queue.splice(index, 1)[0]?.reject(error);
+      }
     }
   }
 
   private spawn(): void {
+    const programs = this.lanes.length === 0 ? this.firstLanePrograms : 1;
     const worker = new Worker(workerSource, {
       eval: true,
-      // The complete material is the parallel unit. Do not spawn another
-      // shader pool inside each material Worker.
-      env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: '1' },
+      env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: String(programs) },
       resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64 },
     });
     const owner: Lane = { worker, job: undefined };
@@ -221,10 +258,11 @@ function canonicalJson(value: unknown): string {
 
 /**
  * Routing identity of one cook: the SHA-256 of the canonical content that selects its
- * programs (roots, profile, source directory, parent table and material contract), but
- * not its name or uniform values. It is a pure function of that content, so a build
- * schedules the same way every time; it only routes, and each Worker's own program
- * reuse decides what is actually reused.
+ * programs (roots, profile, source directory, parent table and normalized material
+ * contract), without uniform values or the publication name. Shorthand value names
+ * can select parameter declarations, so use the same normalization as the cooker.
+ * The key only routes work. Each Worker's compiler decides whether cached
+ * programs still satisfy the current request.
  * @internal
  */
 export function programAffinityKey(
@@ -237,12 +275,13 @@ export function programAffinityKey(
     readonly table?: unknown;
     readonly sourcePath?: unknown;
   };
-  const contract =
-    source !== null && typeof source === 'object' ? { ...source, values: undefined } : source;
   const directory = typeof sourcePath === 'string' ? dirname(resolve(sourcePath)) : undefined;
-  // The input already survived structuredClone; only BigInt makes it unserializable.
   let text: string;
   try {
+    const contract =
+      source !== null && typeof source === 'object'
+        ? { ...normalizeMaterialAsset(source as MaterialAsset), values: undefined }
+        : source;
     text = canonicalJson([
       roots,
       profile ?? null,
@@ -251,7 +290,8 @@ export function programAffinityKey(
       contract ?? null,
     ]);
   } catch {
-    text = String(Object.prototype.toString.call(contract));
+    // Invalid or non-JSON declarations still go through the cooker's diagnostics.
+    text = Object.prototype.toString.call(source);
   }
   return createHash('sha256').update(text).digest('hex');
 }
@@ -263,9 +303,9 @@ export function withNodeMaterialWorkers(
   profile?: MaterialPackCookProfile,
   sourceSnapshot?: MaterialSourceSnapshot,
 ): NativeCooker {
-  const count = workerCount();
-  if (count === 1) return cooker;
-  pool ??= new MaterialCookPool(count);
+  const budget = workerBudget();
+  if (budget.materials === 1) return cooker;
+  pool ??= new MaterialCookPool(budget.materials, budget.programs);
   const owner = pool;
   const capturedRoots = [...roots];
   return {

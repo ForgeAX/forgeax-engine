@@ -131,8 +131,9 @@ function applyValueFlag(
     state.flagsSeen = true;
     return 0;
   }
-  if (flag === '--root') state.root = next;
-  else if (flag === '--input') {
+  if (flag === '--root') {
+    state.root = next;
+  } else if (flag === '--input') {
     state.inputRaw = next;
     state.inputSeen = true;
   } else {

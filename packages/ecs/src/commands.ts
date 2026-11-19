@@ -1,3 +1,5 @@
+import { createCommandFailedError, createSystemFailedError, isEcsFault } from './errors';
+import { relationshipTarget } from './relationship-index';
 // @forgeax/engine-ecs — CommandBuffer: deferred structural changes.
 //
 // System execution queues spawn/despawn/addComponent/removeComponent commands.
@@ -5,42 +7,40 @@
 // cascade support (D-06). Deferred spawn returns pending Entity handle (D-07).
 
 import type { Result } from '@forgeax/engine-types';
-import type { Component, ComponentSchema } from './component';
-import { componentId } from './component';
-import { fillComponentDefaults, validateComponentDataKeys } from './component-default-fallback';
-import { componentDefinition } from './component-schema';
-import { Entity } from './entity';
-import { ENTITY_NULL_RAW, type EntityHandle, entityGeneration, entityIndex } from './entity-handle';
+import type { Component, ComponentData, ComponentSchema } from './component';
+import {
+  componentDefinition,
+  componentId,
+  expandComponentRequirements,
+  implicitComponentInputs,
+} from './component';
+import {
+  componentRemovalError,
+  InitializedComponentData,
+  isArrayPayload,
+  validateComponentDataKeys,
+} from './component-input';
+import { type EntityHandle, entityGeneration, entityIndex } from './entity-handle';
 import {
   type CommandCommitEvidence,
-  CommandFailedError,
+  type CommandFailedError,
   type CommandKind,
   ComponentAlreadyPresentError,
   ComponentNotPresentError,
-  RelationshipSelfCycleError,
-  RelationshipTargetReadonlyError,
-  RemoveEntityComponentError,
+  type EcsError,
   StaleEntityError,
-  SystemFailedError,
 } from './errors';
 import type { WorldExecutionState } from './execution/shared-kernel';
-import { isRelationshipTarget, relationshipRole } from './relationship-index';
-import type { ComponentData, EcsError } from './world';
+import { isExclusiveRelationshipSource, relationshipRole } from './relationship-index';
 import { type WorldInternal, worldInternal } from './world-internal';
-
-// ────────────────────────────────────────────────────────────────────────────
 // Command types
-// ────────────────────────────────────────────────────────────────────────────
 
 export type Command =
   | { type: 'spawn'; componentDatas: ComponentData[]; entity: EntityHandle }
   | { type: 'despawn'; entity: EntityHandle }
   | { type: 'addComponent'; entity: EntityHandle; componentData: ComponentData }
   | { type: 'removeComponent'; entity: EntityHandle; component: Component };
-
-// ────────────────────────────────────────────────────────────────────────────
 // CommandBuffer interface
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * CommandBuffer queues structural changes (spawn/despawn/addComponent/removeComponent)
@@ -67,10 +67,7 @@ export interface CommandBuffer {
   commit(): void;
   abort(error?: unknown): void;
 }
-
-// ────────────────────────────────────────────────────────────────────────────
 // World access interface (avoids circular import)
-// ────────────────────────────────────────────────────────────────────────────
 
 /** Minimal world interface needed by CommandBuffer for entity allocation. */
 export interface WorldForCommands {
@@ -99,10 +96,7 @@ export interface WorldForCommands {
   /** Fast membership probe used by command preflight. */
   hasComponent(entity: EntityHandle, component: Component): boolean;
 }
-
-// ────────────────────────────────────────────────────────────────────────────
 // Implementation
-// ────────────────────────────────────────────────────────────────────────────
 
 export interface CommandBufferImpl extends CommandBuffer {
   /** @internal Queue size without materializing storage for an unused buffer. */
@@ -121,8 +115,6 @@ export interface CommandBufferImpl extends CommandBuffer {
   readonly _systemName: string;
   /** @internal */
   readonly _scheduleName: string;
-  /** @internal */
-  _setStatus(status: 'committed' | 'aborted'): void;
 }
 
 /**
@@ -168,28 +160,24 @@ class CommandBufferState implements CommandBufferImpl {
     if (this._queueError === null) this._queueError = { index, kind, cause };
   }
 
-  _setStatus(next: 'committed' | 'aborted'): void {
-    if (this.currentStatus === 'open') this.currentStatus = next;
-  }
-
-  commit(): void {
-    this.ensureOpen();
-    this.currentStatus = 'committed';
-    if (this.queue !== undefined) this.queue.length = 0;
-    this.pending?.clear();
-    this._queueError = null;
-  }
-
-  abort(): void {
-    if (this.currentStatus !== 'open') return;
+  private finish(status: 'committed' | 'aborted'): void {
     if (this.pending !== undefined)
       for (const raw of this.pending) {
         this.world[worldInternal].cancelPendingEntity(raw as EntityHandle);
       }
-    this.currentStatus = 'aborted';
+    this.currentStatus = status;
     if (this.queue !== undefined) this.queue.length = 0;
     this.pending?.clear();
     this._queueError = null;
+  }
+
+  commit(): void {
+    this.ensureOpen();
+    this.finish('committed');
+  }
+
+  abort(): void {
+    if (this.currentStatus === 'open') this.finish('aborted');
   }
 
   spawn(...componentDatas: ComponentData[]): EntityHandle {
@@ -261,26 +249,19 @@ export function createCommandBuffer(
 export function detachCommandBufferPayloads(buffer: CommandBufferImpl): void {
   if (buffer._queueLength === 0) return;
   const detach = (input: ComponentData): ComponentData => {
-    const data = fillComponentDefaults(input.component, input.data);
-    for (const [name, plan] of Object.entries(componentDefinition(input.component).plan.fields)) {
+    const initialized = InitializedComponentData.is(input)
+      ? input
+      : new InitializedComponentData(input.component, input.data);
+    const data = initialized.data as Record<string, unknown>;
+    for (const [name, plan] of Object.entries(
+      componentDefinition(initialized.component).plan.fields,
+    )) {
       const value = data[name];
-      if (
-        (plan.kind === 'array' ||
-          plan.kind === 'fixed-array' ||
-          plan.kind === 'buffer' ||
-          plan.kind === 'fixed-buffer') &&
-        value !== null &&
-        typeof value === 'object' &&
-        'length' in value &&
-        typeof value.length === 'number'
-      ) {
-        data[name] =
-          plan.kind === 'buffer' || plan.kind === 'fixed-buffer'
-            ? Uint8Array.from(value as ArrayLike<number>)
-            : Array.from(value as ArrayLike<unknown>);
+      if ((plan.kind === 'array' || plan.kind === 'fixed-array') && isArrayPayload(value, plan)) {
+        data[name] = Array.from(value as ArrayLike<unknown>);
       }
     }
-    return { component: input.component, data } as ComponentData;
+    return initialized;
   };
   for (const command of buffer._queue) {
     if (command.type === 'spawn') command.componentDatas = command.componentDatas.map(detach);
@@ -294,32 +275,11 @@ function commandFailure(
   kind: CommandKind,
   cause: unknown,
 ): CommandFailedError {
-  return new CommandFailedError(buffer._systemName, buffer._scheduleName, index, kind, cause);
-}
-
-type RelationshipOverlay = Map<number, Map<number, EntityHandle | null>>;
-
-function relationshipTarget(
-  component: Component,
-  data: Readonly<Record<string, unknown>>,
-): EntityHandle | null {
-  const role = relationshipRole(component);
-  if (role?.kind !== 'source') return null;
-  const raw = data[role.sourceField];
-  if (raw === null || raw === undefined || raw === ENTITY_NULL_RAW) return null;
-  return raw as EntityHandle;
-}
-
-function overlayTarget(
-  overlay: RelationshipOverlay,
-  entity: EntityHandle,
-  component: Component,
-): EntityHandle | null | undefined {
-  return overlay.get(entity as number)?.get(componentId(component));
+  return createCommandFailedError(buffer._systemName, buffer._scheduleName, index, kind, cause);
 }
 
 function setOverlayTarget(
-  overlay: RelationshipOverlay,
+  overlay: Map<number, Map<number, EntityHandle | null>>,
   entity: EntityHandle,
   component: Component,
   target: EntityHandle | null,
@@ -333,110 +293,120 @@ function setOverlayTarget(
 }
 
 /**
- * Check a relationship edge against committed rows plus the batch overlay.
- * The overlay is the only extra state needed: it records at most one target
- * per affected source/component, so a batch remains O(C + A) rather than
- * rescanning every World entity.
- */
-function relationshipCycle(
-  world: WorldForCommands,
-  holder: EntityHandle,
-  component: Component,
-  target: EntityHandle | null,
-  overlay: RelationshipOverlay,
-): RelationshipSelfCycleError | undefined {
-  if (target === null) return undefined;
-  const role = relationshipRole(component);
-  const allowSelf = role?.kind === 'source' && role.allowSelf;
-  if (holder === target && !allowSelf) {
-    return new RelationshipSelfCycleError(component.name, holder as number, target as number);
-  }
-  const visited = new Set<number>();
-  let current: EntityHandle | null = target;
-  while (current !== null) {
-    const raw = current as number;
-    if (raw === (holder as number) && !(holder === target && allowSelf)) {
-      return new RelationshipSelfCycleError(component.name, holder as number, raw);
-    }
-    if (visited.has(raw)) return undefined;
-    visited.add(raw);
-    const staged = overlayTarget(overlay, current, component);
-    if (staged !== undefined || overlay.get(raw)?.has(componentId(component)) === true) {
-      current = staged ?? null;
-      continue;
-    }
-    const row = world[worldInternal].getQueryRow(current, component);
-    if (!row.ok) return undefined;
-    current = relationshipTarget(component, row.value);
-  }
-  return undefined;
-}
-
-/**
  * Validate the failures that can be proven from the current World and the
  * command batch without mutating storage.  The commit loop remains the only
  * writer; any failure not provable here is treated as an unexpected post-write
  * failure and poisons the World.
  */
-function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): void {
+function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands, offset = 0): void {
   if (buffer._queueError !== null) {
     const { index, kind, cause } = buffer._queueError;
-    throw commandFailure(buffer, index, kind, cause);
+    throw commandFailure(buffer, offset + index, kind, cause);
   }
   if (buffer._queueLength === 0) return;
 
-  type Shadow = {
-    readonly components: Set<number>;
-    readonly added: Set<number>;
-    readonly removed: Set<number>;
-    dead: boolean;
-    pending: boolean;
-  };
-  const shadows = new Map<number, Shadow>();
-  const relationshipOverlay: RelationshipOverlay = new Map();
+  const shadows = new Map<number, Map<number, boolean>>();
+  const relationshipOverlay = new Map<number, Map<number, EntityHandle | null>>();
   const unavailableEntities = new Set<number>();
   const availablePendingEntities = new Set<number>();
-  const shadowFor = (entity: EntityHandle): Shadow => {
-    const raw = entity as unknown as number;
-    const current = shadows.get(raw);
-    if (current !== undefined) return current;
-    const shadow: Shadow = {
-      components: new Set<number>(),
-      added: new Set<number>(),
-      removed: new Set<number>(),
-      dead: false,
-      pending: false,
-    };
-    shadows.set(raw, shadow);
-    return shadow;
+  const membershipFor = (entity: EntityHandle): Map<number, boolean> => {
+    let membership = shadows.get(entity);
+    if (membership === undefined) {
+      membership = new Map();
+      shadows.set(entity, membership);
+    }
+    return membership;
   };
-  const validateData = (
+  const admitData = (
     holder: EntityHandle | null,
     componentData: ComponentData,
-  ): unknown | undefined => {
+    index: number,
+    kind: CommandKind,
+  ): Readonly<ComponentData> => {
     const result = world[worldInternal].preflightComponentData(
+      'command',
       holder,
       componentData,
       availablePendingEntities,
       unavailableEntities,
+      relationshipOverlay,
     );
-    return result.ok ? undefined : result.error;
+    if (!result.ok) throw commandFailure(buffer, index, kind, result.error);
+    return result.value;
   };
-  const liveError = (entity: EntityHandle, operation: string, component?: Component): unknown => {
-    const result = world[worldInternal].lookupAlive(entity, operation, component?.name);
-    return result.ok ? undefined : result.error;
+  const projectRelationship = (
+    entity: EntityHandle,
+    input: ComponentData,
+    index: number,
+    kind: CommandKind,
+  ): void => {
+    const role = relationshipRole(input.component);
+    if (role?.kind !== 'source') return;
+    const target = relationshipTarget(input.component, input.data as Record<string, unknown>);
+    setOverlayTarget(relationshipOverlay, entity, input.component, target);
+    const cycle = world[worldInternal].relationshipCycleError(
+      input.component,
+      role,
+      target,
+      entity,
+      relationshipOverlay,
+    );
+    if (cycle !== null) throw commandFailure(buffer, index, kind, cycle);
   };
-  for (const [index, command] of buffer._queue.entries()) {
+  const hasComponent = (
+    entity: EntityHandle,
+    component: Component,
+    membership: Map<number, boolean>,
+    pending: boolean,
+  ): boolean =>
+    membership.get(componentId(component)) ?? (!pending && world.hasComponent(entity, component));
+  const pendingOrLive = (
+    entity: EntityHandle,
+    component: Component,
+    index: number,
+    kind: 'addComponent' | 'removeComponent',
+  ): boolean => {
+    const unavailable = unavailableEntities.has(entity);
+    if (!unavailable && availablePendingEntities.has(entity)) return true;
+    const operation = `command.${kind}`;
+    const live = world[worldInternal].lookupAlive(entity, operation, component.name);
+    if (!live.ok) throw commandFailure(buffer, index, kind, live.error);
+    if (unavailable) {
+      const generation = entityGeneration(entity);
+      throw commandFailure(
+        buffer,
+        index,
+        kind,
+        new StaleEntityError(entity, entityIndex(entity), generation, {
+          operation,
+          expectedGeneration: generation,
+          actualGeneration: -1,
+        }),
+      );
+    }
+    return false;
+  };
+  for (const [batchIndex, command] of buffer._queue.entries()) {
+    const index = offset + batchIndex;
     switch (command.type) {
       case 'spawn': {
+        command.componentDatas = expandComponentRequirements(command.componentDatas);
         const raw = command.entity as unknown as number;
-        const shadow = shadowFor(command.entity);
-        shadow.pending = true;
+        const membership = membershipFor(command.entity);
         availablePendingEntities.add(raw);
-        for (const componentData of command.componentDatas) {
-          const dataError = validateData(command.entity, componentData);
-          if (dataError !== undefined) throw commandFailure(buffer, index, command.type, dataError);
-          if (shadow.components.has(componentId(componentData.component))) {
+        for (
+          let componentIndex = 0;
+          componentIndex < command.componentDatas.length;
+          componentIndex++
+        ) {
+          const componentData = admitData(
+            command.entity,
+            command.componentDatas[componentIndex] as ComponentData,
+            index,
+            command.type,
+          );
+          command.componentDatas[componentIndex] = componentData;
+          if (membership.get(componentId(componentData.component)) === true) {
             throw commandFailure(
               buffer,
               index,
@@ -444,169 +414,61 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
               new ComponentAlreadyPresentError(raw, componentData.component.name),
             );
           }
-          shadow.components.add(componentId(componentData.component));
-          const role = relationshipRole(componentData.component);
-          if (role?.kind === 'source') {
-            const filled = fillComponentDefaults(
-              componentData.component,
-              componentData.data as Record<string, unknown>,
-            );
-            const target = relationshipTarget(componentData.component, filled);
-            setOverlayTarget(relationshipOverlay, command.entity, componentData.component, target);
-            const cycle = relationshipCycle(
-              world,
-              command.entity,
-              componentData.component,
-              target,
-              relationshipOverlay,
-            );
-            if (cycle !== undefined) throw commandFailure(buffer, index, command.type, cycle);
+          membership.set(componentId(componentData.component), true);
+          projectRelationship(command.entity, componentData, index, command.type);
+        }
+        break;
+      }
+      case 'despawn':
+        // Stale despawn is a no-op; the handle is unavailable to later commands either way.
+        unavailableEntities.add(command.entity);
+        availablePendingEntities.delete(command.entity);
+        break;
+      case 'addComponent': {
+        const { entity } = command;
+        command.componentData = admitData(entity, command.componentData, index, command.type);
+        const component = command.componentData.component;
+        const pending = pendingOrLive(entity, component, index, command.type);
+        const membership = membershipFor(entity);
+        const present = hasComponent(entity, component, membership, pending);
+        if (present && (pending || !isExclusiveRelationshipSource(component))) {
+          throw commandFailure(
+            buffer,
+            index,
+            command.type,
+            new ComponentAlreadyPresentError(entity, component.name),
+          );
+        }
+        const dependencies = implicitComponentInputs(command.componentData);
+        if (dependencies !== undefined) {
+          for (const input of dependencies) {
+            if (hasComponent(entity, input.component, membership, pending)) continue;
+            const admitted = admitData(command.entity, input, index, command.type);
+            membership.set(componentId(input.component), true);
+            projectRelationship(command.entity, admitted, index, command.type);
           }
         }
-        break;
-      }
-      case 'despawn': {
-        const shadow = shadowFor(command.entity);
-        if (!shadow.pending && !world.hasComponent(command.entity, Entity)) {
-          // A stale handle is a no-op for the direct facade today; preserve
-          // that contract instead of inventing a new command error.
-          shadow.dead = true;
-          unavailableEntities.add(command.entity as unknown as number);
-          availablePendingEntities.delete(command.entity as unknown as number);
-          break;
-        }
-        shadow.dead = true;
-        unavailableEntities.add(command.entity as unknown as number);
-        availablePendingEntities.delete(command.entity as unknown as number);
-        break;
-      }
-      case 'addComponent': {
-        const raw = command.entity as unknown as number;
-        const shadow = shadowFor(command.entity);
-        const dataError = validateData(command.entity, command.componentData);
-        if (dataError !== undefined) throw commandFailure(buffer, index, command.type, dataError);
-        if (!shadow.pending) {
-          const stale = liveError(
-            command.entity,
-            'command.addComponent',
-            command.componentData.component,
-          );
-          if (stale !== undefined) throw commandFailure(buffer, index, command.type, stale);
-        }
-        const role = relationshipRole(command.componentData.component);
-        const present = shadow.pending
-          ? shadow.components.has(componentId(command.componentData.component))
-          : shadow.removed.has(componentId(command.componentData.component))
-            ? false
-            : shadow.added.has(componentId(command.componentData.component)) ||
-              world.hasComponent(command.entity, command.componentData.component);
-        if (shadow.dead) {
-          throw commandFailure(
-            buffer,
-            index,
-            command.type,
-            liveError(command.entity, 'command.addComponent', command.componentData.component) ??
-              new StaleEntityError(
-                raw,
-                entityIndex(command.entity),
-                entityGeneration(command.entity),
-                {
-                  operation: 'command.addComponent',
-                  expectedGeneration: entityGeneration(command.entity),
-                  actualGeneration: -1,
-                },
-              ),
-          );
-        }
-        const reparent =
-          present && role?.kind === 'source' && role.exclusive === true && !shadow.pending;
-        if (present && !reparent) {
-          throw commandFailure(
-            buffer,
-            index,
-            command.type,
-            new ComponentAlreadyPresentError(raw, command.componentData.component.name),
-          );
-        }
-        shadow.components.add(componentId(command.componentData.component));
-        if (!reparent) shadow.added.add(componentId(command.componentData.component));
-        shadow.removed.delete(componentId(command.componentData.component));
-        if (role?.kind === 'source') {
-          const filled = fillComponentDefaults(
-            command.componentData.component,
-            command.componentData.data as Record<string, unknown>,
-          );
-          const target = relationshipTarget(command.componentData.component, filled);
-          setOverlayTarget(
-            relationshipOverlay,
-            command.entity,
-            command.componentData.component,
-            target,
-          );
-          const cycle = relationshipCycle(
-            world,
-            command.entity,
-            command.componentData.component,
-            target,
-            relationshipOverlay,
-          );
-          if (cycle !== undefined) throw commandFailure(buffer, index, command.type, cycle);
-        }
+        // Reparenting keeps the existing membership source, including an earlier staged add.
+        if (!present) membership.set(componentId(component), true);
+        projectRelationship(command.entity, command.componentData, index, command.type);
         break;
       }
       case 'removeComponent': {
-        const raw = command.entity as unknown as number;
-        if (isRelationshipTarget(command.component)) {
+        const { entity, component } = command;
+        const protectedComponent = componentRemovalError(component);
+        if (protectedComponent !== undefined)
+          throw commandFailure(buffer, index, command.type, protectedComponent);
+        const pending = pendingOrLive(entity, component, index, command.type);
+        const membership = membershipFor(entity);
+        if (!hasComponent(entity, component, membership, pending)) {
           throw commandFailure(
             buffer,
             index,
             command.type,
-            new RelationshipTargetReadonlyError(command.component.name, 'removeComponent'),
+            new ComponentNotPresentError(entity, component.name),
           );
         }
-        if (componentId(command.component) === componentId(Entity)) {
-          throw commandFailure(buffer, index, command.type, new RemoveEntityComponentError());
-        }
-        const shadow = shadowFor(command.entity);
-        if (shadow.dead) {
-          throw commandFailure(
-            buffer,
-            index,
-            command.type,
-            liveError(command.entity, 'command.removeComponent', command.component) ??
-              new StaleEntityError(
-                raw,
-                entityIndex(command.entity),
-                entityGeneration(command.entity),
-                {
-                  operation: 'command.removeComponent',
-                  expectedGeneration: entityGeneration(command.entity),
-                  actualGeneration: -1,
-                },
-              ),
-          );
-        }
-        if (!shadow.pending) {
-          const stale = liveError(command.entity, 'command.removeComponent', command.component);
-          if (stale !== undefined) throw commandFailure(buffer, index, command.type, stale);
-        }
-        const present = shadow.pending
-          ? shadow.components.has(componentId(command.component))
-          : shadow.removed.has(componentId(command.component))
-            ? false
-            : shadow.added.has(componentId(command.component)) ||
-              world.hasComponent(command.entity, command.component);
-        if (!present) {
-          throw commandFailure(
-            buffer,
-            index,
-            command.type,
-            new ComponentNotPresentError(raw, command.component.name),
-          );
-        }
-        shadow.components.delete(componentId(command.component));
-        shadow.removed.add(componentId(command.component));
-        shadow.added.delete(componentId(command.component));
+        membership.set(componentId(component), false);
         if (relationshipRole(command.component)?.kind === 'source') {
           setOverlayTarget(relationshipOverlay, command.entity, command.component, null);
         }
@@ -618,7 +480,7 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
 
 /**
  * Flush all queued commands against the World.
- * Uses while(queue.length > 0) to support cascade (commands spawned during flush).
+ * Admit and drain complete batches; callbacks stage the following batch.
  */
 export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands): void {
   if (buffer.status !== 'open') return;
@@ -634,11 +496,9 @@ export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands
     buffer.abort(error);
     throw error;
   }
-  let applied = 0;
   // Once the preflight boundary has passed, a command may have touched
   // storage even when its Result is an error (for example relationship
-  // maintenance after a row was appended). `applied` is intentionally not
-  // used as the poison decision: it only counts commands that returned ok.
+  // maintenance after a row was appended).
   let mutationStarted = false;
   let commandIndex = -1;
   let currentCommand: Command | undefined;
@@ -655,45 +515,38 @@ export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands
       }
     };
     while (queue.length > 0) {
-      // biome-ignore lint/style/noNonNullAssertion: queue length is checked
-      const cmd = queue.shift()!;
-      commandIndex += 1;
-      currentCommand = cmd;
-      switch (cmd.type) {
-        case 'spawn':
-          mutationStarted = true;
-          requireSuccess(
-            world[worldInternal].materializePendingEntity(cmd.entity, cmd.componentDatas),
-          );
-          buffer._pendingEntities.delete(cmd.entity as unknown as number);
-          applied += 1;
-          lastCommittedCommand = { index: commandIndex, kind: cmd.type };
-          break;
-        case 'despawn':
-          mutationStarted = true;
-          requireSuccess(world.despawn(cmd.entity));
-          applied += 1;
-          lastCommittedCommand = { index: commandIndex, kind: cmd.type };
-          break;
-        case 'addComponent':
-          mutationStarted = true;
-          requireSuccess(world.addComponent(cmd.entity, cmd.componentData));
-          applied += 1;
-          lastCommittedCommand = { index: commandIndex, kind: cmd.type };
-          break;
-        case 'removeComponent':
-          mutationStarted = true;
-          requireSuccess(world.removeComponent(cmd.entity, cmd.component));
-          applied += 1;
-          lastCommittedCommand = { index: commandIndex, kind: cmd.type };
-          break;
+      const batch = queue.splice(0);
+      for (const cmd of batch) {
+        // A release/asset callback can end the buffer while this batch is detached.
+        if (buffer.status !== 'open') return;
+        commandIndex += 1;
+        currentCommand = cmd;
+        mutationStarted = true;
+        switch (cmd.type) {
+          case 'spawn':
+            requireSuccess(world[worldInternal].materializeEntity(cmd.entity, cmd.componentDatas));
+            buffer._pendingEntities.delete(cmd.entity as unknown as number);
+            break;
+          case 'despawn':
+            requireSuccess(world.despawn(cmd.entity));
+            break;
+          case 'addComponent':
+            requireSuccess(world.addComponent(cmd.entity, cmd.componentData));
+            break;
+          case 'removeComponent':
+            requireSuccess(world.removeComponent(cmd.entity, cmd.component));
+            break;
+        }
+        lastCommittedCommand = { index: commandIndex, kind: cmd.type };
       }
+      if (buffer.status !== 'open') return;
+      if (queue.length > 0) preflightCommands(buffer, world, commandIndex + 1);
     }
-    buffer.commit();
+    if (buffer.status === 'open') buffer.commit();
   } catch (error) {
     buffer.abort(error);
-    if (error instanceof CommandFailedError) throw error;
-    if (!mutationStarted && applied === 0) {
+    if (isEcsFault(error, 'command-failed') && !mutationStarted) throw error;
+    if (!mutationStarted) {
       throw commandFailure(
         buffer,
         Math.max(commandIndex, 0),
@@ -708,7 +561,7 @@ export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands
       partialWrite: true,
       retryable: false,
     });
-    throw new SystemFailedError(
+    throw createSystemFailedError(
       buffer._systemName,
       buffer._scheduleName,
       error,

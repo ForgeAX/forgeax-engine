@@ -43,16 +43,14 @@ describe('M4 vertex-color shader contract', () => {
     if (file === 'unlit.wgsl') {
       expect(text).toMatch(/baseColor\.rgb\s*\*\s*texSample\.rgb\s*\*\s*vertexColor\.rgb/);
       expect(text).toMatch(
-        /fn unlitSurfaceCoverage\([\s\S]*?alphaCoverage\(material\.baseColor\.a\s*\*\s*unlitTextureAlpha\(textureAlpha\)\s*\*\s*vertexAlpha\s*\*\s*mappedAlpha/,
+        /fn unlitCoverageValue\([\s\S]*?alphaCoverageValue\(material\.baseColor\.a\s*\*\s*unlitTextureAlpha\(textureAlpha\)\s*\*\s*vertexAlpha\s*\*\s*mappedAlpha/,
+      );
+      expect(text).toContain('unlitCoverageValue(texSample.a, vertexColor.a, mappedAlpha)');
+      expect(text).toContain(
+        'let test = unlitCoverageTest(in.positionOS, material.alphaToCoverage, unlitAlphaHash())',
       );
       expect(text).toContain(
-        'unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, vertexColor.a, mappedAlpha)',
-      );
-      expect(text).toContain(
-        'unlitSurfaceCoverage(in.clippingPositionWS, in.positionOS, texSample.a, vertexColor.a, mappedAlpha)',
-      );
-      expect(text).toContain(
-        'unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, materialVertexColor(in).a, mappedAlpha)',
+        'unlitCoverageValue(texSample.a, materialVertexColor(in).a, mappedAlpha)',
       );
     } else {
       expect(text).toContain(

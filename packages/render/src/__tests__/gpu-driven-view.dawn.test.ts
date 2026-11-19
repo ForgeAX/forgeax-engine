@@ -82,6 +82,8 @@ describe('GPU-driven View Dawn', () => {
       recoveredReadbackFrame: 11,
       firstVisible: 1,
       recoveredVisible: 0,
+      firstFrustumCulled: 2,
+      recoveredFrustumCulled: 3,
     });
   });
 

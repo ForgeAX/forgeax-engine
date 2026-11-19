@@ -3492,7 +3492,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     transform: PhysicsTransform3D,
     collider: ColliderSnapshot,
     bodyType: RigidBodyType,
-  ): ColliderDesc {
+  ): ColliderDesc | undefined {
     return runAuthoredColliderDesc(
       this.rapierModule,
       (reason) => this.colliderFailure(reason),

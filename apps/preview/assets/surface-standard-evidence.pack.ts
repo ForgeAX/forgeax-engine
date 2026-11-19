@@ -173,6 +173,18 @@ const opticalMaterials = Object.fromEntries(
   ]),
 );
 
+const {
+  'material/water-optical-zero-extinction': planarWater,
+  ...otherOpticalMaterials
+} = opticalMaterials;
+if (planarWater === undefined) throw new Error('Missing the zero-extinction optical material');
+
+export const planarReflectionMaterials = {
+  'material/planar-red': Materials.unlit([1, 0, 0, 1]),
+  'material/planar-green': Materials.unlit([0, 1, 0, 1]),
+  'material/water-optical-zero-extinction': planarWater,
+} as const;
+
 export default definePack({
   schemaVersion: '2.0.0',
   packageId,
@@ -194,8 +206,7 @@ export default definePack({
     } });
     if (!waterOutputs.ok) return waterOutputs;
     return ok({
-      'material/planar-red': Materials.unlit([1, 0, 0, 1]),
-      'material/planar-green': Materials.unlit([0, 1, 0, 1]),
+      ...planarReflectionMaterials,
       // A cooked glass: its program declares the dedicated transmission backdrop.
       'material/cooked-glass': Materials.standard({
         baseColor: [0.9, 0.95, 1, 1],
@@ -246,7 +257,7 @@ export default definePack({
       'material/water-surface-b': mediumSurface('preview::water_surface_b', waterBParameters),
       [SURFACE_OPTICAL_BACKGROUND_SOURCE_KEY.replace('preview-surface-standard-evidence:', '')]:
         opticalBackground,
-      ...opticalMaterials,
+      ...otherOpticalMaterials,
       ...waterOutputs.value,
     });
   },

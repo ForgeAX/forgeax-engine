@@ -8,6 +8,7 @@ import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { endRenderFrame } from '../world/render-world';
@@ -75,11 +76,12 @@ it.each([
   const destroyed = vi.spyOn(device, 'destroyBuffer');
   let frameNumber = 0;
   function frame(abort = false): FrameRecording {
+    const sourceWorld = new World();
     const outcome = stageFeatureFrame(host, [
       {
         identity: 'view',
         render: true,
-        world: new World(),
+        world: sourceWorld,
         frameNumber: ++frameNumber,
         caps: device.caps,
         gpuWork,
@@ -100,7 +102,12 @@ it.each([
     expect(prepared?.errors).toEqual([]);
     // Open the frame before the coordinator classifies its RenderRecord boundary.
     return (function* (): FrameRecording {
-      yield { kind: 'shared-work', internals, sceneInputs: false };
+      yield {
+        kind: 'shared-work',
+        internals,
+        sourceScope: worldRenderResources(sourceWorld),
+        sceneInputs: false,
+      };
       // The view's graph compiles in RenderRecord, before any view encodes.
       if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
       const result = yield {

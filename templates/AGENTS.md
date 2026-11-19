@@ -44,6 +44,13 @@ where output is clamped earlier (an 8-bit target, per-draw tone mapping) does no
 
 ## Run, test, build, and release
 
+- **Open optional View:** for interactive project, scene or asset review, read
+  `skills/forgeax-view-start/SKILL.md`. From this game root run
+  `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
+  If local skills predate View, read the same skill under
+  `node_modules/@forgeax/engine/tools/view/skills/`. View owns this file entry;
+  cold CLI help does not discover it. Published packages need no Engine build or
+  global SDK. Keep the terminal open and verify the requested project in the page.
 - **Iterate locally:** `pnpm exec forgeax dev start` serves source; Vite/DevKit handles TypeScript and Pack assets as needed. No prior `project build`, separate asset build, or manual TypeScript compilation is required.
 - **Build and preview:** `pnpm exec forgeax project build` produces the production `dist/` through Vite and asset producers; `pnpm exec forgeax project preview` serves it. `pnpm typecheck` is a separate check, not a launch prerequisite.
 
@@ -54,7 +61,7 @@ where output is clamped earlier (an 8-bit target, per-draw tone mapping) does no
 | Engine/SDK change, SDK publication, performance | Owning package, SDK production, performance skill |
 
 ```bash
-pnpm exec forgeax project check --json          # structure and types
+pnpm exec forgeax project check --json          # project and dependency checks
 pnpm exec forgeax dev start --headless true     # once; keeps a warm page for dev look
 pnpm exec forgeax dev look --hide-ui true --json  # look-dev: scene PNG after each visual edit
 pnpm exec forgeax project play scripts/playthrough.mjs --json   # real input, state, screenshots
@@ -72,7 +79,13 @@ picture: look-dev comes before writing the playthrough, not after it.
 journey (`play.advance(seconds)` for timers, `play.state()` / `play.waitFor()` for the
 projection; the API index's playthrough file lists every helper). Any other browser check
 against the built `release/` also counts. Done means: core input works in play, and you opened
-the final screenshots and they pass the visual self-review against the intended look. If a check
-cannot run, report it as not run.
+the final screenshots and they pass the visual self-review against the intended look.
 Serve `release/` with `forgeax project preview` (it sets the COOP/COEP headers and handles
 multiple connections).
+
+> [!IMPORTANT]
+> If the browser run is blocked, name the delivery target, the first failing command and error,
+> the recovery attempted, and the player-visible checks still open. Say whether startup,
+> rendering and the requested controls were observed. A successful build with a browser launch
+> failure leaves all three unverified, and the game may stop before its first playable frame.
+> Report the artifact as built with runtime acceptance blocked until the target passes.

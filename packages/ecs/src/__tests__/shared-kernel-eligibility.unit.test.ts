@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../component';
-import { SharedKernelEligibilityError } from '../errors';
 import {
   defineSharedKernel,
   SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
@@ -49,7 +48,7 @@ describe('SharedKernel eligibility', () => {
       'descriptor-conflict',
     ]);
     expect(() => defineSharedKernel(import.meta.url, { name: 'bad', ...fixtures[0] })).toThrow(
-      SharedKernelEligibilityError,
+      expect.objectContaining({ code: 'shared-kernel-ineligible' }),
     );
   });
 
@@ -77,3 +76,56 @@ describe('SharedKernel eligibility', () => {
     expect(warmed).toEqual(['direct', 'batch', 'replacement']);
   });
 });
+
+async function suspendedPromise(): Promise<void> {
+  await Promise.resolve();
+}
+function* suspendedIterator(): Generator<undefined> {
+  yield undefined;
+}
+
+for (const run of [suspendedPromise, suspendedIterator]) {
+  it.each([
+    'small-work',
+    'no-executor',
+    'pre-dispatch-refusal',
+  ])(`refuses ${run.name} through %s`, (mode) => {
+    const world = new World({ storage: 'shared' });
+    world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+    let executorCalls = 0;
+    if (mode !== 'no-executor') {
+      world.insertResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY, {
+        execute() {
+          executorCalls++;
+          return {
+            cause: new Error('controlled refusal before dispatch'),
+            dispatched: 0,
+            completed: 0,
+            partialWrite: false,
+          };
+        },
+      });
+    }
+    const kernel = defineSharedKernel(import.meta.url, {
+      name: `${mode}-${run.name}`,
+      queries: [{ read: [Position] }],
+      minimumRows: mode === 'small-work' ? 2 : 0,
+      run,
+    });
+    world.addSystem(Update, kernel).unwrap();
+    expect(world.update(0)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'system-failed',
+        cause: {
+          code: 'memory-scope-invalid',
+          detail: { kind: 'scope', reason: 'asynchronous' },
+        },
+      },
+    });
+    expect(executorCalls).toBe(mode === 'pre-dispatch-refusal' ? 1 : 0);
+    expect(world.execution.health).toBe('poisoned');
+    expect(world.execution.fault?.cause).toMatchObject({ code: 'memory-scope-invalid' });
+    expect(world.update(0).ok).toBe(false);
+  });
+}

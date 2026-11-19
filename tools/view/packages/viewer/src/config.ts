@@ -1,12 +1,15 @@
 import type { Plugin, Context } from '@forgeax/engine-plugin';
 import type { EngineWorkspacePresentation } from '@forgeax/engine/app';
-import type { FrontendConfig, SlotRegistry } from '@forgeax/view-workspace-core/frontend-contract';
+import type { FrontendConfig, SlotRegistry, ViewFrontendRole } from '@forgeax/view-workspace-core/frontend-contract';
 import type { createViewPageTypeRegistry } from './host/page-registry.ts';
 
 import type { FrontendPlatform } from '@forgeax/engine-host/platform';
 
 export type ViewFrontendConfig = FrontendConfig & {
+  /** Supplied by the authenticated Host root descriptor, never inferred from page URL. */
+  role?: ViewFrontendRole;
   platform?: FrontendPlatform;
+  launcher?: import('./launcher.ts').ViewLauncher;
   /** Borrow the native realm that already owns its optional platform plugin. */
   context?: Context;
   embedded?: boolean; embeddedShell?: Plugin;

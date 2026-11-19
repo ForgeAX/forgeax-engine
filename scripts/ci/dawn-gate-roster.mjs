@@ -32,6 +32,24 @@ export const DAWN_ISOLATED_GROUPS = [
     files: ['packages/runtime/src/__tests__/feature-depth-material.dawn.test.ts'],
   },
   {
+    // This capture/replay file ran to completion in a fresh fork but lost
+    // its worker beside ordinary Dawn files under the same memory limit.
+    id: 'alpha-hash',
+    nativeProcessSlots: 2,
+    // The complete historical file cost is 186.15 seconds. Include admission
+    // headroom so every retained cohort fits the existing placement bounds.
+    placementReserveSeconds: 200,
+    files: ['packages/runtime/src/__tests__/alpha-hash.dawn.test.ts'],
+  },
+  {
+    // The full Three Surface cook and replay needs the native lane after
+    // run 44387085437 exhausted all three case budgets in ordinary-2.
+    id: 'three-surface-expression',
+    nativeProcessSlots: 2,
+    placementReserveSeconds: 420,
+    files: ['packages/three/src/__tests__/surface-expression.dawn.test.ts'],
+  },
+  {
     // The complete S6 capture journey owns a fresh native parent process;
     // keep both case tests and their original budgets outside ordinary backfill.
     id: 'modeling-s6',
@@ -55,7 +73,9 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'surface-pipelines',
-    nativeProcessSlots: 1,
+    // The planar fixtures cook a cold authored Pack before native readback.
+    // The paired one-compiler allocation exhausted both original case limits.
+    nativeProcessSlots: 2,
     // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
     // this complete owner too little of the unchanged 40-minute step.
     // Reserve the existing complete-owner maximum plus both newly serial
@@ -70,6 +90,8 @@ export const DAWN_ISOLATED_GROUPS = [
       // serial Surface owner for both complete planar carriers.
       'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
       'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
+      // Same cold Surface Pack and renderer path as the planar carriers.
+      'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
     ],
   },
   {
@@ -133,8 +155,18 @@ export const DAWN_ISOLATED_GROUPS = [
     ],
   },
   {
+    id: 'path-tracer',
+    // The cold shared-material cook needs the full compiler allocation before
+    // the first native replay. Keep the complete file and every case deadline.
+    nativeProcessSlots: 2,
+    placementReserveSeconds: 150,
+    files: ['packages/render/src/__tests__/raytracing/path-tracer.dawn.test.ts'],
+  },
+  {
     id: 'gi-2',
-    nativeProcessSlots: 1,
+    // The path-buffer fixture cooks the complete ray-material input set and
+    // replays both sources. Keep the full compiler allocation for this owner.
+    nativeProcessSlots: 2,
     files: [
       'packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-probe-placement.dawn.test.ts',
@@ -198,27 +230,36 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // and spread complete native owners and reserved headroom across these lanes;
 // one-pass backfill retains every file without historical layout constraints.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze(['ordinary-1', 'direct-light', 'gi-1', 'heavy-4', 'modeling-s6', 'rect-source']),
+  Object.freeze([
+    'ordinary-1',
+    'direct-light',
+    'gi-1',
+    'heavy-4',
+    'modeling-s6',
+    'path-tracer',
+    'rect-source',
+    'three-surface-expression',
+  ]),
   Object.freeze([
     'ordinary-2',
     'compact-2',
     'gi-4',
     'gi-6',
     'heavy-2',
-    'renderer',
+    'specular-aa',
     'shadow-quality',
     'surface-pipelines',
     'transmission',
   ]),
   Object.freeze([
     'ordinary-3',
+    'alpha-hash',
     'compact-3',
     'feature-depth',
     'gi-2',
     'heavy-1',
     'heavy-3',
     'modeling-show',
-    'nested-discard',
     'screen-probe',
   ]),
   Object.freeze([
@@ -226,8 +267,9 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'compact-1',
     'gi-3',
     'gi-5',
+    'nested-discard',
     'shadow-fields',
-    'specular-aa',
+    'renderer',
     'vfx-depth',
   ]),
 ]);

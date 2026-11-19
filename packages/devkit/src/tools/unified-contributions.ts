@@ -107,6 +107,9 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     packageName: string,
     dryRun: boolean,
   }),
+  'project.list': schema({ ...root, json: boolean }),
+  'project.import': schema({ ...root, path: string, json: boolean }, ['path']),
+  'project.browse': schema({ ...root, path: string, json: boolean }),
   'project.init': schema({ ...root, install: boolean, dryRun: boolean }),
   'project.check': schema({ ...root, json: boolean }),
   'project.test': schema({ ...root, json: boolean }),
@@ -458,7 +461,7 @@ export function command<TArgs extends Record<string, unknown>>(
   execute: (args: TArgs, context: ToolExecutionContext) => Promise<CommandValue>,
   realm: ToolRealm = 'build',
   options: {
-    readonly schema?: ToolJsonSchema;
+    readonly schema?: ToolJsonSchema | undefined;
     readonly capabilities?: readonly string[];
     readonly errors?: readonly string[];
     readonly example?: JsonValue;
@@ -905,6 +908,23 @@ export function createUnifiedCommandContributions(
     ...createModelingTools({ projectRoot }),
     createModelRenderTool(projectRoot),
     createModelReplayTool(projectRoot),
+    ...(['list', 'import', 'browse'] as const).map((operation) =>
+      command(
+        `project.${operation}`,
+        `Project ${operation}`,
+        'Read or register Node-visible project metadata without preparing a runtime.',
+        async (args) => {
+          const owner = await import('../known-projects.js');
+          if (operation === 'list') return owner.listKnownProjects();
+          if (operation === 'import') return owner.registerKnownProject(String(args.path));
+          return owner.browseProjectDirectories(
+            typeof args.path === 'string' ? args.path : undefined,
+          );
+        },
+        'host',
+        { schema: commandSchemas[`project.${operation}`] },
+      ),
+    ),
     ...(['start', 'status', 'stop'] as const).map((operation) =>
       command(
         `backend.${operation}`,

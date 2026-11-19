@@ -18,6 +18,7 @@ import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { applyInitPlan, createInitPlan } from './init.js';
+import { registerKnownProject } from './known-projects.js';
 import { commandError, readProjectFacts } from './project.js';
 import { hasLocalEngineDependencyOverride, inspectRunDependencyClosure } from './run-snapshot.js';
 import { findSdkContext } from './sdk.js';
@@ -238,6 +239,14 @@ export async function doctorCommand(
   return finishDoctor(facts.value, pnpm, localDependencies);
 }
 
+async function registerInitializedProject(
+  root: string,
+  result: CommandResult<unknown>,
+): Promise<CommandResult<unknown>> {
+  const registered = await registerKnownProject(root);
+  return registered.ok ? result : registered;
+}
+
 export async function initCommand(options: InitOptions = {}): Promise<CommandResult<unknown>> {
   try {
     const sdk = await findSdkContext();
@@ -283,7 +292,9 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
         sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
       );
     }
-    if (options.install === false) return applied;
+    if (options.install === false) {
+      return await registerInitializedProject(facts.value.root, applied);
+    }
     const store =
       sdk === undefined || sdk.store === undefined
         ? undefined
@@ -295,7 +306,7 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
       env: { ...process.env, CI: 'true' },
       maxBuffer: 16 * 1024 * 1024,
     });
-    return applied;
+    return await registerInitializedProject(facts.value.root, applied);
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'project-init-failed') };
   }
@@ -462,7 +473,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
         maxBuffer: 16 * 1024 * 1024,
       });
       const sdkUpdate = await checkSdkUpdate(sdk.manifest.sdkVersion);
-      return {
+      return await registerInitializedProject(root, {
         ok: true,
         value: {
           root,
@@ -472,7 +483,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
           onboarding: agentOnboarding(sdk, root),
           sdkUpdate,
         },
-      };
+      });
     } catch (cause) {
       if (staging !== undefined) await rm(staging, { recursive: true, force: true });
       if (committed) {

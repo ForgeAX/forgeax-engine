@@ -27,7 +27,7 @@
 //
 // Exit codes: 0 clean, 1 errors found, 2 setup/load failure.
 
-import { existsSync, globSync } from 'node:fs';
+import { existsSync, globSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -158,6 +158,7 @@ function main() {
   }
   const paths = [...globSync(SOURCE_GLOBS, { cwd: REPO_ROOT })]
     .map((path) => resolve(REPO_ROOT, path))
+    .filter((path) => statSync(path).isFile())
     .sort();
   const errors = lintSourcePaths(paths, tsconfig);
   for (const e of errors) {

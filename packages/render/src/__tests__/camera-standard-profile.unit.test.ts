@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AMBIENT_OCCLUSION_GTAO, AmbientOcclusion } from '../components/ambient-occlusion';
+import {
+  AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_SPIRAL_SSAO,
+  AmbientOcclusion,
+} from '../components/ambient-occlusion';
 import { MaterialResource } from '../material-resource';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
 import { resolveStandardGtaoExecution } from '../pipeline/standard-build-context';
@@ -10,6 +14,9 @@ import { MaterialFrame } from '../scene/material-dispatch';
 const lane = { storageBuffer: true, maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 72 };
 const ao = {
   algorithm: AMBIENT_OCCLUSION_GTAO,
+  application: 0,
+  sceneColorStrength: 0.95,
+  sampleCount: 0,
   radius: 0.8,
   bias: 0.03,
   intensity: 1.4,
@@ -101,13 +108,13 @@ describe('selected-view Standard projection', () => {
       },
     });
   });
-  it('keeps Water MSAA on the real Forward producer even when SSR or the authored profile selects Deferred', () => {
-    for (const profile of [base, { ...base, renderPath: 'deferred' as const }]) {
+  it('keeps Forward Water MSAA on the real Forward producer with SSR', () => {
+    for (const antialias of ['msaa', 'msaa-fxaa'] as const) {
       for (const screenSpaceReflection of [undefined, {}]) {
         const selected = deriveCameraStandardConfiguration(
-          profile,
+          base,
           config,
-          { antialias: 'msaa', screenSpaceReflection },
+          { antialias, screenSpaceReflection },
           lane,
           true,
         );
@@ -118,6 +125,23 @@ describe('selected-view Standard projection', () => {
   it('leaves an unrequested camera on the original profile and config identities', () => {
     expect(derive(undefined).profile).toBe(base);
     expect(derive(undefined).config).toBe(config);
+  });
+  it('preserves an explicit spiral budget across camera configuration projection', () => {
+    expect(
+      derive({
+        ambientOcclusion: {
+          ...ao,
+          algorithm: AMBIENT_OCCLUSION_SPIRAL_SSAO,
+          sampleCount: 16,
+          resolutionScale: 0.5,
+        },
+      }).config?.ssao,
+    ).toMatchObject({
+      enabled: true,
+      algorithm: 'spiral-ssao',
+      sampleCount: 16,
+      resolutionScale: 0.5,
+    });
   });
   it('projects camera AO over install-time AO without changing other configuration', () => {
     expect(derive({ ambientOcclusion: ao })).toMatchObject({

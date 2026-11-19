@@ -482,6 +482,7 @@ export function particleMaterialUsesBindings(
     contract === 'render-material' ||
     contract === 'render-material-with-scene-depth' ||
     contract === 'render-material-and-scene-depth' ||
+    contract === 'render-lit-material-and-scene-depth' ||
     contract === 'render-standard-material-and-scene-depth'
   );
 }
@@ -502,6 +503,7 @@ export function particleMaterialSceneDepthBinding(
   if (
     contract === 'view-and-scene-depth' ||
     contract === 'render-material-and-scene-depth' ||
+    contract === 'render-lit-material-and-scene-depth' ||
     contract === 'render-standard-material-and-scene-depth'
   )
     return 1;

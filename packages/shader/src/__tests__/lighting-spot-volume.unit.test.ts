@@ -16,9 +16,11 @@ describe('shared Spot volume optics', () => {
     expect(punctual).toContain('evalSpotAttenuation');
   });
 
-  it('keeps invalid range and cone inputs finite at the shared boundary', () => {
+  it('forwards the distance exponent and preserves the range and cone guards', () => {
     expect(attenuation).toContain('max(dSquared, nearFloor)');
-    expect(attenuation).toContain('evalDistanceAttenuation(dSquared, invRangeSquared, 2.0, 1e-4)');
+    expect(attenuation).toContain(
+      'evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4)',
+    );
     expect(attenuation).toContain('clamp');
     expect(attenuation).toContain('cosInner');
     expect(attenuation).toContain('cosOuter');

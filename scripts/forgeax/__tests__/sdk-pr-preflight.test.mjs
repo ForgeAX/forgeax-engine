@@ -711,7 +711,7 @@ test('archive project owns independent runs and installed View while source keep
   );
 });
 
-test('the real installed View and npm schedulers conserve complete chains and full defaults', async () => {
+test('the installed View and npm schedulers retain both producers and one recovery chain', async () => {
   const npm = readFileSync(resolve(import.meta.dirname, '../check-sdk-npm-consumer.mjs'), 'utf8');
   const start = npm.indexOf('async function verifyInstalledNpmOwners(');
   assert.ok(start >= 0);
@@ -855,9 +855,9 @@ test('the real installed View and npm schedulers conserve complete chains and fu
       rmSync(root, { recursive: true, force: true });
     }
   }
-  assert.deepEqual(observed.all, ['js-live', 'js-cold', 'ts-live', 'ts-cold']);
+  assert.deepEqual(observed.all, ['js-live', 'js-cold', 'ts-live']);
   assert.deepEqual(observed.view, ['js-live', 'js-cold']);
-  assert.deepEqual(observed.project, ['ts-live', 'ts-cold']);
+  assert.deepEqual(observed.project, ['ts-live']);
   assert.deepEqual(observed.game3d, ['game3d-installed']);
   assert.deepEqual([...observed.view, ...observed.project], observed.all);
   assert.deepEqual(observed['npm-all'], ['diagnostics', ...observed.game3d, ...observed.view]);

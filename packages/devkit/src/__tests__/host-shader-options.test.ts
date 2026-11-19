@@ -19,7 +19,7 @@ const { createViteConfig } = await import('../host.js');
 const { readProjectFacts } = await import('../project.js');
 const { findEngineWorkspaceRoot } = await import('../asset-libraries.js');
 
-async function configFor(forgeax: Record<string, unknown>) {
+async function configFor(forgeax: Record<string, unknown>, resourcePreview = false) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-devkit-shader-options-'));
   try {
     await mkdir(resolve(root, 'assets'), { recursive: true });
@@ -39,8 +39,20 @@ async function configFor(forgeax: Record<string, unknown>) {
     const facts = await readProjectFacts(root);
     if (!facts.ok) throw new Error(JSON.stringify(facts.error));
     shaderOptions.length = 0;
-    await createViteConfig(facts.value, 'build');
-    return shaderOptions.at(-1) as { engineEntries?: unknown; workspaceRoot?: string } | undefined;
+    await createViteConfig(
+      facts.value,
+      'build',
+      '/',
+      resourcePreview ? { bootstrapRoot: 'resource-bootstrap' } : {},
+    );
+    return shaderOptions.at(-1) as
+      | {
+          engineEntries?: unknown;
+          workspaceRoot?: string;
+          publication?: string;
+          publishAuthoredMaterialShaders?: boolean;
+        }
+      | undefined;
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -57,6 +69,41 @@ describe('DevKit shader build options', () => {
     expect((await configFor({ pointShadows: true }))?.engineEntries).toEqual({
       pointShadows: true,
     });
-    expect(await configFor({})).not.toHaveProperty('engineEntries');
+    const defaults = await configFor({});
+    expect(defaults).not.toHaveProperty('engineEntries');
+    expect(defaults?.publication).toBe('source');
+    expect(defaults?.publishAuthoredMaterialShaders).toBe(false);
+  }, 60_000);
+
+  it('routes an explicitly selected source publication through the ordinary project build', async () => {
+    const options = await configFor({ shaderPublication: 'source' });
+    expect(options?.publication).toBe('source');
+    expect(options?.publishAuthoredMaterialShaders).toBe(false);
+  }, 60_000);
+
+  it('keeps explicit precompiled publication available', async () => {
+    const options = await configFor({ shaderPublication: 'compiled' });
+    expect(options).not.toHaveProperty('publication');
+    expect(options).not.toHaveProperty('publishAuthoredMaterialShaders');
+  }, 60_000);
+
+  it('publishes tool-owned texture programs for resource previews with source-default projects', async () => {
+    const options = await configFor({}, true);
+    expect(options).not.toHaveProperty('publication');
+    expect(options).not.toHaveProperty('publishAuthoredMaterialShaders');
+    expect(options).toHaveProperty(
+      'materialPackages',
+      expect.arrayContaining([
+        expect.stringMatching(/texture-view\/2d\.pack\.json$/),
+        expect.stringMatching(/texture-view\/2d-array\.pack\.json$/),
+        expect.stringMatching(/texture-view\/3d\.pack\.json$/),
+      ]),
+    );
+  }, 60_000);
+
+  it('rejects unknown shader publication formats before constructing the build', async () => {
+    await expect(configFor({ shaderPublication: 'invalid' })).rejects.toThrow(
+      'package-manifest-invalid',
+    );
   }, 60_000);
 });

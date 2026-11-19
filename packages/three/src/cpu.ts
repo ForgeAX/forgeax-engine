@@ -141,7 +141,9 @@ export { default as CanvasTarget } from 'three/src/renderers/common/CanvasTarget
 export { default as CubeRenderTarget } from 'three/src/renderers/common/CubeRenderTarget.js';
 export { default as InspectorBase } from 'three/src/renderers/common/InspectorBase.js';
 export { default as ReadbackBuffer } from 'three/src/renderers/common/ReadbackBuffer.js';
+export { UniformsUtils } from 'three/src/renderers/shaders/UniformsUtils.js';
 export * from 'three/src/Three.Core.js';
+export { AnimationClip } from './animation-clip';
 export { JoinNode, MemberNode, NodeFrame, SetNode } from './node-authoring';
 export {
   AssignNode,

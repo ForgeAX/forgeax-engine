@@ -92,6 +92,70 @@ it('does not bump broker subscribers when changed() repeats the same UI snapshot
   await broker.dispose();
 });
 
+it('publishes an updated workspace snapshot from one projection and keeps prior revisions detached', async () => {
+  let reads = 0;
+  const broker = new ViewWorkspaceBroker({
+    engine: {},
+    display() {
+      reads++;
+      return { state: 'unavailable' };
+    },
+  });
+  try {
+    const states = [];
+    broker.subscribe(state => states.push(state));
+    broker.thumbnailEpoch = 4;
+    reads = 0;
+    broker.changed();
+    assert.equal(reads, 1);
+    assert.equal(states.length, 2);
+    assert.equal(states[1].revision, states[0].revision + 1);
+    assert.equal(states[1].thumbnailEpoch, 4);
+    assert.equal(states[0].thumbnailEpoch, undefined);
+    broker.changed();
+    assert.equal(states.length, 2);
+  } finally {
+    await broker.dispose();
+  }
+});
+
+it('refreshes a shared Shell and embedded broker once and publishes to both connections', async () => {
+  const target = { sessionId: 'session', targetId: 'target', generation: 1, headed: true };
+  const status = { phase: 'running', sessionId: target.sessionId, target };
+  const engine = {
+    project: { project: { id: 'project', root: '/project' }, status },
+    projectStatus: status,
+    subscribeProjectStatus() { return () => {}; },
+  };
+  let reads = 0;
+  const broker = new ViewWorkspaceBroker({
+    engine, engineForCaller: () => engine,
+    display() {
+      reads++;
+      return { state: 'unavailable' };
+    },
+  });
+  const states = new Map();
+  const transport = {
+    publish(_topic, state, { connectionId }) { states.set(connectionId, state); },
+  };
+  try {
+    broker.attachPageSession({ kind: 'frontend', sourceId: 'view-frontend', connectionId: 'shell' }, transport);
+    broker.attachPageSession({ kind: 'frontend', sourceId: 'forgeax-workspace:session:target', connectionId: 'embedded' }, transport);
+    assert.equal(broker.pageSessions.get('shell').broker, broker.pageSessions.get('embedded').broker);
+    broker.assets = [{ guid: 'cube', name: 'Cube', kind: 'mesh' }];
+    reads = 0;
+    states.clear();
+    broker.publishPageSessions();
+    assert.equal(reads, 1);
+    assert.deepEqual([...states.keys()], ['shell', 'embedded']);
+    assert.equal(states.get('shell').revision, states.get('embedded').revision);
+    assert.equal(states.get('shell').assets[0].guid, 'cube');
+  } finally {
+    await broker.dispose();
+  }
+});
+
 it('revokes observations synchronously on selection/generation changes, with idempotent cleanup', () => {
   let snapshot = { entity: 'a', generation: 1 };
   const listeners = new Set();

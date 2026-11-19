@@ -7,6 +7,8 @@
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_EXPLICIT
 #pragma variant_axis ALPHA_MASK
+#pragma variant_axis CLIPPING_PLANES
+#pragma variant_axis LOD_DITHER
 #pragma variant_axis STANDARD_LEAN_INPUTS
 #pragma variant_axis VERTEX_COLOR_AVAILABLE
 #pragma material_slot surface
@@ -480,10 +482,14 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
   // Standard Surface path. The scene compiler maps `material` to a private
   // per-invocation provider for this variant.
   material = sceneMaterials[in.materialAddress.x];
+#if LOD_DITHER == true
   applyLodCoverage(in.clip.xy, bitcast<f32>(in.materialAddress.y));
 #endif
+#endif
 
+#if CLIPPING_PLANES == true
   applyViewClipping(in.positionWS, true);
+#endif
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   applyLocalClipping(in.positionWS, true, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
 #endif

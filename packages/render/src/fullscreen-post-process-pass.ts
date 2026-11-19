@@ -138,15 +138,18 @@ function postProcessSourceDigest(source: string): string {
 }
 
 /** Content-addressed PSO label shared by the post-process pipeline factory. */
-export function postProcessShaderPipelineLabel(identity: string, source: string): string {
-  return `post-process-${identity}-pso-${postProcessSourceDigest(source)}`;
+export function postProcessShaderPipelineLabel(
+  identity: string,
+  source: string | PostProcessShaderEntry,
+): string {
+  return `post-process-${identity}-pso-${postProcessLabelDigest(source)}`;
 }
 
 /** Content-addressed shader-module label shared by prewarm and lazy paths. */
-export function postProcessShaderModuleLabel(source: string): string {
+export function postProcessShaderModuleLabel(source: string | PostProcessShaderEntry): string {
   // Graph-local names and public feature identities may alias the same source.
   // Share the prewarmed module, while pipelines retain their own layouts/targets.
-  return `post-process-module-${postProcessSourceDigest(source)}`;
+  return `post-process-module-${postProcessLabelDigest(source)}`;
 }
 
 /**
@@ -171,6 +174,7 @@ interface PostProcessSignatureCapture {
   readonly readKeys: readonly (string | undefined)[] | undefined;
   readonly readSampleTypes: readonly (PostProcessReadSampleType | undefined)[] | undefined;
   readonly readStrings: readonly boolean[] | undefined;
+  readonly readPrimary: readonly (true | undefined)[] | undefined;
   readonly usesView: boolean | undefined;
   readonly storageBindings: readonly number[] | undefined;
   readonly storageBindingValues: readonly number[] | undefined;
@@ -180,6 +184,16 @@ const postProcessSignatures = new GenerationalWeakMap<
   PostProcessShaderEntry,
   PostProcessSignatureCapture
 >();
+
+function postProcessLabelDigest(source: string | PostProcessShaderEntry): string {
+  if (typeof source === 'string') return postProcessSourceDigest(source);
+  const captured = postProcessSignatures.get(source);
+  // Layout/parameter changes do not affect module content. The ordinary
+  // signature lookup still observes those live fields before PSO admission.
+  if (captured?.source === source.source) return captured.sourceDigest;
+  postProcessShaderEntrySignature(source);
+  return (postProcessSignatures.get(source) as PostProcessSignatureCapture).sourceDigest;
+}
 
 function sameSignatureInputs(
   entry: PostProcessShaderEntry,
@@ -244,7 +258,8 @@ function sameRead(
   return (
     captured.readStrings?.[index] === false &&
     read?.key === key &&
-    read?.sampleType === captured.readSampleTypes?.[index]
+    read?.sampleType === captured.readSampleTypes?.[index] &&
+    read?.primary === captured.readPrimary?.[index]
   );
 }
 
@@ -300,6 +315,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     readKeys: reads?.map((read) => (typeof read === 'string' ? read : read.key)),
     readSampleTypes: reads?.map((read) => (typeof read === 'string' ? undefined : read.sampleType)),
     readStrings: reads?.map((read) => typeof read === 'string'),
+    readPrimary: reads?.map((read) => (typeof read === 'string' ? undefined : read.primary)),
     usesView: entry.usesView,
     storageBindings: entry.storageBindings,
     storageBindingValues: entry.storageBindings?.slice(),
@@ -326,6 +342,8 @@ export function isTemporalFullscreenBinding(values: Readonly<Record<string, unkn
 export interface PostProcessReadEntry {
   readonly key: string;
   readonly sampleType?: PostProcessReadSampleType | undefined;
+  /** Use binding 0 for the sole depth input. */
+  readonly primary?: true;
 }
 
 /**
@@ -438,6 +456,16 @@ export function entryHasDepthRead(entry: PostProcessShaderEntry): boolean {
  * is WebGPU's minimum uniform-buffer binding size.
  */
 export const DEPTH_MIN_PARAMS_BYTE_SIZE = 16;
+
+export function entryUsesPrimaryDepth(entry: PostProcessShaderEntry): boolean {
+  const read = entry.reads?.[0];
+  return (
+    entry.reads?.length === 1 &&
+    typeof read !== 'string' &&
+    read?.sampleType === 'depth' &&
+    read.primary === true
+  );
+}
 
 // ─── Public: register / build a fullscreen post-process pass ─────────────
 
@@ -587,13 +615,28 @@ function createFullscreenPostProcessPass(
   // texture variant for a 4-sample scene target. params@2 is always present to
   // avoid 2x2 kind explosion.
   const hasDepth = entryHasDepthRead(entry);
-  const bglKind = fullscreenBindGroupKind(entry, hasDepth, depthMultisampled);
+  const primaryDepth = entryUsesPrimaryDepth(entry);
+  const bglKind = primaryDepth
+    ? 'fullscreen-post-with-params'
+    : fullscreenBindGroupKind(entry, hasDepth, depthMultisampled);
   const descriptor = buildBindGroupLayoutDescriptor(FULLSCREEN_DEFAULT_SPEC, { kind: bglKind });
   const colorReads = (entry.reads ?? []).filter(
     (read) => typeof read === 'string' || read.sampleType !== 'depth',
   );
   const extraColorCount = Math.max(0, colorReads.length - 1);
-  const firstExtraBinding = hasDepth ? 5 : entry.params === undefined ? 2 : 3;
+  const firstExtraBinding = primaryDepth ? 3 : hasDepth ? 5 : entry.params === undefined ? 2 : 3;
+  if (primaryDepth) {
+    const texture = descriptor.entries.find((binding) => binding.binding === 0);
+    const sampler = descriptor.entries.find((binding) => binding.binding === 1);
+    if (texture !== undefined) {
+      texture.texture = {
+        sampleType: 'depth',
+        viewDimension: '2d',
+        multisampled: depthMultisampled,
+      };
+    }
+    if (sampler !== undefined) sampler.sampler = { type: 'non-filtering' };
+  }
   const appendFullscreenColorReads = () => {
     const firstRead = colorReads[0];
     if (typeof firstRead !== 'string' && firstRead?.sampleType !== undefined) {
@@ -625,11 +668,15 @@ function createFullscreenPostProcessPass(
   }
 
   // Step 2: Samplers.
-  const sampler = createFullscreenSampler(
-    device,
-    colorReads.some((read) => typeof read !== 'string' && read.sampleType === 'float-3d-repeat'),
-  );
   const depthSampler = hasDepth ? createDepthSampler(device) : null;
+  const sampler = primaryDepth
+    ? depthSampler
+    : createFullscreenSampler(
+        device,
+        colorReads.some(
+          (read) => typeof read !== 'string' && read.sampleType === 'float-3d-repeat',
+        ),
+      );
 
   return {
     bindGroupLayout: bglRes.value,

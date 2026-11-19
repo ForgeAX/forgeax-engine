@@ -45,6 +45,7 @@ export function createViewRecorder(
       base,
       capture,
       target,
+      primaryOwner,
     );
     if (renderWorld.hasComponent(entity, ViewRecordContext))
       renderWorld.removeComponent(entity, ViewRecordContext).unwrap();

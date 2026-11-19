@@ -72,30 +72,38 @@ export function scheduleWorkNames(world: World): readonly string[] {
   return [...(owners.get(world)?.work.keys() ?? [])].sort();
 }
 
-/** Open an owner-named synchronous operation only while diagnostics observe this World. */
-export function beginScheduleWork(world: World, work: string): ScheduleWorkScope | undefined {
-  const current = owners.get(world)?.observers;
-  if (current === undefined || current.size === 0) return undefined;
-  const roster = [...current];
-  for (const observer of roster) {
+/** Subscription changes during a callback take effect at the next boundary. */
+function snapshotObservers(world: World): ScheduleRunObserver[] | undefined {
+  const observers = owners.get(world)?.observers;
+  return observers === undefined || observers.size === 0 ? undefined : [...observers];
+}
+
+function notify(
+  roster: readonly ScheduleRunObserver[],
+  reverse: boolean,
+  invoke: (observer: ScheduleRunObserver) => void,
+): void {
+  for (let offset = 0; offset < roster.length; offset++) {
     try {
-      observer.onWorkStart?.(work);
+      const index = reverse ? roster.length - 1 - offset : offset;
+      invoke(roster[index] as ScheduleRunObserver);
     } catch {
       // Diagnostics cannot change schedule execution.
     }
   }
+}
+
+/** Open an owner-named synchronous operation only while diagnostics observe this World. */
+export function beginScheduleWork(world: World, work: string): ScheduleWorkScope | undefined {
+  const roster = snapshotObservers(world);
+  if (roster === undefined) return undefined;
+  notify(roster, false, (observer) => observer.onWorkStart?.(work));
   let active = true;
   return {
     end() {
       if (!active) return;
       active = false;
-      for (let index = roster.length - 1; index >= 0; index--) {
-        try {
-          roster[index]?.onWorkEnd?.(work);
-        } catch {
-          // Diagnostics cannot change schedule execution.
-        }
-      }
+      notify(roster, true, (observer) => observer.onWorkEnd?.(work));
     },
   };
 }
@@ -132,11 +140,8 @@ export function beginScheduleSystem(
   schedule: string,
   system: string,
 ): ScheduleRunScope | undefined {
-  const current = owners.get(world)?.observers;
-  if (current === undefined || current.size === 0) return undefined;
-  // Pin this invocation's observers. Unsubscription/re-registration during a
-  // callback affects only the next boundary and cannot break start/end pairs.
-  const roster = [...current];
+  const roster = snapshotObservers(world);
+  if (roster === undefined) return undefined;
   for (const observer of roster) {
     try {
       observer.onSystemStart?.(schedule, system);
@@ -179,25 +184,12 @@ export function beginScheduleCommandDrain(
   world: World,
   schedule: string,
 ): CommandDrainScope | undefined {
-  const current = owners.get(world)?.observers;
-  if (current === undefined || current.size === 0) return undefined;
-  const roster = [...current];
-  for (const observer of roster) {
-    try {
-      observer.onCommandDrainStart?.(schedule);
-    } catch {
-      // Diagnostics cannot change schedule execution.
-    }
-  }
+  const roster = snapshotObservers(world);
+  if (roster === undefined) return undefined;
+  notify(roster, false, (observer) => observer.onCommandDrainStart?.(schedule));
   return {
     end() {
-      for (let index = roster.length - 1; index >= 0; index--) {
-        try {
-          roster[index]?.onCommandDrainEnd?.(schedule);
-        } catch {
-          // Diagnostics cannot change schedule execution.
-        }
-      }
+      notify(roster, true, (observer) => observer.onCommandDrainEnd?.(schedule));
     },
   };
 }

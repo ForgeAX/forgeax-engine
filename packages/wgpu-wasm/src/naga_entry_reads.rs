@@ -1,7 +1,7 @@
 //! Build-time resource reads of each entry, following helper arguments and returns.
 //! Aggregate copies keep their origin until a member is selected. Unknown aggregate
 //! consumption conservatively reads its complete originating structure.
-use naga::valid::ModuleInfo;
+use naga::valid::{GlobalUse, ModuleInfo};
 use naga::{AddressSpace, Expression, Function, Handle, Module, Statement, Type, TypeInner};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +11,51 @@ pub struct EntryReads {
     pub name: String,
     pub stage: &'static str,
     pub bindings: Vec<BindingReads>,
+    pub effects: EntryEffects,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryEffects {
+    pub may_discard: bool,
+    pub writes_depth: bool,
+    pub writes_sample_mask: bool,
+    pub writes_storage: bool,
+}
+
+fn block_may_discard(block: &naga::Block, functions: &[bool]) -> bool {
+    block.iter().any(|statement| match statement {
+        Statement::Kill => true,
+        Statement::Call { function, .. } => {
+            functions.get(function.index()).copied().unwrap_or(true)
+        }
+        Statement::Block(body) => block_may_discard(body, functions),
+        Statement::If { accept, reject, .. } => {
+            block_may_discard(accept, functions) || block_may_discard(reject, functions)
+        }
+        Statement::Switch { cases, .. } => cases
+            .iter()
+            .any(|case| block_may_discard(&case.body, functions)),
+        Statement::Loop {
+            body, continuing, ..
+        } => block_may_discard(body, functions) || block_may_discard(continuing, functions),
+        _ => false,
+    })
+}
+
+fn output_builtin(module: &Module, function: &Function, builtin: naga::BuiltIn) -> bool {
+    let Some(result) = &function.result else {
+        return false;
+    };
+    let matches = |binding: &Option<naga::Binding>| matches!(binding, Some(naga::Binding::BuiltIn(found)) if found == &builtin);
+    if matches(&result.binding) {
+        return true;
+    }
+    match &module.types[result.ty].inner {
+        TypeInner::Struct { members, .. } => members.iter().any(|member| matches(&member.binding)),
+        _ => false,
+    }
+}
+
 #[derive(Serialize)]
 pub struct BindingReads {
     pub group: u32,
@@ -310,6 +354,13 @@ impl<'a, 'r> FunctionReads<'a, 'r> {
 }
 
 pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
+    // Validated Naga functions precede their callers. Unlike may_kill (a
+    // uniformity fact), structural Kill reachability includes uniform and
+    // unconditional discard. No source parser or separate shader IR is used.
+    let mut function_discards = Vec::with_capacity(module.functions.len());
+    for (_, function) in module.functions.iter() {
+        function_discards.push(block_may_discard(&function.body, &function_discards));
+    }
     module
         .entry_points
         .iter()
@@ -361,6 +412,21 @@ pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
                     _ => "unknown",
                 },
                 bindings,
+                effects: EntryEffects {
+                    // A helper used by another entry does not affect this entry.
+                    may_discard: block_may_discard(&entry.function.body, &function_discards),
+                    writes_depth: output_builtin(module, &entry.function, naga::BuiltIn::FragDepth),
+                    writes_sample_mask: output_builtin(
+                        module,
+                        &entry.function,
+                        naga::BuiltIn::SampleMask,
+                    ),
+                    writes_storage: module.global_variables.iter().any(|(handle, global)| {
+                        global.binding.is_some()
+                            && info.get_entry_point(index)[handle]
+                                .intersects(GlobalUse::WRITE | GlobalUse::ATOMIC)
+                    }),
+                },
             }
         })
         .collect()
@@ -379,6 +445,45 @@ mod tests {
         .unwrap();
         serde_json::to_value(derive(&module, &info)).unwrap()
     }
+    #[test]
+    fn entry_effects_follow_native_reachability_and_fragment_outputs() {
+        let result = reflect(
+            r#"
+@group(0) @binding(0) var<storage, read_write> colors: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> counter: atomic<u32>;
+fn masked(alpha: f32) { if alpha < 0.5 { discard; } }
+fn nested(alpha: f32) { masked(alpha); }
+fn unused() { colors[0] = vec4<f32>(1.0); discard; }
+@fragment fn opaque() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+@fragment fn clipped(@location(0) alpha: f32) -> @location(0) vec4<f32> {
+  nested(alpha); return vec4<f32>(1.0);
+}
+struct Output {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+  @builtin(sample_mask) mask: u32,
+}
+@fragment fn outputs() -> Output { return Output(vec4<f32>(1.0), 0.5, 1u); }
+fn store_color() { colors[0] = vec4<f32>(1.0); }
+@fragment fn storage_fs() -> @location(0) vec4<f32> { store_color(); return vec4<f32>(1.0); }
+@compute @workgroup_size(1) fn atomic_cs() { atomicAdd(&counter, 1u); }
+"#,
+        );
+        assert_eq!(
+            result[0]["effects"],
+            serde_json::json!({
+                "mayDiscard": false, "writesDepth": false, "writesSampleMask": false, "writesStorage": false,
+            })
+        );
+        assert_eq!(result[1]["effects"]["mayDiscard"], true);
+        assert_eq!(result[1]["effects"]["writesStorage"], false);
+        assert_eq!(result[2]["effects"]["writesDepth"], true);
+        assert_eq!(result[2]["effects"]["writesSampleMask"], true);
+        assert_eq!(result[3]["effects"]["writesStorage"], true);
+        assert_eq!(result[4]["effects"]["writesStorage"], true);
+        assert_eq!(result[4]["effects"]["mayDiscard"], false);
+    }
+
     #[test]
     fn entry_reads_follow_helper_struct_arguments_and_returns() {
         let result = reflect(
@@ -400,6 +505,7 @@ fn unused() -> f32 { return params.roughness; }
             result[1]["bindings"][0]["fields"],
             serde_json::json!(["alpha"])
         );
+        assert_eq!(result[1]["effects"]["mayDiscard"], true);
     }
     #[test]
     fn entry_reads_cover_dynamic_arrays_and_complete_aggregate_outputs() {

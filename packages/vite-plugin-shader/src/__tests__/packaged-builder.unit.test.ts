@@ -155,11 +155,9 @@ describe('standalone builder input ownership', () => {
         ]),
       ),
     );
-    fixtures.packaged.mockReturnValue({
-      entries: [{ hash: 'profile', wgsl: 'admitted engine shader', bindings: '[]' }],
-      materialShaders: [],
-      imports: {},
-    });
+    fixtures.packaged.mockReturnValue(
+      packaged([{ hash: 'profile', wgsl: 'admitted engine shader', bindings: '[]' }]),
+    );
     const directory = await mkdtemp(join(tmpdir(), 'packaged-authored-builder-'));
     try {
       await writeFile(

@@ -1,5 +1,10 @@
 #define_import_path forgeax_pbr::lighting_attenuation
 
+// Cluster slots and analytic ray rows reserve a zero word for default inverse-square.
+fn decodeSpotDecay(encoded : u32) -> f32 {
+  return select(bitcast<f32>(encoded), 2.0, encoded == 0u);
+}
+
 // Shared punctual light optics. Range is represented by the host-derived
 // inverse squared range; the shader never reconstructs authoring units.
 fn evalDistanceAttenuation(
@@ -36,10 +41,11 @@ fn evalSpotAttenuation(
   cosInner : f32,
   cosOuter : f32,
   invRangeSquared : f32,
+  decay : f32,
 ) -> f32 {
   let toLight = lightPos - worldPos;
   let dSquared = dot(toLight, toLight);
-  let distance = evalDistanceAttenuation(dSquared, invRangeSquared, 2.0, 1e-4);
+  let distance = evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4);
   let direction = normalize(select(vec3<f32>(0.0, 0.0, -1.0), toLight, dSquared > 1e-4));
   let cone = evalSpotCone(cosInner, cosOuter, dot(direction, -normalize(lightDir)));
   return distance * cone;
@@ -66,10 +72,11 @@ fn evalVolumeSpotRadiance(
   cosInner : f32,
   cosOuter : f32,
   invRangeSquared : f32,
+  decay : f32,
   worldPos : vec3<f32>,
 ) -> vec3<f32> {
   return colorTimesIntensity * evalSpotAttenuation(
-    lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared,
+    lightPos, lightDir, worldPos, cosInner, cosOuter, invRangeSquared, decay,
   );
 }
 

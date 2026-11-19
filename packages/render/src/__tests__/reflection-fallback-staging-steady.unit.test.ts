@@ -9,7 +9,7 @@ import type { SkylightSnapshot } from '../render-system-extract';
 type FakeResource = {
   fact: ReflectionProbeFact;
   activeFact: ReflectionProbeFact | undefined;
-  active: object | undefined;
+  pmrem: { active: object | undefined };
   filter: { activeGeneration: number };
 };
 
@@ -37,7 +37,7 @@ function probeFact(entityKey: number): ReflectionProbeFact {
 }
 
 function readyResource(fact: ReflectionProbeFact): FakeResource {
-  return { fact, activeFact: fact, active: {}, filter: { activeGeneration: 1 } };
+  return { fact, activeFact: fact, pmrem: { active: {} }, filter: { activeGeneration: 1 } };
 }
 
 function probeSelection(entityKey: number, normalizedDistance: number) {
@@ -56,7 +56,12 @@ function scene() {
     ['7', readyResource(near)],
     [
       '8',
-      { fact: pending, activeFact: undefined, active: undefined, filter: { activeGeneration: 0 } },
+      {
+        fact: pending,
+        activeFact: undefined,
+        pmrem: { active: undefined },
+        filter: { activeGeneration: 0 },
+      },
     ],
   ]);
   const selections = new Map<string, ReflectionProbeSelectionResult>();
@@ -199,7 +204,7 @@ describe('fallback projection staging at steady state', () => {
     ).toBe(5);
     expect(
       derivedBy(() => {
-        pending.active = {};
+        pending.pmrem.active = {};
         pending.activeFact = pending.fact;
       }),
     ).toBe(5);

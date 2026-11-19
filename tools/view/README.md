@@ -33,98 +33,95 @@ See the authoring design.
 
 Agent guidance: [forgeax-view-start](skills/forgeax-view-start/SKILL.md).
 
-### Published npm SDK
+`pnpm test` and `pnpm test:view` run both the top-level suites and each package's
+`src/*.test.mjs` and `src/__tests__` owner regressions. Paired Engine and View CI use these same entries.
 
-For a game created with the published SDK, use the
-[npm startup workflow](skills/forgeax-view-start/SKILL.md#published-npm-sdk).
-Resolve View's `host.pack.json` from the SDK CLI runtime, then use that same
-installed CLI and backend `--root` for `backend status/start`, `help view`,
-`view status` and `view start --project`. The View commands come from the
-selected Host Pack after backend readiness. Keep the backend's terminal session
-alive until the returned URL is open and the requested project/assets are
-visible. The skill supplies the exact commands, Windows path handling and
-failure sequence; published packages need no local source build.
+### One-file startup
 
-### Local Engine checkout
-
-For a known game project using a local Engine checkout, one script prepares
-the builds and services and returns the project URL as JSON:
+Use the View file included in the complete Engine or SDK installation. Source
+checkouts use the same location:
 
 ```sh
-node skills/forgeax-view-start/scripts/start-view.mjs \
-  --project /absolute/path/to/game \
-  --engine /absolute/path/to/forgeax-engine
+# Ordinary npm game, from its root:
+node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+# Explicit SDK or source installation:
+node /path/to/forgeax-engine/tools/view/start.mjs
+node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
+node /path/to/forgeax-engine/tools/view/start.mjs --new-instance --project /path/to/another-game
 ```
 
-Open its `url` in a browser to load the project. The script leaves the
-browser, Play, and independent AI runs to their separate operations. See the
-[skill](skills/forgeax-view-start/SKILL.md#local-engine-checkout-one-script) for
-reuse, restart, and failure behavior.
+View resolves its matching Engine from its installation and reads its own
+`host.pack.json`. Published outputs are built already. A source contributor can
+prepare missing outputs with
+`node tools/view/skills/forgeax-view-start/scripts/start-view.mjs [--project G]`;
+ordinary startup uses the root file with prepared outputs. See the
+[contributor guide](skills/forgeax-view-start/CONTRIBUTOR.md) for source preparation
+and native host integration. The published startup skill contains only consumer
+guidance; no global SDK or game-level launcher is required.
+
+The initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
+`project`, `url`, Backend `root` and `phase: preparing`. This is an announcement,
+not live status. `--help` starts no services; the file emits JSON without `--json`.
+An incomplete installation reports the missing output before allocating an instance.
 
 ### Service boundaries
 
-> [!IMPORTANT]
-> View requires an Engine backend started with `--host-pack` and a matching
-> View package. Published npm packages include built outputs; a local checkout
-> requires explicit builds. A running backend must be restarted to change its
-> selected host Pack.
+The file publishes a plain URL before backend readiness, then directly calls
+Engine's public `ensureDevKitView` API. Keep its terminal open while using the
+page. Ctrl+C closes that presentation and cancels its startup caller; H's existing
+process manager retains backend ownership. The presentation remains available
+for an explicit restart after backend termination.
 
-Select View's installed host Pack when starting Engine. The game project does
-not need a View asset or a `forge.json.roots.host` change:
+Stopping View retires its frontend lease while Engine retains the selected
+project. An explicit same-project restart recovers the exact lost session through
+Engine's guarded admission and publishes a new target. Other terminal failures
+remain visible and do not trigger automatic project admission.
+
+Default backend workspace H is shared per canonical Engine/View installation in
+the system temporary directory, independently of cwd and project G.
+`--new-instance` allocates a unique temporary H; explicit `--root H` takes
+precedence. Use the returned H explicitly for subsequent instance controls.
+Omitting G leaves a fresh owner unbound or preserves its existing project. The
+offline Shell can start the backend with optional G. A connected unbound Shell
+offers known/recent projects and a shallow folder picker; Next validates and
+opens the selection. A bound Shell retains the chooser in the header while
+showing Engine session preparation and readiness.
+
+DevKit owns the durable catalogue outside H and G. `forgeax project list`,
+`project import --path G` and `project browse [--path D]` use that same owner.
+Low-level lifecycle operations remain independently usable:
 
 ```sh
-forgeax backend start --root /path/to/workspace \
-  --host-pack /path/to/forgeax-view/host.pack.json --json
-forgeax view start --root /path/to/workspace --project /path/to/game --json
+forgeax backend status --root /path/to/backend --json
+forgeax backend start --root /path/to/backend --host-pack /path/to/view/host.pack.json --json
+forgeax view start --root /path/to/backend --project /path/to/game --json
+forgeax view status --root /path/to/backend --json
 ```
 
-The packaged `host.pack.json` identifies View's native plugin and its CLI
-declarations. The Engine backend loads that Pack from the View package; the
-game remains an ordinary project opened through the Engine workspace API.
-Use a separate workspace root when the game already declares its own host root.
-The selected host Pack is visible in `backend status`.
+Low-level `view start` requires a compatible running backend. Explicit G wins;
+otherwise H containing `forge.json` is admitted as G. This fallback is separate
+from file startup. Plain-URL connections adopt Engine's single shared
+project/session; the selected presenter alone places its exact document. An
+explicit `?project=/path` is an optional switch command guarded by the current
+session/generation. Refresh never replays writes, selection, camera or Play.
 
-Start the backend, then enable View:
-
-```sh
-forgeax backend status --root /path/to/workspace --json
-forgeax view start --root /path/to/workspace --json
-# Override the project when it differs from the backend workspace.
-forgeax view start --root /path/to/workspace --project /path/to/game --json
-# Optional explicit allocation on an already-running View.
-forgeax view project open --root /path/to/workspace --project /path/to/game --json
-```
-
-Open the `url` returned by `view start` in your browser. Explicit `--project`
-wins; otherwise a backend root containing `forge.json` is included automatically.
-The browser connects and opens that project without asking you to type its path.
-`view project open`
-allocates the project and returns its headed document as `projectTarget.url`;
-open that URL, or leave an already-open empty shell to navigate there.
-Only an unknown project requires the **Open project** dialog. Open a project before using
-any View page, including Runtime capture. `backend start` and `view start` do
-not open a project or run a game. These
-commands do not launch Playwright or install Chromium. Repeat `view start` to
-retrieve the URL of the existing interface.
-
-| Step | What success means |
+| Step | Completion evidence |
 |:--|:--|
-| `backend start` | Engine API and declared host plugins are available; no browser or renderer is required |
-| `view start` | View is serving its interface on the existing Engine Host |
-| Open the returned URL | The browser has loaded the Shell and connected its frontend plugins |
-| Open a project | Engine has opened the chosen project; its rendering target has its own readiness and errors |
-| Play or start an AI run | An explicit Engine execution target has started |
+| `start.mjs` returns | The independent Shell and launcher are listening |
+| Ensure finishes | Engine backend and View owner are available; optional G is admitted |
+| Open the plain URL | The retained Shell is visible and reports connection/project progress |
+| Project becomes ready | Engine's exact project target is ready; inspect requested assets |
+| Play or start an AI run | Its separately requested execution target produces its own evidence |
 
-When the request includes a project path, opening the Shell is only an
-intermediate state. Return the URL with that project intent, or run
-`view project open` and open its headed URL; wait for
-the project name, its directories, and an Engine target to appear. A final
-screenshot that still shows `No project`, an empty path, or a disabled
-**Open project** button does not prove that the project opened. A JSON result
-that only contains `projectTarget.url` does not prove the headed page has
-loaded. Scene preview
-and Play are later, separate gates: open a scene asset to verify the hierarchy,
-and select **Play** to verify the game target and rendered pixels.
+A URL or allocation receipt does not establish browser or rendering acceptance.
+Verify the requested project identity, assets and exact target in the actual page.
+A project failure remains visible while the Shell and selection stay available.
+The workspace owner publishes Engine project-status changes before any browser
+connects. Embedding fixtures first await the published document, then its Engine
+readiness marker before using an authenticated target; Shell mounting alone is
+not target readiness.
+An embedding Shell already inside that Engine target uses its current document's
+presentation; only an independent Shell creates a project document Frame.
 
 ### Use a local Engine checkout
 
@@ -139,8 +136,7 @@ cd /path/to/game
 pnpm link /path/to/forgeax-engine/packages/engine
 pnpm exec forgeax project engine use-local /path/to/forgeax-engine --json
 pnpm exec forgeax project engine check --json
-pnpm exec forgeax backend start --host-pack /path/to/forgeax-view/host.pack.json --json
-pnpm exec forgeax view start --json
+node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
 ```
 
 The explicit build and shader preparation happen before startup; the local
@@ -158,8 +154,7 @@ exports to TypeScript source. Resolve `node_modules/@forgeax/engine` and confirm
 that it belongs to the same checkout recorded by the binding. A healthy browser
 binding cannot prevent Node-side Pack imports from using a different checkout;
 that mismatch can add stale component defaults and make scene cooking fail.
-Open the returned View URL, then choose the game
-project explicitly. A running backend keeps its original Engine; apply a
+Open the returned plain View URL and verify the admitted game identity. A running backend keeps its original Engine; apply a
 binding change with explicit `backend stop` / `backend start`. Independent runs
 retain their own input version and lifecycle.
 
@@ -264,8 +259,10 @@ After detaching frontend authority, resident View shutdown terminates its owned
 WebSocket connections before joining server cleanup. A disappeared browser cannot
 retain the backend by leaving a close handshake unanswered.
 
-The API/CLI operations can be composed by a caller. No startup operation
-implicitly runs the following steps on its behalf.
+The low-level API/CLI operations remain independently usable. View's `start.mjs`
+composes backend startup and View admission through the public Engine API and
+retains the independent foreground presentation. Stop the foreground presentation with Ctrl+C. Stopping
+its backend leaves that presentation available for an explicit restart.
 
 ## Source integration and distribution
 
@@ -396,14 +393,13 @@ Search and filter preferences stay intact; manual navigation cancels the focus.
 Request cancellation and timeout retire the pending receipt and notify the exact
 frontend to stop remaining asynchronous navigation. A late visible acknowledgment
 cannot complete a cancelled request; an old cancellation cannot cancel a newer reveal.
-The entry URL uses `view-frontend`; after a project opens, the full View shell
-uses the exact `forgeax-workspace:<sessionId>:<targetId>` caller of the current
-headed project target. Both are page sessions, while other Engine target callers
-cannot claim the View page. Each fresh entry document opens its own Engine
-session from the confirmed project intent; it does not copy another document's
-headed target URL. Each target still owns one accepted browser caller. Refresh
-retains that target and replaces only its browser generation. View selection,
-resource opens and Display bindings belong to the exact frontend connection.
+The entry URL uses `view-frontend`; the full View shell in the headed project
+document uses the exact `forgeax-workspace:<sessionId>:<targetId>` caller. One
+top-level Shell at a time presents the backend-owned project document; other
+Shells observe the same Engine facts without creating another execution frame.
+The backend owns one project/session across page connections. Refresh retains
+that target and replaces only its browser generation. View selection, resource
+opens and Display bindings belong to the exact frontend connection.
 The Pack receipt rechecks the source revision and project at acknowledgment.
 
 > [!NOTE]
@@ -420,10 +416,11 @@ plugin, reporting capability errors when absent. `dev:ui` starts a private
 fixture Host and serves the same Viewer code path as `dev`. Its catalog and
 scene responses arrive through the Host workspace API. Use
 `pnpm dev -- --view-host <http-origin>` to connect the development Viewer to an
-existing compatible View Host. `--view-host` is the Host HTTP origin; Vite's
+existing foreground `start.mjs` service. `--view-host` is that service HTTP origin; Vite's
 `--host` option only selects the development server's bind address. The
-development server proxies the View bootstrap and health endpoints; workspace
-data uses the Host WebSocket.
+development server proxies bootstrap, health and the same-origin launcher to
+that service; workspace data uses the authenticated Host WebSocket. Start the
+service in a separate persistent terminal before the dev server.
 Material editing and runtime property writes are not implemented.
 
 Every scene entity uses the same grouped read-only Inspector. Its bounded top
@@ -490,6 +487,10 @@ existing dedicated previews. Its plugin controls install existing PluginAssets
 and inspect/dispose only the current View connection's native installations.
 Missing Engine support remains an explicit capability error.
 
+The panel retains the latest export's Blob URL until the next save or panel
+disposal, so an asynchronous browser download can consume its bytes. Repeated
+saves retain at most one export; replacing the project releases it.
+
 Operations address `projectTarget` and its World, independently of the selected
 preview or AI run. A project replacement resets drafts and aborts pending calls;
 closing this panel does not withdraw saved definitions or game installations.
@@ -503,7 +504,8 @@ supplies facts when no consumer binding is available. View does not derive bindi
 facts from source parameters or the producer's current generation.
 
 `node scripts/verify-runtime-content-ui.mjs` exercises the actual Chromium UI
-against explicit fixture responses, including save/import, failed generation
+against explicit fixture responses, including delayed downloads, export retirement,
+save/import, failed generation
 with an older successful result, plugin controls and replacement cancellation.
 Set `FORGEAX_BROWSER_EXECUTABLE` to an installed browser when necessary. These
 UI checks do not replace real Engine execution, rendered previews or SDK evidence.
@@ -587,8 +589,9 @@ that run. Stop/start selects a new input version; reload keeps the current
 snapshot. View tabs, focus, dimensions and lifecycle cannot alter execution.
 Observation displays capture time and stale images explicitly; output is bounded
 and shared per run, with no screenshot loop per viewer.
-After closing a browser, reopen the returned View URL. Its project intent opens
-the same project directly. A healthy Scene refresh retains Engine's project,
+After closing a browser, reopen the returned View URL. It attaches to the
+existing backend project/session; cached paths never reopen a project. A
+healthy Scene refresh retains Engine's project,
 session and target while the workspace reports restoration. Engine retires the
 old browser's resource previews and Play through their actual cleanup owners,
 then admits the authenticated replacement browser and advances
@@ -734,6 +737,12 @@ cancelled or absent lane cannot produce a successful aggregate. Parallel schedul
 allows work to overlap when runner capacity is available; it does not guarantee a
 queue time or total CI duration. No Engine checkout or browser is needed for the
 static gate itself.
+
+Daily browser CI runs two complete Play and Stop cycles in the plugin journey.
+The first covers initial rendering and the second verifies fresh target identity
+and teardown after reopening. The Play failure, independent run, capture and
+panel assertions use their original probes. The full diagnostic workload runs
+ten cycles. Set `FORGEAX_BROWSER_CI_LIGHTWEIGHT=0` to select it locally.
 
 | Constraint | Automated evidence |
 |:--|:--|
@@ -1165,9 +1174,11 @@ successes in one `CI-Repair-Rerun:` line using exact comma-separated check names
 (`architecture`, `build`, `browser (0)` through `browser (3)`). Current context
 and workflow contracts always run; every final lane must still succeed.
 
-The build transfers its ordinary point/SSAO shader inputs to fresh browser jobs.
-The existing producer verifies source, compiler, profile and payload digests
-before reuse; mismatches retain normal source compilation. Fresh browsers need
+The build transfers its ordinary point/SSAO shader inputs and verified Rapier
+packages to fresh browser jobs. The existing producers verify the source and
+payload before reuse. Both build and browser jobs may hydrate matching WASM
+releases using the Engine repository credential. Missing or rejected Rapier
+packages retain the Engine cache and pinned source fallback. Fresh browsers need
 a fixed Engine SHA and the original unexpired build artifact. Missing artifacts
 or a floating Engine revision require a fresh build; successful browser siblings
 retain their own evidence. The four original jobs and deadlines remain.

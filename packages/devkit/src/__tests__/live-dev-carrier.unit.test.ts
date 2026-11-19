@@ -1,6 +1,7 @@
+import type { SpawnOptions } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer as createTcpServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { tmpdir, totalmem } from 'node:os';
 import { join } from 'node:path';
 import {
   createExecutionReport,
@@ -14,6 +15,7 @@ import { err, ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { serializeBridgeResult } from '../../../app/src/internal/browser-remote-bridge';
+import { backendHeapEnv } from '../backend-heap.js';
 import { publicPageUrl } from '../live-bridge-url.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
@@ -114,7 +116,7 @@ const fixtures = vi.hoisted(() => {
     return true;
   });
   const project = { url: 'http://127.0.0.1:43124/' };
-  const spawn = vi.fn((_command: string, args: readonly string[]) => {
+  const spawn = vi.fn((_command: string, args: readonly string[], _options?: SpawnOptions) => {
     const generation = Number(args[3]);
     queueMicrotask(() => {
       child.stdout.emit(
@@ -722,6 +724,10 @@ describe('live DevKit borrowed carrier boundary', () => {
   });
 
   it('composes the existing live owner in process and waits for host cancellation cleanup', async () => {
+    if (process.geteuid !== undefined) {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+      vi.spyOn(process, 'geteuid').mockReturnValue(0);
+    }
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-in-process-'));
     // A second start waits for an existing `waiting` owner within this budget.
     await writeFile(
@@ -865,6 +871,10 @@ describe('live DevKit borrowed carrier boundary', () => {
         carrierGeneration: fixtures.target.generation,
         headless: false,
       });
+      const projectEnv = fixtures.spawn.mock.calls[0]?.[2]?.env;
+      expect(projectEnv?.NODE_OPTIONS).toBe(
+        backendHeapEnv(process.env, totalmem(), process.constrainedMemory()).NODE_OPTIONS,
+      );
       const projectArgs = fixtures.spawn.mock.calls[0]?.[1];
       expect(projectArgs).toEqual([
         expect.any(String),

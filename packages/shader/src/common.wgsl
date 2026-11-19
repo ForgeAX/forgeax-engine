@@ -93,7 +93,7 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog (skyOpacity, reserved); [1296..1312) opaque SSR work budgets.
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -158,7 +158,10 @@ struct View {
   // reference sample count (zero = LUT), sun radius, AP range km, flags (1 aerial perspective, 2 captured atmosphere sun).
   atmosphereControl : vec4<f32>,
   // x = Fog.skyOpacity: scale of the fog opacity on background pixels under
-  // an Atmosphere (1 = physical distant fog, 0 = sky unfogged); yzw reserved.
+  // an Atmosphere (1 = physical distant fog, 0 = sky unfogged).
+  // y = admitted Forward vertex-height route; zero retains screen/capture
+  // consumers. The View owner selects it, never the material author.
+  // z = perspective camera height density; w reserved.
   fogSky : vec4<f32>,
   // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
   ssrQuality : vec4<f32>,
@@ -299,7 +302,7 @@ struct DirectLightSlot {
   direction           : vec4<f32>, // row2: primary axis + second angular fact
   auxiliary           : vec4<f32>, // row3: auxiliary Rect axis
   metadata : vec4<u32>,
-  channels : vec4<u32>,
+  channels : vec4<u32>, // row5: lighting channels + Spot decay as f32 bits
 };
 
 @group(0) @binding(0) var<uniform> view : View;

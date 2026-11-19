@@ -17,6 +17,7 @@ const RENDER_MATERIAL_CONTRACTS = [
   'render-material',
   'render-material-with-scene-depth',
   'render-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
 ];
 
 describe('program binding contract selectors', () => {
@@ -57,6 +58,7 @@ describe('program binding contract selectors', () => {
 });
 
 interface ProgramCase {
+  readonly forwardFog?: 'height-vertex/1';
   readonly bindings: MaterialProgramBindingContract;
   readonly sceneDepth?: 'before-pass';
   readonly fog: boolean;
@@ -66,6 +68,21 @@ function programSource(program: ProgramCase): string {
   const view = program.bindings !== 'group-0' && program.bindings !== 'group-0-resource';
   const depthBinding =
     program.bindings === 'group-0-resource' ? 0 : program.sceneDepth === undefined ? undefined : 1;
+  if (program.forwardFog !== undefined)
+    return `#define_import_path game::contract_fog
+#pragma variant_axis ATMOSPHERE_AVAILABLE
+#pragma variant_axis STORAGE_BUFFER_AVAILABLE
+#import forgeax_view::common::{View, view}
+#import forgeax_view::fog::{vertex_height_fog, forward_fog}
+${depthBinding === undefined ? '' : `@group(0) @binding(${depthBinding}) var scene_depth: texture_depth_2d;`}
+struct VertexOutput { @builtin(position) position: vec4f, @location(0) worldFog: vec4f }
+@vertex fn vs_main(@location(0) position: vec3f) -> VertexOutput {
+  return VertexOutput(view.worldViewProj * vec4f(position,1), vec4f(position,vertex_height_fog(view,position)));
+}
+@fragment fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+  let depth = ${depthBinding === undefined ? '0.0' : 'textureLoad(scene_depth, vec2i(input.position.xy),0)'};
+  return vec4f(forward_fog(view,input.worldFog.xyz,input.worldFog.w,vec3f(0.3 + depth),1),1);
+}`;
   return `#define_import_path game::contract_fog
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
@@ -102,6 +119,7 @@ async function cookProgram(program: ProgramCase) {
           program: {
             module: 'game::contract_fog',
             bindings: program.bindings,
+            ...(program.forwardFog === undefined ? {} : { forwardFog: program.forwardFog }),
             ...(program.sceneDepth === undefined ? {} : { sceneDepth: program.sceneDepth }),
           },
           renderState: { tags: { LightMode: 'Forward' }, queue: 3000, depthWriteEnabled: false },
@@ -117,6 +135,7 @@ async function cookProgram(program: ProgramCase) {
         backend: selection.context.backend,
         capability: selection.context.capability,
         bindings: selection.abi?.bindings,
+        forwardFog: selection.abi?.forwardFog,
         wgsl: new TextDecoder().decode(cooked.artifacts[entry.artifact.path]?.bytes),
       })),
     );
@@ -135,6 +154,20 @@ const VIEW_CASES: readonly ProgramCase[] = [
 ];
 
 describe('group-0 and View programs on the uniform fallback', () => {
+  it.each([
+    { bindings: 'view-only', fog: true, forwardFog: 'height-vertex/1' },
+    {
+      bindings: 'view-and-scene-depth',
+      sceneDepth: 'before-pass',
+      fog: true,
+      forwardFog: 'height-vertex/1',
+    },
+  ] as const)('publishes the explicit vertex fog contract on every $bindings selection', async (program) => {
+    const rows = await cookProgram(program);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.forwardFog).toBe('height-vertex/1');
+    expect(new Set(rows.map((row) => row.backend))).toEqual(new Set(['webgpu', 'webgl2']));
+  });
   it.each(
     VIEW_CASES,
   )('cooks $bindings (fog: $fog) for both fallback backends inside its contract', async (program) => {

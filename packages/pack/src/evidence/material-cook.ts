@@ -52,6 +52,10 @@ export interface MaterialCookRasterContext {
   readonly pipeline: 'forward' | 'deferred';
   /** Absent is the ordinary material ABI; enabled by the receiving renderer. */
   readonly visibleSurface?: true;
+  /** Receiving-view clipping; material-local planes remain independent. Absence is off. */
+  readonly viewClipping?: true;
+  /** Scene-index cross-fade coverage, independent of receiving-view clipping. Absence is off. */
+  readonly lodCoverage?: true;
   readonly geometry: 'mesh' | 'skinned' | 'sprite' | 'sprite-instances' | 'terrain';
   readonly pass: 'forward' | 'shadow' | 'depth';
   readonly profile: 'forgeax-material-wgsl-v1';
@@ -966,7 +970,7 @@ export function validateMaterialCookProgramContext(
     instrumentation: ['none', 'validation'],
   };
   for (const field of Object.keys(context)) {
-    if (field === 'visibleSurface') {
+    if (field === 'visibleSurface' || field === 'viewClipping' || field === 'lodCoverage') {
       if (context[field] !== true) return invalid(`context.${field}`, context[field]);
     } else if (!(field in fields)) return invalid(`context.${field}`, context[field]);
   }

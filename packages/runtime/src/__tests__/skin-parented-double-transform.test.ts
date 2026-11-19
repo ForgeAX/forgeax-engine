@@ -274,8 +274,9 @@ describe('skin parented double transform (AC-01)', () => {
     expect(src).toMatch(specCorrectWorldPos);
 
     // Post-M1 spec-correct normal: only skinNormal3x3 * in.normal (no instanceLocal /
-    // normalMatrix factor).
-    const specCorrectNormal = /out\.worldNormal\s*=\s*normalize\(skinNormal3x3\s*\*\s*in\.normal\)/;
+    // normalMatrix factor); the fourth component carries vertex height fog.
+    const specCorrectNormal =
+      /out\.worldNormal\s*=\s*vec4<f32>\(normalize\(skinNormal3x3\s*\*\s*in\.normal\),\s*vertex_height_fog\(view,\s*skinnedLocal\.xyz\)\)/;
     expect(src).toMatch(specCorrectNormal);
   });
 });

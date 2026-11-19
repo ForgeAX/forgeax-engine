@@ -24,7 +24,9 @@ describe('material schema vocabulary', () => {
     expect(passFields).toEqual(['name', 'outputs', 'program', 'renderState']);
     expect(programFields).toEqual([
       'bindings',
+      'forwardFog',
       'fragmentEntry',
+      'gbuffer',
       'module',
       'moduleSlots',
       'sceneDepth',

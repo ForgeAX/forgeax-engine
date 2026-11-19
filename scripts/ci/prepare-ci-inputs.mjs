@@ -19,6 +19,18 @@ import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
+// Producer profiles bind exact compiler bytes, not merely a common Rust source key.
+export async function restoreShaderCompiler(root, compiler) {
+  await verifyProvenance({ pkgDirectory: compiler });
+  const destination = join(root, 'packages/wgpu-wasm/pkg');
+  rmSync(destination, { recursive: true, force: true });
+  cpSync(compiler, destination, { recursive: true });
+  await prepareBrowserGlueAsset(
+    join(destination, 'wgpu_wasm.js'),
+    join(root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'),
+  );
+}
+
 export async function prepareInputs({
   restore,
   rebuild,
@@ -165,17 +177,7 @@ export async function main(
   };
   const publishSharedInput = async () => {
     const compiler = join(stage, shared, 'compiler');
-    if (existsSync(compiler)) {
-      const destination = join(root, 'packages/wgpu-wasm/pkg');
-      rmSync(destination, { recursive: true, force: true });
-      cpSync(compiler, destination, { recursive: true });
-      // Same-source producers may emit different glue. Keep the runtime's raw
-      // derived asset paired with the exact compiler admitted above.
-      await prepareBrowserGlueAsset(
-        join(destination, 'wgpu_wasm.js'),
-        join(root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'),
-      );
-    }
+    if (existsSync(compiler)) await restoreShaderCompiler(root, compiler);
     rmSync(join(root, shared), { recursive: true, force: true });
     cpSync(join(stage, shared), join(root, shared), { recursive: true });
   };
@@ -224,6 +226,9 @@ export async function main(
                 ids,
                 '--path',
                 path,
+                // Leave time for a fresh route inside the shared wall deadline.
+                '--idle-timeout-ms',
+                '25000',
               ],
               { timeoutMs, env },
             );

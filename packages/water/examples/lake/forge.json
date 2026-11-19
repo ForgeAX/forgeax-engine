@@ -1,0 +1,12 @@
+{
+  "id": "lake-starter",
+  "name": "Lake Starter",
+  "schemaVersion": "3.0.0",
+  "assetRoots": [
+    "assets/lake"
+  ],
+  "assetLibraries": ["@forgeax/engine/content"],
+  "roots": {
+    "engine": "f3a09c40-6a45-50b9-8205-21dd4d369a93"
+  }
+}

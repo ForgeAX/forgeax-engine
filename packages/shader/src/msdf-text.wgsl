@@ -3,7 +3,7 @@
 #pragma variant_axis CLUSTER_FORWARD_AVAILABLE
 
 #import forgeax_view::common::{View, Mesh, view, meshes, sampleMaterialTexture}
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog}
 
 // @forgeax/engine-shader - msdf-text.wgsl
 // (feat-20260531-world-space-msdf-text-rendering M5 / w20).
@@ -66,7 +66,8 @@ struct Material {
   // distanceRange: atlas-space distance-field width (msdfgen -pxrange output,
   // = sidecar.common.distanceRange). atlasSize.xy carries the atlas pixel
   // dimensions so screenPxRange can convert atlas units to screen pixels.
-  // distanceRange in .x; atlasSize in .yz; .w padding (std140 vec4 align).
+  // distanceRange in .x; atlasSize in .yz; .w = orientation (0 camera-facing billboard,
+  // 1 follows the entity's world matrix).
   distanceRange : vec4<f32>,
   baseColorTextureCoordinatesTransform : vec4<f32>,
   baseColorTextureCoordinatesMetadata : vec4<f32>,
@@ -92,7 +93,7 @@ struct VsIn {
 struct VsOut {
   @builtin(position) clip : vec4<f32>,
   @location(0) uv         : vec2<f32>,
-  @location(1) worldPos   : vec3<f32>,
+  @location(1) worldPos   : vec4<f32>,
 };
 
 @vertex
@@ -123,11 +124,13 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
   // Expand the glyph quad's local layout coordinate along the world-space
   // right / up basis (Finding 6: billboard-rotate then translate). pos.z is
   // 0 for every baked glyph vertex so it contributes nothing.
-  let world_pos = anchor + right * in.pos.x + up * in.pos.y;
+  let billboard_pos = anchor + right * in.pos.x + up * in.pos.y;
+  let oriented_pos = (model * vec4<f32>(in.pos, 1.0)).xyz;
+  let world_pos = select(billboard_pos, oriented_pos, material.distanceRange.w > 0.5);
   var out : VsOut;
   out.clip = view.worldViewProj * vec4<f32>(world_pos, 1.0);
   out.uv = in.uv;
-  out.worldPos = world_pos;
+  out.worldPos = vec4<f32>(world_pos, vertex_height_fog(view, world_pos));
   return out;
 }
 
@@ -163,7 +166,7 @@ fn fs_main_hdr(in : VsOut) -> @location(0) vec4<f32> {
   let alpha = clamp(dist + 0.5, 0.0, 1.0) * material.tintColor.a;
   // Premultiplied output: rgb already multiplied by alpha for srcFactor=ONE /
   // dstFactor=ONE_MINUS_SRC_ALPHA (wiki section 6 SSOT).
-  return vec4<f32>(translucent_fog(view, in.worldPos, material.tintColor.rgb * alpha, alpha), alpha);
+  return vec4<f32>(forward_fog(view, in.worldPos.xyz, in.worldPos.w, material.tintColor.rgb * alpha, alpha), alpha);
 }
 
 // linear_to_srgb: per-channel IEC 61966-2-1 transfer function for the LDR
@@ -183,7 +186,7 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
   let sd = median(msd.r, msd.g, msd.b);
   let dist = (sd - 0.5) * screen_px_range(in.uv);
   let alpha = clamp(dist + 0.5, 0.0, 1.0) * material.tintColor.a;
-  let premult = translucent_fog(view, in.worldPos, material.tintColor.rgb * alpha, alpha);
+  let premult = forward_fog(view, in.worldPos.xyz, in.worldPos.w, material.tintColor.rgb * alpha, alpha);
   return vec4<f32>(
     linear_to_srgb(premult.r),
     linear_to_srgb(premult.g),

@@ -1,8 +1,10 @@
 export { assetLibrarySourceIdentity } from './asset-libraries.js';
 export { createDevKitBackend, type DevKitBackend } from './backend.js';
+export { retainBackendLifetime } from './backend-lifetime.js';
 export {
   callDevKitBackend,
   devKitBackendStatus,
+  ensureDevKitView,
   startDevKitBackend,
   stopDevKitBackend,
 } from './backend-process.js';
@@ -76,6 +78,21 @@ export {
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
+export {
+  browseProjectDirectories,
+  type KnownProject,
+  type KnownProjectEntry,
+  type KnownProjectError,
+  type KnownProjectErrorCode,
+  type KnownProjectResult,
+  KnownProjectStoreError,
+  knownProjectStorePath,
+  listKnownProjects,
+  type ProjectDirectoryEntry,
+  type ProjectDirectoryListing,
+  registerKnownProject,
+  rememberKnownProject,
+} from './known-projects.js';
 export type {
   LiveDevBackend,
   LiveDevDaemonOptions,

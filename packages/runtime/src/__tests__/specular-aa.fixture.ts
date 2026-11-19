@@ -404,8 +404,8 @@ export async function verifySpecularAaGBuffer(
     if (target?.attachments === null || target === undefined)
       throw new Error('missing fs_gbuffer work');
     const normalRoughness = target.attachments.colorViewHandleIds[1];
-    const reflectance = target.attachments.colorViewHandleIds[2];
-    if (normalRoughness === undefined || reflectance === undefined)
+    const albedoMetallic = target.attachments.colorViewHandleIds[3];
+    if (normalRoughness === undefined || albedoMetallic === undefined)
       throw new Error('missing packed G-buffer');
     const sources = geometry.map(
       (work) => work.pipeline.shaders.find((shader) => shader.stage === 'fragment')?.source ?? '',
@@ -422,7 +422,7 @@ export async function verifySpecularAaGBuffer(
         const reads = (
           await replay.readAtWorks([
             { resourceId: normalRoughness, workIndex: target.workIndex },
-            { resourceId: reflectance, workIndex: target.workIndex },
+            { resourceId: albedoMetallic, workIndex: target.workIndex },
           ])
         ).unwrap();
         const words = (index: number, resourceId: string, format: 'r32uint' | 'rg32uint') => {
@@ -436,13 +436,13 @@ export async function verifySpecularAaGBuffer(
               texels.bytes.byteOffset + texels.bytes.byteLength,
             ),
           );
-          // Reflectance stores mixed and dielectric response in separate words;
-          // this classifier consumes mixed F0 in the red channel.
-          return format === 'rg32uint' ? packed.filter((_, index) => index % 2 === 0) : packed;
+          return packed;
         };
+        const normal = words(0, normalRoughness, 'rg32uint');
         return {
-          roughness: words(0, normalRoughness, 'r32uint'),
-          f0: words(1, reflectance, 'rg32uint'),
+          roughness: normal.filter((_, index) => index % 2 === 1).map((value) => value & 255),
+          covered: normal.filter((_, index) => index % 2 === 0).map((value) => value & 0x40000000),
+          albedoMetallic: words(1, albedoMetallic, 'r32uint'),
         };
       } finally {
         (await replay.dispose()).unwrap();
@@ -455,17 +455,17 @@ export async function verifySpecularAaGBuffer(
       encodeTape(falsifier, { compression: 'gzip' }).unwrap(),
     );
     const off = await read(falsifier, 'falsifier');
-    // Metal writes a bright F0 byte; the dielectric backdrop keeps F0 near 0.04.
+    // Classify the metal sphere by its authored metallic channel, independently of dielectric F0.
     const sphere: number[] = [];
     const backdrop: number[] = [];
     const sphereOff: number[] = [];
     const backdropOff: number[] = [];
     for (let i = 0; i < live.roughness.length; i++) {
-      const covered = (live.roughness[i] ?? 0) !== 0 || (live.f0[i] ?? 0) !== 0;
+      const covered = (live.covered[i] ?? 0) !== 0;
       if (!covered) continue;
-      const metal = ((live.f0[i] ?? 0) & 255) > 128;
-      (metal ? sphere : backdrop).push((live.roughness[i] ?? 0) >>> 24);
-      (metal ? sphereOff : backdropOff).push((off.roughness[i] ?? 0) >>> 24);
+      const metal = (live.albedoMetallic[i] ?? 0) >>> 24 > 128;
+      (metal ? sphere : backdrop).push(live.roughness[i] ?? 0);
+      (metal ? sphereOff : backdropOff).push(off.roughness[i] ?? 0);
     }
     return {
       digest: encoded.digest,

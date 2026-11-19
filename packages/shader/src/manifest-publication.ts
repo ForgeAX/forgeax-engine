@@ -1,8 +1,21 @@
 import { isShaderEntryPointReads, isShaderReflection, ShaderSource } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 
+// Publication owns source readers for both template and fragment-backed rows.
+// Keeping this leaf independent of template admission also permits native Node
+// to read source publications without loading a compiler or a bundler resolver.
+const boundSourceReaders = new WeakMap<object, () => ShaderSource>();
+
+export function bindManifestShaderSource(row: object, read: () => ShaderSource): void {
+  boundSourceReaders.set(row, read);
+}
+
+export function boundManifestShaderSource(row: object): ShaderSource | undefined {
+  return boundSourceReaders.get(row)?.();
+}
+
 const digestPattern = /^[a-f0-9]{64}$/;
-export const SHADER_MANIFEST_PUBLICATION_VERSION = '5.0.0' as const;
+export const SHADER_MANIFEST_PUBLICATION_VERSION = '6.0.0' as const;
 
 const sourceDomain = Uint8Array.from('forgeax.shader.source.v4\0', (char) => char.charCodeAt(0));
 
@@ -32,39 +45,50 @@ export async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise
     : new Uint8Array(await subtle.digest('SHA-256', bytes));
 }
 
-// Verified fragment arrays already own each source independently of other rows.
-// Each verified fragment array belongs to exactly one published source digest.
-const selectedSources = new WeakMap<readonly string[], ShaderSource>();
-const selectedSourcesByRow = new WeakMap<object, readonly string[]>();
-const publishedDigests = new WeakMap<readonly string[], string>();
+/** One immutable table and compact indices; expand references only for a selected source. */
+interface PublishedSource {
+  readonly pool: readonly string[];
+  readonly indices: Uint32Array;
+  readonly digest: string;
+}
+const selectedSources = new WeakMap<PublishedSource, ShaderSource>();
+const selectedSourcesByRow = new WeakMap<object, PublishedSource>();
 const deferredReflectionRows = new WeakSet<object>();
 /** True while a row's reflection is validated on first read instead of at admission. */
 export function hasDeferredReflection(row: object): boolean {
   return deferredReflectionRows.has(row);
 }
 
-function selectSource(fragments: readonly string[]): ShaderSource {
-  let source = selectedSources.get(fragments);
-  if (source === undefined) {
-    source = new ShaderSource(fragments, publishedDigests.get(fragments));
-    selectedSources.set(fragments, source);
-  }
-  return source;
+function sourceBlocks(source: PublishedSource): string[] {
+  return Array.from(source.indices, (index) => source.pool[index] as string);
 }
 
-/** Bound to the fragment owner, so detached and foreign-receiver reads stay independent. */
-function readSourceText(this: readonly string[]): string {
+function selectSource(source: PublishedSource): ShaderSource {
+  let selected = selectedSources.get(source);
+  if (selected === undefined) {
+    selected = new ShaderSource(sourceBlocks(source), source.digest);
+    selectedSources.set(source, selected);
+  }
+  return selected;
+}
+
+/** Bound to one source owner, never the publication's maps or unused source bodies. */
+function readSourceText(this: PublishedSource): string {
   return selectSource(this).read();
 }
 
 /** Utility rows use the same admitted source owner as material variants. */
 export function manifestShaderSource(row: { readonly wgsl: string }): ShaderSource {
+  const templateSource = boundManifestShaderSource(row);
+  if (templateSource !== undefined) return templateSource;
   const fragments = selectedSourcesByRow.get(row);
   return fragments === undefined ? new ShaderSource([row.wgsl]) : selectSource(fragments);
 }
 
 /** Read the verified fragment owner without retaining its expanded body. */
 export function materialShaderSource(row: { readonly composedWgsl: string }): ShaderSource {
+  const templateSource = boundManifestShaderSource(row);
+  if (templateSource !== undefined) return templateSource;
   const fragments = selectedSourcesByRow.get(row);
   return fragments === undefined ? new ShaderSource([row.composedWgsl]) : selectSource(fragments);
 }
@@ -77,7 +101,8 @@ export function materialShaderSourceEquals(
   const fragments = selectedSourcesByRow.get(row);
   if (fragments === undefined) return row.composedWgsl === source;
   let offset = 0;
-  for (const fragment of fragments) {
+  for (const index of fragments.indices) {
+    const fragment = fragments.pool[index] as string;
     if (!source.startsWith(fragment, offset)) return false;
     offset += fragment.length;
   }
@@ -90,7 +115,9 @@ export function materialShaderSourceMatches(
   pattern: RegExp,
 ): boolean {
   const fragments = selectedSourcesByRow.get(row);
-  return pattern.test(fragments === undefined ? row.composedWgsl : fragments.join(''));
+  return pattern.test(
+    fragments === undefined ? row.composedWgsl : sourceBlocks(fragments).join(''),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -119,8 +146,9 @@ type PublicationRows = {
 };
 
 type PublicationSources = {
-  readonly fragments: Map<string, readonly string[]>;
-  readonly indices: Map<string, readonly number[]>;
+  readonly owners: Map<string, PublishedSource>;
+  readonly fragments: ReadonlyMap<string, readonly string[]>;
+  readonly indices: ReadonlyMap<string, readonly number[]>;
 };
 
 function checkReferenceIndex(
@@ -235,33 +263,37 @@ function resolvePublicationSources(
   sources: Record<string, unknown>,
   fragments: readonly string[],
 ): PublicationSources {
-  const sourceFragments = new Map<string, readonly string[]>();
-  const sourceIndices = new Map<string, readonly number[]>();
+  const owners = new Map<string, PublishedSource>();
   const usedFragments = new Set<number>();
+  const pool = fragments;
   for (const digest of referenced) {
     const indices = Object.hasOwn(sources, digest) ? sources[digest] : undefined;
     if (
       !Array.isArray(indices) ||
       indices.length === 0 ||
-      !indices.every(
-        (index) => Number.isSafeInteger(index) && index >= 0 && index < fragments.length,
-      )
+      !indices.every((index) => Number.isSafeInteger(index) && index >= 0 && index < pool.length)
     ) {
       throw new Error(`Invalid shader source fragments: ${digest}`);
     }
-    const ownedIndices = [...indices] as number[];
+    const ownedIndices = Uint32Array.from(indices);
     for (const index of ownedIndices) usedFragments.add(index);
-    const blocks = ownedIndices.map((index) => fragments[index] as string);
-    if (!blocks.some((fragment) => fragment.length > 0)) {
+    if (!ownedIndices.some((index) => (pool[index] as string).length > 0)) {
       throw new Error(`Shader source is empty: ${digest}`);
     }
-    sourceFragments.set(digest, blocks);
-    sourceIndices.set(digest, ownedIndices);
+    owners.set(digest, { pool, indices: ownedIndices, digest });
   }
-  if (usedFragments.size !== fragments.length) {
+  if (usedFragments.size !== pool.length)
     throw new Error('Shader fragment table has unused entries');
-  }
-  return { fragments: sourceFragments, indices: sourceIndices };
+  // These public diagnostic projections are snapshots, not retained runtime storage.
+  return {
+    owners,
+    get fragments() {
+      return new Map([...owners].map(([digest, source]) => [digest, sourceBlocks(source)]));
+    },
+    get indices() {
+      return new Map([...owners].map(([digest, source]) => [digest, Array.from(source.indices)]));
+    },
+  };
 }
 
 function deferredReflectionReader(reflections: readonly unknown[]): (index: number) => unknown {
@@ -320,10 +352,9 @@ function expandPublicationRows(
     if (deferReflections && reflectionIndex !== undefined) {
       attachDeferredReflection(result, reflectionIndex as number, admitReflection);
     }
-    const fragments = sources.fragments.get(digest) as readonly string[];
+    const fragments = sources.owners.get(digest) as PublishedSource;
     let getter = selected.get(digest);
     if (getter === undefined) {
-      publishedDigests.set(fragments, digest);
       getter = readSourceText.bind(fragments);
       selected.set(digest, getter);
     }
@@ -367,10 +398,64 @@ function assertPublicationShape(
     !value.entryPoints.every(isShaderEntryPointReads) ||
     (value.reflections !== undefined &&
       (!Array.isArray(value.reflections) ||
-        (options.deferReflections !== true && !value.reflections.every(isShaderReflection))))
+        (value.schemaVersion === '5.0.0' &&
+          options.deferReflections !== true &&
+          !value.reflections.every(isShaderReflection))))
   ) {
     throw new Error('Invalid shader manifest publication');
   }
+}
+
+/** Resolve transport references without duplicating shared compiler ABI objects. */
+function expandReflectionFacts(
+  value: PublicationShape,
+  entryPoints: readonly unknown[],
+  referencedReads: Set<number>,
+  owned: boolean,
+): unknown[] {
+  if (!Array.isArray(value.reflectionBindings))
+    throw new Error('Invalid shader reflection bindings table');
+  const snapshot = owned
+    ? value
+    : structuredClone({
+        reflections: value.reflections ?? [],
+        reflectionBindings: value.reflectionBindings,
+      });
+  const bindings = sharePublicationFacts(snapshot.reflectionBindings as unknown[]);
+  const used = new Set<number>();
+  const rows = (snapshot.reflections ?? []).map((row: unknown) => {
+    if (
+      !isRecord(row) ||
+      !Array.isArray(row.bindingIndices) ||
+      Object.hasOwn(row, 'boundGlobals') ||
+      Object.hasOwn(row, 'entryPoints')
+    )
+      throw new Error('Invalid shader reflection fact references');
+    const { bindingIndices, entryPointsIndex, ...metadata } = row;
+    const globals = bindingIndices.map((index: unknown) => {
+      if (!Number.isSafeInteger(index) || Number(index) < 0 || Number(index) >= bindings.length)
+        throw new Error('Invalid shader reflection binding reference');
+      used.add(Number(index));
+      return bindings[Number(index)];
+    });
+    checkReferenceIndex(
+      row,
+      'entryPointsIndex',
+      entryPoints.length,
+      referencedReads,
+      'Invalid shader reflection entry points reference',
+    );
+    return {
+      ...metadata,
+      boundGlobals: globals,
+      ...(entryPointsIndex === undefined
+        ? {}
+        : { entryPoints: entryPoints[Number(entryPointsIndex)] }),
+    };
+  });
+  if (used.size !== bindings.length)
+    throw new Error('Shader reflection bindings table has unused entries');
+  return rows;
 }
 
 /** Pure expansion shared by browser admission and synchronous packaged-input loading. */
@@ -395,12 +480,15 @@ export function expandShaderManifestPublication(
       sourceIndices: new Map(),
     };
   }
-  if (value.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION)
+  if (
+    value.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION &&
+    value.schemaVersion !== '5.0.0'
+  )
     throw new Error(
       `Unsupported shader manifest publication version: ${String(value.schemaVersion)}`,
     );
   assertPublicationShape(value, options);
-  const fragments = [...value.fragments] as string[];
+  const fragments = Object.freeze([...value.fragments]) as readonly string[];
   const sources = value.sources;
   // Own and freeze the pooled ABI facts once before verification yields. Registry
   // keys can then share the admitted receipt instead of cloning its type tree
@@ -412,20 +500,27 @@ export function expandShaderManifestPublication(
   const entryPoints = sharePublicationFacts(structuredClone(value.entryPoints));
   freezeTree(entryPoints);
   const deferReflections = options.deferReflections === true;
-  // Ownership and validation timing are independent: strict owned JSON still passed
-  // the complete reflection checks above. Borrowed input needs its own snapshot.
-  const reflections = sharePublicationFacts(
-    (deferReflections || options.ownedReflections === true
-      ? (value.reflections ?? [])
-      : structuredClone(value.reflections ?? [])) as unknown[],
-  );
-  if (!deferReflections) freezeTree(reflections);
+  // Owned JSON can share immutable facts immediately without eagerly validating
+  // each reflection. Borrowed input first needs its independent snapshot.
   const referenced: PublicationReferences = {
     sources: new Set(),
     receipts: new Set(),
     entryPoints: new Set(),
     reflections: new Set(),
   };
+  const reflections =
+    value.schemaVersion === SHADER_MANIFEST_PUBLICATION_VERSION
+      ? expandReflectionFacts(value, entryPoints, referenced.entryPoints, deferReflections)
+      : sharePublicationFacts(
+          (deferReflections || options.ownedReflections === true
+            ? (value.reflections ?? [])
+            : structuredClone(value.reflections ?? [])) as unknown[],
+        );
+  if (!deferReflections) {
+    freezeTree(reflections);
+    if (!reflections.every(isShaderReflection))
+      throw new Error('Invalid shader manifest publication');
+  }
   const tables = { receipts, entryPoints, reflections };
   const rows = collectPublicationRows(value.entries, value.materialShaders, tables, referenced);
   assertPublicationReferences(referenced, sources, receipts, entryPoints, reflections);
@@ -441,9 +536,13 @@ export function expandShaderManifestPublication(
   );
   return {
     manifest,
-    sourceFragments: resolved.fragments,
+    get sourceFragments() {
+      return resolved.fragments;
+    },
     fragmentTable: fragments,
-    sourceIndices: resolved.indices,
+    get sourceIndices() {
+      return resolved.indices;
+    },
   };
 }
 

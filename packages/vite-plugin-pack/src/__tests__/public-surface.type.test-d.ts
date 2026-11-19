@@ -16,6 +16,7 @@ describe('vite-plugin-pack public type surface', () => {
     expectTypeOf(pluginPack().rebind).toBeFunction();
     expectTypeOf<keyof PluginPackOptions>().toEqualTypeOf<
       | 'roots'
+      | 'enginePackageRoot'
       | 'takeInitialSourceSnapshot'
       | 'producerReadiness'
       | 'importers'

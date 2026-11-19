@@ -59,7 +59,7 @@ export function _setZstdEncoderImporter(next?: ZstdImporter): void {
 }
 
 /**
- * Compress bytes with zstd using a fixed compression level (level 3 = default).
+ * Compress bytes with zstd using a selected compression level (default 3).
  *
  * Build-time only. Uses @bokuweb/zstd-wasm pinned at 0.0.27 for
  * deterministic output (same input + same level = byte-identical output).
@@ -68,10 +68,18 @@ export function _setZstdEncoderImporter(next?: ZstdImporter): void {
  * Returns `{ ok: false, error: { code: 'decompression-failed', ... } }` on failure
  * (encoding failures mapped to decompression-failed per D-8, same code different detail).
  */
-export async function compressZstd(bytes: Uint8Array): Promise<CodecResult<Uint8Array>> {
+export async function compressZstd(
+  bytes: Uint8Array,
+  options: { readonly level?: number } = {},
+): Promise<CodecResult<Uint8Array>> {
   try {
+    const level = options.level ?? 3;
+    if (!Number.isInteger(level) || level < 1 || level > 19)
+      return codecError('decompression-failed', {
+        reason: 'zstd compression level must be an integer in [1, 19]',
+      });
     const zstd = await getZstd();
-    const result = zstd.compress(bytes, 3);
+    const result = zstd.compress(bytes, level);
     return { ok: true, value: result };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);

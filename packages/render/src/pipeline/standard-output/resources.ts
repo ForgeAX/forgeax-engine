@@ -1,5 +1,15 @@
-import { err, ok, type Result, RhiError, type RhiQueue } from '@forgeax/engine-rhi';
+import {
+  type Buffer,
+  err,
+  ok,
+  type Result,
+  type RhiDevice,
+  RhiError,
+  type RhiQueue,
+} from '@forgeax/engine-rhi';
+import { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
+import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../../gpu-usage';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
@@ -7,10 +17,9 @@ import type { CameraSnapshot } from '../../render-contract';
 import { recordContext } from '../../world/view-record-context';
 import {
   abortAutoExposureGpuFrame,
-  beginAutoExposureGpuFrame,
-  completeAutoExposureGpuFrame,
   createAutoExposureGpuResources,
   retireAutoExposureGpuResources,
+  submitAutoExposureGpuFrame,
   writeAutoExposureParameters,
 } from './auto-exposure/gpu';
 import { autoExposureCapabilityFailure } from './auto-exposure/inspection';
@@ -33,6 +42,32 @@ import {
  * `commitStandardOutputSubmission` after an accepted submit, and discarded by
  * the failure paths below. No other module writes the pending fields.
  */
+
+/** View ownership keeps the same output buffer across graph-only changes. */
+export function ensureStandardOutputParameters(
+  state: RenderFrameState,
+  device: RhiDevice,
+): Result<Buffer, RhiError> {
+  if (state.standardOutputParameters?.device === device)
+    return ok(state.standardOutputParameters.buffer);
+  if (state.standardOutputParameters !== undefined)
+    return err(
+      new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'native output parameters belong to the current view device',
+        hint: 'reset the view output resources before adopting another device',
+      }),
+    );
+  const created = device.createBuffer({
+    label: 'standard-output-parameters',
+    size: STANDARD_OUTPUT_V2_PARAMS_LAYOUT.byteSize,
+    usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    mappedAtCreation: false,
+  });
+  if (!created.ok) return created;
+  state.standardOutputParameters = { device, buffer: created.value };
+  return created;
+}
 
 /** Ordinary frames and detached recovery graphs prepare the same output resources. */
 export function prepareStandardOutputResources(
@@ -140,6 +175,7 @@ export function resetStandardOutputForDeviceLoss(
     deviceEpoch,
   });
   discardStandardOutputStates(state);
+  state.standardOutputParameters = undefined;
   state.pendingAutoExposureGpuResources = undefined;
   state.autoExposureGpuResources = undefined;
   state.pendingStandardLutGpuResources = undefined;
@@ -153,11 +189,12 @@ export function resetStandardOutputForDeviceLoss(
  * compile callback can publish a value early.
  */
 function autoExposureHistoryIdentity(
-  frameState: RenderFrameState,
   internals: RenderSystemInternals,
   camera: CameraSnapshot | undefined,
 ): string {
-  return `${camera?.entityKey ?? 0}:${camera?.historyVersion ?? 0}:${recordContext(internals).canvas?.width ?? 0}x${recordContext(internals).canvas?.height ?? 0}:${frameState.compiledFrameGraphGeneration}`;
+  const canvas = recordContext(internals).canvas;
+  // The metering buffers are owned by the view across graph replacements.
+  return `${camera?.entityKey ?? 0}:${camera?.historyVersion ?? 0}:${canvas?.width ?? 0}x${canvas?.height ?? 0}`;
 }
 
 function stageAutoExposureState(
@@ -192,14 +229,6 @@ function stageAutoExposureState(
   const resources =
     frameState.pendingAutoExposureGpuResources ?? frameState.autoExposureGpuResources;
   if (resources !== undefined) {
-    const begun = beginAutoExposureGpuFrame(resources);
-    if (!begun.ok)
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'an available exposure candidate for this frame',
-        hint: 'await the oldest frame completion before drawing again',
-        detail: { error: { code: 'auto-exposure-history-busy', message: String(begun.error) } },
-      });
     const parameterWrite = writeAutoExposureParameters(resources, {
       compensationEv: exposure.compensationEv,
       rangeMinEv: exposure.rangeEv[0],
@@ -209,10 +238,10 @@ function stageAutoExposureState(
       deltaTime,
       fallback: exposure.fallback,
       generation: state.targetGeneration,
-      historyIdentity: autoExposureHistoryIdentity(frameState, internals, camera),
+      historyIdentity: autoExposureHistoryIdentity(internals, camera),
     });
     if (!parameterWrite.ok) {
-      internals.errorRegistry.fire(parameterWrite.error as RhiError);
+      internals.errorRegistry.fire(parameterWrite.error);
       return false;
     }
   }
@@ -317,7 +346,7 @@ export function commitStandardOutputSubmission(state: RenderFrameState, queue: R
   if (pendingAutoState !== undefined) {
     if (acceptedGpu === undefined) state.autoExposureState = pendingAutoState.state;
     else
-      completeAutoExposureGpuFrame(acceptedGpu, () => {
+      submitAutoExposureGpuFrame(acceptedGpu, () => {
         if (state.autoExposureGpuResources === acceptedGpu)
           state.autoExposureState = commitAutoExposureSubmission(
             pendingAutoState.state,
@@ -325,7 +354,7 @@ export function commitStandardOutputSubmission(state: RenderFrameState, queue: R
           );
       });
     state.pendingAutoExposureState = undefined;
-  } else if (acceptedGpu !== undefined) completeAutoExposureGpuFrame(acceptedGpu, () => {});
+  } else if (acceptedGpu !== undefined) submitAutoExposureGpuFrame(acceptedGpu, () => {});
   const pendingLut = state.pendingStandardLutGpuResources;
   if (pendingLut !== undefined) {
     const previousLut = state.standardLutGpuResources;
@@ -370,6 +399,9 @@ export function retirePendingStandardOutputGpu(state: RenderFrameState): void {
 
 /** Renderer disposal: retire staged and accepted resources and drop auto-exposure state. */
 export function disposeStandardOutput(state: RenderFrameState): void {
+  const parameters = state.standardOutputParameters;
+  if (parameters !== undefined) parameters.device.destroyBuffer(parameters.buffer);
+  state.standardOutputParameters = undefined;
   retirePendingStandardOutputGpu(state);
   if (state.autoExposureGpuResources !== undefined) {
     retireAutoExposureGpuResources(state.autoExposureGpuResources);

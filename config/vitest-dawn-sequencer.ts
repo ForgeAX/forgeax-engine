@@ -112,16 +112,31 @@ function partitionFiles(
       };
     })
     .sort((a, b) => b.seconds - a.seconds || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  // Native reserves can leave one lane admitting several largest ordinary
-  // owners before its peers. Spread that first complete cost-ranked wave;
-  // subsequent files still backfill the full retained native/ordinary load.
-  const firstWave = new Set(spreadFirstWave ? bins : []);
-  for (const file of ranked) {
-    const eligible = firstWave.size > 0 ? [...firstWave] : bins;
-    const target = eligible.reduce((best, bin) => (bin.seconds < best.seconds ? bin : best));
-    firstWave.delete(target);
-    target.files.push(file.specification);
-    target.seconds += file.seconds;
+  // Preserve qualified placement when discovery adds unmeasured files. New
+  // owners retain the full fallback cost and backfill the established loads.
+  const cohorts = spreadFirstWave
+    ? [
+        ranked.filter((file) => weights.has(file.path)),
+        ranked.filter((file) => !weights.has(file.path)),
+      ]
+    : [ranked];
+  for (const [index, cohort] of cohorts.entries()) {
+    // Native reserves must not admit several largest owners before peers.
+    const occupied = new Set(
+      index === 1
+        ? ranked
+            .slice(0, bins.length)
+            .flatMap((file) => bins.filter((bin) => bin.files.includes(file.specification)))
+        : [],
+    );
+    const firstWave = new Set(spreadFirstWave ? bins.filter((bin) => !occupied.has(bin)) : []);
+    for (const file of cohort) {
+      const eligible = firstWave.size > 0 ? [...firstWave] : bins;
+      const target = eligible.reduce((best, bin) => (bin.seconds < best.seconds ? bin : best));
+      firstWave.delete(target);
+      target.files.push(file.specification);
+      target.seconds += file.seconds;
+    }
   }
   return bins.map((bin) => bin.files);
 }

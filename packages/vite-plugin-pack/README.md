@@ -87,6 +87,12 @@ and imported GUID set available for the next same-source retry.
 Staged Meta imports leave Catalog diffing to the outer generation owner. Only
 direct route imports with a delta subscriber compare the accepted Catalog;
 preparing each staged source does not hash unrelated catalog payloads.
+With `before-consume`, importers declaring `parallelPreparation` can prepare
+detached products alongside authored Pack cooking. The generation runs up to
+three imports at once, holds up to four pending preparations, and admits them
+in declaration order. It
+drains started work before disposal. Transport finalization and Catalog
+publication still use the ordinary ordered generation.
 Candidate maps share immutable accepted artifact bodies; producers replace map
 entries with new bodies instead of mutating published bytes. Unrelated lazy
 publications retain both the accepted bytes and their prepared HTTP encodings.
@@ -515,3 +521,17 @@ Player loading carries no Recast compiler dependency.
 The revision observer exposes one asynchronous `close()` fence. Plugin shutdown and
 rebind await that fence after watcher readiness, reconciliation and pending batch
 work; there is no callable stop handle or alternate close method.
+
+Hosts that select a local Engine pass `enginePackageRoot`, the absolute directory
+of its public `@forgeax/engine/package.json`. Both dev and build source inventories
+and their isolated publication leases receive this selection. Omission preserves
+the authored source's installed npm package; the Pack plugin does not infer a
+workspace or inspect a DevKit binding.
+
+## Bounded isolated source preparation
+
+Meta imports retain serial declaration-order Catalog and transport publication.
+The session-owned image importer uses the same detached preparation queue
+when its encoder pool admits concurrent workers. The default image importer
+and custom importers without this capability remain serial. Completed build-DDC
+products remain available after cancellation.

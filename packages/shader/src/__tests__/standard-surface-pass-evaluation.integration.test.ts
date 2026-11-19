@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { stripWgslComments } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 function source(name: string): string {
@@ -7,6 +8,7 @@ function source(name: string): string {
 }
 
 function entryBody(sourceText: string, entry: string): string {
+  sourceText = stripWgslComments(sourceText);
   const start = sourceText.indexOf(`fn ${entry}`);
   const end = sourceText.indexOf('\n@fragment', start + 1);
   return sourceText.slice(start, end < 0 ? sourceText.length : end);
@@ -38,17 +40,32 @@ describe('Standard Surface pass evaluation', () => {
               ? 'skinGBuffer'
               : entry
             : name === 'default-standard-pbr.wgsl'
-              ? 'standardForwardLit'
+              ? 'standardForwardLitSurface'
               : 'standardSkinForwardLit';
         const body = entryBody(shader, owner);
         expect(body, `${name}:${owner} must exist`).toContain(`fn ${owner}`);
+        const preparation = entryBody(shader, 'prepareStandardForwardSurface(');
+        const evaluations = entry === 'fs_main' ? preparation : body;
         expect(
-          body.match(
+          evaluations.match(
             /(?:evaluateStandardSurface|evaluate_surface|forgeax_evaluate_surface_from_fragments)\s*\(/g,
           ),
           `${name}:${entry}`,
         ).toHaveLength(1);
-        expect(body).toContain('alphaTestSurface(surface)');
+        if (entry === 'fs_main') {
+          const forward = entryBody(shader, 'fs_main(');
+          const sampling = forward.indexOf('prepareStandardForwardSurface(');
+          const rejection = forward.indexOf(
+            'if (standardSurfaceRejected(prepared.surface)) { discard; }',
+          );
+          const lighting = forward.indexOf(`${owner}(`);
+          expect(sampling).toBeGreaterThan(0);
+          expect(rejection).toBeGreaterThan(sampling);
+          expect(lighting).toBeGreaterThan(rejection);
+          expect(preparation).toContain('shadingNormalSpread(surface.normalWS)');
+          expect(preparation).not.toContain('discard;');
+          expect(body).not.toContain('alphaTestSurface(surface)');
+        } else expect(body).toContain('alphaTestSurface(surface)');
         if (entry === 'fs_main') expect(body).toContain('surface.opacity');
         expect(body).toContain('surface.baseColor');
         expect(body).toContain('surface.normalWS');

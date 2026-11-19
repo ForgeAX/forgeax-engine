@@ -185,18 +185,26 @@ const { Name, Transform } = await import('@forgeax/engine-scene');
 // at vite build time, charter P5 — the runtime no longer ships an inline
 // fallback shader so the manifest must carry both entries).
 const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const manifestArgument = process.argv.indexOf('--shader-manifest');
+if (manifestArgument >= 0 && !process.argv[manifestArgument + 1]) {
+  throw new Error('--shader-manifest requires a publication file path');
+}
+const MANIFEST_PATH = manifestArgument < 0
+  ? resolve(here, '..', 'dist', 'shaders', 'manifest.json')
+  : resolve(process.argv[manifestArgument + 1]);
 const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 let assets;
 let renderDiagnostics;
+const rendererStartedAt = performance.now();
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
   assets = constructed.value.assets;
   renderDiagnostics = constructed.value.debugDrawHost;
+  if (manifestArgument >= 0) console.log(`[smoke] shaderPreparation=${JSON.stringify({ elapsedMs: performance.now() - rendererStartedAt, ...assets.shaderRegistry.programTemplateInspection() })}`);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);

@@ -414,28 +414,34 @@ function cloudTraceOutputFormat(
   view: RenderFeaturePlanContext['views'][number],
   context: RenderFeaturePlanContext,
 ) {
+  if (context.caps.backendKind === 'wgpu-webgl2')
+    return err(new CloudLayerCapabilityMissingError('WebGPU backend'));
   const output = view.targets.find((target) => target.name === 'motion-output');
-  const depth = view.targets.find((target) => target.name === 'depth');
-  const limit = context.limits?.maxColorAttachmentBytesPerSample ?? 32;
   if (
     (output?.format !== 'rgba16float' && output?.format !== 'rgba32float') ||
-    depth?.sampleCount !== 1 ||
-    context.caps.backendKind === 'wgpu-webgl2' ||
-    context.caps.rgba16floatRenderable !== true ||
-    limit < (output.format === 'rgba32float' ? 48 : 32) ||
-    (context.limits?.maxColorAttachments ?? 3) < 3
-  ) {
+    context.caps.rgba16floatRenderable !== true
+  )
+    return err(new CloudLayerCapabilityMissingError('renderable Standard HDR target'));
+  const depth = view.targets.find((target) => target.name === 'depth');
+  if (depth?.sampleCount !== 1)
+    return err(
+      new CloudLayerCapabilityMissingError('single-sample depth (select FXAA or disable MSAA)'),
+    );
+  const requiredBytes = output.format === 'rgba32float' ? 48 : 32;
+  if (
+    (context.limits?.maxColorAttachments ?? 3) < 3 ||
+    (context.limits?.maxColorAttachmentBytesPerSample ?? 32) < requiredBytes
+  )
     return err(
       new CloudLayerCapabilityMissingError(
-        'single-sample WebGPU Standard HDR with three cloud attachments',
+        `three color attachments totaling ${requiredBytes} bytes per sample`,
       ),
     );
-  }
   return ok(output.format);
 }
 
 /** Standard's cooked, post-opaque, full-resolution cloud producer. */
-export function createAnalyticCloudFeature(): RenderFeature<CookedCloudViews> {
+export function createAnalyticCloudFeature() {
   return {
     identity: CLOUD_LAYER_FEATURE_IDENTITY,
     placement: 'scene',
@@ -450,11 +456,15 @@ export function createAnalyticCloudFeature(): RenderFeature<CookedCloudViews> {
     requiresPreparation: (views) => Object.keys(views).length > 0,
     plan(views, context) {
       const works: RenderFeatureWork[] = [];
+      const unavailable = new Map<string, string>();
       for (const view of context.views) {
         const layer = views[view.identity];
         if (layer === undefined) continue;
         const output = cloudTraceOutputFormat(view, context);
-        if (!output.ok) return output;
+        if (!output.ok) {
+          unavailable.set(view.identity, output.error.detail.capability);
+          continue;
+        }
         const sampled = layer.status === 'sampled' ? layer : undefined;
         const custom = layer.status === 'program' ? layer : undefined;
         const materialLayer = sampled ?? custom;
@@ -508,7 +518,7 @@ export function createAnalyticCloudFeature(): RenderFeature<CookedCloudViews> {
           ),
         );
       }
-      return ok({ work: works });
+      return ok({ work: works, unavailable });
     },
-  };
+  } satisfies RenderFeature<CookedCloudViews>;
 }

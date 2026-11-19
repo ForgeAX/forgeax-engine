@@ -289,7 +289,8 @@ function sameProgramInputs(
   for (const key of keys) {
     if (
       current[key]?.entryPoints !== next[key]?.entryPoints ||
-      current[key]?.systemInputs !== next[key]?.systemInputs
+      current[key]?.systemInputs !== next[key]?.systemInputs ||
+      current[key]?.forwardFog !== next[key]?.forwardFog
     )
       return false;
   }
@@ -309,6 +310,45 @@ export function rebindPublicationMaterialSchemas(
   return input;
 }
 
+/** Capture one immutable program from its native declaration; callers traverse its family closure. */
+export function capturePublicationProgram(
+  assets: AssetRegistry,
+  key: string,
+): RenderPublication['programs'][number] {
+  const declaration = assets.shaderRegistry.materialArtifactDeclaration(key);
+  const artifact = assets.getMaterialArtifact(key);
+  if (declaration?.kind === 'bytes' && artifact?.digest !== undefined) {
+    const { kind: _kind, ...metadata } = declaration;
+    assets.shaderRegistry
+      .validateMaterialArtifactBytes(key, {
+        ...metadata,
+        bytes: artifact.bytes,
+        digest: artifact.digest,
+      })
+      .unwrap();
+    return { key, shader: { sourceEncoding: 'utf8', ...metadata }, artifact };
+  }
+  const entry = assets.shaderRegistry.findMaterialArtifact(key).unwrap();
+  return {
+    key,
+    shader: {
+      // A local candidate can keep its source lazy until publication actually serializes it.
+      get source() {
+        return entry.source;
+      },
+      ...(entry.variantReferences === undefined
+        ? {}
+        : { variantReferences: entry.variantReferences }),
+      ...(entry.program.entryPoints === undefined
+        ? {}
+        : { entryPoints: entry.program.entryPoints }),
+      paramSchema: entry.paramSchema,
+      ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
+    },
+    ...(artifact === undefined ? {} : { artifact }),
+  };
+}
+
 /** Validate direct-source publication without changing its eager admission route. */
 function publicationSourceEntry(
   registry: ShaderRegistry,
@@ -320,6 +360,7 @@ function publicationSourceEntry(
     previous.ok &&
     (previous.value.source !== shader.source ||
       !sameSchemaValue(previous.value.paramSchema, shader.paramSchema) ||
+      !sameSchemaValue(previous.value.variantReferences, shader.variantReferences) ||
       !sameSchemaValue(previous.value.receipt, shader.receipt) ||
       !sameSchemaValue(
         previous.value.program.entryPoints,

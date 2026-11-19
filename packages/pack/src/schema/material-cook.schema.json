@@ -563,6 +563,12 @@
                         },
                         "visibleSurface": {
                           "const": true
+                        },
+                        "viewClipping": {
+                          "const": true
+                        },
+                        "lodCoverage": {
+                          "const": true
                         }
                       },
                       "additionalProperties": false

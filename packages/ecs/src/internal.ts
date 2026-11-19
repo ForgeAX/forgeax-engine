@@ -11,12 +11,11 @@
 // Raw World storage stays source-private; semantic World reads live behind the
 // separate `./world-read` entry.
 export {
-  bufferFieldByteLength,
+  componentDefinition,
   componentId,
   componentSchema,
   parseManagedArraySchema,
 } from './component';
-export { componentDefinition } from './component-schema';
 
 import type { Result } from '@forgeax/engine-types';
 import { type Component, componentId as componentIdOf } from './component';
@@ -89,8 +88,6 @@ export function markComponentChanged(
 export type {
   DerivedColumnBinding,
   DerivedRangeCursor,
-  DerivedRangeRowCommit,
-  DerivedRangeRowProbe,
   DerivedRangeWriter,
 } from './query/derived-range-writer';
 export type { EntityLookup, EntityLookupColumns } from './query/entity-lookup';

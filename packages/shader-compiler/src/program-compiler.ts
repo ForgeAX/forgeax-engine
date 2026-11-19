@@ -51,9 +51,10 @@ function invocationIdentity(
             writable: true,
           });
       }
-      return captured;
+      return Object.freeze(captured);
     };
-    // Own the selector containers while sharing immutable WGSL strings.
+    // Freeze the detached selector snapshot once so the successful result can
+    // be admitted under the original digest without hashing the same sources again.
     const captured = copy(options) as CompileOptions;
     if (unsupported) return undefined;
     const hash = createHash('sha256');
@@ -267,6 +268,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
   };
   const compileProgram: typeof compileShaderProgram = async (wgsl, options, locateSyntaxError) => {
     const selection = {
+      ...(options.computeEntry === undefined ? {} : { computeEntry: options.computeEntry }),
       ...(options.renderEntries === undefined ? {} : { renderEntries: options.renderEntries }),
       dynamicOffsets: options.dynamicOffsets ?? [],
     };
@@ -360,7 +362,6 @@ export function createShaderProgramCompiler(): typeof compileShader {
       reusable &&
       identity !== undefined &&
       identity.bytes <= 16 * MiB &&
-      invocationIdentity(source, identity.options)?.key === identity.key &&
       admittedBy === pipeline
     ) {
       const value = freezeResult(result.value);

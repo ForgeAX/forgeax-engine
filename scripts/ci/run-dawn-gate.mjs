@@ -51,6 +51,12 @@ export function dawnVitestArgs(group, { ordinaryWorkers = 1 } = {}) {
     '--project=dawn',
     group.vitestShard === undefined ? '--passWithNoTests=false' : '--passWithNoTests=true',
     `--maxWorkers=${parallel ? 2 : 1}`,
+    ...(group.vitestShard === undefined
+      ? []
+      : [
+          '--reporter=default',
+          `--reporter=${resolve(ROOT, 'scripts/ci/modeling-file-phase-reporter.mjs')}`,
+        ]),
     ...(parallel ? ['--pool=forks', '--fileParallelism=true'] : ['--no-file-parallelism']),
     group.isolate === false ? '--no-isolate' : '--isolate',
     ...(group.isolate === false ? ['--retry=0', '--bail=1'] : []),

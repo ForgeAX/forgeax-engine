@@ -121,8 +121,10 @@ async function installRunObserver(ctx: Context) {
     if (caller?.kind !== 'frontend') return undefined;
     if (caller.sourceId === 'view-frontend') return caller.connectionId;
     const resolve = ctx.get?.('engineWorkspaceForCaller', false);
-    const target = (resolve ? resolve(caller) : ctx.get?.('engineWorkspace', false))?.project?.target;
-    return target && caller.sourceId === `forgeax-workspace:${target.sessionId}:${target.targetId}`
+    const projectStatus = (resolve ? resolve(caller) : ctx.get?.('engineWorkspace', false))?.project?.status;
+    const document = projectStatus && projectStatus.phase !== 'preparing'
+      ? projectStatus.document : undefined;
+    return document && caller.sourceId === `forgeax-workspace:${document.sessionId}:${document.targetId}`
       ? caller.connectionId : undefined;
   };
   const sessionFor = (caller?: ToolCallerIdentity) => {

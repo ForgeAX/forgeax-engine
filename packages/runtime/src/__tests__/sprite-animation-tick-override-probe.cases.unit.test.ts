@@ -16,7 +16,7 @@ afterEach(() => vi.restoreAllMocks());
   // --- from sprite-animation-tick-override-probe.test.ts ---
 
   function setDt(world: World, dt: number): void {
-    world[worldInternal].getClockWriter().time.delta = dt;
+    world[worldInternal].clockWriter.time.delta = dt;
   }
 
   function makeRegions(): Float32Array {

@@ -157,7 +157,23 @@ it('reuses one Standard material cook across Pack publication generations', asyn
     ).unwrap();
     // A hit rebinds the stored record without validating it again; the record
     // it publishes is exactly the validated form.
-    expect((secondAsset.payload as { cooked: unknown }).cooked).toEqual(reused);
+    const { programs: publishedPrograms, ...publishedRecord } = (
+      secondAsset.payload as { cooked: typeof reused }
+    ).cooked;
+    const { programs: validatedPrograms, ...validatedRecord } = reused;
+    expect(publishedRecord).toEqual(validatedRecord);
+    expect(publishedPrograms).toHaveLength(validatedPrograms.length);
+    for (const [index, published] of publishedPrograms.entries()) {
+      const validated = validatedPrograms[index];
+      if (validated === undefined) throw new Error('compiled program count changed');
+      const { bytes: publishedBytes, ...publishedArtifact } = published.artifact;
+      const { bytes: validatedBytes, ...validatedArtifact } = validated.artifact;
+      expect(Buffer.compare(publishedBytes, validatedBytes)).toBe(0);
+      expect({ ...published, artifact: publishedArtifact }).toEqual({
+        ...validated,
+        artifact: validatedArtifact,
+      });
+    }
     expect(original.publicationGeneration).toBe(1);
     expect(reused.publicationGeneration).toBe(7);
     expect(reused.receipt.identity.cookGeneration).toBe(7);

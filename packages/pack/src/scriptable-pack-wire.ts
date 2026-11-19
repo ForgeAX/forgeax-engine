@@ -17,6 +17,11 @@ export function isScriptablePackField(name: string): boolean {
   return declaredFields.has(name);
 }
 
+export interface ScriptablePackPackageBinding {
+  readonly name: string;
+  readonly root: string;
+}
+
 export interface StructuredFailure {
   readonly name?: unknown;
   readonly code?: unknown;

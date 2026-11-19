@@ -162,16 +162,17 @@ describe('sprite-lit shader (flat 2D lighting, tweak-20260701 M1)', () => {
   });
 
   describe('VsOut carries per-fragment worldPos (D-P1)', () => {
-    it('VsOut declares `@location(1) worldPos: vec3<f32>` interpolant', async () => {
+    it('VsOut carries world position and vertex fog in one location', async () => {
       const src = await readSpriteLitSource();
       // Match the WGSL declaration inside the VsOut struct. Whitespace-tolerant.
-      const re = /@location\(\s*1\s*\)\s+worldPos\s*:\s*vec3<f32>/;
+      const re = /@location\(\s*1\s*\)\s+worldPos\s*:\s*vec4<f32>/;
       expect(re.test(src)).toBe(true);
     });
 
-    it('vs_main writes `out.worldPos = world.xyz`', async () => {
+    it('vs_main writes world.xyz with its vertex height transmittance', async () => {
       const src = await readSpriteLitSource();
-      const re = /out\.worldPos\s*=\s*world\.xyz\s*;/;
+      const re =
+        /out\.worldPos\s*=\s*vec4<f32>\(world\.xyz,\s*vertex_height_fog\(view,\s*world\.xyz\)\)\s*;/;
       expect(re.test(src)).toBe(true);
     });
 

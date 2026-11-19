@@ -72,7 +72,7 @@ it('losslessly tables fixture programs while retaining independent real decode a
     try {
       install = prepareRuntimeAssetPublication(entries);
       const transport = json.mock.calls.filter(
-        ([value]) => value?.schemaVersion === 'pack-material-programs/2',
+        ([value]) => value?.schemaVersion === 'pack-material-programs/3',
       );
       expect(transport).toHaveLength(1);
       expect(transport[0]?.[1]).toBeUndefined();
@@ -105,12 +105,18 @@ it('losslessly tables fixture programs while retaining independent real decode a
       ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
     );
     const wire = JSON.parse(body);
-    expect(wire.schemaVersion).toBe('pack-material-programs/2');
+    expect(wire.schemaVersion).toBe('pack-material-programs/3');
     expect(wire.programs).toHaveLength(1);
     expect(new TextEncoder().encode(body).byteLength).toBeLessThan(
       new TextEncoder().encode(expanded).byteLength,
     );
-    expect(packRuntime.decodeMaterialProgramWire(wire).unwrap()).toEqual(JSON.parse(expanded));
+    expect(
+      JSON.parse(
+        JSON.stringify(packRuntime.decodeMaterialProgramWire(wire).unwrap(), (_key, value) =>
+          ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+        ),
+      ),
+    ).toEqual(JSON.parse(expanded));
     for (const [index, record] of records.entries()) {
       const firstHandle = (await first.load(record.guid, 'material')).unwrap();
       const secondHandle = (await second.load(record.guid, 'material')).unwrap();

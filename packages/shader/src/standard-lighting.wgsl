@@ -1,12 +1,13 @@
 #define_import_path forgeax_pbr::standard_lighting
 #import forgeax_view::common::{view, lightingChannelsMatch}
+#import forgeax_pbr::brdf::{DirectLobes, directLobesRadiance, scaleDirectLobes}
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, standardDiffuseWeight}
 #import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblRadiance, sampleReflectionProbeRadiance, environmentScatteringFromDfg, environmentDfg, environmentReflectionDirection}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
-#import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactor}
+#import forgeax_pbr::lighting_directional::{evalDirectionalNoShadowLobes, evalDirectionalShadowFactor}
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#import forgeax_standard::cluster::{evaluateStandardClusterLights}
+#import forgeax_standard::cluster::{evaluateStandardClusterLobes}
 #endif
 
 struct SkylightUniforms {
@@ -124,10 +125,44 @@ struct StandardDirect {
   diffuse : vec3<f32>,
 };
 
-// Forward Standard direct lighting: radiance only. Forward callers never
-// split diffuse from specular, so the zero-albedo second pass (a second
-// cluster loop) is absent from their programs; deferred uses
-// evaluateStandardDirectSplit.
+// Direct lighting evaluates each light once and accumulates its components.
+// Forward consumes their sum; Deferred SSS also consumes reflected diffuse.
+fn evaluateStandardDirectLobes(
+  worldPosition : vec3<f32>, ndc : vec3<f32>, viewZ : f32, pixel : vec2<f32>,
+  normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
+  transmission : vec3<f32>, metallic : f32, alpha : f32, f0 : vec3<f32>, shadow : f32,
+  receiveShadows : bool, receiverChannels : u32,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> DirectLobes {
+  var direct = DirectLobes(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+  if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
+    let solar = evalDirectionalNoShadowLobes(normal, direction, albedo, metallic, alpha, f0, transmission,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
+    let solarFactor = view_apply_direct_solar(view, vec3<f32>(shadow), worldPosition);
+    direct = scaleDirectLobes(solar, solarFactor);
+  }
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  let local = evaluateStandardClusterLobes(ndc, pixel, viewZ, worldPosition, normal, direction,
+    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
+  direct.radiance += local.radiance;
+  direct.diffuse += local.diffuse;
+  direct.specular += local.specular;
+#endif
+  return direct;
+}
+
 fn evaluateStandardDirect(
   worldPosition : vec3<f32>, ndc : vec3<f32>, viewZ : f32, pixel : vec2<f32>,
   normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
@@ -138,25 +173,12 @@ fn evaluateStandardDirect(
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> StandardDirect {
-  var direct = vec3<f32>(0.0);
-  if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
-    direct = view_apply_direct_solar(view, shadow * evalDirectionalNoShadow(normal, direction, albedo, metallic, alpha, f0, transmission,
-    useDirectDfgLut,
+  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, receiverChannels, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
-  ), worldPosition);
-  }
-#ifdef CLUSTER_FORWARD_AVAILABLE
-  direct += evaluateStandardClusterLights(ndc, pixel, viewZ, worldPosition, normal, direction,
-    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
-    useDirectDfgLut,
-#ifdef DIRECT_DFG_LUT_AVAILABLE
-    directDfgLut, directDfgSampler,
-#endif
-  );
-#endif
-  return StandardDirect(direct, vec3<f32>(0.0));
+);
+  return StandardDirect(directLobesRadiance(lobes), vec3<f32>(0.0));
 }
 
 // Deferred variant: `splitDiffuse` is a per-pixel G-buffer fact there.
@@ -170,47 +192,10 @@ fn evaluateStandardDirectSplit(
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> StandardDirect {
-  var direct = vec3<f32>(0.0);
-  if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
-    direct = view_apply_direct_solar(view, shadow * evalDirectionalNoShadow(normal, direction, albedo, metallic, alpha, f0, transmission,
-    useDirectDfgLut,
+  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, receiverChannels, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
-  ), worldPosition);
-  }
-#ifdef CLUSTER_FORWARD_AVAILABLE
-  direct += evaluateStandardClusterLights(ndc, pixel, viewZ, worldPosition, normal, direction,
-    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
-    useDirectDfgLut,
-#ifdef DIRECT_DFG_LUT_AVAILABLE
-    directDfgLut, directDfgSampler,
-#endif
-  );
-#endif
-  var diffuse = vec3<f32>(0.0);
-  if (splitDiffuse) {
-    // The shared BRDF is affine in albedo. Its zero-albedo result retains
-    // specular, using exactly the same solar, shadow and receiver-channel gates.
-    var specular = vec3<f32>(0.0);
-    if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
-      specular = view_apply_direct_solar(view, shadow * evalDirectionalNoShadow(normal, direction, vec3<f32>(0.0), metallic, alpha, f0, transmission,
-    useDirectDfgLut,
-#ifdef DIRECT_DFG_LUT_AVAILABLE
-    directDfgLut, directDfgSampler,
-#endif
-  ), worldPosition);
-    }
-#ifdef CLUSTER_FORWARD_AVAILABLE
-    specular += evaluateStandardClusterLights(ndc, pixel, viewZ, worldPosition, normal, direction,
-      vec3<f32>(0.0), metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
-    useDirectDfgLut,
-#ifdef DIRECT_DFG_LUT_AVAILABLE
-    directDfgLut, directDfgSampler,
-#endif
-  );
-#endif
-    diffuse = direct - specular;
-  }
-  return StandardDirect(direct, diffuse);
+);
+  return StandardDirect(directLobesRadiance(lobes), select(vec3<f32>(0.0), lobes.diffuse, splitDiffuse));
 }

@@ -1,7 +1,7 @@
 #define_import_path forgeax_ray::diffuse_gi
 #import forgeax_material::ray_abi::{RayMaterialSurface}
 #import forgeax_pbr::ray_bsdf::{rayBasis, rayBsdfValue, sampleRayBsdf}
-#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation}
+#import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation, decodeSpotDecay}
 #pragma sdf_traversal
 #pragma card_lookup
 
@@ -115,7 +115,7 @@ fn analytic(position:vec3f,s:RayMaterialSurface,wo:vec3f,rho:vec3f,proxy:bool)->
  for(var i=0u;i<settings.scene.w;i++){
   let l=lights[i];var direction=-l.directionRange.xyz;var distance=settings.environment.w;var attenuation=1.0;
   if(l.positionKind.w!=1.0){let delta=l.positionKind.xyz-position;distance=length(delta);direction=delta/max(distance,1e-10);attenuation=evalDistanceAttenuation(distance*distance,l.directionRange.w,l.radiance.w,1e-4);
-   if(l.positionKind.w==3.0){attenuation=evalSpotAttenuation(l.positionKind.xyz,l.directionRange.xyz,position,l.cone.x,l.cone.y,l.directionRange.w);}}
+   if(l.positionKind.w==3.0){attenuation=evalSpotAttenuation(l.positionKind.xyz,l.directionRange.xyz,position,l.cone.x,l.cone.y,l.directionRange.w,decodeSpotDecay(bitcast<u32>(l.radiance.w)));}}
   let nl=max(dot(n,direction),0.0);if(nl==0.0 || dot(s.geometricNormal.xyz,direction)<=0.0 || attenuation==0.0){continue;}
   let shadowOrigin=position+s.geometricNormal.xyz*settings.bias.x;
   var shadowDirection=direction;var shadowDistance=distance;

@@ -48,12 +48,23 @@ Pass the same `profiler` to `createApp({ renderer, world, profiler })` or to the
 | Need | Public entry | Result |
 |:--|:--|:--|
 | Start a bounded capture | `createProfiler().startCapture(limits)` | `Result<RecorderSession, ProfilerError>` |
+| Open an owned frame | `session.beginFrame()` | capture-owned `{ captureId, frameId }` token |
 | Finish and retain the artifact | `session.finish()` | `Result<ProfileCapture, ProfilerError>` |
 | Validate persisted JSON | `validateProfileCapture(value)` | schema and semantic validation |
 | Build an offline summary | `buildProfileModel(capture, options?)` | frame and phase projections |
 | Query from a shell | `forgeax profile summary --artifact artifact.json --json` | structured JSON on stdout |
 
 `ProfileCapture` is the portable boundary. It carries the fixed version, time unit, bounded frame and event evidence, owner phase catalog, and `completeness` status. `complete`, `partial`, and `overflow` are explicit outcomes; an overflow artifact remains useful and records its affected frame range.
+
+App, Worker and direct Renderer frame owners use `session.beginFrame()` to allocate
+the next identity from the capture's existing sequence. The returned token can
+follow the frame into Renderer. Starting a capture during an App update can let
+the current direct draw open its first frame; the next App frame then receives
+the next identity rather than colliding with a separate local counter. A rejected
+open does not advance the sequence. Explicit `beginFrame(frameId)` remains available
+for imported identities, retains its void result, and requires strictly increasing
+positive safe integers. Automatic opens follow the last accepted explicit identity.
+This does not change the artifact schema or create records when profiling is off.
 
 > [!NOTE]
 > The model reports frames represented by retained phase or skip records. Skip-only frames remain

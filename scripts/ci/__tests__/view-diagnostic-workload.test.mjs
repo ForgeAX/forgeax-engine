@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
@@ -49,20 +49,60 @@ const viewPlanForCI = (ci, ...args) =>
     }),
   );
 const viewPlan = (...args) => viewPlanForCI('false', ...args);
-test('repartitioning retains every original View command, input and capability flag', async () => {
+test('only self-contained fixture copies omit the optional Engine content library', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-fixture-libraries-'));
+  const manifestPath = resolve(root, 'forge.json');
+  const manifest = {
+    id: 'fixture',
+    roots: { engine: 'entry' },
+    assetLibraries: ['@forgeax/engine/content', 'test-extra-library'],
+  };
+  try {
+    await mkdir(resolve(root, 'assets'));
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await reduceTestProject(root);
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, 'utf8')), manifest);
+
+    await reduceTestProject(root, { omitEngineContent: true });
+    assert.deepEqual(JSON.parse(await readFile(manifestPath, 'utf8')), {
+      ...manifest,
+      assetLibraries: ['test-extra-library'],
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the View plan retains every command except the duplicate TypeScript cold reopen', async () => {
   const original = JSON.parse(
     await readFile(
       new URL('./fixtures/view-probe-population-c65c03331d.json', import.meta.url),
       'utf8',
     ),
   );
-  // Main 0e8c042 adds the cloud Preview program contract to this complete owner.
-  // Retain the preceding population and require its new contract as well.
+  // Preserve the historical population plus the admitted MCP carrier contracts.
   const appContracts = original.commands.find(({ args }) =>
     args.includes('tools/forgeax-mcp/__tests__/app/program-host.test.mjs'),
   );
   assert.ok(appContracts);
-  appContracts.args.push('tools/forgeax-mcp/__tests__/app/preview-program.test.mjs');
+  appContracts.args.push(
+    ...[
+      'card-contract',
+      'codex-binding',
+      'codex-file',
+      'codex-routing',
+      'compact-card',
+      'context-probe',
+      'host-lifecycle',
+      'hosting',
+      'multi-card',
+      'preview-program',
+      'source-broker',
+      'source-reuse',
+      'stdio-lifetime',
+      'view-plugin',
+    ].map((name) => `tools/forgeax-mcp/__tests__/app/${name}.test.mjs`),
+  );
   appContracts.args.sort();
   const actual = viewPlan('--dry-run').map(([, command, args, env = {}]) => ({
     command,
@@ -72,10 +112,12 @@ test('repartitioning retains every original View command, input and capability f
     env,
   }));
   const portable = JSON.parse(JSON.stringify(actual).replaceAll(resolve('.'), '<root>'));
-  assert.deepEqual(
-    portable.map(JSON.stringify).sort(),
-    original.commands.map(JSON.stringify).sort(),
+  const retired = original.commands.filter(
+    ({ env }) => env.FORGEAX_RUNTIME_PACK_LANGUAGE === 'ts' && env.FORGEAX_RUNTIME_PACK_SNAPSHOT,
   );
+  assert.equal(retired.length, 1);
+  const retained = original.commands.filter((command) => command !== retired[0]);
+  assert.deepEqual(portable.map(JSON.stringify).sort(), retained.map(JSON.stringify).sort());
 });
 test('CI retains the complete View plan and its diagnostic-page capability flag', () => {
   const local = viewPlan('--dry-run');
@@ -152,6 +194,44 @@ test('complete View owner receipts retain setup headroom inside four original jo
   );
 });
 
+for (const [runId, uncompletedOwners] of [
+  [44242238183, ['diagnostic-gpu-2d']],
+  [44249977351, []],
+]) {
+  test(`View placement fits the observed timeout window of run ${runId}`, async () => {
+    const receipt = JSON.parse(
+      await readFile(new URL(`./fixtures/view-partial-${runId}.json`, import.meta.url), 'utf8'),
+    );
+    assert.equal(receipt.conclusion, 'cancelled');
+    assert.deepEqual(receipt.uncompletedOwners, uncompletedOwners);
+    for (const owner of uncompletedOwners) {
+      assert.equal(Object.hasOwn(receipt.completedOwnerSeconds, owner), false);
+    }
+    const finishes = [0, 1, 2, 3].map((shard) => {
+      const owners = new Set(
+        viewPlan('--shard', String(shard), '--dry-run').map(([owner]) => owner),
+      );
+      owners.delete('prepare');
+      const ownerSeconds = [...owners].map((owner) => {
+        const seconds = receipt.completedOwnerSeconds[owner] ?? receipt.retainedOwnerSeconds[owner];
+        assert.ok(seconds > 0, `missing complete timing or retained forecast for ${owner}`);
+        return seconds;
+      });
+      return (
+        ownerSeconds.reduce((sum, seconds) => sum + seconds, 0) +
+        receipt.prepareSeconds +
+        receipt.setupAndTransferReserveSeconds +
+        (receipt.afterPairingReserveSecondsByShard[shard] ?? 0) +
+        (receipt.additionalSourceRecoverySecondsByShard?.[shard] ?? 0)
+      );
+    });
+    assert.ok(
+      Math.max(...finishes) <= receipt.jobBudgetSeconds,
+      `View lanes, source recovery and browser gates must fit the same run: ${finishes}`,
+    );
+  });
+}
+
 test('measured diagnostic owners share the original four jobs and Modeling runs last', () => {
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run'),
@@ -164,17 +244,17 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
     { owner: 'diagnostic-pages', shard: 3 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-texture-preview-integration.mjs'), [
-    { owner: 'diagnostic-texture', shard: 2 },
+    { owner: 'diagnostic-texture', shard: 0 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-gpu-texture-preview.mjs'), [
     { owner: 'diagnostic-gpu-2d', shard: 0 },
-    { owner: 'diagnostic-gpu-array', shard: 3 },
+    { owner: 'diagnostic-gpu-array', shard: 1 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-authoring-integration.mjs'), [
-    { owner: 'diagnostic-pack-authoring', shard: 3 },
+    { owner: 'diagnostic-pack-authoring', shard: 0 },
   ]);
   assert.deepEqual(groupOwner('tools/view/scripts/verify-pack-save-reopen-integration.mjs'), [
-    { owner: 'diagnostic-pack-save', shard: 2 },
+    { owner: 'diagnostic-pack-save', shard: 1 },
   ]);
   for (const probe of ['owner-surface-resize', 'page-plugin-lifecycle', 'startup-boundaries'])
     assert.deepEqual(groupOwner(`tools/view/scripts/verify-${probe}.mjs`), [
@@ -189,9 +269,17 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
     'the live RHI replay must start before the other GPU diagnostic owners',
   );
   assert.deepEqual(
-    shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
-    ['game3d', 'game3d', 'diagnostic-texture', 'diagnostic-pack-save'],
-    'the complete Game 3D chain stays contiguous before texture preview',
+    shards[1].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
+    [
+      'game3d',
+      'game3d',
+      'lifecycle',
+      'lifecycle',
+      'lifecycle',
+      'diagnostic-pack-save',
+      'diagnostic-gpu-array',
+    ],
+    'the complete Game 3D chain stays contiguous before the other owners',
   );
   assert.equal(
     shards[3].at(-1)[0],
@@ -199,14 +287,15 @@ test('measured diagnostic owners share the original four jobs and Modeling runs 
     'Modeling runs after the complete diagnostic replay',
   );
   assert.deepEqual(
-    [
-      ...new Set(
-        shards[0].filter(([owner]) => owner.startsWith('runtime-')).map(([owner]) => owner),
-      ),
-    ].sort(),
-    ['runtime-js', 'runtime-ts'],
-    'both complete publication chains share the balanced contract/plugin shard',
+    shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
+    ['plugin', 'workspace', 'workspace', 'runtime-js', 'runtime-js'],
+    'the plugin journey starts before its remaining paired probes',
   );
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-runtime-content-engine.mjs'), [
+    { owner: 'runtime-js', shard: 2 },
+    { owner: 'runtime-js', shard: 2 },
+    { owner: 'runtime-ts', shard: 3 },
+  ]);
   assert.ok(viewPlan('--list-groups').includes('modeling'));
   assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);
 });
@@ -231,7 +320,7 @@ for (const viewport of [
   });
 test('Scene resume waits for the actual resize after a completed old-size frame', async () => {
   const start = source.indexOf(
-    ' await page.waitForFunction(',
+    ' await project.waitForFunction(',
     source.indexOf(' await resizeSceneBuffer(0.5);'),
   );
   const end = source.indexOf('\n scenePresentation.resumed=', start);
@@ -255,10 +344,10 @@ test('Scene resume waits for the actual resize after a completed old-size frame'
       active: { canvas: { width: 272 } },
       afterCapture: { after: { renderer: { execution: { frame: { completed: 89 } } } } },
     },
-    page: {
+    project: {
       locator: (selector) => {
-        assert.equal(selector, 'canvas');
-        return { first: () => ({ evaluate: async (read) => read(canvas) }) };
+        assert.equal(selector, 'canvas#app');
+        return { evaluate: async (read) => read(canvas) };
       },
       waitForFunction: async (ready, input, options) => {
         assert.equal(options.timeout, 90000);
@@ -409,6 +498,48 @@ for (const lightweight of [false, true])
     }
   });
 
+test('hidden Scene settling never depends on animation frames in its suspended document', async () => {
+  const begin = source.indexOf(' const waitForHiddenScene=');
+  const end = source.indexOf('\n scenePresentation.hidden=', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const calls = [];
+  const fact = {
+    renderer: { execution: { world: { identity: 'scene' }, frame: { submitted: 60 } } },
+  };
+  let advances = false;
+  const hidden = runInNewContext(`${source.slice(begin, end)}; waitForHiddenScene`, {
+    assert,
+    sceneWorld: 'scene',
+    sceneFacts: async () => {
+      calls.push('facts');
+      if (advances) fact.renderer.execution.frame.submitted++;
+      return structuredClone(fact);
+    },
+    project: {
+      evaluate: async () => {
+        throw new Error('hidden document cannot schedule rAF');
+      },
+    },
+    page: {
+      locator: () => ({
+        waitFor: async (options) => {
+          assert.equal(options.state, 'hidden');
+          assert.equal(options.timeout, 10000);
+        },
+      }),
+      waitForTimeout: async (milliseconds) => {
+        assert.equal(milliseconds, 1000);
+        calls.push('settle');
+      },
+    },
+  });
+  await hidden();
+  assert.deepEqual(calls, ['settle', 'facts', 'settle', 'facts']);
+  // A continuing producer must still fail the original submission oracle.
+  advances = true;
+  await assert.rejects(hidden(), /inactive Scene must stop continuous submissions/);
+});
+
 test('View diagnostic retains bounded cold readiness and sixty actual ready frames', async () => {
   const begin = source.indexOf(' const waitForReadyPictures=');
   const end = source.indexOf('\n const sceneCompletedFrames=', begin);
@@ -419,7 +550,7 @@ test('View diagnostic retains bounded cold readiness and sixty actual ready fram
     __diagnosticReadyCompletedFrames: { scene: 0 },
     __diagnosticReadiness: {},
     performance: { now: () => 42 },
-    page: {
+    project: {
       async waitForFunction(predicate, minimum, options) {
         events.push({ minimum, timeout: options.timeout });
         context.__diagnosticReadyCompletedFrames.scene = minimum - 1;

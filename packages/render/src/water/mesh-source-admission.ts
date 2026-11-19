@@ -1,8 +1,8 @@
 import { waterBodyOwnerKey } from '@forgeax/engine-water';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { WaterMeshInstanceDrawUpload } from './wave-material';
 
+type WaterMaterialSource = Pick<RenderableSnapshot, 'waterOwner' | 'waterMeshTiles'>;
 type WaterMeshSource = NonNullable<RenderableSnapshot['waterMeshSource']>;
 type WaterMeshTiles = NonNullable<RenderableSnapshot['waterMeshTiles']>;
 type WaterMeshDraw = WaterMeshSource['views'][number]['draws'][number];
@@ -27,7 +27,7 @@ export interface WaterMaterialAdmissionDrawClosure {
 }
 
 /** Seal Water association slots only while constructing a renderer-owned source snapshot. */
-export function ownWaterMaterialAdmissionSource<T extends RenderableSnapshot>(source: T): T {
+export function ownWaterMaterialAdmissionSource<T extends WaterMaterialSource>(source: T): T {
   try {
     lockOwnDataProperty(source, 'waterOwner', true);
     lockOwnDataProperty(source, 'waterMeshTiles', true);
@@ -57,7 +57,7 @@ export function isOwnedWaterMaterialOwner(
  * from their producer; writable/custom sources stay on the live admission path.
  */
 export function finalizeWaterMaterialAdmissionDraws(
-  rows: readonly Pick<ValidatedRenderable, 'renderableIndex' | 'source'>[],
+  rows: readonly { readonly renderableIndex: number; readonly source: WaterMaterialSource }[],
 ): WaterMaterialAdmissionDrawClosure | undefined {
   const draws: WaterMaterialAdmissionDraw[] = [];
   const uploads: WaterMeshInstanceDrawUpload[] = [];
@@ -74,7 +74,7 @@ export function finalizeWaterMaterialAdmissionDraws(
           !Number.isSafeInteger(indexDescriptor.value)
         )
           return undefined;
-        const source = sourceDescriptor.value as RenderableSnapshot;
+        const source = sourceDescriptor.value as WaterMaterialSource;
         const ownerDescriptor = immutableOwnDataProperty(source, 'waterOwner', true);
         const tilesDescriptor = immutableOwnDataProperty(source, 'waterMeshTiles', true);
         if (
@@ -211,11 +211,16 @@ function normalizeUpload(tiles: WaterMeshTiles): WaterMeshInstanceDrawUpload {
 }
 
 /** Receiver admission detaches every mutable input before retaining its fixed upload. */
-export function ownWaterMeshAdmissionDraw(
+export function ownWaterMeshAdmissionDraw<
+  T extends Pick<
+    WaterMeshDraw,
+    'drawKey' | 'bytes' | 'coverageBytes' | 'layout' | 'transitionTargets'
+  >,
+>(
   source: Pick<WaterMeshSource, 'guid' | 'generation' | 'worldIdentity' | 'zoneGeneration'>,
   viewIdentity: string,
-  draw: WaterMeshDraw,
-): WaterMeshDraw {
+  draw: T,
+): T {
   const owned = {
     ...draw,
     bytes: draw.bytes.slice(),
@@ -270,7 +275,7 @@ export function offsetWaterMeshAdmissionDraw(draw: WaterMeshDraw, offset: number
 /** A current projection may inherit only the exact admitted byte and owner closure. */
 export function projectWaterMeshAdmissionTiles(
   tiles: WaterMeshTiles,
-  draw: WaterMeshDraw,
+  draw: Pick<WaterMeshDraw, 'transitionTargets'>,
 ): WaterMeshTiles {
   const upload = (draw as WithUpload)[OWNED_DRAW_UPLOAD];
   return Object.freeze(

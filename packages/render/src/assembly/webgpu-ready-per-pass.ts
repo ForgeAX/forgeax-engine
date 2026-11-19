@@ -6,6 +6,7 @@ interface ReadyPerPassResourceInputs {
   readonly fxaaSampler: PerPassResources['fxaaSampler'];
   readonly skyboxPipeline: PerPassResources['skyboxPipeline'];
   readonly skyboxPipelineMsaa: PerPassResources['skyboxPipelineMsaa'];
+  readonly skyboxScenePipeline?: PerPassResources['skyboxScenePipeline'];
   readonly skyboxBindGroupLayout: PerPassResources['skyboxBindGroupLayout'];
   readonly skyboxSampler: PerPassResources['skyboxSampler'];
   readonly skyboxRotationBuffer: PerPassResources['skyboxRotationBuffer'];
@@ -28,6 +29,8 @@ interface ReadyPerPassResourceInputs {
   readonly retireBloomResources: NonNullable<PerPassResources['retireBloomResources']>;
   readonly drainBloomResources: NonNullable<PerPassResources['drainBloomResources']>;
   readonly inspectBloomResources: NonNullable<PerPassResources['inspectBloomResources']>;
+  readonly ssaoGBufferPipelines?: PerPassResources['ssaoGBufferPipelines'];
+  readonly gtaoGBufferComputePipeline?: PerPassResources['gtaoGBufferComputePipeline'];
   readonly ssaoCalcPipeline: PerPassResources['ssaoCalcPipeline'];
   readonly ssaoBlurPipeline: PerPassResources['ssaoBlurPipeline'];
   readonly ssaoBgl: PerPassResources['ssaoBgl'];
@@ -38,6 +41,8 @@ interface ReadyPerPassResourceInputs {
   readonly ssaoDepthCalcPipeline?: PerPassResources['ssaoDepthCalcPipeline'];
   readonly ssaoDepthBlurPipeline?: PerPassResources['ssaoDepthBlurPipeline'];
   readonly ssaoDepthBgl?: PerPassResources['ssaoDepthBgl'];
+  readonly ssaoSpiralPipelines?: PerPassResources['ssaoSpiralPipelines'];
+  readonly ssaoScenePipeline?: PerPassResources['ssaoScenePipeline'];
 }
 
 /** Creates the mutable per-pass slots owned by one prepared device generation. */
@@ -49,6 +54,7 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     fxaaSampler: input.fxaaSampler,
     skyboxPipeline: input.skyboxPipeline,
     skyboxPipelineMsaa: input.skyboxPipelineMsaa,
+    skyboxScenePipeline: input.skyboxScenePipeline,
     skyboxBindGroupLayout: input.skyboxBindGroupLayout,
     skyboxSampler: input.skyboxSampler,
     skyboxRotationBuffer: input.skyboxRotationBuffer,
@@ -74,6 +80,8 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     retireBloomResources: input.retireBloomResources,
     drainBloomResources: input.drainBloomResources,
     inspectBloomResources: input.inspectBloomResources,
+    ssaoGBufferPipelines: input.ssaoGBufferPipelines,
+    gtaoGBufferComputePipeline: input.gtaoGBufferComputePipeline,
     ssaoCalcPipeline: input.ssaoCalcPipeline,
     ssaoBlurPipeline: input.ssaoBlurPipeline,
     ssaoBgl: input.ssaoBgl,
@@ -86,6 +94,8 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     ssaoDepthCalcPipeline: input.ssaoDepthCalcPipeline ?? null,
     ssaoDepthBlurPipeline: input.ssaoDepthBlurPipeline ?? null,
     ssaoDepthBgl: input.ssaoDepthBgl ?? null,
+    ssaoSpiralPipelines: input.ssaoSpiralPipelines,
+    ssaoScenePipeline: input.ssaoScenePipeline,
     ssaoFilteringSampler: null,
     ssaoDepthSampler: null,
     ssaoFallbackRawView: null,

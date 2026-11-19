@@ -130,7 +130,7 @@ async function rasterProbe(
     pass.end();
     pixels.forEach((pixel, index) => {
       encoder.copyTextureToBuffer(
-        { texture: target, origin: pixel },
+        { texture: target, origin: [...pixel] },
         { buffer: readback, offset: index * 256, bytesPerRow: 256 },
         [1, 1],
       );

@@ -14,6 +14,7 @@ export type PipelineGroup2Contract = 'mesh' | 'skin' | 'cluster' | 'skin-cluster
 
 /** Immutable facts about one composed source, shared across material passes and GPU devices. */
 export interface MaterialShaderProgram {
+  readonly forwardFog?: 'height-vertex/1';
   readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly source: string;
   readonly sourceReference: ShaderSource;
@@ -35,6 +36,16 @@ export interface MaterialShaderProgram {
   readonly materialBindings: readonly number[] | undefined;
   /** Numeric `@id` pipeline overrides this exact module declares, in source order. */
   readonly overrideIds: readonly string[];
+}
+
+/** A producer certifies fog semantics for these exact immutable source bytes. */
+export function withMaterialShaderForwardFog(
+  program: MaterialShaderProgram,
+  contract: 'height-vertex/1' | undefined,
+): MaterialShaderProgram {
+  if (contract === undefined || program.forwardFog === contract) return program;
+  if (contract !== 'height-vertex/1') throw new TypeError('Unsupported Forward fog contract');
+  return Object.freeze({ ...program, forwardFog: contract });
 }
 
 export function materialShaderUvSetCount(source: string): number | undefined {
@@ -121,7 +132,7 @@ function materialBindings(source: string): readonly number[] | undefined {
 }
 
 /** Compare producer read metadata without decoding a shader source. */
-export function sameMaterialShaderEntryPoints(
+function sameMaterialShaderEntryPointBindings(
   left: readonly ShaderEntryPointReads[] | undefined,
   right: readonly ShaderEntryPointReads[] | undefined,
 ): boolean {
@@ -154,6 +165,33 @@ export function sameMaterialShaderEntryPoints(
   );
 }
 
+function sameEntryEffects(
+  left: ShaderEntryPointReads['effects'],
+  right: ShaderEntryPointReads['effects'],
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.mayDiscard === right.mayDiscard &&
+      left.writesDepth === right.writesDepth &&
+      left.writesSampleMask === right.writesSampleMask &&
+      left.writesStorage === right.writesStorage)
+  );
+}
+
+export function sameMaterialShaderEntryPoints(
+  left: readonly ShaderEntryPointReads[] | undefined,
+  right: readonly ShaderEntryPointReads[] | undefined,
+): boolean {
+  return (
+    sameMaterialShaderEntryPointBindings(left, right) &&
+    (left === right ||
+      (left?.every((entry, index) => sameEntryEffects(entry.effects, right?.[index]?.effects)) ??
+        false))
+  );
+}
+
 /** Reflection may arrive after source warmup; retain the already admitted source facts. */
 export function withMaterialShaderEntryPoints(
   program: MaterialShaderProgram,
@@ -161,12 +199,25 @@ export function withMaterialShaderEntryPoints(
 ): MaterialShaderProgram {
   if (entryPoints === undefined || program.entryPoints === entryPoints) return program;
   if (program.entryPoints !== undefined) {
-    const same = sameMaterialShaderEntryPoints(program.entryPoints, entryPoints);
-    if (!same)
+    if (sameMaterialShaderEntryPoints(program.entryPoints, entryPoints)) return program;
+    if (!sameMaterialShaderEntryPointBindings(program.entryPoints, entryPoints))
       throw new Error(
         'ShaderRegistry: conflicting shader entry read contract for immutable source',
       );
-    return program;
+    const existing = program.entryPoints;
+    entryPoints = entryPoints.map((entry, index) => {
+      const retained = existing[index]?.effects;
+      if (
+        retained !== undefined &&
+        entry.effects !== undefined &&
+        !sameEntryEffects(retained, entry.effects)
+      )
+        throw new Error('ShaderRegistry: conflicting shader entry effects for immutable source');
+      // A legacy publication cannot erase native facts, and missing facts can
+      // be enriched by the matching compiler without mutating retained programs.
+      return retained === undefined ? entry : { ...entry, effects: retained };
+    });
+    if (sameMaterialShaderEntryPoints(existing, entryPoints)) return program;
   }
   // Reads published inside a retained ABI receipt are already deep-frozen JSON.
   const reads = isDeepFrozenJson(entryPoints)
@@ -174,6 +225,7 @@ export function withMaterialShaderEntryPoints(
     : entryPoints.map((entry) =>
         Object.freeze({
           ...entry,
+          ...(entry.effects === undefined ? {} : { effects: Object.freeze({ ...entry.effects }) }),
           bindings: Object.freeze(
             entry.bindings.map((binding) =>
               Object.freeze({

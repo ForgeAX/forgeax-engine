@@ -631,9 +631,13 @@ export class RendererIrradianceField {
     const plan = planIrradianceField(profile.field).unwrap();
     const entries = [...shaders.entries()];
 
-    const viewSource = requirePublishedKernel(entries, 'gatherField');
-    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse');
-    const reflectionSource = requirePublishedKernel(entries, 'fs_ray_reflection_field');
+    const viewSource = requirePublishedKernel(entries, 'gatherField', 'standard-gbuffer/2');
+    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse', 'standard-gbuffer/2');
+    const reflectionSource = requirePublishedKernel(
+      entries,
+      'fs_ray_reflection_field',
+      'standard-gbuffer/2',
+    );
     const field = profile.field;
     const region = await prepareProbeGlobalRegion(
       runtime,

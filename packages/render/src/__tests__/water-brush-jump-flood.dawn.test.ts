@@ -110,7 +110,8 @@ function jfaOracle(
         const candidateUvX = (cx + 0.5) / width,
           candidateUvY = (cy + 0.5) / height;
         if (
-          (source[candidate] <= 0 && source[candidate + 1] <= 0) ||
+          (requiredFixtureValue(source[candidate]) <= 0 &&
+            requiredFixtureValue(source[candidate + 1]) <= 0) ||
           candidateUvX <= 0 ||
           candidateUvX >= 1 ||
           candidateUvY <= 0 ||
@@ -273,8 +274,8 @@ it.each([
     expect(output.readback.paddedBytes).toHaveLength(256 * heightPx);
     expect(output.readback.values).toHaveLength(widthPx * heightPx * 4);
     const assertJumpFloodOracleReadbacks = (output: WaterBrushJumpFloodExecution) => {
-      let oracleA = new Float32Array(widthPx * heightPx * 4);
-      let oracleB = new Float32Array(widthPx * heightPx * 4);
+      let oracleA: Float32Array = new Float32Array(widthPx * heightPx * 4);
+      let oracleB: Float32Array = new Float32Array(widthPx * heightPx * 4);
       for (let y = 0; y < heightPx; y++)
         for (let x = 0; x < widthPx; x++) oracleA[(y * widthPx + x) * 4 + 3] = xMask(x, widthPx);
       for (const source of seeds) {
@@ -291,14 +292,16 @@ it.each([
       }
       let oracleSource: 'jump-flood-a' | 'jump-flood-b' = 'jump-flood-a';
       for (let index = 0; index < blurPassCount; index++) {
-        const target = oracleSource === 'jump-flood-a' ? 'jump-flood-b' : 'jump-flood-a';
+        const target: 'jump-flood-a' | 'jump-flood-b' =
+          oracleSource === 'jump-flood-a' ? 'jump-flood-b' : 'jump-flood-a';
         const result = blurOracle(target === 'jump-flood-a' ? oracleB : oracleA, widthPx, heightPx);
         if (target === 'jump-flood-a') oracleA = result;
         else oracleB = result;
         oracleSource = target;
       }
       for (const step of jfaStepOffsets) {
-        const target = oracleSource === 'jump-flood-a' ? 'jump-flood-b' : 'jump-flood-a';
+        const target: 'jump-flood-a' | 'jump-flood-b' =
+          oracleSource === 'jump-flood-a' ? 'jump-flood-b' : 'jump-flood-a';
         const result = jfaOracle(
           target === 'jump-flood-a' ? oracleB : oracleA,
           widthPx,

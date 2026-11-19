@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TimeScaleInvalidError, TimeScaleLeaseReleasedError } from '../index';
 import { defineSystem } from '../schedule';
 import { FixedUpdate, Update } from '../schedule-token';
 import { FixedTime, Time } from '../time';
@@ -20,7 +21,7 @@ describe('World time resources', () => {
 
   it('rejects negative, NaN, and infinite deltas without mutating time', () => {
     const world = new World();
-    const before = world.getResource(Time);
+    const before = { ...world.getResource(Time) };
 
     for (const delta of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
       const result = world.update(delta);
@@ -58,8 +59,8 @@ describe('World time resources', () => {
     const world = new World({
       time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.05 },
     });
-    const beforeTime = world.getResource(Time);
-    const beforeFixed = world.getResource(FixedTime);
+    const beforeTime = { ...world.getResource(Time) };
+    const beforeFixed = { ...world.getResource(FixedTime) };
 
     const result = world.update(0.01);
 
@@ -205,5 +206,130 @@ describe('merged fixed catch-up', () => {
     expect(world.update(0.1).ok).toBe(true);
     expect(seen).toEqual([0.05, 0.05]);
     expect(world.getResource(FixedTime)).toMatchObject({ catchUp: 'substeps', tick: 2 });
+  });
+});
+
+describe('World clock view ownership', () => {
+  it('keeps live, enumerable, frozen views independent across Worlds', () => {
+    const a = new World();
+    const b = new World();
+    const first = a.getResource(Time);
+    const second = b.getResource(Time);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.keys(first)).toEqual([
+      'delta',
+      'elapsed',
+      'unscaledDelta',
+      'unscaledElapsed',
+      'scale',
+      'maxDeltaSeconds',
+    ]);
+    expect(() => Object.assign(first, { elapsed: 100 })).toThrow(TypeError);
+    a.update(0.025).unwrap();
+    expect(first.elapsed).toBe(0.025);
+    expect(second.elapsed).toBe(0);
+    expect(JSON.parse(JSON.stringify(first))).toEqual({
+      delta: 0.025,
+      elapsed: 0.025,
+      unscaledDelta: 0.025,
+      unscaledElapsed: 0.025,
+      scale: 1,
+      maxDeltaSeconds: 0.1,
+    });
+    expect(Object.getOwnPropertySymbols(first)).toEqual([]);
+    expect(Object.getOwnPropertyDescriptor(first, 'elapsed')?.set).toBeUndefined();
+  });
+});
+
+describe('World time scale ownership', () => {
+  it('samples the smallest active contribution at update boundaries and caps only simulation time', () => {
+    const world = new World();
+    const half = world.acquireTimeScale(0.5).unwrap();
+    const quarter = world.acquireTimeScale(0.25).unwrap();
+    const time = world.getResource(Time);
+    expect(time.scale).toBe(1);
+    world.update(0.04).unwrap();
+    expect(time).toMatchObject({ delta: 0.01, elapsed: 0.01, scale: 0.25, unscaledElapsed: 0.04 });
+    quarter.release();
+    quarter.release();
+    world.update(0.04).unwrap();
+    expect(time).toMatchObject({ delta: 0.02, elapsed: 0.03, scale: 0.5, unscaledElapsed: 0.08 });
+    half.set(2).unwrap();
+    expect(time.scale).toBe(0.5);
+    world.update(0.08).unwrap();
+    expect(time).toMatchObject({
+      delta: 0.1,
+      scale: 2,
+      unscaledDelta: 0.08,
+      unscaledElapsed: 0.16,
+    });
+    expect(time.elapsed).toBeCloseTo(0.13, 12);
+    half.release();
+    world.update(0.02).unwrap();
+    expect(time.scale).toBe(1);
+    expect(time.elapsed).toBeCloseTo(0.15, 12);
+    expect(time.unscaledElapsed).toBeCloseTo(0.18, 12);
+    expect(new World().getResource(Time).scale).toBe(1);
+  });
+
+  it('keeps Update and host time running while a zero contribution pauses fixed simulation', () => {
+    const world = new World();
+    let updates = 0;
+    let ticks = 0;
+    world
+      .addSystem(Update, defineSystem({ name: 'scaled-update', queries: [], fn: () => updates++ }))
+      .unwrap();
+    world
+      .addSystem(
+        FixedUpdate,
+        defineSystem({ name: 'scaled-fixed', queries: [], fn: () => ticks++ }),
+      )
+      .unwrap();
+    const pause = world.acquireTimeScale(0).unwrap();
+    world.update(0.05).unwrap();
+    expect(world.getResource(Time)).toMatchObject({
+      delta: 0,
+      elapsed: 0,
+      unscaledDelta: 0.05,
+      unscaledElapsed: 0.05,
+    });
+    expect(updates).toBe(1);
+    expect(ticks).toBe(0);
+    pause.release();
+    world.update(1 / 60).unwrap();
+    expect(updates).toBe(2);
+    expect(ticks).toBe(1);
+  });
+
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -1,
+  ])('rejects invalid scale %s without changing a lease, and refuses a released lease', (invalid) => {
+    const world = new World();
+    const acquired = world.acquireTimeScale(invalid);
+    expect(acquired.ok).toBe(false);
+    if (acquired.ok) throw new Error('invalid scale was accepted');
+    expect(acquired.error).toBeInstanceOf(TimeScaleInvalidError);
+    expect(acquired.error.detail.received).toBe(invalid);
+    const lease = world.acquireTimeScale(0.5).unwrap();
+    const changed = lease.set(invalid);
+    expect(changed.ok).toBe(false);
+    if (changed.ok) throw new Error('invalid scale replaced an active contribution');
+    expect(changed.error.code).toBe('time-scale-invalid');
+    expect(lease).toMatchObject({ active: true, scale: 0.5 });
+    world.update(0.04).unwrap();
+    expect(world.getResource(Time).delta).toBe(0.02);
+    lease.release();
+    lease.release();
+    const released = lease.set(0.25);
+    expect(released.ok).toBe(false);
+    if (released.ok) throw new Error('released lease was reactivated');
+    expect(released.error).toBeInstanceOf(TimeScaleLeaseReleasedError);
+    expect(released.error.code).toBe('time-scale-lease-released');
+    expect(lease).toMatchObject({ active: false, scale: 0.5 });
+    world.update(0.04).unwrap();
+    expect(world.getResource(Time)).toMatchObject({ delta: 0.04, scale: 1 });
   });
 });

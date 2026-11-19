@@ -24,7 +24,9 @@ it.each([
   true,
 ])('selects plain and colored programs for a shared material across frames (color first: %s)', async (colorFirst) => {
   const source = Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 });
-  const output = await createMaterialPackCooker().cook({
+  // This extraction fixture selects only the storage WebGPU context below.
+  // Portable backend/geometry coverage remains in the stock material input owner.
+  const output = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
     guid: 'd81bc8b3-0d67-4f7e-97e5-ebbbf8615ade',
     source,
   });

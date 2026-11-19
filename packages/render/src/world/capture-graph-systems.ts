@@ -1,5 +1,5 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import {
   compiledRenderGraphPassDeclarations,
   type RenderGraphPassExecution,
@@ -35,7 +35,7 @@ import { ViewRecorder, viewCameraOf } from './render-views';
 import { RenderCleanup, RenderRecord, renderSubmission, renderWorldFor } from './render-world';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
 import { retireAfterSubmission } from './submission-systems';
-import { EMPTY_VIEW_STATE_UPDATE, requireViewField } from './view-field';
+import { requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 import { ViewTopologyInputs, viewTopologyOf } from './view-topology-systems';
@@ -348,7 +348,7 @@ export function registerCaptureGraphSystems(world: World): void {
           rows.forEach((row) => {
             const entity = row.entity;
 
-            setDerivedComponent(world, entity, ViewCaptureGraphs, EMPTY_VIEW_STATE_UPDATE).unwrap();
+            markDerivedComponentChanged(world, entity, ViewCaptureGraphs).unwrap();
             const state = world
               .resolveUniqueRef<CaptureGraphsState>(
                 requireViewField(world, entity, ViewCaptureGraphs, 'state'),

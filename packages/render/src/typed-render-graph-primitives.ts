@@ -1,5 +1,6 @@
-﻿import {
+import {
   type GraphAccess,
+  type GraphBuffer,
   type GraphResourceResolver,
   type GraphTextureView,
   type RenderGraphBuilder,
@@ -33,14 +34,27 @@ import {
 } from './gpu-texture-usage';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
 import { geometryPipelineRequestContext } from './record/geometry-pipeline-requests';
-import { encodeMainPass, hasMainPassCpuWork, type MainPassOptions } from './record/main-pass';
+import {
+  encodeMainPass,
+  hasMainPassCpuWork,
+  type MainPassOptions,
+  prepareMainPassGeometryPipelines,
+} from './record/main-pass';
 import { encodeFrameObservationCapture } from './record/observation-capture';
+import {
+  addOrdinaryMaterialDepthSnapshot,
+  ordinaryMaterialDepthDemand,
+} from './record/ordinary-material-depth';
 import { retireSceneRenderBundleCache, sceneRenderBundleCache } from './record/render-bundle-cache';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from './record/render-context';
-import { resolveScenePassSelection, type ScenePassSelection } from './record/scene-pass-selection';
+import {
+  resolveScenePassSelection,
+  type ScenePassSelection,
+  selectScenePassPipelineEntries,
+} from './record/scene-pass-selection';
 import {
   registerScenePass,
   type ScenePassRequest,
@@ -204,12 +218,29 @@ function legacyResolver(
 export function addTypedSkyboxPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   color: RenderPipelineTarget,
+  sceneDepth?: { readonly target: RenderPipelineTarget; readonly loadOp: GPULoadOp },
 ): Result<void, RenderGraphError> {
   return graph.addRasterPass('skybox', {
     accesses: [
       ...graph.consumerReads('render-feature.scene'),
       { resource: color.view, usage: 'color-attachment' },
+      ...(sceneDepth === undefined
+        ? []
+        : [{ resource: sceneDepth.target.view, usage: 'depth-stencil-write' as const }]),
     ],
+    ...(sceneDepth === undefined
+      ? {}
+      : {
+          depthStencilAttachment: {
+            view: sceneDepth.target.view,
+            depthClearValue: 0,
+            depthLoadOp: sceneDepth.loadOp,
+            depthStoreOp: 'store' as const,
+            stencilClearValue: 0,
+            stencilLoadOp: sceneDepth.loadOp,
+            stencilStoreOp: 'store' as const,
+          },
+        }),
     colorAttachments: [
       {
         view: color.view,
@@ -219,12 +250,19 @@ export function addTypedSkyboxPass(
       },
     ],
     encodeDirect: (pass, frame, _graphresources) => {
-      encodeSkyboxPass(frame as _InternalRenderPipelineContext, pass);
+      encodeSkyboxPass(
+        frame as _InternalRenderPipelineContext,
+        pass,
+        sceneDepth?.target.format,
+        color.format,
+      );
     },
   });
 }
 
 export interface TypedScenePassOptions {
+  /** Native view topology omits before-pass resources when no material reads them. */
+  readonly materialSceneDepth?: boolean | undefined;
   /** A renderer-owned selection recipe, re-read for normal recording and candidate demand. */
   readonly selection?: ScenePassSelection;
   /** Raster geometry on the display lattice used by after-tonemap consumers. */
@@ -261,6 +299,8 @@ export interface TypedScenePassOptions {
   readonly clearColor?: readonly [number, number, number, number] | undefined;
   readonly colorClearValues?: readonly (readonly [number, number, number, number])[];
   readonly colorLoadOp?: GPULoadOp | readonly GPULoadOp[] | undefined;
+  /** Auto lets the graph release resolved MSAA color after its last declared consumer. */
+  readonly colorStoreOp?: GPUStoreOp | 'auto' | undefined;
   readonly depthLoadOp?: GPULoadOp | undefined;
   /** The loaded depth is the exact prepass raster of this pass's opaque draws. */
   readonly seededDepth?: boolean | undefined;
@@ -443,6 +483,14 @@ function typedScenePassAccesses(
   return accesses;
 }
 
+function assignOptionalMaterialDepth(
+  options: { materialSceneDepth?: TextureView },
+  resources: GraphResourceResolver,
+  depth: GraphTextureView | undefined,
+): void {
+  if (depth !== undefined) options.materialSceneDepth = resolvedView(resources, depth);
+}
+
 export function addTypedScenePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   options: TypedScenePassOptions,
@@ -502,6 +550,17 @@ export function addTypedScenePass(
     late: options.gpuDrivenPhase === 'late',
     capture: false,
   });
+  const sampledMaterialDepth =
+    options.materialSceneDepth !== true
+      ? ok(undefined)
+      : addOrdinaryMaterialDepthSnapshot(
+          graph,
+          options.depth,
+          options.name,
+          (frame) => ordinaryMaterialDepthDemand(frame, request),
+          options.depthLoadOp !== 'load',
+        );
+  if (!sampledMaterialDepth.ok) return sampledMaterialDepth;
   const fragmentEntryPoint = scenePassFragmentEntryPoint(options);
   const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
@@ -513,13 +572,12 @@ export function addTypedScenePass(
         options.selectEntities === undefined
           ? context.pipelinePreparationEntries
           : context.pipelinePreparationEntries?.filter(
-              (entry) =>
-                selection !== undefined && selection.entities.includes(entry.source.entityKey),
+              (entry) => selection?.entities.includes(entry.source.entityKey) === true,
             );
       // A graph can declare this preparation lane while the current frame has
       // no pending material pipelines. Do not copy its whole context in that case.
       if (entries === undefined || entries.length === 0) return false;
-      return prepareTypedScenePipelineDemand(
+      const matched = prepareTypedScenePipelineDemand(
         {
           ...geometryPipelineRequestContext(context),
           ...(entries === undefined ? {} : { pipelinePreparationEntries: entries }),
@@ -551,6 +609,14 @@ export function addTypedScenePass(
             : { selection: options.selection }),
         },
       );
+      if (matched && options.selector !== undefined)
+        prepareMainPassGeometryPipelines(
+          context,
+          options.selector,
+          options,
+          selectScenePassPipelineEntries(entries, options.selection, context.camera),
+        );
+      return matched;
     },
     options.selectEntities === undefined
       ? {
@@ -602,6 +668,7 @@ export function addTypedScenePass(
     else if (options.selection !== undefined)
       result.selection = resolveScenePassSelection(options.selection, frame.camera);
     result.colorFormats = formats;
+    assignOptionalMaterialDepth(result, resources, sampledMaterialDepth.value);
     result.passKind = request.passKind;
     if (request.recordMode !== undefined) result.recordMode = request.recordMode;
     if (options.transparentDepthWrite !== undefined)
@@ -635,6 +702,8 @@ export function addTypedScenePass(
     return result;
   };
   const accesses = typedScenePassAccesses(options, colorTargets);
+  if (sampledMaterialDepth.value !== undefined)
+    accesses.push({ resource: sampledMaterialDepth.value, usage: 'sampled-read' });
   for (const read of graph.consumerReads('render-feature.scene'))
     if (
       !accesses.some((access) => access.resource === read.resource && access.usage === read.usage)
@@ -656,7 +725,7 @@ export function addTypedScenePass(
         (typeof options.colorLoadOp === 'string'
           ? options.colorLoadOp
           : options.colorLoadOp?.[index]) ?? 'clear',
-      storeOp: 'store',
+      storeOp: options.colorStoreOp ?? 'store',
       clearValue: {
         r: options.colorClearValues?.[index]?.[0] ?? options.clearColor?.[0] ?? 0,
         g: options.colorClearValues?.[index]?.[1] ?? options.clearColor?.[1] ?? 0,
@@ -770,6 +839,15 @@ export function addTypedScenePass(
       // Native Scene Pass work already owns a detached context. Enrich that
       // context once instead of copying the entire frame twice more per Pass.
       const passContext = internal;
+      passContext.ordinaryDepthViewTargets = {
+        directionalShadow,
+        spotShadow,
+        cloudShadow,
+        atmosphere: atmosphereVolumeViews(resources, options.environment?.atmosphere),
+        projector: internal.spotLightProjector?.view ?? internal.volumetricFog?.projectorView,
+        projectorSampler:
+          internal.spotLightProjector?.sampler ?? internal.volumetricFog?.projectorSampler,
+      };
       passContext.gpuDrivenSelection =
         options.gpuDriven === undefined ? undefined : gpuDrivenSelection;
       if (options.environment !== undefined)
@@ -780,7 +858,7 @@ export function addTypedScenePass(
       passContext.transparentColorFormat = colorTargets[0]?.format as GPUTextureFormat;
       if (options.passKind !== 'deferred' && colorTargets[1]?.format === 'rgba16float')
         passContext.reflectionFallbackColorFormat = 'rgba16float';
-      passContext.msaaActive = colorTargets[0]?.sampleCount === 4;
+      passContext.msaaActive = sampleCount === 4;
       passContext.viewBindGroup = groups.viewBindGroup;
       if (options.rasterProjection === 'unjittered')
         passContext.viewBindGroupDynamicOffset = POST_PROCESS_VIEW_UNIFORM_OFFSET;
@@ -848,7 +926,8 @@ export function addReflectionFallbackObservationPass(
 
 export interface TypedBloomTargets {
   readonly scene: RenderPipelineTarget;
-  readonly composited: RenderPipelineTarget;
+  /** Omit when native Grade consumes the five filter outputs directly. */
+  readonly composited?: RenderPipelineTarget;
   readonly horizontal: readonly RenderPipelineTarget[];
   readonly vertical: readonly RenderPipelineTarget[];
   readonly levelDimensions: readonly { readonly width: number; readonly height: number }[];
@@ -871,7 +950,7 @@ export function addTypedBloomPasses(
 ): Result<void, RenderGraphError> {
   const named: Record<string, RenderPipelineTarget> = {
     hdrColor: targets.scene,
-    hdrComposited: targets.composited,
+    ...(targets.composited === undefined ? {} : { hdrComposited: targets.composited }),
   };
   targets.horizontal.forEach((target, level) => {
     named[`bloomHorizontal${level}`] = target;
@@ -966,12 +1045,14 @@ export function addTypedBloomPasses(
     );
     if (!v.ok) return v;
   }
-  return add(
-    TYPED_BLOOM_PASS_NAMES.composite,
-    [targets.scene, ...targets.vertical],
-    targets.composited,
-    (frame, resolve, pass) => recordBloomCompositePass(frame, resolve, pass),
-  );
+  return targets.composited === undefined
+    ? ok(undefined)
+    : add(
+        TYPED_BLOOM_PASS_NAMES.composite,
+        [targets.scene, ...targets.vertical],
+        targets.composited,
+        (frame, resolve, pass) => recordBloomCompositePass(frame, resolve, pass),
+      );
 }
 
 export interface TypedSsaoTargets {
@@ -980,6 +1061,10 @@ export interface TypedSsaoTargets {
   readonly depth: RenderPipelineTarget;
   readonly raw: RenderPipelineTarget;
   readonly blurred: RenderPipelineTarget;
+  /** Present only for the spiral estimator: the seven-tap horizontal intermediate. */
+  readonly horizontal?: RenderPipelineTarget | undefined;
+  readonly linearDepth?: RenderPipelineTarget | undefined;
+  readonly parameters?: GraphBuffer | undefined;
   /** Owner-only acceptance selection; game-facing camera configuration stays algorithm-only. */
   readonly execution?: 'fragment' | 'compute' | undefined;
 }
@@ -990,7 +1075,8 @@ export function addTypedSsaoPasses(
 ): Result<void, RenderGraphError> {
   const depth = depthSampleView(graph, targets.depth, 'typed-ssao-depth-only-view');
   if (!depth.ok) return depth;
-  if (targets.normal === undefined) return addTypedSsaoDepthPasses(graph, targets, depth.value);
+  if (targets.normal === undefined || targets.horizontal !== undefined)
+    return addTypedSsaoDepthPasses(graph, targets, depth.value);
   return addTypedSsaoNormalPasses(graph, { ...targets, normal: targets.normal }, depth.value);
 }
 
@@ -1000,16 +1086,19 @@ function addTypedSsaoDepthPasses(
   targets: TypedSsaoTargets,
   depth: GraphTextureView,
 ): Result<void, RenderGraphError> {
-  // The forward lane admits this path only for the fragment GTAO entry.
+  // Depth-only GTAO and spiral SSAO share this typed raster/depth owner.
   const stage = (
-    name: 'ssao-calc' | 'ssao-blur',
+    name: 'ssao-calc' | 'ssao-blur' | 'ssao-blur-horizontal',
     output: RenderPipelineTarget,
     raw?: RenderPipelineTarget,
   ): Result<void, RenderGraphError> =>
     graph.addRasterPass(name, {
       accesses: [
         ...(raw === undefined ? [] : [{ resource: raw.view, usage: 'sampled-read' as const }]),
-        { resource: depth, usage: 'sampled-read' },
+        { resource: targets.linearDepth?.view ?? depth, usage: 'sampled-read' },
+        ...(targets.parameters === undefined
+          ? []
+          : [{ resource: targets.parameters, usage: 'uniform-read' as const }]),
         { resource: output.view, usage: 'color-attachment' },
       ],
       colorAttachments: [
@@ -1023,18 +1112,38 @@ function addTypedSsaoDepthPasses(
       encodeDirect: (pass, frame, resources) =>
         recordSsaoDepthPass(
           frame as _InternalRenderPipelineContext,
-          raw === undefined ? 'calc' : 'blur',
+          targets.horizontal === undefined
+            ? raw === undefined
+              ? 'calc'
+              : 'blur'
+            : raw === undefined
+              ? 'spiral'
+              : name === 'ssao-blur-horizontal'
+                ? 'blur-x'
+                : 'blur-y',
           pass,
           {
             output: resolvedView(resources, output.view),
-            depth: resolvedView(resources, depth),
+            depth: resolvedView(resources, targets.linearDepth?.view ?? depth),
+            linearDepth:
+              targets.linearDepth === undefined
+                ? undefined
+                : resolvedView(resources, targets.linearDepth.view),
+            uniform:
+              targets.parameters === undefined
+                ? undefined
+                : resources.buffer(targets.parameters).unwrap(),
             raw: raw === undefined ? undefined : resolvedView(resources, raw.view),
           },
         ),
     });
   const calc = stage('ssao-calc', targets.raw);
   if (!calc.ok) return calc;
-  return stage('ssao-blur', targets.blurred, targets.raw);
+  if (targets.horizontal !== undefined) {
+    const horizontal = stage('ssao-blur-horizontal', targets.horizontal, targets.raw);
+    if (!horizontal.ok) return horizontal;
+  }
+  return stage('ssao-blur', targets.blurred, targets.horizontal ?? targets.raw);
 }
 
 function addTypedSsaoNormalPasses(
@@ -1055,6 +1164,7 @@ function addTypedSsaoNormalPasses(
             const extent = resources.textureViewExtent(targets.raw.view);
             if (!extent.ok) throw extent.error;
             recordGtaoComputePass(frame as _InternalRenderPipelineContext, pass, {
+              gbufferV2: targets.normal.format === 'rg32uint',
               output: resolvedView(resources, targets.raw.view),
               normal: resolvedView(resources, targets.normal.view),
               depth: resolvedView(resources, depth.value),
@@ -1087,6 +1197,7 @@ function addTypedSsaoNormalPasses(
               undefined,
               pass,
               {
+                gbufferV2: targets.normal.format === 'rg32uint',
                 output: resolvedView(resources, targets.raw.view),
                 normal,
                 depth: depthView,
@@ -1124,6 +1235,7 @@ function addTypedSsaoNormalPasses(
         undefined,
         pass,
         {
+          gbufferV2: targets.normal.format === 'rg32uint',
           output: resolvedView(resources, targets.blurred.view),
           raw: resolvedView(resources, targets.raw.view),
           normal,

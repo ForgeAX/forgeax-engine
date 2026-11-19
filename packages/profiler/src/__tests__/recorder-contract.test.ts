@@ -20,6 +20,36 @@ function expectOk<T>(result: { ok: boolean; value?: T; error?: { code: string } 
 }
 
 describe('bounded profiler recorder contract', () => {
+  it('owns automatic frame identities across explicit and automatic callers', () => {
+    const profiler = createProfiler({ clock: createClock(), phaseCatalog: TEST_PHASE_CATALOG });
+    const session = expectOk(profiler.startCapture({ frameLimit: 3, eventLimit: 4 }));
+    expect(expectOk(session.beginFrame())).toEqual({ captureId: session.captureId, frameId: 1 });
+    expect(session.beginFrame().ok).toBe(false);
+    expectOk(session.beginPhase('render', 'record'));
+    expectOk(session.endPhase());
+    expectOk(session.endFrame());
+    expect(session.beginFrame(7)).toEqual({ ok: true, value: undefined });
+    expectOk(session.beginPhase('app', 'frame-total'));
+    expectOk(session.endPhase());
+    expectOk(session.endFrame());
+    expect(expectOk(session.beginFrame())).toEqual({ captureId: session.captureId, frameId: 8 });
+    expectOk(session.beginPhase('app', 'frame-total'));
+    expectOk(session.endPhase());
+    expectOk(session.endFrame());
+    const artifact = expectOk(session.finish());
+    expect(artifact.records.map((record) => record.frameId)).toEqual([1, 7, 8]);
+    expect(artifact.completeness.status).toBe('complete');
+  });
+
+  it('does not wrap automatic identities beyond the safe integer boundary', () => {
+    const profiler = createProfiler({ clock: createClock(), phaseCatalog: TEST_PHASE_CATALOG });
+    const session = expectOk(profiler.startCapture({ frameLimit: 2, eventLimit: 4 }));
+    expectOk(session.beginFrame(Number.MAX_SAFE_INTEGER));
+    expectOk(session.endFrame());
+    expect(session.beginFrame().ok).toBe(false);
+    expectOk(session.finish());
+  });
+
   it('rejects invalid limits before entering an active capture', () => {
     const profiler = createProfiler({ clock: createClock(), phaseCatalog: TEST_PHASE_CATALOG });
 

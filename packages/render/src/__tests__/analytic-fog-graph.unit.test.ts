@@ -14,6 +14,7 @@ import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
+import { scenePipelinePreparations } from '../record/scene-pipeline-preparation';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
 import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
@@ -237,17 +238,41 @@ describe('analytic distance and height fog graph', () => {
     const compiled = graph
       .compile({ device: localDevice, surfaceSize: { width: 8, height: 8 } })
       .unwrap();
-    compiled
-      .execute({
-        encoder: localDevice.createCommandEncoder().unwrap(),
-        runtime: {
-          device: localDevice,
-          lookupPostProcess: () => ({ source: 'synthetic' }),
-          shaderModuleFactory: { createShaderModule: () => ok(shader) },
-        },
-        pipelineState: { viewUniformBuffer: uniform },
-      } as unknown as RenderPipelineFrame)
-      .unwrap();
+    let moduleReady = false;
+    const pending = new RhiError({
+      code: 'rhi-not-available',
+      expected: 'the lazy fog shader module finishes preparation',
+      hint: 'retry preparation after the module is ready',
+    });
+    const createModule = vi.fn(() => (moduleReady ? ok(shader) : err(pending)));
+    const frame = {
+      encoder: localDevice.createCommandEncoder().unwrap(),
+      runtime: {
+        device: localDevice,
+        lookupPostProcess: () => ({ source: 'synthetic' }),
+        shaderModuleFactory: { createShaderModule: createModule },
+      },
+      pipelineState: { viewUniformBuffer: uniform },
+      frameState: {},
+    } as unknown as RenderPipelineFrame;
+    const preparations = scenePipelinePreparations(graph);
+    expect(preparations).toHaveLength(1);
+    const prepare = preparations[0];
+    if (prepare === undefined) throw new Error('Missing graph-owned fog preparation');
+    expect(prepare.kind).toBe('utility');
+    const context = frame as Parameters<typeof prepare>[0];
+    expect(() => prepare(context, new Map())).not.toThrow();
+    expect(context.frameState.pipelinePreparationPendingReason).toEqual({
+      code: 'scene-pipeline-preparation',
+    });
+    expect(pipelines).not.toHaveBeenCalled();
+    moduleReady = true;
+    prepare(context, new Map());
+    expect(pipelines).toHaveBeenCalledTimes(1);
+    createModule.mockClear();
+    compiled.execute(frame).unwrap();
+    expect(createModule).not.toHaveBeenCalled();
+    expect(pipelines).toHaveBeenCalledTimes(1);
     expect(pipelines.mock.calls.at(-1)?.[0]).toMatchObject({
       multisample: { count: 4 },
       fragment: {
@@ -279,39 +304,43 @@ describe('analytic distance and height fog graph', () => {
   it('keeps native FXAA after multisampled fog and resolve', () => {
     const names = inspect(true, { antialias: 'msaa-fxaa' }).passes.map((pass) => pass.name);
     expect(names).toContain('fxaa');
-    expect(names.indexOf('fxaa')).toBeGreaterThan(names.indexOf('analytic-fog'));
+    expect(names.indexOf('main')).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf('fxaa')).toBeGreaterThan(names.indexOf('main'));
   });
-  it('fogs multisampled opaque color before resolving and drawing translucency', () => {
+  it('keeps ordinary MSAA height fog in surface writers without a fullscreen fog pass', () => {
     const info = inspect(true, { antialias: 'msaa' });
-    const fog = info.passes.find((pass) => pass.name === 'analytic-fog');
-    expect(fog?.accesses).toContainEqual({
+    expect(info.passes.some((pass) => pass.name === 'analytic-fog')).toBe(false);
+    expect(
+      info.resources.find((resource) => resource.label === 'scene-color-msaa')?.descriptor,
+    ).toMatchObject({ sampleCount: 4 });
+    expect(
+      info.resources.find((resource) => resource.label === 'scene-depth')?.descriptor,
+    ).toMatchObject({ sampleCount: 4 });
+    const main = info.passes.find((pass) => pass.name === 'main');
+    expect(main?.accesses).toContainEqual({
       resource: 'scene-color-msaa',
       usage: 'color-attachment',
     });
-    expect(fog?.accesses).toContainEqual({ resource: 'scene-depth', usage: 'sampled-read' });
     const names = info.passes.map((pass) => pass.name);
-    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('transparent'));
+    expect(names.indexOf('main')).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf('transparent')).toBeGreaterThan(names.indexOf('main'));
   });
   it('is absent when disabled, with no fog target or volume history', () => {
     const info = inspect(false);
     expect(info.passes.some((p) => p.name === 'analytic-fog')).toBe(false);
     expect(info.resources.filter((r) => r.label.startsWith('analytic-fog'))).toHaveLength(0);
   });
-  it('fogs the opaque scene in place after opaque shading and before translucency', () => {
+  it('adds no depth reconstruction or volume history for native surface height fog', () => {
     const info = inspect(true);
-    const names = info.passes.map((p) => p.name);
-    expect(names.filter((n) => n === 'analytic-fog')).toHaveLength(1);
-    expect(names.indexOf('analytic-fog')).toBeGreaterThan(names.indexOf('main'));
-    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('transparent'));
-    expect(names.indexOf('analytic-fog')).toBeLessThan(names.indexOf('bloom-horizontal-0'));
-    expect(names.some((n) => n.startsWith('volume-'))).toBe(false);
-    const fog = info.passes.find((p) => p.name === 'analytic-fog');
-    expect(fog?.accesses).toEqual([
-      { resource: 'scene-depth', usage: 'sampled-read' },
-      { resource: 'analytic-fog-view', usage: 'uniform-read' },
-      { resource: 'scene-color', usage: 'color-attachment' },
-    ]);
-    expect(info.resources.some((r) => r.label === 'analytic-fog-color')).toBe(false);
+    const names = info.passes.map((pass) => pass.name);
+    expect(names).not.toContain('analytic-fog');
+    expect(names.indexOf('main')).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf('transparent')).toBeGreaterThan(names.indexOf('main'));
+    expect(names.indexOf('bloom-horizontal-0')).toBeGreaterThan(names.indexOf('transparent'));
+    expect(names.some((name) => name.startsWith('volume-'))).toBe(false);
+    expect(info.resources.some((resource) => resource.label.startsWith('analytic-fog'))).toBe(
+      false,
+    );
   });
 
   it('adds no unfogged opaque pass unless a fog:false opaque material is present', () => {
@@ -319,15 +348,12 @@ describe('analytic distance and height fog graph', () => {
     expect(names).not.toContain('main-unfogged');
   });
 
-  it('draws fog:false opaque materials after the opaque fog pass (Three Material.fog)', () => {
-    const info = inspect(true, { unfoggedOpaque: true });
-    const names = info.passes.map((p) => p.name);
-    const unfogged = names.indexOf('main-unfogged');
-    expect(unfogged).toBeGreaterThan(names.indexOf('analytic-fog'));
-    expect(unfogged).toBeLessThan(names.indexOf('transparent'));
-    expect(inspect(false, { unfoggedOpaque: true }).passes.map((p) => p.name)).not.toContain(
-      'main-unfogged',
-    );
+  it('keeps fog:false opaque materials on their View slot without a second geometry pass', () => {
+    const names = inspect(true, { unfoggedOpaque: true }).passes.map((pass) => pass.name);
+    expect(names).not.toContain('analytic-fog');
+    expect(names).not.toContain('main-unfogged');
+    expect(names.filter((name) => name === 'main')).toHaveLength(1);
+    expect(names).toEqual(inspect(false, { unfoggedOpaque: true }).passes.map((pass) => pass.name));
   });
 
   it('keeps fog on the internal lattice before TAA and DoF', () => {
@@ -347,7 +373,8 @@ describe('analytic distance and height fog graph', () => {
       expect(color?.descriptor).toEqual(expect.objectContaining({ width: 320, height: 176 }));
       expect(depth?.descriptor).toEqual(expect.objectContaining({ width: 320, height: 176 }));
       const resolve = names.indexOf(antialias === 'taa' ? 'taa-resolve' : 'fxaa');
-      if (resolve >= 0) expect(names.indexOf('analytic-fog')).toBeLessThan(resolve);
+      expect(names).not.toContain('analytic-fog');
+      if (resolve >= 0) expect(names.indexOf('main')).toBeLessThan(resolve);
     }
   });
 });

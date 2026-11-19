@@ -9,8 +9,8 @@ or a runtime shader compiler.
 This is a bounded compatibility surface, not complete Three conformance. See
 COMPATIBILITY.md for defaults, supported source operations,
 measured rendering differences and the specific native contracts still missing.
-WebGL backends and their exclusive interfaces are outside the target.
-GPU-dependent addon expansion is deferred. The 88 public CPU addon subpaths share
+WebGL backends are outside the target. The supported Three post-processing
+addon sequence is described below. The 118 public CPU addon subpaths share
 the facade's original constructor family and import no native renderer or cooked
 material programs. They include the existing OrbitControls, GLTFLoader,
 BufferGeometryUtils, SkeletonUtils and MeshSurfaceSampler, plus:
@@ -25,14 +25,19 @@ BufferGeometryUtils, SkeletonUtils and MeshSurfaceSampler, plus:
 - NURBSCurve/Surface/Volume/Utils, LoftGeometry, ConvexObjectBreaker, ColorConverter, ColorSpaces and SortUtils.
 - Arcball/Drag/FirstPerson/Fly/Map/PointerLock/Trackball/Transform controls and SelectionBox/SelectionHelper.
 - Collada/3MF/AMF/VOX/TDS/VRML/GCode/RGBE loaders, GLTFExporter, AnimationPathHelper and SceneOptimizer.
+- MD2/TIFF/PVR/KMZ/LUTImage/HDRCube loaders, CPU DataTexture EXR export, UVsDebug, WorkerPool and GeometryCompressionUtils.
+- MarchingCubes, Gyroscope, MorphAnimMesh/MorphBlendMesh, MD2 character managers, TubePainter and RollerCoaster geometries.
+- USD/USDZ/LWO loaders, texture-free USDZ export, Volume/VolumeSlice, InteractiveGroup, CSMFrustum and Color/Debug/Room environments.
 
 Import each through `@forgeax/engine/three/addons/<category>/<name>.js`.
 Generated geometry uses the existing native topology and material admission.
 Points transport RGB/RGBA vertex colors through the existing native point tint
 stream, including normalized attributes, source color revisions and color-enable
-changes. PointsNodeMaterial retains the same supported uniform/reference inputs.
-Lines still reject per-vertex colors; Lines/Points source UV and point-coordinate
-texture paths remain unsupported. Octree and OBB are CPU queries, not native physics bodies.
+changes. Stock PointsMaterial supports size, perspective attenuation, and map
+sampling over generated sprite coordinates. Points with source UVs, separate alpha
+maps, and custom node point sizes need a separate sampling or sizing path.
+PointsNodeMaterial retains its admitted uniform/reference inputs. Lines still
+reject textures and per-vertex colors. Octree and OBB are CPU queries.
 OBJ/MTL keep their original Phong CPU materials; select a supported native material
 explicitly for rendering. HDRLoader parsing does not install environment lighting
 or PMREM. Modifiers, exporters, clip generation and CCD IK run only when called;
@@ -80,10 +85,60 @@ explicitly rewrites the source scene and disposes replaced meshes/assets. Its
 BatchedMesh result uses the existing CPU expansion route, not native GPU instancing;
 this export is not a frame-time improvement claim.
 
+MD2 parsing preserves absolute morph frames and clips; invalid MD2/PVR headers can
+return undefined. TIFF decoding and DataTexture EXR export operate on CPU bytes;
+EXR renderer readback overloads are not newly supported. KMZ uses a real DOMParser
+and retains Collada material models. HDRCube loading returns six CPU DataTextures,
+not native IBL filtering. LUTImage builds Data3DTexture data without native 3D-LUT
+sampling. PVRTC parsing does not establish device compression support.
+GeometryCompressionUtils explicitly mutates attributes into packed encodings;
+these require matching shader decode and are not admitted as native mesh inputs
+by this addition. UVsDebug requires Canvas2D. WorkerPool creates workers only via
+the caller factory and explicit postMessage calls; dispose terminates them. It
+adds no Engine scheduler. Its real queue field replaces the upstream type typo.
+
+MarchingCubes and MorphAnimMesh/MorphBlendMesh use the existing Mesh/morph route;
+call their update methods explicitly. MarchingCubes reuses its field/output buffers
+until resolution changes. MorphBlendMesh requires morph geometry at construction;
+its inherited clone() retains the upstream missing-geometry constructor failure.
+AnimationClip morph-sequence factories accept named BufferAttributes
+without obsolete vertex arrays and retain their original constructor/static identity.
+The ordinary scene traversal drives Gyroscope's original `updateMatrixWorld`
+behavior. MD2 character managers retain
+explicit update/load ownership and create no frame driver or native controller.
+Assign controls before calling MD2CharacterComplex.update().
+TubePainter exposes moveTo/lineTo/setSize/setColor/update; the historical public
+stroke/updateGeometry declarations describe private helpers. It retains upstream's
+three eagerly allocated attribute arrays (36 MB total), even for a short stroke;
+this export does not establish an efficient native dynamic-stroke renderer.
+RollerCoaster exports ordinary CPU geometries; TreesGeometry retains upstream
+randomness and raycasting. ShadowMesh retains its planar matrix and stencil
+material; native projected-shadow rendering is not newly qualified here.
+
+USD/USDZ and LWO preserve original hierarchies, transforms and material models;
+select supported materials explicitly for native rendering.
+Zero/constant UVs remain valid without tangent-space inputs: the native vertex ABI uses
+normal-plane tangents instead of requiring an unused UV-derived frame. Normal,
+bump, clearcoat-normal and anisotropy inputs retain authored-UV tangent validation. Changing that material requirement also
+changes the geometry cache variant.
+
+Texture-free USDZ
+export/reload is verified; compressed-texture readback and external asset networks
+are separate contracts. Update source world matrices before USDZ export. The deprecated USDZLoader alias retains the original
+warning. Volume accepts backing buffers, and map callbacks return replacement
+voxel values. NRRDLoader returns that same Volume constructor family and supplies
+orientation/window metadata before slicing. VolumeSlice uses real Canvas2D and
+explicit repaint; it is not native volume ray marching. InteractiveGroup only
+needs `{ domElement: HTMLElement }` and a Camera for direct-child CPU picking;
+disconnect it when retiring the host. XR event transport is not newly qualified.
+CSMFrustum is CPU split math, not native CSM integration. Color/Debug/Room are
+disposable source scenes, not a new PMREM or environment-capture implementation.
+
 `setRenderTarget(null, face, mip)` retains default-framebuffer selection metadata:
 face is an integer from 0 to 5 and mip is a nonnegative safe integer. Omitting them
 resets both to zero; RendererUtils save/restore preserves them. They select no GPU
-subresource on the default framebuffer. Non-null RenderTargets remain unsupported.
+subresource on the default framebuffer. The ordered target contract below covers
+non-null targets.
 
 ## Use
 
@@ -154,7 +209,125 @@ morphs and BatchedMesh trade CPU work and upload memory for compatibility. They
 are not claims of Three's instancing performance. Native Skylight continues to own
 both diffuse environment lighting and reflections.
 
+## Three addon post-processing
+
+The `addons/postprocessing/` subpaths support an `EffectComposer(renderer)`
+display sequence of `RenderPass`, optional `GTAOPass`, optional
+`UnrealBloomPass`, and final `OutputPass`. Pass `enabled` settings control their
+native graph work. The renderer owns scene MSAA, AO, HDR Bloom, and output
+encoding. Parameters map to the native filter and composition methods.
+
+This route uses default GTAO output and internal geometry inputs. The active
+renderer supplies the display size and GPU outputs. Caller-owned targets,
+pass-owned GPU texture reads, custom passes and GLSL are outside this sequence.
+
+## Ordered HDR targets and cube environments
+
+```mermaid
+flowchart LR
+  A["Three target and camera"] --> B["Native capture graph and ordered submit"]
+  B --> C["Resolved HDR texture"]
+  C --> D["Ordinary material sampling"]
+  C --> E["Explicit native IBL filter"]
+  E --> F["Skylight and PBR"]
+```
+
+`setRenderTarget(target, face, mip)` selects a renderer-owned 2D or cube target.
+Each `render` is a separate ordered native submission; it does not queue a later
+scene traversal. The canvas is not acquired during a target write. Target color
+is linear HDR, without display tone mapping or output transfer. Use RGBA
+`HalfFloatType` for HDR or `UnsignedByteType` for LDR, and samples 0/1/4.
+Target resize/disposal retires native storage behind its allocation queue fence.
+
+Offscreen passes share the existing asset usage epoch until a canvas draw or
+readback closes it. A warmed composition reuses geometry/material/texture leases
+across its passes. Later unused leases are swept at the next boundary; source
+`dispose` invalidates them even during an offscreen-only window, and renderer
+`dispose` releases the entire cache. Clear-only submissions keep the window open.
+
+| Operation | Contract |
+| --- | --- |
+| Cold target preparation | Await `renderAsync`; it waits for real preparation and a completed target write. Synchronous `render` throws `renderer-not-ready` if the target write was held. The receipt remains inspectable. |
+| Target switching | Separate ordered submissions preserve source callbacks and edits at each invocation. A later target can sample an earlier successfully submitted target. |
+| Clear/load | Full-target independent color/depth/stencil clears and `autoClear` flags; `clearAsync` waits for preparation. Native reverse-depth clears remain owned by Render. |
+| Sampling | 2D color maps sample mip 0 with Linear/Nearest filtering; mip-filtered target maps are rejected. |
+| Face/mip | Explicit 2D mip or cube face/mip writes. Face numbering follows r187 WebGPU CubeCamera; the adapter projects its X faces into native cube order. |
+| Depth | Cube scene writes clear private depth each face; retaining depth between cube faces is rejected. |
+| MSAA | Native private multisample color/depth attachments resolve into the sampled target, including explicit mip writes. |
+| Readback | `readRenderTargetPixelsAsync` returns the complete mip-0 raw target as a byte/half-float array, with r187 textureIndex/faceIndex arguments. |
+| Rejected scope | MRT, depth textures, partial viewport/scissor, automatic mip generation, target feedback, implicit framebuffer sampling and arbitrary composer/WebGL state. Unsupported operations raise structured diagnostics. |
+
+```ts
+const target = new THREE.RenderTarget(256, 256, {
+  type: THREE.HalfFloatType, samples: 4, generateMipmaps: false,
+});
+renderer.setRenderTarget(target);
+await renderer.renderAsync(offscreenScene, offscreenCamera);
+renderer.setRenderTarget(null);
+material.map = target.texture;
+renderer.render(scene, camera);
+```
+
+`WebGLCubeRenderTarget` is a CPU constructor alias for `CubeRenderTarget`; it does
+not create a WebGL backend. Cube initialization uses the CPU `CubeCamera` and
+`CubeRenderTarget` constructors
+with an explicit awaited native execution boundary:
+
+```ts
+const cube = new THREE.CubeRenderTarget(128, {
+  type: THREE.HalfFloatType, generateMipmaps: false,
+});
+const probe = new THREE.CubeCamera(0.1, 100, cube);
+await renderer.captureCubeAsync(probe, scene);
+scene.environment = cube.texture;
+await renderer.captureCubeAsync(probe, scene); // optional second lighting bounce
+```
+
+`captureCubeAsync` projects six real face cameras into the native capture operation.
+Render submits all six ready writes and native diffuse/PMREM in GPU queue order.
+The returned promise waits for the finished environment and replaces the previous
+environment once per round. Scene callbacks run per face at preparation and
+submission, and the promise covers GPU completion. `prepareEnvironment(cube.texture)`
+explicitly filters a cube written by
+other admitted target operations. Filtering snapshots the source entirely on the
+GPU; its completed output feeds existing native Skylight/PBR binding. Material
+binding never filters that output again. Disposal releases the environment lease.
+Capture admits world translation, six original matching face lenses and mip 0 for
+environment filtering; rotated/scaled probes and customized child views are rejected.
+
+> [!IMPORTANT]
+> Game initialization must await this boundary instead of the old synchronous
+> `CubeCamera.update`/WebGL `PMREMGenerator.fromCubemap` sequence. This adapter does
+> not execute Three's PMREM shaders or promise universal WebGL renderer compatibility.
+> GPU cube backgrounds, material-local `envMap` and partial-target composer passes
+> remain separate unsupported consumers. Use an admitted Color/equirect background.
+
 ## CPU addons and Matcap coverage
+
+The root `UniformsUtils.clone/merge` export is the original r187 CPU utility.
+It clones marked Three values and arrays of those values using their original
+constructors. Ordinary arrays are shallow copies; plain objects and typed arrays
+remain shared. Render-target texture values warn and become null as upstream.
+This export does not enable ShaderMaterial or post-processing execution.
+
+When source-linking the SDK and importing external r187 addons through a `three`
+root alias, keep that constructor family outside Vite's dependency optimizer:
+
+```ts
+optimizeDeps: { exclude: ['three', '@forgeax/engine/three', '@forgeax/engine-three'] },
+```
+
+The linked facade and its public CPU addons must use the same module graph as
+those external addons. Prebundling only one side can create duplicate Three
+constructors; including only the root facade still leaves linked public addon
+chunks separate. Check geometry and material identity as well as module linkage.
+Ordinary public addon imports retain the configuration shown above in Use.
+
+Custom `Material.onBeforeCompile` hooks return `three-migration-required` with
+the material UUID before native publication. Forgeax does not execute their
+WebGL GLSL edits. Migrate surface edits through cooked WGSL/MaterialAsset
+authoring and lighting/pass edits through their native owners. Default hooks
+and ordinary supported materials retain their existing admission.
 
 Import the supported CPU utilities through the public facade. Their ordinary
 upstream APIs are retained; no renderer, World synchronization or shader compiler
@@ -211,6 +384,7 @@ still built only when actually needed. Unsupported shapes/formats stay explicit.
 | Interface | Supported behavior | Boundary |
 |:--|:--|:--|
 | `initTexture` / `initTextureAsync` | Explicit CPU texture residency, source versions, update callbacks and disposal/reinitialization | Shares the native owner; pending images, role variants and pipeline readiness retain their own contracts |
+| `SpotLight.decay` | Live non-negative distance exponent with the existing cone, range, and shadow path | The engine near-light safety floor applies |
 | `IESSpotLight` | Original constructor, copy/clone, ordinary untextured spot lighting and edits | iesMap and projector maps remain rejected; ProjectorLight rectangular attenuation is deferred |
 | Node descriptors / diagnostics | Original NodeAttribute, NodeCode, NodeFunctionInput, NodeUniform, NodeVar, NodeVarying, NodeError and StackTrace objects | Data and error handling only; no runtime node compiler or native graph conversion |
 | Node parameter types | Original declaration-only parameters, JSON, context, scope and event interfaces | Parameters alone do not imply native shader-graph support; the model subset below owns its actual behavior |
@@ -228,7 +402,7 @@ still built only when actually needed. Unsupported shapes/formats stay explicit.
 | CPU expressions / references | TempNode, AssignNode, ConditionalNode, StackNode, LoopNode, OperatorNode, MathNode, BitcastNode, RotateNode, UniformArrayNode, ReferenceNode, ReferenceBaseNode, ReferenceElementNode, UserDataNode, OutputStructNode, SubBuildNode, IndexNode, VertexColorNode, FrontFacingNode, TextureNode, CubeTextureNode and Texture3DNode | Original CPU operands, references and JSON; caller-driven updates, no native graph evaluation |
 | CPU graph authoring | ArrayNode, ArrayElementNode, BypassNode, ContextNode, ConvertNode, ExpressionNode, FlipNode, JoinNode, MemberNode, ParameterNode, PropertyNode, SetNode, SplitNode, StructTypeNode and UniformNode preserve original identity, references, values and JSON | Does not supply a NodeBuilder or native shader-graph conversion |
 | `EventNode`, `ReadbackBuffer` | Original update-phase callbacks via caller-owned NodeFrame; release/dispose events and readback data fields | The facade does not drive node events or allocate/read GPU buffers; pipeline events need a separate upstream builder owner |
-| `RendererUtils` | Original save/reset/restore functions for renderer, scene and combined state; reusable caller state objects | Current canvas/default draw state; non-null MRT, render-target and render-object overrides remain unsupported |
+| `RendererUtils` | Original save/reset/restore functions for renderer, scene and combined state; reusable caller state objects | Current canvas/default draw state; non-null MRT and render-object overrides remain unsupported; explicit render targets use the native capture path |
 | `Node`, `InputNode`, `ConstNode`, `UniformGroupNode`, `NodeCache`, `NodeFrame`, `NodeUtils` | Original CPU node identity/events, weak cache inheritance, manually driven updates and value/hash utilities | Not connected to native material compilation or the renderer animation loop |
 | `waitForGPU` | Physical completion of prior native queue work | Retained legacy declaration API; distinct from renderAsync submission |
 | `hasCompatibility`, `resetState` | WebGPU comparison capability and pass-local state boundary | Unknown hints return false; resetState retains authored renderer settings, matching WebGPU |
@@ -463,11 +637,10 @@ material program payloads. It does not supply a NodeBuilder or upstream GPU rend
 | positionNode / rotationNode / scaleNode | Uniform Vector3, finite float, and positive finite Vector2 on SpriteNodeMaterial | Local position, billboard rotation and multiplicative world scale; Points fields remain unsupported |
 | offsetNode / dashScaleNode / dashSizeNode / gapSizeNode | Uniform finite floats; dashSize > 0, gapSize >= 0 on LineDashedNodeMaterial | Existing affine lineDistance admission; signed and zero dash scale are supported |
 
-These inputs work on Basic, Lambert, Standard, Physical, LineBasic, LineDashed,
-Points and Sprite models. Existing line/point UV restrictions still reject
-texture inputs. The additional lit inputs accept UniformNode or the direct
+These leaf inputs work without a recipe on Basic, Lambert, Standard, Physical, LineBasic, LineDashed,
+Points and Sprite models. The line and point node inputs require untextured primitives. The additional lit inputs accept UniformNode or the direct
 material-reference leaves below, with finite RGB values. Normal and Matcap keep their null-input boundary. Unlisted node
-inputs remain null. Operators, ConstNode (including TSL.color), Fn, custom node
+inputs remain null. Without a cooked surface recipe, operators and ConstNode (including TSL.color), Fn, custom node
 subclasses, update callbacks, precision overrides, custom UV/LOD/gradient/offset
 nodes, comparison/fetch sampling and GPU-only attachment textures are rejected.
 Use ordinary material color for fixed values and UniformNode for editable inputs.
@@ -666,3 +839,86 @@ native environment conversion, framebuffer copies, shadow graphs, pass/MRT
 execution and motion-vector generation remain unsupported; the renderer does
 not drive their GPU setup/update callbacks. Viewport/pass texture leaves fail
 native material admission before publication.
+
+### Cooked surface expressions
+
+`cookThreeSurface` from `@forgeax/engine/three/build` accepts an explicitly
+constructed, host-neutral r187 Standard or Basic NodeMaterial. It admits a
+bounded expression DAG, lowers `evaluate_surface`, and uses the existing native
+material cooker, reflection and publication. Basic uses the Engine emission-only
+Standard Surface mapping with specular disabled. Ordinary materials and existing leaf inputs keep their
+current path and need no expression recipe.
+
+```ts
+// Shared authoring function; no canvas, renderer, DOM or implicit clock.
+function authorSurface() {
+  const wetness = THREE.TSL.uniform(0.25);
+  const material = new THREE.MeshStandardNodeMaterial();
+  material.roughnessNode = THREE.TSL.mix(0.15, 0.9, wetness.mul(0.8).add(0.1));
+  return { material, wetness };
+}
+// Build process only:
+const cooked = await cookThreeSurface(authorSurface().material);
+// Save cooked.recipe and cooked.publication as build outputs.
+// Player, using a fresh graph from the same authoring function:
+const { material, wetness } = authorSurface();
+THREE.bindThreeSurface(material, cooked.recipe).unwrap();
+const renderer = new THREE.WebGPURenderer({
+  forgeax: { materialPrograms: [cooked.publication] },
+});
+wetness.value = 0.8;
+```
+
+| Contract | Accepted subset |
+|:--|:--|
+| Roots | Standard color, roughness, metalness, emissive, opacity and alphaTest; Basic color, opacity and alphaTest |
+| Values | Finite float, Vector2/3/4 and linear Color constants/uniforms; direct float/Color/vec3/vec4 references |
+| Expressions | Float/vector construction, vector swizzles, arithmetic, scalar comparison/select, mix/clamp/smoothstep and bounded pure math |
+| Textures | At most eight unsigned-byte RGBA 2D image/DataTexture inputs; explicit uv(0..7), arithmetic UVs, texture.channel 0..3, default UV matrix, declared sRGB/linear space |
+| Cook target | Existing WebGPU storage raster contexts; Ray/Card programs are not emitted |
+| Limits | At most 256 authored dependency nodes, depth 64 and 64 live value inputs |
+| Failures | `ThreeSurfaceError.detail.path` and `.reason` identify the source root/dependency and typed refusal |
+
+> [!IMPORTANT]
+> Graph structure is immutable while bound. After editing nodes, constants,
+> references' property/type selectors, roots or texture structure, explicitly
+> bind a matching cooked recipe; recook when the normalized shader structure
+> changes. Root replacement, ordinary map membership
+> changes, incompatible live value types and texture class/format/space/channel
+> changes are checked before publication. In-place edits of deeper graph structure
+> are checked at rebind, not by walking or hashing the graph every frame.
+
+Recipes require the default linear-sRGB working color space. Other working spaces
+fail admission rather than treating their values as linear sRGB.
+
+Uniform/reference values and same-contract texture replacement remain live source
+inputs and do not change program identity. The current store and source Three
+textures remain authoritative; Engine resource caches own upload, sampler and
+retirement. Program selection includes graph structure, generated Surface bytes,
+verified compiler identity and the cooker's source identity. Parameter layouts
+come from the existing schema/reflection; the player imports no shader compiler.
+Pure expressions are canonicalized by typed content, so upstream constant
+interning does not affect a host-neutral recipe's identity. Distinct mutable
+inputs retain separate reflected slots.
+A missing cooked program or unmatched recipe fails explicitly.
+Install publications for all structural revisions in `forgeax.materialPrograms`
+before renderer initialization. A new recipe requires the producer to cook its
+publication and the player to load it; binding never invokes a runtime compiler.
+
+A supplied root replaces its ordinary parameter/map; absent roots retain the
+normal Standard parameters, maps and default normal path. Color texture RGB is
+decoded by the existing sRGB texture projection; alpha and data remain distinct.
+An ordinary `map` can be a previously written native 2D render target while an
+independent root uses a cooked expression. Include that map slot when cooking;
+replace its source texture before binding the player recipe. Await target writes
+before sampling. Render-target textures inside expression TextureNodes remain
+outside this subset. Target writes also support Basic vertex colors. Pipeline
+preparation keeps the current receipt pending even after earlier ready frames;
+`renderAsync` waits for the actual target draw instead of exposing a clear-only result.
+Custom normal spaces, derivatives, Fn/JS callbacks, vertex overrides, physical
+extensions, skinning, implicit timers, framebuffer/depth/history/pass/light nodes,
+texture LOD/fetch/gradients, alphaHash and alphaToCoverage are outside this recipe
+subset. Raster casters use Engine Surface opacity/clip semantics; Three's shadow
+material and shadow silhouette equivalence are not qualified. Ray, Card, custom
+deformation and view-dependent shadow inputs need separate acceptance. Exporting
+a CPU node does not admit its execution.

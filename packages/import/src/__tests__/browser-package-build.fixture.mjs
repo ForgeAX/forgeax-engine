@@ -30,6 +30,10 @@ await build({
     },
   ],
   build: {
+    // The assertions exercise browser entry resolution and bundle closure.
+    // Skip minifying and reporting the size of code this fixture discards.
+    minify: false,
+    reportCompressedSize: false,
     write: false,
     lib: { entry, formats: ['es'], fileName: 'import-browser-consumer' },
   },

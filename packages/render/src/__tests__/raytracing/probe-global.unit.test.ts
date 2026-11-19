@@ -892,6 +892,10 @@ async function editableIrradianceFixture() {
   const entries = ['ray-irradiance-field', 'ray-diffuse-composite', 'ray-reflection-composite'].map(
     (name) => ({
       wgsl: readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8'),
+      programContract: {
+        schemaVersion: 'shader-program-contract/1' as const,
+        gbuffer: 'standard-gbuffer/2' as const,
+      },
     }),
   );
   Object.assign(f.runtime.shaderRegistry ?? {}, { entries: () => entries });

@@ -1,8 +1,19 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { join, resolve } from 'node:path';
 export async function createBridgeClient(rootArg) {
-  const root = await realpath(resolve(rootArg));
+  const input = typeof rootArg === 'object' ? undefined : await realpath(resolve(rootArg));
+  const hostingBinding = typeof rootArg === 'object' ? rootArg : (await stat(input)).isFile()
+    ? JSON.parse(await readFile(input, 'utf8')) : undefined;
+  if (hostingBinding && (hostingBinding.schemaVersion !== 1 ||
+      !['root', 'enginePackage', 'hostPack', 'viewRoot'].every(key => typeof hostingBinding[key] === 'string') ||
+      (hostingBinding.codexContext !== undefined &&
+        (typeof hostingBinding.codexContext?.command !== 'string' ||
+          (hostingBinding.codexContext.home !== undefined && typeof hostingBinding.codexContext.home !== 'string'))))) {
+    throw new TypeError('Invalid local View hosting binding');
+  }
+  if (hostingBinding) await mkdir(hostingBinding.root, { recursive: true });
+  const root = await realpath(hostingBinding?.root ?? input);
   const statePath = join(root, '.forgeax', 'host', 'mcp-bridge.json');
   function failure(code, expected, hint) {
     return { ok: false, error: { code, expected, hint } };
@@ -92,5 +103,5 @@ export async function createBridgeClient(rootArg) {
     });
   }
 
-  return { root, request };
+  return { root, request, hostingBinding };
 }

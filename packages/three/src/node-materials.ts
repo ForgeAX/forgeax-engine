@@ -13,6 +13,7 @@ import { Material } from 'three/src/Three.Core.js';
 import { unsupported } from './errors';
 import { admitSurfaceInput, type InputField, SURFACE_INPUTS } from './node-inputs';
 import { instanceShaderOverride, nodeDefinition } from './node-material-instance';
+import { boundSurfaceRoot, SURFACE_ROOTS, validateSurfaceBinding } from './node-surface';
 
 export { default as NodeMaterial } from 'three/src/materials/nodes/NodeMaterial.js';
 export {
@@ -133,17 +134,27 @@ const models = new Map<object, ReturnType<typeof model>>([
   ],
 ]);
 
-/** Ordinary properties share native material owners; authored shader graphs remain unsupported. */
-export function admitNodeMaterial(material: Material): Result<void, Error> {
+/** Ordinary leaves keep native projection; expressions require an explicit cooked binding. */
+export function admitNodeMaterial(
+  material: Material,
+  preparingSurface = false,
+): Result<void, Error> {
   const definition = nodeDefinition(material);
   const model = models.get(definition.constructor);
   if (model === undefined)
     return unsupported('NodeMaterial subclass requires native graph conversion', material.uuid);
   const admitted = admitDefinition(material, definition, model);
   if (!admitted.ok) return admitted;
+  const binding = preparingSurface ? acceptedMaterial : validateSurfaceBinding(material);
+  if (!binding.ok) return binding;
   const source = material as unknown as Record<string, unknown>;
   for (const field of NODE_MATERIAL_INPUTS) {
     const value = source[field];
+    if (
+      (preparingSurface && SURFACE_ROOTS.some((root) => root === field)) ||
+      boundSurfaceRoot(material, field)
+    )
+      continue;
     if (
       field in SURFACE_INPUTS &&
       model.requiredInputs.has(field) &&

@@ -1,5 +1,5 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import { AssetError } from '@forgeax/engine-types';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
 import { discardStandardOutputStates } from '../pipeline/standard-output/resources';
@@ -62,7 +62,7 @@ import {
   renderSubmission,
   renderWorldFor,
 } from './render-world';
-import { EMPTY_VIEW_STATE_UPDATE, readViewField, requireViewField } from './view-field';
+import { readViewField, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState, viewFrameScopes } from './view-frame-systems';
 import { viewComposition } from './view-output-systems';
 import { recordContext } from './view-record-context';
@@ -410,7 +410,7 @@ export function registerViewRecordSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         entries.push({
           entity: entity,
           owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
@@ -449,7 +449,7 @@ export function registerViewRecordSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         entries.push({
           entity: entity,
           owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
@@ -485,7 +485,7 @@ export function registerViewRecordSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         const entry: Entry = {
           entity: entity,
           owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
@@ -529,7 +529,7 @@ export function registerViewRecordSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         const entry: Entry = {
           entity: entity,
           owner: ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
@@ -564,7 +564,7 @@ export function registerViewRecordSystems(world: World): void {
       rows.forEach((row) => {
         const entity = row.entity;
 
-        setDerivedComponent(world, entity, ViewRecordAttempt, EMPTY_VIEW_STATE_UPDATE).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         const state = world
           .resolveUniqueRef<ViewRecordAttemptState>(
             requireViewField(world, entity, ViewRecordAttempt, 'state'),

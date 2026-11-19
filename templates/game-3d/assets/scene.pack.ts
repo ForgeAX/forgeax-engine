@@ -89,6 +89,7 @@ function showcaseScene(): SceneAsset {
     kind: 'scene',
     skinGuids: [guidText(assetGuid(PACKAGE_IDS.character, 'rig/player-skin'))],
     entities: Object.fromEntries([
+      // Replace this whole entry when your level supplies its own floor and collision.
       meshEntity(
         'ground',
         'Ground',
@@ -98,6 +99,9 @@ function showcaseScene(): SceneAsset {
         [0, 0, 0, 1],
         staticCuboid([1000, 0.2, 1000]),
       ),
+      // Delete this entry and sphere-reflection to remove the demo prop completely.
+      // To hide only its mesh, add Visibility with state VisibilityStateValue.hidden
+      // to the extra components and include Visibility in sceneComponents below.
       meshEntity(
         'iron-sphere',
         'Rusted Iron Sphere',
@@ -140,6 +144,7 @@ function showcaseScene(): SceneAsset {
           Fog: { density: 0.00008 },
         },
       }),
+      // This probe serves the iron-sphere demo prop. Remove both when replacing it.
       keyed('sphere-reflection', {
         components: {
           Name: { value: 'Iron Sphere Reflection' },

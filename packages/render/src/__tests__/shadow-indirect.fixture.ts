@@ -26,7 +26,7 @@ export function preparedShadowFixture({
   readonly view: BindGroup;
   readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
 }) {
-  const pipelineLookup = vi.fn(() => shared.pipeline);
+  const pipelineLookup = vi.fn((_shader: string) => shared.pipeline);
   const counts = { createBindGroup: 0, keys: [] as string[] };
   const materialBuffer = { buffer };
   const pipelineState = {
@@ -115,6 +115,7 @@ export function preparedShadowFixture({
     flags: 1,
   });
   const context = {
+    camera: {},
     validatedOrdered: [],
     runtime: {
       device,

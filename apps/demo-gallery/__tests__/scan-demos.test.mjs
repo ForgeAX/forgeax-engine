@@ -99,7 +99,6 @@ test('discovers the merged R0–R2 world, R3–R8 and the independent showcase',
     [
       'water/water-mesh',
       'water/r3-slw-reflection-underwater',
-      'water/r4-buoyancy-foam',
       'water/r5-gpu-mesh-async-pontoons',
       'water/r6-legacy-rt-fluid',
       'water/r7-advanced-shallow-bake-fft',

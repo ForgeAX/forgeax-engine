@@ -22,7 +22,7 @@ import type { RenderSystemInternals } from './render-context';
 
 type LodSelection = Pick<
   GpuDrivenLodSelectionInspection,
-  'candidateCount' | 'visible' | 'occluded' | 'lodHistogram'
+  'candidateCount' | 'visible' | 'occluded' | 'lodHistogram' | 'gpuSelection'
 > & { readonly submit?: { readonly frameId: number; readonly deviceGeneration: number } };
 
 interface LodVisibility {
@@ -281,6 +281,9 @@ export class LodInspectionOwner {
       // Per-primitive samples are omitted until the GPU readback carries
       // stable primitive identities; the histogram is the producer fact.
       samples: [],
+      ...(selection.submit === undefined || selection.gpuSelection === undefined
+        ? {}
+        : { gpu: selection.gpuSelection }),
       attribution:
         selection.submit === undefined
           ? {

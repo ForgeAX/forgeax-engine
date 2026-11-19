@@ -9,7 +9,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http';
-import { homedir } from 'node:os';
+import { homedir, totalmem } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
@@ -22,8 +22,10 @@ import {
 import type { JSHandle } from 'playwright';
 import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
+import { backendHeapEnv } from './backend-heap.js';
 import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
 import { captureRenderFailure } from './capture-render-failure.js';
+import { liveDevBrowserHeadless } from './chromium-sandbox.js';
 import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { failureSummary } from './failure-summary.js';
@@ -1410,7 +1412,7 @@ async function openSession(
       state.status = {
         ...state.status,
         phase: 'reloading',
-        error: `${LIVE_STARTUP_SUPERSEDED}: ${error instanceof Error ? error.message : String(error)}`,
+        error: `${LIVE_STARTUP_SUPERSEDED}: ${failureSummary(error)}`,
       };
       await writeSessionFile(state);
       return;
@@ -1418,7 +1420,7 @@ async function openSession(
     state.status = {
       ...state.status,
       phase: 'failed',
-      error: error instanceof Error ? error.message : String(error),
+      error: failureSummary(error),
     };
   }
   await writeSessionFile(state);
@@ -1731,7 +1733,7 @@ async function replaceProjectProcess(state: LiveDevDaemonState, generation: numb
     ],
     {
       env: {
-        ...process.env,
+        ...backendHeapEnv(process.env, totalmem(), process.constrainedMemory()),
         // Independent runs consume the copied package inputs, not a mutable
         // contributor build cache selected by the launching shell.
         ...(state.snapshot ? { FORGEAX_SHARED_APP_INPUTS_MANIFEST: undefined } : {}),
@@ -3291,7 +3293,7 @@ export async function runLiveDevDaemon(
       carrier: 'private-browser',
       carrierTarget: undefined,
       carrierFallbackReason: undefined,
-      headless: options.headless ?? process.env.FORGEAX_DEV_HEADLESS === 'true',
+      headless: liveDevBrowserHeadless(options.headless, options.carrier !== undefined),
       bridgeConnected: false,
       rhiCapture,
       error: undefined,

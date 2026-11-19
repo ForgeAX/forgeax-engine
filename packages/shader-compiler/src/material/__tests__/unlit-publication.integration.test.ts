@@ -44,43 +44,47 @@ it('publishes real direct unlit color and skin inputs without claiming a scene-i
       'storage-buffer',
       'storage-buffer-atmosphere',
     ]) {
-      for (const geometry of ['mesh', 'skinned'])
-        for (const color of [false, true]) {
-          const matches = record.programs.filter((program) =>
-            program.selections.some(
-              (selection) =>
-                selection.pass === pass &&
-                selection.context.capability === capability &&
-                selection.context.geometry === geometry &&
-                selection.address === 'direct' &&
-                selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
-            ),
-          );
-          expect(matches).toHaveLength(1);
-          const program = matches[0];
-          const selection = program?.selections.find((selection) => selection.pass === pass);
-          if (program === undefined || selection === undefined)
-            throw new Error('missing compiled selection');
-          expect(selection.abi?.sceneIndexEntry).toBeUndefined();
-          const wgsl = new TextDecoder().decode(program.artifact.bytes);
-          expect(/@location\(13\)/.test(wgsl)).toBe(color);
-          expect(selection.abi?.vertexInputs.some((input) => input.semantic === 'skinIndex')).toBe(
-            geometry === 'skinned',
-          );
-          expect(selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
-            geometry === 'skinned',
-          );
-          expect(selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight')).toBe(
-            geometry === 'skinned',
-          );
-          expect(
-            /var<storage(?:,\s*read)?>\s+skinTaskOutput/.test(wgsl),
-            wgsl
-              .split('\n')
-              .filter((line) => line.includes('skinTask'))
-              .join('\n'),
-          ).toBe(geometry === 'skinned');
-        }
+      for (const viewClipping of [false, true])
+        for (const geometry of ['mesh', 'skinned'])
+          for (const color of [false, true]) {
+            const matches = record.programs.filter((program) =>
+              program.selections.some(
+                (selection) =>
+                  selection.pass === pass &&
+                  selection.context.pipeline !== 'ray' &&
+                  selection.context.lodCoverage !== true &&
+                  selection.context.capability === capability &&
+                  selection.context.geometry === geometry &&
+                  (selection.context.viewClipping === true) === viewClipping &&
+                  selection.address === 'direct' &&
+                  selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+              ),
+            );
+            expect(matches).toHaveLength(1);
+            const program = matches[0];
+            const selection = program?.selections.find((selection) => selection.pass === pass);
+            if (program === undefined || selection === undefined)
+              throw new Error('missing compiled selection');
+            expect(selection.abi?.sceneIndexEntry).toBeUndefined();
+            const wgsl = new TextDecoder().decode(program.artifact.bytes);
+            expect(/@location\(13\)/.test(wgsl)).toBe(color);
+            expect(
+              selection.abi?.vertexInputs.some((input) => input.semantic === 'skinIndex'),
+            ).toBe(geometry === 'skinned');
+            expect(
+              selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight'),
+            ).toBe(geometry === 'skinned');
+            expect(
+              selection.abi?.vertexInputs.some((input) => input.semantic === 'skinWeight'),
+            ).toBe(geometry === 'skinned');
+            expect(
+              /var<storage(?:,\s*read)?>\s+skinTaskOutput/.test(wgsl),
+              wgsl
+                .split('\n')
+                .filter((line) => line.includes('skinTask'))
+                .join('\n'),
+            ).toBe(geometry === 'skinned');
+          }
     }
   expect(
     record.programs

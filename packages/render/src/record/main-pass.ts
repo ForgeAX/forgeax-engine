@@ -11,12 +11,14 @@ import {
 import {
   err,
   type MaterialSurfacePassKind,
+  type MeshAsset,
   ok,
   type PassKind,
   type PassSelector,
 } from '@forgeax/engine-types';
 import { waterBodyOwnerKey } from '@forgeax/engine-water';
 import { meshSsboBuffer, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
+import { prepareMorphGeometryPipeline } from '../device/morph-geometry';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { RendererContractFailureError } from '../errors/render';
 import { renderFeatureViewIdentity } from '../features/view';
@@ -40,6 +42,7 @@ import type {
   RenderPipelineGpuDrivenProjection,
 } from '../render-pipeline';
 import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { FrameList } from '../scene/frame-list';
 import { materialPasses } from '../scene/material-dispatch';
 import {
@@ -109,6 +112,7 @@ export function gpuDrivenSkinVariantKey(task: SkinTaskBinding, bytes: number): s
 }
 
 export type MainPassOptions = {
+  readonly materialSceneDepth?: TextureView;
   readonly bundleDescriptor?: RenderBundleEncoderDescriptor;
   readonly selection?: { readonly entities: readonly number[] };
   readonly colorFormats?: readonly GPUTextureFormat[];
@@ -223,27 +227,79 @@ export function hasMainPassPipelinePreparation(
   mode: MainPassOptions['recordMode'],
   excludeSelector?: PassSelector,
 ): boolean {
-  for (const entry of c.pipelinePreparationEntries ?? []) {
-    for (const sm of entry.mesh.submeshes) {
-      const material = c.materialFrame?.get(
-        entry.source.materials[sm.materialSlot] ?? entry.source.material,
-      )?.snapshot;
-      if (material === undefined) throw new Error('Pipeline preparation has no accepted material');
-      if (
-        (mode !== undefined && !matchesRecordMode(material, mode)) ||
-        preparationMaterialExcluded(entry, material.materialHandle ?? 0, excludeSelector)
-      )
-        continue;
-      for (const pass of entry.source.pipelinePreparation ?? []) {
-        if (
-          pass.materialHandle === (material.materialHandle ?? 0) &&
-          matchPass(pass.tags, selector)
-        )
-          return true;
-      }
-    }
+  for (const entry of c.pipelinePreparationEntries ?? [])
+    if (entryHasPipelinePreparation(c, entry, selector, mode, excludeSelector)) return true;
+  return false;
+}
+
+function entryHasPipelinePreparation(
+  c: Pick<_InternalRenderPipelineContext, 'materialFrame'>,
+  entry: ValidatedRenderable,
+  selector: PassSelector,
+  mode: MainPassOptions['recordMode'],
+  excludeSelector?: PassSelector,
+  skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
+): boolean {
+  let index = 0;
+  for (const sm of entry.mesh.submeshes) {
+    if (skipDraw?.(entry, index++)) continue;
+    const material = c.materialFrame?.get(
+      entry.source.materials[sm.materialSlot] ?? entry.source.material,
+    )?.snapshot;
+    if (material === undefined) throw new Error('Pipeline preparation has no accepted material');
+    if (
+      (mode !== undefined && !matchesRecordMode(material, mode)) ||
+      preparationMaterialExcluded(entry, material.materialHandle ?? 0, excludeSelector)
+    )
+      continue;
+    for (const pass of entry.source.pipelinePreparation ?? [])
+      if (pass.materialHandle === (material.materialHandle ?? 0) && matchPass(pass.tags, selector))
+        return true;
   }
   return false;
+}
+
+/** Prepare deformation only for explicit rows selected by this actual scene pass. */
+export function prepareMainPassGeometryPipelines(
+  c: _InternalRenderPipelineContext,
+  selector: PassSelector,
+  options: {
+    readonly recordMode?: MainPassOptions['recordMode'];
+    readonly excludeSelector?: PassSelector | undefined;
+  },
+  entries = c.pipelinePreparationEntries,
+  skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
+): void {
+  for (const entry of entries ?? []) {
+    if (
+      !entryHasPipelinePreparation(
+        c,
+        entry,
+        selector,
+        options.recordMode,
+        options.excludeSelector,
+        skipDraw,
+      )
+    )
+      continue;
+    const handle = entry.source.assetHandle;
+    const asset =
+      handle === undefined ? undefined : (entry.world ?? c.world).resolveAsset<MeshAsset>(handle);
+    // Idle morph weights deliberately have no MorphSnapshot. Use admitted Mesh metadata.
+    if (
+      entry.source.morph === undefined &&
+      !(asset?.ok === true && (asset.value.morphTargets?.length ?? 0) > 0)
+    )
+      continue;
+    if (!prepareMorphGeometryPipeline(c.runtime, c.store.morphGeometry))
+      markPipelinePreparationPending(c.frameState, {
+        code: 'scene-pipeline-preparation',
+        entity: entry.source.entityKey,
+        shader: 'morph-geometry',
+      });
+    // All selected meshes share this one device-owned utility pipeline.
+    return;
+  }
 }
 
 /** Prepare an otherwise empty graph lane without opening its attachments. */
@@ -255,6 +311,7 @@ export function prepareMainPassPipelines(
   colorFormats: readonly GPUTextureFormat[],
   skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
 ): void {
+  prepareMainPassGeometryPipelines(c, selector, options, c.pipelinePreparationEntries, skipDraw);
   prepareMainPassPipelineDemand(
     {
       ...geometryPipelineRequestContext(c),
@@ -636,6 +693,7 @@ export function encodeMainPass(
       options?.seededDepth === true,
       recordMode === 'opaque-depth',
       options?.opaqueDepthPrimed ?? false,
+      options?.materialSceneDepth,
     );
   };
   // The late occlusion pass only adds GPU items the HZB revealed; the CPU

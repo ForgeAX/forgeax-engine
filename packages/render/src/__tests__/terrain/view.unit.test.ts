@@ -239,9 +239,11 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
   const same = project(12);
   expect(resolveCalls - callsBeforeStableHit).toBe(2);
   for (const row of same.frame.renderables) {
-    expect(row.material).toBe(nearBySection.get(row.terrainSection?.index)?.material);
+    expect(row.material).toBe(nearBySection.get(defined(row.terrainSection).index)?.material);
     expect(row.terrainSection?.projectionFacts).toBe(projectionFacts);
-    expect(row.terrainSection).toBe(nearBySection.get(row.terrainSection?.index)?.terrainSection);
+    expect(row.terrainSection).toBe(
+      nearBySection.get(defined(row.terrainSection).index)?.terrainSection,
+    );
   }
   expect(Object.isFrozen(projectionFacts)).toBe(true);
   expect(Object.isFrozen(projectionFacts?.sections)).toBe(true);
@@ -350,7 +352,7 @@ it('relocates accepted Terrain dispatch around live rows and rejects in-place po
   };
   const first = project(false).frame;
   accept(first);
-  const heldFacts = defined(first.renderables[0]?.terrainSection).projectionFacts;
+  const heldFacts = defined(first.renderables.at(0)?.terrainSection).projectionFacts;
   const withOther = project(true).frame;
   const terrainRows = withOther.renderables.flatMap((row, index) =>
     row.terrainSection === undefined ? [] : [index],
@@ -360,7 +362,7 @@ it('relocates accepted Terrain dispatch around live rows and rejects in-place po
 
   matrix[12] = 3;
   const moved = project(false).frame;
-  const movedFacts = defined(moved.renderables[0]?.terrainSection).projectionFacts;
+  const movedFacts = defined(moved.renderables.at(0)?.terrainSection).projectionFacts;
   expect(movedFacts).not.toBe(heldFacts);
   expect(heldFacts?.transform[12]).toBe(0);
   expect(movedFacts?.transform[12]).toBe(3);
@@ -635,10 +637,10 @@ it('projects mixed terrain and multi-pass members with one source dispatch trave
     ...fixture.source,
     terrain: { ...defined(fixture.source.terrain), forcedLod: 0 },
   };
+  const { terrain: _terrain, ...ordinarySource } = fixture.source;
   const member = (offset: number, authorVisible = true): RenderableSnapshot => ({
-    ...fixture.source,
+    ...ordinarySource,
     entityKey: (fixture.source.entityKey + offset) as typeof fixture.source.entityKey,
-    terrain: undefined,
     authorVisible,
   });
   const renderables = [member(1), terrain, member(2), member(3, false)];
@@ -648,10 +650,10 @@ it('projects mixed terrain and multi-pass members with one source dispatch trave
     appendMaterialDispatchEntries(
       dispatch,
       [{ name: order, program: { module: 'test' }, renderState: { queue: 2000 } }],
-      source.entityKey,
+      source.entityKey as typeof fixture.entity,
       1,
       renderableIndex,
-      source.layer,
+      source.layer ?? 0,
       passIndex,
     );
   };

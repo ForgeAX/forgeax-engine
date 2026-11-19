@@ -219,7 +219,35 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   /** Set once when the owning device is lost while this library is still open. */
   private lost: RhiError | undefined;
 
-  constructor(private readonly device: GPUDevice) {}
+  private emptyDepthFragment: GPUFragmentState | undefined;
+
+  constructor(
+    private readonly device: GPUDevice,
+    private readonly vertexOnlyRenderBundles = true,
+  ) {}
+
+  private nativeRenderDescriptor(
+    descriptor: GPURenderPipelineDescriptor,
+  ): GPURenderPipelineDescriptor {
+    if (
+      this.vertexOnlyRenderBundles ||
+      descriptor.fragment !== undefined ||
+      descriptor.depthStencil === undefined
+    )
+      return descriptor;
+
+    // Keep the portable recipe vertex-only. Only the device that rejected
+    // vertex-only bundles needs a fragment with no outputs or side effects.
+    this.emptyDepthFragment ??= {
+      module: this.device.createShaderModule({
+        label: 'forgeax-depth-only-fragment',
+        code: '@fragment fn depth_only() {}',
+      }),
+      entryPoint: 'depth_only',
+      targets: [],
+    };
+    return { ...descriptor, fragment: this.emptyDepthFragment };
+  }
 
   /**
    * Native `device.lost` settles the library. Every later library failure is
@@ -640,7 +668,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       realmPipelineCreations++;
       const handle =
         kind === 'render'
-          ? this.device.createRenderPipeline(descriptor as GPURenderPipelineDescriptor)
+          ? this.device.createRenderPipeline(
+              this.nativeRenderDescriptor(descriptor as GPURenderPipelineDescriptor),
+            )
           : this.device.createComputePipeline(descriptor as GPUComputePipelineDescriptor);
       endPipeline();
       if (program !== undefined) {
@@ -722,7 +752,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         });
         const handle =
           kind === 'render'
-            ? await this.device.createRenderPipelineAsync(descriptor as GPURenderPipelineDescriptor)
+            ? await this.device.createRenderPipelineAsync(
+                this.nativeRenderDescriptor(descriptor as GPURenderPipelineDescriptor),
+              )
             : await this.device.createComputePipelineAsync(
                 descriptor as GPUComputePipelineDescriptor,
               );

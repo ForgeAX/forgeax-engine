@@ -17,7 +17,13 @@
     43819262879, 43839073791, 43851698763, 43885880971, 43904183011, 44023395616, 44039100905,
     44073088105, 44113035424, 44136739089, 44152394166
   ],
-  "fileReserves": {},
+  "fileReserves": {
+    "packages/render/src/__tests__/target-environment.dawn.test.ts": 60,
+    "packages/render/src/__tests__/target-subresources.dawn.test.ts": 90,
+    "packages/three/src/__tests__/procedural-addons-render.dawn.test.ts": 270,
+    "packages/three/src/__tests__/surface-expression.dawn.test.ts": 390,
+    "packages/three/src/__tests__/target-surface.dawn.test.ts": 150
+  },
   "files": {
     "apps/hello/boss-lightning/src/__tests__/particle-pixels.dawn.test.ts": 9.13030588235294,
     "apps/hello/entity-visibility/__tests__/visibility.dawn.test.ts": 15.755,

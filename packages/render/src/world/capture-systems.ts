@@ -4,6 +4,7 @@ import { buildCaptureFaces, type CaptureFace } from '../capture/faces';
 import { PlanarTargetLease } from '../capture/planar-target';
 import type { RendererCaptureOwner } from '../capture/renderer-captures';
 import type { CubeCaptureWork } from '../capture/scheduler';
+import { RenderTargetDescriptorInvalidError } from '../errors/render';
 import { preparePlanarCapture } from '../record/frame';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
 import type { CameraSnapshot, RendererError } from '../render-contract';
@@ -13,9 +14,9 @@ import {
   RenderFeatureBatchOrder,
   RenderFeatureViewsOrder,
 } from '../system-order';
+import { renderTargetLayerCount, renderTargetMipCount } from '../targets/contracts';
 import { planarFaceFeatureWork } from './capture-face-feature-systems';
 import { featureFrameOutcome, viewFeatureInputOf } from './feature-systems';
-import { frameSubmitOutcome } from './frame-submit-systems';
 import { ViewRecorder } from './render-views';
 import { RenderCommit, RenderPrepare, renderSubmission } from './render-world';
 import { readViewField, requireViewField } from './view-field';
@@ -111,6 +112,49 @@ function scheduleRendererCaptures(
   staged: ViewFrameState,
   { internals }: ViewSettlementOwner,
 ): ViewCaptureRoute {
+  const input = stagedViewInputs(world, staged);
+  const write = staged.opts.targetWrite;
+  if (write !== undefined) {
+    const physical = internals.getRenderTargetPhysical?.(write.target);
+    const camera = input.cameras[0];
+    if (physical === undefined || camera === undefined)
+      throw new RenderTargetDescriptorInvalidError({
+        field: 'targetWrite',
+        value: write,
+        expected: 'a live renderer target and camera',
+      });
+    const layer = write.layer ?? 0,
+      mipLevel = write.mipLevel ?? 0;
+    if (
+      !Number.isSafeInteger(layer) ||
+      layer < 0 ||
+      layer >= renderTargetLayerCount(physical.descriptor) ||
+      !Number.isSafeInteger(mipLevel) ||
+      mipLevel < 0 ||
+      mipLevel >= renderTargetMipCount(physical.descriptor)
+    )
+      throw new RenderTargetDescriptorInvalidError({
+        field: 'targetWrite',
+        value: write,
+        expected: 'an admitted target layer and mip',
+      });
+    if (
+      physical.descriptor.shape === 'cube' &&
+      physical.descriptor.depth !== undefined &&
+      !write.clearDepth &&
+      !write.clearOnly
+    )
+      throw new RenderTargetDescriptorInvalidError({
+        field: 'targetWrite.clearDepth',
+        value: false,
+        expected:
+          'a depth clear for cube scene writes; native private depth is shared across faces',
+      });
+    return {
+      cube: [],
+      sceneInputs: [{ target: write.target, layer, mipLevel, physical, faceCamera: camera, write }],
+    };
+  }
   const snapshots =
     staged.result?.ok === true ? stagedViewInputs(world, staged).frame.cubeCameras : [];
   return {
@@ -133,17 +177,18 @@ function prepareViewCaptures(
   // Re-project them against this view's selected display camera.
   // A targetless mirror writes the Renderer-owned lease sized from this view.
   captures.planarTarget ??= new PlanarTargetLease();
-  const auxiliaryCameras = dropAuxiliary
-    ? []
-    : projectAuxiliaryCamerasForView(
-        view.cameras[0],
-        captures.planarTarget.resolve(
-          internals.ownedRenderTargets,
+  const auxiliaryCameras =
+    dropAuxiliary || staged.opts.targetWrite !== undefined
+      ? []
+      : projectAuxiliaryCamerasForView(
           view.cameras[0],
-          view.frame.auxiliaryCameras,
-          recordContext(internals).canvas,
-        ),
-      );
+          captures.planarTarget.resolve(
+            internals.ownedRenderTargets,
+            view.cameras[0],
+            view.frame.auxiliaryCameras,
+            recordContext(internals).canvas,
+          ),
+        );
   // Only a recording that draws the display picture selects the planar mirror:
   // the display graph records it on its own shadows. Any other recording
   // keeps the last selection.
@@ -246,9 +291,10 @@ export function registerViewCaptureSystems(world: World): void {
               : world.resolveUniqueRef<ViewCaptureWorkState>(stored).unwrap(),
         });
       });
-      const recorder = sharedCaptureRecorder(views);
+      const explicit = views.find((view) => view.staged.opts.targetWrite !== undefined);
+      const recorder = explicit ?? sharedCaptureRecorder(views);
       // The first shared view's frame carries the cube snapshots, as its request did.
-      const sharedView = views.find((view) => view.shared);
+      const sharedView = explicit ?? views.find((view) => view.shared);
       const scheduled: ViewCaptureScheduleOutcome | undefined =
         sharedView === undefined
           ? undefined
@@ -334,10 +380,7 @@ export function registerCaptureSystems(
     queries: [],
     fn: (world) => {
       const submission = renderSubmission(world);
-      const completed = owner.complete(
-        submission.accepted && frameSubmitOutcome(world).captureReady,
-        submission.completion,
-      );
+      const completed = owner.complete(submission.accepted, submission.completion);
       if (!completed.ok) report(completed.error);
     },
   });

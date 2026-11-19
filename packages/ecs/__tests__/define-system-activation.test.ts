@@ -11,7 +11,7 @@ import { Update } from '../src/schedule-token';
 import { describe, expect, it } from 'vitest';
 import { defineComponent } from '../src/component';
 import { componentSchema } from '../src/component';
-import { componentDefinition } from '../src/component-schema';
+import { componentDefinition } from '../src/component';
 import { defineSystem } from '../src/index';
 import { World } from '../src/world';
 

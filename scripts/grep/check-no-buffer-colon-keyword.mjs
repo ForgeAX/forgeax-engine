@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 import process from 'node:process';
-// AC-10 / w25 (feat-20260515-buffer-array-vocab-collapse M5): assert that
-// the legacy schema-vocab keyword `'buffer:<N>'` (colon-form) cannot
-// re-appear as a string literal in the live source tree. The closed
-// `SchemaVocabKeyword` union dropped `'buffer:<N>'` at M1 / w4 in favour
-// of the angle-bracket generics `'buffer'` (variable capacity) and
-// `'buffer<N>'` (fixed N-byte capacity).
+// Retired byte-field colon syntax must not reappear in component declarations.
+// Byte storage uses array<u8> and array<u8, N>.
 //
 // Banned pattern (regex; case-sensitive):
 //   - 'buffer:<digits>'   (single-quoted string literal)
@@ -19,7 +15,7 @@ import process from 'node:process';
 //
 // Self-exempt:
 //   - this gate file
-//   - packages/ecs/src/__tests__/buffer-array-vocab.test-d.ts (the AC-01
+//   - packages/ecs/src/__tests__/component-fields.test-d.ts (the AC-01
 //     `@ts-expect-error` negative anchor intentionally writes the literal
 //     `'buffer:8'` to lock the closed-union narrowing)
 //
@@ -30,7 +26,7 @@ const ROOTS = ['packages', 'apps', 'templates'];
 
 const SELF_EXEMPT = new Set([
   'scripts/grep/check-no-buffer-colon-keyword.mjs',
-  'packages/ecs/src/__tests__/buffer-array-vocab.test-d.ts',
+  'packages/ecs/src/__tests__/component-fields.test-d.ts',
 ]);
 
 const RE_LITERAL = /(['"`])buffer:[0-9]+\1/g;
@@ -55,13 +51,8 @@ if (hits.length > 0) {
     console.error(`  - ${h.literal}  in  ${h.path}`);
   }
   console.error(
-    '\nfeat-20260515-buffer-array-vocab-collapse M1 / w4 collapsed the ' +
-      "buffer schema vocab from `'buffer:<N>'` (colon-form) into the " +
-      "angle-bracket generic forms `'buffer'` (variable capacity, " +
-      "Uint8Array snapshot) and `'buffer<N>'` (fixed N-byte capacity). " +
-      'Use those keywords in defineComponent schemas. See ' +
-      'packages/ecs/README.md §Schema vocab + AGENTS.md §Breaking changes ' +
-      '2026-05-15 row.',
+    'Use array<u8> for variable bytes or array<u8, N> for fixed bytes. ' +
+      'Supply an explicit Uint8Array when the input represents raw bytes.',
   );
   process.exit(1);
 }

@@ -288,10 +288,16 @@ it('records queued image-page copies before a derived projection registered earl
 });
 
 it.each([
-  true,
-  false,
-])('settles every projection and mip scratch when a completion callback throws (submitted=%s)', async (submitted) => {
+  { submitted: true, backendKind: 'null' },
+  { submitted: false, backendKind: 'null' },
+  { submitted: true, backendKind: 'wgpu-webgl2' },
+  { submitted: false, backendKind: 'wgpu-webgl2' },
+] as const)('settles every projection and mip temporary when a completion callback throws ($backendKind, submitted=$submitted)', async ({
+  submitted,
+  backendKind,
+}) => {
   const { device, store } = await fixture();
+  Object.defineProperty(device, 'caps', { value: { ...device.caps, backendKind } });
   store.configureGpuDevice(
     device,
     (owner, descriptor) => rhi.createShaderModule(owner, descriptor),
@@ -360,10 +366,13 @@ it.each([
     }
     expect(notifications).toEqual([submitted]);
     const scratch = created.mock.calls.flatMap(([descriptor], index) =>
-      descriptor.label === 'mipmap-scratch' ? [created.mock.results[index]?.value.unwrap()] : [],
+      descriptor.label?.startsWith('mipmap-physical-')
+        ? [created.mock.results[index]?.value.unwrap()]
+        : [],
     );
-    expect(scratch).toHaveLength(1);
-    expect(destroyed.mock.calls.filter(([texture]) => scratch.includes(texture))).toHaveLength(1);
+    expect(scratch).toHaveLength(backendKind === 'wgpu-webgl2' ? 4 : 0);
+    for (const temporary of scratch)
+      expect(destroyed.mock.calls.filter(([texture]) => texture === temporary)).toHaveLength(1);
     if (!submitted) {
       rejectCallback = false;
       store.prepareTextureMips().unwrap()?.complete(true);

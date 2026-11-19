@@ -115,6 +115,108 @@ export async function specializeComputeEntries(
  */
 export type ValidatedModule = ModuleHandle;
 
+/** Initialized native phases. Calls are synchronous; each invocation owns its IR. */
+export interface PreparedNagaCompiler {
+  composeShader(
+    entry: string,
+    imports: Record<string, string>,
+    defines: Record<string, boolean>,
+  ): string;
+  composeProgram(
+    entry: string,
+    imports: Record<string, string>,
+    defines: Record<string, boolean>,
+    normalizeSource?: (source: string) => string,
+  ): { readonly source: string; readonly module: ValidatedModule };
+  parse(source: string): Result<ParsedModule, ShaderError>;
+  validate(module: ParsedModule): Result<ValidatedModule, ShaderError>;
+  validateRenderEntries(
+    module: ValidatedModule,
+    vertex: string,
+    fragment?: string,
+    colorFormats?: readonly string[],
+  ): Result<void, ShaderError>;
+  specializeComputeEntries(
+    source: string,
+    entries: readonly string[],
+  ): Result<
+    readonly {
+      readonly entryPoint: string;
+      readonly source: string;
+    }[],
+    ShaderError
+  >;
+  emitReflection(module: ValidatedModule, options: string): Result<string, ShaderError>;
+}
+
+function nativeResult<T>(request: () => T): Result<T, ShaderError> {
+  try {
+    return ok(request());
+  } catch (cause) {
+    return err(wrapShaderError(cause));
+  }
+}
+
+/** Initialize once before a program consumer needs synchronous composition/reflection. */
+export async function prepareNagaCompiler(): Promise<Result<PreparedNagaCompiler, ShaderError>> {
+  try {
+    const wasm = await ensureReady();
+    return ok({
+      composeShader: (entry, imports, defines) =>
+        wasm.compose_shader(entry, JSON.stringify(imports), JSON.stringify(defines)),
+      composeProgram: (entry, imports, defines, normalizeSource) => {
+        const source = wasm.compose_shader(
+          entry,
+          JSON.stringify(imports),
+          JSON.stringify(defines),
+          normalizeSource,
+        );
+        // The native parser consumes the checked writer's exact one-shot IR.
+        // Validation transfers that same owner; no second compiler cache is needed.
+        const parsed = wasm.parse(source);
+        const module = (wasm.validate as unknown as (value: ParsedModule) => ValidatedModule)(
+          parsed,
+        );
+        return { source, module };
+      },
+      parse: (source) => nativeResult(() => wasm.parse(source)),
+      validate: (module) =>
+        nativeResult(() =>
+          (wasm.validate as unknown as (module: ParsedModule) => ValidatedModule)(module),
+        ),
+      validateRenderEntries: (module, vertex, fragment, formats) =>
+        nativeResult(() => {
+          (
+            wasm.validate_render_entries as (
+              module: ValidatedModule,
+              vertex: string,
+              fragment?: string,
+              formats?: string,
+            ) => void
+          )(module, vertex, fragment, formats === undefined ? undefined : JSON.stringify(formats));
+        }),
+      specializeComputeEntries: (source, entries) =>
+        nativeResult(() =>
+          JSON.parse(wasm.specialize_compute_entries(source, JSON.stringify(entries))),
+        ),
+      emitReflection: (module, options) =>
+        nativeResult(() =>
+          (wasm.emit_reflection as (module: ValidatedModule, options: string) => string)(
+            module,
+            options,
+          ),
+        ),
+    });
+  } catch (cause) {
+    return err(
+      wrapShaderError(
+        cause,
+        'Repair the verified native compiler payload before preparing shader programs.',
+      ),
+    );
+  }
+}
+
 export type ShaderReflectionMember = ReflectionMember;
 export type {
   ShaderReflectionArraySize,
@@ -573,6 +675,10 @@ export async function validateRenderEntries(
  * the three-argument `compileShader(src, { imports, defines, id })` entry lives.
  * Callers of this raw passthrough should `try / catch` the thrown error.
  *
+ * An optional synchronous normalizer runs before checked writeback admission.
+ * Its result is reparsed, validated and checked for complete buffer-ABI equality.
+ * The next exact parse/validate may consume that owned IR once.
+ *
  * Wasm boundary: awaits `ensureReady()` on first call (shared singleton with
  * `@forgeax/engine-rhi-wgpu` + other naga phases); subsequent calls take the
  * cached path.
@@ -581,11 +687,20 @@ export async function composeShader(
   entry: string,
   imports: Record<string, string>,
   defines: Record<string, boolean>,
+  normalize?: (source: string) => string,
 ): Promise<string> {
   const wasm = await ensureReady();
-  const compose = (wasm as { compose_shader: (e: string, i: string, d: string) => string })
-    .compose_shader;
-  return compose(entry, JSON.stringify(imports), JSON.stringify(defines));
+  const compose = (
+    wasm as {
+      compose_shader: (
+        e: string,
+        i: string,
+        d: string,
+        normalize?: (source: string) => string,
+      ) => string;
+    }
+  ).compose_shader;
+  return compose(entry, JSON.stringify(imports), JSON.stringify(defines), normalize);
 }
 
 // === Phase 3: emit_reflection =======================================================

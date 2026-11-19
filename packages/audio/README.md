@@ -84,7 +84,9 @@ Transport admission failures throw `AudioError` and remain observable in backend
 ## Bus control via AudioEngine Resource
 
 ```ts
-const audio = world.getResource<AudioBackend>('AudioEngine');
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine/audio';
+
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 audio.setBusVolume('music', 0.3);
 audio.setBusMute('sfx', true);
 audio.setBusMute('sfx', false); // restores previous volume
@@ -327,3 +329,7 @@ recovery fields live in [`src/music.ts`](src/music.ts).
 Source choices and frozen measurement contract
 
 AudioIntent declares each acoustic and bus operation once; Host consumers and Worker queues use that same closed union.
+
+## Owned global playback speed
+
+`acquireAudioPlaybackRate(backend, scale)` returns an owned lease with `active`, `scale`, `set(scale)` and idempotent `release()`. Finite positive scales are accepted. The minimum active contribution wins; releasing the last contribution restores 1. This composes independent slowdown owners without overwriting per-source pitch. Use an unscaled game clock for recovery. The realm-neutral intent reaches the Host, which applies the multiplier to active and future buffered/streaming voices and synchronized music. Music beat and pending fade timing follow the same speed. Release leases before destroying the audio backend.

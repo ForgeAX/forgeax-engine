@@ -16,19 +16,6 @@ declare const camera: EntityHandle;
 declare const renderer: Renderer;
 declare const sceneAsset: AssetHandle<'scene'>;
 
-type RenderProjection = {
-  readonly spans: readonly {
-    readonly fields: Readonly<Record<string, ArrayLike<number>>>;
-  }[];
-};
-type RenderWorldLease = {
-  querySpans(request: {
-    readonly components: readonly {
-      readonly component: object;
-      readonly fields: readonly string[];
-    }[];
-  }): RenderProjection;
-};
 type Renderer = { attach(world: World): unknown };
 
 // These owner packages intentionally do not become scene dependencies (the
@@ -86,14 +73,11 @@ if (globalQuery.ok) {
   }
 }
 
-// Renderer sync consumes only the ECS projection lease and the derived world
-// field; it does not receive a World mutation API or a backend object.
-const lease: RenderWorldLease = createRenderReadLease(world);
-const renderSpans = lease.querySpans({
-  components: [{ component: GlobalTransform, fields: ['world'] }],
-});
+// Renderer sync observes versions through a lease and reads columns through Query.
+const lease = createRenderReadLease(world);
+const renderChanges = lease.readChanges(lease.captureVersion());
 const rendererAttachment = renderer.attach(world);
-void renderSpans;
+void renderChanges;
 void rendererAttachment;
 
 // Existing adapter consumers read the same Transform token without taking

@@ -1,7 +1,12 @@
 import { createServer } from 'node:net';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { NetEndpoint, NetEndpointConnector, NetSession } from '@forgeax/engine-net';
-import { createReplicaCoordinator, decodeReplicationPacket, netPlugin } from '@forgeax/engine-net';
+import {
+  createReplicaCoordinator,
+  decodeReplicationPacket,
+  NetSessionResource,
+  netPlugin,
+} from '@forgeax/engine-net';
 import {
   connectWebSocketClientEndpoint,
   createWebSocketConnector,
@@ -80,7 +85,7 @@ async function connect(
   const observedEndpoint = observeEndpoint(endpoint.value, packets);
   const world = new World();
   await createWorldContext(world, [netPlugin({ endpoint: observedEndpoint, sessionId })]);
-  const session = world.getResource<NetSession>('net-session');
+  const session = world.getResource(NetSessionResource);
   const replica = createReplicaCoordinator(world, snakeProfile);
   session.attachReplica(replica, snakeProfile.limits);
   await receiveBaseline(world, session, peers);
@@ -248,7 +253,7 @@ async function connectSession(url: string): Promise<ProcessSessionClient> {
       recovery: { reconnectDelaysMs: [0] },
     }),
   ]);
-  const session = world.getResource<NetSession>('net-session');
+  const session = world.getResource(NetSessionResource);
   const replica = createReplicaCoordinator(world, snakeProfile);
   session.attachReplica(replica, snakeProfile.limits);
   await receiveBaseline(world, session);

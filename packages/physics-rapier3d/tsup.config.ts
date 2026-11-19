@@ -7,6 +7,7 @@ export default defineConfig({
     index: 'src/index.ts',
     'wasm-browser': 'src/wasm-browser.ts',
     native: 'src/native.ts',
+    'solver-worker-entry': 'src/solver-worker-entry.ts',
   },
   external: [
     '@forgeax/engine-physics-rapier3d/wasm-runtime',

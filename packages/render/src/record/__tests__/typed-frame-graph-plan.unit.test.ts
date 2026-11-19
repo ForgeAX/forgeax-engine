@@ -46,6 +46,9 @@ function executeCapture(overrides: CaptureOverrides = {}) {
   const descriptor = { ...captureDescriptor, ...overrides.descriptor, texture };
   const graph = {
     execute: () => ok(undefined),
+    inspect: () => ({ generation: 7, passes: [] }),
+    commitExecution: vi.fn(),
+    discardExecution: vi.fn(),
   };
   const frameState = {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),

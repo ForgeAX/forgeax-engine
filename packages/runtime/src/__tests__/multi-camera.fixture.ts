@@ -8,6 +8,7 @@ import {
   CubeCamera,
   createRenderPublisher,
   DynamicResolution,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -33,6 +34,18 @@ import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
+
+async function saveSharedCaptureTape(
+  save: (name: string, bytes: Uint8Array) => void | Promise<void>,
+  face: number,
+  count: number,
+  tape: EncodedTape,
+): Promise<void> {
+  if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(tape).bytes);
+  if (count !== (face < 6 ? 2 : 1))
+    await save(`held-views-face-${face}-failed.rhitape`, compactTape(tape).bytes);
+}
+
 export async function verifyMultiCamera(
   renderer: Renderer,
   recorder: RecorderAttachment,
@@ -132,6 +145,7 @@ export async function verifyMultiCamera(
         );
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   let time = 0;
+  let journey = 'initial-views';
   const draw = async (
     observation?: readonly ['final-display'],
     capture?: (tape: EncodedTape) => void,
@@ -143,6 +157,7 @@ export async function verifyMultiCamera(
     let captureAbort: AbortController | undefined;
     let recycling: Promise<void> | undefined;
     let capturedAttempt: EncodedTape | undefined;
+    let attemptEvidence: ReturnType<typeof observeMultiCameraReceipt> | undefined;
     try {
       return await completeReadyFrame(
         async () => {
@@ -162,13 +177,7 @@ export async function verifyMultiCamera(
                 });
           candidate?.accept();
           const result = renderer.draw(
-            packet === undefined
-              ? {
-                  leases: [required(lease)],
-                  camera: { lease: required(lease) },
-                  environment: { lease: required(lease) },
-                }
-              : { publication: packet },
+            packet === undefined ? { source: required(lease) } : { publication: packet },
           );
           const recycle = () => {
             if (packet !== undefined)
@@ -180,6 +189,7 @@ export async function verifyMultiCamera(
             recycle();
             throw new Error(JSON.stringify({ failure: result.error, errors }));
           }
+          attemptEvidence = observeMultiCameraReceipt(result.value);
           // Frame storage returns only after its physical completion, independently
           // of the driver's compilation/GPU deadlines. Observe cleanup rejection.
           recycling = result.value.completed.then(recycle);
@@ -196,6 +206,9 @@ export async function verifyMultiCamera(
           return result.value;
         },
         {
+          // The deferred SSR path admits cold async compute pipelines. Let its
+          // preparation use the existing complete-ready-frame owner budget.
+          ...(journey === 'deferred-ssao-ssr' ? { timeoutMs: 90_000 } : {}),
           onCompleted: async (receipt) => {
             await recycling;
             if (receipt.presentation === 'ready' && capturedAttempt !== undefined)
@@ -204,6 +217,13 @@ export async function verifyMultiCamera(
         },
       );
     } catch (cause) {
+      await saveMultiCameraFailure(save, renderer, {
+        time,
+        journey,
+        cause,
+        errors,
+        attemptEvidence,
+      });
       if (capturedAttempt !== undefined)
         await save('failed-physical-frame.rhitape', compactTape(capturedAttempt).bytes);
       throw cause;
@@ -315,6 +335,7 @@ export async function verifyMultiCamera(
       frames: view.renderedFrames,
       history: view.temporal.frameIndex,
     }));
+    journey = 'held-views-shared-captures';
     for (let face = 0; face < 7; face += 1) {
       if (face === 6) world.set(captureLight, PointLight, { intensity: 0 }).unwrap();
       // A logical ready draw may submit preparation frames. Record each physical
@@ -332,7 +353,7 @@ export async function verifyMultiCamera(
           event.colorAttachmentViewHandleIds.length > 0,
       );
       const submissions = tape.events.filter((event) => event.kind === 'submit');
-      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
+      await saveSharedCaptureTape(save, face, targetPasses.length, captured);
       expect(targetPasses).toHaveLength(face < 6 ? 2 : 1);
       expect(submissions).toHaveLength(1);
       expect(
@@ -396,11 +417,13 @@ export async function verifyMultiCamera(
     renderValue(targets.destroyRenderTarget(cube));
     renderValue(targets.destroyRenderTarget(auxiliaryTarget));
     for (const camera of cameras) world.set(camera, CameraView, { updateInterval: 1 }).unwrap();
+    journey = 'resume-views-after-captures';
     await draw();
     expect(errors).toEqual([]);
     const accepted = required(renderer.inspect().views);
     world.set(required(cameras[0]), CameraView, { viewport: [0, 0, 1, 1] }).unwrap();
     failNextSubmit();
+    journey = 'injected-submit-refusal';
     await expect(draw()).rejects.toThrow();
     expect(required(renderer.inspect().views).map((v) => [v.width, v.renderedFrames])).toEqual(
       accepted.map((v) => [v.width, v.renderedFrames]),
@@ -411,6 +434,7 @@ export async function verifyMultiCamera(
     expect(errors).toHaveLength(1);
     errors.length = 0;
     world.set(required(cameras[0]), CameraView, { viewport: [0, 0, 0.5, 1] }).unwrap();
+    journey = 'retry-views-after-submit-refusal';
     await draw();
     const views = required(renderer.inspect().views);
     expect(views).toHaveLength(2);
@@ -435,6 +459,7 @@ export async function verifyMultiCamera(
         .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 12 } })
         .unwrap();
     renderValue(renderer.setProfile({ ...originalProfile, renderPath: 'deferred', ssao: true }));
+    journey = 'deferred-ssao-ssr';
     for (let frame = 0; frame < 3; frame += 1) await draw();
     expect(
       required(renderer.inspect().views).every((view) => view.passes.includes('ssao-calc')),
@@ -450,6 +475,7 @@ export async function verifyMultiCamera(
       world.set(entity, MeshRenderer, { materials: required(originalMaterials[index]) }).unwrap();
     for (const camera of cameras) world.removeComponent(camera, ScreenSpaceReflection).unwrap();
     renderValue(renderer.setProfile(originalProfile));
+    journey = 'restore-original-profile';
     await draw();
     expect(
       required(renderer.inspect().views).every((view) => !view.passes.includes('ssao-calc')),
@@ -914,6 +940,83 @@ export async function verifyMultiCamera(
     lease?.dispose();
     publisher?.dispose();
     targetOwner?.dispose();
+  }
+}
+
+type MultiCameraSettlement =
+  | { readonly status: 'unavailable' | 'pending' }
+  | { readonly status: 'fulfilled'; readonly atMs: number; readonly result: unknown }
+  | { readonly status: 'rejected'; readonly atMs: number; readonly cause: unknown };
+
+/** Observe the original signals without replacing them or accepting a pending picture. */
+function observeMultiCameraSettlement(signal: Promise<unknown> | undefined) {
+  const observation: { settlement: MultiCameraSettlement } = {
+    settlement: { status: signal === undefined ? 'unavailable' : 'pending' },
+  };
+  void signal?.then(
+    (result) => {
+      observation.settlement = { status: 'fulfilled', atMs: performance.now(), result };
+    },
+    (cause: unknown) => {
+      observation.settlement = {
+        status: 'rejected',
+        atMs: performance.now(),
+        cause: multiCameraFailureCause(cause),
+      };
+    },
+  );
+  return observation;
+}
+
+function observeMultiCameraReceipt(receipt: FrameReceipt) {
+  return {
+    observedAtMs: performance.now(),
+    frameId: receipt.frameId,
+    deviceGeneration: receipt.deviceGeneration,
+    graphGeneration: receipt.graphGeneration,
+    presentation: receipt.presentation,
+    presentationPendingReason: receipt.presentationPendingReason,
+    preparation: observeMultiCameraSettlement(receipt.preparationCompleted),
+    completed: observeMultiCameraSettlement(receipt.completed),
+  };
+}
+
+function multiCameraFailureCause(cause: unknown): unknown {
+  return cause instanceof Error
+    ? { name: cause.name, message: cause.message, stack: cause.stack, cause: cause.cause }
+    : cause;
+}
+
+/** Failure-only inspection retains the actual native request identities before disposal. */
+async function saveMultiCameraFailure(
+  save: (name: string, bytes: Uint8Array) => void | Promise<void>,
+  renderer: Renderer,
+  evidence: {
+    readonly time: number;
+    readonly journey: string;
+    readonly cause: unknown;
+    readonly errors: readonly unknown[];
+    readonly attemptEvidence: ReturnType<typeof observeMultiCameraReceipt> | undefined;
+  },
+) {
+  if (evidence.attemptEvidence?.presentation !== 'pending') return;
+  try {
+    const data = {
+      kind: 'multi-camera-original-readiness-failure',
+      observedAtMs: performance.now(),
+      ...evidence,
+      cause: multiCameraFailureCause(evidence.cause),
+      inspection: renderer.inspect({
+        runtimeRequests: true,
+        fields: ['state', 'profile', 'views', 'pipelineLibrary', 'frame'],
+      }),
+    };
+    // Preserve the original failed receipt in the CI log before artifact transport.
+    console.error(JSON.stringify(data));
+    await save('failed-readiness.json', new TextEncoder().encode(JSON.stringify(data, null, 2)));
+  } catch (cause) {
+    // Diagnostic transport must not replace the original error.
+    console.error('multi-camera failure evidence unavailable', multiCameraFailureCause(cause));
   }
 }
 

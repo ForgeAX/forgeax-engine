@@ -62,7 +62,7 @@ it('adopts replacement object-binding publications without changing their prior 
   const first = owner.update(p, f.bindings);
   const original = first.plan.batches.map((row) => row.candidates);
   const replacement = new Map(f.bindings);
-  replacement.set('0:1', 'C');
+  replacement.set('1', 'C');
   const next = owner.update(p, replacement);
   compare(next, freshFilteredPlan(p, replacement));
   expect(next.plan.batches).toHaveLength(3);

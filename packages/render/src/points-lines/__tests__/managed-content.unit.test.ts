@@ -29,7 +29,6 @@ it('consumes edits at draw time without replacing the source row, and fences res
   const view = renderWorld.spawn({ component: RenderView, data: { primary: true } }).unwrap();
   const owner = adoptViewPointsLines(renderWorld, view, { device } as RenderSystemInternals);
   const source = createPointsLinesSnapshot({
-    worldId: 0,
     entityKey: 1,
     component: 'Lines',
     meshHandle: mesh,

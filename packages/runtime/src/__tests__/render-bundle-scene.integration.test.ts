@@ -5,7 +5,11 @@ import { RhiNullAdapter, RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { standardPbrManifestRow } from '../../../render/src/__tests__/shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
 import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { testAssets } from './helpers/runtime-assets';
@@ -21,11 +25,15 @@ function value<T>(
 const manifest = `data:application/json,${encodeURIComponent(
   JSON.stringify({
     entries: [
+      ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr00000', wgsl: 'f_schlick(', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: 'unlit', glsl: '', bindings: '' },
       { hash: 'tonemap0', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
     ],
     materialShaders: [
+      ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       {
         identifier: 'forgeax::default-unlit',
         sourcePath: 'unlit.wgsl',
@@ -96,9 +104,7 @@ it('retains bundles through resize and follows real scene membership and culling
     const frame = async () => {
       const draws = device.totalDrawCount;
       world.update(0).unwrap();
-      const receipt = value(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+      const receipt = value(renderer.draw({ source: lease }));
       value(await receipt.completed);
       return device.totalDrawCount - draws;
     };

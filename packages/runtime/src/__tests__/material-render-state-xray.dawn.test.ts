@@ -159,11 +159,7 @@ async function renderCenter(xray: boolean): Promise<{ rgb: number[]; errors: unk
     if (!attached.ok) throw attached.error;
     for (let frame = 0; frame < 3; frame += 1) {
       world.update(1 / 60).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      await drawReadyFrame(renderer, { source: attached.value });
     }
     if (device === undefined || target === undefined) throw new Error('Dawn target missing');
     const buffer = device.createBuffer({

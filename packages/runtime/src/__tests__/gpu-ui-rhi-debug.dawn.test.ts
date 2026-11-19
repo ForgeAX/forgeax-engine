@@ -294,9 +294,7 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
         restorePipelines();
         const lease = value(renderer.attach(scene.world));
         await drawReadyFrame(renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
+          source: lease,
           sampleTimeSeconds: 1,
         });
         required(ui.document.querySelector('main')).style.opacity = '.75';

@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
@@ -76,6 +77,7 @@ export async function createResonanceForge(
   });
   if (assets === undefined) return { snapshot, dispose() {} };
 
+  let animationSystem: import('@forgeax/engine/ecs').System<readonly []> | undefined;
   try {
     const sceneHandle = (await assets.load(parsedGuid(assetGuid('scene/formation')), 'scene')).unwrap();
     const instantiated = assets.instantiate(sceneHandle, world);
@@ -93,7 +95,7 @@ export async function createResonanceForge(
       }
       entities.push(entity as EntityHandle);
     }
-    world.addSystem(Update, {
+    animationSystem = defineSystem({
       name: 'resonance-forge-animation',
       queries: [] as const,
       fn: () => {
@@ -106,7 +108,8 @@ export async function createResonanceForge(
           world.set(entity, Transform, { pos: pose.position, quat: rotation, scale: pose.scale });
         }
       },
-    }).unwrap();
+    });
+world.addSystem(Update, animationSystem).unwrap();
     status = 'ready';
   } catch (error) {
     errorCode = typeof error === 'object' && error !== null && 'code' in error
@@ -117,7 +120,7 @@ export async function createResonanceForge(
   return {
     snapshot,
     dispose() {
-      if (status === 'ready') world.removeSystem(Update, 'resonance-forge-animation');
+      if (animationSystem !== undefined) world.removeSystem(Update, animationSystem);
       if (sceneRoot !== undefined) worldDespawnScene(world, sceneRoot);
       entities.length = 0;
     },

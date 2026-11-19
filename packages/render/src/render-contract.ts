@@ -126,6 +126,7 @@ import type { PostProcessError } from './post-process-errors.js';
 import type {
   GpuPassTimingObservation,
   GpuPassTimingOptions,
+  GpuPassTimingPassIdentity,
 } from './record/gpu-pass-timing/index.js';
 import type { VolumeTimingObservation } from './record/gpu-timing.js';
 import type { SurfaceDynamicInputFrame } from './surface/dynamic-input.js';
@@ -190,6 +191,7 @@ export interface ResolvedViewCamera {
 }
 
 export interface CameraSnapshot {
+  readonly cullMask?: number;
   readonly projectedDecals?: readonly import('./decals/extract').ProjectedDecalSnapshot[];
   /** Public world-space per-view clipping; captures carry their own detached value. */
   readonly clipping?: import('@forgeax/engine-types').ClippingOptions;
@@ -200,8 +202,6 @@ export interface CameraSnapshot {
   readonly target?: RenderTarget;
   /** Nonzero `Camera.targetLayer`: the cube face, array layer, or 3D slice written. */
   readonly targetLayer?: number;
-  /** World index supplied by the multi-world extract merge. */
-  readonly worldId?: number;
   /** Camera-owned history generation forwarded into the frame plan. */
   readonly historyVersion?: number;
   /** World-space translation from the Scene-owned presentation matrix. */
@@ -231,6 +231,8 @@ export interface CameraSnapshot {
   readonly orthoRight: number;
   readonly orthoBottom: number;
   readonly orthoTop: number;
+  /** Optional view effects are enabled by default; output transfer and raster MSAA are independent. */
+  readonly postProcessing?: boolean;
   readonly tonemap: Tonemap;
   readonly exposure: number;
   readonly whitePoint: number;
@@ -274,6 +276,8 @@ export interface CameraSnapshot {
 
 /** Stable identity owned by the Standard feature host for output transform. */
 export const STANDARD_OUTPUT_TRANSFORM_FEATURE_ID = 'forgeax::standard::output-transform';
+/** Source-only native Grade/Final declaration; its parameters belong to each graph. */
+export const STANDARD_OUTPUT_V2_FEATURE_ID = 'forgeax::standard::output-v2';
 
 /** Stable identity for the special FXAA pass' per-frame output policy UBO. */
 export const FXAA_POST_PROCESS_ID = 'forgeax::post::fxaa';
@@ -308,6 +312,12 @@ interface RenderPipelineStateView {
  */
 export interface RenderPipelineObservationCapture {
   readonly domain: FrameObservationDomain;
+  readonly featureTexture?: Readonly<{
+    featureIdentity: string;
+    name: string;
+    targetName: string;
+    viewIdentity?: string;
+  }>;
   /** The exact per-frame row projection used by the raster producer. */
   readonly surfaceRecords?: Uint32Array;
   /** Display encoding captured with a `final-display` copy. */
@@ -325,9 +335,38 @@ export interface RenderPipelineObservationCapture {
   readonly bytesPerRow: number;
 }
 
+/** One declared feature-texture readback in the current source frame. */
+export interface FeatureTextureReadbackDeclaration {
+  readonly featureIdentity: string;
+  /** Physical graph allocation scope (frame or exact view) for same-named outputs. */
+  readonly viewIdentity?: string;
+  readonly name: string;
+  readonly targetName: string;
+  readonly format: TextureFormat;
+  readonly width: number;
+  readonly height: number;
+  readonly bytesPerRow: number;
+  readonly byteLength: number;
+}
+
 export interface RenderPipelineObservationCaptureOwner {
   readonly register: (capture: RenderPipelineObservationCapture) => void;
-  readonly consume: (frameNumber: number) => readonly RenderPipelineObservationCapture[];
+  readonly preflightFeatureTextureReadbacks?: (
+    frameNumber: number,
+    declarations: readonly FeatureTextureReadbackDeclaration[],
+  ) => RenderResult<void, RenderError>;
+  readonly claimFeatureTextureReadback?: (
+    frameNumber: number,
+    declaration: FeatureTextureReadbackDeclaration,
+  ) => RenderResult<void, RenderError>;
+  readonly retainFeatureTextureReadbacks?: (frameNumber: number) => (() => void) | undefined;
+  readonly settleFeatureTextureReadbacks?: (frameNumber: number) => void;
+  readonly completeFeatureTextureReadbackObservation?: (frameNumber: number) => void;
+  readonly recordGraph: (frameNumber: number, graphGeneration: number) => void;
+  readonly consume: (frameNumber: number) => Readonly<{
+    captures: readonly RenderPipelineObservationCapture[];
+    graphGenerations: readonly number[];
+  }>;
   readonly drain: () => readonly RenderPipelineObservationCapture[];
 }
 
@@ -509,6 +548,7 @@ export interface DepthPyramidShaderSources {
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
+  readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
   readonly composeFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly traceFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly temporalFragment?: string | import('@forgeax/engine-types').ShaderSource;
@@ -593,12 +633,31 @@ export interface RenderInspectionOptions<
   /** Start/stop an explicit diagnostic route retention scope. */
   readonly pipelineLibraryCollection?: boolean;
   readonly pipelineLibraryLimits?: import('@forgeax/engine-rhi').PipelineLibraryLimits;
+  /** Export only recipes a renderer asked for; recipes compiled solely by an imported library are left out. */
+  readonly pipelineLibraryRequestedOnly?: boolean;
   readonly runtimeRequests?: boolean;
   /** Select fields before producing scene inventories; omission returns the full snapshot. */
   readonly fields?: readonly K[];
 }
 
 export interface Renderer {
+  /** Submit all six mip-0 face views in native cube order, then publish one filtered environment. */
+  captureRenderTargetEnvironment(
+    target: RenderTarget,
+    options: RenderTargetEnvironmentCapture,
+  ): Promise<
+    RenderResult<import('./targets/environment').RenderTargetEnvironmentLease, RenderError>
+  >;
+  prepareRenderTargetEnvironment(
+    target: RenderTarget,
+  ): Promise<
+    RenderResult<import('./targets/environment').RenderTargetEnvironmentLease, RenderError>
+  >;
+  /** Prepare one attached CPU-backed TextureAsset without rendering or waiting for a frame. */
+  prepareTextureResidency(
+    world: World,
+    textureHandle: AssetHandle<'texture'>,
+  ): Result<void, import('./texture-residency').TextureResidencyError>;
   /** Await real current-view pipelines for existing mesh-prepared candidate credentials. */
   prepareDynamicGeometryPipelines(
     candidates: readonly DynamicGeometryCandidate[],
@@ -793,17 +852,7 @@ export type RendererEventListener = (event: RendererEvent) => void;
  * the attached scene lease and never accepts a backend object.
  */
 export interface FrameCamera {
-  readonly lease: RenderWorldLease;
   readonly entityKey?: number;
-}
-
-/**
- * Environment authority supplied for one frame. The scene/environment owner
- * supplies the identity; the host validates it against the attached lease.
- */
-export interface FrameEnvironment {
-  readonly lease: RenderWorldLease;
-  readonly identity?: string;
 }
 
 /**
@@ -815,14 +864,16 @@ export type FrameObservationDomain =
   | 'linear-hdr'
   | 'linear-ldr'
   | 'final-display'
-  | 'visible-surface';
+  | 'visible-surface'
+  | 'feature-texture';
 
 export function isFrameObservationDomain(value: string): value is FrameObservationDomain {
   return (
     value === 'linear-hdr' ||
     value === 'linear-ldr' ||
     value === 'final-display' ||
-    value === 'visible-surface'
+    value === 'visible-surface' ||
+    value === 'feature-texture'
   );
 }
 
@@ -847,9 +898,21 @@ export interface FrameObservationRequest {
  * this exact receipt; a recovery retry must obtain a new one.
  */
 export interface FrameReceipt {
+  /** Revision of the graph that recorded this scene, absent for UI-only submissions. */
+  readonly configurationRevision?: number;
+  readonly editorAssistance?: import('./features/editor-assistance/picking').SubmittedEditorAssistanceFrame;
   /** Default-off CPU shadow census captured by this successful submission. */
   readonly shadowWorkload?: ShadowWorkloadObservation;
   readonly frameId: number;
+  /** Detached App profiler token accepted with this exact physical submission. */
+  readonly profileFrame?: ProfileFrameToken;
+  /**
+   * Bounded Render-owned mapping from named CPU pass scopes to the actual
+   * graph and optional GPU timing execution identity for this receipt.
+   */
+  readonly renderPassCpuIdentities?: readonly RenderPassCpuIdentity[];
+  /** False when an executed graph pass cannot be represented by the identity sidecar. */
+  readonly renderPassCpuIdentitiesComplete?: boolean;
   readonly deviceGeneration: number;
   /** Whether this frame can present the active scene without a readiness fallback. */
   readonly presentation: FramePresentation;
@@ -885,6 +948,28 @@ export interface FrameReceipt {
   readonly creditCompleted?: Promise<RenderResult<void, RenderError>>;
 }
 
+/** Receipt-side join facts; identity fields never masquerade as Profiler phase names. */
+export interface RenderPassCpuIdentity {
+  readonly phase: RenderGraphPassProfilePhase;
+  readonly owner: string;
+  readonly viewId?: number;
+  readonly deviceGeneration: number;
+  readonly graphGeneration: number;
+  readonly graphExecutionIndex: number;
+  readonly passName: string;
+  readonly passKind: 'raster' | 'compute' | 'copy';
+  readonly gpuIdentityStatus: 'available' | 'not-requested' | 'unavailable' | 'not-recorded';
+  readonly gpuIdentity?: GpuPassTimingPassIdentity;
+}
+
+/** Render's bounded per-receipt graph-pass-to-GPU identity join capture. */
+export interface RenderPassCpuIdentityCapture {
+  readonly entries: RenderPassCpuIdentity[];
+  /** A valid pass instrumentation path observed this collector, including an empty graph. */
+  instrumentationAccepted: boolean;
+  complete: boolean;
+}
+
 /** Producer-derived presentation readiness for one submitted frame. */
 export type FramePresentation = 'pending' | 'ready';
 
@@ -909,7 +994,6 @@ export interface FramePresentationPendingReason {
     | 'spot-shadow'
     | 'ui-only'
     | 'camera-view-pending';
-  readonly worldId?: number;
   readonly entity?: number;
   readonly submesh?: number;
   readonly section?: number;
@@ -938,15 +1022,14 @@ export interface FramePresentationPendingReason {
  */
 export type RenderFrameInput = (
   | {
-      readonly leases: readonly RenderWorldLease[];
-      readonly camera: FrameCamera;
-      readonly environment: FrameEnvironment;
+      readonly source: RenderWorldLease;
+      /** Omission selects the source's active camera. */
+      readonly camera?: FrameCamera;
     }
   | {
-      /** No scene is admitted; the configured screen UI still submits a pending frame. */
-      readonly leases: readonly [];
-      readonly camera: null;
-      readonly environment: null;
+      /** No scene is admitted; configured screen UI submits a pending frame. */
+      readonly source: null;
+      readonly camera?: never;
     }
 ) & {
   /**
@@ -955,6 +1038,8 @@ export type RenderFrameInput = (
    * Omitting it keeps direct renderer callers on the ECS-clock fallback.
    */
   readonly sampleTimeSeconds?: number;
+  /** Write linear HDR to this target instead of acquiring the canvas. */
+  readonly targetWrite?: RenderTargetWrite;
   /**
    * Mark the next submitted frame as a fresh temporal baseline. App sets this
    * on resume so a short wall-clock pause cannot be mistaken for a valid
@@ -987,6 +1072,8 @@ export interface MaterialDrawObservation {
   readonly entityKey: number;
   readonly submeshIndex: number;
   readonly materialHandle: number;
+  /** Root revision from the immutable MaterialSnapshot consumed by this actual draw. */
+  readonly sourceRevision?: number;
   readonly publication: Pick<
     import('@forgeax/engine-assets-runtime').MaterialRenderProjection,
     'materialGuid' | 'publicationGeneration' | 'specializationKey' | 'artifactHash'
@@ -1048,7 +1135,32 @@ export type FrameDomainObservation = FrameAttachmentObservation &
         readonly colorSpace: OutputColorSpace;
       }
     | { readonly domain: 'visible-surface'; readonly records: Uint32Array }
+    | {
+        readonly domain: 'feature-texture';
+        readonly featureIdentity: string;
+        readonly name: string;
+        readonly targetName: string;
+        readonly viewIdentity?: string;
+      }
   );
+
+export type FeatureTextureObservation = Extract<
+  FrameDomainObservation,
+  { readonly domain: 'feature-texture' }
+>;
+
+/** Detached completion delivered back to the source owner after receipt readback. */
+export type FeatureTextureReadbackResult =
+  | { readonly ok: true; readonly value: readonly FeatureTextureObservation[] }
+  | {
+      readonly ok: false;
+      readonly error: Readonly<{
+        code: string;
+        expected: string;
+        hint: string;
+        detail?: unknown;
+      }>;
+    };
 
 interface FrameAttachmentObservation {
   readonly bytes: Uint8Array;
@@ -1174,8 +1286,33 @@ export interface RenderInspection {
   };
   readonly surface: 'available' | 'released';
   readonly profile: StandardProfile;
+  /** Last submitted view selection; `profile` above remains the device default. */
+  readonly viewConfiguration?: {
+    readonly requested: {
+      readonly renderPath: RenderProfile['renderPath'];
+      readonly antialias: Antialias;
+    };
+    readonly effective: {
+      readonly renderPath: StandardProfile['renderPath'];
+      readonly antialias: Antialias;
+      /** Actual scene color attachment sampling; clear-only graphs have one sample. */
+      readonly geometrySampleCount: number;
+    };
+  };
   readonly capabilities: Readonly<RhiCaps>;
   readonly limits?: Readonly<Record<string, number>>;
+  /** Current native device facts; null adapter information is unavailable, not non-fallback. */
+  readonly deviceInfo?: {
+    readonly deviceGeneration: number;
+    readonly adapterInfo: {
+      readonly vendor: string;
+      readonly architecture: string;
+      readonly device: string;
+      readonly description: string;
+      /** Null when the native API does not publish a boolean. */
+      readonly isFallbackAdapter: boolean | null;
+    } | null;
+  };
   readonly frame: {
     readonly frameId: number;
     readonly deviceGeneration: number;
@@ -1213,11 +1350,14 @@ export interface RenderInspection {
   readonly instanceCollections: readonly InstanceCollectionInspection[];
   /** Standard MeshAsset dynamic-candidate lifecycle facts. */
   readonly dynamicGeometry?: DynamicGeometryInspection;
+  readonly textureGeneration?: import('./device/texture-generators').TextureGeneratorInspection;
   readonly renderScene: RenderSceneInspection;
   /** Detached logical allocation facts for graph-created render targets. */
   readonly renderGraphResourceAllocation?: RenderGraphResourceAllocationInspection;
   /** Detached logical allocation facts across graph generations. */
   readonly renderGraphGenerationAllocation?: RenderGraphGenerationAllocationInspection;
+  /** Actual current-view Water pass dependencies and resource descriptors; no inferred backend policy. */
+  readonly waterGraph?: import('./water/capabilities').WaterRenderGraphInspection;
   readonly reflectionProbes: ReflectionProbeInspection;
   /** Renderer-owned SSR dependency seam; consumer facts are projected from live owners. */
   readonly ssrDependencies: SsrDependenciesInspection;
@@ -1304,25 +1444,36 @@ export interface RenderInspection {
   /** Bounded renderer-owned LOD/occlusion facts; absent before a candidate frame. */
   readonly lodOcclusion?: LodOcclusionInspection;
 }
+/** An explicit ordered HDR write through the existing capture graph. */
+export interface RenderTargetWrite {
+  readonly target: RenderTarget;
+  readonly layer?: number;
+  readonly mipLevel?: number;
+  readonly clearColor: boolean;
+  readonly clearDepth: boolean;
+  readonly clearStencil: boolean;
+  /** Clear attachments without recording scene draws. */
+  readonly clearOnly?: boolean;
+}
 
-/** Backend marker — single-element union preserved for future extensibility (D-2). */
-/**
- * `renderer.draw(worlds, options)` owner options
- * (feat-20260709-editor-world-partition M1 / w6, plan-strategy §2 D-3).
- *
- * The single `owner` index that previously served BOTH the surfaced cameras
- * and the singleton render resources (skylight / skybox / postProcessParams) is
- * split into two independent indices:
- *   - `cameraOwner`   — the world whose cameras are surfaced.
- *   - `resourceOwner` — the world whose skylight / skybox / postProcessParams
- *                       are surfaced.
- *
- * Both owners are always explicit. Single-world callers pass zero for both;
- * composite callers may select different worlds.
- */
-export type DrawOwnerOptions = {
-  readonly cameraOwner: number;
-  readonly resourceOwner: number;
+export interface RenderTargetEnvironmentCapture {
+  /** Prepare one scene view for the given native cube layer, from +X through -Z. */
+  readonly prepareFace: (
+    layer: number,
+  ) => RenderTargetEnvironmentFace | Promise<RenderTargetEnvironmentFace>;
+  /** Invoked after each ready submission. GPU completion is covered by the capture result. */
+  readonly onFaceSubmitted?: (layer: number, receipt: FrameReceipt) => void;
+}
+
+export type RenderTargetEnvironmentFace = Omit<
+  Extract<RenderFrameInput, { source: RenderWorldLease }>,
+  'targetWrite'
+> &
+  Pick<RenderTargetWrite, 'clearColor' | 'clearDepth' | 'clearStencil'>;
+
+/** Frame options shared by all views of the Renderer's current source. */
+export type DrawOptions = {
+  readonly targetWrite?: RenderTargetWrite;
   /** Optional FrameCamera entity selection; absent preserves ActiveCamera semantics. */
   readonly cameraEntityKey?: number;
   /** Monotonic host render-sample time in seconds, before the ECS delta clamp. */
@@ -1415,6 +1566,9 @@ export const RENDER_GRAPH_EXECUTION_PHASE_CATALOG = [
 ] as const;
 
 export type RenderGraphExecutionPhase = (typeof RENDER_GRAPH_EXECUTION_PHASE_CATALOG)[number];
+
+/** Exact compiled-pass identity, admitted from the live graph roster at capture start. */
+export type RenderGraphPassProfilePhase = `record/graph-execute/pass/${string}`;
 
 /** Bounded producer-owned children of the scene-state record owner. */
 export const RENDER_HDRP_BINNER_PHASE_CATALOG = [
@@ -1519,17 +1673,34 @@ export const RENDER_RECORD_PHASE_CATALOG = [
   ...RENDER_GRAPH_EXECUTION_PHASE_CATALOG,
 ] as const;
 
-export type RenderRecordPhase = (typeof RENDER_RECORD_PHASE_CATALOG)[number];
+export type RenderRecordPhase =
+  | (typeof RENDER_RECORD_PHASE_CATALOG)[number]
+  | RenderGraphPassProfilePhase;
 
 export const RENDER_PHASE_CATALOG = [
   'extract',
+  'extract/resource-frame',
+  'extract-schedule',
+  'stage-inputs',
+  'post-prepare',
+  'prepare',
+  'queue',
+  'queue-resume',
   'bind-groups',
   'features',
   'sort',
+  'record-schedule',
+  'commit-schedule',
+  'cleanup-schedule',
   'record',
   'submission/presentation',
   'submission/finish',
   'submission/submit',
+  'submission/receipt-issue',
+  'graph/key-match',
+  'graph/build',
+  'graph/compile',
+  'finally-cleanup',
   ...RENDER_RECORD_PHASE_CATALOG,
 ] as const;
 
@@ -1563,10 +1734,29 @@ export interface RendererOptions {
    * `inspect().pipelineLibrary.backgroundWarmup`; failures never fail the renderer.
    */
   readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /** Outstanding native requests for `backgroundPipelineLibrary`: integer 1..4; omission keeps the hardware default. */
+  readonly backgroundPipelineLibraryConcurrency?: number;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Renderer AssetRegistry content bytes: positive safe integer; default 4 GiB. */
   readonly assetBudgetBytes?: number;
+  /**
+   * Borrowed executor for asynchronous derivation work such as texture
+   * transcode. Without one the Renderer runs that work inline, time-sliced.
+   */
+  readonly tasks?: import('@forgeax/engine-types').TaskExecutor | undefined;
+  /**
+   * Explicit per-source-frame cap for declared feature-texture readbacks. No
+   * Engine default is selected; Worker hosts that transport pixels must choose
+   * a cap from their workload profile.
+   */
+  readonly featureTextureReadbackBudgetBytes?: number;
+  /**
+   * Leading packed mip levels the GPU copy drops from textures that declare
+   * `skippableMips: true`; integer 0-32, default 0 (every authored level).
+   * At least one level always remains. Other textures keep their full chain.
+   */
+  readonly textureMipSkip?: number;
   /** Construction-time graph composition; resources and submission remain renderer-owned. */
   readonly pipeline?: import('./render-pipeline.js').RenderPipeline;
   /** Bind a source session before receiving any publication. */
@@ -1582,6 +1772,13 @@ export interface RendererOptions {
    * back to sRGB with a structured `inspect().output.colorSpace` report.
    */
   readonly outputColorSpace?: OutputColorSpace | undefined;
+  /**
+   * Serializable backend preference for hosts that cannot pass an `rhi` object
+   * across realms. `'auto'` (default) assembles native WebGPU and makes one
+   * wgpu/WebGL2 attempt after an environment failure; `'webgpu'` never falls
+   * back; `'webgl2'` assembles wgpu/WebGL2 directly. An injected `rhi` wins.
+   */
+  readonly renderBackend?: 'auto' | 'webgpu' | 'webgl2' | undefined;
   /** Explicit profiler capability shared by App and Render. */
   readonly profiler?: Profiler | undefined;
   /** Explicitly request timestamp-query for receipt-bound GPU profiling. */

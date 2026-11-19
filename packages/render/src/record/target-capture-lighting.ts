@@ -13,11 +13,13 @@ import { prepareFrameLighting, writeHdrpClusterAndSsaoBuffers } from './frame-li
 import type { RenderFrameState } from './frame-snapshot';
 import { createPointsLinesViewBuffer } from './points-lines-view-buffer';
 import type { PipelineState, RenderSystemInternals } from './render-context';
+import { CaptureScenePasses } from './scene-pass-work';
 import type { CubeCaptureGraphState } from './target-capture-graph';
 import { VIEW_UNIFORM_BUFFER_SIZE } from './view-ubo';
 
 interface CaptureLightingView {
   readonly runtime: RenderSystemInternals;
+  readonly scenePasses: CaptureScenePasses;
   state: RenderFrameState;
   generation?: number;
   atmosphere?: AtmosphereLease;
@@ -132,6 +134,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
         device: { value: device },
         encodeFramebufferSnapshots: { value: undefined },
       }) as RenderSystemInternals,
+      scenePasses: new CaptureScenePasses(work.faceCamera),
       state: { ...frameState },
       viewBuffer: buffer.value,
       pointsLinesView: pointsLines,
@@ -160,6 +163,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       fogs: current.fog === undefined ? [] : [current.fog],
     }).unwrap();
   }
+  view.scenePasses.camera = work.faceCamera;
   const cascades = captureLights.cascades;
   // This frame's capture views grow to the slots `view-points-lines` prepared.
   view.pointsLinesView.ensureCapacity(preparedPointsLinesSlots(runtime));
@@ -201,6 +205,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   }
   return {
     runtime: view.runtime,
+    scenePasses: view.scenePasses,
     capturedAtmosphere: view.atmosphere?.storage,
     frameState: view.state,
     lighting,

@@ -1,0 +1,505 @@
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
+import type { FrameReceipt, Renderer, RenderWorldLease } from '@forgeax/engine-render';
+import { describe, expect, it, vi } from 'vitest';
+import { createFrameLoop } from '../internal/frame-loop';
+import { testPlatform } from './platform-fixture';
+
+interface DrawCall {
+  readonly request: unknown;
+}
+
+function lease(onDispose: () => void = () => {}): RenderWorldLease {
+  return {
+    worldIdentity: {},
+    generation: 0,
+    readChanges: vi.fn(),
+    inspectCursor: vi.fn(),
+    dispose: onDispose,
+  } as unknown as RenderWorldLease;
+}
+
+function completeReceipt(frameId: number): FrameReceipt {
+  const completed = {
+    // biome-ignore lint/suspicious/noThenProperty: synchronous test completion keeps pump() deterministic.
+    then(onFulfilled: (value: { ok: true; value: undefined }) => void): void {
+      onFulfilled({ ok: true, value: undefined });
+    },
+  } as unknown as FrameReceipt['completed'];
+  return {
+    frameId,
+    deviceGeneration: 0,
+    presentation: 'ready',
+    completed,
+  };
+}
+
+function makeSpyRenderer(): { renderer: Renderer; calls: DrawCall[] } {
+  const calls: DrawCall[] = [];
+  const renderer = {
+    state: () => 'alive' as const,
+    backend: 'webgpu' as const,
+    attach(): { ok: true; value: RenderWorldLease } {
+      return { ok: true, value: lease() };
+    },
+    draw(request: unknown): {
+      ok: true;
+      value: FrameReceipt;
+    } {
+      calls.push({ request });
+      return { ok: true, value: completeReceipt(calls.length) };
+    },
+    onError(): () => void {
+      return () => {
+        // no-op unsubscribe
+      };
+    },
+    dispose(): void {
+      // no-op
+    },
+  } as unknown as Renderer;
+  return { renderer, calls };
+}
+
+/**
+ * Synchronous rAF driver: fire the scheduled tick exactly `frames` times.
+ * The injected `raf` stores the next callback; `pump` invokes it, which in
+ * turn schedules the following one, so we can step the loop deterministically.
+ */
+function makeSyncScheduler() {
+  let pending: ((t: number) => void) | null = null;
+  let clock = 0;
+  const raf = (cb: (t: number) => void): number => {
+    pending = cb;
+    return 1;
+  };
+  const caf = (): void => {
+    pending = null;
+  };
+  const now = (): number => {
+    clock += 16;
+    return clock;
+  };
+  const pump = (frames: number): void => {
+    for (let i = 0; i < frames; i++) {
+      const cb = pending;
+      pending = null;
+      if (cb === null) break;
+      cb(clock);
+    }
+  };
+  return { raf, caf, now, pump };
+}
+
+describe('single source frame loop', () => {
+  it.each([
+    undefined,
+    'automatic',
+    'direct',
+  ] as const)('retains the geometry lane across scene and UI-only draws: %s', (geometryLane) => {
+    const world = new World();
+    const { renderer, calls } = makeSpyRenderer();
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    let admission: 'scene' | 'ui-only' = 'scene';
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      sceneAdmission: () => admission,
+      platform: testPlatform({ now, raf, caf }),
+      ...(geometryLane === undefined ? {} : { geometryLane }),
+    });
+    loop.start().unwrap();
+    try {
+      pump(1);
+      admission = 'scene';
+      pump(1);
+      admission = 'ui-only';
+      pump(1);
+      expect(calls).toHaveLength(3);
+      for (const { request } of calls) {
+        if (geometryLane === undefined) expect(request).not.toHaveProperty('geometryLane');
+        else expect(request).toHaveProperty('geometryLane', geometryLane);
+      }
+    } finally {
+      loop.stop().unwrap();
+    }
+  });
+
+  it('attaches once before the first update without moving sceneAdmission ahead of update', () => {
+    const events: string[] = [];
+    const world = new World();
+    const systemToken1 = defineSystem({
+      name: 'observeUpdateOrder',
+      queries: [],
+      fn: () => events.push('update'),
+    });
+    world.addSystem(Update, systemToken1).unwrap();
+    const renderer = {
+      state: () => 'alive' as const,
+      backend: 'webgpu' as const,
+      attach(): { ok: true; value: RenderWorldLease } {
+        events.push('attach');
+        return { ok: true, value: lease() };
+      },
+      draw(): { ok: true; value: FrameReceipt } {
+        events.push('draw');
+        return { ok: true, value: completeReceipt(1) };
+      },
+      onError: () => () => {},
+      dispose: () => {},
+    } as unknown as Renderer;
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      sceneAdmission: () => {
+        events.push('sceneAdmission');
+        return 'scene';
+      },
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    loop.start().unwrap();
+    pump(2);
+    loop.stop().unwrap();
+
+    expect(events).toEqual([
+      'attach',
+      'update',
+      'sceneAdmission',
+      'draw',
+      'update',
+      'sceneAdmission',
+      'draw',
+    ]);
+  });
+
+  it('calls renderer.draw with one lease-bound world per running frame', () => {
+    const world = new World();
+    const { renderer, calls } = makeSpyRenderer();
+    const { raf, caf, now, pump } = makeSyncScheduler();
+
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+    const started = loop.start();
+    expect(started.ok).toBe(true);
+
+    // start() schedules the first tick via raf (it does not run synchronously);
+    // pump three ticks so we observe 3 frames total.
+    pump(3);
+
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    for (const call of calls) {
+      expect(call.request).toMatchObject({ source: { worldIdentity: expect.any(Object) } });
+    }
+
+    loop.stop();
+  });
+
+  it('does not draw a World whose update did not reach terminal publication', () => {
+    const world = new World();
+    const systemToken2 = defineSystem({
+      name: 'fail-update',
+      queries: [],
+      fn: () => {
+        throw new Error('update failed');
+      },
+    });
+    world.addSystem(Update, systemToken2).unwrap();
+    const { renderer, calls } = makeSpyRenderer();
+    const onError = vi.fn();
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      onError,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    loop.start().unwrap();
+    pump(1);
+
+    expect(calls).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    loop.stop().unwrap();
+  });
+
+  it('does not mutate the public frame-loop contract: start/stop return Result.ok', () => {
+    const world = new World();
+    const { renderer } = makeSpyRenderer();
+    const { raf, caf, now } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    const started = loop.start();
+    expect(started.ok).toBe(true);
+    const stopped = loop.stop();
+    expect(stopped.ok).toBe(true);
+  });
+
+  it('forwards a draw Result.err through onError (single world path unchanged)', () => {
+    const world = new World();
+    const calls: DrawCall[] = [];
+    const rhiErr = { code: 'rhi-not-available' } as const;
+    const renderer = {
+      state: () => 'alive' as const,
+      backend: 'webgpu' as const,
+      attach: () => ({ ok: true as const, value: lease() }),
+      draw(request: unknown): { ok: false; error: typeof rhiErr } {
+        calls.push({ request });
+        return { ok: false, error: rhiErr };
+      },
+      onError(): () => void {
+        return () => {
+          // no-op
+        };
+      },
+      dispose(): void {
+        // no-op
+      },
+    } as unknown as Renderer;
+    const onError = vi.fn();
+    const { raf, caf, now, pump } = makeSyncScheduler();
+
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      onError,
+      platform: testPlatform({ now, raf, caf }),
+    });
+    loop.start();
+    // start() schedules the first tick via raf; pump once to run it.
+    pump(1);
+
+    expect(calls[0]?.request).toMatchObject({
+      source: expect.any(Object),
+    });
+    expect(onError).toHaveBeenCalledWith(rhiErr);
+
+    loop.stop();
+  });
+
+  it('keeps the rAF heartbeat and submits receipt-bound frames', () => {
+    const world = new World();
+    const calls: unknown[] = [];
+    const renderer = {
+      state: () => 'alive' as const,
+      backend: 'webgpu' as const,
+      attach: () => ({ ok: true as const, value: lease() }),
+      draw(): { ok: true; value: FrameReceipt } {
+        calls.push(undefined);
+        return { ok: true, value: completeReceipt(calls.length) };
+      },
+      onError(): () => void {
+        return () => {};
+      },
+      dispose(): void {},
+    } as unknown as Renderer;
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+    loop.start();
+    pump(1);
+    expect(calls).toHaveLength(1);
+    pump(3);
+    expect(calls).toHaveLength(4);
+    loop.stop();
+  });
+
+  it('steps one deterministic frame through the same update and draw authority while paused', () => {
+    const world = new World();
+    const update = vi.spyOn(world, 'update');
+    const { renderer, calls } = makeSpyRenderer();
+    const { raf, caf, now } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    expect(loop.start().ok).toBe(true);
+    expect(loop.pause().ok).toBe(true);
+    const stepped = loop.stepFrame(1 / 60);
+
+    expect(stepped.ok).toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(1 / 60);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.request).toMatchObject({ source: { worldIdentity: expect.any(Object) } });
+
+    expect(loop.resume().ok).toBe(true);
+    expect(loop.stop().ok).toBe(true);
+  });
+
+  it('steps update-only frames without drawing or receipt credit, then resets the next picture', () => {
+    const world = new World();
+    const update = vi.spyOn(world, 'update');
+    const beforeDraw = vi.fn();
+    const calls: DrawCall[] = [];
+    // Receipts never complete: once the in-flight credit is spent, only update-only steps run.
+    const renderer = {
+      ...makeSpyRenderer().renderer,
+      draw(request: unknown) {
+        calls.push({ request });
+        return {
+          ok: true,
+          value: { ...completeReceipt(calls.length), completed: new Promise(() => {}) },
+        };
+      },
+    } as unknown as Renderer;
+    const { raf, caf, now } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+      beforeDraw,
+    });
+    loop.start().unwrap();
+    loop.pause().unwrap();
+    while (loop.stepFrame(0.05).ok);
+    const drawn = calls.length;
+    const updated = update.mock.calls.length;
+    expect(loop.stepFrame(0.05)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'credit' } },
+    });
+    for (let step = 0; step < 3; step++) loop.stepFrame(0.05, false).unwrap();
+    expect(calls).toHaveLength(drawn);
+    expect(update.mock.calls.slice(updated)).toEqual([[0.05], [0.05], [0.05]]);
+    expect(beforeDraw).toHaveBeenCalledTimes(drawn + 3);
+    expect(loop.stepFrame(-1, false)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'delta' } },
+    });
+    loop.stop().unwrap();
+
+    // With credit available, the first drawn picture after skipped steps resets
+    // temporal history at the sample time those steps advanced.
+    const synced = makeSpyRenderer();
+    const next = createFrameLoop({
+      world: new World(),
+      renderer: synced.renderer,
+      platform: testPlatform(makeSyncScheduler()),
+    });
+    next.start().unwrap();
+    next.pause().unwrap();
+    next.stepFrame(0.05).unwrap();
+    next.stepFrame(0.05, false).unwrap();
+    next.stepFrame(0.05, false).unwrap();
+    next.stepFrame(0.05).unwrap();
+    expect(synced.calls).toHaveLength(2);
+    const [a, b] = synced.calls.map(
+      ({ request }) => request as { sampleTimeSeconds: number; temporalReset?: boolean },
+    );
+    expect(b?.temporalReset).toBe(true);
+    expect((b?.sampleTimeSeconds ?? 0) - (a?.sampleTimeSeconds ?? 0)).toBeCloseTo(0.15, 9);
+    next.stop().unwrap();
+  });
+
+  it('rejects deterministic stepping outside paused state and with an invalid delta', () => {
+    const world = new World();
+    const { renderer } = makeSpyRenderer();
+    const { raf, caf, now } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    const idle = loop.stepFrame(1 / 60);
+    expect(idle.ok).toBe(false);
+    if (!idle.ok) {
+      expect(idle.error.code).toBe('app-frame-step-invalid');
+      if ('detail' in idle.error) {
+        expect(idle.error.detail).toEqual({ state: 'idle', deltaSeconds: 1 / 60, reason: 'state' });
+      }
+    }
+
+    expect(loop.start().ok).toBe(true);
+    expect(loop.pause().ok).toBe(true);
+    const invalidDelta = loop.stepFrame(Number.NaN);
+    expect(invalidDelta.ok).toBe(false);
+    if (!invalidDelta.ok) {
+      expect(invalidDelta.error).toMatchObject({
+        code: 'app-frame-step-invalid',
+        detail: { reason: 'delta' },
+      });
+    }
+    expect(loop.resume().ok).toBe(true);
+    expect(loop.stop().ok).toBe(true);
+  });
+
+  it('terminates a paused loop and detaches its primary World exactly once', () => {
+    const world = new World();
+    const detached: World[] = [];
+    const renderer = {
+      state: () => 'alive' as const,
+      backend: 'webgpu' as const,
+      attach: (candidate: World) => ({
+        ok: true as const,
+        value: lease(() => detached.push(candidate)),
+      }),
+      draw: () => ({
+        ok: true as const,
+        value: completeReceipt(1),
+      }),
+      onError: () => () => {},
+      dispose: () => {},
+    } as unknown as Renderer;
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    loop.start().unwrap();
+    pump(1);
+    loop.pause().unwrap();
+    loop.stop().unwrap();
+
+    expect(loop.getState()).toBe('stopped');
+    expect(detached).toEqual([world]);
+  });
+
+  it('terminal setStopped releases attachments once across repeated cleanup', () => {
+    const world = new World();
+    const detached: World[] = [];
+    const renderer = {
+      state: () => 'alive' as const,
+      backend: 'webgpu' as const,
+      attach: (candidate: World) => ({
+        ok: true as const,
+        value: lease(() => detached.push(candidate)),
+      }),
+      draw: () => ({
+        ok: true as const,
+        value: completeReceipt(1),
+      }),
+      onError: () => () => {},
+      dispose: () => {},
+    } as unknown as Renderer;
+    const { raf, caf, now, pump } = makeSyncScheduler();
+    const loop = createFrameLoop({
+      world,
+      renderer,
+      platform: testPlatform({ now, raf, caf }),
+    });
+
+    loop.start().unwrap();
+    pump(1);
+    loop.setStopped();
+    loop.setStopped();
+
+    expect(loop.getState()).toBe('stopped');
+    expect(detached).toEqual([world]);
+  });
+});

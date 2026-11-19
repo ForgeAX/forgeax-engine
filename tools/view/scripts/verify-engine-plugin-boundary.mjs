@@ -22,10 +22,13 @@ import { savePreviewRhiEvidence } from './preview-rhi-evidence.mjs';
 const engine = dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
 const view = resolve(import.meta.dirname, '..');
 const evidence = resolve(process.env.FORGEAX_EVIDENCE_DIR ?? join(view, 'artifacts/plugin-boundary'));
+const workload = browserProofWorkload();
+const playCycles = Number(process.env.FORGEAX_PLAY_CYCLES ?? workload.playCycles);
+assert.ok(Number.isSafeInteger(playCycles) && playCycles >= 1, 'Play cycles must be a positive integer');
 const root = await mkdtemp(join(tmpdir(), 'view-plugin-boundary-'));
+const backendRoot = await mkdtemp(join(tmpdir(), 'view-plugin-backend-'));
 const viewCandidate = await mkdtemp(join(tmpdir(), 'view-plugin-candidate-'));
 const errors = [];
-const workload = browserProofWorkload();
 let browser;
 let browserServer;
 let page;
@@ -97,16 +100,17 @@ try {
   await sameRun();
   }
   if (!playOnly && process.env.FORGEAX_PROBE_LIBRARY_ONLY !== '1') {
-  const backend = await runUnifiedCli(['backend', 'start', '--host-pack', join(viewCandidate, 'host.pack.json'), '--root', root, '--json']);
+  const native = args => runUnifiedCli([...args, '--root', backendRoot, '--json']);
+  const backend = await native(['backend', 'start', '--host-pack', join(viewCandidate, 'host.pack.json')]);
   assert.equal(backend.ok, true, JSON.stringify(backend));
-  const help = await runUnifiedCli(['help', 'view', 'start', '--root', root, '--json']);
+  const help = await native(['help', 'view', 'start']);
   assert.equal(help.ok, true, JSON.stringify(help));
-  const status = await runUnifiedCli(['view', 'status', '--root', root, '--json']);
+  const status = await native(['view', 'status']);
   assert.equal(status.value.phase, 'stopped', JSON.stringify(status));
-  const started = await runUnifiedCli(['view', 'start', '--root', root, '--json']);
+  const started = await native(['view', 'start']);
   assert.equal(started.ok, true, JSON.stringify(started));
   assert.equal(started.value.phase, 'ready');
-  const resident = await runUnifiedCli(['view', 'status', '--root', root, '--json']);
+  const resident = await native(['view', 'status']);
   assert.equal(resident.value.phase, 'ready');
   assert.equal('connection' in resident.value, false);
   assert.equal(new URL(resident.value.url).search, '');
@@ -127,12 +131,12 @@ try {
     assert.equal((await observer.getState()).project ?? null, null);
     console.error('independent AI screenshot observed with no project or View browser');
   } finally { observer.close('empty observation complete'); }
-  const stopped = await runUnifiedCli(['view', 'stop', '--root', root, '--json']);
+  const stopped = await native(['view', 'stop']);
   assert.equal(stopped.ok, true, JSON.stringify(stopped));
-  const finalStatus = await runUnifiedCli(['view', 'status', '--root', root, '--json']);
+  const finalStatus = await native(['view', 'status']);
   assert.equal(finalStatus.value.phase, 'stopped');
-  assert.equal((await runUnifiedCli(['backend', 'status', '--root', root, '--json'])).value.phase, 'ready');
-  assert.equal((await runUnifiedCli(['backend', 'stop', '--root', root, '--json'])).ok, true);
+  assert.equal((await native(['backend', 'status'])).value.phase, 'ready');
+  assert.equal((await native(['backend', 'stop'])).ok, true);
   const exitDeadline = Date.now() + 5000;
   const backendAlive = () => {
     try { process.kill(backend.value.pid, 0); return true; }
@@ -323,12 +327,12 @@ try {
         error: { name: error.name, message: error.message, code: error.code, detail: error.detail } }, null, 2));
     },
   });
-  await verifyScenePlay({ page, live, root, sameRun, cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) });
+  await verifyScenePlay({ page, live, sameRun, cycles: playCycles });
   await verifyScenePlayFailure({ page, live, sameRun });
   await closeInlinePreviews();
   assert.deepEqual(errors, [], 'combined target use and disposal must not emit browser errors');
 
-  if (playOnly) console.log(JSON.stringify({ passed: true, boundary: 'scene-play', cycles: Number(process.env.FORGEAX_PLAY_CYCLES ?? 10) }));
+  if (playOnly) console.log(JSON.stringify({ passed: true, boundary: 'scene-play', cycles: playCycles }));
   else {
   const frameProgress = setInterval(() => { void page.evaluate(() => ({ frame: document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null, error: document.querySelector('#forgeax-fatal-details')?.textContent })).then(value => console.error('preview progress', JSON.stringify(value))).catch(() => {}); }, 10_000);
   frameProgress.unref();
@@ -589,8 +593,9 @@ try {
     assert.equal(detached.project.id, lossProject.id);
     assert.equal(detached.projectPhase, 'starting');
     assert.equal(live.workspaceCore.snapshot().workspaceTargetLost, false);
-    assert.equal(detached.projectTarget.targetId, live.target.targetId);
-    assert.equal(detached.projectTarget.sessionId, live.target.sessionId);
+    assert.equal(detached.projectTarget, null);
+    assert.equal(detached.projectStatus.target.targetId, live.target.targetId);
+    assert.equal(detached.projectStatus.target.sessionId, live.target.sessionId);
     assert.ok(await lossClient.request('engine.workspace.capabilities', {}));
     const retired = await lossClient.request('engine.workspace.call', {
       operation: 'engine.project.close', args: { projectId: lossProject.id },
@@ -643,6 +648,7 @@ try {
   await browserServer?.close().catch(() => {});
   await runUnifiedCli?.(['view', 'stop', '--root', root, '--json']);
   await runUnifiedCli?.(['backend', 'stop', '--root', root, '--json']);
+  await runUnifiedCli?.(['backend', 'stop', '--root', backendRoot, '--json']);
   await cp(join(root, 'owner.log'), '/tmp/view-plugin-owner.log').catch(() => {});
   if (previousStateFile === undefined) delete process.env.FORGEAX_VIEW_STATE_FILE;
   else process.env.FORGEAX_VIEW_STATE_FILE = previousStateFile;
@@ -651,4 +657,5 @@ try {
   if (previousPreviewRhiWindow === undefined) delete process.env.FORGEAX_PREVIEW_RHI_WINDOW;
   else process.env.FORGEAX_PREVIEW_RHI_WINDOW = previousPreviewRhiWindow;
   await rm(root, { recursive: true, force: true });
+  await rm(backendRoot, { recursive: true, force: true });
 }

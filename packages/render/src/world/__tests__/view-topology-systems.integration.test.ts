@@ -4,6 +4,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer } from '../../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
@@ -61,7 +62,7 @@ it('compiles the view graph only from the topology render-view-topology planned'
   renderer.onError((error) => errors.push(error));
   const draw = async () => {
     world.update().unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     if (drawn.value !== undefined) {
       const completed = await drawn.value.completed;
@@ -81,7 +82,12 @@ it('compiles the view graph only from the topology render-view-topology planned'
         ),
     );
     if (renderWorld === undefined) throw new Error('Missing topology Render World');
-    expect(renderWorld.removeSystem(RenderPrepare, RENDER_VIEW_TOPOLOGY_SYSTEM).ok).toBe(true);
+    expect(
+      renderWorld.removeSystem(
+        RenderPrepare,
+        registeredSystem(renderWorld, RenderPrepare, 'render-view-topology'),
+      ).ok,
+    ).toBe(true);
     // Recording has no other topology authority: the frame fails naming the system.
     await expect(draw()).rejects.toThrow('did not submit');
     expect(JSON.stringify(errors)).toContain(`${RENDER_VIEW_TOPOLOGY_SYSTEM} did not plan`);

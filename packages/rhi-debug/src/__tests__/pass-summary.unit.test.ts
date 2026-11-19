@@ -4,7 +4,7 @@ import { summarizeFrame } from '../frame-summary';
 import { passLine, summarizePasses, summarizeResources } from '../pass-summary';
 import type { Tape } from '../protocol/types';
 
-function makeTape(): Tape {
+function makeTape(texture: Record<string, unknown> = {}, view: Record<string, unknown> = {}): Tape {
   return {
     header: { formatVersion: 7, rhiCaps: {}, eventCount: 0, blobCount: 0 },
     bootstrap: [
@@ -14,7 +14,12 @@ function makeTape(): Tape {
         create: {
           kind: 'createTexture',
           handleId: 'tex:hdr',
-          desc: { label: 'scene-hdr', size: { width: 640, height: 360 }, format: 'rgba16float' },
+          desc: {
+            label: 'scene-hdr',
+            size: { width: 640, height: 360 },
+            format: 'rgba16float',
+            ...texture,
+          },
         },
         initialData: [],
       },
@@ -25,7 +30,7 @@ function makeTape(): Tape {
           kind: 'createTextureView',
           handleId: 'view:hdr',
           sourceHandleId: 'tex:hdr',
-          desc: {},
+          desc: view,
         },
         initialData: [],
       },
@@ -89,5 +94,31 @@ describe('pass summary', () => {
     const hits = summarizeResources(model, /scene-hdr/);
     expect(hits.length).toBeGreaterThan(0);
     expect(summarizeResources(model, /nothing-matches/)).toEqual([]);
+  });
+
+  it.each([
+    [{ width: 640, height: 360 }, 1, 320, 180],
+    [{ width: 639, height: 359 }, 3, 79, 44],
+    [[17, 9], 4, 1, 1],
+    [[17], 0, 17, 1],
+    [17, 1, 8, 1],
+  ])('reports the rendered mip extent for size %j at mip %i', (size, mip, width, height) => {
+    const model = buildFrameModel(
+      makeTape({ size, mipLevelCount: 5 }, { baseMipLevel: mip, mipLevelCount: 1 }),
+    );
+    expect(summarizePasses(model)[0]?.colorTargets[0]).toMatchObject({ width, height });
+    expect(
+      summarizeResources(model, /scene-hdr/).find((row) => row.kind === 'texture-view'),
+    ).toMatchObject({ width, height });
+  });
+
+  it('reports an attachment view format independently of its backing texture format', () => {
+    const model = buildFrameModel(
+      makeTape({ format: 'rgba8unorm' }, { format: 'rgba8unorm-srgb' }),
+    );
+    expect(summarizePasses(model)[0]?.colorTargets[0]?.format).toBe('rgba8unorm-srgb');
+    expect(
+      summarizeResources(model, /scene-hdr/).find((row) => row.kind === 'texture')?.format,
+    ).toBe('rgba8unorm');
   });
 });

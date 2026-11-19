@@ -7,19 +7,19 @@
 // Decision anchors:
 // - requirements section "inState factory" -- single factory, no and/or/not
 //   combiners (OOS-7); returns (world) => boolean
-// - research Finding 3 -- reuse stateResourceKey + hasResource + getResource<number>
+// - research Finding 3 -- reuse stateResource + hasResource + getResource
 // - plan-strategy D-8 -- runIf receives World, inState returns the predicate
 
 import type { World } from '@forgeax/engine-ecs';
 import type { StateToken } from './define-state';
-import { type StatePayload, stateResourceKey } from './resources';
+import { stateResource } from './resources';
 
 /**
  * Create a run-condition predicate that passes when the state machine
  * identified by `token` is in the given `variant`.
  *
  * The predicate reads the current state index from the World resource store
- * (keyed by {@link stateResourceKey}) and compares it against the variant's
+ * (keyed by {@link stateResource}) and compares it against the variant's
  * index in `token.nameToIdx`.
  *
  * If the state resource has not been inserted yet (state not activated), the
@@ -42,7 +42,7 @@ import { type StatePayload, stateResourceKey } from './resources';
  * @returns A predicate `(world: World) => boolean` suitable for `SystemDescriptor.runIf`.
  */
 export function inState(token: StateToken, variant: string): (world: World) => boolean {
-  const key = stateResourceKey(token);
+  const key = stateResource(token);
   const expectedIdx = token.nameToIdx.get(variant);
   // If the variant string is not in the token's vocabulary, the predicate
   // always returns false -- the system will never run. This is a programmer
@@ -54,7 +54,7 @@ export function inState(token: StateToken, variant: string): (world: World) => b
   }
   return (world: World) => {
     if (!world.hasResource(key)) return false;
-    const currentIdx = world.getResource<StatePayload>(key).current;
+    const currentIdx = world.getResource(key).current;
     return currentIdx === expectedIdx;
   };
 }

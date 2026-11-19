@@ -32,7 +32,7 @@ in additional catalog rows.
 
 | Capability | Executable example | Proof |
 |:--|:--|:--|
-| Three.js compatibility | `?f=geometry-scene-animation/three-compatibility`; `pnpm --filter @forgeax/engine-three example` for interactive controls | Lab: 60 completed ready frames and actual green/red material readback; owner Browser/Dawn fixtures compare the bounded r184 surface. |
+| Three.js compatibility | `?f=geometry-scene-animation/three-compatibility`; `pnpm --filter @forgeax/engine-three example` for interactive controls | Lab: 60 completed ready frames and actual green/red material readback; owner Browser/Dawn fixtures compare the bounded r187 surface. |
 | Scene hierarchy | `?f=geometry-scene-animation/scene-hierarchy` | Parent chain plus visible shear/mirrored scale and world-matrix checks. |
 | Perspective / orthographic camera | `?f=cameras-visibility/perspective-camera` or `orthographic-camera` | Existing projection toggle includes shared lens offsets; Three example exposes film/view controls. |
 | Voxel collision and editing | `?f=physics/voxel-collision` | Real Rapier raycasts, holes, mass, prepare/cancel/refuse/admit behavior. |
@@ -50,6 +50,15 @@ The SDK 0.4.19 capability additions use these examples and owner gates:
 
 ## Feature kinds
 
+The experimental Water R7 rows (`Advanced shallow water simulation`, `River
+water bake`, `World Ocean FFT patch`) route to
+[`apps/water/r7-advanced-shallow-bake-fft`](../water/r7-advanced-shallow-bake-fft/README.md)
+and `packages/water/src/__tests__/advanced-simulation.unit.test.ts`. Their
+producer-backed Pack, durable Bake reload and real GPU resource lifetime belong
+to that project rather than the Lab's empty asset catalog. `GATE_PROVED_ROWS`
+records this owner route; fresh hardware acceptance and paired UE runtime/pixel
+equivalence remain separate, pending evidence.
+
 | Kind | Where | Proof |
 |:--|:--|:--|
 | `visual` | `src/features/<area>/<slug>.ts` | `toggle(on)` switches the feature off and back on; the runner screenshots both states after 60 frames and fails when the mean pixel difference is below the threshold. Optional `checks()` add structured assertions. |
@@ -65,6 +74,7 @@ They remain part of the complete `pnpm test:browser` roster.
 
 | Catalog row | Owning gate | Evidence boundary |
 |:--|:--|:--|
+| Project startup presentation | `packages/devkit/src/__tests__/startup-ui.unit.test.ts`, `startup-entry.unit.test.ts`, `build/__tests__/wechat-startup-failure.test.ts` | Generated pre-module Host UI, black-screen input gating, custom state/actions and teardown; native device appearance remains a separate acceptance step. |
 | Gamepad feedback | `packages/input/src/__tests__/gamepad-feedback.browser.test.ts` | Actual DOM ownership and Worker POD transport; actuator double, physical compatibility unverified. |
 | Long audio windows | `packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts` | Native Web Audio output and real HTTP Range windows; original PCM, clock, cleanup and budget assertions. |
 | Acoustic regions | `packages/audio-webaudio/src/__tests__/acoustic-regions.browser.test.ts` | Real OfflineAudioContext PCM, bus/send ramps and accepted regional routing. |
@@ -77,6 +87,18 @@ Runtime asset editing has an independent visual page:
 `?f=import-loading/runtime-asset-editing`. Two quads share one mutable material;
 a third uses an independent copy. Its checks retain a fixed snapshot and verify
 that rejected writes preserve current content.
+
+Local water fluid simulation uses the producer-backed project at
+`apps/water/r6-legacy-rt-fluid` (`pnpm --filter @forgeax/water-r6-legacy-rt-fluid dev`,
+port 5386), registered in `GATE_PROVED_ROWS`. Its saved Scene has Ripple and
+Shallow basins with real water materials, independent WaveFoam controls, impulse,
+moving-grid, quality, multiview, resize and renderer recovery actions. Acceptance
+requires same-camera reset/inject/propagate browser frames, finite nonzero solver
+RT readback and captured pass/binding identities; CPU state alone is insufficient.
+The owning gates are Water's `fluid-simulation.unit.test.ts`, Runtime's
+`water-scene-plugin.integration.test.ts`, Render's `fluid-feature.unit.test.ts`
+and `fluid-normal.dawn.test.ts`, plus the maintained browser/Dawn and core-smoke
+routes. Engine GPU evidence does not establish UE runtime pixel matching.
 
 `src/node-features/cli-preview/pack-live-parameters-and-drafts.ts` runs real
 filesystem draft edit/undo/redo/Save/reopen and conflict refresh without executing

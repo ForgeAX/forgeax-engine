@@ -253,6 +253,31 @@ metric remains unchanged. Source code, validation and the complete variant fleet
 remain the same; generated bundles keep their source key, byte hashes and
 compiler fingerprint. See the [measured source compiler recovery](../../scripts/ci/README.md#failure-recovery).
 
+A WASM instance retains one imported Naga graph only when the public preprocessor
+reports no definition dependencies or module definitions in any imported source.
+Reuse retains the unchanged registration prefix; changed or removed modules
+and their dependent suffix register again with contiguous native span indices. Supplied definition maps are replaced
+before entry conflict admission; entry composition and validation remain fresh.
+Automatic bindings, conditional imports, aliased module headers and oversized
+closures use the ordinary fresh path. Failed requests are never retained. The retained source closure is at most
+2 MiB, and independent imported IR has only one selection per module.
+
+The checked WGSL writer transfers its already reparsed, fully validated consumer
+module to the next `parse`/`validate` call under exact source-byte equality. This
+one-shot handoff retains at most one source up to 2 MiB. A changed source consumes
+and discards the witness, then follows ordinary parsing and validation. Handles
+still own their module and validation data; rendering-entry and reflection checks
+remain independent. The compiler can supply its existing synchronous portability
+normalizer before the writer's reparse, validation and complete buffer-ABI comparison.
+A failing transform or ABI mismatch never publishes a witness.
+
+Imported-padding preflight classifies complete immutable module source strings
+once per WASM instance, bounded by 2 MiB and 256 entries. Modules without `@` or
+padding-name text need no tokenizer. This caches only a conservative candidate
+boolean; active definitions, imported layout admission, composition and final Naga
+validation still run for each shader. Eviction or oversized input repeats the
+original scan and never admits a shader.
+
 ## Per-frame command lifetime
 
 Command-encoder and render-pass labels are borrowed only while wgpu creates the

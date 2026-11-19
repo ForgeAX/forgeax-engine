@@ -1,5 +1,6 @@
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=5):
 //   - packages/physics-rapier3d/__tests__/collision-event.test.ts
@@ -13,7 +14,7 @@
 //
 // Note: merged from __tests__/ into src/__tests__/; import paths adjusted (../src/xxx → ../xxx).
 
-import { World } from '@forgeax/engine-ecs';
+import { Disabled, World } from '@forgeax/engine-ecs';
 import {
   CharacterController,
   Collider,
@@ -288,7 +289,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER as never);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
 
         // Ground: static cuboid, top at y=0.
         const ground = spawnPairedEntity(
@@ -415,7 +416,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
 
         spawnPairedEntity(
           world,
@@ -473,7 +474,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
 
         const dynamicEntity = spawnPairedEntity(
           world,
@@ -563,7 +564,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
 
         // Ball: dynamic body + sphere collider dropped from y=5.
         const ball = spawnPairedEntity(
@@ -639,7 +640,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         const obstacle = spawnPairedEntity(
           world,
           {
@@ -687,7 +688,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         const obstacle = spawnPairedEntity(
           world,
           { component: Transform as never, data: { scale: [1, 1, 1] } },
@@ -734,7 +735,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
         async function restHeight(halfExtents: readonly [number, number, number]): Promise<number> {
           const world = prepareWorld();
           const pw = createRapier3DPhysicsWorld(RAPIER as never);
-          world.insertResource('PhysicsWorld', pw);
+          world.insertResource(PhysicsWorldResource, pw);
           const ball = spawnPairedEntity(
             world,
             { component: Transform as never, data: { pos: [0, 8, 0] } },
@@ -797,7 +798,7 @@ function rapierBodyFor(pw: any, entity: number): any | undefined {
 
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
 
         // Parent: a kinematic body (NO CharacterController, so the kinematic
         // mirror -- not moveAndSlide -- drives it) placed far from the origin.
@@ -995,7 +996,7 @@ describe('incremental physics ECS reconciliation', () => {
     runPhysicsTicks(world);
 
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     runPhysicsTicks(world);
     expect(pw.hasBody(entity)).toBe(true);
     expect(pw.getBodyCount()).toBe(1);
@@ -1006,7 +1007,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     spawnBox(world);
     const unregister = registerPhysicsSystems(world);
     runPhysicsTicks(world);
@@ -1040,7 +1041,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world);
     registerPropagateTransforms(world);
     registerPhysicsSystems(world);
@@ -1079,7 +1080,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world);
     registerPropagateTransforms(world);
     registerPhysicsSystems(world);
@@ -1102,7 +1103,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const parent = spawnPairedEntity(world, {
       component: Transform as never,
       data: { pos: [1, 0, 0] },
@@ -1145,7 +1146,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const root = spawnBox(world, { bodyType });
     const parent = spawnPairedEntity(world, {
       component: Transform as never,
@@ -1185,7 +1186,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.dynamic });
     world.set(entity as never, RigidBody as never, { gravityScale: 0 }).unwrap();
     registerPropagateTransforms(world);
@@ -1202,12 +1203,70 @@ describe('incremental physics ECS reconciliation', () => {
     expect(rapierBodyFor(pw, entity)?.translation().x).toBeCloseTo(0, 5);
   });
 
+  it.each([
+    ['kinematic', RigidBodyTypeValue.kinematic],
+    ['dynamic', RigidBodyTypeValue.dynamic],
+  ] as const)('keeps an accepted source-owned pose when Transform and %s RigidBody edits arrive together', async (_label, requestedType) => {
+    const RAPIER = await loadOrSkip();
+    if (!RAPIER) return;
+    const world = prepareWorld();
+    const pw = createRapier3DPhysicsWorld(RAPIER);
+    const entity = spawnBox(world, { pos: [0, 0, 0], bodyType: RigidBodyTypeValue.static });
+    try {
+      pw._syncFromEcs(world, Transform, GlobalTransform);
+      const sceneMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+      const candidate = pw
+        .prepareDerivedShapeCandidate({
+          entity,
+          revision: 1,
+          sourceKey: `river:${entity}`,
+          bodyType: 'static',
+          sourceTransform: { sceneMatrix },
+          shapes: [
+            {
+              id: 'river-surface',
+              revision: 1,
+              kind: 'convex-compound',
+              pieces: [boxPoints([-1, 0, 0], [1, 1, 1])],
+            },
+          ],
+        })
+        .unwrap();
+      pw.admitDerivedShapeCandidate(candidate).unwrap();
+      pw.step(1 / 60);
+      pw.finalizeDerivedFixedStep();
+      const publication = pw.getDerivedPublication(entity);
+      const syncPose = vi.spyOn(pw, 'syncAuthoredPose');
+
+      world.set(entity as never, Transform as never, { pos: [12, 8, -4] }).unwrap();
+      world.set(entity as never, RigidBody as never, { type: requestedType }).unwrap();
+      pw._syncFromEcs(world, Transform, GlobalTransform);
+
+      expect(world.get(entity as never, RigidBody as never).unwrap().type).toBe(
+        RigidBodyTypeValue.static,
+      );
+      expect(rapierBodyFor(pw, entity)?.translation()).toMatchObject({ x: 0, y: 0, z: 0 });
+      expect(pw.getDerivedBodyType(entity)).toBe('static');
+      expect(pw.getDerivedPublication(entity)).toBe(publication);
+      expect(pw.getDerivedFailure(entity)).toMatchObject({
+        candidateId: publication?.candidateId,
+        revision: publication?.revision,
+        recovery: 'old-state-retained',
+        error: { code: 'derived-candidate-invalid' },
+      });
+      expect(syncPose).not.toHaveBeenCalled();
+      expect(pw.writebackDynamicBodies().some((pose) => pose.entity === entity)).toBe(false);
+    } finally {
+      pw.dispose();
+    }
+  });
+
   it('reconciles Collider and RigidBody add, remove, and change from the final ECS combination', async () => {
     const RAPIER = await loadOrSkip();
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world);
     registerPhysicsSystems(world);
     runPhysicsTicks(world);
@@ -1264,7 +1323,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.dynamic });
     world.removeComponent(entity as never, Collider as never).unwrap();
     world.set(entity as never, RigidBody as never, { gravityScale: 0 }).unwrap();
@@ -1327,7 +1386,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.kinematic });
     registerPropagateTransforms(world);
     registerPhysicsSystems(world);
@@ -1353,7 +1412,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.kinematic });
     world
       .addComponent(entity as never, {
@@ -1389,7 +1448,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.kinematic });
     world
       .addComponent(entity as never, {
@@ -1431,7 +1490,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world, { bodyType: RigidBodyTypeValue.kinematic });
     world
       .addComponent(entity as never, {
@@ -1465,7 +1524,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const previous = spawnBox(world, { pos: [1, 0, 0] });
     registerPhysicsSystems(world);
     runPhysicsTicks(world);
@@ -1489,7 +1548,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const entity = spawnBox(world);
     registerPropagateTransforms(world);
     registerPhysicsSystems(world);
@@ -1517,7 +1576,7 @@ describe('incremental physics ECS reconciliation', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier3DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorldResource, pw);
     const fixed = spawnBox(world);
     const dynamic = spawnBox(world, { bodyType: RigidBodyTypeValue.dynamic });
     registerPhysicsSystems(world);
@@ -1626,7 +1685,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) throw new Error('Real Rapier is required for this regression');
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
         const character = spawnCharacter(world, [0, 1, 0]);
         runPhysicsTicks(world, 1);
@@ -1677,7 +1736,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) throw new Error('Real Rapier is required for this regression');
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
         spawnStaticBox(world, { pos: [10, 1, 9.1], halfExtents: [1, 1, 0.1] });
         const character = spawnCharacter(world, [0, 1, 0]);
@@ -1695,7 +1754,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) throw new Error('Real Rapier is required for this regression');
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         const parent = world.spawn({ component: Transform, data: { pos: [5, 0, 0] } }).unwrap();
         const child = spawnPairedEntity(
           world,
@@ -1745,7 +1804,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) throw new Error('Real Rapier is required for this regression');
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
         const character = spawnCharacter(world, [0, 0, 0]);
@@ -1774,7 +1833,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // Ground under the character so it is grounded.
@@ -1796,7 +1855,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -1818,7 +1877,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -1848,7 +1907,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // Shared ground; two characters 10m apart so they never interact.
@@ -1880,7 +1939,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld(),
           pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [30, 0.5, 30] });
         const character = spawnCharacter(world, [0, 0, 0]);
@@ -1908,7 +1967,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [30, 0.5, 30] });
@@ -1964,7 +2023,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // 30deg ramp centered at x=2; the ramp surface at x≈0.8 is near y=0.
@@ -1991,7 +2050,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // 60deg ramp centered at x=1.5 — steeper than default maxSlopeClimbDeg=45.
@@ -2019,7 +2078,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // Ground box top at y=-0.35; the capsule (radius 0.3 + halfHeight 0.5)
@@ -2059,7 +2118,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [4, 0.5, 4] });
@@ -2082,7 +2141,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [4, 0.5, 4] });
@@ -2106,7 +2165,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // Downhill ramp toward +x (top near origin, descending).
@@ -2141,7 +2200,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         // A short platform: top at y=0 (center -0.5, halfExtent 0.5), spanning
@@ -2178,7 +2237,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -2201,7 +2260,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         const char = spawnCharacter(world, [0, 0, 0], {}, RigidBodyTypeValue.dynamic);
@@ -2229,7 +2288,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         const char = spawnCharacter(world, [0, 0, 0], {}, RigidBodyTypeValue.static);
@@ -2317,7 +2376,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         // The kinematic mirror drives the collider from GlobalTransform.world (so a
         // ChildOf collider follows its parent), which propagateTransforms
         // populates; register it (createApp always does, and physicsSyncBackend
@@ -2355,7 +2414,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -2392,7 +2451,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -2419,7 +2478,7 @@ describe('incremental physics ECS reconciliation', () => {
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -2447,7 +2506,7 @@ describe('incremental physics ECS reconciliation', () => {
         // self-collision eating the movement).
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
         const char = spawnCharacter(world, [0, 0, 0]);
@@ -2460,12 +2519,70 @@ describe('incremental physics ECS reconciliation', () => {
     });
 
     describe('hasBody readiness query', () => {
+      it('reports initial ECS synchronization as pending without claiming a native body', async () => {
+        const RAPIER = await loadOrNull();
+        expect(RAPIER).not.toBeNull();
+        if (!RAPIER) return;
+        const world = prepareWorld();
+        const pw = createRapier3DPhysicsWorld(RAPIER);
+        world.insertResource(PhysicsWorldResource, pw);
+        registerPhysicsSystems(world);
+
+        const body = spawnStaticBox(world, { pos: [0, 0, 0], halfExtents: [1, 1, 1] });
+        const disabledBody = spawnStaticBox(world, { pos: [2, 0, 0], halfExtents: [1, 1, 1] });
+        world.addComponent(disabledBody as never, { component: Disabled, data: {} }).unwrap();
+        expect(pw.hasBody(body)).toBe(false);
+        expect(pw.getCommittedBodyDynamics(body)).toMatchObject({
+          ok: false,
+          error: {
+            code: 'fixed-body-missing',
+            detail: { entity: body, recovery: 'await-native-sync' },
+          },
+        });
+        const disabledResult = pw.getCommittedBodyDynamics(disabledBody);
+        expect(disabledResult).toMatchObject({
+          ok: false,
+          error: { code: 'fixed-body-missing', detail: { entity: disabledBody } },
+        });
+        expect(
+          disabledResult.ok ? undefined : disabledResult.error.detail.recovery,
+        ).toBeUndefined();
+
+        const standalone = createRapier3DPhysicsWorld(RAPIER);
+        const standaloneResult = standalone.getCommittedBodyDynamics(body);
+        expect(standaloneResult).toMatchObject({
+          ok: false,
+          error: { code: 'fixed-body-missing', detail: { entity: body } },
+        });
+        expect(
+          standaloneResult.ok ? undefined : standaloneResult.error.detail.recovery,
+        ).toBeUndefined();
+        standalone.dispose();
+
+        world.update(1 / 60).unwrap();
+        world.update(1 / 60).unwrap();
+
+        expect(pw.hasBody(body)).toBe(true);
+        expect(pw.getCommittedBodyDynamics(body).ok).toBe(true);
+
+        world.despawn(body as never);
+        world.update(1 / 60).unwrap();
+        world.update(1 / 60).unwrap();
+        expect(pw.hasBody(body)).toBe(false);
+        const retiredResult = pw.getCommittedBodyDynamics(body);
+        expect(retiredResult).toMatchObject({
+          ok: false,
+          error: { code: 'fixed-body-missing', detail: { entity: body } },
+        });
+        expect(retiredResult.ok ? undefined : retiredResult.error.detail.recovery).toBeUndefined();
+      });
+
       it('returns false before the body is built, true after', async () => {
         const RAPIER = await loadOrNull();
         if (!RAPIER) return;
         const world = prepareWorld();
         const pw = createRapier3DPhysicsWorld(RAPIER);
-        world.insertResource('PhysicsWorld', pw);
+        world.insertResource(PhysicsWorldResource, pw);
         registerPhysicsSystems(world);
 
         spawnStaticBox(world, { pos: [0, -0.85, 0], halfExtents: [10, 0.5, 10] });
@@ -2509,7 +2626,7 @@ describe('incremental physics ECS reconciliation', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier3DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorldResource, pw);
       registerPhysicsSystems(world);
 
       // A "player" kinematic body + CollidingEntities, sitting at the origin.
@@ -2554,7 +2671,7 @@ describe('incremental physics ECS reconciliation', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier3DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorldResource, pw);
       registerPhysicsSystems(world);
 
       const subscriber = spawnPairedEntity(
@@ -2591,7 +2708,7 @@ describe('incremental physics ECS reconciliation', () => {
       if (!RAPIER) return;
       const world = prepareWorld();
       const pw = createRapier3DPhysicsWorld(RAPIER);
-      world.insertResource('PhysicsWorld', pw);
+      world.insertResource(PhysicsWorldResource, pw);
       registerPhysicsSystems(world);
 
       const player = spawnPairedEntity(

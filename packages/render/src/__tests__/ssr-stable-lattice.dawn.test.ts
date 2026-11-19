@@ -95,6 +95,10 @@ it.for([
     imports: {
       'forgeax_view::common': readFileSync(resolve('packages/shader/src/common.wgsl'), 'utf8'),
       'forgeax_pbr::gbuffer': gbufferSource,
+      forgeax_scene_temporal: readFileSync(
+        resolve('packages/shader/src/scene-temporal.wgsl'),
+        'utf8',
+      ),
     },
   });
   if (!compiled.ok) throw compiled.error;

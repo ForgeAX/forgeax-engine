@@ -1,6 +1,6 @@
 import type { Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
-import type { ShaderCatalog } from '@forgeax/engine-shader';
+import { isShaderTemplateManifestRow, type ShaderCatalog } from '@forgeax/engine-shader';
 import { atmosphereAvailable } from '../environment/capability';
 import type { SeedShaderModule } from './material-shader-policy';
 
@@ -35,6 +35,19 @@ export async function prewarmRequiredMaterialShaders({
   readonly seedShaderModule: SeedShaderModule;
 }): Promise<void> {
   for (const materialShaderId of requiredMaterialShaders) {
+    const declaration = registry.materialShaderManifestEntry(materialShaderId);
+    if (declaration !== undefined && isShaderTemplateManifestRow(declaration)) {
+      if (registry.materialArtifactDeclaration(materialShaderId) === undefined)
+        throw new RhiError({
+          code: 'shader-compile-failed',
+          expected: `declared render feature material shader '${materialShaderId}' is present in the loaded manifest`,
+          hint: `publish the native material declaration for '${materialShaderId}'`,
+        });
+      // Source families select and prepare the actual draw lane through the
+      // existing material readiness path. A feature declaration is not evidence
+      // that every optional particle/geometry family is used by this scene.
+      continue;
+    }
     const lookup = registry.findMaterialArtifact(materialShaderId);
     if (!lookup.ok) {
       throw new RhiError({
@@ -67,6 +80,7 @@ export async function prewarmRequiredMaterialShaders({
       (candidate) => candidate.identifier === materialShaderId,
     );
     if (manifestEntry === undefined) continue;
+    if (isShaderTemplateManifestRow(manifestEntry)) continue;
 
     for (const variant of manifestEntry.variants) {
       if (!isOrdinaryMaterialVariant(variant)) continue;

@@ -183,7 +183,7 @@ export async function verifyContactShadow(
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
       const frame = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease } },
+        { source: lease },
         last ? ['linear-hdr'] : undefined,
       );
       if (pending !== undefined && capture !== undefined) {

@@ -1,6 +1,5 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { SourceMap } from 'node:module';
-import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
@@ -8,16 +7,31 @@ import { Context, startPluginAsset } from '@forgeax/engine-plugin';
 import { ok } from '@forgeax/engine-types';
 import { build as viteBuild } from 'vite';
 import { describe, expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { discoverPluginAssets } from '../build/plugin-assets.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
 const namespace = '01900000-0000-7000-8000-000000008201';
 const guid = (key: string) => AssetGuid.format(AssetGuid.derive(definePackageId(namespace), key));
-
-async function createEmptyWorkerProject(): Promise<string> {
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-worker-bootstrap-'));
+async function createEmptyWorkerProject(): Promise<{ root: string; temporaryRoot: string }> {
   const repositoryRoot = resolve(import.meta.dirname, '../../../..');
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-worker-bootstrap-',
+    repositoryRoot,
+    manifestPath,
+  );
+  if (manifestPath)
+    await prepareLiveSyncSharedInputs({
+      sourceRoot: repositoryRoot,
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath,
+    });
   await mkdir(resolve(root, 'assets'));
   await mkdir(resolve(root, 'docs'));
   await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
@@ -77,12 +91,12 @@ export default {
 };\n`,
     ),
   ]);
-  return root;
+  return { root, temporaryRoot };
 }
 
 describe('generated Engine Worker bootstrap production bundle', () => {
   it('executes the production bootstrap and its dynamic plugin imports without DOM globals', async () => {
-    const root = await createEmptyWorkerProject();
+    const { root, temporaryRoot } = await createEmptyWorkerProject();
     const outDir = resolve(root, 'dist');
     try {
       const facts = await readProjectFacts(root);
@@ -200,7 +214,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
         await context.fiber.dispose();
       }
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(temporaryRoot, { recursive: true, force: true });
     }
   }, 600_000);
 
@@ -208,7 +222,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
     {},
     { engine: true, render: false, kernels: false },
   ])('derives the production page and Worker entries from policy %j', async (workers) => {
-    const root = await createEmptyWorkerProject();
+    const { root, temporaryRoot } = await createEmptyWorkerProject();
     const previousTier = process.env.FORGEAX_EXECUTION_WORKERS;
     process.env.FORGEAX_EXECUTION_WORKERS = JSON.stringify(workers);
     try {
@@ -231,7 +245,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
         'execution-bootstrap': resolve(generatedRoot, 'execution-bootstrap.ts'),
       });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(temporaryRoot, { recursive: true, force: true });
       if (previousTier === undefined) delete process.env.FORGEAX_EXECUTION_WORKERS;
       else process.env.FORGEAX_EXECUTION_WORKERS = previousTier;
     }

@@ -1,8 +1,10 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { installGpuDrivenEvidence } from '@forgeax/apps-shared/gpu-driven-evidence';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 // hello-skin -- Fox.glb + AnimationPlayer demo. Three clips (Survey / Walk /
 // Run) are sub-assets of the same gltf. Five keystroke paths exercise the
 // variable N-way SoA schema (clips/times/weights/speeds variable arrays +
@@ -358,12 +360,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       '<br /><span style="color:#8a90a8;">[1] Survey  [2] Walk  [3] Run  [4] Walk-&gt;Run blend  [5] 3-way  [Space] Pause</span>';
   };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'skin-clip-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       // Digit press-edges 1..3: hard-cut to the picked clip + reset phase.
@@ -413,6 +415,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = curSpace;
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Resolve clip handles by semantic name once -- the blend driver references
   // Walk / Run / Survey by role rather than CLIPS array index so re-ordering
@@ -426,12 +429,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const walkHandle = findClip('Walk');
   const runHandle = findClip('Run');
 
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'skin-blend-driver',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       // Press-edge 4: arm a Walk -> Run linear crossfade. Slot 0 = Walk,
@@ -504,6 +507,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+world.addSystem(Update, systemToken2);
 
   refreshHud();
 

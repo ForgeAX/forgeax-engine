@@ -13,7 +13,7 @@ export function setMalformedParentEdge(world, child, parent, childOf) {
   if (internal === undefined) {
     throw new Error('Malformed hierarchy fixture requires the ECS test injection seam.');
   }
-  const records = internal.getRecords();
+  const records = internal.records;
   const slot = child & 0x00ffffff;
   const record = {
     archetypeId: records.archetypeId[slot] ?? -1,
@@ -22,9 +22,9 @@ export function setMalformedParentEdge(world, child, parent, childOf) {
   if (record.archetypeId < 0) {
     throw new Error(`Malformed hierarchy fixture child ${child} is not live.`);
   }
-  const graph = internal.getGraph();
+  const graph = internal.graph;
   const archetype = graph.archetypes[record.archetypeId];
-  const table = archetype === undefined ? undefined : graph.tables[archetype.tableId];
+  const table = archetype?.table;
   const column = table?.storage.get(componentId(childOf))?.fields.get('parent');
   const tableRow = archetype?.rows[record.archetypeRow];
   if (column === undefined || tableRow === undefined) {

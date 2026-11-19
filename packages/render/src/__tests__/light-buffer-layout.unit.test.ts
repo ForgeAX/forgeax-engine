@@ -92,7 +92,7 @@ describe('direct light snapshot buffer layout', () => {
 describe('DirectLightSlot ABI', () => {
   it('locks the six-row 96-byte host contract and closed kind values', () => {
     const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
-    expect(layout.capacity).toBe(256);
+    expect(layout.capacity).toBe(1024);
     expect(layout.byteSize).toBe(96);
     expect(layout.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
     expect(layout.metadataByteOffset).toBe(64);
@@ -119,6 +119,17 @@ describe('DirectLightSlot ABI', () => {
     expect([...packedSpot.slice(4, 7)]).toEqual([10, 11, 12]);
     expect([...packedSpot.slice(8, 11)]).toEqual([0, -1, 0]);
     expect([...packedRect.slice(8, 16)]).toEqual([0, 1, 0, 3, 1, 0, 0, 0]);
+  });
+
+  it('stores Spot decay next to receiver channels without increasing the slot stride', () => {
+    const legacy = packDirectLightSlot(snapshot);
+    const authored = packDirectLightSlot({ ...snapshot, decay: 0, lightingChannels: 12 });
+    expect(new Uint32Array(legacy.buffer)[21]).toBe(0);
+    expect(new Uint32Array(packDirectLightSlot({ ...snapshot, decay: 2 }).buffer)[21]).toBe(0);
+    expect(new Uint32Array(authored.buffer)[21]).toBe(0x80000000);
+    expect(packDirectLightSlot({ ...snapshot, decay: 1.5 })[21]).toBe(1.5);
+    expect(new Uint32Array(authored.buffer)[20]).toBe(12);
+    expect(authored.byteLength).toBe(legacy.byteLength);
   });
 
   it('uses 0xffffffff for absent shadow and modifier identities', () => {

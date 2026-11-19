@@ -40,7 +40,7 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
         (frame, material) => frame.with(material),
         new MaterialFrame(undefined),
       ),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       ...terrainViewPreparation(fixture.assets),
     ).frame.renderables;
   };
@@ -86,8 +86,8 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     prepareDirectionalShadowCache(
       internals,
       state,
-      [world].map(worldRenderResources),
-      [lease],
+      worldRenderResources(world),
+      lease,
       lights,
       1024,
       { reads, epoch: changes.epoch, change: 'quiet' },

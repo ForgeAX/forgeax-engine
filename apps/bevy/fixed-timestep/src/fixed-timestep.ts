@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedTime, FixedUpdate, Time, Update, type World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { Transform } from '@forgeax/engine-scene';
@@ -21,7 +22,7 @@ export function buildFixedTimestepWorld(world: World): { getState: () => FixedTi
     overstep: 0,
   };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'frame-update',
     queries: [],
     fn: (_world) => {
@@ -29,8 +30,9 @@ export function buildFixedTimestepWorld(world: World): { getState: () => FixedTi
       state.lastFrameDelta = _world.getResource(Time).delta;
     },
   });
+world.addSystem(Update, systemToken1);
 
-  world.addSystem(FixedUpdate, {
+  const systemToken2 = defineSystem({
     name: 'fixed-update',
     queries: [],
     fn: (world) => {
@@ -38,6 +40,7 @@ export function buildFixedTimestepWorld(world: World): { getState: () => FixedTi
       state.overstep = world.getResource(FixedTime).overstep;
     },
   });
+world.addSystem(FixedUpdate, systemToken2);
 
   const eye = [-2, 2.5, 5];
   world.spawn(

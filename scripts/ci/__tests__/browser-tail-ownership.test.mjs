@@ -3,23 +3,81 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parse } from 'yaml';
 
-test('FXAA keeps its complete server and both pixel journeys off the full nightly shard-zero tail', () => {
+test('the existing fallback worker shares its server with complete Mesh and FXAA tails', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
-  const job = Object.values(workflow.jobs).find((job) =>
-    job.steps?.some(
-      (step) => step.name === 'Hello FXAA dark-gradient Browser WebGPU smoke (direct)',
-    ),
-  );
+  const job = workflow.jobs['webkit-fallback'];
   const names = [
-    'Start hello-fxaa dev server (owned background)',
+    'Mesh interchange Catalog and RHI replay browser gate',
+    'Preserve mesh interchange evidence',
     'Hello FXAA dark-gradient Browser WebGPU smoke (direct)',
     'Hello FXAA dark-gradient Browser WebGPU smoke (clustered)',
-    'Stop hello-fxaa dev server',
   ];
   for (const name of names) {
-    const steps = job.steps.filter((step) => step.name === name);
-    assert.equal(steps.length, 1);
-    assert.match(steps[0].if, /matrix\.shard == 2/);
+    const owners = Object.entries(workflow.jobs).filter(([_id, candidate]) =>
+      candidate.steps?.some((step) => step.name === name),
+    );
+    assert.deepEqual(
+      owners.map(([id]) => id),
+      ['webkit-fallback'],
+      name,
+    );
+    assert.doesNotMatch(job.steps.find((step) => step.name === name).if, /matrix/);
   }
-  assert.equal(job.strategy.matrix.shard.length, 4);
+  assert.equal(
+    job.steps.find((step) => step.name === 'Stop dev server').if,
+    "steps.ci-repair.outputs.reused != 'true' && (always())",
+  );
+  const aggregate = workflow.jobs['vitest-browser'];
+  assert.ok(aggregate.needs.includes('shared-inputs-browser'));
+  assert.match(aggregate.steps[0].run, /needs.shared-inputs-browser.result/);
+  assert.equal(workflow.jobs['vitest-browser-shard'].strategy.matrix.shard.length, 4);
+  assert.ok(aggregate.needs.includes('webkit-fallback'));
+  assert.match(aggregate.steps[0].run, /needs.webkit-fallback.result/);
+  assert.equal(
+    job.steps.filter((step) => step.name === 'Start hello-fxaa dev server (owned background)')
+      .length,
+    1,
+  );
+  assert.match(job.steps.find((step) => step.name === 'Stop dev server').run, /hello-fxaa.json/);
+  assert.equal(job.strategy, undefined);
+});
+
+test('the prepared View worker owns the complete Runtime Pack tail and Browser observes it', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const view = workflow.jobs['view-integration-shards'];
+  const name = 'Runtime Pack Worker dev/build JS/TS browser gate';
+  const owners = Object.entries(workflow.jobs).filter(([_id, job]) =>
+    job.steps?.some((step) => step.name === name),
+  );
+  assert.deepEqual(
+    owners.map(([id]) => id),
+    ['view-integration-shards'],
+  );
+  const runtime = view.steps.find((step) => step.name === name);
+  assert.equal(runtime.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == '0')");
+  assert.equal(runtime.env.FORGEAX_BROWSER_FIXED_SMOKE, '1');
+  assert.equal(runtime.env.FORGEAX_BROWSER_CI_VIEWPORT_WIDTH, '320');
+  assert.equal(runtime.env.FORGEAX_BROWSER_CI_VIEWPORT_HEIGHT, '180');
+  assert.equal(runtime.env.FORGEAX_BROWSER_CI_SETTLE_FRAMES, '2');
+  assert.equal(runtime.env.FORGEAX_DEV_PACK_READINESS, 'on-demand');
+  assert.equal(runtime.env.NODE_OPTIONS, '--max-old-space-size=4096');
+  const point = view.steps.findIndex(
+    (step) => step.name === 'Prepare matching DevKit browser shader profile',
+  );
+  assert.ok(
+    point >
+      view.steps.findIndex(
+        (step) =>
+          step.name === "Verify paired candidate (main ancestry remains primary-pnpm's gate)",
+      ),
+  );
+  assert.ok(point < view.steps.indexOf(runtime));
+  assert.match(
+    view.steps[point].run,
+    /--profile point-ssao --shared-input-manifest shared-app-inputs\/manifest.json/,
+  );
+  const aggregate = workflow.jobs['vitest-browser'];
+  assert.ok(aggregate.needs.includes('view-integration'));
+  assert.match(aggregate.steps[0].run, /needs.view-integration.result/);
+  assert.equal(view['timeout-minutes'], 30);
 });

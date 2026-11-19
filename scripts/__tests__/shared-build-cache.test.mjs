@@ -24,6 +24,8 @@ test('transferred shaders bind source, compiler, WASM, lockfile, profile and exa
     'packages/vfx-render/src/shaders/main.wgsl',
     'pnpm-lock.yaml',
     'scripts/build-shared-inputs.mjs',
+    'scripts/lib/shader-source-budget.mjs',
+    'scripts/lib/runner-resources.mjs',
     'scripts/ci/build-shared-app-inputs.mjs',
     'scripts/lib/shared-build-cache.mjs',
     'scripts/build-task-cache.mjs',
@@ -52,6 +54,16 @@ test('transferred shaders bind source, compiler, WASM, lockfile, profile and exa
     const profile = { pointShadows: true, hdrpSsao: true };
     const fingerprint = () => sharedShaderInputFingerprint(root, profile);
     const expected = fingerprint();
+    const offlineTest = 'packages/shader/src/material/__tests__/test-only.fixture.mjs';
+    write(offlineTest, 'not used by the engine shader producer');
+    assert.equal(fingerprint(), expected, 'a test fixture is outside the production source key');
+    write(offlineTest, 'changed test fixture');
+    assert.equal(fingerprint(), expected, 'editing a test fixture preserves the production key');
+    const shaderFixture = 'packages/shader/src/__tests__/fixture.wgsl';
+    write(shaderFixture, 'shader path remains part of the raw source inventory');
+    assert.notEqual(fingerprint(), expected);
+    rmSync(join(root, shaderFixture));
+    assert.equal(fingerprint(), expected);
     write('packages/render/dist/index.js', 'changed runtime render implementation');
     write('packages/vfx-render/dist/index.js', 'changed runtime VFX implementation');
     assert.equal(

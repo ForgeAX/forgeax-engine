@@ -10,7 +10,6 @@ import {
   createAutoExposureState,
 } from '../pipeline/standard-output/auto-exposure/state';
 import { renderTime, worldRenderResources } from '../publication/resource-scope';
-import { canonicalizeWorldComposition } from '../render-system-projections';
 
 function candidate(): AutoExposureCandidate {
   return { ev: 1.25, generation: 4, deviceEpoch: 2, frameId: 9 };
@@ -67,28 +66,12 @@ describe('auto exposure frame transaction', () => {
     expect(after.lastKnownGood).toBe(before.lastKnownGood);
   });
 
-  it('keeps camera-owned delta time after reversing a two-World composition', () => {
-    const first = new World();
-    const second = new World();
-    const worlds =
-      first.identity.localeCompare(second.identity) < 0 ? [second, first] : [first, second];
-    const cameraWorld = worlds[0];
-    const otherWorld = worlds[1];
-    if (cameraWorld === undefined || otherWorld === undefined) {
-      throw new Error('expected a two-World composition');
-    }
-    cameraWorld.update(1 / 30).unwrap();
-    otherWorld.update(1 / 120).unwrap();
-
-    const composition = canonicalizeWorldComposition(
-      worlds,
-      { cameraOwner: 0, resourceOwner: 0 },
-      undefined,
-    );
-    const resolvedCameraWorld = composition.worlds[composition.owners.cameraOwner];
-
-    expect(resolvedCameraWorld).toBe(cameraWorld);
-    if (resolvedCameraWorld === undefined) throw new Error('Camera owner is missing');
-    expect(renderTime(worldRenderResources(resolvedCameraWorld)).delta).toBeCloseTo(1 / 30);
+  it('reads delta time from the current source while independent Worlds advance separately', () => {
+    const source = new World();
+    const other = new World();
+    source.update(1 / 30).unwrap();
+    other.update(1 / 120).unwrap();
+    expect(renderTime(worldRenderResources(source)).delta).toBeCloseTo(1 / 30);
+    expect(renderTime(worldRenderResources(other)).delta).toBeCloseTo(1 / 120);
   });
 });

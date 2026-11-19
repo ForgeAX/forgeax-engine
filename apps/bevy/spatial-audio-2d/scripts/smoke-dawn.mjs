@@ -6,9 +6,9 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // Dawn has no AudioContext, so this gate checks the real createApp audio
 // resource, scene construction, renderer draws, and absence of RHI errors.
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -73,7 +73,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildSpatialAudio2dWorld } = await import('../src/spatial-audio-2d.ts');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const shaderManifestUrl = processShaderManifestUrl(manifestPath);
 
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl });
 if (!hostResult.ok) throw hostResult.error;

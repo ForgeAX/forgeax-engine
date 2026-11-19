@@ -50,24 +50,44 @@ function canonical(type: string): string {
   return shorthand ? `${shorthand[1]}<${SCALARS[shorthand[2] ?? 'f']}>` : type;
 }
 
-function createLayouter(sources: readonly string[]) {
-  const structs = new Map<string, string[]>();
-  const aliases = new Map<string, string>();
-  for (const source of sources) {
-    const text = stripNonCode(source);
+function createLayouter(source: string, modules: ReadonlyMap<string, string>) {
+  const declarations = new Map<
+    string,
+    { structs: Map<string, string[]>; aliases: Map<string, string>; imports: Map<string, string> }
+  >();
+  const parse = (owner: string) => {
+    const existing = declarations.get(owner);
+    if (existing !== undefined) return existing;
+    const structs = new Map<string, string[]>();
+    const aliases = new Map<string, string>();
+    const imports = new Map<string, string>();
+    const text = stripNonCode(owner);
     for (const match of text.matchAll(/\bstruct\s+(\w+)\s*\{([^}]*)\}/g)) {
-      const members = splitTopLevel(match[2] ?? '').map((member) => {
-        const type = member.replace(/@\w+(\([^)]*\))?/g, '').split(':')[1];
-        if (type === undefined) throw new Error(`unparsed member '${member}' in ${match[1]}`);
-        return type.trim();
-      });
-      structs.set(match[1] ?? '', members);
+      structs.set(
+        match[1] ?? '',
+        splitTopLevel(match[2] ?? '').map((member) => {
+          const type = member.replace(/@\w+(\([^)]*\))?/g, '').split(':')[1];
+          if (type === undefined) throw new Error(`unparsed member ${member} in ${match[1]}`);
+          return type.trim();
+        }),
+      );
     }
     for (const match of text.matchAll(/\balias\s+(\w+)\s*=\s*([^;]+);/g))
       aliases.set(match[1] ?? '', match[2]?.trim() ?? '');
-  }
-  const layout = (raw: string): Layout => {
-    const type = canonical(aliases.get(raw.trim()) ?? raw.trim());
+    for (const match of owner.matchAll(/^\s*#import\s+([\w:]+)::(?:\{([^}]+)\}|(\w+))/gm)) {
+      const module = match[1] ?? '';
+      for (const symbol of (match[2] ?? match[3] ?? '').split(',').map((value) => value.trim()))
+        imports.set(symbol, module);
+    }
+    const result = { structs, aliases, imports };
+    declarations.set(owner, result);
+    return result;
+  };
+  const layout = (raw: string, owner = source): Layout => {
+    const declared = parse(owner);
+    const type = canonical(raw.trim());
+    const alias = declared.aliases.get(type);
+    if (alias !== undefined) return layout(alias, owner);
     if (/^(f32|i32|u32|atomic<(u32|i32)>)$/.test(type)) return { size: 4, align: 4 };
     const vec = /^vec([234])<\w+>$/.exec(type);
     if (vec) {
@@ -76,23 +96,31 @@ function createLayouter(sources: readonly string[]) {
     }
     const mat = /^mat([234])x([234])<f32>$/.exec(type);
     if (mat) {
-      const column = layout(`vec${mat[2]}<f32>`);
+      const column = layout(`vec${mat[2]}<f32>`, owner);
       return { size: Number(mat[1]) * roundUp(column.align, column.size), align: column.align };
     }
     const array = /^array<(.+),\s*(\d+)u?>$/.exec(type);
     if (array) {
-      const element = layout(array[1] ?? '');
+      const element = layout(array[1] ?? '', owner);
       return {
         size: Number(array[2]) * roundUp(element.align, element.size),
         align: element.align,
       };
     }
-    const members = structs.get(type);
-    if (members === undefined) throw new Error(`unknown uniform member type '${type}'`);
+    const members = declared.structs.get(type);
+    if (members === undefined) {
+      const imported = declared.imports.get(type);
+      if (imported !== undefined) {
+        const module = modules.get(imported);
+        if (module === undefined) throw new Error(`unknown imported module ${imported}`);
+        return layout(type, module);
+      }
+      throw new Error(`unknown uniform member type ${type}`);
+    }
     let offset = 0;
     let align = 1;
     for (const member of members) {
-      const field = layout(member);
+      const field = layout(member, owner);
       offset = roundUp(field.align, offset) + field.size;
       align = Math.max(align, field.align);
     }
@@ -101,15 +129,74 @@ function createLayouter(sources: readonly string[]) {
   return layout;
 }
 
+function shaderCompositionSources(files: readonly string[], sources: readonly string[]): string[] {
+  const byFile = new Map(files.map((file, index) => [file, sources[index] ?? '']));
+  const composed = new Map<string, string>();
+  for (const sourceOwner of ['auto-exposure-source.ts', 'tsr-source.ts']) {
+    const owner = readFileSync(join(SRC, sourceOwner), 'utf8');
+    const imports = new Map<string, string>();
+    for (const match of owner.matchAll(/import\s+(\w+)\s+from\s+'([^']+)\?raw';/g)) {
+      const file = join(SRC, match[2] ?? '');
+      const source = byFile.get(file);
+      if (source === undefined) throw new Error(`missing composed shader ${file}`);
+      imports.set(match[1] ?? '', source);
+    }
+    for (const match of owner.matchAll(/export const \w+ = \x60([^\x60]+)\x60;/g)) {
+      const values = [...(match[1] ?? '').matchAll(/\$\{(\w+)\}/g)].map((part) => {
+        const name = part[1] ?? '';
+        const source = imports.get(name);
+        if (source !== undefined) return source;
+        if (name === 'sceneData') {
+          const temporal = imports.get('temporal');
+          if (temporal !== undefined) return temporal.replace(/^#define_import_path.*$/gm, '');
+        }
+        throw new Error(`unknown composed shader symbol ${name}`);
+      });
+      const complete = values.join('\n');
+      for (const value of values) composed.set(value, complete);
+    }
+  }
+  return sources.map((source) => composed.get(source) ?? source);
+}
+
 describe('built-in shaders on WebGL2', () => {
+  it('sizes duplicate type names in their defining module and follows explicit imports', () => {
+    const shared = '#define_import_path fixture::shared\nstruct Params { value: vec4<f32> }';
+    const unrelated =
+      '#define_import_path fixture::storage\nstruct Params { rows: array<vec4<u32>> }';
+    const modules = new Map([
+      ['fixture::shared', shared],
+      ['fixture::storage', unrelated],
+    ]);
+    const imported = createLayouter(
+      '#import fixture::shared::Params\nstruct Uniform { params: Params }',
+      modules,
+    );
+    expect(imported('Uniform').size).toBe(16);
+    const local = createLayouter('struct Params { value: vec4<f32> }', modules);
+    expect(local('Params').size).toBe(16);
+    expect(() => createLayouter(unrelated, modules)('Params')).toThrow(
+      'unknown uniform member type',
+    );
+    expect(createLayouter('struct Params { value: f32 }', modules)('Params').size).toBe(4);
+    expect(() => createLayouter('', modules)('Missing')).toThrow('unknown uniform member type');
+  });
   it('give every uniform binding a 16-byte-multiple span', () => {
     const files = wgslFiles(SRC);
     const sources = files.map((file) => readFileSync(file, 'utf8'));
-    const layout = createLayouter(sources);
+    const modules = new Map(
+      sources.flatMap((source) => {
+        const id = /^\s*#define_import_path\s+(\S+)/m.exec(source)?.[1];
+        return id === undefined ? [] : [[id, source] as const];
+      }),
+    );
     const bindings: string[] = [];
     const unaligned: string[] = [];
+    const compositionSources = shaderCompositionSources(files, sources);
     files.forEach((file, index) => {
-      const text = stripNonCode(sources[index] ?? '');
+      const source = sources[index] ?? '';
+      const layout = createLayouter(compositionSources[index] ?? source, modules);
+      const text = stripNonCode(source);
       for (const match of text.matchAll(/var<uniform>\s+(\w+)\s*:\s*([^;]+);/g)) {
         const name = `${relative(SRC, file)} ${match[1]}`;
         bindings.push(name);

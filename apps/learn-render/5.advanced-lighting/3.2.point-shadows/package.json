@@ -17,7 +17,9 @@
   "forgeax": {
     "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-3-2-point-shadows smoke",
     "rhiDebug": {
-      "riskFamilies": ["lighting-shadows"]
+      "riskFamilies": [
+        "lighting-shadows"
+      ]
     },
     "metrics": {
       "bundle-size": {
@@ -58,6 +60,7 @@
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",
+    "@forgeax/engine-dawn-node": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

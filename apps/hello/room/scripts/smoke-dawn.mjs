@@ -158,9 +158,7 @@ const ROOM_PACK_PATH = resolve(here, '..', 'assets', 'room.pack.json');
 const ROOM_SCENE_GUID = '019e2808-d3ba-735f-811f-ae7bbb465392';
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(
-  readFileSyncFs(MANIFEST_PATH, 'utf8'),
-)}`;
+const MANIFEST_URL = `data:application/octet-stream;base64,${readFileSyncFs(MANIFEST_PATH).toString('base64')}`;
 
 let renderer;
 let assets;
@@ -189,11 +187,7 @@ const worldContext = await createWorldContext(world, [
 ]);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 
 const sceneGuid = AssetGuid.parse(ROOM_SCENE_GUID);
 if (!sceneGuid.ok) {

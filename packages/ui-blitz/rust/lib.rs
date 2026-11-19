@@ -4,18 +4,20 @@ use anyrender::{ImageRenderer, PaintScene};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
 use blitz_dom::{DocumentConfig, Node, NodeData, NodeId, QualName, StyleThreading};
 use std::sync::Arc;
-mod gpu;
-mod resources;
 #[cfg(test)]
-mod image_tests;
-#[cfg(test)]
-mod scroll_tests;
+mod control_tests;
 #[cfg(test)]
 mod focus_tests;
 #[cfg(test)]
 mod form_tests;
+mod gpu;
 #[cfg(test)]
-mod control_tests;
+mod image_tests;
+mod resources;
+#[cfg(test)]
+mod scroll_tests;
+#[cfg(test)]
+mod text_tests;
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
@@ -485,7 +487,8 @@ impl UiDocument {
     pub fn show_validation_message(&mut self, id: u64, message: &str) -> Result<(), String> {
         self.element(id)?;
         self.resolve();
-        self.document.show_validation_message(NodeId::from_u64(id), message);
+        self.document
+            .show_validation_message(NodeId::from_u64(id), message);
         self.dirty = true;
         Ok(())
     }
@@ -496,7 +499,9 @@ impl UiDocument {
     }
     pub fn sequential_focus_target(&mut self, reverse: bool) -> u64 {
         self.resolve();
-        self.document.sequential_focus_target(reverse).map_or(0, |id| id.as_u64())
+        self.document
+            .sequential_focus_target(reverse)
+            .map_or(0, |id| id.as_u64())
     }
     pub fn focus(&mut self, id: u64, by_pointer: bool) -> Result<(), String> {
         if id == 0 {
@@ -518,11 +523,17 @@ impl UiDocument {
         self.resolve();
         let node_id = NodeId::from_u64(id);
         if self.document.get_focussed_node_id() != Some(node_id)
-            || self.element(id)?.element_data().unwrap().text_input_data().is_none()
+            || self
+                .element(id)?
+                .element_data()
+                .unwrap()
+                .text_input_data()
+                .is_none()
         {
             return Ok(false);
         }
-        self.document.with_text_input(node_id, |mut driver| driver.select_all());
+        self.document
+            .with_text_input(node_id, |mut driver| driver.select_all());
         self.dirty = true;
         Ok(true)
     }
@@ -761,7 +772,10 @@ impl UiDocument {
     }
     pub fn form_owner(&self, id: u64) -> Result<u64, String> {
         self.element(id)?;
-        Ok(self.document.form_owner(NodeId::from_u64(id)).map_or(0, NodeId::as_u64))
+        Ok(self
+            .document
+            .form_owner(NodeId::from_u64(id))
+            .map_or(0, NodeId::as_u64))
     }
     pub fn reset_form(&mut self, id: u64) -> Result<(), String> {
         self.element(id)?;
@@ -829,18 +843,38 @@ impl UiDocument {
     pub fn number_stepper_hit(&mut self, id: u64, x: f64, y: f64) -> Result<i32, String> {
         self.element(id)?;
         self.resolve();
-        let Some(hit) = self.document.hit(x as f32, y as f32) else { return Ok(0); };
-        if hit.node_id != NodeId::from_u64(id) { return Ok(0); }
-        let Some(rect) = self.node(id)?.number_stepper_rect() else { return Ok(0); };
+        let Some(hit) = self.document.hit(x as f32, y as f32) else {
+            return Ok(0);
+        };
+        if hit.node_id != NodeId::from_u64(id) {
+            return Ok(0);
+        }
+        let Some(rect) = self.node(id)?.number_stepper_rect() else {
+            return Ok(0);
+        };
         let point = vello_common::kurbo::Point::new(f64::from(hit.x), f64::from(hit.y));
-        Ok(if !rect.contains(point) { 0 } else if point.y < rect.center().y { 1 } else { -1 })
+        Ok(if !rect.contains(point) {
+            0
+        } else if point.y < rect.center().y {
+            1
+        } else {
+            -1
+        })
     }
     /// User number stepping accepts step=any as a unit increment, as native browsers do.
     pub fn number_step(&mut self, id: u64, count: i32) -> Result<(), String> {
         self.resolve();
         let node = self.element(id)?;
-        if !self.document.can_focus(NodeId::from_u64(id)) || node.attr(blitz_dom::local_name!("readonly")).is_some() { return Ok(()); }
-        let mut constraints = node.element_data().unwrap().numeric_constraints().ok_or("InvalidStateError: expected a numeric input")?;
+        if !self.document.can_focus(NodeId::from_u64(id))
+            || node.attr(blitz_dom::local_name!("readonly")).is_some()
+        {
+            return Ok(());
+        }
+        let mut constraints = node
+            .element_data()
+            .unwrap()
+            .numeric_constraints()
+            .ok_or("InvalidStateError: expected a numeric input")?;
         if let Some(value) = constraints.stepped_by_user(&self.input_value(id)?, count) {
             self.set_input_value(id, &value.to_string())?;
         }
@@ -856,7 +890,9 @@ impl UiDocument {
             self.set_input_value(id, &(value + step * f64::from(count)).to_string())
         } else if let Some(value) = constraints.stepped(&self.input_value(id)?, count) {
             self.set_input_value(id, &value.to_string())
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     }
     pub fn input_text(&self, id: u64) -> Result<String, String> {
         self.element(id)?;
@@ -1026,7 +1062,9 @@ mod tests {
 
     #[test]
     fn input_inline_client_metrics_exclude_padding_without_resizing_controls() {
-        let mut doc = doc("<style>input,textarea,div{box-sizing:content-box;width:76px;height:20px;padding:5px;border:1px solid}div{overflow:auto}</style><input type=number value=2.4><textarea></textarea><div></div>");
+        let mut doc = doc(
+            "<style>input,textarea,div{box-sizing:content-box;width:76px;height:20px;padding:5px;border:1px solid}div{overflow:auto}</style><input type=number value=2.4><textarea></textarea><div></div>",
+        );
         let input = find(&doc, "input");
         let metrics = doc.scroll_metrics(input).unwrap();
         assert_eq!(metrics[4], 76.0);
@@ -1051,14 +1089,26 @@ mod tests {
             include_bytes!("../../../third_party/blitz/packages/blitz-dom/tests/fonts/dejavu-sans-ascii.ttf").to_vec(),
         ).unwrap();
         let input = find(&doc, "input");
-        doc.set_input_value(input, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").unwrap();
+        doc.set_input_value(input, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+            .unwrap();
         let before = doc.scroll_metrics(input).unwrap();
         assert!(before[2] > before[4] + 80.0);
         doc.scroll_to(input, 10000.0, 10000.0).unwrap();
         let end = doc.scroll_metrics(input).unwrap();
         assert!((end[0] - (end[2] - end[4])).abs() < 0.01);
         assert_eq!(end[1], 0.0);
-        assert_eq!(f64::from(doc.node(input).unwrap().element_data().unwrap().text_input_data().unwrap().scroll_offset), end[0]);
+        assert_eq!(
+            f64::from(
+                doc.node(input)
+                    .unwrap()
+                    .element_data()
+                    .unwrap()
+                    .text_input_data()
+                    .unwrap()
+                    .scroll_offset
+            ),
+            end[0]
+        );
         assert_eq!(doc.node(input).unwrap().scroll_offset().x, 0.0);
         doc.set_input_value(input, "short").unwrap();
         assert_eq!(doc.scroll_metrics(input).unwrap()[0], 0.0);
@@ -1241,7 +1291,8 @@ mod tests {
         );
         doc.set_attribute(field, "type", None).unwrap();
         assert_eq!(doc.input_value(field).unwrap(), "0.8");
-        doc.set_attribute(field, "value", Some("0.9".into())).unwrap();
+        doc.set_attribute(field, "value", Some("0.9".into()))
+            .unwrap();
         assert_eq!(doc.input_value(field).unwrap(), "0.9");
         doc.paint().unwrap();
     }
@@ -1313,37 +1364,53 @@ mod tests {
     #[test]
     fn select_cached_text_and_popup_follow_device_scale_transitions() {
         let html = "<style>body{margin:0;background:#123}select{position:absolute;left:12px;top:12px;font:13px sans-serif;width:140px}</style><select><option>One</option><option disabled>Unavailable</option><option>Three</option></select>";
-        let create = |scale: u32| UiDocument::new(
+        let create = |scale: u32| {
+            UiDocument::new(
             html, 200 * scale, 160 * scale, scale as f32,
             include_bytes!("../../../third_party/blitz/packages/blitz-dom/tests/fonts/dejavu-sans-ascii.ttf").to_vec(),
-        ).unwrap();
+        ).unwrap()
+        };
         let mut resized = create(1);
         let select = find(&resized, "select");
         resized.paint().unwrap();
         for scale in [2, 3, 1] {
-            resized.set_viewport(200 * scale, 160 * scale, scale as f32).unwrap();
+            resized
+                .set_viewport(200 * scale, 160 * scale, scale as f32)
+                .unwrap();
             let mut fresh = create(scale);
             let fresh_select = find(&fresh, "select");
-            assert_eq!(resized.rect(select).unwrap(), fresh.rect(fresh_select).unwrap());
-            assert!(resized.paint().unwrap() == fresh.paint().unwrap(),
-                "select glyph pixels after a DPR{scale} transition must equal a fresh document");
+            assert_eq!(
+                resized.rect(select).unwrap(),
+                fresh.rect(fresh_select).unwrap()
+            );
+            assert!(
+                resized.paint().unwrap() == fresh.paint().unwrap(),
+                "select glyph pixels after a DPR{scale} transition must equal a fresh document"
+            );
             resized.select_key(select, " ").unwrap();
             fresh.select_key(fresh_select, " ").unwrap();
             resized.select_key(select, "ArrowDown").unwrap();
             fresh.select_key(fresh_select, "ArrowDown").unwrap();
             let preview = resized.paint().unwrap();
-            assert!(preview == fresh.paint().unwrap(),
-                "open select popup must use the current DPR{scale} text layouts");
+            assert!(
+                preview == fresh.paint().unwrap(),
+                "open select popup must use the current DPR{scale} text layouts"
+            );
             assert_eq!(resized.input_value(select).unwrap(), "One");
             fresh.select_key(fresh_select, "Enter").unwrap();
             let committed = fresh.paint().unwrap();
             let rect = fresh.rect(fresh_select).unwrap();
             // Compare the field interior; the popup has its own adjoining border.
-            for y in ((rect[1] + 1.0) * f64::from(scale)) as usize..((rect[1] + rect[3] - 1.0) * f64::from(scale)) as usize {
-                let start = (y * 200 * scale as usize + ((rect[0] + 1.0) * f64::from(scale)) as usize) * 4;
+            for y in ((rect[1] + 1.0) * f64::from(scale)) as usize
+                ..((rect[1] + rect[3] - 1.0) * f64::from(scale)) as usize
+            {
+                let start =
+                    (y * 200 * scale as usize + ((rect[0] + 1.0) * f64::from(scale)) as usize) * 4;
                 let end = start + ((rect[2] - 2.0) * f64::from(scale)) as usize * 4;
-                assert!(preview[start..end] == committed[start..end],
-                    "the open control previews the highlighted label before its value commits (DPR{scale}, row {y})");
+                assert!(
+                    preview[start..end] == committed[start..end],
+                    "the open control previews the highlighted label before its value commits (DPR{scale}, row {y})"
+                );
             }
             resized.select_key(select, "Escape").unwrap();
             assert_eq!(resized.input_value(select).unwrap(), "Three");
@@ -1793,24 +1860,43 @@ mod tests {
         let idle = doc.paint().unwrap();
         doc.set_hover(input).unwrap();
         let hover = doc.paint().unwrap();
-        assert!(hover == idle, "native number buttons are already visible before hover");
+        assert!(
+            hover == idle,
+            "native number buttons are already visible before hover"
+        );
         doc.focus(input, false).unwrap();
         let focused = doc.paint().unwrap();
         for y in 28..44 {
             let pixel = &focused[(y * 240 + 19) * 4..(y * 240 + 19) * 4 + 4];
-            assert_eq!(pixel, &[255, 255, 255, 255], "the auto ring closes its outer left edge at {y}");
+            assert_eq!(
+                pixel,
+                &[255, 255, 255, 255],
+                "the auto ring closes its outer left edge at {y}"
+            );
             for x in [20, 21] {
                 let inner = &focused[(y * 240 + x) * 4..(y * 240 + x) * 4 + 4];
-                assert_eq!(inner, &[16, 16, 16, 255], "the inner ring overlays the authored border");
+                assert_eq!(
+                    inner,
+                    &[16, 16, 16, 255],
+                    "the inner ring overlays the authored border"
+                );
             }
             let interior = &focused[(y * 240 + 22) * 4..(y * 240 + 22) * 4 + 4];
-            assert_eq!(interior, &[24, 45, 62, 255], "the auto ring leaves no inner white rim");
+            assert_eq!(
+                interior,
+                &[24, 45, 62, 255],
+                "the auto ring leaves no inner white rim"
+            );
         }
         let rect = doc.node(input).unwrap().number_stepper_rect().unwrap();
         let x = 20.0 + rect.center().x;
         let y = 20.0 + rect.y0 + rect.height() / 4.0;
         assert_eq!(doc.number_stepper_hit(input, x, y).unwrap(), 1);
-        assert_eq!(doc.number_stepper_hit(input, x, y + rect.height() / 2.0).unwrap(), -1);
+        assert_eq!(
+            doc.number_stepper_hit(input, x, y + rect.height() / 2.0)
+                .unwrap(),
+            -1
+        );
         assert_eq!(doc.number_stepper_hit(input, 24.0, y).unwrap(), 0);
         doc.number_step(input, 1).unwrap();
         assert_eq!(doc.input_value(input).unwrap(), "0.7");
@@ -1822,13 +1908,15 @@ mod tests {
         doc.set_input_value(input, "0.42").unwrap();
         doc.input_step(input, -1).unwrap();
         assert_eq!(doc.input_value(input).unwrap(), "0.4");
-        doc.set_attribute(input, "step", Some("any".into())).unwrap();
+        doc.set_attribute(input, "step", Some("any".into()))
+            .unwrap();
         assert!(doc.input_step(input, 1).is_err());
         doc.set_input_value(input, "0.43").unwrap();
         doc.number_step(input, 1).unwrap();
         assert_eq!(doc.input_value(input).unwrap(), "1.43");
         for attribute in ["readonly", "disabled"] {
-            doc.set_attribute(input, attribute, Some(String::new())).unwrap();
+            doc.set_attribute(input, attribute, Some(String::new()))
+                .unwrap();
             assert_eq!(doc.number_stepper_hit(input, x, y).unwrap(), 0);
             doc.number_step(input, -1).unwrap();
             assert_eq!(doc.input_value(input).unwrap(), "1.43");
@@ -1845,7 +1933,8 @@ mod tests {
         ).unwrap();
         let input = find(&doc, "input");
         doc.focus(input, false).unwrap();
-        doc.show_validation_message(input, "Please fill out this field.").unwrap();
+        doc.show_validation_message(input, "Please fill out this field.")
+            .unwrap();
         let popup = doc.document.validation_message_popup().unwrap();
         assert!(popup.above);
         assert!(popup.rect[0] + popup.rect[2] <= 396.0);
@@ -1856,7 +1945,8 @@ mod tests {
         let popup = doc.document.validation_message_popup().unwrap();
         assert!(!popup.above);
         assert!((popup.rect[1] - 64.0).abs() < 0.1);
-        doc.set_attribute(input, "disabled", Some(String::new())).unwrap();
+        doc.set_attribute(input, "disabled", Some(String::new()))
+            .unwrap();
         doc.paint().unwrap();
         assert!(doc.document.validation_message_popup().is_none());
     }
@@ -1871,7 +1961,8 @@ mod tests {
         let input = find(&doc, "input");
         doc.focus(input, false).unwrap();
         let before = doc.paint().unwrap();
-        doc.show_validation_message(input, "Please enter a valid number.").unwrap();
+        doc.show_validation_message(input, "Please enter a valid number.")
+            .unwrap();
         let painted = doc.paint().unwrap();
         assert_ne!(painted, before);
         let popup = doc.document.validation_message_popup().unwrap();
@@ -1879,11 +1970,13 @@ mod tests {
         assert!(popup.rect[0] >= 0.0 && popup.rect[0] + popup.rect[2] <= 320.0);
         doc.set_input_text(input, "0.8").unwrap();
         assert!(doc.document.validation_message_popup().is_none());
-        doc.show_validation_message(input, "Please enter a valid number.").unwrap();
+        doc.show_validation_message(input, "Please enter a valid number.")
+            .unwrap();
         doc.focus(find(&doc, "button"), false).unwrap();
         assert!(doc.document.validation_message_popup().is_none());
         doc.focus(input, false).unwrap();
-        doc.show_validation_message(input, "Please enter a valid number.").unwrap();
+        doc.show_validation_message(input, "Please enter a valid number.")
+            .unwrap();
         doc.remove(input).unwrap();
         doc.paint().unwrap();
         assert!(doc.document.validation_message_popup().is_none());
@@ -1912,7 +2005,9 @@ mod tests {
 
     #[test]
     fn scrolling_moves_descendant_client_rects_but_not_the_scrollport() {
-        let mut doc = doc("<style>body{margin:0}section{margin:10px;width:60px;height:40px;overflow:auto}div{width:140px;height:160px}</style><section><div></div></section>");
+        let mut doc = doc(
+            "<style>body{margin:0}section{margin:10px;width:60px;height:40px;overflow:auto}div{width:140px;height:160px}</style><section><div></div></section>",
+        );
         let host = find(&doc, "section");
         let content = find(&doc, "div");
         let host_before = doc.rect(host).unwrap();
@@ -1926,7 +2021,9 @@ mod tests {
 
     #[test]
     fn layout_shrink_clamps_existing_scroll_offsets_before_geometry_reads() {
-        let mut doc = doc("<style>html,body{margin:0}section{height:50vh;width:60px;overflow:auto}div{height:160px;width:140px}</style><section><div></div></section>");
+        let mut doc = doc(
+            "<style>html,body{margin:0}section{height:50vh;width:60px;overflow:auto}div{height:160px;width:140px}</style><section><div></div></section>",
+        );
         let host = find(&doc, "section");
         let content = find(&doc, "div");
         doc.scroll_to(host, 1000.0, 1000.0).unwrap();
@@ -2116,8 +2213,15 @@ mod tests {
         let input = find(&doc, "input");
         let button = find(&doc, "button");
         let selection = |doc: &UiDocument| {
-            doc.element(input).unwrap().element_data().unwrap()
-                .text_input_data().unwrap().editor.selected_text().map(str::to_owned)
+            doc.element(input)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .text_input_data()
+                .unwrap()
+                .editor
+                .selected_text()
+                .map(str::to_owned)
         };
         assert!(!doc.select_input_text(input).unwrap());
         doc.focus(input, false).unwrap();
@@ -2126,8 +2230,11 @@ mod tests {
         assert_eq!(selection(&doc).as_deref(), Some("0.65"));
         doc.set_input_value(input, "0.65").unwrap();
         assert_eq!(selection(&doc).as_deref(), Some("0.65"));
-        let selected_pixels = |rgba: &[u8]| rgba.chunks_exact(4)
-            .filter(|pixel| **pixel == [25, 103, 210, 255]).count();
+        let selected_pixels = |rgba: &[u8]| {
+            rgba.chunks_exact(4)
+                .filter(|pixel| **pixel == [25, 103, 210, 255])
+                .count()
+        };
         assert!(selected_pixels(&doc.paint().unwrap()) > 10);
         doc.set_input_text(input, "0.8").unwrap();
         assert_eq!(selection(&doc), None);
@@ -2149,7 +2256,8 @@ mod tests {
         assert_eq!(doc.focused(), current);
         assert!(doc.matches(current, ":focus-visible").unwrap());
         assert!(!doc.matches(next, ":focus").unwrap());
-        doc.set_attribute(next, "disabled", Some(String::new())).unwrap();
+        doc.set_attribute(next, "disabled", Some(String::new()))
+            .unwrap();
         assert!(!doc.can_focus(next).unwrap());
         assert_eq!(doc.focused(), current);
         doc.set_attribute(next, "disabled", None).unwrap();
@@ -2191,7 +2299,8 @@ mod tests {
             let pixels = doc.paint().unwrap();
             let pixel = &pixels[4 * 3019..4 * 3019 + 4];
             assert_eq!(
-                pixel[3] > 0, true,
+                pixel[3] > 0,
+                true,
                 "{selector} outline must paint outside its box"
             );
             assert_ne!(pixels, unfocused, "{selector} focus paints a visible ring");

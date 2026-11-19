@@ -3,14 +3,19 @@ import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
-import { assert, beforeAll, expect, it } from 'vitest';
+import { assert, beforeAll, expect, it, vi } from 'vitest';
 import {
   cookStaticShadow,
   OPAQUE_SWITCHES,
 } from '../../../../shader-compiler/src/material/__tests__/standard-static-shadow.fixture';
 import { updateShadowView } from '../../__tests__/helpers/gpu-input-read-domain';
-import { shadowSourceFixture } from '../../__tests__/shadow-source-content.fixture';
+import {
+  shadowSourceFixture,
+  shadowSourceSnapshot,
+} from '../../__tests__/shadow-source-content.fixture';
 import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
+import type { GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
+import type { BatchExecutions } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
 import {
   installPublicationPrograms,
@@ -18,11 +23,12 @@ import {
 } from '../../publication/programs';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareDirectionalShadowCache } from '../../record/directional-shadow-cache';
+import { collectGpuShadowMaterials } from '../../record/frame-gpu-driven';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
 import type { ViewLights } from '../../world/render-lights';
-import { MaterialFrame } from '../material-dispatch';
+import { MaterialDispatch, MaterialFrame } from '../material-dispatch';
 import {
   ShadowMaterialContent,
   sameShadowMaterial,
@@ -30,6 +36,7 @@ import {
 } from '../material-shadow-content';
 import { MeshFrame } from '../mesh-frame';
 import { type PersistentShadowCasterProjection, RenderScene } from '../render-scene';
+import { SceneSlots } from '../scene-slots';
 
 let opaque: MaterialSnapshot, alpha: MaterialSnapshot, displaced: MaterialSnapshot;
 function snapshot(cooked: Awaited<ReturnType<typeof cookStaticShadow>>): MaterialSnapshot {
@@ -46,7 +53,7 @@ function snapshot(cooked: Awaited<ReturnType<typeof cookStaticShadow>>): Materia
       },
     ],
     materialProgramKeys: { shadow: pass.sourceClosureDigest },
-    materialEntryPoints: { shadow: pass.abi.entryPoints },
+    materialProgramInputs: { shadow: { entryPoints: pass.abi.entryPoints } },
     materialParamSchema: pass.paramSchema,
     paramSnapshot: { roughness: 0.5, alphaCutoff: 0.5, displacementScale: 1, displacementBias: 0 },
   };
@@ -106,6 +113,193 @@ it('witnesses fixed numeric materials without losing scope or selected-snapshot 
   expect(masked.same(before)).toBe(false);
   resource.adopt(change(alpha, 'alphaCutoff', 0.9));
   expect(capture(frame.with(resource)).same(masked)).toBe(false);
+});
+
+it('ignores shadow-read edits of frame materials no member uses', () => {
+  const scope = worldRenderResources(new World());
+  const member = new MaterialResource(opaque),
+    other = new MaterialResource(alpha);
+  const frame = new MaterialFrame(undefined).with(member).with(other);
+  const capture = (materials: MaterialFrame) => {
+    const content = new ShadowMaterialContent(materials);
+    content.add(member, member.snapshot, scope);
+    return content;
+  };
+  const before = capture(frame);
+  other.adopt(change(alpha, 'alphaCutoff', 0.9));
+  const otherEdited = frame.with(other);
+  expect(sameShadowMaterialFrames(frame, otherEdited)).toBe(false);
+  expect(capture(otherEdited).same(before)).toBe(true);
+  member.adopt(alpha);
+  expect(capture(otherEdited.with(member)).same(before)).toBe(false);
+});
+
+it('keeps views that batch different caster subsets, but not across a subset edit', () => {
+  const scope = worldRenderResources(new World());
+  const shared = new MaterialResource(opaque),
+    subset = new MaterialResource(opaque);
+  const frame = new MaterialFrame(undefined).with(shared).with(subset);
+  const capture = (materials: MaterialFrame, members: readonly MaterialResource[]) => {
+    const content = new ShadowMaterialContent(materials);
+    for (const member of members) content.add(member, member.snapshot, scope);
+    return content;
+  };
+  const main = capture(frame, [shared, subset]);
+  expect(capture(frame, [shared]).same(main)).toBe(true);
+  subset.adopt(alpha);
+  expect(capture(frame.with(subset), [shared]).same(main)).toBe(false);
+});
+
+it.each([
+  'opaque',
+  'masked',
+] as const)('ignores an unread material edit while retaining the consumed %s material witness', (kind) => {
+  const world = new World();
+  const caster = new MaterialResource(kind === 'opaque' ? opaque : alpha);
+  const flash = new MaterialResource(alpha);
+  const before = new MaterialFrame(undefined).with(caster).with(flash);
+  const capture = (frame: MaterialFrame) => {
+    const content = new ShadowMaterialContent(frame);
+    content.add(caster, caster.snapshot, worldRenderResources(world));
+    return content;
+  };
+  const original = capture(before);
+  flash.adopt(change(alpha, 'alphaCutoff', 0.9));
+  const after = before.with(flash);
+  expect(sameShadowMaterialFrames(before, after)).toBe(false);
+  expect(capture(after).same(original)).toBe(true);
+  // The consumed root keeps its old value even after the resource adopts a new one.
+  caster.adopt(change(alpha, 'alphaCutoff', 0.7));
+  expect(capture(after.with(caster)).same(original)).toBe(false);
+});
+
+it('retains a static GPU view when only an unconsumed material and equivalent source plan change', async () => {
+  const fixture = await staticShadowFixture();
+  const world = new World(),
+    caster = new MaterialResource(opaque),
+    flash = new MaterialResource(alpha);
+  const before = new MaterialFrame(undefined).with(caster).with(flash);
+  const capture = (frame: MaterialFrame) => {
+    const content = new ShadowMaterialContent(frame);
+    content.add(caster, caster.snapshot, worldRenderResources(world));
+    return content;
+  };
+  try {
+    const first = updateShadowView(fixture.pool, {
+      ...fixture.input(),
+      shadowMaterials: capture(before),
+    }).unwrap();
+    fixture.pool._commitResourceReplacement();
+    flash.adopt(change(alpha, 'alphaCutoff', 0.9));
+    fixture.topology.rebuild(fixture.projection.slotsSnapshot());
+    const input = fixture.input();
+    expect(input.sourcePlan).not.toBe(first.sourcePlan);
+    const next = updateShadowView(fixture.pool, {
+      ...input,
+      shadowMaterials: capture(before.with(flash)),
+    }).unwrap();
+    expect(next.cache).toBe('hit');
+    expect(fixture.pool.invalidationReason(fixture.identity)).toBeUndefined();
+    expect(next.generation).toBe(first.generation);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+it.each([
+  'noncaster',
+  'member',
+] as const)('collects actual caster material roots, including shared-row %s edits', (edit) => {
+  const world = new World(),
+    owner = new MaterialDispatch(),
+    slots = new SceneSlots();
+  const primary = new MaterialResource(alpha),
+    member = new MaterialResource(alpha),
+    flash = new MaterialResource(alpha);
+  const rows = [primary, member, flash].map((resource, slot) => {
+    const source = {
+      ...shadowSourceSnapshot(slot + 1, slot),
+      material: resource,
+      materials: [resource],
+      ...(slot === 2 ? { shadowCaster: false as const } : {}),
+    };
+    owner.bind(slot, source);
+    const { entityKey, transform, ...content } = source;
+    slots.write(slot, {
+      entityKey,
+      generation: 1,
+      content,
+      pose: transform?.world ?? new Float32Array(16),
+    });
+    return source;
+  });
+  const bindings: GpuDrivenBatchBinding[] = [0, 2].map((index) => {
+    const source = rows[index];
+    assert(source !== undefined);
+    const geometry = source.gpuDrivenDraws?.[0]?.geometry;
+    assert(geometry !== undefined);
+    return {
+      assetHandle: 3,
+      material: source.material,
+      geometry,
+      drawItemIndex: 0,
+      ...(index === 0
+        ? {
+            rowGroup: {
+              text: 'shared-caster',
+              sources: 'renderer-override',
+              rows: new Map([
+                [primary, 1],
+                [member, 1],
+              ]),
+            },
+          }
+        : {}),
+    };
+  });
+  const capture = () => {
+    const materials = owner.materials(),
+      content = new ShadowMaterialContent(materials);
+    const projection: PersistentShadowCasterProjection = {
+      meshDraws: new RenderScene(),
+      content: {
+        owner,
+        materials,
+        meshes: new MeshFrame(),
+        sceneRevision: 0,
+        dispatchRevision: 0,
+        subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+      },
+      dispatch: owner.query(slots.capture()),
+      renderables: rows,
+      worldBoundsOf: () => false,
+    };
+    const executions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
+    for (const binding of bindings)
+      executions.set(binding, {
+        forward: { route: 'none' },
+        shadow: {
+          route: 'direct',
+          material: materials.get(binding.material)?.snapshot ?? binding.material.snapshot,
+          pass: { kind: 'shadow', shaderId: 'fixture-shadow' },
+        },
+      });
+    collectGpuShadowMaterials(
+      { preparedMaterialTexture: () => undefined },
+      worldRenderResources(world),
+      executions,
+      new Map(),
+      content,
+      undefined,
+      projection,
+    );
+    return content;
+  };
+  const before = capture(),
+    edited = edit === 'member' ? member : flash;
+  edited.adopt(change(alpha, 'alphaCutoff', 0.9));
+  owner.adopt(edited);
+  expect(capture().same(before)).toBe(edit === 'noncaster');
 });
 
 it.each([
@@ -215,8 +409,8 @@ it('checks actual shadow material content before accepting an unchanged World pr
     prepareDirectionalShadowCache(
       internals,
       state,
-      [world].map(worldRenderResources),
-      [lease],
+      worldRenderResources(world),
+      lease,
       lights,
       1024,
       { reads, epoch: changes.epoch, change: 'quiet' },
@@ -238,7 +432,7 @@ it('checks actual shadow material content before accepting an unchanged World pr
 it('rebinds Worker-cloned shader reads to the receiving immutable program owner', () => {
   const assets = new AssetRegistry();
   try {
-    const reads = opaque.materialEntryPoints?.shadow;
+    const reads = opaque.materialProgramInputs?.shadow?.entryPoints;
     const key = opaque.materialProgramKeys?.shadow;
     assert(reads !== undefined && key !== undefined && opaque.materialParamSchema !== undefined);
     const programs = structuredClone([
@@ -254,13 +448,15 @@ it('rebinds Worker-cloned shader reads to the receiving immutable program owner'
     installPublicationPrograms(assets, programs);
     const registered = assets.shaderRegistry.findMaterialArtifact(key).unwrap().program.entryPoints;
     expect(registered).toEqual(reads);
-    const copied = { ...structuredClone(opaque), materialEntryPoints: {} };
+    const copied = { ...structuredClone(opaque), materialProgramInputs: {} };
     const candidate = rebindPublicationMaterialSchemas(assets.shaderRegistry, {
       frame: { renderables: [] },
       materialUpdates: [new MaterialResource(copied)],
       operations: [],
     } as never);
-    expect(candidate.materialUpdates[0]?.snapshot.materialEntryPoints?.shadow).toBe(registered);
+    expect(candidate.materialUpdates[0]?.snapshot.materialProgramInputs?.shadow?.entryPoints).toBe(
+      registered,
+    );
     const malformed = structuredClone(programs);
     assert(malformed[0] !== undefined);
     malformed[0].shader.entryPoints = [];
@@ -302,11 +498,192 @@ it('fully redraws retained static depth for material-only changes without geomet
     expect(
       updateShadowView(fixture.pool, { ...input, directMaterials: after }).unwrap().cache,
     ).toBe('invalidated');
+    expect(fixture.pool.inspect()[0]?.preparation).toMatchObject({
+      materialContentMisses: 1,
+      sceneBoundsMisses: 0,
+    });
     expect(fixture.pool.dirtyRects(fixture.identity)).toBeUndefined();
     fixture.pool._commitResourceReplacement();
     expect(updateShadowView(fixture.pool, input).unwrap().cache).toBe('invalidated');
     expect(fixture.pool.dirtyRects(fixture.identity)).toBeUndefined();
   } finally {
     fixture.dispose();
+  }
+});
+
+it.each([
+  0, 1,
+])('checks only the actual static row-material selection, including member %s', async (selectedSlot) => {
+  const fixture = await staticShadowFixture();
+  const world = new World();
+  const scope = worldRenderResources(world);
+  const resources = [new MaterialResource(alpha), new MaterialResource(alpha)];
+  for (const [slot, resource] of resources.entries()) {
+    const row = shadowSourceSnapshot(slot + 1, slot === 0 ? -10 : 10);
+    fixture.update({ ...row, material: resource, materials: [resource], mobility: 'static' });
+  }
+  const selected = resources[selectedSlot];
+  const unrelated = resources[1 - selectedSlot];
+  assert(selected && unrelated);
+  const base = fixture.input();
+  expect(base.sourcePlan.batches.some((batch) => batch.key.rowMaterial === true)).toBe(true);
+  const frame = () =>
+    resources.reduce((frame, resource) => frame.with(resource), new MaterialFrame(undefined));
+  const capture = () => {
+    const materials = frame();
+    const shadowMaterials = new ShadowMaterialContent(materials);
+    const executions = new Map();
+    for (const batch of base.sourcePlan.batches) {
+      const binding = batch.binding;
+      assert(binding);
+      executions.set(binding, { shadow: { route: 'gpu', material: binding.material.snapshot } });
+    }
+    collectGpuShadowMaterials(
+      {} as RenderSystemInternals,
+      scope,
+      executions,
+      new Map(),
+      shadowMaterials,
+      undefined,
+    );
+    return {
+      ...base,
+      candidatePrimitiveIndices: [selectedSlot],
+      materialSource: { slotAt: fixture.projection.slotAt },
+      directMaterials: materials,
+      shadowMaterials,
+    };
+  };
+  try {
+    const before = capture();
+    updateShadowView(fixture.pool, before, before.sourcePlan).unwrap();
+    fixture.pool._commitResourceReplacement();
+    unrelated.adopt(change(alpha, 'alphaCutoff', 0.9));
+    const dynamicOnly = capture();
+    expect(updateShadowView(fixture.pool, dynamicOnly, dynamicOnly.sourcePlan).unwrap().cache).toBe(
+      'hit',
+    );
+    selected.adopt(change(alpha, 'alphaCutoff', 0.7));
+    const staticEdit = capture();
+    expect(updateShadowView(fixture.pool, staticEdit, staticEdit.sourcePlan).unwrap().cache).toBe(
+      'invalidated',
+    );
+    expect(fixture.pool.dirtyRects(fixture.identity)).toBeUndefined();
+    expect(before.directMaterials.get(selected)?.snapshot).toBe(alpha);
+    fixture.pool._commitResourceReplacement();
+    expect(updateShadowView(fixture.pool, staticEdit, staticEdit.sourcePlan).unwrap().cache).toBe(
+      'hit',
+    );
+  } finally {
+    fixture.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('requires each independent Renderer World to capture its selected shared row material (numeric: %s)', async (numeric) => {
+  const fixtures = [await staticShadowFixture(), await staticShadowFixture()];
+  const worlds = [new World(), new World()];
+  const shared = new MaterialResource(numeric ? opaque : alpha);
+  const unrelated = new MaterialResource(alpha);
+  const before = new MaterialFrame(undefined).with(shared).with(unrelated);
+  for (const fixture of fixtures) {
+    for (const entityKey of [1, 2]) {
+      fixture.update({
+        ...shadowSourceSnapshot(entityKey, entityKey === 1 ? -10 : 10),
+        material: shared,
+        materials: [shared],
+        mobility: 'static',
+      });
+    }
+  }
+  const capture = (materials: MaterialFrame, world: World, complete: boolean) => {
+    const content = new ShadowMaterialContent(materials);
+    if (complete) content.add(shared, shared.snapshot, worldRenderResources(world), undefined, 0);
+    return content;
+  };
+  try {
+    unrelated.adopt(change(alpha, 'alphaCutoff', 0.9));
+    const after = before.with(unrelated);
+    const selected: ShadowMaterialContent[] = [];
+    for (const [index, fixture] of fixtures.entries()) {
+      const world = worlds[index];
+      assert(world);
+      const plan = fixture.input().sourcePlan;
+      expect(plan.batches.length).toBeGreaterThan(0);
+      expect(plan.batches.every((batch) => batch.key.rowMaterial === true)).toBe(true);
+      const partial = capture(before, world, false);
+      expect(partial.select(plan, fixture.projection)).toBe(partial);
+      const complete = capture(before, world, true);
+      const admitted = complete.select(plan, fixture.projection);
+      expect(admitted).not.toBe(complete);
+      selected.push(admitted);
+      expect(capture(after, world, false).select(plan, fixture.projection).same(partial)).toBe(
+        false,
+      );
+      expect(capture(after, world, true).select(plan, fixture.projection).same(admitted)).toBe(
+        true,
+      );
+    }
+    expect(selected[0]?.same(selected[1])).toBe(false);
+  } finally {
+    for (const fixture of fixtures) fixture.dispose();
+  }
+});
+
+it('does not let an unknown World capture certify a selected World sharing the resource', async () => {
+  const fixture = await staticShadowFixture();
+  const worlds = [new World(), new World()];
+  const shared = new MaterialResource(alpha);
+  const materials = new MaterialFrame(undefined).with(shared);
+  for (const entityKey of [1, 2]) {
+    fixture.update({
+      ...shadowSourceSnapshot(entityKey, entityKey === 1 ? -10 : 10),
+      material: shared,
+      materials: [shared],
+      mobility: 'static',
+    });
+  }
+  const source = fixture.input().sourcePlan;
+  const plan = source;
+  expect(plan.batches.length).toBeGreaterThan(0);
+  const other = worlds[0];
+  assert(other);
+  const scope = worldRenderResources(other);
+  const content = new ShadowMaterialContent(materials);
+  content.add(shared, shared.snapshot, scope);
+  try {
+    expect(content.select(plan, fixture.projection)).toBe(content);
+    const unknown = new ShadowMaterialContent(materials);
+    unknown.add(shared, shared.snapshot, scope, undefined, 1);
+    expect(unknown.select(plan, fixture.projection)).toBe(unknown);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+it('captures each fixed snapshot once per shadow preparation while preserving scope membership', () => {
+  const world = new World();
+  const resource = new MaterialResource(opaque);
+  const frame = new MaterialFrame(undefined).with(resource);
+  const content = new ShadowMaterialContent(frame);
+  const get = vi.spyOn(frame, 'get');
+  try {
+    for (let i = 0; i < 100; i++) content.add(resource, opaque, worldRenderResources(world));
+    const second = new World();
+    for (let i = 0; i < 100; i++) content.add(resource, opaque, worldRenderResources(second));
+    expect(get).toHaveBeenCalledTimes(1);
+    const next = new ShadowMaterialContent(frame);
+    next.add(resource, opaque, worldRenderResources(world));
+    expect(next.same(content)).toBe(false);
+    next.add(resource, opaque, worldRenderResources(second));
+    expect(next.same(content)).toBe(true);
+    const selected = new ShadowMaterialContent(frame);
+    selected.add(resource, opaque, worldRenderResources(world));
+    selected.add(resource, alpha, worldRenderResources(second));
+    expect(selected.same(content)).toBe(false);
+  } finally {
+    get.mockRestore();
   }
 });

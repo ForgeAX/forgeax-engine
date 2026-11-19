@@ -6,7 +6,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type { BindGroup, RenderPipeline, Result, TextureFormat } from '@forgeax/engine-rhi';
 import { ok, RhiError } from '@forgeax/engine-rhi';
-import { isSupportedVariantKey, type MaterialShaderArtifact } from '@forgeax/engine-shader';
+import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState, ResultOk } from '@forgeax/engine-types';
 import { materialArtifactProgramIdentity } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -21,6 +21,7 @@ import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alph
 import { seededDepthRenderState } from '../material-render-state';
 import { rasterColorFormat } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
+import { PREDEPTH_FRAGMENT_ENTRY, predepthFragmentEntry } from '../predepth-coverage';
 import {
   geometryRenderStateForPass,
   variantSetForCoveragePass,
@@ -33,6 +34,7 @@ import {
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { GpuDrivenBatch } from './batch-topology';
 import type { LiveRasterBatch } from './live-raster';
+import { withFrameLighting } from './pbr-program';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import type { PreparedBatch } from './production-raster-prepare';
 import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
@@ -44,11 +46,14 @@ export type RasterPipelineFor = (
   formatKey?: string,
   preparation?: boolean,
   sampleCount?: 1 | 4,
+  opaqueDepthPrimed?: boolean,
 ) => Result<RenderPipeline, RhiError>;
 
 export interface ProjectedRasterPipelines {
   readonly pipelineFor: RasterPipelineFor;
   readonly aoInputPipelineFor: RasterPipelineFor;
+  readonly predepthPipelineFor: RasterPipelineFor;
+  readonly aoInputMsaaPipelineFor: RasterPipelineFor;
   readonly temporalPipelineFor: RasterPipelineFor;
   readonly coveragePipelineFor: RasterPipelineFor;
   readonly gbufferPipelineFor: RasterPipelineFor;
@@ -67,7 +72,8 @@ export interface ProjectedRasterPipelines {
  * representatives are live per-frame facts read at encode.
  */
 export interface ProjectedRasterClass {
-  orderDiagnosticState: MaterialRenderState | undefined;
+  readonly predepthCovered: boolean;
+  renderState: MaterialRenderState | undefined;
   diagnosticSourceDigest?: string;
   readonly artifact: MaterialShaderArtifact;
   readonly mesh: MeshGpuHandles;
@@ -87,6 +93,7 @@ export interface ProjectedRasterClass {
  * mask; raw projections retain per-mesh lazy reads and retry boundaries.
  */
 export interface RasterPipelineShape {
+  readonly predepthCovered: boolean;
   readonly raster: MaterialAbiRasterAdapter;
   readonly prepared: PreparedBatch;
   readonly artifact: MaterialShaderArtifact;
@@ -122,11 +129,12 @@ export function rasterPipelineShapeKey(shape: RasterPipelineShape): string | und
     shape.shaderUvSetCount,
     shape.topology,
     shape.directionalShadowSimple === true,
-    shape.directionalShadowSimple === true && shape.leanLighting === true,
+    shape.leanLighting === true,
     shape.stripIndexFormat ?? '',
     shape.renderState ?? null,
     shape.standardTextureMask ?? -1,
     shape.standardSurfaceDiscards,
+    shape.predepthCovered,
     artifact.material,
     artifact.pass,
     artifact.layoutIdentity,
@@ -159,34 +167,24 @@ function fragmentArtifact(
   };
 }
 
-const SIMPLE_OFF = 'DIRECTIONAL_SHADOW_SIMPLE=false';
-
-/** Flip a published definesKey to the source-level one-cascade Vogel receiver. */
-function withDirectionalShadowSimple(
-  artifact: MaterialShaderArtifact,
-  leanLighting: boolean,
-): MaterialShaderArtifact {
-  const key = artifact.variantSet;
-  if (key === undefined || !key.includes(SIMPLE_OFF)) return artifact;
-  const simple = key
-    .replace(SIMPLE_OFF, 'DIRECTIONAL_SHADOW_SIMPLE=true')
-    .replace(/LEAN_LIGHTING=(true|false)/, `LEAN_LIGHTING=${leanLighting}`);
-  // Only rows the shared permutation rules publish (no mask, visible surface,
-  // transmission, probe blend or no-storage lane) select the simple receiver.
-  return isSupportedVariantKey(simple) ? { ...artifact, variantSet: simple } : artifact;
-}
-
 function shapeRenderState(
   shape: RasterPipelineShape,
   selected: MaterialShaderArtifact,
   coverageOnly: boolean,
   seededDepth: boolean,
+  opaqueDepthPrimed: boolean,
 ): MaterialRenderState | undefined {
   const renderState = shape.renderState;
-  if (seededDepth)
-    return seededDepthRenderState(renderState, artifactAlphaMask(selected.variantSet));
-  if (selected.fragmentEntry !== 'fs_temporal') return renderState;
-  return geometryRenderStateForPass(renderState, 'temporal', coverageOnly);
+  if (seededDepth && shape.predepthCovered)
+    return seededDepthRenderState(renderState, artifactAlphaMask(shape.artifact.variantSet));
+  return geometryRenderStateForPass(
+    renderState,
+    selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+    coverageOnly,
+    undefined,
+    selected.fragmentEntry,
+    opaqueDepthPrimed,
+  );
 }
 
 /**
@@ -251,8 +249,14 @@ function pipelineForFragment(
       shape.standardSurfaceDiscards,
     );
   };
-  return (formats, formatKey, preparation = false, sampleCount = shape.sampleCount) => {
-    const key = `${formatKey ?? formats.join(',')}|${sampleCount}`;
+  return (
+    formats,
+    formatKey,
+    preparation = false,
+    sampleCount = shape.sampleCount,
+    opaqueDepthPrimed = false,
+  ) => {
+    const key = `${formatKey ?? formats.join(',')}|${sampleCount}|${opaqueDepthPrimed ? 1 : 0}`;
     const projected = projectedPipelines?.get(key);
     if (projected !== undefined) return shape.rendererRecording ? projected : ok(projected.value);
     // Unused G-buffer, temporal and coverage entries need no artifact copy.
@@ -260,17 +264,27 @@ function pipelineForFragment(
       generalArtifact = fragmentArtifact(shape.artifact, fragmentEntry, coverageOnly);
       // The pass state follows the authored ALPHA_MASK lane; the general and
       // simple receivers share it.
-      renderState = shapeRenderState(shape, generalArtifact, coverageOnly, seededDepth);
-      if (seededDepth) generalArtifact = maskedInEarlyPassArtifact(shape, generalArtifact);
+      if (seededDepth && shape.predepthCovered)
+        generalArtifact = maskedInEarlyPassArtifact(shape, generalArtifact);
     }
-    selectedArtifact ??=
-      forwardColorPass && shape.directionalShadowSimple === true
-        ? withDirectionalShadowSimple(generalArtifact, shape.leanLighting === true)
-        : generalArtifact;
+    renderState = shapeRenderState(
+      shape,
+      generalArtifact,
+      coverageOnly,
+      seededDepth,
+      opaqueDepthPrimed,
+    );
+    selectedArtifact ??= forwardColorPass
+      ? withFrameLighting(
+          generalArtifact,
+          shape.directionalShadowSimple === true,
+          shape.leanLighting === true,
+        )
+      : generalArtifact;
     const selected = build(selectedArtifact, formats, preparation, sampleCount);
-    // The simple receiver only specializes the general one. While its PSO
-    // builds, the frame draws with the general receiver instead of waiting;
-    // the fallback is not retained, so the simple PSO takes over once ready.
+    // Both specializations preserve the general program's output. While a
+    // specialized PSO builds, the frame draws with that general program;
+    // the fallback is not retained, so the selected PSO takes over once ready.
     if (!selected.ok && selectedArtifact !== generalArtifact) {
       const general = build(generalArtifact, formats, preparation, sampleCount);
       if (general.ok) return shape.rendererRecording ? general : ok(general.value);
@@ -288,6 +302,13 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
   const { artifact } = shape;
   const pipelineFor = pipelineForFragment(shape, undefined, false, true);
   const aoInputPipelineFor = pipelineForFragment(shape, 'fs_ao_input');
+  const depthOnlyPipelineFor = pipelineForFragment(shape, predepthFragmentEntry(artifact));
+  // A single-sample normal reader shares the same primary depth rasterization.
+  // The dedicated depth fragment has no color output, so select the coverage
+  // equivalent AO entry when this pass declares its normal attachment.
+  const predepthPipelineFor: RasterPipelineFor = (formats, ...args) =>
+    (formats.length === 0 ? depthOnlyPipelineFor : aoInputPipelineFor)(formats, ...args);
+  const aoInputMsaaPipelineFor = pipelineForFragment(shape, 'fs_ao_input_msaa');
   // Only the template forward entry has an fs_opaque twin; an authored
   // fragment entry keeps its own pipeline.
   const templateEntry =
@@ -324,6 +345,8 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
   const pipelines = {
     pipelineFor,
     aoInputPipelineFor,
+    predepthPipelineFor,
+    aoInputMsaaPipelineFor,
     opaquePipelineFor,
     seededPipelineFor,
     screenPipelineFor: templateEntry
@@ -354,8 +377,12 @@ export function selectRasterPipeline(
       return coverageOnly ? pipelines.coveragePipelineFor : pipelines.temporalPipelineFor;
     case 'fs_gbuffer':
       return pipelines.gbufferPipelineFor;
+    case PREDEPTH_FRAGMENT_ENTRY:
+      return pipelines.predepthPipelineFor;
     case 'fs_ao_input':
       return pipelines.aoInputPipelineFor;
+    case 'fs_ao_input_msaa':
+      return pipelines.aoInputMsaaPipelineFor;
     case 'fs_nearest_layer':
       return pipelines.nearestPipelineFor ?? pipelines.pipelineFor;
     case 'fs_color':
@@ -369,6 +396,46 @@ export function selectRasterPipeline(
   }
 }
 
+/** Raw graphs retain each Mesh resolver; physical aliases admit later compatible bindings. */
+export function rasterClassProjectionKey(
+  live: LiveRasterBatch,
+  rendererRecording: boolean,
+): string {
+  return rendererRecording
+    ? live.recordingClassKey
+    : `${live.classKey}:mesh:${live.batch.key.assetHandle}`;
+}
+
+function hasNoForwardOutput(
+  batch: ProjectedRasterClass,
+  rendererRecording: boolean,
+  fragmentEntryPoint: string | undefined,
+  coverageOnly: boolean,
+): boolean {
+  const state = batch.renderState;
+  // The built-in Unlit program has no storage side effects. Keep its source
+  // and GPU ownership (including shadow work), but record no ordinary color
+  // draw when it writes neither attachments nor depth/stencil. Raw callers,
+  // custom entries and coverage overrides retain their observable recording.
+  return (
+    rendererRecording &&
+    !coverageOnly &&
+    batch.artifact.material === 'forgeax::default-unlit' &&
+    batch.artifact.pass === 'forward' &&
+    (batch.artifact.fragmentEntry === undefined || batch.artifact.fragmentEntry === 'fs_main') &&
+    (batch.artifact.vertexEntry === undefined ||
+      batch.artifact.vertexEntry === 'vs_main' ||
+      batch.artifact.vertexEntry === 'vs_scene_index') &&
+    (fragmentEntryPoint === undefined ||
+      fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
+      fragmentEntryPoint === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY) &&
+    state?.colorWriteMask === 0 &&
+    state.depthWriteEnabled === false &&
+    state.stencil === undefined &&
+    state.outputs === undefined
+  );
+}
+
 /** The compiled class a live batch draws with in this pass, or none. */
 export function rasterClassFor(
   rasterClasses: ReadonlyMap<string, ProjectedRasterClass>,
@@ -376,9 +443,12 @@ export function rasterClassFor(
   live: LiveRasterBatch,
   filter?: RenderPipelineGpuDrivenFilter,
   fragmentEntryPoint?: string,
+  coverageOnly = false,
 ): ProjectedRasterClass | undefined {
   if (live.batch.visibleCapacity === 0) return undefined;
-  const batch = rasterClasses.get(rendererRecording ? live.recordingClassKey : live.classKey);
+  const batch =
+    rasterClasses.get(rasterClassProjectionKey(live, rendererRecording)) ??
+    (rendererRecording ? undefined : rasterClasses.get(live.classKey));
   if (batch === undefined) {
     throw new RhiError({
       code: 'internal-error',
@@ -386,6 +456,8 @@ export function rasterClassFor(
       hint: 'derive the graph signature from the same raster class set as the live batches',
     });
   }
+  if (hasNoForwardOutput(batch, rendererRecording, fragmentEntryPoint, coverageOnly))
+    return undefined;
   if (
     fragmentEntryPoint === 'fs_temporal' &&
     !gpuTemporalEligible(
@@ -456,7 +528,7 @@ export function importMeshBuffers(
   accesses: GraphAccess[],
 ): Result<ImportedMeshBuffers, RenderGraphError> {
   const { mesh } = prepared;
-  const label = `gpu-driven.standard.${prepared.worldKey}.${prepared.batch.key.assetHandle}`;
+  const label = `gpu-driven.standard.${prepared.batch.key.assetHandle}`;
   const vertex = graph.importBuffer(
     `${label}.vertex`,
     { size: mesh.vboBytes, usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST },

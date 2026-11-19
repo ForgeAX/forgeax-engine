@@ -14,6 +14,7 @@ import {
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
 } from './gpu-driven-view-gpu-evidence';
+import { verifyGpuViewSkinDemandBoundary } from './gpu-view-skin-demand.fixture';
 import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { skinTaskFixture } from './skin-task-fixture';
@@ -35,7 +36,6 @@ it('refreshes active Skin shadow tasks each frame and recovers GPU output after 
   const delta = f.scene.apply(
     [f.first, f.second].map((slot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: slot.entityKey,
       snapshot: preparedPbrSnapshot({
         ...slot.snapshot,
@@ -144,17 +144,17 @@ it('refreshes active Skin shadow tasks each frame and recovers GPU output after 
     await draw(3);
     await draw(3, true);
     f.matrix[12] = 5;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     await draw(5);
-    f.skin.joint(0, 19, undefined);
+    f.skin.joint(19, undefined);
     await draw(undefined);
     f.matrix[12] = 9;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     await draw(9);
     await draw(9);
     f.frames.resetHistory();
     f.matrix[12] = 11;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     await draw(11);
     await draw(11);
     expect(await native.popErrorScope()).toBeNull();
@@ -197,7 +197,6 @@ it.each([
   const delta = f.scene.apply(
     [f.first, f.second].map((slot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: slot.entityKey,
       snapshot: {
         ...slot.snapshot,
@@ -316,7 +315,7 @@ it.each([
   try {
     await f.frames.submitFrame(f.frame, Promise.resolve(), true);
     f.matrix[12] = 5;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     const first = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     if (forceOverflow) {
       // Deliberately under-admit palette capacity while retaining the real
@@ -330,12 +329,12 @@ it.each([
     }
     await draw(first);
     await f.frames.submitFrame(first, Promise.resolve(), true);
-    f.skin.joint(0, 19, undefined);
+    f.skin.joint(19, undefined);
     const missing = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(missing);
     await f.frames.submitFrame(missing, Promise.resolve(), false);
     f.matrix[12] = 9;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     const restored = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(restored);
     expect(results.slice(0, 3).map((row) => row.overflow)).toEqual([0, 0, 0]);
@@ -354,12 +353,12 @@ it.each([
     // Accepted history that lacks a joint the current pose has reseeds every
     // previous matrix from current instead of publishing a partial history.
     await f.frames.submitFrame(restored, Promise.resolve(), true);
-    f.skin.joint(0, 19, undefined);
+    f.skin.joint(19, undefined);
     const gap = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(gap);
     await f.frames.submitFrame(gap, Promise.resolve(), true);
     f.matrix[12] = 11;
-    f.skin.joint(0, 19, f.matrix);
+    f.skin.joint(19, f.matrix);
     const reseeded = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await draw(reseeded);
     expect(results.slice(3).map((row) => row.visible)).toEqual([0, 2]);
@@ -379,7 +378,7 @@ it.each([
         { joints: new Uint16Array(), shapes: new Float32Array() },
         capsules,
       ]) {
-        f.skin.skeletonChanged(0, 7, {
+        f.skin.skeletonChanged(7, {
           kind: 'skeleton',
           jointCount: 1,
           inverseBindMatrices: mat4.identity(mat4.create()),
@@ -424,3 +423,8 @@ it('resolves the true Skin slot when two preceding rigid draws share another ins
     primitiveIndex: 0,
   });
 });
+
+it(
+  'does not run Skin preparation for rigid views of a Scene with Skin input',
+  verifyGpuViewSkinDemandBoundary,
+);

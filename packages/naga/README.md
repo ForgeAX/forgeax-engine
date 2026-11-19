@@ -2,6 +2,12 @@
 
 > **本包是 `@forgeax/engine-wgpu-wasm` 暴露的 naga raw bindings 之上的 TS-only 薄壳**，对齐三阶段 API（`parse` / `validate` / `emit_reflection`），关注点零业务逻辑。AI 用户（含 agentic AI runtime）可直接 `import { parse, validate, emit_reflection } from '@forgeax/engine-naga'` 复用 WGSL syntax check 能力——内部走 `@forgeax/engine-wgpu-wasm.ensureReady()` singleton 加载物理 wasm（plan-strategy §D-P3 / §D-P4 + research F-4 + charter 命题 1 渐进披露 + 命题 5 一致抽象）。
 
+`composeShader` optionally accepts a synchronous output normalizer. Naga reparses
+and validates that returned WGSL and compares its complete buffer ABI before
+returning it. The next exact `parse`/`validate` can consume this checked IR once;
+changed bytes take the ordinary path. Opaque handle ownership and explicit
+render-entry/reflection admission are unchanged.
+
 ## 形态铁律
 
 - **关注点单一** —— 只做 raw wasm-bindgen 出口的 TS 包装（snake_case naga upstream 原生命名延续）；reflection 字段派生 / 三件套 emit 都在上游 `@forgeax/engine-shader-compiler`。
@@ -26,7 +32,24 @@ aggregate access and partial aggregate stores conservatively retain their source
 structure. Other entries and unreachable helpers do not contribute reads. Missing
 metadata means unknown, never an empty dependency set.
 
+Each newly compiled entry also publishes `effects`: Naga's transitive
+`mayDiscard`, fragment `writesDepth` / `writesSampleMask` outputs and bound
+`writesStorage` (including atomics and storage textures). Private/workgroup
+stores do not count as externally visible storage writes. This is an additive
+field in the existing reflection wire; absent older metadata remains unknown.
+Native validation owns these facts; consumers do not scan shader text to infer
+them or manufacture effect-free defaults.
+The native projection visits validated `Kill` statements and their function
+calls. Naga's `FunctionInfo.may_kill` is a uniformity fact and omits uniform or
+unconditional discard, so it cannot serve as this complete effect contract.
+
 Opaque module handles expose `free()` for deterministic native IR release.
+`composeShader` optionally accepts a source-normalization function. Normalization
+runs inside the checked writer boundary, before its final parse and ABI check.
+The call returns WGSL; the next exact-source native `parse` consumes the bounded
+one-shot checked IR, and `validate` transfers its existing validated information.
+A changed source parses independently. Both asynchronous compilation and the
+prepared synchronous compiler consume this same native ownership path.
 `validate` consumes its parsed handle even on failure; do not free that handle
 again. A successful syntax probe that stops before validation frees its parsed
 handle. Reflection and selected-entry validation borrow the validated handle;
@@ -104,3 +127,25 @@ pnpm build:engine
 Then rebuild or re-cook manifests from their owning source producer. Runtime
 admission rejects old `/2` or inconsistent `/3` publications; bypassing that
 check would let host packing and WGSL disagree.
+
+## Prepared composition and module reuse
+
+`PreparedNagaCompiler.composeProgram` returns final WGSL and an invocation-owned
+validated module. An optional synchronous source normalizer runs before the
+checked writer parses and validates that final source and compares its buffer
+ABI. The Shader compiler passes its existing portability normalizer here, so
+reflection uses exactly the WGSL delivered to the GPU without a second parse.
+The consumer frees the validated module after its last reflection/interface read.
+Both composition APIs use main's one-shot checked-program handoff. The exact
+normalized writer output and validated IR stay in the native owner until the
+matching native parse consumes them. `composeProgram` transfers that owner
+through the same native parse/validate entrypoints; it adds no compiler cache.
+A changed source or an output over the native retention bound follows ordinary
+parsing and validation.
+
+The native composer retains one bounded definition-independent import closure
+and its unchanged registration prefix. Definition-dependent imports and automatic
+bindings use fresh composition. Entry selection, imported padding, normalization,
+validation and writer ABI checks remain authoritative. Reentrant normalization
+uses the same checked native boundary; failed composition cannot publish a
+successful program. ShaderRegistry remains the complete program reuse owner.

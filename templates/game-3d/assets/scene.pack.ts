@@ -9,14 +9,15 @@ import {
 } from '@forgeax/engine/physics';
 import {
   ANTIALIAS_FXAA,
+  Atmosphere,
   Camera,
   DirectionalLight,
+  Fog,
   MeshFilter,
   MeshRenderer,
   perspective,
-  PointLight,
-  SKYBOX_MODE_CUBEMAP,
-  SkyboxBackground,
+  ReflectionProbe,
+  REFLECTION_PROBE_UPDATE_ON_CHANGE,
   Skylight,
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine/render';
@@ -25,7 +26,8 @@ import { Skin } from '@forgeax/engine/skinning';
 import type { AssetGuid, SceneAsset, SceneEntity } from '@forgeax/engine/types';
 import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS, SUN_OUTGOING_DIRECTION } from './shared/asset-refs.ts';
-import { PLAYER_RIG } from './player/player-rig.ts';
+import { PLAYER_COLLIDER, PLAYER_RIG } from './shared/player-rig.ts';
+import { CAMERA_DISTANCE, CAMERA_TARGET_HEIGHT, INITIAL_CAMERA_PITCH, orbitPosition } from './shared/third-person.ts';
 
 function meshEntity(
   key: string,
@@ -78,28 +80,16 @@ function staticCuboid(halfExtents: readonly [number, number, number]) {
   };
 }
 
-function staticSphere(radius: number) {
-  return {
-    RigidBody: { type: RigidBodyTypeValue.static },
-    Collider: {
-      shape: ColliderShapeValue.sphere,
-      radius,
-      friction: 0.8,
-      restitution: 0,
-    },
-  };
-}
-
 function showcaseScene(): SceneAsset {
-  const playerPosition = [0, 0.95, 7.4] as const;
-  const cameraPosition = [0, 3.35, 13.5] as const;
-  const target = [0, 1.42, 7.4] as const;
+  const playerPosition = [0, PLAYER_COLLIDER.radius + PLAYER_COLLIDER.halfHeight + 0.02, 7.4] as const;
+  const target = [playerPosition[0], playerPosition[1] + CAMERA_TARGET_HEIGHT, playerPosition[2]] as const;
+  const cameraPosition = orbitPosition(target, 0, INITIAL_CAMERA_PITCH, CAMERA_DISTANCE);
   const cameraRotation = quat.fromLookAt(quat.create(), cameraPosition, target, [0, 1, 0]);
-  const rampRotation = [Math.sin(-Math.PI / 24), 0, 0, Math.cos(-Math.PI / 24)] as const;
   return {
     kind: 'scene',
     skinGuids: [guidText(assetGuid(PACKAGE_IDS.character, 'rig/player-skin'))],
     entities: Object.fromEntries([
+      // Replace this whole entry when your level supplies its own floor and collision.
       meshEntity(
         'ground',
         'Ground',
@@ -107,89 +97,22 @@ function showcaseScene(): SceneAsset {
         [0, -0.2, 0],
         [1, 1, 1],
         [0, 0, 0, 1],
-        staticCuboid([14, 0.2, 14]),
+        staticCuboid([1000, 0.2, 1000]),
       ),
+      // Delete this entry and sphere-reflection to remove the demo prop completely.
+      // To hide only its mesh, add Visibility with state VisibilityStateValue.hidden
+      // to the extra components and include Visibility in sceneComponents below.
       meshEntity(
-        'pedestal',
-        'Warm Stone Pedestal',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/pedestal'),
-        [-4, 0.5, 1],
+        'iron-sphere',
+        'Rusted Iron Sphere',
+        assetGuid(PACKAGE_IDS.geometry, 'mesh/iron-sphere'),
+        [0, 1, 2.4],
         [1, 1, 1],
         [0, 0, 0, 1],
-        staticCuboid([0.75, 0.5, 0.75]),
-      ),
-      meshEntity(
-        'mirror-sphere',
-        'Mirror Sphere',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/sphere'),
-        [-4, 1.75, 1],
-        [1, 1, 1],
-        [0, 0, 0, 1],
-        staticSphere(0.9),
-      ),
-      meshEntity(
-        'collision-cube',
-        'Lacquer Collision Cube',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/cube'),
-        [0, 0.75, -4.5],
-        [1, 1, 1],
-        [0, 0, 0, 1],
-        staticCuboid([0.75, 0.75, 0.75]),
-      ),
-      meshEntity(
-        'mirror-torus',
-        'Mirror Torus',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/torus'),
-        [4, 1.2, 1],
-        [1, 1, 1],
-        [Math.sin(Math.PI / 8), 0, 0, Math.cos(Math.PI / 8)],
-        staticSphere(1.12),
-      ),
-      meshEntity('point-light-marker', 'Warm Point Light Marker', assetGuid(PACKAGE_IDS.geometry, 'mesh/light'), [0, 4.6, 0]),
-      meshEntity(
-        'step',
-        'Sandstone Step',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/step'),
-        [5.3, 0.225, 6],
-        [1, 1, 1],
-        [0, 0, 0, 1],
-        staticCuboid([1.2, 0.225, 1.2]),
-      ),
-      meshEntity(
-        'ramp',
-        'Rusted Iron Ramp',
-        assetGuid(PACKAGE_IDS.geometry, 'mesh/ramp'),
-        [-2.2, 0.42, 7.4],
-        [1, 1, 1],
-        rampRotation,
-        staticCuboid([1.6, 0.15, 2.2]),
-      ),
-      meshEntity(
-        'klein-bottle',
-        'Klein Bottle',
-        assetGuid(PACKAGE_IDS.fantasyMeshes, 'mesh/klein-bottle'),
-        [-4.4, 2.15, -4.2],
-        [0.72, 0.72, 0.72],
-        [0, 0, 0, 1],
-        staticSphere(1.55),
-      ),
-      meshEntity(
-        'trefoil-knot',
-        'Trefoil Knot',
-        assetGuid(PACKAGE_IDS.fantasyMeshes, 'mesh/trefoil-knot'),
-        [4.4, 2.05, -4],
-        [1.02, 1.02, 1.02],
-        [Math.sin(-Math.PI / 12), 0, 0, Math.cos(-Math.PI / 12)],
-        staticSphere(1.5),
-      ),
-      meshEntity(
-        'astral-bloom',
-        'Astral Bloom',
-        assetGuid(PACKAGE_IDS.fantasyMeshes, 'mesh/astral-bloom'),
-        [0, 2.05, -0.9],
-        [1.08, 1.08, 1.08],
-        [Math.sin(Math.PI / 8), 0, 0, Math.cos(Math.PI / 8)],
-        staticSphere(1.45),
+        {
+          RigidBody: { type: RigidBodyTypeValue.static },
+          Collider: { shape: ColliderShapeValue.sphere, radius: 1, friction: 0.86, restitution: 0 },
+        },
       ),
       keyed('sun', {
         components: {
@@ -198,34 +121,39 @@ function showcaseScene(): SceneAsset {
             direction: SUN_OUTGOING_DIRECTION,
             // Bare lights default off; this game explicitly requests sun shadows.
             castShadow: true,
-            // Keep centimeter-scale shadow texels across the 28 m showcase.
+            // Keep centimeter-scale shadow texels around the nearby props.
             shadowDistance: 56,
           },
-        },
-      }),
-      keyed('point-light', {
-        components: {
-          Name: { value: 'Warm Point Light' },
-          Transform: { pos: [0, 4.6, 0] },
-          PointLight: { color: [1, 0.32, 0.08], intensity: 52, range: 12 },
         },
       }),
       keyed('skylight', {
         components: {
           Name: { value: 'Skylight' },
-          Skylight: {
-            equirect: guidText(assetGuid(PACKAGE_IDS.environment, 'environment/daylight')),
-            color: [1, 1, 1],
-            intensity: 0.82,
-          },
+          Skylight: {},
         },
       }),
-      keyed('sky-background', {
+      keyed('atmosphere', {
         components: {
-          Name: { value: 'Sky Background' },
-          SkyboxBackground: {
-            equirect: guidText(assetGuid(PACKAGE_IDS.environment, 'environment/daylight')),
-            mode: SKYBOX_MODE_CUBEMAP,
+          Name: { value: 'Analytic Sky' },
+          Atmosphere: { mieScattering: 1.998e-6, mieAbsorption: 0.222e-6 },
+        },
+      }),
+      keyed('height-fog', {
+        components: {
+          Name: { value: 'Height Fog' },
+          Fog: { density: 0.00008 },
+        },
+      }),
+      // This probe serves the iron-sphere demo prop. Remove both when replacing it.
+      keyed('sphere-reflection', {
+        components: {
+          Name: { value: 'Iron Sphere Reflection' },
+          Transform: { pos: [0, 1, 2.4] },
+          ReflectionProbe: {
+            halfExtents: [3, 3, 3],
+            resolution: 128,
+            boxProjection: true,
+            updateIntent: REFLECTION_PROBE_UPDATE_ON_CHANGE,
           },
         },
       }),
@@ -242,7 +170,13 @@ function showcaseScene(): SceneAsset {
             ],
           },
           Camera: {
-            ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }),
+            // Auto exposure meters the frame; no compensation bias. The fallback
+            // applies until the first adaptation and on devices without compute.
+            ...perspective({
+              fov: Math.PI / 4,
+              aspect: 16 / 9,
+              exposure: { kind: 'auto', fallback: 0.95, compensationEv: 0, rangeEv: [-12, 4], rates: [3, 1] },
+            }),
             // Explicit presentation style; generic Camera defaults remain neutral.
             tonemap: TONEMAP_ACES_FILMIC,
             antialias: ANTIALIAS_FXAA,
@@ -257,13 +191,12 @@ function showcaseScene(): SceneAsset {
           RigidBody: { type: RigidBodyTypeValue.kinematic },
           Collider: {
             shape: ColliderShapeValue.capsule,
-            radius: 0.38,
-            halfHeight: 0.55,
+            ...PLAYER_COLLIDER,
             friction: 0.7,
             restitution: 0,
           },
           CharacterController: {
-            offset: 0.03,
+            offset: 0.01,
             maxSlopeClimbDeg: 48,
             minSlopeSlideDeg: 55,
             autoStepMaxHeight: 0.32,
@@ -296,7 +229,9 @@ export default definePack({
     {
       name: 'sunColor',
       type: 'vec3',
-      default: [1, 0.98, 0.93],
+      // A slightly warm key light. Parameter defaults must be literals so the
+      // editor can rewrite them; entity colors use color.linearRgb(0xRRGGBB).
+      default: [1, 0.95, 0.87],
       apply: {
         asset: 'scene/showcase',
         path: ['entities', 'sun', 'components', 'DirectionalLight', 'color'],
@@ -305,9 +240,9 @@ export default definePack({
     {
       name: 'sunIntensity',
       type: 'f32',
-      default: 3.2,
+      default: 12,
       minimum: 0,
-      maximum: 10,
+      maximum: 100,
       apply: {
         asset: 'scene/showcase',
         path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'],
@@ -315,18 +250,19 @@ export default definePack({
     },
   ],
   sceneComponents: [
+    Atmosphere,
     Camera,
     CharacterController,
     ChildOf,
     Collider,
     DirectionalLight,
+    Fog,
     MeshFilter,
     MeshRenderer,
     Name,
-    PointLight,
+    ReflectionProbe,
     RigidBody,
     Skin,
-    SkyboxBackground,
     Skylight,
     Transform,
   ],

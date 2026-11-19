@@ -6,7 +6,7 @@
 
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture}
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
 
 // @forgeax/engine-shader - sprite.wgsl (feat-20260520-2d-sprite-layer-mvp /
@@ -143,7 +143,7 @@ struct VsOut {
   // `in.uv_atlas` without any host-side region
   // re-write per draw.
   @location(0) uv_atlas       : vec2<f32>,
-  @location(1) worldPos        : vec3<f32>,
+  @location(1) worldPos        : vec4<f32>,
 };
 
 struct SpriteVertex {
@@ -262,7 +262,7 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_index)
   var out : VsOut;
   out.clip = view.worldViewProj * world;
   out.uv_atlas = vertex.uvAtlas;
-  out.worldPos = world.xyz;
+  out.worldPos = vec4<f32>(world.xyz, vertex_height_fog(view, world.xyz));
   return out;
 }
 
@@ -278,13 +278,13 @@ fn linear_to_srgb(linear : f32) -> f32 {
 
 @fragment
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
-  applyViewClipping(in.worldPos, false);
+  applyViewClipping(in.worldPos.xyz, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   // R6 mitigation: strict clamp 0..1 before premultiplied alpha multiply.
   let rgba = clamp(texel * material.colorTint, vec4<f32>(0.0), vec4<f32>(1.0));
   // Premultiplied alpha: rgb pre-multiplied by alpha for srcFactor='one' /
   // dstFactor='one-minus-src-alpha' blend.
-  let premult = vec4<f32>(translucent_fog(view, in.worldPos, rgba.rgb * rgba.a, rgba.a), rgba.a);
+  let premult = vec4<f32>(forward_fog(view, in.worldPos.xyz, in.worldPos.w, rgba.rgb * rgba.a, rgba.a), rgba.a);
   // LDR target is bgra8unorm (blendable per WebGPU spec); hardware does not
   // sRGB-encode bgra8unorm, so apply the transfer function in the shader.
   // Only RGB channels are encoded; alpha is linear throughout the blend.
@@ -300,11 +300,11 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
 // offscreen target; the tonemap fullscreen pass handles sRGB encoding.
 @fragment
 fn fs_main_hdr(in : VsOut) -> @location(0) vec4<f32> {
-  applyViewClipping(in.worldPos, false);
+  applyViewClipping(in.worldPos.xyz, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   // R6 mitigation: strict clamp 0..1 before premultiplied alpha multiply.
   let rgba = clamp(texel * material.colorTint, vec4<f32>(0.0), vec4<f32>(1.0));
-  return vec4<f32>(translucent_fog(view, in.worldPos, rgba.rgb * rgba.a, rgba.a), rgba.a);
+  return vec4<f32>(forward_fog(view, in.worldPos.xyz, in.worldPos.w, rgba.rgb * rgba.a, rgba.a), rgba.a);
 }
 
 struct TemporalVsOut {

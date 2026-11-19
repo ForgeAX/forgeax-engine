@@ -23,9 +23,17 @@ description: >-
 > native replay on the host), keep the tape and `rhi summary` structure, then continue
 > with live evidence (`dev capture` screenshots, `dev eval` state, debug draw) on the
 > real backend. Do not retry replay or block delivery on it.
+>
+> macOS and Windows hosts have no prebuilt `dawn.node` by design (it is built from an
+> Engine source checkout with `pnpm --filter @forgeax/engine-dawn-node build:native`),
+> so replay is normally absent there. Everything structural still works without it:
+> `rhi summary` (including `--passes` and `--label`) and `rhi inspect` with the default
+> `pipeline`/`bindings` fields read the tape only. Only `pixels`, `outputs`, `rhi read`
+> and `rhi timing` replay.
 
 | Symptom | First check |
 |:--|:--|
+| An object or effect is missing from one render target | `rhi summary --passes --json` lists every pass with its label, targets (label, size, format), draw/dispatch counts and pipeline labels: find the pass that renders into that target and check that the object's pipeline label and a draw appear there. `--label <regex>` finds the texture or buffer by name. Needs no replay device. |
 | White/transparent canvas, HUD fine | `rendererError` in `dev capture --json` or the `project play` report (also `__forgeaxGameInspection.renderer().rendererError`): a GPU validation/submit error rejects every frame's submit, so capture the frame and inspect the resource the message names. |
 
 The package contract is [`packages/rhi-debug/README.md`](../../packages/rhi-debug/README.md).
@@ -37,6 +45,12 @@ scene/compositor draws. Composed views share the frame's preparation barrier;
 a ready sibling cannot write a partial picture while another native PSO is
 pending. Route that violation to Render graph seal and physical frame submit,
 retaining the actual tape and the original Browser readiness bound.
+
+For resource byte/count distribution and captured pipeline/usage graphs, use the
+[performance GPU workbench](../forgeax-engine-performance/SKILL.md#gpu-capture-workbench)
+on this same tape. Requested GPU resource inspection can capture a frame even
+when its image is correct. The standalone viewer keeps resource IDs and `workIndex`,
+exports images/HTML/AI JSON, and needs no replay device for structural inspection.
 
 ## Diagnose and prove the repair
 
@@ -136,7 +150,12 @@ pnpm exec forgeax dev start --rhi-capture true --json
 pnpm exec forgeax rhi capture --json
 ```
 
-If a live owner already exists, stop it before changing its capture options.
+`dev status` reports `rhiCapture`. The recorder attaches when the device is created,
+so it cannot be switched on in a running session: if `rhiCapture` is `false`,
+`rhi capture` fails with `capture-unavailable` and the exact restart command
+(`dev start --rhi-capture true` retires the old owner and starts a new one).
+`rhi capture` returns `frameId` (the host frame the tape recorded, with
+`frameIdSource`) and `capturedAt`; two captures taken apart report different frames.
 Preserve the failing backend and execution tier, reproduce the target state, then
 capture. The CLI calls the live host's recorder and persists one `.rhitape`;
 retain its returned path and digest. Capture requires a ready recorder-enabled
@@ -147,6 +166,8 @@ App; it does not start one automatically. For an embedded host, use the
 Use the returned path and select `summary.works[].workIndex`:
 
 ```bash
+pnpm exec forgeax rhi summary --artifact <path> --passes --json
+pnpm exec forgeax rhi summary --artifact <path> --passes --label particle --json
 pnpm exec forgeax rhi summary --artifact <path> --json
 pnpm exec forgeax rhi inspect --artifact <path> --work-index <workIndex> --json
 pnpm exec forgeax rhi read --artifact <path> --reads '[{"binding":{"group":0,"binding":2},"workIndex":<workIndex>,"image":{"format":"rgba16float","width":256,"height":256,"tile":{"tileWidth":8,"tileHeight":8,"index":0,"border":1},"png":"probe0.png"}}]' --json

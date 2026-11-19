@@ -1,6 +1,6 @@
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
-import { assert, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import {
@@ -13,7 +13,7 @@ import {
   IRRADIANCE_OCT_DIRECTIONS,
   IRRADIANCE_VOLUME_KIND,
 } from '../../raytracing/irradiance-volume';
-import { prepareRayPathFixture } from './path-tracer.commands';
+import { prepareRayPublicationFixture } from './path-tracer.commands';
 import { plane } from './path-tracer.fixture';
 
 const GUID = '6a1d7c3e-2b4f-4d8a-9e0c-5f3a1b7d9c24';
@@ -41,15 +41,16 @@ const texelToward = (z: 1 | -1) => {
 it('bakes the reference integrator into deterministic, cooked irradiance probes', {
   timeout: 300_000,
 }, async () => {
-  const fixture = await prepareRayPathFixture();
-  const matte = fixture.materials.find((m) => m.name === 'matte');
-  assert(matte);
+  const {
+    kernel,
+    material: { asset, program },
+  } = await prepareRayPublicationFixture('matte');
   const device = (await (await gpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   // The Dawn setup owns native device teardown; RHI devices expose no destroy method.
   const input: IrradianceBakeInput = {
-    kernel: fixture.kernel,
+    kernel,
     scene: buildRaySurfaceScene([plane()]).unwrap(),
-    materials: [{ id: 0, ...matte }],
+    materials: [{ id: 0, asset, program }],
     lights: [],
     lattice: { origin: [0, 0, -1], spacing: 2, dimensions: [1, 1, 2] },
     settings: {

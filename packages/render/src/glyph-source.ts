@@ -31,6 +31,7 @@ export interface GlyphRenderSource {
   readonly font: AssetHandle<'font'>;
   readonly text: string;
   readonly size: number;
+  readonly worldOriented: boolean;
   readonly color: readonly [number, number, number, number];
 }
 
@@ -59,16 +60,24 @@ interface FontContent {
   readonly layouts: Map<string, Map<number, MeshAsset>>;
   readonly materials: WeakMap<GlyphRenderSource, MaterialResource>;
   readonly colors: Map<string, MaterialResource>;
-  base?: MaterialSnapshot;
+  /** One snapshot per orientation mode: the mode rides in distanceRange.w. */
+  readonly bases: [MaterialSnapshot | undefined, MaterialSnapshot | undefined];
   bytes: number;
 }
 
 /** Adopts only changed Font roots. No entity catalogue or Font-to-label reverse index. */
 export class GlyphSources {
-  private worlds = new WeakMap<RenderResourceScope, Map<number, FontContent>>();
-
+  private source: RenderResourceScope | undefined;
+  private readonly roots = new Map<number, FontContent>();
+  private rootsFor(source: RenderResourceScope): Map<number, FontContent> {
+    if (this.source !== source) {
+      this.clear();
+      this.source = source;
+    }
+    return this.roots;
+  }
   private content(world: RenderResourceScope, handle: AssetHandle<'font'>): FontContent {
-    let roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     const cached = roots?.get(handle);
     if (cached !== undefined) return cached;
     const font = world.resolveAsset<FontAsset>(handle).unwrap();
@@ -83,18 +92,15 @@ export class GlyphSources {
       layouts: new Map(),
       materials: new WeakMap(),
       colors: new Map(),
+      bases: [undefined, undefined],
       bytes: 0,
     };
-    if (roots === undefined) {
-      roots = new Map();
-      this.worlds.set(world, roots);
-    }
     roots.set(handle, content);
     return content;
   }
 
   adopt(world: RenderResourceScope, changes: readonly AssetChange[]): void {
-    const roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     if (roots === undefined) return;
     for (const change of changes) roots.delete(change.handle);
   }
@@ -131,10 +137,11 @@ export class GlyphSources {
     let material = content.materials.get(source);
     if (material === undefined) {
       const font = content.font;
-      const key = source.color.join(',');
+      const mode = source.worldOriented ? 1 : 0;
+      const key = `${mode}:${source.color.join(',')}`;
       material = content.colors.get(key);
       const snapshot =
-        content.base ??
+        content.bases[mode] ??
         prepareMaterialSnapshot({
           handle: 0,
           world,
@@ -157,13 +164,13 @@ export class GlyphSources {
                 font.common.distanceRange,
                 font.common.atlasWidth,
                 font.common.atlasHeight,
-                0,
+                mode,
               ],
               baseColorTexture: { texture: font.atlas, sampler: font.sampler },
             },
           },
         });
-      content.base = snapshot;
+      content.bases[mode] = snapshot;
       if (material === undefined) {
         material = MaterialResource.from({
           ...snapshot,
@@ -180,17 +187,17 @@ export class GlyphSources {
   }
 
   detach(world: RenderResourceScope): void {
-    this.worlds.delete(world);
+    if (this.source === world) this.clear();
   }
   clear(): void {
-    this.worlds = new WeakMap();
+    this.roots.clear();
+    this.source = undefined;
   }
 }
 
 /** Snapshot changed component rows; layout is deferred until actual view consumption. */
 export function extractGlyphSources(
   world: World,
-  worldId: number,
   renderables: RenderableSnapshot[],
   selected?: ReadonlySet<number>,
   visibility?: { effective(entity: number): string },
@@ -224,10 +231,10 @@ export function extractGlyphSources(
         font: glyph.fontHandle,
         text: glyph.text,
         size: glyph.fontSize,
+        worldOriented: glyph.worldOriented,
         color: [glyph.color[0] ?? 1, glyph.color[1] ?? 1, glyph.color[2] ?? 1, glyph.color[3] ?? 1],
       },
       transform: { world: new Float32Array(matrix) },
-      worldId,
       entityKey: entity,
       material: rootMaterial,
       materials: [rootMaterial],
@@ -259,7 +266,7 @@ export function extractGlyphSources(
 export function projectGlyphView(
   frame: ExtractedFrame,
   materials: MaterialFrame,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   sources: GlyphSources,
   assets: AssetRegistry | undefined,
   hasSources = frame.renderables.some((source) => source.glyph !== undefined),
@@ -273,7 +280,7 @@ export function projectGlyphView(
       source.glyph.text.length === 0
     )
       return source;
-    const world = worlds[source.worldId];
+    const world = sourceScope;
     if (world === undefined) throw new Error('GlyphText requires its source resource scope');
     if (assets === undefined) throw new Error('GlyphText requires the renderer asset service');
     const { mesh, material } = sources.resolve(world, source.glyph, assets);
@@ -287,11 +294,15 @@ export function projectGlyphView(
       index,
       source.layer ?? 0,
     );
-    const matrix = new Float32Array(16);
-    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
-    matrix[12] = source.transform.world[12] ?? 0;
-    matrix[13] = source.transform.world[13] ?? 0;
-    matrix[14] = source.transform.world[14] ?? 0;
+    // Billboards keep only the anchor; world-oriented labels keep rotation and scale too.
+    let matrix = source.transform.world;
+    if (!source.glyph.worldOriented) {
+      matrix = new Float32Array(16);
+      matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1;
+      matrix[12] = source.transform.world[12] ?? 0;
+      matrix[13] = source.transform.world[13] ?? 0;
+      matrix[14] = source.transform.world[14] ?? 0;
+    }
     return {
       ...source,
       transform: { world: matrix },

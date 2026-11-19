@@ -29,7 +29,6 @@ export function shadowSourceSnapshot(
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -84,7 +83,6 @@ export function shadowSourceFixture(
     apply([
       {
         kind: 'update',
-        worldId: snapshot.worldId,
         entityKey: snapshot.entityKey,
         snapshot,
       },

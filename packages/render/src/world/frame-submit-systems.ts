@@ -1,17 +1,20 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { CommandBuffer, RhiCommandEncoder } from '@forgeax/engine-rhi';
 import type { RecordedView } from '../assembly/frame-recording';
 import type { RendererFrameStageResult } from '../assembly/renderer-frame-transaction';
 import type { RendererOperationCause } from '../errors/render';
+import { activeRenderProfileSession } from '../record/profile-session';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { RenderPhase } from '../render-contract';
-import { sharedFeatureGraphEncoded, sharedFeatureGraphStaged } from './feature-graph-systems';
 import {
-  RENDER_VIEW_GRAPH_ENCODE_SYSTEM,
-  ViewGraphSeal,
-  type ViewGraphSealState,
-} from './graph-seal-systems';
+  RenderFrameSubmitOrder,
+  RenderViewGraphEncodeOrder,
+  RenderViewRecordSettleOrder,
+} from '../system-order';
+import { sharedFeatureGraphEncoded, sharedFeatureGraphStaged } from './feature-graph-systems';
+import { ViewGraphSeal, type ViewGraphSealState } from './graph-seal-systems';
 import {
   closeFrameEncoder,
   RenderRecordInput,
@@ -24,7 +27,7 @@ import { surfaceUi } from './surface-ui';
 import { encodeSurfaceUi, RENDER_SURFACE_UI_ENCODE_SYSTEM } from './surface-ui-systems';
 import { readViewField, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
-import { type ViewOutputOwner, ViewOutputOwnerKey, viewComposition } from './view-output-systems';
+import { ViewOutputOwnerKey, viewComposition } from './view-output-systems';
 import { recordContext } from './view-record-context';
 import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-systems';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -40,7 +43,7 @@ export interface FrameSubmitState {
   rejectionCause?: RendererOperationCause;
   composite: 'not-required' | 'pending' | 'encoded' | 'rejected';
 }
-const RenderFrameSubmit = Object.freeze({ name: 'RenderFrameSubmit' });
+const RenderFrameSubmit = defineResource<FrameSubmitState>('RenderFrameSubmit');
 export function frameSubmitOutcome(world: World): FrameSubmitState {
   if (!world.hasResource(RenderFrameSubmit))
     return {
@@ -51,7 +54,7 @@ export function frameSubmitOutcome(world: World): FrameSubmitState {
       captureReady: true,
       composite: 'not-required',
     };
-  return world.getResource<FrameSubmitState>(RenderFrameSubmit);
+  return world.getResource(RenderFrameSubmit);
 }
 export function beginFrameSubmission(world: World): void {
   world.insertResource<FrameSubmitState>(RenderFrameSubmit, {
@@ -93,7 +96,7 @@ function encodeComposite(
   const internals = input.rendererInternals;
   if (internals === undefined || !world.hasResource(ViewOutputOwnerKey)) return false;
   const plan = viewComposition(world);
-  const owner = world.getResource<ViewOutputOwner>(ViewOutputOwnerKey);
+  const owner = world.getResource(ViewOutputOwnerKey);
   for (const view of plan.recorded) {
     if (view.target === undefined || view.output === undefined) continue;
     const target = internals.getRenderTargetPhysical?.(view.target);
@@ -104,6 +107,10 @@ function encodeComposite(
       viewport: { x: 0, y: 0, width, height, renderWidth: width, renderHeight: height },
     };
     if (!view.composite.encode(encoder, [picture], target.texture, target.descriptor)) return false;
+  }
+  if (plan.directDisplay !== undefined) {
+    recordContext(internals).encodeRenderTargetReadbacks?.(encoder);
+    return true;
   }
   if (internals.context === null) return false;
   const output = internals.presentationOutput ?? internals.context.getCurrentTexture().unwrap();
@@ -164,7 +171,7 @@ export function submitEncodedFrame(
   if (work === undefined) return false;
   let session: RecorderSession | undefined;
   try {
-    session = owner?.profiler?.activeSession();
+    session = activeRenderProfileSession(owner);
   } catch {}
   let textureMips: ReturnType<RenderSystemInternals['gpuStore']['prepareTextureMips']> | undefined;
   let canvasMips:
@@ -315,7 +322,7 @@ export function encodeFramePresentation(
 ): void {
   let session: RecorderSession | undefined;
   try {
-    session = input.rendererInternals?.profiler?.activeSession();
+    session = activeRenderProfileSession(input.rendererInternals);
   } catch {}
   profiled(session, 'submission/presentation', () =>
     encodeSurfaceUi(world, input.rendererInternals, input.frameId, encoder, sceneOutputEncoded),
@@ -352,134 +359,131 @@ function frameOutputsReady(
 }
 
 export function registerFrameSubmitSystems(world: World): void {
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_COMPOSITE_ENCODE_SYSTEM,
-      after: [RENDER_VIEW_GRAPH_ENCODE_SYSTEM],
-      queries: [{ read: [ViewGraphSeal] }],
-      fn: (world, [rows]) => {
-        const state = frameSubmitOutcome(world);
-        if (!world.hasResource(RenderRecordInput)) return;
-        const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
-        if (input.composite !== true) return;
-        const frame = renderSubmission(world).frame;
-        for (const row of rows) {
-          const seal = world
-            .resolveUniqueRef<ViewGraphSealState>(
-              requireViewField(world, row.entity, ViewGraphSeal, 'state'),
-            )
-            .unwrap();
-          if (seal.frame === frame && seal.encoding?.kind === 'pending') {
-            state.composite = 'pending';
-            return;
-          }
-        }
-        const encoder = renderFrameEncoder(world);
-        if (encoder.kind !== 'open') {
-          state.composite = 'rejected';
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_COMPOSITE_ENCODE_SYSTEM,
+    after: [RenderViewGraphEncodeOrder],
+    queries: [{ read: [ViewGraphSeal] }],
+    fn: (world, [rows]) => {
+      const state = frameSubmitOutcome(world);
+      if (!world.hasResource(RenderRecordInput)) return;
+      const input = world.getResource(RenderRecordInput);
+      if (input.composite !== true) return;
+      const frame = renderSubmission(world).frame;
+      for (const row of rows) {
+        const seal = world
+          .resolveUniqueRef<ViewGraphSealState>(
+            requireViewField(world, row.entity, ViewGraphSeal, 'state'),
+          )
+          .unwrap();
+        if (seal.frame === frame && seal.encoding?.kind === 'pending') {
+          state.composite = 'pending';
           return;
         }
-        try {
-          state.composite = encodeComposite(world, input, encoder.encoder) ? 'encoded' : 'rejected';
-        } catch (cause) {
-          state.composite = 'rejected';
-          state.failures.push(cause);
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_SURFACE_UI_ENCODE_SYSTEM,
-      after: [RENDER_COMPOSITE_ENCODE_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        if (!world.hasResource(RenderRecordInput)) return;
-        const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
-        const encoder = renderFrameEncoder(world);
-        if (encoder.kind !== 'open') return;
-        const state = frameSubmitOutcome(world);
-        if (state.composite === 'pending') return;
-        try {
-          const sceneOutputEncoded =
-            state.composite === 'encoded' ||
-            (renderSubmission(world).open && hasEncodedSurfaceView(world, input.frameId));
-          encodeFramePresentation(world, input, encoder.encoder, sceneOutputEncoded);
-        } catch (cause) {
-          state.failures.push(cause);
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_FRAME_SUBMIT_SYSTEM,
-      after: [RENDER_SURFACE_UI_ENCODE_SYSTEM],
-      queries: [{ read: [ViewRecordAttempt, ViewFrame, ViewRecorder], optional: [ViewGraphSeal] }],
-      fn: (world, [rows]) => {
-        if (!world.hasResource(RenderRecordInput)) return;
-        const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
-        // Bare graph fixtures do not stage a renderer submission. They own their explicit harness.
-        if (input.rendererInternals === undefined) return;
-        const state = frameSubmitOutcome(world);
-        if (!frameOutputsReady(world, input, state)) return;
-        // Presentation-only frames do not open a scene frame. Retained view attempts
-        // belong to the previous scene frame and cannot participate in this submit.
-        if (!renderSubmission(world).open) {
-          submitEncodedFrame(world, input, [], state);
-          return;
-        }
-        const works: RecordedView[] = [];
-        const frame = renderSubmission(world).frame;
+      }
+      const encoder = renderFrameEncoder(world);
+      if (encoder.kind !== 'open') {
+        state.composite = 'rejected';
+        return;
+      }
+      try {
+        state.composite = encodeComposite(world, input, encoder.encoder) ? 'encoded' : 'rejected';
+      } catch (cause) {
+        state.composite = 'rejected';
+        state.failures.push(cause);
+      }
+    },
+  });
+  world.addSystem(RenderRecord, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_SURFACE_UI_ENCODE_SYSTEM,
+    after: [systemToken1],
+    queries: [],
+    fn: (world) => {
+      if (!world.hasResource(RenderRecordInput)) return;
+      const input = world.getResource(RenderRecordInput);
+      const encoder = renderFrameEncoder(world);
+      if (encoder.kind !== 'open') return;
+      const state = frameSubmitOutcome(world);
+      if (state.composite === 'pending') return;
+      try {
+        const sceneOutputEncoded =
+          state.composite === 'encoded' ||
+          (renderSubmission(world).open && hasEncodedSurfaceView(world, input.frameId));
+        encodeFramePresentation(world, input, encoder.encoder, sceneOutputEncoded);
+      } catch (cause) {
+        state.failures.push(cause);
+      }
+    },
+  });
+  world.addSystem(RenderRecord, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    sets: [RenderFrameSubmitOrder],
+    commands: 'none',
+    name: RENDER_FRAME_SUBMIT_SYSTEM,
+    after: [systemToken2],
+    queries: [{ read: [ViewRecordAttempt, ViewFrame, ViewRecorder], optional: [ViewGraphSeal] }],
+    fn: (world, [rows]) => {
+      if (!world.hasResource(RenderRecordInput)) return;
+      const input = world.getResource(RenderRecordInput);
+      // Bare graph fixtures do not stage a renderer submission. They own their explicit harness.
+      if (input.rendererInternals === undefined) return;
+      const state = frameSubmitOutcome(world);
+      if (!frameOutputsReady(world, input, state)) return;
+      // Presentation-only frames do not open a scene frame. Retained view attempts
+      // belong to the previous scene frame and cannot participate in this submit.
+      if (!renderSubmission(world).open) {
+        submitEncodedFrame(world, input, [], state);
+        return;
+      }
+      const works: RecordedView[] = [];
+      const frame = renderSubmission(world).frame;
 
-        for (const row of rows) {
-          const entity = row.entity;
+      for (const row of rows) {
+        const entity = row.entity;
 
-          const attempt = world
-            .resolveUniqueRef<ViewRecordAttemptState>(
-              requireViewField(world, entity, ViewRecordAttempt, 'state'),
-            )
-            .unwrap();
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame) continue;
-          if (attempt.frame !== frame) return;
-          const slot = readViewField(world, entity, ViewGraphSeal, 'state');
-          const seal =
-            slot === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
-          const selected = selectViewWork(
-            world,
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            attempt,
-            seal,
-            state,
-          );
-          if (selected.kind === 'rejected') return;
-          if (selected.kind === 'ready') works.push(selected.work);
-        }
-        submitEncodedFrame(world, input, works, state);
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: 'render-frame-submit-report',
-      after: ['render-view-record-settle'],
-      queries: [],
-      fn: (world) => {
-        if (!world.hasResource(RenderRecordInput)) return;
-        const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
-        const encoder = renderFrameEncoder(world);
-        // Per-view settlement discarded candidate outputs before any error observer inspects them.
-        if (encoder.kind === 'failed') input.rendererInternals?.errorRegistry.fire(encoder.error);
-      },
-    })
-    .unwrap();
+        const attempt = world
+          .resolveUniqueRef<ViewRecordAttemptState>(
+            requireViewField(world, entity, ViewRecordAttempt, 'state'),
+          )
+          .unwrap();
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame) continue;
+        if (attempt.frame !== frame) return;
+        const slot = readViewField(world, entity, ViewGraphSeal, 'state');
+        const seal =
+          slot === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
+        const selected = selectViewWork(
+          world,
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          attempt,
+          seal,
+          state,
+        );
+        if (selected.kind === 'rejected') return;
+        if (selected.kind === 'ready') works.push(selected.work);
+      }
+      submitEncodedFrame(world, input, works, state);
+    },
+  });
+  world.addSystem(RenderRecord, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: 'render-frame-submit-report',
+    after: [RenderViewRecordSettleOrder],
+    queries: [],
+    fn: (world) => {
+      if (!world.hasResource(RenderRecordInput)) return;
+      const input = world.getResource(RenderRecordInput);
+      const encoder = renderFrameEncoder(world);
+      // Per-view settlement discarded candidate outputs before any error observer inspects them.
+      if (encoder.kind === 'failed') input.rendererInternals?.errorRegistry.fire(encoder.error);
+    },
+  });
+  world.addSystem(RenderRecord, systemToken4).unwrap();
 }

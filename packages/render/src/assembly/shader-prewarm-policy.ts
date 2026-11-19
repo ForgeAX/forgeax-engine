@@ -1,7 +1,10 @@
 import type { Result, RhiError, ShaderModule } from '@forgeax/engine-rhi';
 import {
+  findVariantByDefines,
   findVariantByKey,
+  isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
+  materialShaderAxes,
   materialShaderSource,
 } from '@forgeax/engine-shader';
 import type { SeedShaderModule } from './material-shader-policy';
@@ -19,7 +22,10 @@ export function isOrdinaryMaterialVariant(
     // use by an alpha-cutout material, so they add no boot pipelines.
     variant.defines.ALPHA_MASK !== true &&
     variant.defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
-    variant.defines.LEAN_LIGHTING !== true
+    variant.defines.LEAN_LIGHTING !== true &&
+    variant.defines.WATER_WAVES_AVAILABLE !== true &&
+    variant.defines.WATER_INFO_RGBA16 !== true &&
+    variant.defines.STANDARD_LEAN_INPUTS !== true
   );
 }
 
@@ -83,6 +89,9 @@ export function selectSkinPrewarmVariants(
         defines.COVERAGE_ONLY !== true &&
         defines.VISIBLE_SURFACE_AVAILABLE !== true &&
         defines.ALPHA_MASK !== true &&
+        defines.WATER_WAVES_AVAILABLE !== true &&
+        defines.WATER_INFO_RGBA16 !== true &&
+        defines.STANDARD_LEAN_INPUTS !== true &&
         (defines.ATMOSPHERE_AVAILABLE ?? false) === atmosphereAvailable &&
         defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
         defines.PROBE_BLEND_AVAILABLE !== true &&
@@ -110,6 +119,31 @@ export function selectGpuDrivenSceneIndexVariant(
   vertexColorAvailable = false,
   atmosphereAvailable = false,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
+  if (manifestEntry !== undefined && isShaderTemplateManifestRow(manifestEntry)) {
+    const axes = new Set(materialShaderAxes(manifestEntry));
+    const optional = {
+      COVERAGE_ONLY: false,
+      VISIBLE_SURFACE_AVAILABLE: false,
+      ALPHA_MASK: false,
+      DIRECTIONAL_SHADOW_SIMPLE: false,
+      LEAN_LIGHTING: false,
+      STANDARD_LEAN_INPUTS: false,
+      CLUSTER_FORWARD_AVAILABLE: false,
+      PROBE_BLEND_AVAILABLE: false,
+      EXTENDED_LIGHTING_AVAILABLE: extendedLightingAvailable,
+      DIRECTIONAL_PCSS_AVAILABLE: directionalPcssAvailable,
+      PROJECTOR_AVAILABLE: projectorAvailable,
+      REFLECTION_FALLBACK_AVAILABLE: false,
+      TRANSMISSION_AVAILABLE: false,
+    };
+    return findVariantByDefines(manifestEntry, {
+      ...Object.fromEntries(Object.entries(optional).filter(([axis]) => axes.has(axis))),
+      STORAGE_BUFFER_AVAILABLE: true,
+      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+      ATMOSPHERE_AVAILABLE: atmosphereAvailable,
+      VERTEX_COLOR_AVAILABLE: vertexColorAvailable,
+    });
+  }
   return manifestEntry?.variants.find(
     (variant) =>
       isOrdinaryMaterialVariant(variant) &&
@@ -176,10 +210,7 @@ export function selectBootVariant(
   manifestEntry: MaterialShaderManifestEntry | undefined,
   axes: Readonly<Record<string, boolean>>,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
-  const required = Object.entries(axes);
-  return manifestEntry?.variants.find(({ defines }) =>
-    required.every(([axis, value]) => (defines[axis] ?? false) === value),
-  );
+  return manifestEntry === undefined ? undefined : findVariantByDefines(manifestEntry, axes);
 }
 
 /**

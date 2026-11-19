@@ -1,6 +1,6 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { copyMeshAttribute, createBoxGeometry } from '@forgeax/engine-geometry';
 import type { RuntimePackSnapshot } from '@forgeax/engine-import';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createRuntimePackPublication, preparePackProgram } from '@forgeax/engine-pack/runtime';
@@ -202,7 +202,7 @@ it('uses the default App dependency source and restores a generated Scene with s
     const mesh = restored.registry
       .read((await restored.registry.load(meshGuid, 'mesh')).unwrap())
       .unwrap();
-    expect(mesh.attributes.position).toEqual(original.geometry.attributes.position);
+    expect(copyMeshAttribute(mesh, 'position')).toEqual(original.geometry.attributes.position);
     expect(mesh.indices).toEqual(original.geometry.indices);
     expect((await restored.registry.load(materialGuid, 'material')).ok).toBe(true);
     const source = rows.find((row) => row.guid === meshGuid);

@@ -41,6 +41,14 @@ const material: MaterialSnapshot = {
   passes: [],
 };
 
+it('keeps Water frame inputs on the specialized direct recording contract', () => {
+  const resolve = () => ({
+    ...artifact,
+    receipt: { ...receipt, systemInputs: { water: 'water-frame/3' as const } },
+  });
+  expect(prepareBatchExecution(geometry, material, pass, resolve).unwrap().route).toBe('direct');
+});
+
 it('prepares one shared geometry and material version without entity inputs', () => {
   const resolve = vi.fn(() => artifact);
   const accepted = prepareBatchExecution(geometry, material, pass, resolve).unwrap();
@@ -51,6 +59,8 @@ it('prepares one shared geometry and material version without entity inputs', ()
     pass: 'forward',
     address: 'scene-index',
     alphaMask: false,
+    // No standardTextureMask: an unknown mask keeps the general inputs.
+    leanInputs: false,
   });
   if (accepted.route !== 'gpu') throw new Error('Expected shared GPU execution');
   const next = { ...material, roughness: 0.9 };

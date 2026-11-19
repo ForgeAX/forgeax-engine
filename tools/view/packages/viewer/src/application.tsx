@@ -14,6 +14,7 @@ import type { HostConnection } from './shell/HostConnectionIndicator';
 import { createBrowserConnection } from './plugins/browser-connection.ts';
 import { ViewerShell } from './shell/ViewerShell';
 import type { WorkspaceRecoveryClient } from './shell/WorkspaceProjectRecovery';
+import { createServiceViewLauncher, type ViewLauncher } from './launcher.ts';
 import type { ViewFrontendConfig } from './config.ts';
 import '@forgeax/view-components/styles.css';
 import './styles.css';
@@ -23,7 +24,7 @@ import type { EngineWorkspacePresentation } from '@forgeax/engine/app';
 import type { Context } from '@forgeax/engine-plugin';
 import type { FrontendPlatform } from '@forgeax/engine-host/platform';
 
-export function mountViewApplication(platform: FrontendPlatform, { panels, presentation, context }: { panels?: Promise<unknown>; presentation?: EngineWorkspacePresentation; context?: Context } = {}) {
+export function mountViewApplication(platform: FrontendPlatform, { panels, presentation, context, launcher: borrowedLauncher }: { launcher?: ViewLauncher; panels?: Promise<unknown>; presentation?: EngineWorkspacePresentation; context?: Context } = {}) {
   const { window, document } = platform;
   restoreProjectPreferences(window);
   initI18n();
@@ -45,6 +46,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
     platform,
   });
 
+  let launcher = borrowedLauncher;
   let workspaceClient: WorkspaceRecoveryClient | undefined;
   let hostConnection: HostConnection = { phase: 'connecting', onReconnect: startConnection };
   let responsiveAutoTuck = false;
@@ -93,6 +95,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
             panelHost={panelHost}
             workspaceClient={workspaceClient}
             hostConnection={hostConnection}
+            launcher={launcher}
             responsiveAutoTuck={responsiveAutoTuck}
           />
         </ThemeProvider>
@@ -107,6 +110,7 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
 
     let config: {
       configured?: boolean;
+      launcher?: boolean;
       reason?: string;
       frontendEndpoint?: string;
       token?: string;
@@ -115,13 +119,28 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
     };
     try {
       const response = await platform.fetch('/__forgeax/view/bootstrap', { cache: 'no-store', signal });
-      if (!response.ok) throw new Error(`View bootstrap failed (${response.status})`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => undefined) as { phase?: unknown; reason?: unknown; launcher?: boolean } | undefined;
+        if (payload?.launcher) launcher ??= createServiceViewLauncher(platform.fetch);
+        if (response.status === 503 && payload?.phase === 'offline') {
+          window.__forgeaxViewReady = { unconfigured: true, reason: typeof payload.reason === 'string' ? payload.reason : 'Backend offline' };
+          renderApp();
+          return;
+        }
+        if (response.status === 503 && payload?.phase === 'preparing') {
+          const error = new Error(typeof payload.reason === 'string' ? payload.reason : 'View is preparing the Engine Host connection.');
+          Object.assign(error, { forgeaxPreparing: true });
+          throw error;
+        }
+        throw new Error(`View bootstrap failed (${response.status})`);
+      }
       config = await response.json();
     } catch (error) {
       if (signal.aborted) return;
       throw error;
     }
     if (signal.aborted) return;
+    if (config.launcher) launcher ??= createServiceViewLauncher(platform.fetch);
     responsiveAutoTuck = config.frontendConfig?.layout?.responsiveAutoTuck !== false;
     renderApp();
     if (config.configured === false) {

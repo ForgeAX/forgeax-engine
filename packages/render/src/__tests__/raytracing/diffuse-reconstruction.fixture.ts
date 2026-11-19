@@ -40,7 +40,9 @@ export async function verifyDiffuseReconstruction(
     buffers.push(b);
     return b;
   };
-  const texture = (format: 'r32uint' | 'rgba32uint' | 'rgba16float' | 'depth32float') => {
+  const texture = (
+    format: 'rg32uint' | 'r32uint' | 'rgba32uint' | 'rgba16float' | 'depth32float',
+  ) => {
     const t = device
       .createTexture({
         format,
@@ -54,7 +56,7 @@ export async function verifyDiffuseReconstruction(
   };
   try {
     const depth = texture('depth32float'),
-      normal = texture('r32uint');
+      normal = texture('rg32uint');
     const identity = texture('rgba32uint'),
       motion = texture('rgba16float');
     const d = buffer('reconstruction.raw', pixels * 80),
@@ -93,7 +95,7 @@ export async function verifyDiffuseReconstruction(
         fragment: {
           module: rasterModule,
           entryPoint: 'fs',
-          targets: [{ format: 'r32uint' }, { format: 'rgba32uint' }, { format: 'rgba16float' }],
+          targets: [{ format: 'rg32uint' }, { format: 'rgba32uint' }, { format: 'rgba16float' }],
         },
         primitive: { topology: 'triangle-list' },
         depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },

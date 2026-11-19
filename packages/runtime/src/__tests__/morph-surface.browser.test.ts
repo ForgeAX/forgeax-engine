@@ -7,6 +7,7 @@ import { commands, page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { base64Bytes } from './helpers/forward-gtao-capture';
 import { describeForwardGtaoFailure } from './helpers/forward-gtao-failure';
+import { MorphOriginalFrame } from './helpers/morph-original-frame';
 import { MORPH_SURFACE_SIZE, verifyMorphSurface } from './helpers/morph-surface';
 
 it.each([
@@ -35,6 +36,7 @@ it.each([
     },
   });
   if (!created.ok) throw created.error;
+  const original = new MorphOriginalFrame(recorder, () => created.value.renderer.inspect());
   try {
     expect(created.value.renderer.inspect().capabilities.backendKind).toBe(backend);
     await verifyMorphSurface(
@@ -52,31 +54,28 @@ it.each([
         );
       },
       skin,
-      async (draw, cause) => {
+      async (_draw, cause) => {
         const prefix = `artifacts/webgl2-six/morph/${backend}-${skin ? 'skin' : 'mesh'}-failure`;
+        const evidence = original.evidence();
         await commands.writeFile(
           `${prefix}.json`,
-          JSON.stringify(describeForwardGtaoFailure(cause)),
+          JSON.stringify({
+            failure: describeForwardGtaoFailure(cause),
+            ...evidence,
+            tape: undefined,
+          }),
         );
-        const pending = recorder.captureFrame();
-        (await recorder.frameBoundary()).unwrap();
-        try {
-          await draw();
-        } catch {
-          /* Preserve the same failed frame's recorded work. */
-        }
-        (await recorder.frameBoundary()).unwrap();
-        const captured = await pending;
-        if (captured.ok)
+        if (evidence.tape !== undefined)
           await commands.writeFile(
-            `${prefix}.rhitape`,
-            base64Bytes(captured.value.bytes),
+            `${prefix}-original-operation.rhitape`,
+            base64Bytes(evidence.tape),
             'base64',
           );
-        else await commands.writeFile(`${prefix}-capture.json`, JSON.stringify(captured.error));
       },
+      original,
     );
   } finally {
+    original.dispose();
     expect((await created.value.renderer.dispose()).ok).toBe(true);
     (await recorder.dispose()).unwrap();
     canvas.remove();

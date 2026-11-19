@@ -1,14 +1,16 @@
-import type { Component, SchemaFieldType } from '../component';
-import { componentId, componentSchema } from '../component';
+import { componentDefinition, componentId } from '../component';
 import {
-  SharedKernelEligibilityError,
-  SharedKernelFailureError,
-} from '../errors/shared-kernel-errors';
-import type { QueryDescriptor, QuerySpan } from '../query/query';
-import type { SystemHandle } from '../schedule';
+  createSharedKernelEligibilityError,
+  createSharedKernelFailureError,
+  isEcsFault,
+} from '../errors';
+import { DESCRIPTOR_ROLES, type QueryDescriptor, type QuerySpan } from '../query/query';
+import { defineResource } from '../resource';
+import { defineSystem, type System, type SystemOrderReference } from '../schedule';
 import { worldInternal } from '../world-internal';
 
-export const SHARED_KERNEL_EXECUTOR_RESOURCE_KEY = 'SharedKernelExecutor';
+export const SHARED_KERNEL_EXECUTOR_RESOURCE_KEY =
+  defineResource<SharedKernelExecutor>('SharedKernelExecutor');
 
 export interface KernelDispatchResult {
   readonly mode: 'forced-inline' | 'shared';
@@ -98,11 +100,12 @@ export function poisonedWorldExecutionState(
 
 export interface SharedKernelDefinition<Qs extends readonly QueryDescriptor[]> {
   readonly name: string;
+  readonly sets?: readonly import('../schedule').SystemSet[];
   readonly queries: Qs;
   readonly run: (spans: readonly QuerySpan[]) => void;
   readonly minimumRows?: number;
-  readonly before?: readonly (string | import('../schedule-token').ScheduleToken)[];
-  readonly after?: readonly (string | import('../schedule-token').ScheduleToken)[];
+  readonly before?: readonly SystemOrderReference[];
+  readonly after?: readonly SystemOrderReference[];
 }
 
 export interface SharedKernelDispatch<
@@ -118,35 +121,8 @@ export interface SharedKernelDispatch<
 
 export interface SharedKernelHandle<
   Qs extends readonly QueryDescriptor[] = readonly QueryDescriptor[],
-> extends SystemHandle<Qs>,
+> extends System<Qs>,
     SharedKernelDispatch<Qs> {}
-
-const NUMERIC_FIELDS = new Set<SchemaFieldType>([
-  'f32',
-  'f64',
-  'i32',
-  'u32',
-  'i16',
-  'u16',
-  'i8',
-  'u8',
-  'bool',
-  'enum',
-  'ref',
-  'entity',
-]);
-
-function components(descriptor: QueryDescriptor): readonly Component[] {
-  return [
-    ...(descriptor.read ?? []),
-    ...(descriptor.write ?? []),
-    ...(descriptor.optional ?? []),
-    ...(descriptor.with ?? []),
-    ...(descriptor.without ?? []),
-    ...(descriptor.changed ?? []),
-    ...(descriptor.added ?? []),
-  ];
-}
 
 function descriptorReason(descriptor: QueryDescriptor): SharedKernelEligibilityReason | undefined {
   if ((descriptor.read?.length ?? 0) + (descriptor.write?.length ?? 0) === 0) {
@@ -160,12 +136,15 @@ function descriptorReason(descriptor: QueryDescriptor): SharedKernelEligibilityR
     return 'span-unavailable';
   }
   const seen = new Set<number>();
-  for (const component of components(descriptor)) {
-    if (seen.has(componentId(component))) return 'descriptor-conflict';
-    seen.add(componentId(component));
-    if (component.storage === 'sparse') return 'span-unavailable';
-    if (Object.values(componentSchema(component)).some((field) => !NUMERIC_FIELDS.has(field))) {
-      return 'object-field';
+  for (const role of DESCRIPTOR_ROLES) {
+    const components = descriptor[role];
+    if (components === undefined) continue;
+    for (const component of components) {
+      const id = componentId(component);
+      if (seen.has(id)) return 'descriptor-conflict';
+      seen.add(id);
+      if (component.storage === 'sparse') return 'span-unavailable';
+      if (!componentDefinition(component).plan.scalarOnly) return 'object-field';
     }
   }
   return undefined;
@@ -199,9 +178,10 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
   definition: SharedKernelDefinition<Qs>,
 ): SharedKernelHandle<Qs> {
   const reason = sharedKernelEligibility(moduleUrl, definition);
-  if (reason !== undefined) throw new SharedKernelEligibilityError(definition.name, reason);
+  if (reason !== undefined) throw createSharedKernelEligibilityError(definition.name, reason);
 
-  const handle: SharedKernelHandle<Qs> = Object.freeze({
+  const descriptor = {
+    ...(definition.sets === undefined ? {} : { sets: definition.sets }),
     kind: 'shared-kernel' as const,
     moduleUrl,
     name: definition.name,
@@ -210,11 +190,12 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
     run: definition.run,
     ...(definition.before !== undefined ? { before: definition.before } : {}),
     ...(definition.after !== undefined ? { after: definition.after } : {}),
-    fn: (world: import('../world').World, queries: Parameters<SystemHandle<Qs>['fn']>[1]) => {
+    fn: (world: import('../world').World, queries: Parameters<System<Qs>['fn']>[1]) => {
       const dispatchSpans: KernelDispatchSpan[] = [];
       for (const [queryIndex, query] of queries.entries()) {
         const result = query.spans();
-        if (!result.ok) throw new SharedKernelEligibilityError(definition.name, 'span-unavailable');
+        if (!result.ok)
+          throw createSharedKernelEligibilityError(definition.name, 'span-unavailable');
         for (const span of result.value) dispatchSpans.push({ queryIndex, span });
       }
       const spans = dispatchSpans.map((entry) => entry.span);
@@ -224,17 +205,13 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
           totalRows < (definition.minimumRows ?? 16_384) ||
           !world.hasResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY)
         ) {
-          definition.run(spans);
-          return;
+          return definition.run(spans);
         }
-        const executor = world.getResource<SharedKernelExecutor>(
-          SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
-        );
+        const executor = world.getResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY);
         const result = executor.execute(handle, dispatchSpans);
         if (isKernelDispatchFailure(result)) {
           if (!result.partialWrite) {
-            definition.run(spans);
-            return;
+            return definition.run(spans);
           }
           world[worldInternal].poisonExecution({
             code: 'shared-kernel-failed',
@@ -243,7 +220,7 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
             partialWrite: result.partialWrite,
             retryable: false,
           });
-          throw new SharedKernelFailureError(
+          throw createSharedKernelFailureError(
             definition.name,
             world.execution.identity,
             result.cause,
@@ -258,10 +235,22 @@ export function defineSharedKernel<const Qs extends readonly QueryDescriptor[]>(
           partialWrite: true,
           retryable: false,
         });
-        if (cause instanceof SharedKernelFailureError) throw cause;
-        throw new SharedKernelFailureError(definition.name, world.execution.identity, cause, true);
+        if (isEcsFault(cause, 'shared-kernel-failed')) throw cause;
+        throw createSharedKernelFailureError(
+          definition.name,
+          world.execution.identity,
+          cause,
+          true,
+        );
       }
     },
+  };
+  const handle: SharedKernelHandle<Qs> = Object.freeze({
+    ...defineSystem(descriptor),
+    kind: descriptor.kind,
+    moduleUrl: descriptor.moduleUrl,
+    minimumRows: descriptor.minimumRows,
+    run: descriptor.run,
   });
   return handle;
 }
@@ -276,11 +265,13 @@ export type SharedFieldView =
   | Int8Array
   | Uint8Array;
 
+/** Portable columns in query declaration order; labels never identify components. */
 export interface SharedSpanBinding {
+  readonly queryIndex: number;
   readonly entities: Readonly<Uint32Array>;
   readonly length: number;
-  readonly read: Readonly<Record<string, Readonly<Record<string, SharedFieldView>>>>;
-  readonly write: Readonly<Record<string, Readonly<Record<string, SharedFieldView>>>>;
+  readonly read: readonly Readonly<Record<string, SharedFieldView>>[];
+  readonly write: readonly Readonly<Record<string, SharedFieldView>>[];
 }
 
 function sliceFields(
@@ -300,55 +291,34 @@ export function bindSharedSpan(
 ): SharedSpanBinding {
   const descriptor = kernel.queries[queryIndex];
   if (descriptor === undefined) throw new Error(`Missing query descriptor ${queryIndex}.`);
-  const read = Object.fromEntries(
-    (descriptor.read ?? []).map((component) => [
-      component.name,
-      span.get(component) as unknown as Record<string, SharedFieldView>,
-    ]),
+  const read = (descriptor.read ?? []).map(
+    (component) => span.get(component) as unknown as Record<string, SharedFieldView>,
   );
-  const write = Object.fromEntries(
-    (descriptor.write ?? []).map((component) => [
-      component.name,
-      span.mut(component) as unknown as Record<string, SharedFieldView>,
-    ]),
+  const write = (descriptor.write ?? []).map(
+    (component) => span.mut(component) as unknown as Record<string, SharedFieldView>,
   );
-  return { entities: span.entities, length: span.length, read, write };
+  return { queryIndex, entities: span.entities, length: span.length, read, write };
 }
 
-export function splitSharedSpan(
+/** Rows `[start, end)` of `binding`, as views over the same storage. */
+export function sliceSharedSpan(
   binding: SharedSpanBinding,
-  shardCount: number,
-): readonly SharedSpanBinding[] {
-  if (binding.length === 0 || shardCount <= 0) return [];
-  const count = Math.min(binding.length, shardCount);
-  const shards: SharedSpanBinding[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const start = Math.floor((binding.length * index) / count);
-    const end = Math.floor((binding.length * (index + 1)) / count);
-    shards.push({
-      entities: binding.entities.subarray(start, end),
-      length: end - start,
-      read: Object.fromEntries(
-        Object.entries(binding.read).map(([component, fields]) => [
-          component,
-          sliceFields(fields, start, end),
-        ]),
-      ),
-      write: Object.fromEntries(
-        Object.entries(binding.write).map(([component, fields]) => [
-          component,
-          sliceFields(fields, start, end),
-        ]),
-      ),
-    });
-  }
-  return shards;
+  start: number,
+  end: number,
+): SharedSpanBinding {
+  return {
+    queryIndex: binding.queryIndex,
+    entities: binding.entities.subarray(start, end),
+    length: end - start,
+    read: binding.read.map((fields) => sliceFields(fields, start, end)),
+    write: binding.write.map((fields) => sliceFields(fields, start, end)),
+  };
 }
 
 export function isSharedSpan(binding: SharedSpanBinding): boolean {
   if (typeof SharedArrayBuffer === 'undefined') return false;
   if (!(binding.entities.buffer instanceof SharedArrayBuffer)) return false;
-  return [...Object.values(binding.read), ...Object.values(binding.write)].every((fields) =>
+  return [...binding.read, ...binding.write].every((fields) =>
     Object.values(fields).every((view) => view.buffer instanceof SharedArrayBuffer),
   );
 }

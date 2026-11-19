@@ -257,11 +257,6 @@ it('preserves borrowed binding iteration failures', () => {
   });
   Object.freeze(bindings);
   expect(() =>
-    projectMeshMaterialBindingObservation({
-      worldId: 0,
-      entityKey: 1,
-      bindings,
-      diagnostics: [],
-    }),
+    projectMeshMaterialBindingObservation({ worldId: 0, entityKey: 1, bindings, diagnostics: [] }),
   ).toThrow(failure);
 });

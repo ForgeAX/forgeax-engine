@@ -13,6 +13,7 @@ import {
 } from '@forgeax/engine-types';
 import { validateMeshCardLayout } from '../mesh-card-artifact';
 import type { MeshCardLayout } from '../mesh-card-layout';
+import { interleavedMeshFiniteFailure, meshAttributeLayout } from '../mesh-storage';
 import {
   deriveVertexLayoutProjectionFromMask,
   unpackInterleavedVertexAttributes,
@@ -21,10 +22,11 @@ import {
 import { MeshBinAssetError } from './mesh-bin-error';
 
 export interface UnpackedMeshBin {
-  readonly version: 4 | 5;
+  readonly version: 4 | 5 | 6;
   readonly projection: VertexLayoutProjection;
   readonly vertices: Float32Array;
   readonly attributes: VertexAttributeMap;
+  readonly attributeStorage?: 'interleaved';
   readonly indices?: Uint16Array | Uint32Array;
   readonly submeshes: ReadonlyArray<Record<string, unknown>>;
   readonly cardLayout?: MeshCardLayout;
@@ -379,7 +381,31 @@ function decodeAttributes(
   projection: VertexLayoutProjection,
   header: MeshBinHeader,
   sourceKey: string,
+  storage: 'channels' | 'interleaved',
 ): Result<VertexAttributeMap, MeshBinAssetError> {
+  if (storage === 'interleaved') {
+    const declaration: VertexAttributeMap = {};
+    const nonfinite = interleavedMeshFiniteFailure(vertices, projection);
+    if (nonfinite !== undefined)
+      return fail(
+        sourceKey,
+        `finite ${nonfinite}`,
+        'non-finite vertex lane',
+        header,
+        'payload-non-finite',
+      );
+    for (const attribute of projection.attributes)
+      Reflect.set(
+        declaration,
+        attribute.key,
+        attribute.format === 'uint32'
+          ? new Uint32Array(0)
+          : attribute.format === 'uint16x4'
+            ? new Uint16Array(0)
+            : new Float32Array(0),
+      );
+    return ok(meshAttributeLayout(declaration));
+  }
   const attributes = unpackInterleavedVertexAttributes(vertices, projection);
   if (attributes === undefined)
     return fail(
@@ -446,7 +472,7 @@ function decodeMorphTargets(
   sourceKey: string,
 ): Result<ReadonlyArray<Record<string, Float32Array>> | undefined, MeshBinAssetError> {
   try {
-    if (header.version === 5) {
+    if (header.version >= 5) {
       if (meta.morphTargets !== undefined)
         throw new TypeError('v5 morph targets must use binary lanes');
       return ok(decodeMeshBinMorphs(morphBytes, header.vertexCount, meta.morphTargetMasks));
@@ -483,9 +509,25 @@ function morphWeightsMatch(
   );
 }
 
+function decodeLodPolicy(
+  meta: MeshBinMetadata,
+  header: MeshBinHeader,
+  sourceKey: string,
+): Result<Pick<UnpackedMeshBin, 'lods' | 'lodHysteresis'>, MeshBinAssetError> {
+  const lods = decodeLods(meta.lods, header, sourceKey);
+  if (!lods.ok) return lods;
+  const lodHysteresis = decodeLodHysteresis(meta.lodHysteresis, header, sourceKey);
+  if (!lodHysteresis.ok) return lodHysteresis;
+  return ok({
+    ...(lods.value === undefined ? {} : { lods: lods.value }),
+    ...(lodHysteresis.value === undefined ? {} : { lodHysteresis: lodHysteresis.value }),
+  });
+}
+
 export function unpackMeshBin(
   bytes: Uint8Array,
   sourceKey = '<unknown mesh source>',
+  storage: 'channels' | 'interleaved' = 'channels',
 ): Result<UnpackedMeshBin, MeshBinAssetError> {
   const headerResult = decodeMeshBinHeader(bytes, sourceKey);
   if (!headerResult.ok) return headerFailure(bytes, sourceKey, headerResult.error);
@@ -498,11 +540,9 @@ export function unpackMeshBin(
   const metaResult = parseMetadata(jsonBytes, header, sourceKey);
   if (!metaResult.ok) return metaResult;
   const meta = metaResult.value;
-  const lods = decodeLods(meta.lods, header, sourceKey);
-  if (!lods.ok) return lods;
-  const lodHysteresis = decodeLodHysteresis(meta.lodHysteresis, header, sourceKey);
-  if (!lodHysteresis.ok) return lodHysteresis;
-  const attributes = decodeAttributes(vertices, projection.value, header, sourceKey);
+  const lodPolicy = decodeLodPolicy(meta, header, sourceKey);
+  if (!lodPolicy.ok) return lodPolicy;
+  const attributes = decodeAttributes(vertices, projection.value, header, sourceKey, storage);
   if (!attributes.ok) return attributes;
   const morphTargets = decodeMorphTargets(meta, morphBytes, header, sourceKey);
   if (!morphTargets.ok) return morphTargets;
@@ -527,6 +567,7 @@ export function unpackMeshBin(
     projection: projection.value,
     vertices,
     attributes: attributes.value,
+    ...(storage === 'interleaved' ? { attributeStorage: 'interleaved' as const } : {}),
     ...(indices === undefined ? {} : { indices }),
     submeshes: meta.submeshes,
     ...(meta.cardLayout === undefined ? {} : { cardLayout: meta.cardLayout }),
@@ -537,7 +578,6 @@ export function unpackMeshBin(
     ...(meta.morphWeights === undefined
       ? {}
       : { morphWeights: new Float32Array(meta.morphWeights) }),
-    ...(lods.value === undefined ? {} : { lods: lods.value }),
-    ...(lodHysteresis.value === undefined ? {} : { lodHysteresis: lodHysteresis.value }),
+    ...lodPolicy.value,
   });
 }

@@ -3,9 +3,9 @@ import {
   type ComponentSchema,
   defineComponent,
   type FieldsInput,
+  componentRelationshipRoles as roles,
 } from './component';
-import { componentRelationshipRoles as roles } from './component-schema';
-import type { EntityHandle } from './entity-handle';
+import { ENTITY_NULL_RAW, type EntityHandle } from './entity-handle';
 
 declare const relationshipTargetBrand: unique symbol;
 
@@ -13,6 +13,9 @@ declare const relationshipTargetBrand: unique symbol;
 export type RelationshipTargetComponent<C extends Component = Component> = C & {
   readonly [relationshipTargetBrand]: true;
 };
+
+/** Command-owned changes to source edges over the committed World graph. */
+export type RelationshipOverlay = ReadonlyMap<number, ReadonlyMap<number, EntityHandle | null>>;
 
 export interface RelationshipOptions {
   readonly sourceName: string;
@@ -104,16 +107,15 @@ export function relationshipRole(component: Component): RelationshipRole | undef
   return roles.get(component);
 }
 
-/** Return the materialized target token owned by a source relationship. */
-export function relationshipMirror(component: Component): Component | undefined {
-  const role = roles.get(component);
-  return role?.kind === 'source' ? role.target : undefined;
-}
-
 /** Return the source token owned by a materialized relationship target. */
 export function relationshipSource(component: Component): Component | undefined {
   const role = roles.get(component);
   return role?.kind === 'target' ? role.source : undefined;
+}
+
+export function isExclusiveRelationshipSource(component: Component): boolean {
+  const role = roles.get(component);
+  return role?.kind === 'source' && role.exclusive;
 }
 
 export function isRelationshipTarget(component: Component): boolean {
@@ -145,16 +147,9 @@ export class RelationshipIndex {
     return true;
   }
 
-  reparent(source: EntityHandle, target: EntityHandle, slot: number): number {
-    return this.attach(source, target, slot);
-  }
-
-  slotOf(source: EntityHandle): number | undefined {
-    return this.slots.get(source as number)?.slot;
-  }
-
-  targetOf(source: EntityHandle): EntityHandle | undefined {
-    return this.slots.get(source as number)?.target as EntityHandle | undefined;
+  slotForTarget(source: EntityHandle, target: EntityHandle): number | undefined {
+    const location = this.slots.get(source as number);
+    return location?.target === (target as number) ? location?.slot : undefined;
   }
 
   /** Bind the source that swap-remove moved into `slot`. */
@@ -165,16 +160,21 @@ export class RelationshipIndex {
     location.slot = slot;
     this.epochValue++;
   }
+}
 
-  /** Cold recovery path only: rebuild from R source records. */
-  recover(records: Iterable<readonly [EntityHandle, EntityHandle]>): void {
-    this.slots.clear();
-    const nextSlots = new Map<number, number>();
-    for (const [source, target] of records) {
-      const slot = nextSlots.get(target as number) ?? 0;
-      nextSlots.set(target as number, slot + 1);
-      this.attach(source, target, slot);
-    }
-    this.epochValue++;
-  }
+/** The declared source field is the relationship edge, including its null sentinel. */
+export function relationshipTarget(
+  component: Component,
+  data: Readonly<Record<string, unknown>>,
+): EntityHandle | null {
+  const role = relationshipRole(component);
+  if (role?.kind !== 'source') return null;
+  return decodeRelationshipTarget(data[role.sourceField]);
+}
+
+/** Normalize the stored null sentinel and explicit nullish input to the same empty edge. */
+export function decodeRelationshipTarget(raw: unknown): EntityHandle | null {
+  return raw === null || raw === undefined || raw === ENTITY_NULL_RAW
+    ? null
+    : (raw as EntityHandle);
 }

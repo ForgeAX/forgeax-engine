@@ -6,16 +6,95 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { consumerInputConfig, consumerInputExternal } from '../build-app-inputs.mjs';
 import { appPackages } from '../build-task-cache.mjs';
 import {
+  appBuildOutputMode,
+  createAppBuildInvocation,
   createPrebuildInvocation,
   createViteBuildInvocation,
   resolveViteCli,
   validateCanonicalAppBuild,
   validateCanonicalAppBuilds,
 } from '../lib/app-build-launcher.mjs';
+import { runnerResources, shaderProducerHeapSize } from '../lib/runner-resources.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+test('input producers retain complete preview and project builds while full mode stays the default', () => {
+  const app = { manifest: { scripts: { build: 'vite build' } } };
+  assert.equal(appBuildOutputMode(app), 'full');
+  assert.equal(appBuildOutputMode(app, true), 'consumer-inputs');
+  assert.equal(
+    appBuildOutputMode(
+      { manifest: { ...app.manifest, forgeax: { smokeArtifacts: { preview: true } } } },
+      true,
+    ),
+    'full',
+  );
+  const project = appPackages(repoRoot).find(
+    ({ manifest }) => manifest.name === '@forgeax/app-vc-ue5',
+  );
+  assert.ok(project);
+  assert.equal(appBuildOutputMode(project, true), 'full');
+  const invocation = createAppBuildInvocation({
+    app: { ...app, directory: '/tmp/fixture-app' },
+    outputMode: 'consumer-inputs',
+    baseEnv: { KEEP_ME: 'yes' },
+  });
+  assert.deepEqual(invocation.args, [resolve(repoRoot, 'scripts/build-app-inputs.mjs')]);
+  assert.equal(invocation.options.env.KEEP_ME, 'yes');
+  assert.equal(invocation.options.cwd, '/tmp/fixture-app');
+});
+
+test('input builds preserve authored Shader traversal and the original external policy', () => {
+  const external = consumerInputExternal(['already-external', /^custom:/], '/repo/packages');
+  for (const id of [
+    '@forgeax/engine',
+    '@forgeax/engine/render',
+    '@forgeax/engine-render',
+    '/repo/packages/render/dist/index.mjs',
+    'already-external',
+    'custom:module',
+  ])
+    assert.equal(external(id), true, id);
+  for (const id of [
+    './src/material.wgsl',
+    '@forgeax/engine-shader/default-standard-pbr.wgsl?raw',
+    '@forgeax/engine/package.json',
+    '/repo/packages/engine/package.json',
+    '/repo/packages/shader/src/pbr.wgsl',
+    './src/scene.ts',
+    '/repo/apps/shared/materials.ts',
+  ])
+    assert.equal(external(id), false, id);
+  const calls = [];
+  const delegated = consumerInputExternal((...args) => {
+    calls.push(args);
+    return args[0] === 'custom';
+  });
+  assert.equal(delegated('custom', 'importer', true), true);
+  assert.deepEqual(calls, [['custom', 'importer', true]]);
+});
+
+test('program and execution hosts retain the complete Vite facade graph', async () => {
+  for (const name of ['forgeax:execution-worker-entries', 'forgeax:plugin-programs']) {
+    const config = {
+      plugins: [false, Promise.resolve([{ name }])],
+      build: { rollupOptions: { external: ['custom'] } },
+    };
+    assert.equal(await consumerInputConfig(config), config);
+  }
+  const config = {
+    plugins: [{ name: 'forgeax:shader' }],
+    build: { rollupOptions: { external: ['custom'] } },
+  };
+  const selected = await consumerInputConfig(config);
+  assert.notEqual(selected, config);
+  assert.equal(selected.build.rollupOptions.external('custom'), true);
+  assert.equal(selected.build.rollupOptions.external('@forgeax/engine-render'), true);
+  assert.equal(selected.build.rollupOptions.external('@forgeax/engine/package.json'), false);
+});
 
 test('resolves the installed Vite CLI from the repository package manifest', () => {
   const cliPath = resolveViteCli(repoRoot);
@@ -23,7 +102,7 @@ test('resolves the installed Vite CLI from the repository package manifest', () 
   assert.equal(existsSync(cliPath), true);
 });
 
-test('the discovered app fleet uses the canonical Vite build script', () => {
+test('the discovered app fleet uses a supported direct build entrypoint', () => {
   const apps = appPackages(repoRoot);
   assert.ok(apps.length > 0, 'canonical validation must cover a non-empty app fleet');
   validateCanonicalAppBuilds(apps);
@@ -33,7 +112,7 @@ test('rejects an app build script outside the canonical fleet contract', () => {
   assert.throws(
     () =>
       validateCanonicalAppBuild({ manifest: { name: '@fixture/app', scripts: { build: 'true' } } }),
-    /unsupported build script for @fixture\/app: expected "vite build", received "true"/,
+    /unsupported build script for @fixture\/app: expected "vite build" or "node \.\.\/\.\.\/\.\.\/scripts\/vite-app\.mjs build", received "true"/,
   );
 });
 
@@ -53,9 +132,36 @@ test('build invocation preserves app cwd, explicit environment, and direct Node 
     env: {
       KEEP_ME: 'yes',
       FORGEAX_SHARED_APP_INPUTS_MANIFEST: '/tmp/shared/manifest.json',
+      NODE_OPTIONS: `--max-old-space-size=${shaderProducerHeapSize(runnerResources())}`,
       FORGEAX_BUILD_METRICS_DIR: '/tmp/facts',
     },
   });
+});
+
+test('launches the cloud project through its installed Engine CLI and preserves its worker policy', () => {
+  const app = appPackages(repoRoot).find(({ manifest }) => manifest.name === '@forgeax/app-vc-ue5');
+  assert.ok(app);
+  const invocation = createAppBuildInvocation({
+    app,
+    baseEnv: { FORGEAX_SHARED_APP_INPUTS_MANIFEST: '/tmp/shared/manifest.json' },
+  });
+  assert.equal(invocation.command, process.execPath);
+  assert.equal(
+    invocation.args[0],
+    realpathSync(resolve(repoRoot, 'packages/engine/dist/bin/forgeax.mjs')),
+  );
+  assert.deepEqual(invocation.args.slice(1), ['project', 'build']);
+  assert.equal(invocation.options.cwd, app.directory);
+  assert.equal(invocation.options.shell, false);
+  assert.deepEqual(JSON.parse(invocation.options.env.FORGEAX_EXECUTION_WORKERS), {
+    engine: false,
+    render: false,
+    kernels: false,
+  });
+  assert.equal(
+    invocation.options.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    '/tmp/shared/manifest.json',
+  );
 });
 
 test('prebuild invocation preserves the package lifecycle before direct Vite builds', () => {

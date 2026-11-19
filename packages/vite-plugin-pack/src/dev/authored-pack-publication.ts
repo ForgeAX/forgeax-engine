@@ -34,6 +34,10 @@ import type { AssetPublicationEnvelope, PackIndexEntry } from '@forgeax/engine-t
 import { createAssetPublication } from '@forgeax/engine-types';
 import type { PluginPackInternalOptions } from '../plugin-contract.js';
 import { structuredPluginError } from '../structured-plugin-error.js';
+import {
+  createAuthoredPackProgressTiming,
+  timeAuthoredPackRecipe,
+} from './authored-pack-timing.js';
 import type { PluginServerState } from './plugin-server.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
@@ -287,12 +291,18 @@ async function publishWithExecutors(
         : {
             discover(input: unknown) {
               assertPublicationOpen(context.signal);
+              if (process.env.FORGEAX_WORKSPACE_TIMING === '1')
+                return timeAuthoredPackRecipe('native-discover', cooker.key, input, () =>
+                  discover.call(cooker, input),
+                );
               return discover.call(cooker, input);
             },
           }),
       cook(input: unknown) {
         // Drain an accepted cook, but do not start another output after close.
         assertPublicationOpen(context.signal);
+        if (process.env.FORGEAX_WORKSPACE_TIMING === '1')
+          return timeAuthoredPackRecipe('native-cook', cooker.key, input, () => cooker.cook(input));
         return cooker.cook(input);
       },
     };
@@ -308,23 +318,21 @@ async function publishWithExecutors(
   const authoredRevisions = new Map<string, PackIndexEntry['revision']>();
   const authoredPublications = new Map<string, AssetPublicationEnvelope>();
   const dynamicPackEntries: PackIndexEntry[] = [];
-  const requiredGuids = raw.map((entry) => {
-    const parsed = AssetGuid.parse(entry.guid);
+  // Register every declared identity for lazy content reads. Snapshot owners
+  // invoke their producer only when readByGuid requests one of their outputs.
+  const declaredGuids = [
+    ...raw.map((entry) => entry.guid),
+    ...[...context.sourceDeclarations.values()].flatMap((declaration) =>
+      declaration.format === 'meta.json'
+        ? declaration.value.subAssets.map((asset) => asset.guid)
+        : [],
+    ),
+  ].map((guid) => {
+    const parsed = AssetGuid.parse(guid);
     if (!parsed.ok) throw structuredPluginError(parsed.error);
     return parsed.value;
   });
-  // Catalog-declared Meta outputs prove identity for direct Pack refs, but
-  // they are not all content dependencies of a ScriptablePack build. Keep
-  // that availability set separate from required content reads so an
-  // unrelated procedural stub is not imported merely because it is scanned.
-  const availableGuids = new Set([
-    ...requiredGuids.map((guid) => AssetGuid.format(guid).toLowerCase()),
-    ...[...context.sourceDeclarations.values()].flatMap((declaration) =>
-      declaration.format === 'meta.json'
-        ? declaration.value.subAssets.map((asset) => asset.guid.toLowerCase())
-        : [],
-    ),
-  ]);
+  const availableGuids = new Set(declaredGuids.map((guid) => AssetGuid.format(guid).toLowerCase()));
   // ScriptablePack sources and v3 instances have no static output rows for the
   // scanner to publish. Build every current subject in one fixed-point pass,
   // then add the resulting rows to this generation's Catalog candidate. The
@@ -358,7 +366,7 @@ async function publishWithExecutors(
     const assetSource = createDeclaredPackAssetSnapshotSource(
       context.sourceDeclarations,
       cookers ?? [],
-      requiredGuids,
+      declaredGuids,
       {
         importerRegistry: context.importerRegistry,
         fsForImport: context.fsForImport,
@@ -366,21 +374,32 @@ async function publishWithExecutors(
     );
     const produce = async (sources: readonly ScriptablePackInput[]) => {
       const producingAt = performance.now();
-      const prepared = await produceScriptablePackProducts({
-        sources,
-        ...(context.opts.ddc?.buildCacheRoot === undefined
-          ? {}
-          : { buildCacheRoot: context.opts.ddc.buildCacheRoot }),
-        ...(context.opts.ddc?.identityRoot === undefined
-          ? {}
-          : { cacheIdentityRoot: context.opts.ddc.identityRoot }),
-        ...(cookers === undefined ? {} : { cookers }),
-        assetSource,
-        availableGuids,
-      });
-      publicationTiming('produce-and-cook', producingAt);
-      if (!prepared.ok) throw dynamicPluginError(prepared.error);
-      return prepared.value;
+      const timing =
+        process.env.FORGEAX_WORKSPACE_TIMING === '1'
+          ? createAuthoredPackProgressTiming()
+          : undefined;
+      try {
+        const prepared = await produceScriptablePackProducts({
+          sources,
+          ...(context.opts.ddc?.buildCacheRoot === undefined
+            ? {}
+            : { buildCacheRoot: context.opts.ddc.buildCacheRoot }),
+          ...(context.opts.ddc?.identityRoot === undefined
+            ? {}
+            : { cacheIdentityRoot: context.opts.ddc.identityRoot }),
+          ...(cookers === undefined ? {} : { cookers }),
+          assetSource,
+          availableGuids,
+          ...(timing === undefined ? {} : { onProgress: timing.onProgress }),
+        });
+        if (!prepared.ok) throw dynamicPluginError(prepared.error);
+        if (timing === undefined) publicationTiming('produce-and-cook', producingAt);
+        timing?.finish();
+        return prepared.value;
+      } catch (failure) {
+        timing?.finish(failure);
+        throw failure;
+      }
     };
     let preparedScriptablePacks = await produce(packInputs);
     const generationFor = (displaySourcePath: string): number => {

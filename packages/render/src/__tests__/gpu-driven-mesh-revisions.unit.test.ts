@@ -68,7 +68,6 @@ async function fixture(materialIndices?: readonly number[]) {
     const transforms = new Float32Array(8 * 16);
     for (let ordinal = 0; ordinal < 8; ordinal++) transforms.set(matrix, ordinal * 16);
     const base = preparedPbrSnapshot({
-      worldId: 0,
       entityKey: index + 1,
       assetHandle: Number(handle),
       transform: { world: matrix },
@@ -138,7 +137,6 @@ async function fixture(materialIndices?: readonly number[]) {
   const delta = projection.apply(
     snapshots.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: snapshot.worldId,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -442,12 +440,11 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(original.map((row) => row.source.batchId)).toEqual(
         native.batches.map((batch) => batch.batchId),
       );
-      patch([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
+      patch([{ kind: 'remove', entityKey: 1 }]);
       check();
       expect(retained.batches.size).toBe(1);
       const add = (entityKey: number, source = defined(snapshots[0])) => ({
         kind: 'update' as const,
-        worldId: 0,
         entityKey,
         snapshot: { ...source, entityKey },
       });
@@ -455,13 +452,13 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       check();
       expect(retained.batches.size).toBe(2);
       const replaced = f.input.scene.plan.batches;
-      patch([{ kind: 'remove', worldId: 0, entityKey: 3 }, add(4)]);
+      patch([{ kind: 'remove', entityKey: 3 }, add(4)]);
       check();
       expect(retained.batches.size).toBe(2);
       expect(f.input.scene.plan.batches).not.toEqual(replaced);
       patch([
-        { kind: 'remove', worldId: 0, entityKey: 2 },
-        { kind: 'remove', worldId: 0, entityKey: 4 },
+        { kind: 'remove', entityKey: 2 },
+        { kind: 'remove', entityKey: 4 },
       ]);
       expect(check()).toBeUndefined();
       expect(retained.batches.size).toBe(0);
@@ -1017,7 +1014,7 @@ describe('selected GPU material graph dependencies', () => {
         key: batch.key,
       }));
       const before = f.production.inspect();
-      const delta = f.projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
+      const delta = f.projection.apply([{ kind: 'remove', entityKey: 1 }]);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
       f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
@@ -1136,11 +1133,9 @@ describe('selected GPU material graph dependencies', () => {
           },
         })),
       };
-      const delta = f.projection.apply([
-        { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot },
-      ]);
+      const delta = f.projection.apply([{ kind: 'update', entityKey: source.entityKey, snapshot }]);
       skinInputs.apply(delta);
-      skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+      skinInputs.joint(19, mat4.identity(mat4.create()));
       Object.assign(f.input.scene, { skin: skinFrames.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);

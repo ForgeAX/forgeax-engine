@@ -149,11 +149,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const frame = (): void => {
     world.update().unwrap();
-    const r = renderer.draw({
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    const r = renderer.draw({ source: worldAttachment1.value });
     if (!r.ok) console.error('[tonemap] draw error:', r.error);
     requestAnimationFrame(frame);
   };

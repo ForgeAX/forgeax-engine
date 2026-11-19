@@ -7,15 +7,35 @@ import { join, resolve } from 'node:path';
 import { nativeOutputReady, sha, verifyWindowsX64 } from '../native-output.mjs';
 import {
   git as sourceGit,
+  buildStandaloneGclientConfig,
   nativeBuildCache,
   nativeBuildConcurrency,
   prepareGclientGit,
   runGclient,
   windowsBuildEnvironment,
+  windowsHostToolchainCMakeArgs,
   windowsNativeBuildProfile,
   verifyWindowsBuildCommands,
 } from '../prepare-native.mjs';
 const directory = mkdtempSync(join(tmpdir(), 'forgeax-dawn-output-'));
+
+test('standalone Windows x64 gclient config overrides vpython host architecture probing', () => {
+  const standalone = [
+    'solutions = [',
+    '  { "name" : ".",',
+    '    "custom_vars" : {',
+    '      "dawn_node" : True,',
+    '    }',
+    '  },',
+    ']',
+  ].join('\n');
+  const configured = buildStandaloneGclientConfig(standalone, 'x64');
+  assert.match(configured, /"custom_deps" : \{"third_party\/swiftshader": None\}/);
+  assert.match(configured, /"dawn_node" : True,\n      "host_cpu" : "x64",/);
+  const unmodifiedArch = buildStandaloneGclientConfig(standalone, undefined);
+  assert.doesNotMatch(unmodifiedArch, /"host_cpu"/);
+  assert.throws(() => buildStandaloneGclientConfig('solutions = []', 'x64'), /standalone-contract-mismatch/);
+});
 
 test('Windows MSBuild probe stays below MAX_PATH in a deep source checkout', { skip: process.platform !== 'win32' }, () => {
   const packageRoot = 'C:/Users/developer/projects/game-engine/deep-checkout/packages/dawn-node';
@@ -79,6 +99,10 @@ test('Windows SDK discovery supplies the native Ninja MSVC toolchain', { skip: p
   const overridden = spawnSync('cmake', ['-S', source, '-B', ninja], { env, encoding: 'utf8', windowsHide: true });
   assert.equal(overridden.status, 0, `${overridden.stdout}\n${overridden.stderr}`);
   assert.throws(() => verifyWindowsBuildCommands(ninja), /host-optimization-policy/);
+});
+
+test('Windows host probe lets CMake select an installed Visual Studio generator', () => {
+  assert.deepEqual(windowsHostToolchainCMakeArgs('probe', 'build'), ['-S', 'probe', '-B', 'build', '-A', 'x64']);
 });
 
 test('native Ninja compilation has one CPU-bounded two-job budget', () => {

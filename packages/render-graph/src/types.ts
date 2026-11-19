@@ -43,6 +43,7 @@ export type GraphResourceKind = 'texture' | 'buffer' | 'acceleration-structure';
 export type GraphExtent =
   | 'surface'
   | 'half-surface'
+  | 'quarter-surface'
   | {
       readonly width: number;
       readonly height: number;
@@ -52,6 +53,8 @@ export type GraphExtent =
 export interface GraphTextureDescriptor {
   readonly format: TextureFormat;
   readonly size: GraphExtent;
+  /** Cross-compile allocation lifetime. Omitted textures are transient. */
+  readonly lifetime?: 'transient' | 'persistent' | undefined;
   /** Additional RHI usage required by an external diagnostic consumer such as readback. */
   readonly usage?: number | undefined;
   readonly mipLevelCount?: number | undefined;
@@ -170,7 +173,8 @@ export interface RasterColorAttachment<FrameCtx> {
   readonly clearValue?: GPUColor | ((frame: FrameCtx) => GPUColor) | undefined;
   /** Dynamic loads conservatively require initialized attachment contents. */
   readonly loadOp: GPULoadOp | ((frame: FrameCtx) => GPULoadOp);
-  readonly storeOp: GPUStoreOp;
+  /** Auto permits discarding dead resolved MSAA samples; explicit stores are preserved. */
+  readonly storeOp: GPUStoreOp | 'auto';
   readonly depthSlice?: number | undefined;
 }
 
@@ -331,6 +335,8 @@ export interface CompiledRenderGraphInfo {
     readonly name: string;
     readonly kind: GraphPassKind;
     readonly executionIndex: number;
+    /** Consecutive logical stages sharing one physical raster attachment lifetime. */
+    readonly rasterBatch?: readonly string[] | undefined;
     readonly accesses: readonly GraphAccessInfo[];
     readonly dependencies: readonly string[];
   }[];
@@ -425,6 +431,8 @@ export interface RenderGraphPassExecution {
   readonly name: string;
   readonly kind: GraphPassKind;
   readonly executionIndex: number;
+  /** Present only at a physical instrumentation boundary; never timed per member. */
+  readonly logicalPassNames?: readonly string[] | undefined;
   /**
    * The frame-resolved depth view used by an active raster pass. This is
    * absent for non-raster, no-depth, and skipped passes.
@@ -432,7 +440,13 @@ export interface RenderGraphPassExecution {
   readonly resolvedDepthStencilAttachmentView?: TextureView | undefined;
 }
 
-export type RenderGraphPassRunner = (pass: RenderGraphPassExecution, encode: () => void) => void;
+export type RenderGraphPassRunner = ((
+  pass: RenderGraphPassExecution,
+  encode: () => void,
+) => void) & {
+  /** Explicit native observation/copy seam. Ordinary CPU wrappers need no boundary. */
+  readonly requiresPassBoundary?: ((passName: string) => boolean) | undefined;
+};
 
 /**
  * The graph-neutral boundary for observing and decorating an actual pass.
@@ -441,6 +455,8 @@ export type RenderGraphPassRunner = (pass: RenderGraphPassExecution, encode: () 
  * boundary. Timestamp policy and acceptance remain outside the graph.
  */
 export interface RenderGraphPassInstrumentationScope {
+  /** Render-owned synchronous work nested around this actual pass encode. */
+  readonly endPass?: (() => void) | undefined;
   readonly renderPassDescriptor?: (descriptor: RenderPassDescriptor) => RenderPassDescriptor;
   readonly computePassDescriptor?: (descriptor: ComputePassDescriptor) => ComputePassDescriptor;
   readonly beforeCopy?: (encoder: RhiCommandEncoder) => void;
@@ -461,12 +477,27 @@ export interface RenderGraphCompileOptions {
   readonly reuseResourcesFrom?: CompiledRenderGraph<RenderGraphFrame> | undefined;
 }
 
+/** Texture mip/layer range whose contents were written by an executed graph pass. */
+export interface GraphTextureContentRange {
+  readonly mipStart: number;
+  readonly mipEnd: number;
+  readonly layerStart: number;
+  readonly layerEnd: number;
+  readonly aspect: GPUTextureAspect;
+}
+
 export interface CompiledRenderGraph<FrameCtx extends RenderGraphFrame> {
   execute(
     frame: FrameCtx,
     runPass?: RenderGraphPassRunner,
     instrumentation?: RenderGraphPassInstrumentation<FrameCtx>,
   ): Result<void, RenderGraphError>;
+  /** Commit writes from successful execute() calls after their command buffer is submitted. */
+  commitExecution(): void;
+  /** Discard staged writes when the frame containing execute() is rejected. */
+  discardExecution(): void;
+  /** Graph-owned physical texture, available until the graph retires. */
+  getColorTargetTexture(name: string): Texture | undefined;
   inspect(): CompiledRenderGraphInfo;
   retire(): Promise<Result<void, RenderGraphError>>;
 }

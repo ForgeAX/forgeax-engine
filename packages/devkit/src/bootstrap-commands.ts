@@ -18,8 +18,9 @@ import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
 import { applyInitPlan, createInitPlan } from './init.js';
+import { registerKnownProject } from './known-projects.js';
 import { commandError, readProjectFacts } from './project.js';
-import { inspectRunDependencyClosure } from './run-snapshot.js';
+import { hasLocalEngineDependencyOverride, inspectRunDependencyClosure } from './run-snapshot.js';
 import { findSdkContext } from './sdk.js';
 import {
   agentOnboarding,
@@ -73,6 +74,8 @@ export interface DoctorReport {
   readonly node: string;
   readonly pnpm: string;
   readonly workspaceDependencies: readonly string[];
+  /** Authored Pack sources loaded with the same admission rules as `project play`. */
+  readonly packSources: number;
   readonly uiAuthoringProfile: UiAuthoringProfile;
   /** Offline dry cook of authored material and particle-effect rows. */
   readonly assets: Pick<AssetCheckReport, 'checked' | 'skipped'>;
@@ -122,6 +125,8 @@ async function finishDoctor(
   const assets = await checkProjectAssets(facts.root, facts.assetRoots);
   const failure = assetCheckFailure(assets);
   if (failure !== undefined) return failure;
+  const sources = await (await import('./assets.js')).checkProjectSources(facts);
+  if (!sources.ok) return sources;
   return {
     ok: true,
     value: {
@@ -130,10 +135,30 @@ async function finishDoctor(
       node: process.versions.node,
       pnpm,
       workspaceDependencies,
+      packSources: sources.value,
       uiAuthoringProfile: UI_AUTHORING_PROFILE,
       assets: { checked: assets.checked, skipped: assets.skipped },
     },
   };
+}
+
+function projectLocalDependencies(packageJson: Record<string, unknown>): string[] {
+  const dependencies = new Set<string>();
+  for (const section of [
+    'dependencies',
+    'devDependencies',
+    'optionalDependencies',
+    'peerDependencies',
+  ]) {
+    const entries = packageJson[section];
+    if (entries === null || typeof entries !== 'object') continue;
+    for (const [name, specifier] of Object.entries(entries)) {
+      if (typeof specifier === 'string' && /^(workspace|file|link):/.test(specifier)) {
+        dependencies.add(name);
+      }
+    }
+  }
+  return [...dependencies].sort();
 }
 
 export async function doctorCommand(
@@ -177,25 +202,7 @@ export async function doctorCommand(
       },
     };
   }
-  const workspaceDependencies = new Set<string>();
-  for (const section of [
-    'dependencies',
-    'devDependencies',
-    'optionalDependencies',
-    'peerDependencies',
-  ]) {
-    const value = facts.value.packageJson[section];
-    if (value === null || typeof value !== 'object') continue;
-    for (const [name, version] of Object.entries(value)) {
-      if (
-        typeof version === 'string' &&
-        (version.startsWith('workspace:') || version.startsWith('file:'))
-      ) {
-        workspaceDependencies.add(name);
-      }
-    }
-  }
-  const localDependencies = [...workspaceDependencies].sort();
+  const localDependencies = projectLocalDependencies(facts.value.packageJson);
   const binding = await readEngineBinding(facts.value.root);
   if (!binding.ok) return binding;
   let engineDigest: string | undefined;
@@ -219,14 +226,25 @@ export async function doctorCommand(
       };
     engineDigest = engine.value.workspace.digest;
   }
-  if (binding.value !== null || localDependencies.length > 0) {
-    try {
+  try {
+    if (
+      binding.value !== null ||
+      localDependencies.length > 0 ||
+      (await hasLocalEngineDependencyOverride(facts.value.root))
+    )
       await inspectRunDependencyClosure(facts.value.root, binding.value, engineDigest, pnpm);
-    } catch (cause) {
-      return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
-    }
+  } catch (cause) {
+    return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
   }
   return finishDoctor(facts.value, pnpm, localDependencies);
+}
+
+async function registerInitializedProject(
+  root: string,
+  result: CommandResult<unknown>,
+): Promise<CommandResult<unknown>> {
+  const registered = await registerKnownProject(root);
+  return registered.ok ? result : registered;
 }
 
 export async function initCommand(options: InitOptions = {}): Promise<CommandResult<unknown>> {
@@ -274,7 +292,9 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
         sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
       );
     }
-    if (options.install === false) return applied;
+    if (options.install === false) {
+      return await registerInitializedProject(facts.value.root, applied);
+    }
     const store =
       sdk === undefined || sdk.store === undefined
         ? undefined
@@ -286,7 +306,7 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
       env: { ...process.env, CI: 'true' },
       maxBuffer: 16 * 1024 * 1024,
     });
-    return applied;
+    return await registerInitializedProject(facts.value.root, applied);
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'project-init-failed') };
   }
@@ -453,7 +473,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
         maxBuffer: 16 * 1024 * 1024,
       });
       const sdkUpdate = await checkSdkUpdate(sdk.manifest.sdkVersion);
-      return {
+      return await registerInitializedProject(root, {
         ok: true,
         value: {
           root,
@@ -463,7 +483,7 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
           onboarding: agentOnboarding(sdk, root),
           sdkUpdate,
         },
-      };
+      });
     } catch (cause) {
       if (staging !== undefined) await rm(staging, { recursive: true, force: true });
       if (committed) {

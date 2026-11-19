@@ -1,7 +1,9 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, type World } from '@forgeax/engine-ecs';
 
-const COUNTDOWN_KEY = 'Countdown';
-const ENTITY_TIMER_COMPONENT = 'PrintOnCompletionTimer';
+const COUNTDOWN_KEY = defineResource<Timer[]>("Countdown");
+const ENTITY_TIMER_COMPONENT = defineResource<Timer>("PrintOnCompletionTimer");
 
 interface Timer {
   duration: number;
@@ -29,12 +31,12 @@ export function buildTimersWorld(world: World): { getState: () => TimerState } {
 
   const state: TimerState = { countdownFired: 0, countdownPercent: [], entityTimerFired: false };
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'countdown',
     queries: [],
     fn: (_world) => {
       const time = _world.getResource(Time);
-      const timers = _world.getResource<Timer[]>(COUNTDOWN_KEY);
+      const timers = _world.getResource(COUNTDOWN_KEY);
       if (!timers || !time) return;
 
       const percentTrigger = timers[0]!;
@@ -56,13 +58,14 @@ export function buildTimersWorld(world: World): { getState: () => TimerState } {
       }
     },
   });
+world.addSystem(Update, systemToken1);
 
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'print-when-completed',
     queries: [],
     fn: (_world) => {
       const time = _world.getResource(Time);
-      const timer = _world.getResource<Timer>(ENTITY_TIMER_COMPONENT);
+      const timer = _world.getResource(ENTITY_TIMER_COMPONENT);
       if (!timer || !time) return;
 
       if (timer.finished) return;
@@ -73,6 +76,7 @@ export function buildTimersWorld(world: World): { getState: () => TimerState } {
       }
     },
   });
+world.addSystem(Update, systemToken2);
 
   return { getState: () => state };
 }

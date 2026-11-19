@@ -1,7 +1,10 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
+import type { RenderFeatureSource } from '../features/source';
 import type { PreparedRenderPublication } from '../publication/receiver';
+import { lightsForQuality, type RenderQualityBudgets } from '../quality';
 import type { ReflectionProbeFact } from '../reflection/projection';
 import type { ExtractedFrame, LightRoster } from '../render-system-extract';
 import type {
@@ -10,6 +13,7 @@ import type {
   SceneComposition,
   SceneStage,
 } from '../scene/scene-composition';
+import { RenderSceneOrder, RenderScenePublishOrder } from '../system-order';
 import { RenderExtract, RenderPrepare } from './render-world';
 import { RenderSceneRowStore } from './scene-row-store';
 
@@ -28,13 +32,14 @@ export const RENDER_SCENE_PUBLISH_SYSTEM = 'render-scene-publish';
  */
 export interface RenderSceneSource {
   readonly composition: SceneComposition;
+  quality?: RenderQualityBudgets | undefined;
   assets: AssetRegistry | undefined;
   staged: boolean;
   publication: PreparedRenderPublication | undefined;
-  worlds: readonly World[];
-  owner: { cameraOwner: number; resourceOwner: number };
-  leases: readonly RenderReadLease[] | undefined;
+  world: World | undefined;
+  lease: RenderReadLease | undefined;
   buildCandidateFrame: ((request: PersistentRenderCandidateRequest) => ExtractedFrame) | undefined;
+  captureFeatures?: ((frame: ExtractedFrame) => readonly RenderFeatureSource[]) | undefined;
 }
 
 /**
@@ -44,12 +49,15 @@ export interface RenderSceneSource {
  * extraction rethrows it, keeping the record-side recovery.
  */
 export interface RenderSceneAdoption {
+  featureSources?: readonly RenderFeatureSource[] | undefined;
   advance: SceneAdvance | undefined;
   failure: unknown;
 }
 
 /** The frame's camera-independent light roster, adopted with the scene. */
 export interface RenderLightSource {
+  source?: LightRoster | undefined;
+  quality?: RenderQualityBudgets | undefined;
   roster: LightRoster | undefined;
 }
 
@@ -59,11 +67,11 @@ export interface RenderProbeSource {
 }
 
 /** World resource keys of the scene source, its adoption, its row store and the light roster. */
-export const RenderSceneInput = Object.freeze({ name: 'RenderSceneInput' });
-export const RenderSceneDelta = Object.freeze({ name: 'RenderSceneDelta' });
-export const RenderSceneRows = Object.freeze({ name: 'RenderSceneRows' });
-export const RenderLightInput = Object.freeze({ name: 'RenderLightInput' });
-export const RenderProbeInput = Object.freeze({ name: 'RenderProbeInput' });
+export const RenderSceneInput = defineResource<RenderSceneSource>('RenderSceneInput');
+export const RenderSceneDelta = defineResource<RenderSceneAdoption>('RenderSceneDelta');
+export const RenderSceneRows = defineResource<RenderSceneRowStore>('RenderSceneRows');
+export const RenderLightInput = defineResource<RenderLightSource>('RenderLightInput');
+export const RenderProbeInput = defineResource<RenderProbeSource>('RenderProbeInput');
 
 /**
  * Register the `render-scene` RenderExtract system: it adopts the staged
@@ -81,9 +89,8 @@ export function registerSceneSystem(
     assets,
     staged: false,
     publication: undefined,
-    worlds: [],
-    owner: { cameraOwner: 0, resourceOwner: 0 },
-    leases: undefined,
+    world: undefined,
+    lease: undefined,
     buildCandidateFrame: undefined,
   };
   world.insertResource(RenderSceneInput, source);
@@ -95,17 +102,21 @@ export function registerSceneSystem(
   world.insertResource(RenderSceneRows, rows);
   world.insertResource(RenderLightInput, { roster: undefined });
   world.insertResource<RenderProbeSource>(RenderProbeInput, { facts: [] });
-  world
-    .addSystem(RenderExtract, { name: RENDER_SCENE_SYSTEM, queries: [], fn: adoptScene })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderSceneOrder],
+    name: RENDER_SCENE_SYSTEM,
+    queries: [],
+    fn: adoptScene,
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
   registerAdoptionSystems(world, composition);
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_SCENE_PUBLISH_SYSTEM,
-      queries: [],
-      fn: sceneRowStep(world, (stage, scene) => scene.publishStage(stage)),
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderScenePublishOrder],
+    name: RENDER_SCENE_PUBLISH_SYSTEM,
+    queries: [],
+    fn: sceneRowStep(world, (stage, scene) => scene.publishStage(stage)),
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
   return source;
 }
 
@@ -119,10 +130,10 @@ export function sceneRowStep(
   world: World,
   step: (stage: SceneStage, composition: SceneComposition) => void,
 ): (frameWorld: World) => void {
-  const cursor = world.getResource<RenderSceneRowStore>(RenderSceneRows).cursor();
+  const cursor = world.getResource(RenderSceneRows).cursor();
   return (frameWorld) => {
-    const adoption = frameWorld.getResource<RenderSceneAdoption>(RenderSceneDelta);
-    const rows = frameWorld.getResource<RenderSceneRowStore>(RenderSceneRows);
+    const adoption = frameWorld.getResource(RenderSceneDelta);
+    const rows = frameWorld.getResource(RenderSceneRows);
     try {
       const stage = rows.next(cursor, adoption);
       if (stage !== undefined) step(stage, rows.composition);
@@ -135,39 +146,35 @@ export function sceneRowStep(
 const NO_PROBES: readonly ReflectionProbeFact[] = Object.freeze([]);
 
 function adoptScene(world: World): void {
-  const source = world.getResource<RenderSceneSource>(RenderSceneInput);
-  const adoption = world.getResource<RenderSceneAdoption>(RenderSceneDelta);
-  const rows = world.getResource<RenderSceneRowStore>(RenderSceneRows);
+  const source = world.getResource(RenderSceneInput);
+  const adoption = world.getResource(RenderSceneDelta);
+  const rows = world.getResource(RenderSceneRows);
   adoption.advance = undefined;
   adoption.failure = undefined;
+  adoption.featureSources = undefined;
   rows.append(undefined);
   if (!source.staged) return;
   source.staged = false;
-  const { publication, leases } = source;
+  const { publication, lease } = source;
   const build = source.buildCandidateFrame;
-  source.publication = source.leases = source.buildCandidateFrame = undefined;
-  const lights = world.getResource<RenderLightSource>(RenderLightInput);
-  const probes = world.getResource<RenderProbeSource>(RenderProbeInput);
+  source.publication = source.lease = source.buildCandidateFrame = undefined;
+  const lights = world.getResource(RenderLightInput);
+  const probes = world.getResource(RenderProbeInput);
   try {
     if (publication !== undefined) {
       const consumed = source.composition.consume(publication);
       adoption.advance = consumed.advance;
       rows.append(consumed.stage);
-      lights.roster = publication.frame.lights;
+      stageLightRoster(lights, publication.frame.lights, source.quality);
       probes.facts = publication.frame.reflectionProbes ?? NO_PROBES;
     } else if (build !== undefined) {
-      if (source.assets === undefined)
+      if (source.assets === undefined || source.world === undefined || lease === undefined)
         throw new Error('Source-World scene adoption requires an asset registry');
-      const adopted = source.composition.extract(
-        source.worlds,
-        source.owner,
-        source.assets,
-        build,
-        leases,
-      );
+      const adopted = source.composition.extract(source.world, source.assets, build, lease);
+      adoption.featureSources = source.captureFeatures?.(adopted.resourceFrame);
       adoption.advance = adopted.advance;
       rows.append(adopted.stage);
-      lights.roster = adopted.resourceFrame.lights;
+      stageLightRoster(lights, adopted.resourceFrame.lights, source.quality);
       probes.facts = adopted.resourceFrame.reflectionProbes ?? NO_PROBES;
     }
   } catch (cause) {
@@ -187,38 +194,48 @@ export const INSTANCE_COLLECTIONS_SYSTEM = 'instance-collections';
  * so each view's extraction rethrows it.
  */
 export function registerAdoptionSystems(world: World, composition: SceneComposition): void {
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: SKIN_INPUTS_SYSTEM,
-      queries: [],
-      after: [RENDER_SCENE_SYSTEM],
-      fn: (world) => {
-        const adoption = world.getResource<RenderSceneAdoption>(RenderSceneDelta);
-        if (adoption.failure !== undefined) return composition.discardAdoption();
-        try {
-          composition.adoptSkinInputs();
-        } catch (cause) {
-          adoption.failure = cause;
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: INSTANCE_COLLECTIONS_SYSTEM,
-      queries: [],
-      after: [RENDER_SCENE_SYSTEM, SKIN_INPUTS_SYSTEM],
-      fn: (world) => {
-        const adoption = world.getResource<RenderSceneAdoption>(RenderSceneDelta);
-        if (adoption.failure !== undefined) return composition.discardAdoption();
-        try {
-          composition.adoptInstanceCollections();
-        } catch (cause) {
-          adoption.failure = cause;
-        }
-      },
-    })
-    .unwrap();
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: SKIN_INPUTS_SYSTEM,
+    queries: [],
+    after: [RenderSceneOrder],
+    fn: (world) => {
+      const adoption = world.getResource(RenderSceneDelta);
+      if (adoption.failure !== undefined) return composition.discardAdoption();
+      try {
+        composition.adoptSkinInputs();
+      } catch (cause) {
+        adoption.failure = cause;
+      }
+    },
+  });
+  world.addSystem(RenderExtract, systemToken3).unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: INSTANCE_COLLECTIONS_SYSTEM,
+    queries: [],
+    after: [RenderSceneOrder, systemToken3],
+    fn: (world) => {
+      const adoption = world.getResource(RenderSceneDelta);
+      if (adoption.failure !== undefined) return composition.discardAdoption();
+      try {
+        composition.adoptInstanceCollections();
+      } catch (cause) {
+        adoption.failure = cause;
+      }
+    },
+  });
+  world.addSystem(RenderExtract, systemToken4).unwrap();
+}
+
+/** Unchanged immutable lighting facts retain their quality projection without per-frame light copies. */
+function stageLightRoster(
+  target: RenderLightSource,
+  source: LightRoster,
+  quality: RenderQualityBudgets | undefined,
+): void {
+  if (target.source === source && target.quality === quality) return;
+  target.source = source;
+  target.quality = quality;
+  target.roster = lightsForQuality(source, quality);
 }

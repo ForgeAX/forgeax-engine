@@ -1,3 +1,5 @@
+import { GameProjectileSimulationOrder, GameChargeShotOrder } from "../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedTime, FixedUpdate, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { inState } from '@forgeax/engine-state';
 import type { HudHandle } from './hud';
@@ -46,11 +48,11 @@ function label(snapshot: Pick<HitStreakSnapshot, 'hits' | 'multiplier' | 'elapse
 
 /** Install expiry on Update; hit awarding remains owned by target feedback. */
 export function installHitStreakSystem(ctx: HitStreakSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'game-hit-streak',
     runIf: inState(GameState, 'Play'),
-    after: ['game-charge-shot'],
-    before: ['game-projectile-simulation'],
+    after: [GameChargeShotOrder],
+    before: [GameProjectileSimulationOrder],
     queries: [],
     fn: () => {
       const state = ctx.world.get(ctx.player, HitStreak);
@@ -64,7 +66,8 @@ export function installHitStreakSystem(ctx: HitStreakSystemContext): void {
       ctx.world.set(ctx.player, HitStreak, { elapsed });
       ctx.hud.setComboStatus(label({ hits: state.value.hits, multiplier: state.value.multiplier, elapsed }), 'active');
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }
 
 /** Create the one player-owned hit chain and its reset-safe score projection. */

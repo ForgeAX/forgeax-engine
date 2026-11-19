@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { Materials, MeshRenderer } from '@forgeax/engine-render';
+import { Materials, MeshRenderer, RectAreaLight } from '@forgeax/engine-render';
 import {
   CardLookupStatus,
   GlobalSdfQueryStatus,
@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-render/internal';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
+import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
@@ -457,6 +458,27 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     h.world.set(box, MeshRenderer, { materials: [mask] }).unwrap();
     await h.settle(1);
     expect(inspectField().state).toBe('ready');
+
+    stage = 'analytic area light';
+    // The field has no area-light ray reference: a RectAreaLight stays direct-only
+    // and is reported, instead of failing the field every frame.
+    const errorsBeforeArea = h.errors.length;
+    const area = h.world
+      .spawn(
+        {
+          component: Transform,
+          data: { pos: [0, 1.5, -1.5], quat: [Math.SQRT1_2, 0, 0, Math.SQRT1_2] },
+        },
+        { component: RectAreaLight, data: { width: 1, height: 1, intensity: 4, range: 10 } },
+      )
+      .unwrap();
+    await h.settle(1);
+    expect(inspectField().state).toBe('ready');
+    expect(inspectField().excludedAreaLights).toBe(1);
+    expect(h.errors).toHaveLength(errorsBeforeArea);
+    h.world.despawn(area).unwrap();
+    await h.settle(1);
+    expect(inspectField().excludedAreaLights).toBeUndefined();
 
     // Unsupported materials fail the whole field with a structured cause, never a hole.
     const rejection = async (source: ReturnType<typeof surface>) => {

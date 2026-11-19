@@ -9,6 +9,7 @@ import { runUnifiedCli } from '@forgeax/engine/devkit';
 import { connectViewWorkspace } from '../packages/view-workspace-core/src/resident.ts';
 import { waitForRenderedViewport } from './verify-page-plugins.mjs';
 import { writeProofGameAssets } from './fixtures/plugin-assets.mjs';
+import { projectDocument } from './project-document.mjs';
 
 assert.ok(process.argv.slice(2).every(arg => arg === '--inject-legacy-history'), 'Unknown experience probe option');
 const injectLegacyHistory = process.argv.includes('--inject-legacy-history');
@@ -63,13 +64,13 @@ try {
   console.error('PASS independent AI run started before View');
   await command('backend', 'start', '--host-pack', join(candidate, 'host.pack.json'));
   const start = await command('view', 'start', '--input', JSON.stringify({
-    root, frontendConfig: { layout: { responsiveAutoTuck: false } },
+    project: root, frontendConfig: { layout: { responsiveAutoTuck: false } },
   }));
-  assert.equal(new URL(start.url).searchParams.get('project'), canonicalRoot);
+  assert.equal(new URL(start.url).searchParams.get('project'), null, 'The retained Shell uses a plain URL');
   const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap', start.url)).then(value => value.json());
   client = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'experience-proof' });
   await client.call('display.bind', { root, runId: independent.runId });
-  assert.equal((await client.getState()).project, null, 'CLI must not open a project');
+  assert.equal((await client.getState()).project.root, canonicalRoot, 'CLI admits the explicit project');
   browser = await chromium.launch({
     executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/opt/google/chrome-beta/chrome',
     headless: false,
@@ -100,8 +101,9 @@ try {
   });
   await page.addInitScript(() => { try { localStorage.setItem('forgeax.view.locale', 'en'); } catch {} });
   await page.goto(start.url);
-  await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 60_000 });
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 90_000 });
+  let game = await projectDocument(page, 60_000);
+  assert.equal(page.url(), new URL(start.url).href);
   const opened = await client.getState();
   assert.equal(opened.project.root, canonicalRoot);
   const assets = await client.listAssets(opened.project.id, { targetId: opened.projectTarget.targetId });
@@ -110,8 +112,8 @@ try {
   const mesh = assets.assets.find(asset => asset.kind === 'mesh' && asset.path === 'assets/proof.pack.ts');
   assert.ok(scene && mesh);
   await client.openAsset(scene.guid, { projectId: opened.project.id });
-  await waitForRenderedViewport(page);
-  const canvas = page.locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas').first();
+  await waitForRenderedViewport(game);
+  const canvas = page.frameLocator('iframe[data-forgeax-project-document]').locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app').first();
   assert.equal(await canvas.evaluate(element => {
     const rect = element.getBoundingClientRect();
     return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === element;
@@ -135,7 +137,7 @@ try {
     'Cube behind opening');
   let bounds = await canvas.boundingBox();
   const positionPointer = async () => {
-    await page.waitForFunction(() => !document.pointerLockElement);
+    await game.waitForFunction(() => !document.pointerLockElement);
     bounds = await canvas.boundingBox();
     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
   };
@@ -147,8 +149,8 @@ try {
   const inspector = page.getByTestId('panel-inspector');
   await inspector.getByText('Cube behind opening', { exact: true }).waitFor();
   console.error('PASS first left-click without prior camera input', selected.primary.entityId);
-  assert.equal(await canvas.evaluate(element => Boolean(element.closest('[data-forgeax-view-workspace="targets"]'))), true,
-    'The exact Engine Scene canvas is borrowed into the viewport DOM');
+  assert.equal(new URL(game.url()).searchParams.get('forgeaxWorkspaceTarget'), opened.projectTarget.targetId,
+    'The Scene canvas remains in the exact Engine-owned project document');
   await client.clearSceneSelection(identity);
   assert.equal((await client.getState()).sceneSelection, null);
   await client.call('target.pick', { ...identity, ...outputCenter });
@@ -160,7 +162,7 @@ try {
   const beforeFocus = await camera();
   await page.keyboard.press('f');
   await until(async () => (await camera()).version > beforeFocus.version);
-  assert.equal(await page.evaluate(() => Boolean(document.pointerLockElement)), false,
+  assert.equal(await game.evaluate(() => Boolean(document.pointerLockElement)), false,
     'Selection and focus must not activate the default gameplay pointer lock');
   console.error('PASS F focuses the actual scene selection');
   const beforeAbort = await camera();
@@ -250,7 +252,8 @@ try {
     record: JSON.parse(sessionStorage.getItem('forgeax.view.project-session/1') ?? 'null'),
     navigation: performance.getEntriesByType('navigation')[0]?.type,
   }));
-  assert.equal(new URL(saved.record.entry).origin, new URL(start.url).origin);
+  assert.equal(saved.record.root, canonicalRoot);
+  assert.equal(saved.record.targetId, oldTarget);
   // Older records must not replay removed resources or temporary scene state.
   if (injectLegacyHistory) await page.addInitScript(() => {
     if (performance.getEntriesByType('navigation')[0]?.type !== 'reload') return;
@@ -270,7 +273,8 @@ try {
   page.on('framenavigated', frame => { if (frame === page.mainFrame()) reloadVisits.push(frame.url()); });
   const refreshStartedAt = performance.now();
   await page.reload();
-  await page.waitForURL(url => url.searchParams.get('forgeaxWorkspaceTarget') === oldTarget, { timeout: 30_000 });
+  game = await projectDocument(page, 30_000);
+  assert.equal(new URL(game.url()).searchParams.get('forgeaxWorkspaceTarget'), oldTarget);
   const entryAt = performance.now();
   const replacement = await until(async () => {
     const value = await client.getState();
@@ -302,7 +306,7 @@ try {
     'Healthy refresh must not navigate through the resident View entry');
   assert.equal(await page.locator('[role="tab"][data-page-id="page-mesh"]').count(), 0);
   const reopenedScene = await client.openAsset(scene.guid, { projectId: restored.project.id });
-  await waitForRenderedViewport(page);
+  await waitForRenderedViewport(game);
   const restoredScene = reopenedScene.preview.target;
   const recoveredCamera = await client.getCamera({ targetId: restoredScene.targetId, targetGeneration: restoredScene.generation });
   assert.deepEqual(recoveredCamera.camera.transform, beforeFocus.camera.transform, 'Refresh uses authored initial camera state');
@@ -337,7 +341,8 @@ try {
   await page.screenshot({ path: join(output, 'play-before-refresh.png') });
   const beforePlayRefresh = await client.getState();
   await page.reload();
-  await page.waitForURL(url => url.searchParams.get('forgeaxWorkspaceTarget') === restored.projectTarget.targetId, { timeout: 90_000 });
+  game = await projectDocument(page);
+  assert.equal(new URL(game.url()).searchParams.get('forgeaxWorkspaceTarget'), restored.projectTarget.targetId);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 90_000 });
   await until(async () => {
     const value = await client.getState();
@@ -348,7 +353,8 @@ try {
   for (let cycle = 0; cycle < 2; cycle++) {
     const previous = await client.getState();
     await page.reload();
-    await page.waitForURL(url => url.searchParams.get('forgeaxWorkspaceTarget') === previous.projectTarget.targetId, { timeout: 90_000 });
+    game = await projectDocument(page);
+    assert.equal(new URL(game.url()).searchParams.get('forgeaxWorkspaceTarget'), previous.projectTarget.targetId);
     await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 90_000 });
     const state = await until(async () => {
       const value = await client.getState();

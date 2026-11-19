@@ -1,14 +1,35 @@
 import {
   createShaderProgramCompiler,
   materialVertexInputs,
+  prepareEngineShaderSource,
   standardMaterialDefines,
+  terrainProgramSource,
 } from '@forgeax/engine-shader-compiler';
 import { expect, it } from 'vitest';
 import { loadEngineShaderEntries } from '../engine-inputs/load-engine-shader-entries';
-import {
-  engineMaterialParamSchema,
-  lowerEngineSurfaceEntry,
-} from '../engine-inputs/prepare-engine-shader-source';
+import { engineMaterialParamSchema } from '../engine-inputs/prepare-engine-shader-source';
+import { publishedVariantDefines } from '../index';
+
+it('publishes fixed Terrain programs without Water variants from the shared Pack composition', async () => {
+  const engine = await loadEngineShaderEntries();
+  expect(engine.terrain).toHaveLength(4);
+  for (const file of engine.terrain) {
+    const composition = terrainProgramSource(file.reservedIdentifier ?? '');
+    expect(composition).toBeDefined();
+    expect(composition?.defines).toMatchObject({
+      WATER_WAVES_AVAILABLE: false,
+      WATER_INFO_RGBA16: false,
+    });
+    expect(file.defines).toMatchObject(composition?.defines ?? {});
+    expect(file.source).not.toMatch(
+      /^#pragma variant_axis WATER_(WAVES_AVAILABLE|INFO_RGBA16)\s*$/m,
+    );
+    for (const row of publishedVariantDefines(file.source)) {
+      expect(Object.hasOwn(row, 'WATER_WAVES_AVAILABLE')).toBe(false);
+      expect(Object.hasOwn(row, 'WATER_INFO_RGBA16')).toBe(false);
+    }
+  }
+});
 
 it.each([
   false,
@@ -29,7 +50,12 @@ it.each([
       STORAGE_BUFFER_AVAILABLE: storage,
       ...file.defines,
     };
-    const prepared = lowerEngineSurfaceEntry(file, engine.imports, engine.imports, defines);
+    const prepared = prepareEngineShaderSource(
+      file,
+      engine.imports,
+      engine.imports,
+      defines,
+    ).unwrap();
     const compiled = await compile(prepared.source, {
       id: file.id,
       imports: prepared.imports,

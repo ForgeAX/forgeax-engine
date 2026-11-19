@@ -14,9 +14,9 @@ export default defineFeature({
   catalog: 'Scene hierarchy',
   kind: 'visual',
   summary:
-    'ChildOf { parent } links entities; scenePlugin maintains Children and resolves GlobalTransform.world, so rotating one parent moves its whole chain. A cyan cube demonstrates affine shear and mirrored scale without changing the hierarchy owner.',
+    'ChildOf { parent } links entities; scenePlugin maintains Children and resolves GlobalTransform.world, so rotating one parent moves its whole chain. A cyan cube demonstrates mirrored scale without changing the hierarchy owner.',
   expect:
-    'ON: the red hub is turned 90 degrees and the green arm plus blue tip swing up to point vertically. The cyan cube is sheared and mirrored. OFF: the hub is unrotated, the arm points right along +X and the cyan cube is an ordinary box.',
+    'ON: the red hub is turned 90 degrees and the green arm plus blue tip swing up to point vertically. The cyan cube is mirrored. OFF: the hub is unrotated, the arm points right along +X and the cyan cube is an ordinary box.',
   setup({ world, hud }) {
     const primitiveAssets = world.assets;
     if (!(primitiveAssets instanceof AssetRegistry))
@@ -50,7 +50,6 @@ export default defineFeature({
       pos: [1.8, 0.9, 0],
       scale: [-0.7, 1.2, 0.6],
     });
-    world.set(affine, Transform, { shear: [0.65, 0, 0] }).unwrap();
     let enabled = true;
     const children = world.get(hub, Children);
     hud.status(
@@ -60,11 +59,6 @@ export default defineFeature({
       checks() {
         const checks = new CheckList();
         const matrix = world.get(affine, GlobalTransform).unwrap().world;
-        checks.near(
-          'affine shear reaches the world matrix',
-          matrix[4] ?? NaN,
-          enabled ? 0.65 * 1.2 : 0,
-        );
         checks.near(
           'mirrored X scale survives propagation',
           matrix[0] ?? NaN,
@@ -76,7 +70,6 @@ export default defineFeature({
         enabled = on;
         world
           .set(affine, Transform, {
-            shear: on ? [0.65, 0, 0] : [0, 0, 0],
             scale: [on ? -0.7 : 0.7, 1.2, 0.6],
           })
           .unwrap();

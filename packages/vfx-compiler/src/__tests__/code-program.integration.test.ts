@@ -69,13 +69,13 @@ describe('code-first VFX program cook', () => {
       programFingerprint: result.value.fingerprint,
       emitters: result.value.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
       program: {
-        format: 'forgeax-vfx-program-4',
+        format: 'forgeax-vfx-program-5',
         fingerprint: result.value.fingerprint,
         emitters: result.value.program.emitters,
       },
     };
     expect(asset.program).toMatchObject({
-      format: 'forgeax-vfx-program-4',
+      format: 'forgeax-vfx-program-5',
       fingerprint: result.value.fingerprint,
     });
     expect(asset.program.emitters).toEqual(result.value.program.emitters);

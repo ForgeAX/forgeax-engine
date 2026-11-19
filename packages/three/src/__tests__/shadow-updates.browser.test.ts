@@ -109,8 +109,8 @@ it.each([
     for (const f of [native, reference])
       f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize / 2);
     await frame('frozen-resize');
-    // r184 retains stale GPU views after a live allocation resize. Restore
-    // the admitted extent here; fresh rectangular maps are covered separately.
+    // Restore the admitted extent before refreshing, as in the r184 fixture.
+    // Fresh rectangular maps are covered separately; live reallocation is not claimed here.
     for (const f of [native, reference])
       f.sun.shadow.mapSize.set(testQuality.shadowMapSize, testQuality.shadowMapSize);
     for (const f of [native, reference]) f.sun.shadow.needsUpdate = true;

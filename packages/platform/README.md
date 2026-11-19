@@ -66,3 +66,34 @@ const result = await withCombinedSignal([request.signal, lifetime.signal], (sign
 The implementation verification record identifies the tested
 browser and official WeChat simulator builds, retained evidence, and incomplete
 targets. It does not expand this package's runtime contract.
+
+## Task pool
+
+`createTaskPool({ kinds, workerFactory?, workers? })` runs registered task kinds
+(`TaskModule` from `@forgeax/engine-types`) on lazily spawned Workers, or inline
+in the calling realm when no factory is given. Queues are per priority
+(critical, normal, background) and FIFO; idle Workers are reused most recently
+idle first; one Worker is kept from background tasks while the pool has more
+than one; `maxInFlight` caps a kind. `cancel()` withdraws a queued task, or
+discards a running task's value; `dispose()` rejects everything unfinished. A
+crashed Worker rejects its running task and is replaced on demand; a kind that
+crashes Workers `crashLimit` times in a row runs inline from then on. A kind's
+`shared()` value is produced once by the pool and handed to each Worker's
+`init`. `serveTaskWorker` is the Worker side; `createTaskClient` and
+`serveTaskClient` let another realm submit through the pool with values
+returned on a per-task port directly from the executing Worker.
+
+`parallelFor({ kind, input, count, run, timeoutMs })` runs `count` indices of
+one job within the current frame. The calling realm and every started Worker
+claim indices from one shared atomic cursor, so each index runs exactly once
+and the job completes even when no Worker joins; the caller blocks until the
+last index finished. A slice job reaches a Worker as a message, so it starts
+once the Worker's current task returns, ahead of every queued task; task
+modules keep each uninterrupted run within the 8 ms slice and yield or split
+longer work. `prepareSlices(kind, value)` announces what a slice kind needs to
+every Worker, replays it to Workers started later, and grows the pool to full
+size. A Worker joins a job only once its `SliceModule` reports `ready` for the
+job's input; until then the caller and the other Workers take its share. A
+Worker still holding an index at the deadline is replaced and the outcome
+reports `timedOut`. The Worker side registers kinds through
+`serveTaskWorker(port, registry, { slices })`.

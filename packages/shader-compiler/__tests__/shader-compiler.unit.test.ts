@@ -1181,6 +1181,7 @@ beforeAll(async () => {
   const SHADOW_PCF = readSrc('shadow-pcf.wgsl');
 
   PBR_ENTRY_IMPORTS = {
+    'forgeax_geometry::tangent_frame32': readSrc('tangent-frame32.wgsl'),
     'forgeax_material::displacement': readSrc('standard-displacement.wgsl'),
     'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_material::terrain_vertex': readSrc('terrain-vertex.wgsl'),
@@ -1198,6 +1199,8 @@ beforeAll(async () => {
     'forgeax_atmosphere::coordinates': readSrc('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::sampling': readSrc('atmosphere-sampling.wgsl'),
     'forgeax_cloud::layer': readSrc('cloud.wgsl'),
+    'forgeax_cloud::geometry': readSrc('cloud/geometry.wgsl'),
+    'forgeax_cloud::shadow': readSrc('cloud/shadow.wgsl'),
     'forgeax_pbr::brdf': BRDF,
     'forgeax_pbr::specular_aa': readSrc('specular-aa.wgsl'),
     'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
@@ -1231,6 +1234,7 @@ beforeAll(async () => {
     'forgeax_pbr::sheen': readSrc('material/physical/sheen.wgsl'),
     'forgeax_pbr::iridescence': readSrc('material/physical/iridescence.wgsl'),
     'forgeax_material::surface_v1': readSrc('surface_v1.wgsl'),
+    'forgeax_material::water_waves': readSrc('water-waves.wgsl'),
     'forgeax_material::surface_sampling': readSrc('surface-sampling.wgsl'),
     'forgeax_material::default_standard_surface': readSrc('default_standard_surface.wgsl'),
     'forgeax_material::slot::surface': readSrc('default_standard_surface.wgsl').replace(
@@ -1255,6 +1259,8 @@ beforeAll(async () => {
     'forgeax_view::fog': readSrc('fog.wgsl'),
     'forgeax_view::atmosphere': readSrc('view-atmosphere.wgsl'),
     'forgeax_cloud::layer': readSrc('cloud.wgsl'),
+    'forgeax_cloud::geometry': readSrc('cloud/geometry.wgsl'),
+    'forgeax_cloud::shadow': readSrc('cloud/shadow.wgsl'),
     'forgeax_standard::cluster_texture_data': readSrc('cluster-texture-data.wgsl'),
     'forgeax_atmosphere::table_access': readSrc('atmosphere-table-access.wgsl'),
     'forgeax_atmosphere::optics': readSrc('atmosphere-optics.wgsl'),
@@ -1288,14 +1294,14 @@ describe('w3 AC-04 -- common.wgsl #ifdef STORAGE_BUFFER_AVAILABLE dual-path comp
   };
 
   it('STORAGE_BUFFER_AVAILABLE=true compose succeeds (storage path)', async () => {
-    const entry = stripPragmas(readSrc('default-standard-pbr.wgsl'));
+    const entry = readSrc('default-standard-pbr.wgsl');
     const r = await compileShader(entry, {
       id: 'forgeax::default-standard-pbr',
       imports: PBR_ENTRY_IMPORTS,
       defines: STORAGE_AVAILABLE_DEFINES,
       generatedParameters: GENERATED_STANDARD_INTERFACE,
     });
-    expect(r.ok, `storage-path compose failed: ${r.ok ? '' : r.error.message}`).toBe(true);
+    expect(r.ok, `storage-path compose failed: ${r.ok ? '' : JSON.stringify(r.error)}`).toBe(true);
     if (r.ok) {
       expect(r.value.wgsl).toBeTruthy();
       expect(r.value.wgsl.length).toBeGreaterThan(0);
@@ -1303,14 +1309,14 @@ describe('w3 AC-04 -- common.wgsl #ifdef STORAGE_BUFFER_AVAILABLE dual-path comp
   });
 
   it('STORAGE_BUFFER_AVAILABLE=false compose succeeds (uniform fallback path)', async () => {
-    const entry = stripPragmas(readSrc('default-standard-pbr.wgsl'));
+    const entry = readSrc('default-standard-pbr.wgsl');
     const r = await compileShader(entry, {
       id: 'forgeax::default-standard-pbr',
       imports: PBR_ENTRY_IMPORTS,
       defines: STORAGE_UNAVAILABLE_DEFINES,
       generatedParameters: GENERATED_STANDARD_INTERFACE,
     });
-    expect(r.ok, `uniform-path compose failed: ${r.ok ? '' : r.error.message}`).toBe(true);
+    expect(r.ok, `uniform-path compose failed: ${r.ok ? '' : JSON.stringify(r.error)}`).toBe(true);
     if (r.ok) {
       expect(r.value.wgsl).toBeTruthy();
       expect(r.value.wgsl.length).toBeGreaterThan(0);
@@ -1333,14 +1339,14 @@ describe('w4 AC-08 -- three entry shaders uniform variant (STORAGE_BUFFER_AVAILA
   };
 
   it('forgeax::default-standard-pbr uniform variant compose succeeds', async () => {
-    const entry = stripPragmas(readSrc('default-standard-pbr.wgsl'));
+    const entry = readSrc('default-standard-pbr.wgsl');
     const r = await compileShader(entry, {
       id: 'forgeax::default-standard-pbr',
       imports: PBR_ENTRY_IMPORTS,
       defines: UNIFORM_DEFINES,
       generatedParameters: GENERATED_STANDARD_INTERFACE,
     });
-    expect(r.ok, `pbr uniform compose failed: ${r.ok ? '' : r.error.message}`).toBe(true);
+    expect(r.ok, `pbr uniform compose failed: ${r.ok ? '' : JSON.stringify(r.error)}`).toBe(true);
     if (r.ok) {
       expect(r.value.wgsl).toBeTruthy();
     }

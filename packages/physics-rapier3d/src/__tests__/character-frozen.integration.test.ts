@@ -5,6 +5,7 @@ import {
   Collider,
   ColliderShapeValue,
   type PhysicsWorld,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -27,7 +28,7 @@ async function fixture() {
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier),
     movement: PhysicsWorld = physics;
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const scene = registerPropagateTransforms(world),
     release = registerPhysicsSystems(world);
   const box = (

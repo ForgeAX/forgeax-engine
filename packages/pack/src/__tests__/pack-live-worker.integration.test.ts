@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import {
   createScriptablePackModuleExecutorPool,
   loadScriptablePack,
 } from '../scriptable-pack-node';
+import { installPackProjectDependencies } from './support/pack-project-dependencies.js';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -33,12 +34,39 @@ const output = (intensity: string) =>
 async function file(text: string) {
   const directory = await mkdtemp(join(tmpdir(), 'forgeax-live-worker-'));
   directories.push(directory);
+  await installPackProjectDependencies(directory, text.includes('@forgeax/engine/render'));
   const path = join(directory, 'example.pack.ts');
   await writeFile(path, text);
   return path;
 }
 
 describe('live Pack generation isolation in the actual Worker', () => {
+  it('refuses an incompatible consumer Engine export instead of borrowing the loader Engine', async () => {
+    const path = await file(
+      source(
+        output('1'),
+        "import { RigidBody } from '@forgeax/engine/physics'; if (!RigidBody) throw new Error('missing native body schema');",
+      ),
+    );
+    const consumer = join(path, '..', 'node_modules/@forgeax/engine');
+    await mkdir(consumer, { recursive: true });
+    await writeFile(
+      join(consumer, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine',
+        type: 'module',
+        exports: { './physics': './physics.mjs' },
+      }),
+    );
+    await writeFile(join(consumer, 'physics.mjs'), 'export const installedOldSdk = true;');
+    const loaded = await loadScriptablePack(path, { metadataOnly: true });
+    expect(loaded).toMatchObject({
+      ok: false,
+      error: { code: 'pack-parameter-invalid', detail: { reason: 'module-load' } },
+    });
+    if (loaded.ok) throw new Error('Expected incompatible consumer Engine refusal');
+    expect(JSON.stringify(loaded.error)).toContain('RigidBody');
+  });
   it('builds spatial and fixed temporal resolution cameras through pure render schema imports', async () => {
     const path = await file(
       source(
@@ -105,6 +133,48 @@ describe('live Pack generation isolation in the actual Worker', () => {
     );
   });
 
+  it('builds a cooked volumetric cloud binding through the pure schema vocabulary', async () => {
+    const definition = (
+      await loadScriptablePack(
+        await file(
+          source(
+            `return ok({ 'scene/main': { kind: 'scene', entities: {
+        sun: { components: { DirectionalLight: {} } },
+        clouds: { components: { VolumetricCloudLayer: {
+          material: '01900000-0000-7000-8000-000000000078', bottomMeters: 5000, thicknessMeters: 10000
+        } } }
+      } } });`,
+            "import { VolumetricCloudLayer } from '@forgeax/engine/render';",
+          ).replace(
+            '  build(context)',
+            '  sceneComponents: [VolumetricCloudLayer],\n  build(context)',
+          ),
+        ),
+      )
+    ).unwrap();
+    expect(definition.sceneComponents?.map((component) => component.name)).toEqual([
+      'VolumetricCloudLayer',
+    ]);
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built.unwrap()['scene/main']).toMatchObject({
+      entities: {
+        clouds: {
+          components: {
+            VolumetricCloudLayer: {
+              material: '01900000-0000-7000-8000-000000000078',
+              bottomMeters: 5000,
+              thicknessMeters: 10000,
+            },
+          },
+        },
+      },
+    });
+  });
+
   it('accepts Fog and the Camera bloom and exposure constants', async () => {
     const scene = `return ok({ 'scene/main': { kind: 'scene', entities: {
           sun: { components: { DirectionalLight: {} } },
@@ -151,8 +221,11 @@ describe('live Pack generation isolation in the actual Worker', () => {
       entities: {
         sun: {
           components: {
-            DirectionalLight: { color: [1, 0.98, 0.93], intensity: 3.2, castShadow: true },
+            DirectionalLight: { color: [1, 0.95, 0.87], intensity: 12, castShadow: true },
           },
+        },
+        'sphere-reflection': {
+          components: { ReflectionProbe: { resolution: 128, updateIntent: 1 } },
         },
       },
     });

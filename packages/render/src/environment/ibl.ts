@@ -21,6 +21,13 @@ import {
   pmremLevelCount,
   pmremViewport,
 } from '../ibl/pmrem';
+import {
+  ATMOSPHERE_PREFILTER_SIZE,
+  ATMOSPHERE_SKY_FACES,
+  atmosphereIrradiancePass,
+  atmospherePrefilterCopyPass,
+  atmospherePrefilterPass,
+} from '../record/gpu-pass-timing/sky-pass-names';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { atmosphereStorage } from './storage';
 
@@ -38,7 +45,7 @@ export function addAtmosphereIbl(
   vertices: GraphBuffer,
   dirty: (frame: RenderPipelineFrame) => boolean,
 ): Result<GraphEnvironment, RenderGraphError> {
-  const size = 64,
+  const size = ATMOSPHERE_PREFILTER_SIZE,
     levels = pmremLevelCount(size);
   const irradiance = graph.importTexture(
     'atmosphere-irradiance',
@@ -164,14 +171,14 @@ export function addAtmosphereIbl(
     };
     return state;
   };
-  for (let face = 0; face < 6; face++) {
+  for (let face = 0; face < ATMOSPHERE_SKY_FACES; face++) {
     const target = graph.view(irradiance.value, {
       dimension: '2d',
       baseArrayLayer: face,
       arrayLayerCount: 1,
     });
     if (!target.ok) return target;
-    const added = graph.addRasterPass(`atmosphere-irradiance-${face}`, {
+    const added = graph.addRasterPass(atmosphereIrradiancePass(face), {
       accesses: [
         { resource: sky, usage: 'sampled-read' },
         { resource: vertices, usage: 'vertex-read' },
@@ -202,7 +209,7 @@ export function addAtmosphereIbl(
     if (!added.ok) return added;
   }
   for (let level = 0; level < levels; level++) {
-    const added = graph.addRasterPass(`atmosphere-prefilter-${level}`, {
+    const added = graph.addRasterPass(atmospherePrefilterPass(level), {
       accesses: [
         { resource: sky, usage: 'sampled-read' },
         { resource: scratchView.value, usage: 'sampled-read' },
@@ -236,7 +243,7 @@ export function addAtmosphereIbl(
           .unwrap();
         pass.setPipeline(current.prefilter.pipeline);
         pass.setBindGroup(1, inputs);
-        for (let face = 0; face < 6; face++) {
+        for (let face = 0; face < ATMOSPHERE_SKY_FACES; face++) {
           const index = level * 6 + face;
           current.parameters[index] ??= frame.runtime.device
             .createBindGroup({
@@ -258,14 +265,14 @@ export function addAtmosphereIbl(
       },
     });
     if (!added.ok) return added;
-    const copied = graph.addCopyPass(`atmosphere-prefilter-copy-${level}`, {
+    const copied = graph.addCopyPass(atmospherePrefilterCopyPass(level), {
       accesses: [
         { resource: prefilterView.value, usage: 'copy-src' },
         { resource: scratchView.value, usage: 'copy-dst' },
       ],
       executeIf: dirty,
       encodeDirect: (encoder, frame, resources) => {
-        for (let face = 0; face < 6; face++) {
+        for (let face = 0; face < ATMOSPHERE_SKY_FACES; face++) {
           const viewport = pmremViewport(size, level, face);
           encoder.copyTextureToTexture(
             {

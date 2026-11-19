@@ -5,11 +5,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-clear-color headless dawn smoke — proves Bevy window/clear_color
 // behavior: blue-ish clearColor → Space rising-edge toggle → purple.
 // Browser and smoke share the same src/clear-color.ts scene.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '100', 10);
@@ -103,7 +103,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

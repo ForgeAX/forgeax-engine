@@ -1,0 +1,31 @@
+{
+  "runId": 44242238183,
+  "conclusion": "cancelled",
+  "completedOwnerSeconds": {
+    "contracts": 58.95918411799999,
+    "diagnostic-gpu-array": 53.75243365099997,
+    "diagnostic-pack-authoring": 67.52026843,
+    "diagnostic-pack-save": 44.58868259500002,
+    "diagnostic-pages": 344.663133416,
+    "diagnostic-texture": 177.97544004400004,
+    "engine-only": 160.41925441400002,
+    "game3d": 739.0010160249999,
+    "lifecycle": 102.74221221199998,
+    "modeling": 325.52734910199996,
+    "plugin": 1061.1961688220001,
+    "runtime-js": 252.01211120200017,
+    "runtime-ts": 256.1545106889999,
+    "workspace": 337.5247638310001
+  },
+  "retainedOwnerSeconds": {
+    "diagnostic-gpu-2d": 117.57803540199995
+  },
+  "uncompletedOwners": ["diagnostic-gpu-2d"],
+  "prepareSeconds": 15.851968765999999,
+  "setupAndTransferReserveSeconds": 120,
+  "jobBudgetSeconds": 1800,
+  "afterPairingReserveSecondsByShard": {
+    "0": 480,
+    "1": 390
+  }
+}

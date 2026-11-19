@@ -84,7 +84,7 @@ export function transientViewExecutionEligible(execution: RenderFeaturePlanExecu
   if (!execution.scope?.startsWith('view:') || (placement !== 'scene' && placement !== 'post'))
     return false;
   return execution.passes.every((pass) => {
-    if (pass.shadowCaster) return false;
+    if (pass.shadowCaster || pass.temporal !== undefined) return false;
     if (pass.resolvedGpuCopies !== undefined) return true;
     if (pass.resolvedGpuCompute !== undefined)
       return (

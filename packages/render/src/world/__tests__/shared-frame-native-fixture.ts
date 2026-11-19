@@ -3,6 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { vi } from 'vitest';
 import { stageFeatureFrame } from '../../__tests__/feature-frame-driver';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { DeviceScope } from '../../device/device-scope';
 import { createFullscreenRenderFeature } from '../../features/fullscreen';
 import { createRenderFeatureHost } from '../../features/host';
@@ -12,9 +13,11 @@ import {
   ownRenderFeatureProgramData,
 } from '../../features/prepared-gpu-work';
 import type { RenderFeature } from '../../features/types';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { RenderSystemInternals } from '../../record/render-context';
+
 import * as sharedGraphs from '../feature-graph-systems';
-import { RENDER_FEATURE_GRAPH_ENCODE_SYSTEM } from '../graph-seal-systems';
+
 import { frameEncoder } from '../record-systems';
 import {
   endRenderFrame,
@@ -207,7 +210,12 @@ export async function sharedNativeFixture() {
     errorRegistry: { fire: vi.fn() },
     framePassNames: [],
   } as unknown as RenderSystemInternals;
-  world.removeSystem(RenderRecord, RENDER_FEATURE_GRAPH_ENCODE_SYSTEM).unwrap();
+  world
+    .removeSystem(
+      RenderRecord,
+      registeredSystem(world, RenderRecord, 'render-feature-graph-encode'),
+    )
+    .unwrap();
   let frame = 0;
   function stage(count = state.count) {
     state.count = count;
@@ -215,8 +223,7 @@ export async function sharedNativeFixture() {
       {
         identity: 'main',
         render: true,
-        worlds: [],
-        owner: 0,
+        world,
         frameNumber: ++frame,
         generation: scope.generation,
         caps: device.caps,
@@ -225,7 +232,7 @@ export async function sharedNativeFixture() {
     ]);
     if (sealed.kind !== 'sealed') throw new Error(`Feature frame ${sealed.kind}`);
     if (sealed.batch.frame.errors.length) throw sealed.batch.frame.errors[0];
-    sharedGraphs.stageSharedFeatureGraph(world, internals);
+    sharedGraphs.stageSharedFeatureGraph(world, internals, [worldRenderResources(world)]);
     const recorded = runRenderRecord(world, { device, frameId: frame });
     if (!recorded.ok) throw recorded.error;
     const outcome = sharedGraphs.sharedFeatureGraphOutcome(world);

@@ -162,7 +162,8 @@ test('Editor action keeps the source-only contract while Engine CI owns its fast
   const coreBuild = workflow.slice(coreStart, nextJob);
   assert.doesNotMatch(coreBuild, /build-editor-prerequisite\.mjs/);
   assert.match(coreBuild, /uses: \.\/\.github\/actions\/prepare-wgpu-wasm/);
-  assert.match(coreBuild, /Hydrate fbx \+ codec pkg\/ from release \(best-effort\)/);
+  assert.match(coreBuild, /uses: \.\/\.github\/actions\/prepare-fbx-wasm/);
+  assert.match(coreBuild, /uses: \.\/\.github\/actions\/prepare-codec-wasm/);
   assert.match(coreBuild, /Build package JavaScript once/);
   assert.match(coreBuild, /Stage core artifact classes[\s\S]*packages\/\*\/dist/);
   assert.match(coreBuild, /for source in[^\n]*packages\/dsh\/lib/);
@@ -218,7 +219,7 @@ test('package-only build reuses package and declaration stages without shared in
   const build = readFileSync(resolve(ENGINE_ROOT, 'scripts/build.mjs'), 'utf8');
   assert.match(build, /--packages-only/);
   assert.match(build, /mode !== 'packages-only'/);
-  assert.match(build, /runStage\('packages'/);
+  assert.match(build, /runStage\(\s*'packages'/);
   assert.match(build, /runStage\('types-preflight'/);
   assert.match(build, /runStage\('types'/);
   assert.match(build, /if \(mode === 'full'\)/);

@@ -19,6 +19,7 @@ import { AnimationTargetId, bindAnimationTargets } from '../animation-target';
 import { animationPlugin } from '../plugin';
 import { bindSkeletalMotion, skeletalMotionPlugin } from '../skeletal-motion';
 import { createSplineIKSolver, SplineIK, splineIKPlugin } from '../spline-ik';
+import { AnimationPlayback, SkeletalMotionCapture } from '../system-order';
 
 async function rig(count = 4, length = 1) {
   const world = new World();
@@ -206,8 +207,8 @@ describe('Spline IK ordinary Scene pose', () => {
         expect(
           fixed?.systems.find((system) => system.name === 'animation/solve-spline-ik'),
         ).toMatchObject({
-          after: ['advanceAnimationPlayer'],
-          before: ['captureSkeletalMotionBase', 'propagateTransformsFixed'],
+          after: [AnimationPlayback.name],
+          before: [SkeletalMotionCapture.name, 'propagateTransformsFixed'],
         });
         const presented = [...world.get(joints[0] as EntityHandle, Transform).unwrap().quat];
         world.set(curve, Path, { points: [0, 0, 0, 0, 0, 3] }).unwrap();

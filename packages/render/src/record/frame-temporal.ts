@@ -1,10 +1,9 @@
-import { isTemporalAntialias } from '../components/camera';
-import { recordContext } from '../world/view-record-context';
 // Display-frame temporal state: the sample clock, the TAA / Motion Blur
 // temporal view with its reset reason, and the camera-owned post-process
 // parameters projected from that view at record time.
 
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
+import { isTemporalAntialias } from '../components/camera';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import {
   DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS,
@@ -35,6 +34,7 @@ import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
 import type { TemporalCommitOutcome } from '../temporal/frame';
 import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { createTemporalView, resolveTemporalReset, type TemporalView } from '../temporal/view';
+import { recordContext } from '../world/view-record-context';
 import {
   packBarrelDistortionParams,
   type resolveSubmittedBarrelMapping,
@@ -52,14 +52,11 @@ export interface FrameClockSample {
 /** Read the render sample clock from the camera's composition world once per frame. */
 export function frameClockSample(
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
-  camera: CameraSnapshot,
   sampleTimeSeconds?: number,
 ): FrameClockSample {
-  const owner = worlds[camera.worldId ?? 0] ?? world;
   const invalidSampleTime = sampleTimeSeconds !== undefined && !Number.isFinite(sampleTimeSeconds);
   try {
-    const clock = renderTime(owner);
+    const clock = renderTime(world);
     return {
       deltaSeconds: Number.isFinite(clock.delta) ? Math.max(0, clock.delta) : 0,
       // Keep the raw host sample even when ECS accepted only a clamped

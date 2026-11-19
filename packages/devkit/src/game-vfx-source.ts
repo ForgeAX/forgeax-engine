@@ -1,10 +1,13 @@
 /** One native VFX assembly is constructed independently in each execution realm. */
 export const gameVfxSource = `import { createVfxRuntimeHost } from '@forgeax/engine/vfx-render';
-export function createGameVfx({ isolateViewGraph = true, instanceArenas = true, nativePlanning = true, retainedResources = true } = {}) {
+export function createGameVfx({ isolateViewGraph = true, instanceArenas = true, nativePlanning = true, retainedResources = true, dependencies = [] as readonly string[], providers = undefined as NonNullable<Parameters<typeof createVfxRuntimeHost>[0]>['providers'], providersForWorld = undefined as NonNullable<Parameters<typeof createVfxRuntimeHost>[0]>['providersForWorld'] } = {}) {
   const host = createVfxRuntimeHost({
     instanceArenas,
     nativePlanning,
     retainedResources,
+    dependencies,
+    ...(providers === undefined ? {} : { providers }),
+    ...(providersForWorld === undefined ? {} : { providersForWorld }),
     ...(isolateViewGraph ? { isolateViewGraph: true } : {}),
     camera: { read: (_world, views) => views[0]?.selectedView },
   });

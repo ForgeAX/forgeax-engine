@@ -1,4 +1,8 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import {
+  nativeOutputShaderFixture,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { testAssets } from './helpers/runtime-assets';
 // Consolidated by feat-20260608-ci-time-cut M5 w13/w14: merges
 //   - render-system.test.ts
@@ -23,7 +27,7 @@ import { prepareExtractContext } from '../../../render/src/render-system-extract
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 import { mockRenderBundles } from './mock-render-bundles';
-import { drawWithOwners } from './renderer-test-utils';
+import { drawWorld } from './renderer-test-utils';
 
 type RendererErrorObservation = {
   readonly code: string;
@@ -67,7 +71,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   world.update().unwrap();
-  return drawWithOwners(renderer, world);
+  return drawWorld(renderer, world);
 }
 
 // ─── from render-system.test.ts ───
@@ -184,7 +188,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: { maxTextureDimension2D: 8192 },
+      limits: { maxTextureDimension2D: 8192, maxStorageBuffersPerShaderStage: 8 },
       queue: {
         submit: () => {
           log.queueSubmitCount++;
@@ -215,6 +219,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
             setVertexBuffer: () => undefined,
             setIndexBuffer: () => undefined,
             setViewport: () => undefined,
+            setScissorRect: () => undefined,
+            setBlendConstant: () => undefined,
+            pushDebugGroup: () => undefined,
+            popDebugGroup: () => undefined,
             setBindGroup: (groupIndex: number, _bg: unknown, dynamicOffsets?: number[]) => {
               log.setBindGroupCount++;
               // w8-A: capture mesh uniform buffer offset at group=2.
@@ -286,6 +294,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -296,6 +306,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
         materialShaderStub('forgeax::default-shadow-caster'),
@@ -430,8 +442,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // pass-count literal that changes when a named stage is split.
       expect(log.beginRenderPassCount).toBeGreaterThan(log.queueSubmitCount);
       expect(log.setPipelineCount).toBeGreaterThan(0);
-      // The Forward depth prepass and `main` each draw the entity once.
-      expect(log.drawIndexedCount).toBe(2);
+      // Default Forward has no forced depth prepass: `main` draws once.
+      expect(log.drawIndexedCount).toBe(1);
       expect(log.encoderFinishCount).toBe(1); // one typed graph command encoder
       expect(log.queueSubmitCount).toBe(1); // one submission for the frame graph
       // Three BindGroups recorded per entity (view / material / mesh-array).
@@ -580,10 +592,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Soft path: no error fired (D-Q7 mirroring; LO §1.1 minimum semantic).
       expect(errors).toHaveLength(0);
-      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
-      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
-      // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(15);
+      // Nine fallback clears, spot-shadow, merged sky/main, Grade and Final.
+      // Empty geometry still paints without a forced Forward depth prepass.
+      expect(log.beginRenderPassCount).toBe(13);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
       // No geometry submitted.
       expect(log.drawIndexedCount).toBe(0);
@@ -637,8 +648,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toEqual([]);
-      // Forward depth prepass + main.
-      expect(log.drawIndexedCount).toBe(2);
+      // Default Forward draws geometry once in `main`.
+      expect(log.drawIndexedCount).toBe(1);
     });
 
     it('case D: world has N>1 Camera fires render-system-multi-camera + uses first hit', async () => {
@@ -827,10 +838,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Case E secondary-fix: even when every renderable fails asset
       // registration, the clear pass still runs (so visual debugging shows
       // the cleared canvas rather than a stale frame).
-      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
-      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
-      // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(15);
+      // Nine fallback clears, spot-shadow, merged sky/main, Grade and Final.
+      // Empty geometry still paints without a forced Forward depth prepass.
+      expect(log.beginRenderPassCount).toBe(13);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
     });
 
@@ -1398,8 +1408,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toHaveLength(0);
-      // Forward depth prepass + main.
-      expect(log.drawIndexedCount).toBe(2);
+      // Default Forward draws geometry once in `main`.
+      expect(log.drawIndexedCount).toBe(1);
 
       // Without stencilReference, the draw loop should call
       // setStencilReference(0) (harmless WebGPU default) or not call it at

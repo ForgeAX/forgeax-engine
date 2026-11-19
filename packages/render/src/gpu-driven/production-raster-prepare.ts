@@ -7,7 +7,7 @@ import {
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import { reflectedRenderState } from '../material-render-state';
-import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
@@ -42,8 +42,6 @@ export interface PreparedBatch {
   readonly renderState: MaterialRenderState | undefined;
   readonly standardTextureMask: number | undefined;
   readonly materialBindingClass: string;
-  /** Stable World attachment key used to join same-submit GPU counters. */
-  readonly worldKey: number;
 }
 
 export function meshSupportsBatch(mesh: MeshGpuHandles, batch: GpuDrivenBatch): boolean {
@@ -60,7 +58,6 @@ export interface PreparedBatchFacts {
   readonly artifact: MaterialShaderArtifact;
   readonly material: Pick<MaterialSnapshot, 'materialHandle' | 'standardTextureMask'>;
   readonly renderState: MaterialRenderState | undefined;
-  readonly worldKey: number;
   readonly rasterClassKey: string;
   readonly recordingRasterClassKey: string;
 }
@@ -79,12 +76,10 @@ function rasterClassKeys(
   mesh: MeshGpuHandles,
   artifact: MaterialShaderArtifact,
   material: MaterialSnapshot,
-  worldKey: number,
   renderState: MaterialRenderState | undefined,
 ) {
   const key = batch.key;
   const fields = [
-    worldKey,
     key.drawKind,
     key.topology,
     key.pipelineClass,
@@ -117,7 +112,7 @@ function rasterClassKeys(
   // Main-pass direct draws already bind residency-owned mesh buffers outside
   // the graph. Stock indirect recording follows the same lifetime authority;
   // inter-pass Scene/visibility/indirect buffers remain graph declarations.
-  fields[8] = fields[9] = fields[11] = fields[12] = 0;
+  fields[7] = fields[8] = fields[10] = fields[11] = 0;
   return { rasterClassKey, recordingRasterClassKey: JSON.stringify(fields) };
 }
 
@@ -132,7 +127,6 @@ export interface PreparedBatchRows {
 
 export interface PreparationInputs {
   readonly mesh: MeshGpuHandles | undefined;
-  readonly worldKeys: readonly number[] | undefined;
   readonly execution: BatchExecution;
 }
 
@@ -203,7 +197,6 @@ export function prepareBatchRows(
     execution.route === 'gpu'
   ) {
     const material = execution.material;
-    const worldKey = inputs.worldKeys?.[binding.worldId] ?? binding.worldId;
     const renderState = geometryRenderStateForTopology(
       batch.key.topology,
       reflectedRenderState(execution.pass.renderState, batch.key.reflected === true),
@@ -211,7 +204,6 @@ export function prepareBatchRows(
     fact = Object.freeze({
       mesh,
       artifact,
-      worldKey,
       renderState,
       material: Object.freeze({
         ...(material.materialHandle === undefined
@@ -221,7 +213,7 @@ export function prepareBatchRows(
           ? {}
           : { standardTextureMask: material.standardTextureMask }),
       }),
-      ...rasterClassKeys(batch, mesh, artifact, material, worldKey, renderState),
+      ...rasterClassKeys(batch, mesh, artifact, material, renderState),
     });
   }
   return Object.freeze({ source: batch, lod, fact, mesh, meshContentEpoch: mesh?.contentEpoch });
@@ -230,9 +222,8 @@ export function prepareBatchRows(
 export function assemblePreparedPlan(
   source: SubmissionPlan,
   batchRows: readonly PreparedBatchRows[],
-  worldKeys: readonly number[] | undefined,
 ) {
-  return { source, worldKeys, batchRows: Object.freeze([...batchRows]) };
+  return { source, batchRows: Object.freeze([...batchRows]) };
 }
 
 export type PreparedProductionPlan = ReturnType<typeof assemblePreparedPlan>;
@@ -274,7 +265,7 @@ export function partitionBatch(
   >();
   const candidates = source.candidates[Symbol.iterator]();
   for (const member of members) {
-    const materialBindingClass = bindings?.get(`${binding.worldId}:${member.entityKey}`) ?? '';
+    const materialBindingClass = bindings?.get(`${member.entityKey}`) ?? '';
     const key = materialBindingClass;
     let group = groups.get(key);
     if (group === undefined) {
@@ -344,7 +335,6 @@ export function assembleFilteredBatch(group: FilteredGroup): PreparedBatch {
     renderState: fact.renderState,
     standardTextureMask: fact.material.standardTextureMask,
     materialBindingClass: partition.materialBindingClass,
-    worldKey: fact.worldKey,
   });
 }
 
@@ -419,21 +409,12 @@ export function assembleFilteredGroups(
 /** View visibility depends on the scene, never on material adoption. */
 export function suppressedPrimitiveWords(
   slots: PersistentGpuDrivenState['slots'],
-  worldKeys: readonly number[] | undefined,
   activeEntityKeys: ReadonlySet<number>,
   sceneCapacity: number,
 ): Uint32Array {
   const words = new Uint32Array(Math.max(1, Math.ceil(sceneCapacity / 32)));
   for (const slot of slots) {
-    if (
-      activeEntityKeys.has(
-        worldEntityKey(
-          worldKeys?.[slot.snapshot.worldId] ?? slot.snapshot.worldId,
-          slot.snapshot.entityKey,
-        ),
-      )
-    )
-      continue;
+    if (activeEntityKeys.has(slot.snapshot.entityKey)) continue;
     const word = slot.slot >>> 5;
     if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (slot.slot & 31));
   }
@@ -443,7 +424,6 @@ export function suppressedPrimitiveWords(
 /** The inputs one suppression bitmap was derived from. */
 export interface SuppressionSource {
   readonly slots: PersistentGpuDrivenState['slots'];
-  readonly worldKeys: readonly number[] | undefined;
   readonly activeEntityKeys: ReadonlySet<number>;
   readonly words: Uint32Array;
 }
@@ -473,7 +453,6 @@ export function suppressionPatchOf(
 export function patchSuppressedPrimitiveWords(
   previous: SuppressionSource,
   slots: PersistentGpuDrivenState['slots'],
-  worldKeys: readonly number[] | undefined,
   activeEntityKeys: ReadonlySet<number>,
   sceneCapacity: number,
 ): Uint32Array | undefined {
@@ -482,8 +461,6 @@ export function patchSuppressedPrimitiveWords(
     !(previous.slots instanceof SceneSlotFrame) ||
     !(activeEntityKeys instanceof SlotIdentityKeys) ||
     !(previous.activeEntityKeys instanceof SlotIdentityKeys) ||
-    previous.worldKeys?.length !== worldKeys?.length ||
-    previous.worldKeys?.some((key, index) => key !== worldKeys?.[index]) === true ||
     // Capacity bounds which rows the earlier bitmap could address.
     previous.words.length !== Math.max(1, Math.ceil(sceneCapacity / 32))
   )
@@ -494,14 +471,7 @@ export function patchSuppressedPrimitiveWords(
     const word = slot >>> 5;
     if (word >= words.length) return;
     const record = slots.slotAt(slot);
-    const suppressed =
-      record !== undefined &&
-      !activeEntityKeys.has(
-        worldEntityKey(
-          worldKeys?.[record.snapshot.worldId] ?? record.snapshot.worldId,
-          record.snapshot.entityKey,
-        ),
-      );
+    const suppressed = record !== undefined && !activeEntityKeys.has(record.snapshot.entityKey);
     const bit = 1 << (slot & 31);
     const before = words[word] ?? 0;
     const after = suppressed ? before | bit : before & ~bit;
@@ -625,7 +595,6 @@ export class BatchPreparation {
         readonly plan: SubmissionPlan;
         /** Current immutable frame lookup for attribution, independent of prepared geometry. */
         readonly slotAt: PersistentGpuDrivenState['slotAt'];
-        readonly worldKeys: readonly number[] | undefined;
         readonly scene: PersistentGpuDrivenState['scene'];
         readonly batchRows: readonly PreparedBatchRows[];
         readonly value: PreparedProductionPlan;

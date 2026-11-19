@@ -74,8 +74,7 @@ it('draws a stock medium Surface without a dynamicInput page', async () => {
       )
       .unwrap();
     world.update(1 / 60).unwrap();
-    const draw = () =>
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const draw = () => renderer.draw({ source: lease });
     expect(draw().ok, JSON.stringify(errors)).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(draw().ok, JSON.stringify(errors)).toBe(true);

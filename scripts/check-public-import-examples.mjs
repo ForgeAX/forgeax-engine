@@ -309,7 +309,8 @@ function validateUmbrellaTarget(target, resolvedTarget) {
   const expectedFacade = `${sourceNames.has('default') ? `export { default } from '${expectedSource}';\n` : ''}export * from '${expectedSource}';\n`;
   for (const artifact of [facade.declaration, facade.runtime]) {
     if (fs.existsSync(artifact)) {
-      const content = fs.readFileSync(artifact, 'utf8');
+      // A declaration may open with the doc comment naming where its exports are defined.
+      const content = fs.readFileSync(artifact, 'utf8').replace(/^\/\*\*[\s\S]*?\*\/\n/, '');
       if (content !== expectedFacade) {
         failures.push(`generated facade is stale or differs from ${expectedSource}`);
         break;

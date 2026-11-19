@@ -20,14 +20,19 @@ import { websocketListenerCommands } from '../packages/net-websocket/__tests__/s
 import { diffuseGiCommands } from '../packages/render/src/__tests__/raytracing/diffuse-gi.commands';
 import { rayPathCommands } from '../packages/render/src/__tests__/raytracing/path-tracer.commands';
 import { sdfCardsCommands } from '../packages/render/src/__tests__/raytracing/sdf-cards.commands';
+import { textureGeneratorCommands } from '../packages/render/src/__tests__/texture-generators.commands';
 import { generatedLodCommands } from '../packages/runtime/src/__tests__/generated-lod.server';
 import { materialPublicationCommands } from '../packages/runtime/src/__tests__/material-publication.commands';
 import { vfxMeshLightingCommands } from '../packages/runtime/src/__tests__/vfx-mesh-lighting.commands';
-import { createMaterialPackCooker } from '../packages/shader-compiler/src/index';
+import {
+  createMaterialPackCooker,
+  createTextureGeneratorPackCooker,
+} from '../packages/shader-compiler/src/index';
+import { threeNodeInputCommands } from '../packages/three/src/__tests__/node-inputs.commands';
 import { fixedFieldCommands } from '../packages/vfx-render/src/__tests__/force-fields-fixed-ticks.server';
 import { nativeBindingCommands } from '../packages/wgpu-wasm/scripts/__tests__/native-binding.commands.mjs';
 import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/production-csp.commands.mjs';
-import { selectBrowserExecutable } from '../scripts/ci/browser-executable.mjs';
+import { browserGpuLaunchOptions } from '../scripts/ci/browser-executable.mjs';
 import { browserFixtureInputs } from '../scripts/ci/browser-fixture-inputs.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
@@ -48,6 +53,7 @@ import { createRhiDebugSourceAliases } from './vitest-rhi-debug-source-alias';
 // and loading the rest makes Vite's dependency optimizer exceed the heavy
 // runner heap before a browser test can start.
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
+const coreValidationProfile = JSON.stringify(process.env.FORGEAX_CI_CORE_VALIDATION ?? '0');
 const evidenceSourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
   cwd: rootDir,
   encoding: 'utf8',
@@ -55,11 +61,17 @@ const evidenceSourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
 const evidenceBuildId = `vitest-browser-${evidenceSourceSha.slice(0, 12)}`;
 const templateAssetRoot = resolve(rootDir, 'apps/game-capability-lab/assets');
 const templatePackRoots = gameCapabilityAssetRoots(templateAssetRoot);
+const waterVisibilityPackRoot = resolve(
+  rootDir,
+  'packages/runtime/src/__tests__/fixtures/water-mesh-visibility.pack.ts',
+);
 const surfaceEvidencePackRoots = [
   resolve(rootDir, 'templates/game-3d/assets/materials.pack.ts'),
   resolve(rootDir, 'apps/preview/assets/surface-standard-evidence.pack.ts'),
   resolve(rootDir, 'apps/preview/assets/surface-water-splash-material.pack.json'),
   resolve(rootDir, 'apps/preview/assets/surface-water-splash.pack.json'),
+  resolve(rootDir, 'apps/preview/assets/water-r0-recipes.pack.ts'),
+  resolve(rootDir, 'apps/preview/assets/water-r0-base-terrain.pack.ts'),
 ];
 const surfaceOnly =
   process.env.FORGEAX_BROWSER_SURFACE_ONLY === '1' || process.env.FORGEAX_SURFACE_ONLY === '1';
@@ -122,7 +134,7 @@ const producerReadiness =
   process.env.FORGEAX_BROWSER_PACK_READINESS === 'before-consume' ? 'before-consume' : 'on-demand';
 
 const previewExternalRoots = [
-  resolve(rootDir, 'forgeax-engine-assets/demo-assets/template-game-default/sky.hdr.meta.json'),
+  resolve(rootDir, 'packages/preview/assets/canonical-kit/sky.hdr.meta.json'),
   resolve(rootDir, 'forgeax-engine-assets/sfx'),
   submoduleJpegMetaPath,
   submoduleBgmMetaPath,
@@ -135,26 +147,17 @@ const previewExternalRoots = [
 ];
 
 function browserLaunchOptions() {
-  const selectedLaunch = selectBrowserExecutable(browserLaunch);
-  return {
-    ...selectedLaunch,
-    args: [
-      ...selectedLaunch.args.flatMap((argument) => {
-        if (process.platform !== 'win32') return [argument];
-        if (argument.startsWith('--enable-features=Vulkan')) return [];
-        if (argument === '--use-vulkan=swiftshader') return ['--use-webgpu-adapter=swiftshader'];
-        return [argument];
-      }),
-      // CI deliberately selects software. Cold submissions can exceed
-      // Chromium's GPU watchdog; the unchanged test deadlines bound them.
-      ...(process.env.CI
-        ? [
-            ...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader']),
-            '--disable-gpu-watchdog',
-          ]
-        : []),
-    ],
-  };
+  return browserGpuLaunchOptions(browserLaunch);
+}
+
+function browserFixtureSources(include: readonly string[]): string[] {
+  return [
+    ...include,
+    ...(include.some((file) => file.startsWith('apps/preview/')) ? [templateAssetRoot] : []),
+    ...(include.some((file) => file.startsWith('packages/runtime/src/__tests__/subsurface'))
+      ? [resolve(rootDir, 'apps/hello/foliage-transmission/src')]
+      : []),
+  ];
 }
 
 export function createBrowserProject() {
@@ -170,21 +173,25 @@ export function createBrowserProject() {
   const parityComparison = include.some(
     (file) => file.includes('*') || file.startsWith('apps/parity/color-lighting/'),
   );
-  const fixtureSources = [
-    ...include,
-    ...(include.some((file) => file.startsWith('apps/preview/')) ? [templateAssetRoot] : []),
-    ...(include.some((file) => file.startsWith('packages/runtime/src/__tests__/subsurface'))
-      ? [resolve(rootDir, 'apps/hello/foliage-transmission/src')]
-      : []),
-  ];
+  const fixtureSources = browserFixtureSources(include);
   const materialPackages = browserFixtureInputs(
     rootDir,
     materialContractInventory.materialPackages,
     fixtureSources,
   ).map((file: string) => resolve(rootDir, file));
+  // This fixture compiles its real selector WGSL through RHI. Keep Engine
+  // source publication available without eagerly cooking unrelated profiles.
+  const gpuViewOnly =
+    include.length === 1 &&
+    include[0] === 'packages/render/src/__tests__/gpu-driven-view.browser.test.ts';
   // These owners either reuse their demo closure or author all assets through
   // the fixture Catalog or direct URLs. Unknown/broad/mixed selectors keep the full Catalog.
   const ownerPackRoots = new Map<string, readonly string[]>([
+    ['packages/render/src/__tests__/gpu-driven-view.browser.test.ts', []],
+    [
+      'packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts',
+      [waterVisibilityPackRoot],
+    ],
     [
       'apps/learn-render/5.advanced-lighting/6.hdr/src/__tests__/onerror-gate.browser.test.ts',
       hdrAssetRoots,
@@ -231,6 +238,7 @@ export function createBrowserProject() {
               'forgeax-engine-assets/khronos-gltf-samples/Sponza/Sponza.gltf.meta.json',
             ),
             ...templatePackRoots,
+            waterVisibilityPackRoot,
             ...surfaceEvidencePackRoots,
             ...previewExternalRoots,
           ],
@@ -244,7 +252,11 @@ export function createBrowserProject() {
     externalTextureMaterialFixture(),
     weaponSpiritMaterialFixture(),
     weaponSpiritMaterialFixture(true),
-    forgeaxShader({ engineEntries: { pointShadows: true, hdrpSsao: true }, materialPackages }),
+    forgeaxShader({
+      ...(gpuViewOnly ? { publication: 'source' as const } : {}),
+      engineEntries: { pointShadows: true, hdrpSsao: true },
+      materialPackages,
+    }),
     pluginPack({
       runtimeBinding: createStandaloneRuntimeAssetBinding('browser-tests'),
       producerReadiness: surfaceOnly ? 'before-consume' : producerReadiness,
@@ -266,6 +278,10 @@ export function createBrowserProject() {
           resolve(rootDir, 'templates/game-3d/assets/shaders'),
           resolve(rootDir, 'apps/preview/assets'),
         ]),
+        createTextureGeneratorPackCooker([
+          resolve(rootDir, 'templates/game-3d/assets/shaders'),
+          resolve(rootDir, 'apps/preview/assets'),
+        ]),
       ],
     }),
   ];
@@ -283,6 +299,13 @@ export function createBrowserProject() {
         'ws',
         '@forgeax/engine-render > @forgeax/engine-rhi-debug > pako',
         '@forgeax/engine-render > @forgeax/engine-rhi-debug > @noble/hashes/blake3.js',
+        // The cloud identity code is also reached by later renderer imports.
+        '@forgeax/engine-render > @noble/hashes/sha2.js',
+        '@forgeax/engine-render > @noble/hashes/utils.js',
+        // Cold Worker/scene imports must not reload a running Audio transport test.
+        '@forgeax/engine-pack > acorn',
+        '@forgeax/engine-render > @forgeax/engine-water > clipper2-ts',
+        '@forgeax/engine-geometry > earcut',
         ...(parityComparison ? ['ajv/dist/2020.js'] : []),
       ],
       entries: [
@@ -292,7 +315,7 @@ export function createBrowserProject() {
         // The complete guide loads its ordinary controller through a runtime URL.
         // Discover its dependencies before that import can reload a running test.
         ...(include.some((file) => file.includes('*') || file.startsWith('packages/ui-blitz/'))
-          ? ['templates/game-3d/assets/ui/guide-controller.ts']
+          ? ['packages/ui/test-fixtures/game-guide/guide-controller.ts']
           : []),
       ],
     },
@@ -319,6 +342,10 @@ export function createBrowserProject() {
         : {}),
     },
     define: {
+      'import.meta.env.FORGEAX_CI_CORE_VALIDATION': coreValidationProfile,
+      'import.meta.env.FORGEAX_BROWSER_GPU': JSON.stringify(
+        process.env.FORGEAX_BROWSER_GPU ?? 'software',
+      ),
       'import.meta.env.FORGEAX_RUNTIME_SCOPE_ID': JSON.stringify('browser-tests'),
       'import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA': JSON.stringify(evidenceSourceSha),
       'import.meta.env.VITE_FORGEAX_EVIDENCE_BUILD_ID': JSON.stringify(evidenceBuildId),
@@ -364,6 +391,8 @@ export function createBrowserProject() {
         ui: false,
         commands: {
           ...nativeBindingCommands,
+          ...threeNodeInputCommands,
+          ...textureGeneratorCommands,
           ...productionCspCommands,
           ...fixedFieldCommands,
           ...renderWorkerCommands,

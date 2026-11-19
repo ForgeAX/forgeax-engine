@@ -1,0 +1,20 @@
+{
+  "runId": 43704488189,
+  "forecastSourceRunId": 43532825859,
+  "reservedOwners": {
+    "compact-3": 136.575,
+    "feature-depth": 105.28,
+    "gi-3": 84.61,
+    "gi-4": 219.769,
+    "gi-5": 160.187,
+    "gi-6": 62.795,
+    "heavy-3": 30.738,
+    "heavy-4": 35.037,
+    "modeling-show": 139.82,
+    "renderer": 54.38,
+    "screen-probe": 65.337,
+    "shadow-quality": 78.748,
+    "specular-aa": 64.335,
+    "vfx-depth": 169.417
+  }
+}

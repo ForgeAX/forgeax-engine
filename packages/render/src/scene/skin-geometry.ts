@@ -1,4 +1,26 @@
+import { meshAttributeWindow } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
+
+/** Admit the three typed influence windows without retaining mesh bytes. */
+function skinGeometryWindows(mesh: MeshAsset) {
+  const position = meshAttributeWindow(mesh, 'position');
+  const index = meshAttributeWindow(mesh, 'skinIndex');
+  const weight = meshAttributeWindow(mesh, 'skinWeight');
+  if (
+    !position ||
+    !index ||
+    !weight ||
+    !(position.data instanceof Float32Array) ||
+    !(index.data instanceof Uint16Array) ||
+    !(weight.data instanceof Float32Array) ||
+    !Number.isInteger(position.count) ||
+    position.count <= 0 ||
+    index.count !== position.count ||
+    weight.count !== position.count
+  )
+    return undefined;
+  return { position, index, weight };
+}
 
 /** vec4 header (minimum sum, maximum sum, required joints, envelope count),
  * then two vec4s per used joint: (minimum.xyz, joint index), (maximum.xyz, 0).
@@ -7,40 +29,32 @@ import type { MeshAsset } from '@forgeax/engine-types';
 export function skinGeometryEnvelopes(mesh: MeshAsset): Float32Array | undefined {
   // A base-position envelope cannot prove visibility after authored morphing.
   if (mesh.morphTargets !== undefined && mesh.morphTargets.length > 0) return undefined;
-  const positions = mesh.attributes.position;
-  const indices = mesh.attributes.skinIndex;
-  const weights = mesh.attributes.skinWeight;
-  if (
-    !(positions instanceof Float32Array) ||
-    positions.length === 0 ||
-    positions.length % 3 !== 0 ||
-    !(indices instanceof Uint16Array) ||
-    !(weights instanceof Float32Array) ||
-    indices.length !== (positions.length / 3) * 4 ||
-    weights.length !== indices.length
-  )
-    return undefined;
+  const geometry = skinGeometryWindows(mesh);
+  if (geometry === undefined) return undefined;
+  const { position, index, weight } = geometry;
+  const positions = position.data,
+    indices = index.data,
+    weights = weight.data;
   const bounds = new Map<number, number[]>();
   let minimumSum = Infinity,
     maximumSum = 0,
     requiredJoints = 0;
-  for (let vertex = 0; vertex < positions.length / 3; vertex++) {
-    const x = positions[vertex * 3] as number;
-    const y = positions[vertex * 3 + 1] as number;
-    const z = positions[vertex * 3 + 2] as number;
+  for (let vertex = 0; vertex < position.count; vertex++) {
+    const x = positions[position.offset + vertex * position.stride] as number;
+    const y = positions[position.offset + vertex * position.stride + 1] as number;
+    const z = positions[position.offset + vertex * position.stride + 2] as number;
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined;
     let sum = 0;
     for (let lane = 0; lane < 4; lane++) {
-      const index = vertex * 4 + lane;
-      const joint = indices[index] as number;
-      const weight = weights[index] as number;
+      const joint = indices[index.offset + vertex * index.stride + lane] as number;
+      const influence = weights[weight.offset + vertex * weight.stride + lane] as number;
       // Individual subnormal weights may all flush to zero even when their
       // positive sum is normal, so homogeneous w has no portable lower bound.
-      if (!Number.isFinite(weight) || weight < 0 || (weight > 0 && weight < 2 ** -126))
+      if (!Number.isFinite(influence) || influence < 0 || (influence > 0 && influence < 2 ** -126))
         return undefined;
       requiredJoints = Math.max(requiredJoints, joint + 1);
-      sum += weight;
-      if (weight === 0) continue;
+      sum += influence;
+      if (influence === 0) continue;
       const box = bounds.get(joint);
       if (box === undefined) bounds.set(joint, [x, y, z, x, y, z]);
       else {

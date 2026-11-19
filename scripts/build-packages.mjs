@@ -17,6 +17,7 @@ import {
   workspacePackages,
   writeReceipt,
 } from './build-task-cache.mjs';
+import { prepareAssetsCheckout } from './ci/prepare-assets-checkout.mjs';
 import { buildPackageSelection } from './lib/build-package-selection.mjs';
 import { pnpmCommand } from './lib/pnpm-command.mjs';
 import { runnerResources, workspaceConcurrency } from './lib/runner-resources.mjs';
@@ -35,7 +36,20 @@ const dependencies = new Map(
     ]),
   ]),
 );
-const packages = buildPackageSelection(allPackages, dependencies, process.argv.slice(2));
+const selectionArgs = [];
+let assetsSourceRoot;
+for (let index = 2; index < process.argv.length; index++) {
+  const arg = process.argv[index];
+  if (arg === '--assets-source-root') {
+    if (assetsSourceRoot !== undefined || !process.argv[index + 1])
+      throw new Error('--assets-source-root requires one directory');
+    assetsSourceRoot = resolve(process.argv[++index]);
+  } else selectionArgs.push(arg);
+}
+const packages = buildPackageSelection(allPackages, dependencies, selectionArgs);
+if (assetsSourceRoot !== undefined) {
+  prepareAssetsCheckout(root, { sourceRoot: assetsSourceRoot });
+}
 const { cpus, memoryBytes } = runnerResources();
 const concurrency = Number(
   process.env.FORGEAX_PACKAGE_BUILD_CONCURRENCY ??

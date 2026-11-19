@@ -18,6 +18,10 @@ import {
 import { engineWorkspaceBrowserPlugin } from '../workspace-browser';
 import { createEngineWorkspaceTools } from '../workspace-tools';
 import { testPlatform } from './platform-fixture';
+import {
+  provideRuntimePackTestResources,
+  runtimePackTestResources,
+} from './runtime-pack-resources.fixture';
 
 const packageId = '01900000-0000-7000-8000-000000000341';
 const instanceId = '01900000-0000-7000-8000-000000000342';
@@ -36,7 +40,7 @@ const rendererStub = () =>
 // Actual App/producer/Registry/Cordis and browser command consumer. No renderer or pixel claim.
 async function fixture() {
   const world = new World();
-  world.insertResource('plugin-installations', new Set<number>());
+  world.insertResource(runtimePackTestResources.PluginInstallations, new Set<number>());
   const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const app = (
     await createApp({
@@ -65,6 +69,7 @@ async function fixture() {
       },
     })
   ).unwrap();
+  provideRuntimePackTestResources(app.pluginContext);
   const start = vi.spyOn(app, 'start');
   const project = { id: 'project', root: '/project' };
   const target = {
@@ -107,9 +112,23 @@ async function fixture() {
   await browser.await();
   const runtime = createEngineWorkspaceRuntime(
     createEngineWorkspaceProvider({
-      openProjectSession: () => ({
+      openProjectSession: ({ generation }) => ({
         project,
         target,
+        status: {
+          phase: 'running',
+          sessionId: target.sessionId,
+          generation,
+          document: {
+            sessionId: target.sessionId,
+            targetId: target.targetId,
+            url: 'http://localhost/',
+            browserGeneration: 1,
+          },
+          target,
+          browserGeneration: 1,
+        },
+        subscribeStatus: () => () => {},
         app,
         assets,
         async runtimePack(input) {
@@ -228,8 +247,8 @@ function behavior(source = '') {
           entry: 'behavior.js',
           export: 'default',
           modules: {
-            'behavior.js': `export default { inject: ['world'], async apply(ctx) {
-          const entries = ctx.world.getResource('plugin-installations');
+            'behavior.js': `export default { inject: ['world', 'runtimePackTestResources'], async apply(ctx) {
+          const entries = ctx.world.getResource(ctx.runtimePackTestResources.PluginInstallations);
           const id = ctx.fiber.uid;
           ctx.effect(() => { entries.add(id); return () => entries.delete(id); });
           ${source}
@@ -385,7 +404,7 @@ it('keeps game and two View installations independent using native ownership and
   try {
     const guid = guidFor(pluginId, 'behavior');
     expect(await f.call('admit', { content: behavior() })).toMatchObject({ status: 'admitted' });
-    const entries = f.world.getResource<Set<number>>('plugin-installations');
+    const entries = f.world.getResource(runtimePackTestResources.PluginInstallations);
     expect(entries?.size).toBe(0);
     const game = (await startPluginAsset(f.app.pluginContext, guid)).unwrap();
     const a = (await f.call('plugin-install', { guid })) as { uid: number };
@@ -490,7 +509,7 @@ it('drains a cancelled native installation and reports no surviving connection i
       'view-a',
       controller.signal,
     );
-    const entries = f.world.getResource<Set<number>>('plugin-installations');
+    const entries = f.world.getResource(runtimePackTestResources.PluginInstallations);
     await vi.waitFor(() => expect(entries?.size).toBe(1));
     controller.abort();
     await expect(pending).rejects.toBeDefined();
@@ -525,7 +544,7 @@ it('disposes only the new Fiber when cancellation arrives while its success repl
     const controller = new AbortController();
     const pending = f.call('plugin-install', { guid }, 'view-a', controller.signal);
     await sending;
-    const entries = f.world.getResource<Set<number>>('plugin-installations');
+    const entries = f.world.getResource(runtimePackTestResources.PluginInstallations);
     expect(entries?.size).toBe(2);
     controller.abort();
     release();

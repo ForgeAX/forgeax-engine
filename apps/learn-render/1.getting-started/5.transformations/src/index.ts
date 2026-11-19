@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   exposeLearnRenderTestApp,
@@ -292,7 +293,7 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
   let lastTickScaleX = 1;
   let lastTickScaleY = 1;
   let tickCount = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'transformations-animate-cube',
     queries: [{ write: [Transform], with: [MeshFilter] }],
     fn: (world, queryResults) => {
@@ -314,6 +315,7 @@ async function bootstrap(target: HTMLCanvasElement, browserOnerrorGate: boolean)
       tickCount += 1;
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Capture hooks used by the bench-screenshot recorder + the multi-
   // frame browser test. __captureTransformationsState exposes the

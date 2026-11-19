@@ -13,11 +13,11 @@ it('evaluates phase normalization, Beer extinction, zero-density limit and spher
   if (adapter === null) throw new Error('WebGPU adapter unavailable');
   const device = await adapter.requestDevice();
   const output = device.createBuffer({
-    size: 96,
+    size: 128,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
   const readback = device.createBuffer({
-    size: 96,
+    size: 128,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
   try {
@@ -47,6 +47,14 @@ it('evaluates phase normalization, Beer extinction, zero-density limit and spher
         let opticalA=vec3<f32>(0.1,0.2,0.3);
         result[4]=vec4<f32>(atmosphere_segment(opticalA,2.0)+exp(-opticalA*2.0)*atmosphere_segment(opticalA,3.0),1.0);
         result[5]=vec4<f32>(atmosphere_segment(opticalA,5.0),1.0);
+        result[6]=vec4<f32>(
+          atmosphere_planet_visibility(m,vec3<f32>(0.15717355,6360.0,0.03617745),normalize(vec3<f32>(0.7,-0.087,0.7))),
+          atmosphere_planet_visibility(m,vec3<f32>(0.0,6360.0,0.0),vec3<f32>(0.0,-1.0,0.0)),
+          atmosphere_planet_visibility(m,vec3<f32>(0.0,6359.9995,0.0),vec3<f32>(0.0,-1.0,0.0)),
+          atmosphere_planet_visibility(m,vec3<f32>(0.0,6360.001,0.0),vec3<f32>(0.0,1.0,0.0)));
+        result[7]=vec4<f32>(
+          atmosphere_planet_visibility(m,vec3<f32>(0.0,6365.0,0.0),normalize(vec3<f32>(1.0,-0.01745,0.0))),
+          atmosphere_planet_visibility(m,vec3<f32>(0.0,6360.0,0.0),vec3<f32>(0.0,1.0,0.0)),0.0,1.0);
       }`,
     });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(
@@ -68,7 +76,7 @@ it('evaluates phase normalization, Beer extinction, zero-density limit and spher
     );
     pass.dispatchWorkgroups(1);
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, 96);
+    encoder.copyBufferToBuffer(output, 0, readback, 0, 128);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const values = new Float32Array(readback.getMappedRange());
@@ -83,6 +91,14 @@ it('evaluates phase normalization, Beer extinction, zero-density limit and spher
     expect(values[12]).toBeCloseTo(1, 4);
     expect(values[13]).toBeCloseTo(1, 3);
     for (let i = 0; i < 3; i++) expect(values[16 + i]).toBeCloseTo(values[20 + i] ?? 0, 5);
+    expect(
+      Array.from(values.slice(24, 28)),
+      'surface/inside inward rays and outside upward control',
+    ).toEqual([0, 0, 0, 1]);
+    expect(
+      Array.from(values.slice(28, 30)),
+      'high clouds at negative solar elevation remain lit',
+    ).toEqual([1, 1]);
     readback.unmap();
   } finally {
     output.destroy();

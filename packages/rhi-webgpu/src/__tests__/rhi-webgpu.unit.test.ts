@@ -1304,29 +1304,20 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
   // --- from error-scope-removed.test.ts ---
   // AC-01 + AC-04 + D-I2 — error scope removed test.
   //
-  // This test ratifies the post-realign dispatch model: createX entries return
-  // synchronously (Result<T, RhiError>), NOT Promise<Result>; the device.lost +
-  // onuncapturederror channels carry async error fan-out (separately, via the
-  // @forgeax/engine-runtime RhiErrorListenerRegistry at the engine layer).
-  //
-  // Per implement-decisions.md D-I2: the "delete push/pop+await + register
-  // onuncapturederror listener" half of plan-strategy §S-2 is **vacuously
-  // satisfied** — packages/rhi-webgpu/src/ never contained pushErrorScope /
-  // popErrorScope wrappers; the existing direct-dispatch path already aligns
-  // with the new model.
+  // This test ratifies the split contract: RhiDevice createX entries return
+  // synchronously, while the async adapter initialization path consumes
+  // validation scopes for capability probes before constructing the device.
   //
   // Three-part assertion structure:
-  //   (a) src code has 0 pushErrorScope / popErrorScope hits (D-I2 vacuous
-  //       satisfaction grep gate);
+  //   (a) low-level sync entry modules do not own error-scope operations;
   //   (b) createBuffer with valid descriptor returns Result.ok synchronously
   //       (the returned value is a Buffer wrapper, not a thenable);
   //   (c) createBindGroupLayout / createPipelineLayout / createRenderPipeline
   //       all return synchronously (Result.ok | Result.err with .ok
   //       discriminator, never Promise).
   //
-  // Rationale: requirements AC-01 (delete push/pop+await + spec async dispatch
-  // passthrough); research R-01 §1 chromium DispatchEvent same-tick fact;
-  // plan-strategy D-P6 dual channel boundary; charter proposition 4 + 5.
+  // Scope ownership stays with the async helper in internal/; synchronous
+  // resource APIs retain their Result contract.
 
   // Lazy-load node:fs / node:path through dynamic import so the test file
   // itself does not require @types/node at the package boundary (the shim
@@ -1347,8 +1338,8 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     );
   }
 
-  describe('AC-01 — D-I2 vacuous satisfaction: no pushErrorScope / popErrorScope in shim src', () => {
-    it('packages/rhi-webgpu/src/*.ts has 0 pushErrorScope hits (grep gate)', async () => {
+  describe('AC-01 — synchronous entry modules keep error-scope ownership in the async helper', () => {
+    it('index/device/errors do not manage validation scope stacks directly', async () => {
       const bodies = await loadShimSrcFiles();
       for (const body of bodies) {
         // Strip comment lines so a documentary reference doesn't trip the gate.
@@ -1356,8 +1347,8 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
           .split('\n')
           .filter((line: string) => !/^\s*(\*|\/\/)/.test(line))
           .join('\n');
-        expect(code).not.toMatch(/\bpushErrorScope\b/);
-        expect(code).not.toMatch(/\bpopErrorScope\b/);
+        expect(code).not.toMatch(/\.\s*pushErrorScope\s*\(/);
+        expect(code).not.toMatch(/\.\s*popErrorScope\s*\(/);
       }
     });
   });
@@ -1479,17 +1470,58 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
       });
     });
 
-    it('feature not enabled -> code=feature-not-enabled + three non-empty string fields', async () => {
-      const gpu = createMockGpu({ requestDeviceFeatureNotEnabled: true });
-      const e = unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice());
+    it('disabled timestamp capability -> code=feature-not-enabled + three non-empty string fields', async () => {
+      const gpu = createMockGpu();
+      const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
+      expect(device.caps.timestampQuery).toBe(false);
+      const e = unwrapErr(device.createQuerySet({ type: 'timestamp', count: 4 }));
       expect(e.code).toBe('feature-not-enabled');
       expect(e.expected.length).toBeGreaterThan(0);
       expect(e.hint.length).toBeGreaterThan(0);
     });
 
-    it('limit exceeded -> code=limit-exceeded + three non-empty string fields', async () => {
-      const gpu = createMockGpu({ requestDeviceLimitExceeded: true });
+    it.each([
+      new DOMException('DynamicLib.Open: dxil.dll Windows Error: 87', 'OperationError'),
+      Object.create({ name: 'OperationError', message: 'D3D12 initialization rejected' }),
+    ])('preserves native requestDevice exceptions instead of inventing a compute failure', async (cause) => {
+      const adapter = (
+        await requestAdapterFrom({
+          requestAdapter: async () => ({
+            requestDevice: async () => {
+              throw cause;
+            },
+          }),
+        })
+      ).unwrap();
+      const e = unwrapErr(await adapter.requestDevice());
+      expect(e.code).toBe('webgpu-runtime-error');
+      expect(e.detail).toEqual({
+        error: { code: 'request-device-threw', name: cause.name, message: cause.message },
+      });
+      expect(e.expected).not.toContain('compute');
+    });
+
+    it.each([
+      [
+        { requestDeviceFeatureNotEnabled: true },
+        'mock: requested feature not supported by adapter',
+      ],
+      [{ requestDeviceLimitExceeded: true }, 'mock: requested limit exceeds adapter capability'],
+    ] as const)('retains a native requestDevice rejection with its original message %s', async (failure, message) => {
+      const gpu = createMockGpu(failure);
       const e = unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice());
+      expect(e.code).toBe('webgpu-runtime-error');
+      expect(e.expected.length).toBeGreaterThan(0);
+      expect(e.hint.length).toBeGreaterThan(0);
+      expect(e.detail).toEqual({
+        error: { code: 'request-device-threw', name: 'OperationError', message },
+      });
+    });
+
+    it('query count exceeds 4096 -> code=limit-exceeded + three non-empty string fields', async () => {
+      const gpu = createMockGpu();
+      const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
+      const e = unwrapErr(device.createQuerySet({ type: 'occlusion', count: 4097 }));
       expect(e.code).toBe('limit-exceeded');
       expect(e.expected.length).toBeGreaterThan(0);
       expect(e.hint.length).toBeGreaterThan(0);
@@ -1551,16 +1583,14 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
         triggered.add(unwrapErr(await requestAdapterFrom(gpu)).code);
       }
       {
-        const gpu = createMockGpu({ requestDeviceFeatureNotEnabled: true });
-        triggered.add(
-          unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).code,
-        );
+        const gpu = createMockGpu();
+        const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
+        triggered.add(unwrapErr(device.createQuerySet({ type: 'timestamp', count: 4 })).code);
       }
       {
-        const gpu = createMockGpu({ requestDeviceLimitExceeded: true });
-        triggered.add(
-          unwrapErr(await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).code,
-        );
+        const gpu = createMockGpu();
+        const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
+        triggered.add(unwrapErr(device.createQuerySet({ type: 'occlusion', count: 4097 })).code);
       }
       {
         const gpu = createMockGpu({ shaderCompileMessages: [makeShaderError()] });
@@ -2242,21 +2272,44 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
 
 {
   // --- from rhi-caps-probe.test.ts ---
-  // M1 rhi-webgpu caps probe unit tests (feat-20260608-rhi-hdr-renderable-caps-and-warn-once).
-  //
-  // m1-1-b scope-amend: split caps probe by spec-feature gate vs mandatory-but-
-  // noncompliant fallback. `rg11b10ufloat-renderable` and `float32-filterable`
-  // gate by `device.features.has(...)` first (authoritative); `rgba16float` is
-  // mandatory `RENDER_ATTACHMENT` per spec but unreliable on WebKit so it keeps
-  // the real `createTexture` probe (AC-02 motivation).
+  // Float texture usages are verified at the async adapter boundary. Direct
+  // synchronous construction has no validation receipt and must fail closed.
 
   describe('M1 caps probe — HDR renderable + float32 filterable (rhi-webgpu)', () => {
-    it('AC-01: caps.rgba16floatRenderable is true when createTexture succeeds', () => {
+    it('direct makeRhiDevice leaves unverified float texture capabilities false', () => {
       const r = makeRhiDevice(mockDevice());
-      const device = r.device;
+      expect(r.device.caps.rgba16floatRenderable).toBe(false);
+      expect(r.device.caps.rgba32floatRenderable).toBe(false);
+      expect(r.device.caps.rgba16floatStorage).toBe(false);
+      expect(r.device.caps.rgba32floatStorage).toBe(false);
+    });
 
-      expect(typeof device.caps.rgba16floatRenderable).toBe('boolean');
-      expect(device.caps.rgba16floatRenderable).toBe(true);
+    it('publishes float texture caps only after all validation scopes resolve cleanly', async () => {
+      const device = await (await requestAdapterFrom(createMockGpu())).unwrap().requestDevice();
+      expect(device.ok).toBe(true);
+      if (!device.ok) return;
+      expect(device.value.caps).toMatchObject({
+        rgba16floatRenderable: true,
+        rgba32floatRenderable: true,
+        rgba16floatStorage: true,
+        rgba32floatStorage: true,
+      });
+    });
+
+    it('treats async texture validation errors as unsupported capabilities', async () => {
+      const device = await (
+        await requestAdapterFrom(createMockGpu({ textureValidationError: true }))
+      )
+        .unwrap()
+        .requestDevice();
+      expect(device.ok).toBe(true);
+      if (!device.ok) return;
+      expect(device.value.caps).toMatchObject({
+        rgba16floatRenderable: false,
+        rgba32floatRenderable: false,
+        rgba16floatStorage: false,
+        rgba32floatStorage: false,
+      });
     });
 
     it('AC-01 (m1-1-b): caps.rg11b10ufloatRenderable is true when feature is enabled and probe succeeds', () => {
@@ -2287,11 +2340,7 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
       const r = makeRhiDevice(dev);
 
       expect(r.device.caps.rg11b10ufloatRenderable).toBe(false);
-      // Only `rgba16float` probe should have invoked createTexture; the
-      // rg11b10ufloat probe must short-circuit on feature absence so the
-      // dawn / Chrome onuncapturederror fan-out does not fire.
-      const rg11b10Calls = createTextureCalls - 1; // minus the rgba16float probe
-      expect(rg11b10Calls).toBe(0);
+      expect(createTextureCalls).toBe(0);
     });
 
     it('m1-1-b: caps.float32Filterable is false when feature absent (no createBindGroupLayout call)', () => {
@@ -2308,37 +2357,6 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
       expect(r.device.caps.float32Filterable).toBe(false);
       // Probe must short-circuit before exercising the bind-group-layout.
       expect(bglCalls).toBe(0);
-    });
-
-    it('AC-02: rgba16float false when createTexture throws (D-2.1 try/catch)', () => {
-      const throwing = mockDevice({
-        createTexture: () => {
-          throw new Error('mock: probe createTexture throw');
-        },
-      });
-
-      const r = makeRhiDevice(throwing);
-      expect(r.device.caps.rgba16floatRenderable).toBe(false);
-    });
-
-    it('D-2.1: rgba16float texture.destroy() called on probe success path', () => {
-      const destroyLog: string[] = [];
-      const dev = mockDevice({
-        createTexture: (desc: { format: string }) => {
-          const fmt = desc.format;
-          return {
-            destroy: () => {
-              destroyLog.push(fmt);
-            },
-          };
-        },
-      });
-
-      const r = makeRhiDevice(dev);
-      expect(r.device.caps.rgba16floatRenderable).toBe(true);
-      // Only the rgba16float probe runs createTexture (rg11b10ufloat / float32-
-      // filterable are gated by absent features in this fixture).
-      expect(destroyLog).toEqual(['rgba16float']);
     });
   });
 

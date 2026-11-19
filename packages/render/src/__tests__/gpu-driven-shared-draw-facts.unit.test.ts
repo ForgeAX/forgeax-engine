@@ -19,7 +19,6 @@ import {
   suppressedPrimitiveWords,
 } from '../gpu-driven/production-raster-prepare';
 import { MaterialResource } from '../material-resource';
-import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import {
@@ -28,12 +27,7 @@ import {
   standardPbrInputs,
 } from './gpu-driven-production-fixture';
 
-async function fixture(
-  instanceCount = 64,
-  separateWorlds = false,
-  drawCount = 1,
-  sameEntity = false,
-) {
+async function fixture(instanceCount = 64, separateMeshes = false, drawCount = 1) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
@@ -68,8 +62,8 @@ async function fixture(
     for (let i = 0; i < instanceCount; i++) transforms.set(mat4.identity(mat4.create()), i * 16);
     return {
       ...template,
-      worldId: separateWorlds ? index : 0,
-      entityKey: sameEntity ? 1 : index + 1,
+      entityKey: index + 1,
+      assetHandle: separateMeshes ? index + 3 : 3,
       material: materials[0] ?? template.material,
       materials,
       materialBindingSources: materials.map(() => 'engine-default'),
@@ -92,13 +86,11 @@ async function fixture(
     projection.apply(
       snapshots.map((snapshot) => ({
         kind: 'update',
-        worldId: snapshot.worldId,
         entityKey: snapshot.entityKey,
         snapshot,
       })),
     ),
   );
-  const worldKeys = [101, 202];
   const prepare = (
     options: {
       meshFor?: (binding: GpuDrivenBatchBinding) => MeshGpuHandles | undefined;
@@ -123,11 +115,10 @@ async function fixture(
         execution.route === 'gpu' ? { ...batch, prepared: execution.prepared } : batch;
       return prepareBatchRows(preparedBatch, {
         mesh: options.meshFor === undefined ? mesh : options.meshFor(binding),
-        worldKeys,
         execution,
       });
     });
-    const prepared = assemblePreparedPlan(source, rows, worldKeys);
+    const prepared = assemblePreparedPlan(source, rows);
     const batches = rows.flatMap((row) =>
       partitionBatch(row.source, options.bindings).flatMap((partition) => {
         const group = groupForPartition(row, partition);
@@ -142,7 +133,6 @@ async function fixture(
     artifact,
     projection,
     topology,
-    worldKeys,
     snapshots,
     materials,
     prepare,
@@ -215,17 +205,15 @@ describe('GPU-driven shared draw preparation', () => {
         ]);
       }
       const slots = f.projection.slotsSnapshot();
-      expect(suppressedPrimitiveWords(slots, f.worldKeys, new Set(), 64)[0]).toBe(3);
-      expect(
-        suppressedPrimitiveWords(slots, f.worldKeys, new Set([worldEntityKey(101, 1)]), 64)[0],
-      ).toBe(2);
+      expect(suppressedPrimitiveWords(slots, new Set(), 64)[0]).toBe(3);
+      expect(suppressedPrimitiveWords(slots, new Set([1]), 64)[0]).toBe(2);
     } finally {
       f.close();
     }
   });
 
   it('reuses native membership without reading source draw arrays during material fact assembly', async () => {
-    const f = await fixture(4096, true, 2, true);
+    const f = await fixture(4096, true, 2);
     try {
       const result = f.prepare();
       const source = result.prepared.source;
@@ -238,7 +226,7 @@ describe('GPU-driven shared draw preparation', () => {
           },
         })),
       };
-      const retained = assemblePreparedPlan(guarded, result.rows, f.worldKeys);
+      const retained = assemblePreparedPlan(guarded, result.rows);
       expect(retained.batchRows).toEqual(result.rows);
       expect(result.rows).toHaveLength(4);
       for (const snapshot of f.snapshots) expect(result.selection.ownsAll(snapshot)).toBe(true);
@@ -247,14 +235,14 @@ describe('GPU-driven shared draw preparation', () => {
     }
   });
 
-  it('keeps same-entity Worlds separate through partial mesh and Pass admission', async () => {
-    const f = await fixture(3, true, 2, true);
+  it('keeps Mesh sources separate through partial mesh and Pass admission', async () => {
+    const f = await fixture(3, true, 2);
     try {
       const first = f.snapshots[0],
         second = f.snapshots[1];
       assert(first && second);
       const partial = f.prepare({
-        meshFor: (binding) => (binding.worldId === 0 ? undefined : f.mesh),
+        meshFor: (binding) => (binding.assetHandle === 3 ? undefined : f.mesh),
       });
       expect(partial.selection.ownsAll(first)).toBe(false);
       expect(partial.selection.ownsAll(second)).toBe(true);
@@ -289,14 +277,14 @@ describe('GPU-driven shared draw preparation', () => {
   });
 
   it('keeps unique draw instances across native topology edits and rejects a retired slot generation', async () => {
-    const f = await fixture(3, true, 2, true);
+    const f = await fixture(3, true, 2);
     try {
       const check = () => {
         const result = f.prepare();
         const candidates = result.plan.batches.flatMap((batch) =>
           batch.candidates.map(
             (candidate) =>
-              `${batch.binding?.worldId}:${batch.binding?.drawItemIndex}:${candidate.primitiveIndex}:${candidate.instanceOrdinal}`,
+              `${batch.binding?.drawItemIndex}:${candidate.primitiveIndex}:${candidate.instanceOrdinal}`,
           ),
         );
         expect(new Set(candidates).size).toBe(candidates.length);
@@ -321,7 +309,6 @@ describe('GPU-driven shared draw preparation', () => {
           f.projection.apply([
             {
               kind: 'update',
-              worldId: first.worldId,
               entityKey: first.entityKey,
               instances: {
                 ...first.snapshot.instances,
@@ -334,24 +321,19 @@ describe('GPU-driven shared draw preparation', () => {
         );
         check();
       }
-      f.topology.apply(
-        f.projection.apply([
-          { kind: 'remove', worldId: first.worldId, entityKey: first.entityKey },
-        ]),
-      );
+      f.topology.apply(f.projection.apply([{ kind: 'remove', entityKey: first.entityKey }]));
       check();
       f.topology.apply(
         f.projection.apply([
           {
             kind: 'update',
-            worldId: first.worldId,
             entityKey: first.entityKey,
             snapshot: first.snapshot,
           },
         ]),
       );
       const current = check();
-      const reused = f.projection.slot(first.worldId, first.entityKey);
+      const reused = f.projection.slot(first.entityKey);
       assert(reused);
       expect(reused.slot).toBe(first.slot);
       expect(reused.generation).not.toBe(first.generation);
@@ -372,8 +354,8 @@ describe('GPU-driven shared draw preparation', () => {
       const plain = f.prepare();
       const partitioned = f.prepare({
         bindings: new Map([
-          ['0:1', 'binding-a'],
-          ['0:2', 'binding-b'],
+          ['1', 'binding-a'],
+          ['2', 'binding-b'],
         ]),
       });
       expect(partitioned.batches).toHaveLength(4);
@@ -410,8 +392,8 @@ describe('GPU-driven shared draw preparation', () => {
     }
   });
 
-  it('selects physical LOD ranges independently in each World while preserving shared buffers', async () => {
-    const f = await fixture(8, true, 2, true);
+  it('selects physical LOD ranges independently for each Mesh while preserving shared buffers', async () => {
+    const f = await fixture(8, true, 2);
     try {
       const replacement = {
         ...f.mesh,
@@ -424,19 +406,19 @@ describe('GPU-driven shared draw preparation', () => {
         ],
       };
       const result = f.prepare({
-        meshFor: (binding) => (binding.worldId === 0 ? replacement : f.mesh),
+        meshFor: (binding) => (binding.assetHandle === 3 ? replacement : f.mesh),
       });
       expect(
         result.rows.map((row) => [
-          row.fact?.worldKey,
+          row.source.binding?.assetHandle,
           row.source.binding?.drawItemIndex,
           row.lod?.ranges?.[0]?.first,
         ]),
       ).toEqual([
-        [101, 0, 27],
-        [101, 1, 30],
-        [202, 0, 9],
-        [202, 1, 12],
+        [3, 0, 27],
+        [3, 1, 30],
+        [4, 0, 9],
+        [4, 1, 12],
       ]);
       expect(result.rows.every((row) => row.mesh?.vertexBuffer === f.mesh.vertexBuffer)).toBe(true);
       for (const snapshot of f.snapshots) expect(result.selection.ownsAll(snapshot)).toBe(true);

@@ -21,10 +21,14 @@ import WebSocket from 'ws';
 import { findEngineWorkspaceRoot } from '../asset-libraries.js';
 import { engineUseLocalCommand } from '../engine-binding.js';
 import { createViteConfig, devKitHostBridge } from '../host.js';
-import { composeBoundHostAssembly, validateHostBinding } from '../host-binding.js';
+import {
+  composeBoundHostAssembly,
+  DevKitProjectPages,
+  validateHostBinding,
+} from '../host-binding.js';
 import { readProjectFacts } from '../project.js';
 
-async function fixture(workspace = false) {
+async function fixture(workspace = false, sharedPages = false) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-binding-'));
   const events: string[] = [];
   const backend = await createBackendHost({
@@ -41,10 +45,12 @@ async function fixture(workspace = false) {
   });
   const binding = {
     backend,
+    ...(sharedPages ? { pages: new DevKitProjectPages() } : {}),
     ...(workspace
       ? { workspace: { sessionId: 'session', targetId: 'target', admissionToken: 'token' } }
       : {}),
   };
+  if (binding.pages && binding.workspace) binding.pages.register(binding.workspace);
   const assembly = composeBoundHostAssembly(
     binding,
     createHostAssembly({ root: { program: 'fixture#root', codeRevision: 'one' } }),
@@ -75,6 +81,57 @@ async function fixture(workspace = false) {
   };
 }
 describe('borrowed Host root binding', () => {
+  it('shares one resource server while isolating page admission, replacement and revocation', async () => {
+    const f = await fixture(true, true);
+    const gameAssembly = createHostAssembly({ sessionGeneration: 2 });
+    if (!f.binding.pages) throw new Error('Shared page admissions missing');
+    const revoke = f.binding.pages.register({
+      execution: 'game',
+      sessionId: 'game',
+      targetId: 'game-target',
+      admissionToken: 'game-token',
+      assembly: gameAssembly,
+    });
+    const url = (session: string, target: string, token: string) =>
+      `${f.url}?forgeaxWorkspaceSession=${session}&forgeaxWorkspaceTarget=${target}&forgeaxWorkspaceToken=${token}`;
+    const clients: Awaited<ReturnType<typeof createHostWebSocketClient>>[] = [];
+    try {
+      const editor = await createHostWebSocketClient(
+        new WebSocket(url('session', 'target', 'token')),
+      );
+      clients.push(editor);
+      const game = await createHostWebSocketClient(
+        new WebSocket(url('game', 'game-target', 'game-token')),
+      );
+      clients.push(game);
+      expect(editor.connected).toBe(true);
+      expect(await game.request(HOST_ASSEMBLY_SERVICE, undefined)).toEqual(gameAssembly);
+      const editorAssembly = await editor.request<undefined, HostAssembly>(
+        HOST_ASSEMBLY_SERVICE,
+        undefined,
+      );
+      expect(editorAssembly.root?.program).toBe('fixture#root');
+      await expect(
+        createHostWebSocketClient(new WebSocket(url('game', 'game-target', 'token'))),
+      ).rejects.toBeDefined();
+      const replacement = await createHostWebSocketClient(
+        new WebSocket(url('game', 'game-target', 'game-token')),
+      );
+      clients.push(replacement);
+      await expect.poll(() => game.connected).toBe(false);
+      expect(editor.connected).toBe(true);
+      revoke();
+      await expect.poll(() => replacement.connected).toBe(false);
+      await expect(
+        createHostWebSocketClient(new WebSocket(url('game', 'game-target', 'game-token'))),
+      ).rejects.toBeDefined();
+      expect(await editor.request(HOST_ASSEMBLY_SERVICE, undefined)).toEqual(editorAssembly);
+      expect(f.server.httpServer?.listening).toBe(true);
+    } finally {
+      for (const client of clients) client.close();
+      await f.dispose();
+    }
+  });
   it('activates a native frontend over a real socket and releases only borrowed contributions', async () => {
     const f = await fixture();
     const client = await createHostWebSocketClient(new WebSocket(f.url));
@@ -216,6 +273,87 @@ describe('borrowed Host root binding', () => {
       record('disposed');
     }
   });
+});
+
+it('publishes game preparation only after server admission and preserves a newer owner on close', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-game-preparation-owner-'));
+  const backend = await createBackendHost();
+  const pages = new DevKitProjectPages();
+  const servers: Awaited<ReturnType<typeof createServer>>[] = [];
+  try {
+    await mkdir(resolve(root, 'assets'));
+    await writeFile(resolve(root, 'package.json'), '{"type":"module"}');
+    await writeFile(
+      resolve(root, 'forge.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        id: 'game-preparation-owner',
+        name: 'Game preparation owner',
+        roots: {},
+      }),
+    );
+    const facts = await readProjectFacts(root);
+    if (!facts.ok) throw facts.error;
+    const options = {
+      host: {
+        backend,
+        pages,
+        frontendAssembly: createHostAssembly(),
+        workspace: { sessionId: 'editor', targetId: 'editor-target', admissionToken: 'token' },
+      },
+    };
+    const admit = (config: Awaited<ReturnType<typeof createViteConfig>>) => {
+      const lifecycle = (config.plugins ?? [])
+        .flat()
+        .find(
+          (plugin) =>
+            plugin &&
+            typeof plugin === 'object' &&
+            'name' in plugin &&
+            plugin.name === 'forgeax:project-session',
+        );
+      if (!lifecycle) throw new Error('Project session lifecycle owner missing');
+      if (!config.root) throw new Error('Generated host root missing');
+      return createServer({
+        configFile: false,
+        root: config.root,
+        server: { watch: null },
+        optimizeDeps: { noDiscovery: true, include: [] },
+        plugins: [lifecycle],
+      });
+    };
+    const initial = await createViteConfig(facts.value, 'serve', '/', options);
+    const generatedRoot = initial.root;
+    if (!generatedRoot) throw new Error('Generated host root missing');
+    const [editor, game, gameBootstrap] = await Promise.all(
+      ['main.ts', 'game-main.ts', 'game-execution-bootstrap.ts'].map((file) =>
+        readFile(resolve(generatedRoot, file), 'utf8'),
+      ),
+    );
+    expect(editor).toContain("new URL('./execution-bootstrap.ts', import.meta.url)");
+    expect(game).toContain("new URL('./game-execution-bootstrap.ts', import.meta.url)");
+    expect(gameBootstrap).toContain('game/engine');
+    expect(pages.prepareGame).toBeUndefined();
+    const first = await admit(initial);
+    servers.push(first);
+    const accepted = pages.prepareGame;
+    expect(accepted).toBeTypeOf('function');
+    const candidate = await createViteConfig(facts.value, 'serve', '/', options);
+    expect(pages.prepareGame).toBe(accepted);
+    const second = await admit(candidate);
+    servers.push(second);
+    const replacement = pages.prepareGame;
+    expect(replacement).toBeTypeOf('function');
+    expect(replacement).not.toBe(accepted);
+    await first.close();
+    expect(pages.prepareGame).toBe(replacement);
+    await second.close();
+    expect(pages.prepareGame).toBeUndefined();
+  } finally {
+    for (const server of servers) await server.close();
+    await backend.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it.each([

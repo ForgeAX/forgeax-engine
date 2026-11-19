@@ -6,6 +6,7 @@ import {
   MESH_DISTANCE_FIELD_GENERATION_VERSION,
 } from './distance-field';
 import { decodeMeshDistanceField, validateMeshDistanceField } from './distance-field-artifact';
+import { copyMeshAttribute } from './mesh-storage';
 import { visibilityDistanceFieldSourceDigest } from './visibility-distance-field';
 
 /** Existing asset codec profile binds this builder policy without a second identity field. */
@@ -24,6 +25,23 @@ export interface MeshDistanceFieldDescriptor {
   readonly sectionSidedness: readonly (0 | 1)[];
 }
 
+function sourceDescriptor(
+  descriptor: unknown,
+  mesh: MeshAsset,
+): Result<MeshDistanceFieldDescriptor, DistanceFieldError> {
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))
+    return distanceFieldFailure('mesh distance field requires its source section sidedness');
+  const data = descriptor as Record<string, unknown>;
+  if (
+    Object.keys(data).some((key) => key !== 'sectionSidedness') ||
+    !Array.isArray(data.sectionSidedness) ||
+    data.sectionSidedness.length !== mesh.submeshes.length ||
+    data.sectionSidedness.some((v) => v !== 0 && v !== 1)
+  )
+    return distanceFieldFailure('distance field section sidedness must cover every mesh section');
+  return ok(data as unknown as MeshDistanceFieldDescriptor);
+}
+
 /** Canonical triangle coverage shared by the producer and the ordinary asset loader. */
 export function meshDistanceFieldSource(
   mesh: MeshAsset,
@@ -37,17 +55,13 @@ export function meshDistanceFieldSource(
   },
   DistanceFieldError
 > {
-  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))
-    return distanceFieldFailure('mesh distance field requires its source section sidedness');
-  const data = descriptor as Record<string, unknown>;
-  if (
-    Object.keys(data).some((key) => key !== 'sectionSidedness') ||
-    !Array.isArray(data.sectionSidedness) ||
-    data.sectionSidedness.length !== mesh.submeshes.length ||
-    data.sectionSidedness.some((v) => v !== 0 && v !== 1)
-  )
-    return distanceFieldFailure('distance field section sidedness must cover every mesh section');
-  const positions = mesh.attributes.position;
+  const admittedDescriptor = sourceDescriptor(descriptor, mesh);
+  if (!admittedDescriptor.ok) return admittedDescriptor;
+  const data = admittedDescriptor.value;
+  const positions =
+    mesh.attributeStorage === 'interleaved'
+      ? copyMeshAttribute(mesh, 'position')
+      : mesh.attributes.position;
   if (
     !(positions instanceof Float32Array) ||
     positions.length < 9 ||
@@ -73,7 +87,7 @@ export function meshDistanceFieldSource(
       offset + count > indices.length
     )
       return distanceFieldFailure('distance field sections must partition the triangle buffer');
-    flags.fill(data.sectionSidedness[index], offset / 3, (offset + count) / 3);
+    flags.fill(data.sectionSidedness[index] as 0 | 1, offset / 3, (offset + count) / 3);
     end += count;
   }
   if (
@@ -86,7 +100,7 @@ export function meshDistanceFieldSource(
     positions,
     indices,
     triangleSidedness: flags,
-    descriptor: data as unknown as MeshDistanceFieldDescriptor,
+    descriptor: data,
   });
 }
 

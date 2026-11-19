@@ -1,5 +1,11 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
-import type { RhiCanvasSurfacePresentationProof, TextureFormat } from '@forgeax/engine-rhi';
+import {
+  PIPELINE_LIBRARY_LIMITS,
+  type RhiCanvasSurfacePresentationProof,
+  type RhiDevice,
+  RhiError,
+  type TextureFormat,
+} from '@forgeax/engine-rhi';
 import { dofInspection } from '../features/depth-of-field/depth-of-field-assembly';
 import { emptyBloomInspection } from '../inspection-types';
 import type { IblBindingInspection } from '../mesh-material-bindings';
@@ -10,6 +16,7 @@ import type { PipelineState } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import {
   type RenderInspection,
+  type RenderInspectionOptions,
   type RenderOutputInspection,
   type RenderStandardOutputColorInspection,
   STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
@@ -26,6 +33,7 @@ import {
   viewMeshMaterialBindings,
   viewMotionBlur,
   viewProbePlacement,
+  viewRecoveryEvidence,
   viewRenderScene,
   viewSsr,
   viewSsrDependencies,
@@ -34,6 +42,12 @@ import {
   viewTransmission,
   viewVolumetricFog,
 } from '../view-inspection';
+import { inspectWaterRenderGraph } from '../water/capabilities';
+import {
+  inspectWaterInfoPublications,
+  WATER_INFO_FEATURE_IDENTITY,
+} from '../water/water-info-feature';
+import { sharedFeatureGraphInspection } from '../world/feature-graph-systems';
 import type { ViewSettlementOwner } from '../world/view-settlement';
 
 /** Inputs owned by the renderer assembly for one detached output projection. */
@@ -84,7 +98,12 @@ function projectRendererOutputInspection(
 ): RenderOutputInspection {
   const graph = input.graph;
   const outputTransformPass = graph?.passes.find(
-    (pass) => pass.name === 'output-transform' || pass.name === 'present',
+    (pass) =>
+      pass.name === 'output-transform' ||
+      pass.name === 'present' ||
+      pass.name === 'standard-encode' ||
+      pass.name === 'standard-final' ||
+      (pass.name === 'standard-grade' && writesSurface(pass)),
   );
   const surfaceResource = graph?.resources.find(
     (resource) => resource.kind === 'texture' && resource.label === 'surface',
@@ -101,7 +120,7 @@ function projectRendererOutputInspection(
   const intermediate = graph?.resources.find(
     (resource) =>
       resource.kind === 'texture' &&
-      resource.label === 'standard-output-color' &&
+      (resource.label === 'standard-output-color' || resource.label === 'standard-grade-output') &&
       resource.descriptor?.kind === 'texture',
   );
   const standardOutputColor: RenderStandardOutputColorInspection | undefined =
@@ -183,60 +202,140 @@ export function projectRendererOutputInspectionFromSurface(input: {
   });
 }
 
+/** Whether an inspect() call selected a field; omission selects the full snapshot. */
+export function inspectionSelects(
+  fields: readonly (keyof RenderInspection)[] | undefined,
+  ...names: readonly (keyof RenderInspection)[]
+): boolean {
+  return fields === undefined || names.some((name) => fields.includes(name));
+}
+
 /** Detached facts from the active view owner; no renderer assembly state. */
+type ViewInspectionWant = (...names: readonly (keyof RenderInspection)[]) => boolean;
+
 export function projectRenderViewInspection(
   inspected: ViewSettlementOwner,
   deviceLost: boolean,
   fields?: readonly (keyof RenderInspection)[],
 ) {
-  const graph = deviceLost ? undefined : viewGraphInfo(inspected);
-  const graphResourceAllocation = graph?.resourceAllocation;
-  const graphGenerationAllocation = deviceLost ? undefined : viewGraphAllocation(inspected);
-  const standardLighting = deviceLost
-    ? undefined
-    : inspected.frameState.submittedInspection?.standardLighting;
-  const bloom = deviceLost ? emptyBloomInspection() : viewBloom(inspected);
-  const volumetricFog = viewVolumetricFog(inspected);
-  const directionalShadow = viewDirectionalShadow(inspected);
-  const shadowRaster = inspected.frameState.shadowRaster.inspect();
-  const submitted = inspected.frameState.submittedInspection;
-  const probePlacement = viewProbePlacement(inspected);
-  const diffuseGi = viewDiffuseGi(inspected);
-  const dynamicResolution = inspected.frameState.dynamicResolution?.inspect();
-  const temporalTarget = viewTemporalTarget(inspected);
-  const motionBlur = viewMotionBlur(inspected);
-  const transmission = viewTransmission(inspected);
-  const iblBinding = projectIblBindingInspection(inspected.frameState.iblBindingInspection);
+  const want: ViewInspectionWant = (...names) => inspectionSelects(fields, ...names);
   return {
-    featureGraph: viewFeatureGraph(inspected),
-    materialTextureSources: inspected.recorded.materialTextureSources,
+    ...projectViewGraphInspection(inspected, deviceLost, fields, want),
+    ...projectViewLightingInspection(inspected, deviceLost, want),
+    ...projectViewShadowInspection(inspected, deviceLost, fields, want),
+    ...projectViewBindingInspection(inspected, fields, want),
+  };
+}
+
+function projectViewGraphInspection(
+  inspected: ViewSettlementOwner,
+  deviceLost: boolean,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+  want: ViewInspectionWant,
+) {
+  const graphResourceAllocation =
+    deviceLost || !want('renderGraphResourceAllocation')
+      ? undefined
+      : viewGraphInfo(inspected)?.resourceAllocation;
+  const graphGenerationAllocation =
+    deviceLost || !want('renderGraphGenerationAllocation')
+      ? undefined
+      : viewGraphAllocation(inspected);
+  const graph = deviceLost || !want('waterGraph') ? undefined : viewGraphInfo(inspected);
+  const projectWaterGraphInspection = (
+    graph: ReturnType<typeof viewGraphInfo>,
+    inspected: ViewSettlementOwner,
+    fields: readonly (keyof RenderInspection)[] | undefined,
+  ) =>
+    graph === undefined || fields?.includes('waterGraph') === false
+      ? {}
+      : {
+          waterGraph: inspectWaterRenderGraph(
+            graph,
+            inspected.internals.renderWorld === undefined
+              ? undefined
+              : sharedFeatureGraphInspection(inspected.internals.renderWorld),
+            inspectWaterInfoPublications(
+              inspected.internals.featureHost?.features.find(
+                (feature) => feature.identity === WATER_INFO_FEATURE_IDENTITY,
+              ),
+              inspected.internals.deviceGeneration ?? 0,
+            ),
+          ),
+        };
+  return {
+    ...projectWaterGraphInspection(graph, inspected, fields),
+    ...(want('featureGraph') ? { featureGraph: viewFeatureGraph(inspected) } : {}),
+    ...(want('materialTextureSources')
+      ? { materialTextureSources: inspected.recorded.materialTextureSources }
+      : {}),
     ...projectViewCounterInspection(inspected, fields),
     ...projectInstanceCollectionInspection(inspected, fields),
-    ...(fields !== undefined && !fields.includes('renderScene')
-      ? {}
-      : { renderScene: viewRenderScene(inspected) }),
+    ...(want('renderScene') ? { renderScene: viewRenderScene(inspected) } : {}),
     ...(graphResourceAllocation === undefined
       ? {}
       : { renderGraphResourceAllocation: graphResourceAllocation }),
     ...(graphGenerationAllocation === undefined
       ? {}
       : { renderGraphGenerationAllocation: graphGenerationAllocation }),
+  };
+}
+
+function projectViewLightingInspection(
+  inspected: ViewSettlementOwner,
+  deviceLost: boolean,
+  want: ViewInspectionWant,
+) {
+  const probePlacement = want('probePlacement') ? viewProbePlacement(inspected) : undefined;
+  const diffuseGi = want('diffuseGi') ? viewDiffuseGi(inspected) : undefined;
+  const iblBinding = want('iblBinding')
+    ? projectIblBindingInspection(inspected.frameState.iblBindingInspection)
+    : undefined;
+  const dynamicResolution = want('dynamicResolution')
+    ? inspected.frameState.dynamicResolution?.inspect()
+    : undefined;
+  return {
     ...(iblBinding === undefined ? {} : { iblBinding }),
-    reflectionProbes: inspected.reflectionProbes.inspect(),
-    ssrDependencies: viewSsrDependencies(inspected),
-    ssr: viewSsr(inspected),
+    ...(want('reflectionProbes') ? { reflectionProbes: inspected.reflectionProbes.inspect() } : {}),
+    ...(want('ssrDependencies') ? { ssrDependencies: viewSsrDependencies(inspected) } : {}),
+    ...(want('ssr') ? { ssr: viewSsr(inspected) } : {}),
     ...(probePlacement === undefined ? {} : { probePlacement }),
     ...(diffuseGi === undefined ? {} : { diffuseGi }),
-    volumetricFog,
-    environment: inspected.frameState.environmentLifecycle.inspect(),
-    temporal: viewTemporal(inspected),
+    ...(want('volumetricFog') ? { volumetricFog: viewVolumetricFog(inspected) } : {}),
+    ...(want('environment')
+      ? { environment: inspected.frameState.environmentLifecycle.inspect() }
+      : {}),
+    ...(want('temporal') ? { temporal: viewTemporal(inspected) } : {}),
     ...(dynamicResolution === undefined ? {} : { dynamicResolution }),
-    bloom,
-    directionalShadow,
-    shadowRaster,
+    ...(want('bloom') ? { bloom: deviceLost ? emptyBloomInspection() : viewBloom(inspected) } : {}),
+  };
+}
+
+function projectViewShadowInspection(
+  inspected: ViewSettlementOwner,
+  deviceLost: boolean,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+  want: ViewInspectionWant,
+) {
+  const submitted = inspected.frameState.submittedInspection;
+  const standardLighting = deviceLost ? undefined : submitted?.standardLighting;
+  const temporalTarget = want('temporalTarget') ? viewTemporalTarget(inspected) : undefined;
+  const motionBlur = want('motionBlur') ? viewMotionBlur(inspected) : undefined;
+  const transmission = want('transmission') ? viewTransmission(inspected) : undefined;
+  return {
+    ...(want('directionalShadow') ? { directionalShadow: viewDirectionalShadow(inspected) } : {}),
+    ...(!deviceLost && want('viewConfiguration') && submitted?.viewConfiguration !== undefined
+      ? {
+          viewConfiguration: {
+            requested: { ...submitted.viewConfiguration.requested },
+            effective: { ...submitted.viewConfiguration.effective },
+          },
+        }
+      : {}),
+    ...(want('shadowRaster') ? { shadowRaster: inspected.frameState.shadowRaster.inspect() } : {}),
     ...(temporalTarget === undefined ? {} : { temporalTarget: Object.freeze(temporalTarget) }),
     ...(motionBlur === undefined ? {} : { motionBlur: Object.freeze(motionBlur) }),
-    ...dofInspection(viewDepthOfField(inspected)),
+    ...(want('depthOfField') ? dofInspection(viewDepthOfField(inspected)) : {}),
     ...projectLodInspection(inspected, fields),
     ...(transmission === undefined ? {} : { transmission }),
     ...(standardLighting === undefined
@@ -244,11 +343,24 @@ export function projectRenderViewInspection(
       : { standardLighting: Object.freeze({ ...standardLighting }) }),
     ...(submitted?.capsuleShadow === undefined ? {} : { capsuleShadow: submitted.capsuleShadow }),
     ...(submitted?.transparency === undefined ? {} : { transparency: submitted.transparency }),
+  };
+}
+
+function projectViewBindingInspection(
+  inspected: ViewSettlementOwner,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+  want: ViewInspectionWant,
+) {
+  return {
     ...projectMaterialBindingInspection(inspected, fields),
-    bindGroupCounts: Object.freeze({
-      createBindGroup: inspected.recorded.bindGroups.createBindGroup,
-      keys: Object.freeze([...inspected.recorded.bindGroups.keys]),
-    }),
+    ...(want('bindGroupCounts')
+      ? {
+          bindGroupCounts: Object.freeze({
+            createBindGroup: inspected.recorded.bindGroups.createBindGroup,
+            keys: Object.freeze([...inspected.recorded.bindGroups.keys]),
+          }),
+        }
+      : {}),
   };
 }
 
@@ -383,4 +495,84 @@ export function projectRendererInspectionState(
   if (disposed) return 'disposed';
   if (deviceLost) return 'device-lost';
   return faulted ? 'faulted' : 'alive';
+}
+
+/** Output and observation fields for one frame, projected from the surface and graph state. */
+export function projectRendererOutputFields(
+  input: Omit<Parameters<typeof projectRendererOutputObservationInspection>[0], 'observationId'>,
+) {
+  return projectRendererOutputObservationInspection({
+    observationId: `${STANDARD_OUTPUT_TRANSFORM_FEATURE_ID}:frame-${input.frameId}`,
+    frameId: input.frameId,
+    antialias: input.antialias,
+    outputInspection: input.outputInspection,
+    rgba16floatRenderable: input.rgba16floatRenderable,
+    resourceStats: input.resourceStats,
+  });
+}
+
+/** Detached recovery evidence; a lost device reports an unready graph. */
+export function projectRecoveryEvidenceInspection(
+  inspected: ViewSettlementOwner,
+  deviceLost: boolean,
+  frameId: number,
+  lastGeneration: number | undefined,
+): RenderInspection['recoveryEvidence'] {
+  const recoveryEvidence = viewRecoveryEvidence(inspected);
+  return Object.freeze({
+    ...recoveryEvidence,
+    graph: deviceLost
+      ? { ready: false, generation: 0, passCount: 0, resourceCount: 0 }
+      : recoveryEvidence.graph,
+    producerRoots: Object.freeze([...recoveryEvidence.producerRoots]),
+    receipts: Object.freeze({ count: frameId, lastGeneration }),
+  });
+}
+
+/** Exports the requested pipeline library, or throws when the backend has none. */
+export function exportPipelineLibraryForInspection(
+  library: RhiDevice['pipelineLibrary'],
+  options: RenderInspectionOptions | undefined,
+) {
+  if (options?.pipelineLibrary !== true) return undefined;
+  const exported = library?.export(
+    options.pipelineLibraryLimits,
+    options.pipelineLibraryRequestedOnly === true ? { requestedOnly: true } : undefined,
+  );
+  if (exported === undefined)
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'backend pipeline library support',
+      hint: 'select WebGPU for pipeline recipe collection',
+    });
+  if (exported.ok === false) throw exported.error;
+  return exported;
+}
+
+export function projectRendererPipelineLibraryInspection(
+  library: RhiDevice['pipelineLibrary'],
+  options: RenderInspectionOptions | undefined,
+  collecting: () => boolean,
+  backgroundPipelineLibraryState: RenderInspection['backgroundPipelineLibraryState'],
+  exported: ReturnType<typeof exportPipelineLibraryForInspection>,
+) {
+  return {
+    ...(library === undefined ||
+    !inspectionSelects(options?.fields, 'pipelineLibrary', 'pipelineLibraryCollecting')
+      ? {}
+      : {
+          pipelineLibrary: library.inspect(options),
+          pipelineLibraryCollecting: collecting(),
+        }),
+    ...(backgroundPipelineLibraryState === undefined ? {} : { backgroundPipelineLibraryState }),
+    ...(exported?.ok === true
+      ? {
+          pipelineLibraryManifest: exported.value,
+          pipelineLibraryPolicy: {
+            ...PIPELINE_LIBRARY_LIMITS,
+            ...options?.pipelineLibraryLimits,
+          },
+        }
+      : {}),
+  };
 }

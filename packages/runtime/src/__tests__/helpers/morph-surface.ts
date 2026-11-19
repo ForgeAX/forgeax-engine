@@ -3,9 +3,11 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   AmbientOcclusion,
   Camera,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
+  type Renderer,
   ScreenSpaceReflection,
   Skylight,
 } from '@forgeax/engine-render';
@@ -16,9 +18,18 @@ import type {
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { decodeMaterialNormalX12Y12 } from '../../../../render/src/__tests__/gtao-reference';
-import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
+import {
+  decodeGBufferNormalXYZ10,
+  decodeMaterialNormalX12Y12,
+  decodeSsaoRawNormal,
+} from '../../../../render/src/__tests__/gtao-reference';
+import {
+  captureForwardGtaoTarget,
+  type ForwardGtaoCaptureHost,
+  type ForwardGtaoTargetCapture,
+} from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
+import { observeMorphSubmission, preserveMorphFailure } from './morph-original-frame';
 import {
   attachStandardPbrSkin,
   standardPbrSkinMaterial,
@@ -33,6 +44,7 @@ export async function verifyMorphSurface(
   onState: (name: string, facts: unknown) => Promise<void>,
   skin = false,
   onFailure?: (draw: () => Promise<unknown>, cause: unknown) => Promise<void>,
+  originalSsr?: { begin(): Promise<void>; submitted(receipt: FrameReceipt): void },
 ) {
   const { renderer, assets } = host;
   const debug = host.debugDrawHost as ForwardGtaoCaptureHost &
@@ -107,15 +119,18 @@ export async function verifyMorphSurface(
       { component: MeshRenderer, data: { materials: [gray] } },
     )
     .unwrap();
-  const lease = renderer.attach(world).unwrap();
+  const lease = attachForwardMorphScene(renderer, world);
+  let captureSsr = false;
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     try {
-      return await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease, entityKey: camera },
-        environment: { lease },
+      const diagnostic = captureSsr ? originalSsr : undefined;
+      captureSsr = false;
+      const submitter = await observeMorphSubmission(renderer, diagnostic);
+      return await drawReadyFrame(submitter, {
+        source: lease,
+        camera: { entityKey: camera },
       });
     } catch (cause) {
       throw new Error(
@@ -129,8 +144,8 @@ export async function verifyMorphSurface(
     }
   };
   try {
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' }).unwrap();
     for (const ssr of [false, true]) {
+      captureSsr = ssr;
       if (ssr)
         world
           .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 8 } })
@@ -138,30 +153,39 @@ export async function verifyMorphSurface(
       for (const [state, weight] of [0, 0.5, 1, 0].entries()) {
         world.set(subject, MorphWeights, { weights: [weight] }).unwrap();
         for (let frame = 0; frame < (weight === 1 ? 60 : 2); frame++) await draw();
-        const captured = await captureForwardGtaoTarget(
-          debug,
-          ssr && renderer.inspect().ssr.lane === 'deferred'
-            ? 'gbuffer-normal-roughness'
-            : 'standard-scene-surface-normal',
-          draw,
-        );
-        const at =
-          (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) * 4;
-        const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(
-          at,
-          true,
-        );
-        const normal = decodeMaterialNormalX12Y12(packed);
-        const magnitude = Math.hypot(weight * 0.4, 1);
-        expect(normal[0]).toBeCloseTo(
-          (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
-          2,
-        );
-        expect(normal[1]).toBeCloseTo(0, 2);
-        expect(normal[2]).toBeCloseTo(
-          (Math.cos(angle) - Math.sin(angle) * weight * 0.4) / magnitude,
-          2,
-        );
+        let normal: readonly number[];
+        if (ssr) {
+          const captured = await captureForwardGtaoTarget(
+            debug,
+            renderer.inspect().ssr.lane === 'deferred'
+              ? 'gbuffer-normal-roughness'
+              : 'standard-scene-surface-normal',
+            draw,
+          );
+          normal = centerSurfaceNormal(captured);
+          const magnitude = Math.hypot(weight * 0.4, 1);
+          expect(normal[0]).toBeCloseTo(
+            (Math.cos(angle) * weight * 0.4 + Math.sin(angle)) / magnitude,
+            2,
+          );
+          expect(normal[1]).toBeCloseTo(0, 2);
+          expect(normal[2]).toBeCloseTo(
+            (Math.cos(angle) - Math.sin(angle) * weight * 0.4) / magnitude,
+            2,
+          );
+        } else {
+          // AO alone leaves a depth-only prepass: AO reconstructs the posed face
+          // normal from depth, which the uniform morph translation keeps unchanged.
+          const raw = await captureForwardGtaoTarget(debug, 'ssao-raw', draw);
+          const at = (Math.floor(raw.height / 2) * raw.width + Math.floor(raw.width / 2)) * 4;
+          normal = decodeSsaoRawNormal(
+            (raw.bytes[at + 1] ?? NaN) / 255,
+            (raw.bytes[at + 2] ?? NaN) / 255,
+          );
+          expect(normal[0]).toBeCloseTo(Math.sin(angle), 1);
+          expect(normal[1]).toBeCloseTo(0, 1);
+          expect(normal[2]).toBeCloseTo(Math.cos(angle), 1);
+        }
         expect(renderer.inspect().standardLighting?.ambientOcclusion?.status).toBe('active');
         await onState(`${skin ? 'skin' : 'mesh'}-${ssr ? 'ao-ssr' : 'ao'}-${state}-${weight}`, {
           normal,
@@ -173,11 +197,32 @@ export async function verifyMorphSurface(
     }
     expect(errors).toEqual([]);
   } catch (cause) {
-    await onFailure?.(draw, cause);
-    throw cause;
+    await preserveMorphFailure(onFailure, draw, cause);
   } finally {
     lease.dispose();
     unsubscribe();
     debug.setClusterWorkObservationForConformance(false);
   }
+}
+
+/** Own native admission and dispose an attached scene if its profile cannot be selected. */
+function attachForwardMorphScene(renderer: Renderer, world: World) {
+  const attached = renderer.attach(world);
+  if (!attached.ok) throw attached.error;
+  const profiled = renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' });
+  if (!profiled.ok) {
+    attached.value.dispose();
+    throw profiled.error;
+  }
+  return attached.value;
+}
+
+function centerSurfaceNormal(captured: ForwardGtaoTargetCapture) {
+  const at =
+    (Math.floor(captured.height / 2) * captured.width + Math.floor(captured.width / 2)) *
+    captured.bytesPerTexel;
+  const packed = new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(at, true);
+  return captured.format === 'rg32uint'
+    ? decodeGBufferNormalXYZ10(packed)
+    : decodeMaterialNormalX12Y12(packed);
 }

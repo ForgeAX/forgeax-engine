@@ -105,7 +105,7 @@ function assertEnvelope(envelope, label) {
 async function readM19(label) {
   return assertEnvelope(
     await runRemote([
-      "const input=world.getResource('m19LiveInput'); return {keyboardDown:input.keyboardDown,keyboardJustPressed:input.keyboardJustPressed,keyboardJustReleased:input.keyboardJustReleased,mouseHeld:input.mouseHeld,mouseJustPressed:input.mouseJustPressed,mouseJustReleased:input.mouseJustReleased,pointerLocked:input.pointerLocked,pointerActiveCount:input.pointerActiveCount,pointerEvents:[...input.pointerEvents],pointerPhaseLog:[...input.pointerPhaseLog],gesture:{...input.gesture},gestureEvents:[...input.gestureEvents],gestureLog:[...input.gestureLog],gamepad:{...input.gamepad},edgeLog:[...input.edgeLog]};",
+      "const input=world.getResource((await _import('/src/main.ts')).M19LiveInputResource); return {keyboardDown:input.keyboardDown,keyboardJustPressed:input.keyboardJustPressed,keyboardJustReleased:input.keyboardJustReleased,mouseHeld:input.mouseHeld,mouseJustPressed:input.mouseJustPressed,mouseJustReleased:input.mouseJustReleased,pointerLocked:input.pointerLocked,pointerActiveCount:input.pointerActiveCount,pointerEvents:[...input.pointerEvents],pointerPhaseLog:[...input.pointerPhaseLog],gesture:{...input.gesture},gestureEvents:[...input.gestureEvents],gestureLog:[...input.gestureLog],gamepad:{...input.gamepad},edgeLog:[...input.edgeLog]};",
     ]),
     label,
   );
@@ -260,7 +260,7 @@ try {
   assertEnvelope(await runRemote(['--health']), 'remote health');
   const baseline = assertEnvelope(
     await runRemote([
-      "const phase=world.getResource('m1LivePhase'); const frames=world.getResource('m1LiveFrames'); const fixed=world.getResource('m1LiveFixedTicks'); const input=world.getResource('m1LiveInput'); const m19=world.getResource('m19LiveInput'); const plugin=world.getResource('m1LivePluginBuilt'); const root=world.getResource('m1LiveRoot'); return {phase:phase.value,frames:frames.value,fixed:fixed.value,input:{...input},m19:{...m19,edgeLog:[...m19.edgeLog]},plugin:plugin.value,entities:world.inspect().entityCount,children:Array.from(world.iterDescendants(root)).length};",
+      "const phase=world.getResource((await _import('/src/main.ts')).M1LivePhaseResource); const frames=world.getResource((await _import('/src/main.ts')).M1LiveFramesResource); const fixed=world.getResource((await _import('/src/main.ts')).M1LiveFixedTicksResource); const input=world.getResource((await _import('/src/main.ts')).M1LiveInputResource); const m19=world.getResource((await _import('/src/main.ts')).M19LiveInputResource); const plugin=world.getResource((await _import('/src/main.ts')).M1LivePluginBuiltResource); const root=world.getResource((await _import('/src/main.ts')).M1LiveRootResource); return {phase:phase.value,frames:frames.value,fixed:fixed.value,input:{...input},m19:{...m19,edgeLog:[...m19.edgeLog]},plugin:plugin.value,entities:world.inspect().entityCount,children:Array.from(world.iterDescendants(root)).length};",
     ]),
     'live baseline',
   );
@@ -271,7 +271,7 @@ try {
   await page.waitForTimeout(100);
   const mutation = assertEnvelope(
     await runRemote([
-      "const ecs=await _import('@forgeax/engine-ecs'); const position=world.getResource('m1LivePosition'); const before=position.x; world.insertResource('m1LivePosition',{...position,x:before+0.5}); const after=world.getResource('m1LivePosition'); return {setOk:true,before,after:after.x,input:{...world.getResource('m1LiveInput')},fixed:world.getResource('m1LiveFixedTicks').value,hasEntity:ecs.Entity !== undefined};",
+      "const ecs=await _import('@forgeax/engine-ecs'); const position=world.getResource((await _import('/src/main.ts')).M1LivePositionResource); const before=position.x; world.insertResource((await _import('/src/main.ts')).M1LivePositionResource,{...position,x:before+0.5}); const after=world.getResource((await _import('/src/main.ts')).M1LivePositionResource); return {setOk:true,before,after:after.x,input:{...world.getResource((await _import('/src/main.ts')).M1LiveInputResource)},fixed:world.getResource((await _import('/src/main.ts')).M1LiveFixedTicksResource).value,hasEntity:ecs.Entity !== undefined};",
     ]),
     'live mutation',
   );
@@ -280,7 +280,7 @@ try {
 
   const recovery = assertEnvelope(
     await runRemote([
-      "const invalid=world.update(-1); const phase=world.getResource('m1LivePhase'); const frames=world.getResource('m1LiveFrames'); return {error:invalid.ok?null:invalid.error.code,phase:phase.value,frames:frames.value,entities:world.inspect().entityCount};",
+      "const invalid=world.update(-1); const phase=world.getResource((await _import('/src/main.ts')).M1LivePhaseResource); const frames=world.getResource((await _import('/src/main.ts')).M1LiveFramesResource); return {error:invalid.ok?null:invalid.error.code,phase:phase.value,frames:frames.value,entities:world.inspect().entityCount};",
     ]),
     'live recovery',
   );

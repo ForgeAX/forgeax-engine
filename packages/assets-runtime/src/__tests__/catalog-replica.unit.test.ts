@@ -56,6 +56,26 @@ function source() {
 }
 
 describe('CatalogReplica', () => {
+  it('releases retired directory ownership without mutating returned observations', async () => {
+    const fixture = source();
+    const replica = new CatalogReplica(fixture.source as never);
+    await replica.start();
+    const observation = replica.snapshot();
+    expect(replica.get(base.guid)).toBeDefined();
+    replica.dispose();
+    replica.dispose();
+    expect(replica.get(base.guid)).toBeUndefined();
+    expect(replica.snapshot().entries).toEqual([]);
+    expect(observation.entries).toHaveLength(1);
+    expect(observation.entries[0]?.guid).toBe(base.guid);
+    expect((await replica.require(base.guid)).ok).toBe(false);
+    expect((await replica.start()).ok).toBe(false);
+    const replacement = new CatalogReplica(fixture.source as never);
+    expect((await replacement.start()).ok).toBe(true);
+    expect(replacement.get(base.guid)).toBeDefined();
+    replacement.dispose();
+  });
+
   it('retains accepted LKG evidence on producer failure without adopting degraded identities', async () => {
     const fixture = source();
     const release = fixture.deferEnumeration();

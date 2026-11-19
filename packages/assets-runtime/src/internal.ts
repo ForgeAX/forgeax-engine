@@ -13,11 +13,16 @@ export {
   readMaterialContent,
 } from './internal/resolve-asset.js';
 export {
+  type RetainedBytes,
+  RetentionBudget,
+  realmRetention,
+  stepRetainedBytes,
+  trimRetainedBytes,
+} from './internal/retention-budget.js';
+export {
   runtimeAssetReference,
   runtimeAssetRegistry,
   runtimeAssetSource,
   runtimeAssets,
 } from './internal/runtime-assets.js';
-
-export { shareVerifiedArtifactBytes } from './internal/shared-immutable.js';
 export { createMaterialLoader } from './material/loader.js';

@@ -35,20 +35,10 @@ describe('RhiNull renderer lifecycle', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     renderer.dispose();
     expect(renderer.inspect().state).toBe('disposed');
-    expect(
-      renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      }).ok,
-    ).toBe(false);
+    expect(renderer.draw({ source: attached.value }).ok).toBe(false);
   });
 });

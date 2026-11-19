@@ -1,0 +1,8 @@
+{
+  "id": "water-r8-entry-experiment",
+  "name": "Water R8 Native Entry and Visual FFT",
+  "schemaVersion": "3.0.0",
+  "roots": {},
+  "assetRoots": [],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

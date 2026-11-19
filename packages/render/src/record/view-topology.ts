@@ -1,4 +1,4 @@
-import { recordContext } from '../world/view-record-context';
+import { cloudForQuality } from '../quality';
 // The graph-topology inputs of one view that depend on its lights, scene
 // roster and device: shadow map sizes, terrain receivers, the cloud shadow
 // projection, analytic fog activity and the volumetric fog projection. Only
@@ -7,8 +7,8 @@ import { recordContext } from '../world/view-record-context';
 
 import { RhiError } from '@forgeax/engine-rhi';
 import type { ExtractedCloudLayer } from '../cloud/extract';
-import { cloudShadowResolutionForQuality } from '../cloud/parameters';
-import { type CloudShadowProjection, createCloudShadowProjection } from '../cloud/shadow';
+import { type CloudShadowProjection, createCloudShadowProjection } from '../cloud/lighting/shadow';
+import { prepareCloudShadowView } from '../cloud/lighting/shadow-view';
 import { type FogFrame, fogIsActive } from '../extract/environment';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type {
@@ -21,6 +21,8 @@ import type { FrameList } from '../scene/frame-list';
 import { type TerrainShadowReceiver, terrainShadowReceivers } from '../terrain/shadow-family';
 import { hasVolumetricFogCapability } from '../volume/capability';
 import type { ViewLights } from '../world/render-lights';
+import { recordContext } from '../world/view-record-context';
+import { clusterLocalLights } from './cluster-local-lights';
 import type { RenderFrameState } from './frame-snapshot';
 import { resolveShadowMapSize, resolveSpotShadowMapSize } from './frame-targets';
 import type { PipelineState, RenderSystemInternals } from './render-context';
@@ -28,22 +30,38 @@ import { prepareVolumetricFogFrame, stageVolumetricFogParams } from './volume-pa
 import { volumetricFogForView } from './volume-view';
 
 /** Resolve the stable world-space projection shared by cloud and lighting. */
-export function cloudShadowProjectionFor(
-  cloudLayer: ExtractedCloudLayer | undefined,
-):
-  | (CloudShadowProjection & { readonly baseHeight: number; readonly thickness: number })
+export function cloudShadowProjectionFor(cloudLayer: ExtractedCloudLayer | undefined):
+  | (CloudShadowProjection & {
+      readonly baseHeight: number;
+      readonly thickness: number;
+      readonly beerMap?: boolean;
+      readonly surfaceStrength?: number;
+      readonly atmosphereStrength?: number;
+      readonly rawResolution: number;
+    })
   | undefined {
-  if (cloudLayer?.sunDirection === undefined) return undefined;
-  return {
-    ...createCloudShadowProjection({
-      center: [0, 0, 0],
-      sunDirection: cloudLayer.sunDirection,
-      range: cloudLayer.params.shadowRange,
-      resolution: cloudShadowResolutionForQuality(cloudLayer.params.quality),
-    }),
-    baseHeight: cloudLayer.params.baseHeight,
-    thickness: cloudLayer.params.thickness,
-  };
+  if (cloudLayer !== undefined && cloudLayer.shadowMap !== undefined) {
+    const map = cloudLayer.shadowMap;
+    return {
+      ...createCloudShadowProjection({
+        center: map.origin,
+        sunDirection: map.directionToLight,
+        range: map.extentMeters,
+        resolution: Math.ceil(map.resolution / 2),
+      }),
+      origin: map.origin,
+      rawResolution: map.resolution,
+      right: map.right,
+      up: map.up,
+      lowSun: false,
+      beerMap: true,
+      surfaceStrength: map.cast ? map.surfaceStrength : 0,
+      atmosphereStrength: map.cast ? (map.atmosphereStrength ?? 1) : 0,
+      baseHeight: cloudLayer.bottomMeters,
+      thickness: cloudLayer.thicknessMeters,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -57,7 +75,7 @@ export function cloudShadowProjectionFor(
 function prepareSpotLightProjectorFrame(
   internals: RenderSystemInternals,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   lights: ViewLights,
   fog: ExtractedVolumetricFog | undefined,
 ): SpotLightProjectorFrameContext | undefined {
@@ -80,7 +98,7 @@ function prepareSpotLightProjectorFrame(
   ) {
     return undefined;
   }
-  const ownerWorld = worlds[fog?.worldId ?? 0] ?? world;
+  const ownerWorld = sourceScope ?? world;
   const resident = internals.gpuStore.ensureResident(
     source.projectorHandle,
     source.projectorAsset,
@@ -119,8 +137,17 @@ function prepareSpotLightProjectorFrame(
     view: resident.value.view,
     sampler: sampler.value,
     spotIndex: lights.spot.indexOf(source),
-    lightSlotIndex: lights.point.length + lights.spot.indexOf(source),
+    ...clusterSlotOf(clusterLocalLights(internals, lights).kept, source),
   };
+}
+
+/** The projector's Cluster slot; absent when the light was dropped over the limit. */
+function clusterSlotOf(
+  cluster: Pick<ViewLights, 'point' | 'spot'>,
+  source: ViewLights['spot'][number],
+): { readonly lightSlotIndex?: number } {
+  const spotSlot = cluster.spot.indexOf(source);
+  return spotSlot < 0 ? {} : { lightSlotIndex: cluster.point.length + spotSlot };
 }
 
 /** Stage the accepted parameter payload into the writable slot for a degraded
@@ -144,7 +171,7 @@ export function prepareFrameVolumetricFog(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   world: RenderResourceScope,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   camera: CameraSnapshot,
   lights: ViewLights,
   volumetricFog: ExtractedVolumetricFog | undefined,
@@ -164,7 +191,7 @@ export function prepareFrameVolumetricFog(
   const spotLightProjector = prepareSpotLightProjectorFrame(
     internals,
     world,
-    worlds,
+    sourceScope,
     lights,
     volumetricFog,
   );
@@ -172,7 +199,7 @@ export function prepareFrameVolumetricFog(
     internals,
     frameState,
     world,
-    worlds,
+    sourceScope,
     viewFog,
     lights,
     capability,
@@ -221,6 +248,7 @@ export type FrameVolumetricFog = ReturnType<typeof prepareFrameVolumetricFog>;
 
 /** Everything the graph compile and recording read of a view's lights, scene roster and device. */
 export interface ViewTopology {
+  readonly cloudLayer?: ExtractedCloudLayer | undefined;
   /** Directional cascade map size resolved against device limits. */
   readonly directionalShadowMapSize: number | undefined;
   readonly spotShadowMapSize: number | undefined;
@@ -237,7 +265,7 @@ export interface ViewTopologyInput {
   readonly internals: RenderSystemInternals;
   readonly frameState: RenderFrameState;
   readonly world: RenderResourceScope;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly camera: CameraSnapshot;
   readonly lights: ViewLights;
   /** The scene roster terrain receivers are read from: the retained shadow roster, else the visible rows. */
@@ -296,21 +324,28 @@ export function planViewTopology(input: ViewTopologyInput): ViewTopologyOutcome 
     const spotShadowMapSize = step('shadow-map-size-failed', () =>
       resolveSpotShadowMapSize(internals, lights),
     );
+    const cloudLayer = step('cloud-shadow-failed', () =>
+      prepareCloudShadowView(
+        cloudForQuality(input.cloudLayer, internals.standardProfile?.quality),
+        input.camera.position,
+      ),
+    );
     const topology: ViewTopology = {
+      cloudLayer,
       directionalShadowMapSize,
       spotShadowMapSize,
       shadowMapSize: directionalShadowMapSize ?? spotShadowMapSize,
       terrainReceivers: step('terrain-receivers-failed', () =>
         terrainShadowReceivers(input.sourceRenderables),
       ),
-      cloudShadow: step('cloud-shadow-failed', () => cloudShadowProjectionFor(input.cloudLayer)),
+      cloudShadow: step('cloud-shadow-failed', () => cloudShadowProjectionFor(cloudLayer)),
       analyticFog: input.analyticFog !== undefined && fogIsActive(input.analyticFog),
       volume: step('volumetric-fog-prepare-failed', () =>
         prepareFrameVolumetricFog(
           internals,
           input.frameState,
           input.world,
-          input.worlds,
+          input.sourceScope,
           input.camera,
           lights,
           input.volumetricFog,

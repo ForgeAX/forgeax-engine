@@ -18,6 +18,16 @@ it.each([
       depth,
     ),
   ).toBeUndefined();
+  expect(
+    validateMaterialProgramBindings(
+      {
+        module: 'game::standard-depth',
+        bindings: 'render-standard-material-and-scene-depth',
+        sceneDepth,
+      },
+      depth,
+    ),
+  ).toBeUndefined();
 });
 
 it.each([

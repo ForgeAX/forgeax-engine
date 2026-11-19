@@ -1,10 +1,9 @@
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import {
   type ActionConfig,
   deriveActionStates,
   INPUT_SNAPSHOT_RESOURCE_KEY,
   type InputBackendSample,
-  type InputSnapshot,
   snapshotFromSample,
 } from '@forgeax/engine/input';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
@@ -38,11 +37,11 @@ export default defineFeature({
   setup({ world, frames }) {
     spawnStage(world);
     const seen: { pressed: boolean; just: boolean; released: boolean }[] = [];
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-action-read',
       queries: [],
       fn: (world) => {
-        const jump = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY).action('jump');
+        const jump = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY).action('jump');
         seen.push({
           pressed: jump.isPressed(),
           just: jump.justPressed(),
@@ -50,6 +49,7 @@ export default defineFeature({
         });
       },
     });
+    world.addSystem(Update, systemToken1);
     let memo: Promise<readonly FeatureCheck[]> | undefined;
     return {
       checks() {

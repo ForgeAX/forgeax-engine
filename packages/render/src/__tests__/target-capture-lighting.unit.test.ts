@@ -1,3 +1,4 @@
+import { vec3 } from '@forgeax/engine-math';
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { err } from '@forgeax/engine-types';
@@ -79,6 +80,45 @@ async function fixture() {
 }
 
 describe('target capture lighting ownership', () => {
+  it('retains capture scene consumers with the view while observing its current camera', async () => {
+    const f = await fixture();
+    const first = f.prepare();
+    const firstCamera = required(f.owner.work[0]).faceCamera;
+    expect(first.scenePasses).toBeDefined();
+    const opaque = required(first.scenePasses.opaque);
+    const transparent = required(first.scenePasses.transparent);
+    expect(opaque).not.toBe(transparent);
+    expect(opaque.camera?.()).toBe(firstCamera);
+    const nextCamera = { ...firstCamera, position: vec3.create(3, 2, 1) };
+    const nextWork = { ...required(f.owner.work[0]), faceCamera: nextCamera };
+    f.owner.work = [nextWork];
+    const next = prepareTargetCaptureLighting(
+      f.owner,
+      nextWork,
+      f.runtime,
+      f.state,
+      f.basePipeline,
+      lights,
+    );
+    expect(next.scenePasses).toBe(first.scenePasses);
+    expect(opaque.camera?.()).toBe(nextCamera);
+    expect(transparent.camera?.()).toBe(nextCamera);
+    expect(Object.isFrozen(opaque)).toBe(true);
+    expect(Object.isFrozen(transparent)).toBe(true);
+    disposeTargetCaptureLighting(f.owner);
+    const recreated = prepareTargetCaptureLighting(
+      f.owner,
+      nextWork,
+      f.runtime,
+      f.state,
+      f.basePipeline,
+      lights,
+    );
+    expect(recreated.scenePasses.opaque).not.toBe(opaque);
+    disposeTargetCaptureLighting(f.owner);
+    await Promise.resolve();
+  });
+
   it('recreates planar capture on the replacement device and ignores the retired generation completion', async () => {
     const f = await fixture();
     const descriptor = {
@@ -244,6 +284,7 @@ describe('target capture lighting ownership', () => {
     Object.defineProperty(f.runtime, 'device', { value: replacement });
     const next = f.prepare(0, pipeline(replacement));
 
+    expect(next.scenePasses).not.toBe(old.scenePasses);
     expect(next.pipeline.viewUniformBuffer).not.toBe(old.pipeline.viewUniformBuffer);
     expect(next.pipeline.pointsLinesViewBuffer).not.toBe(oldPointsBuffer);
     expect(old.runtime.device).toBe(f.gpu);
@@ -270,17 +311,22 @@ describe('target capture lighting ownership', () => {
       return { target, layer, faceCamera: camera } as CubeCaptureGraphWork;
     });
     f.owner.work = writers;
-    const prepare = (work: CubeCaptureGraphWork) =>
-      prepareTargetCaptureLighting(
+    const passes: unknown[] = [];
+    const prepare = (work: CubeCaptureGraphWork) => {
+      const view = prepareTargetCaptureLighting(
         f.owner,
         work,
         f.runtime,
         {} as RenderFrameState,
         f.basePipeline,
         lights,
-      ).pipeline.viewUniformBuffer;
+      );
+      passes.push(view.scenePasses);
+      return view.pipeline.viewUniformBuffer;
+    };
     const buffers = writers.map(prepare);
     expect(new Set(buffers).size).toBe(3);
+    expect(new Set(passes).size).toBe(3);
     const destroy = vi.spyOn(f.gpu, 'destroyBuffer');
     // A later frame with one writer reuses ordinal 0 and retires the others.
     f.owner.work = [required(writers[2])];

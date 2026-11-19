@@ -56,4 +56,6 @@ it.each([
     .join('\n');
   expect(wgsl).toContain('terrainVertex');
   expect(wgsl.includes('pairWeights')).toBe(ids);
+  expect(wgsl).not.toContain('waterBodyData');
+  expect(wgsl).not.toContain('evaluateWaterWavesForward');
 }, 60_000);

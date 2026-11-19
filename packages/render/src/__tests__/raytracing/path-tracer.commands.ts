@@ -80,7 +80,9 @@ async function buildRayPublicationFixture(name: RayPublicationMaterialName) {
     asset,
     createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' }),
   );
-  return { kernel, material };
+  if (material.cookedPublication === undefined)
+    throw new Error('Ray publication fixture requires the complete cooked publication');
+  return { kernel, material: { ...material, cookedPublication: material.cookedPublication } };
 }
 
 function cutoutRayMaterial() {
@@ -177,7 +179,11 @@ async function buildRayPathFixture() {
   const assets = rayMaterialAssets();
   const cooker = createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' });
   const materials = await Promise.all(
-    Object.entries(assets).map(([id, asset]) => prepareRayMaterialPublication(id, asset, cooker)),
+    // Every material keeps its real cook, wire roundtrip and loader admission.
+    // Only the retained emission consumer needs another serialized publication.
+    Object.entries(assets).map(([id, asset]) =>
+      prepareRayMaterialPublication(id, asset, cooker, id === 'emission'),
+    ),
   );
   const raster = (
     await cookRayMaterial({ material: 'textured', table: assets, sources, context: 'raster-probe' })

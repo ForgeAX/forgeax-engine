@@ -1,3 +1,5 @@
+import { GameProjectileSimulationOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedUpdate, type ComponentData, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import { inState } from '@forgeax/engine-state';
@@ -113,10 +115,10 @@ export function createAttackPresentation(options: {
     installSystem: () => {
       if (installed) return;
       installed = true;
-      options.world.addSystem(FixedUpdate, {
+      const systemToken1 = defineSystem({
         name: 'game-attack-presentation',
         runIf: inState(GameState, 'Play'),
-        after: ['game-projectile-simulation'],
+        after: [GameProjectileSimulationOrder],
         queries: [],
         fn: () => {
           const charge = options.world.get(options.root, ChargeShot);
@@ -136,7 +138,8 @@ export function createAttackPresentation(options: {
             chargePower: frame.power,
           });
         },
-      }).unwrap();
+      });
+options.world.addSystem(FixedUpdate, systemToken1).unwrap();
     },
     projectilePresentation: () => options.vfx.attackFlightPresentation(),
     onSpawn: (overcharged) => {

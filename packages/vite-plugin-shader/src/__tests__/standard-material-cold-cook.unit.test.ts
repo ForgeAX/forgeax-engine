@@ -39,14 +39,14 @@ describe('Standard material cold cook', () => {
         ...(passes === undefined ? {} : { passes }),
       },
     });
-    // Standard roots publish ordinary/visible direct and scene-index artifacts;
-    // for each texture capability and color ABI, plus two portable artifacts.
-    // Rigid Standard additionally publishes ray-hit and Card artifacts.
+    // Storage roots cover visible-surface, view clipping and both color ABIs
+    // on direct/scene-index lanes. Rigid Standard additionally covers LOD
+    // coverage and publishes ray-hit/Card; portable backends share source bytes.
     expect(Object.keys(draft.artifacts)).toHaveLength(
       module === 'forgeax_material::standard'
-        ? storageCapabilities.length * 8 + 4
+        ? storageCapabilities.length * 32 + 6
         : module === 'forgeax_material::pbr-skin'
-          ? storageCapabilities.length * 8 + 2
+          ? storageCapabilities.length * 16 + 4
           : storageCapabilities.length,
     );
     const cooked = validateCookedMaterialRecord(
@@ -73,37 +73,48 @@ describe('Standard material cold cook', () => {
         : [],
     );
     if (!module.startsWith('forgeax::vfx-render')) {
+      const lodCoverageStates = module === 'forgeax_material::standard' ? [false, true] : [false];
       for (const capability of storageCapabilities) {
         for (const visibleSurface of [false, true]) {
+          for (const viewClipping of [false, true]) {
+            for (const lodCoverage of lodCoverageStates) {
+              for (const vertexColor of [false, true]) {
+                expect(
+                  selections
+                    .filter(
+                      (selection) =>
+                        selection.context.pipeline !== 'ray' &&
+                        selection.context.capability === capability &&
+                        (selection.context.visibleSurface === true) === visibleSurface &&
+                        (selection.context.viewClipping === true) === viewClipping &&
+                        (selection.context.lodCoverage === true) === lodCoverage &&
+                        selection.abi?.vertexInputs.some((input) => input.semantic === 'color') ===
+                          vertexColor,
+                    )
+                    .map((selection) => selection.address),
+                ).toEqual(['direct', 'scene-index']);
+              }
+            }
+          }
+        }
+      }
+      for (const backend of ['webgpu', 'webgl2']) {
+        for (const viewClipping of [false, true]) {
           for (const vertexColor of [false, true]) {
             expect(
               selections
                 .filter(
                   (selection) =>
-                    selection.context.pipeline !== 'ray' &&
-                    selection.context.capability === capability &&
-                    (selection.context.visibleSurface === true) === visibleSurface &&
+                    selection.context.backend === backend &&
+                    selection.context.capability === 'uniform-fallback' &&
+                    (selection.context.viewClipping === true) === viewClipping &&
+                    selection.context.lodCoverage !== true &&
                     selection.abi?.vertexInputs.some((input) => input.semantic === 'color') ===
                       vertexColor,
                 )
                 .map((selection) => selection.address),
-            ).toEqual(['direct', 'scene-index']);
+            ).toEqual(['direct']);
           }
-        }
-      }
-      for (const backend of ['webgpu', 'webgl2']) {
-        for (const vertexColor of [false, true]) {
-          expect(
-            selections
-              .filter(
-                (selection) =>
-                  selection.context.backend === backend &&
-                  selection.context.capability === 'uniform-fallback' &&
-                  selection.abi?.vertexInputs.some((input) => input.semantic === 'color') ===
-                    vertexColor,
-              )
-              .map((selection) => selection.address),
-          ).toEqual(['direct']);
         }
       }
     } else {

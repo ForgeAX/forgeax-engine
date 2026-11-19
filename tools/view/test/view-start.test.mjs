@@ -3,7 +3,7 @@ import { it } from 'node:test';
 import { resolve } from 'node:path';
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolveProjectIntent, resolveProjectRoot, runViewStartInteractive, withProjectIntent } from '../src/view-start.ts';
+import { resolveProjectIntent, resolveProjectRoot, runViewStartInteractive } from '../src/view-start.ts';
 import { runViewProjectOpen } from '../src/view-project-open.ts';
 import { startViewerStaticServer } from '../src/viewer-static-server.ts';
 import * as executor from '../src/command-executor.ts';
@@ -25,11 +25,7 @@ it('infers a known project and lets explicit intent override the backend workspa
   assert.equal(resolveProjectIntent([], root), await realpath(root));
   assert.equal(resolveProjectIntent(['--project', '/another-game'], root), resolve('/another-game'));
   assert.throws(() => resolveProjectIntent(['--project'], root), /requires/);
-  const status = { phase: 'ready', url: 'http://localhost:8000/?existing=1' };
-  const result = withProjectIntent(status, root);
-  assert.equal(new URL(result.url).searchParams.get('project'), root);
-  assert.equal(new URL(result.url).searchParams.get('existing'), '1');
-  assert.equal(status.url, 'http://localhost:8000/?existing=1');
+  assert.equal(resolveProjectIntent(['--project', root], root), await realpath(root));
 });
 
 it('uses the Engine project identity for a symlinked View URL intent', async t => {

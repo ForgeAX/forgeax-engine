@@ -7,7 +7,7 @@ import {
 } from '../asset.js';
 import { resolveMaterialAsset } from '../resolve.js';
 import { deriveStandardLayerPlan } from '../standard-layer-plan.js';
-import { selectMaterialStaticContract } from '../static-switches.js';
+import { isMaterialStaticSwitches, selectMaterialStaticContract } from '../static-switches.js';
 
 const rootId = '00000000-0000-0000-0000-000000000000';
 const parent = new Uint8Array(16) as AssetGuid;
@@ -31,6 +31,18 @@ const root: MaterialAsset = {
 };
 
 describe('material static switches', () => {
+  it('admits vertex mapping independently of Water fragment input choices', () => {
+    expect(isMaterialStaticSwitches({ waterVertexMapping: false, waterInfo: true })).toBe(true);
+    expect(isMaterialStaticSwitches({ waterVertexMapping: true, waterWaves: false })).toBe(true);
+    expect(isMaterialStaticSwitches({ waterVertexMapping: 0 })).toBe(false);
+  });
+
+  it('admits the independent Water dynamic bounds choice as a closed Boolean', () => {
+    expect(isMaterialStaticSwitches({ waterDynamicBoundsClip: true, waterInfo: false })).toBe(true);
+    expect(isMaterialStaticSwitches({ waterDynamicBoundsClip: false, waterInfo: true })).toBe(true);
+    expect(isMaterialStaticSwitches({ waterDynamicBoundsClip: 'true' })).toBe(false);
+  });
+
   it('removes alpha clipping only after an explicit author choice', () => {
     const asset: MaterialAsset = {
       ...root,

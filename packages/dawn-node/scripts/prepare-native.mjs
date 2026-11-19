@@ -48,9 +48,10 @@ export function verifyWindowsNativeConfiguration(output) {
       throw new Error(`dawn-native-backend-configuration:${name}:${value}`);
   }
 }
-const patchSHA = '98f27a6b7f11f6191e7603ce211f3779963c7e3b8e573680aafd0a059de44ccb';
+const patchSHA = 'ab4bf3a7addfb15fe26f176880422bbc6167431aaf9be130b770c3d10faa9f60';
 const patchedFiles = {
   'src/dawn/native/d3d12/PhysicalDeviceD3D12.cpp': '777f12efb6e8f4cfafb63589ae811e95bbf261512258a56389b8af2454442e69',
+  'src/dawn/node/CMakeLists.txt': 'fff03e01f5ae0b18f09cb2d161486bec16efb0566be870c25462e9167ddf1322',
   'src/dawn/native/metal/DeviceMTL.h': '28810f496ab334abc7f11fd1d9dcb0cd822b4a35d3ce65e23693cde84b0567c6',
   'src/dawn/native/metal/DeviceMTL.mm': 'b81701dfd05820a27040abd3996897a3bb09efadd43d11edd8814894f691f5ff',
   'src/dawn/native/metal/CommandBufferMTL.mm': '374629b226a11dcc737f506aba20fffa7f5edec7ac0c497ad3769c8afc200678',
@@ -76,6 +77,16 @@ export function runGclient(tools, args, cwd, env = process.env) {
     { ...env, DEPOT_TOOLS_UPDATE: '0', FORGEAX_DAWN_GCLIENT: join(tools, 'gclient.bat'),
       VPYTHON_VIRTUALENV_ROOT: env.VPYTHON_VIRTUALENV_ROOT ?? resolve(`${env.SystemDrive ?? 'C:'}/tmp/forgeax-dawn-vpython`) },
     { windowsVerbatimArguments: true });
+}
+export function buildStandaloneGclientConfig(standalone, hostCpu) {
+  const marker = '"custom_vars" : {';
+  const nodeVar = '"dawn_node" : True,';
+  if (!standalone.includes(marker) || !standalone.includes(nodeVar))
+    throw new Error('dawn-native-standalone-contract-mismatch');
+  const withHostCpu = hostCpu
+    ? standalone.replace(nodeVar, `${nodeVar}\n      "host_cpu" : ${JSON.stringify(hostCpu)},`)
+    : standalone;
+  return withHostCpu.replace(marker, '"custom_deps" : {"third_party/swiftshader": None},\n    '+marker);
 }
 export function prepareGclientGit(tools, env) {
   // Updating depot_tools is disabled for pinned builds. Render its official
@@ -139,6 +150,9 @@ export function windowsBuildEnvironment(installation, sdkVersion, base = process
   }
   return environment;
 }
+export function windowsHostToolchainCMakeArgs(probe, output) {
+  return ['-S', probe, '-B', output, '-A', 'x64'];
+}
 export async function prepareNative() {
   if (!['darwin', 'win32'].includes(process.platform)) return;
   const windows = process.platform === 'win32';
@@ -157,6 +171,7 @@ export async function prepareNative() {
   let buildEnvironment = process.env;
   let windowsCompiler;
   let windowsNinja;
+const prepareNativeWindowsHostToolchain = () => {
   if (windows) {
     const probe = join(cache, 'host-toolchain');
     mkdirSync(probe, { recursive: true });
@@ -185,20 +200,25 @@ export async function prepareNative() {
       "endif()",
       '',
     ].join('\n'));
-    run('cmake', ['-S', probe, '-B', join(probe, 'build'), '-A', 'x64'], cache, process.env);
+    run('cmake', windowsHostToolchainCMakeArgs(probe, join(probe, 'build')), cache, process.env);
     const [sdkRoot, sdkVersion, installation, ninja, compiler] = readFileSync(join(probe, 'build/sdk.txt'), 'utf8').trim().split(/\r?\n/);
     sdk = [sdkRoot, sdkVersion];
     windowsNinja = ninja;
     windowsCompiler = compiler;
     buildEnvironment = windowsBuildEnvironment(installation, sdkVersion);
   }
+};
+prepareNativeWindowsHostToolchain();
   const source = process.env.FORGEAX_DAWN_NATIVE_SOURCE_DIR ? resolve(process.env.FORGEAX_DAWN_NATIVE_SOURCE_DIR) : join(cache, 'node-webgpu');
+const prepareNativePinnedSourceCheckout = () => {
   if (!existsSync(join(source, '.git'))) {
     if (process.env.FORGEAX_DAWN_NATIVE_SOURCE_DIR) throw new Error('dawn-native-explicit-source-unavailable');
     run('git', ['clone', '--config', 'core.autocrlf=false', '--config', 'core.longpaths=true', '--no-checkout', 'https://github.com/dawn-gpu/node-webgpu.git', source], cache, process.env);
     run('git', ['checkout', '--detach', nodeHead], source, process.env);
   }
   if (!process.env.FORGEAX_DAWN_NATIVE_SOURCE_DIR) run('git', ['-c', 'core.autocrlf=false', '-c', 'core.longpaths=true', 'submodule', 'update', '--init', '--depth', '1'], source, process.env);
+};
+prepareNativePinnedSourceCheckout();
   const dawn = join(source, 'third_party/dawn');
   if (git(source, ['rev-parse', 'HEAD']) !== nodeHead || git(dawn, ['rev-parse', 'HEAD']) !== dawnHead) throw new Error('dawn-native-source-head-mismatch');
   const dirty = git(dawn, ['diff', 'HEAD', '--name-only']);
@@ -221,9 +241,8 @@ export async function prepareNative() {
   }
   {
     const standalone = readFileSync(join(dawn, 'scripts/standalone-with-node.gclient'), 'utf8');
-    const marker = '"custom_vars" : {';
-    if (!standalone.includes(marker)) throw new Error('dawn-native-standalone-contract-mismatch');
-    writeFileSync(join(dawn, '.gclient'), standalone.replace(marker, '"custom_deps" : {"third_party/swiftshader": None},\n    '+marker));
+    const hostCpu = windows && process.arch === 'x64' ? 'x64' : undefined;
+    writeFileSync(join(dawn, '.gclient'), buildStandaloneGclientConfig(standalone, hostCpu));
     runGclient(tools, ['metrics', '--opt-out'], dawn, env);
     // Windows uses installed MSVC/SDK through CMake, not GN bootstrap hooks.
     runGclient(tools, ['sync', '--no-history', ...(windows ? ['--nohooks'] : [])], dawn, env);
@@ -232,6 +251,7 @@ export async function prepareNative() {
   const output = process.env.FORGEAX_DAWN_NATIVE_BUILD_DIR ? resolve(process.env.FORGEAX_DAWN_NATIVE_BUILD_DIR) : join(cache, 'build'); mkdirSync(output, { recursive: true });
   const arch = process.arch === 'x64' ? 'x86_64' : 'arm64';
   const concurrency = nativeBuildConcurrency();
+const selectNativeConfigureArguments = () => {
   const configure = windows
     ? [
       '-GNinja', `-DCMAKE_MAKE_PROGRAM=${windowsNinja}`, `-DCMAKE_C_COMPILER=${windowsCompiler}`, `-DCMAKE_CXX_COMPILER=${windowsCompiler}`,
@@ -242,6 +262,9 @@ export async function prepareNative() {
       '-DTINT_BUILD_SPV_READER=OFF', '-DTINT_BUILD_SPV_WRITER=ON', '-DDAWN_ENABLE_SPIRV_VALIDATION=ON',
     ]
     : ['-GNinja', `-DCMAKE_OSX_ARCHITECTURES=${arch}`, `-DCMAKE_OSX_SYSROOT=${sdk}`, '-DCMAKE_BUILD_TYPE=Release'];
+return configure;
+};
+const configure = selectNativeConfigureArguments();
   run('cmake', [dawn, ...configure, '-DDAWN_BUILD_NODE_BINDINGS=ON', '-DDAWN_USE_X11=OFF', '-DCMAKE_CXX_VISIBILITY_PRESET=hidden', '-DCMAKE_VISIBILITY_INLINES_HIDDEN=1'], output, env);
   if (windows) {
     verifyWindowsNativeConfiguration(output);
@@ -258,6 +281,7 @@ export async function prepareNative() {
     const archResult = spawnSync('lipo', ['-archs', join(built, 'dawn.node')], { encoding: 'utf8' });
     if (archResult.status !== 0 || archResult.stdout.trim() !== arch) throw new Error('dawn-native-built-architecture-mismatch');
   }
+const publishNativeOutputProvenance = () => {
   mkdirSync(native, { recursive: true });
   const files = {};
   for (const name of nativeFiles(process.platform)) {
@@ -269,6 +293,8 @@ export async function prepareNative() {
   const provenance = join(native, 'provenance.json');
   const temporary = `${provenance}.new-${process.pid}`;
   writeFileSync(temporary, `${JSON.stringify({ inputKey: key, nodeHead, dawnHead, patchSHA, platform: process.platform, architecture: process.arch, ...(sdk ? { sdk } : {}), compiler: windows ? 'built-dxc' : 'metal', files }, null, 2)}\n`);
-  renameSync(temporary, provenance);
+  renameSync(temporary, provenance);};
+publishNativeOutputProvenance();
+
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await prepareNative();

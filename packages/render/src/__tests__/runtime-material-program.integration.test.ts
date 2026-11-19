@@ -27,7 +27,7 @@ import {
   materialSurfaceProgramsForMaterial,
   resolveMaterialSnapshot,
 } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
@@ -69,7 +69,7 @@ it('keeps cooked Forward and ShadowCaster programs when owned values change or a
     .unwrap();
   world.update(0).unwrap();
   const frameRead = () =>
-    extractFrames([world], 0, assets, undefined, {
+    extractSource(world, assets, undefined, {
       materialContext: MATERIAL_CONTEXT,
       cull: 'none',
     }).renderables.at(0)?.materials[0]?.snapshot;
@@ -233,7 +233,7 @@ it('carries both accepted Surface programs through value edits and detached publ
       MATERIAL_CONTEXT,
     );
   const frameRead = () =>
-    extractFrames([world], 0, assets, undefined, {
+    extractSource(world, assets, undefined, {
       materialContext: MATERIAL_CONTEXT,
       cull: 'none',
     }).renderables.at(0)?.material.snapshot;

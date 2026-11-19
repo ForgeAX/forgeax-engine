@@ -19,7 +19,6 @@ export function uploadFixture(device: RhiDevice, shader: ShaderModule) {
     passes: [],
   });
   const source = preparedPbrSnapshot({
-    worldId: 0,
     entityKey: 1,
     assetHandle: 3,
     transform: { world },

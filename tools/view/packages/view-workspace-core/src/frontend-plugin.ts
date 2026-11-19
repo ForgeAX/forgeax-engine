@@ -1,9 +1,9 @@
 import type { FrontendPlatform } from '@forgeax/engine-host/platform';
 import type { Plugin } from '@forgeax/engine-plugin';
 import type { HostTransportClient } from '@forgeax/engine-host/transport';
-import type { FrontendConfig } from './frontend-contract.ts';
+import type { FrontendConfig, ViewFrontendRole } from './frontend-contract.ts';
 import type { ViewWorkspaceClient } from './client.ts';
-export type CoreFrontendConfig = FrontendConfig & { platform?: FrontendPlatform; window?: Window & typeof globalThis; workspace?: { endpoint?: string; token: string; clientId: string; frontendTicket?: string } };
+export type CoreFrontendConfig = FrontendConfig & { role?: ViewFrontendRole; platform?: FrontendPlatform; window?: Window & typeof globalThis; workspace?: { endpoint?: string; token: string; clientId: string; frontendTicket?: string } };
 declare module '@forgeax/engine-plugin' { interface EngineContextServices { viewOperationClient?: ViewWorkspaceClient; } }
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
 import { createViewWorkspaceClient, workspaceBrowserEndpoint } from './client.ts';
@@ -13,6 +13,8 @@ import { initViewTraceFromEnvironment, wrapViewWorkspaceClient } from './view-tr
 import { attachPresentationResponder } from './presentation.ts';
 import { workspaceError } from './contract.ts';
 import { createContentBrowserDetailTabs } from './content-browser-detail-tabs.ts';
+import type { createProjectDocumentFrameOwner } from './preview-surface.ts';
+declare module '@forgeax/engine-plugin' { interface EngineContextServices { viewProjectDocumentFrameOwner: ReturnType<typeof createProjectDocumentFrameOwner>; } }
 
 export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> = {
   name: 'forgeax.view.service.workspace-client.frontend',
@@ -64,8 +66,9 @@ export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> 
         : undefined;
     const client = wrapViewWorkspaceClient(rawClient);
     if (lifetime.signal.aborted) return;
-    if (rawClient && (config.window ?? globalThis).location) {
-      const session = createProjectSession(rawClient, { window: config.window ?? globalThis, navigate: config.platform?.navigate ?? ctx.get('frontendPlatform', false)?.navigate });
+    const role = config.role ?? 'shell';
+    if (rawClient && (config.window ?? globalThis).location && role === 'shell') {
+      const session = createProjectSession(rawClient, { role, window: config.window ?? globalThis });
       rawClient.projectSession = session;
       const dispose = () => session.dispose();
       lifetime.signal.addEventListener('abort', dispose, { once: true });
@@ -79,11 +82,27 @@ export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> 
     if (lifetime.signal.aborted) return;
     ctx.provide('viewOperationClient', client);
     if (transport) {
-      const dispose = attachPresentationResponder(transport, (operation, args, signal) => {
+      const dispose = attachPresentationResponder(transport, async (operation, args, signal) => {
+        if (operation === 'presentation.document.release') {
+          const frameOwner = ctx.get?.('viewProjectDocumentFrameOwner', false);
+          if (frameOwner) await frameOwner.release();
+          operation = 'presentation.get';
+        }
         if (!pageHost?.callPresentation) throw workspaceError('view-presentation-unavailable', 'an installed native presentation owner', 'Mount the View Shell before querying its presentation.');
         return pageHost.callPresentation(operation, args, signal);
       });
       ctx.effect(() => dispose);
+      if (role === 'shell' && rawClient && window.location && !new URL(window.location.href).searchParams.has('forgeaxWorkspaceTarget')) {
+        const present = () => {
+          if (lifetime.signal.aborted || (config.document ?? window.document)?.visibilityState === 'hidden') return;
+          void rawClient.presentProject({ signal: lifetime.signal }).catch(error => {
+            if (!lifetime.signal.aborted) console.error('View project presentation failed', error);
+          });
+        };
+        window.addEventListener('pointerdown', present, true);
+        ctx.effect(() => () => window.removeEventListener('pointerdown', present, true));
+        present();
+      }
     }
     if (pageHost?.openResource && client) {
       logResourceOpen('open-request-observer-wired', {});

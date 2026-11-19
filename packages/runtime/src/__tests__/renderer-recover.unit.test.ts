@@ -31,20 +31,12 @@ describe('renderer recovery and receipt contract', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     if (!frame.ok) return;
     const receipt: FrameReceipt = frame.value;
     expect(world.update().ok).toBe(true);
-    const nextFrame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const nextFrame = renderer.draw({ source: attached.value });
     expect(nextFrame.ok).toBe(true);
     const observed = await renderer.observe(receipt, { include: ['draws', 'bindings'] });
     expect(observed.ok).toBe(true);

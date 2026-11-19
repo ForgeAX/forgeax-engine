@@ -189,11 +189,7 @@ const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unw
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;
     const drawFrame = (label = 'frame'): FrameReceipt => {
-      const frame = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      const frame = renderer.draw({ source: lease });
       if (frame.ok) return frame.value;
       const detail = serializableDetail((frame.error as { detail?: unknown }).detail ?? null);
       P.drawFailures.push({ code: frame.error.code, hint: frame.error.hint || '', detail });

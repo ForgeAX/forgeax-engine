@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
-import { createEngineWorkspaceRuntime, type EngineWorkspaceAsset } from '@forgeax/engine-app';
+import {
+  createEngineWorkspaceRuntime,
+  type EngineWorkspaceAsset,
+  type EngineWorkspaceProjectLifecycle,
+} from '@forgeax/engine-app';
 import type { ArtifactRef, JsonValue, ToolTerminal } from '@forgeax/engine-tool-runtime';
 import { createBrowserCapture } from '../browser-capture.js';
 import { createDevKitWorkspaceProvider } from '../workspace-provider.js';
@@ -184,6 +188,12 @@ function sceneAsset(
  * browser page owns App, World, AssetRegistry, scene instantiation and the
  * observation camera.
  */
+function projectDocumentUrl(status: EngineWorkspaceProjectLifecycle): string | undefined {
+  return status.phase === 'starting' || status.phase === 'running'
+    ? status.document.url
+    : undefined;
+}
+
 export async function runScenePreviewTool(
   args: unknown,
   projectRoot: string,
@@ -225,7 +235,7 @@ export async function runScenePreviewTool(
   let reportUri: string | undefined;
   try {
     opened = await runtime.openProject({ root: projectRoot });
-    const serverUrl = opened.target?.url;
+    const serverUrl = projectDocumentUrl(opened.status);
     if (typeof serverUrl !== 'string' || serverUrl.length === 0) {
       return failure(
         'scene-preview-target-url-missing',

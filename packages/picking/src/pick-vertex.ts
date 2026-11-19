@@ -124,7 +124,15 @@ function collectVertexHits(
   if (world.hasComponent(entity, Instances)) return [];
   const pose = currentMeshPositions(world, entity, mesh, world.frameArena);
   if ('reason' in pose) return [];
-  const { positions, bounds, deformed, worldSpace } = pose;
+  const {
+    positions,
+    bounds,
+    deformed,
+    worldSpace,
+    offset = 0,
+    stride = 3,
+    count = positions.length / 3,
+  } = pose;
   const entityWorld = queryMeshMatrix(world, entity, screenRay);
   if (!entityWorld) return [];
   const entityWMLike = worldSpace ? mat4.identity(mat4.create()) : entityWorld;
@@ -135,7 +143,7 @@ function collectVertexHits(
   const seen = new Set<number>(); // (entity, vertexIndex) dedup (review I-1)
   const indices = mesh.indices;
   const submeshes = mesh.submeshes;
-  const maxVertexIndex = Math.floor(positions.length / 3) - 1;
+  const maxVertexIndex = count - 1;
 
   // Shared vertex-emit closure: given 3 vertex indices for a hit triangle,
   // compute worldPos + screenDist + worldDist and push candidates.
@@ -144,9 +152,9 @@ function collectVertexHits(
   const worldB = vec3.create();
   const worldC = vec3.create();
   const emitTriangleVertices = (i0: number, i1: number, i2: number): void => {
-    transformMeshVertex(worldA, positions, i0, entityWMLike);
-    transformMeshVertex(worldB, positions, i1, entityWMLike);
-    transformMeshVertex(worldC, positions, i2, entityWMLike);
+    transformMeshVertex(worldA, positions, i0, entityWMLike, offset, stride);
+    transformMeshVertex(worldB, positions, i1, entityWMLike, offset, stride);
+    transformMeshVertex(worldC, positions, i2, entityWMLike, offset, stride);
     const triResult = ray.rayTriangleIntersects(r, worldA, worldB, worldC);
 
     if (!triResult.hit) return;
@@ -157,9 +165,9 @@ function collectVertexHits(
       [i2, worldC],
     ] as const) {
       if (
-        !Number.isFinite(positions[vi * 3]) ||
-        !Number.isFinite(positions[vi * 3 + 1]) ||
-        !Number.isFinite(positions[vi * 3 + 2])
+        !Number.isFinite(positions[offset + vi * stride]) ||
+        !Number.isFinite(positions[offset + vi * stride + 1]) ||
+        !Number.isFinite(positions[offset + vi * stride + 2])
       )
         continue;
       const wx = worldVec[0] as number;

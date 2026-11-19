@@ -1,5 +1,6 @@
 import type { RenderTextureSourceToken } from '@forgeax/engine-types';
 import { uuidv7 } from 'uuidv7';
+import type { RenderFeatureTextureSource } from '../features/texture-source';
 import type { RenderTargetTextureSource } from '../targets/contracts';
 import type { ExternalTextureSource } from './external-texture';
 import { isRenderTextureSourceToken, renderTextureSourceKey } from './source-token';
@@ -55,9 +56,11 @@ export class CanvasTexture {
 }
 
 export type MaterialTextureSource =
+  | import('../features/feature-texture-source').RenderFeatureTextureSource
   | RenderTargetTextureSource
   | CanvasTextureSource
-  | ExternalTextureSource;
+  | ExternalTextureSource
+  | RenderFeatureTextureSource;
 
 export function isCanvasTextureSource(source: unknown): source is CanvasTextureSource {
   return isRenderTextureSourceToken(source) && source.source === 'canvas';

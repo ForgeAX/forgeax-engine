@@ -1,17 +1,7 @@
 import { createHash } from 'node:crypto';
-import { registerHooks } from 'node:module';
+import './native-source.fixture.mjs';
 
 const finalizerUrl = new URL('../package-finalizer.ts', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    return nextResolve(
-      context.parentURL === finalizerUrl && specifier === './material-program-wire.js'
-        ? new URL('../material-program-wire.ts', import.meta.url).href
-        : specifier,
-      context,
-    );
-  },
-});
 const { finalizePackageTransportSource } = await import(finalizerUrl);
 
 const repeatedText = process.argv[2] === 'repeated-text';

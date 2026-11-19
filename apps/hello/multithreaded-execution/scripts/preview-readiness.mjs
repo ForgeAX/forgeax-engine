@@ -31,3 +31,13 @@ export async function waitForPreview(server, timeoutMs = 15_000) {
     `preview readiness failed: url=${url} index=${index} timeoutMs=${timeoutMs} lastResponse=${lastResponse}${lastTransportError ? `; lastTransportError=${lastTransportError}` : ''}`,
   );
 }
+
+/** Browser-side predicate shared by the smoke and its readiness regression. */
+export function executionSmokeReady(tier) {
+  if (globalThis.__forgeaxExecutionReady !== true) return false;
+  if (tier !== 'shared' && tier !== 'auto') return true;
+  // Cold pool Workers may join after the first safe inline update. Observe
+  // the same published snapshot that the smoke's dispatch assertion reads.
+  const report = JSON.parse(document.querySelector('#execution-report')?.textContent ?? 'null');
+  return report?.kernelDispatch?.usedShared === true;
+}

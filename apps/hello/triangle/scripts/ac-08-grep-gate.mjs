@@ -439,6 +439,9 @@ const bannedCastRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
     // Canvas-retention evidence observes a native validation scope only;
     // scene recording, pipeline preparation and submission stay on RHI.
     'packages/render/src/__tests__/pending-surface.browser.test.ts',
+    // Prepared material layout evidence observes a native validation scope;
+    // layout creation, uniform upload and binding preparation remain on RHI.
+    'packages/render/src/record/__tests__/prepared-material-layout.browser.test.ts',
     'packages/render/src/__tests__/managed-material-versions.dawn.test.ts',
     'packages/render/src/__tests__/managed-mesh-range.gpu-fixture.ts',
     'packages/render/src/__tests__/managed-mesh-structure.gpu-fixture.ts',

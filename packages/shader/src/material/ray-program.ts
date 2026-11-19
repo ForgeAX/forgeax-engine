@@ -59,6 +59,13 @@ export function rayMaterialNeedsCoverage(asset: {
     (surface !== undefined && surface !== 'forgeax_material::default_standard_surface')
   );
 }
+const UNSUPPORTED_RAY_LAYER =
+  /^(clearcoat|anisotropy|sheen|iridescence|diffuseTransmission|transmission|thickness|attenuation|bumpTexture|specularTexture|specularColorTexture|clipping)/;
+// Cards store base albedo/normal/emission/f0 for diffuse bounce. A clearcoat is a
+// view-dependent specular coat over that base with no Card channel, so a Card
+// capture records the base layer exactly; ray hits still refuse the coat.
+const CARD_BASE_LAYER_ONLY = /^clearcoat/;
+
 /** Shared build/runtime admission: value edits cannot silently enable unsupported coverage/layers. */
 export function admitRayMaterial(
   asset: MaterialAsset,
@@ -88,9 +95,8 @@ export function admitRayMaterial(
     if (p.type !== 'texture' && isMaterialTextureParameterType(p.type))
       return rayMaterialFailure(material, module, '2D textures');
     if (
-      /^(clearcoat|anisotropy|sheen|iridescence|diffuseTransmission|transmission|thickness|attenuation|bumpTexture|specularTexture|specularColorTexture|clipping)/.test(
-        p.name,
-      )
+      UNSUPPORTED_RAY_LAYER.test(p.name) &&
+      !(context === 'card-capture' && CARD_BASE_LAYER_ONLY.test(p.name))
     )
       return rayMaterialFailure(material, module, `unsupported parameter ${p.name}`);
   }

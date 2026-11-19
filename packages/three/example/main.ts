@@ -45,8 +45,7 @@ spot.visible = false;
 scene.add(spot, spot.target);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-let affine = false, shiftedLens = false;
-const shearMatrix = new THREE.Matrix4().makeShear(0, 0, 0.45, 0, 0.2, -0.2);
+let shiftedLens = false;
 function resize() {
   const parent = canvas.parentElement;
   if (parent === null) return;
@@ -90,11 +89,6 @@ element('#exposure').onclick = (event) => {
   (event.currentTarget as HTMLElement).textContent = `Exposure: ${renderer.toneMappingExposure}×`;
 };
 element('#pause').onclick = (event) => { paused = !paused; (event.currentTarget as HTMLElement).textContent = paused ? 'Resume rotation' : 'Pause rotation'; };
-element('#affine').onclick = (event) => {
-  affine = !affine;
-  cube.matrixAutoUpdate = !affine;
-  (event.currentTarget as HTMLElement).textContent = affine ? 'Remove matrix shear' : 'Apply matrix shear';
-};
 element('#lens').onclick = (event) => {
   shiftedLens = !shiftedLens;
   resize();
@@ -151,7 +145,6 @@ try {
   renderer.setAnimationLoop((time) => {
     try {
       if (!paused) { cube.rotation.y = time * 0.00025; cube.rotation.x = time * 0.00012; }
-      if (affine) { cube.updateMatrix(); cube.matrix.multiply(shearMatrix); }
       controls.update();
       renderer.render(scene, camera);
       const info = renderer.inspect();

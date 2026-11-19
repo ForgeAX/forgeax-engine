@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import Ajv2020 from 'ajv/dist/2020.js';
 import {
   discoverSdkTemplates,
@@ -20,6 +22,61 @@ import {
 } from '../forgeax/sdk-lib.mjs';
 import { reduceTestProject } from '../test/reduce-test-project.mjs';
 import quality from '../test/render-quality.json' with { type: 'json' };
+
+test('lightweight projects cap nested authored bake resolution without changing the job', async () => {
+  const authored = await readFile(
+    new URL('../../templates/game-3d/assets/player/character.pack.ts', import.meta.url),
+    'utf8',
+  );
+  const root = await mkdtemp(resolve(tmpdir(), 'sdk-ci-bake-'));
+  try {
+    await mkdir(resolve(root, 'assets/player'), { recursive: true });
+    const target = resolve(root, 'assets/player/character.pack.ts');
+    const evaluate = (source) =>
+      runInNewContext(
+        stripTypeScriptTypes(
+          source.replace(/^import .*;\n/gm, '').replace('export default ', 'globalThis.pack = '),
+        ),
+        {
+          definePack: (value) => value,
+          CONVOY_DEFAULT_RESOLUTION: 1024,
+          PACKAGE_IDS: { character: 'character-package' },
+          CONVOY_JOB: {},
+          CONVOY_OUTPUT_KEYS: ['mesh', 'rig', 'animation', 'material', 'texture'],
+        },
+      );
+    for (const [requested, expected] of [
+      [512, 512],
+      [256, 512],
+      [2048, 1024],
+    ]) {
+      await writeFile(target, authored);
+      await reduceTestProject(root, { proceduralTextureResolution: requested });
+      const reduced = await readFile(target, 'utf8');
+      const pack = evaluate(reduced);
+      assert.equal(pack.parameters[0].default, expected);
+      assert.equal(pack.parameters[0].minimum, 512);
+      assert.equal(pack.parameters[0].maximum, 2048);
+      assert.equal(pack.packageId, 'character-package');
+      assert.equal(
+        pack.build.toString(),
+        evaluate(authored).build.toString(),
+        'geometry, rig, animation and output production are unchanged',
+      );
+      await reduceTestProject(root, { proceduralTextureResolution: requested });
+      assert.equal(await readFile(target, 'utf8'), reduced, 'projection is idempotent');
+    }
+    assert.equal(
+      await readFile(
+        new URL('../../templates/game-3d/assets/player/character.pack.ts', import.meta.url),
+        'utf8',
+      ),
+      authored,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('SDK template discovery fails closed on orphan and invalid descriptors', async () => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-templates-'));
@@ -183,6 +240,16 @@ test('SDK source schema admits every expanded maintained dependency', async () =
 test('SDK templates need no contributor-only resource closure', () => {
   assert.deepEqual(SDK_TEMPLATE_RESOURCE_ALLOWLIST, []);
   assert.deepEqual(sdkTemplateResourceManifest(), []);
+});
+
+test('SDK templates mount asset libraries provided by the packaged Engine', async () => {
+  for (const { sourceRoot } of SDK_TEMPLATES) {
+    const template = new URL(`../../${sourceRoot}/`, import.meta.url);
+    const project = JSON.parse(await readFile(new URL('forge.json', template), 'utf8'));
+    const manifest = JSON.parse(await readFile(new URL('package.json', template), 'utf8'));
+    assert.deepEqual(Object.keys(manifest.dependencies), ['@forgeax/engine'], sourceRoot);
+    assert.deepEqual(project.assetLibraries, ['@forgeax/engine/content'], sourceRoot);
+  }
 });
 
 test('SDK manifest admits a pack-only template set with no copied resources', async () => {

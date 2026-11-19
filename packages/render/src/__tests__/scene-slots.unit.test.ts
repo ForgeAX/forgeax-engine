@@ -10,9 +10,8 @@ function record(slot: number, generation = 0): RenderSceneSlot {
     slot,
     generation,
     version: 0,
-    worldId: 0,
     entityKey: slot + generation * 100000,
-    snapshot: { entityKey: slot, worldId: 0 } as RenderableSnapshot,
+    snapshot: { entityKey: slot } as RenderableSnapshot,
   };
 }
 
@@ -193,9 +192,8 @@ test('quiet publication reads keep row identity without rebuilding a per-row map
   rows.apply(
     Array.from({ length: 1000 }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
-      snapshot: { worldId: 0, entityKey, transform: { world: pose } } as RenderableSnapshot,
+      snapshot: { entityKey, transform: { world: pose } } as RenderableSnapshot,
     })),
   );
   const frame = rows.capture();
@@ -257,10 +255,8 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     worlds.set(pose, entityKey * 16);
     return {
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: {
-        worldId: 0,
         entityKey,
         transform: { world: pose },
       } as RenderableSnapshot,
@@ -270,7 +266,7 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
   const before = rows.capture();
   const read = vi.spyOn(RowViews.prototype, 'read');
   try {
-    const unchanged = rows.apply([], [{ worldId: 0, entities, worlds }], true);
+    const unchanged = rows.apply([], [{ entities, worlds }], true);
     expect(unchanged.updated).toBe(0);
     expect(unchanged.ignoredLateUpdates).toBe(0);
     expect(read).not.toHaveBeenCalled();
@@ -278,7 +274,7 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     const old = before.slotAt(64);
     read.mockClear();
     worlds[64 * 16 + 12] = 7;
-    const changed = rows.apply([], [{ worldId: 0, entities, worlds }], true);
+    const changed = rows.apply([], [{ entities, worlds }], true);
     expect(changed.updated).toBe(1);
     expect(changed.updatedSlots[0]?.entityKey).toBe(64);
     expect(changed.contentUpdatedSlots).toHaveLength(0);
@@ -294,8 +290,8 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
 test('numeric pose admission respects prior staged edits, selected offsets and late identities', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { worldId: 0, entityKey: 5, transform: { world: pose } } as RenderableSnapshot;
-  rows.apply([{ kind: 'update', worldId: 0, entityKey: 5, snapshot }], [], true);
+  const snapshot = { entityKey: 5, transform: { world: pose } } as RenderableSnapshot;
+  rows.apply([{ kind: 'update', entityKey: 5, snapshot }], [], true);
   const old = rows.capture().slotAt(0);
   const moved = pose.slice();
   moved[12] = 9;
@@ -303,20 +299,16 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
   worlds.set(moved, 0);
   worlds.set(pose, 16);
   worlds.set(moved, 32);
-  const selected = [{ worldId: 0, entities: Uint32Array.of(5, 5, 999), worlds, rows: [1, 2] }];
+  const selected = [{ entities: Uint32Array.of(5, 5, 999), worlds, rows: [1, 2] }];
   try {
-    const staged = rows.apply(
-      [{ kind: 'update', worldId: 0, entityKey: 5, world: moved }],
-      selected,
-      true,
-    );
+    const staged = rows.apply([{ kind: 'update', entityKey: 5, world: moved }], selected, true);
     expect(staged).toMatchObject({ updated: 1, ignoredLateUpdates: 1 });
     expect(staged.updatedSlots[0]?.snapshot.transform.world[12]).toBe(0);
     const repeated = rows.apply(
       [],
       [
-        { worldId: 0, entities: Uint32Array.of(5), worlds: moved },
-        { worldId: 0, entities: Uint32Array.of(5), worlds: pose },
+        { entities: Uint32Array.of(5), worlds: moved },
+        { entities: Uint32Array.of(5), worlds: pose },
       ],
       true,
     );
@@ -324,10 +316,9 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
     expect(repeated.updatedSlots[0]?.snapshot.transform.world[12]).toBe(0);
     const recreated = rows.apply(
       [
-        { kind: 'remove', worldId: 0, entityKey: 5 },
+        { kind: 'remove', entityKey: 5 },
         {
           kind: 'update',
-          worldId: 0,
           entityKey: 5,
           snapshot: { ...snapshot, transform: { world: moved } },
         },
@@ -347,20 +338,20 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
 test('numeric pose admission reports parity changes and preserves strict NaN comparisons', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { worldId: 0, entityKey: 1, transform: { world: pose } } as RenderableSnapshot;
-  rows.apply([{ kind: 'update', worldId: 0, entityKey: 1, snapshot }], [], true);
+  const snapshot = { entityKey: 1, transform: { world: pose } } as RenderableSnapshot;
+  rows.apply([{ kind: 'update', entityKey: 1, snapshot }], [], true);
   const before = rows.capture();
   const mirrored = pose.slice();
   mirrored[0] = -1;
   const entities = Uint32Array.of(1);
   try {
-    const parity = rows.apply([], [{ worldId: 0, entities, worlds: mirrored }], true);
+    const parity = rows.apply([], [{ entities, worlds: mirrored }], true);
     expect(parity.updated).toBe(1);
     expect(parity.contentUpdatedSlots).toHaveLength(1);
     expect(before.slotAt(0)?.snapshot.transform.world[0]).toBe(1);
     mirrored[0] = Number.NaN;
-    rows.apply([], [{ worldId: 0, entities, worlds: mirrored }], true);
-    expect(rows.apply([], [{ worldId: 0, entities, worlds: mirrored }], true).updated).toBe(1);
+    rows.apply([], [{ entities, worlds: mirrored }], true);
+    expect(rows.apply([], [{ entities, worlds: mirrored }], true).updated).toBe(1);
   } finally {
     rows.dispose();
   }
@@ -373,10 +364,8 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
     [
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 1,
         snapshot: {
-          worldId: 0,
           entityKey: 1,
           transform: { world: pose },
         } as RenderableSnapshot,
@@ -394,7 +383,6 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
       [],
       [
         {
-          worldId: 0,
           entities: Uint32Array.of(1),
           get worlds() {
             reads++;
@@ -410,7 +398,6 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
       [],
       [
         {
-          worldId: 0,
           entities: Uint32Array.of(999),
           get worlds(): Float32Array {
             throw new Error('absent rows have no pose reader');

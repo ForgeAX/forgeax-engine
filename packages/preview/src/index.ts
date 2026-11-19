@@ -64,10 +64,10 @@ export {
   canonicalPresentation,
   createCanonicalPreviewRecipe,
 } from './kit/canonical.js';
-export {
-  type PreviewPresentation,
-  type PreviewSubject,
-  type PreviewSubjectKind,
+export type {
+  PreviewPresentation,
+  PreviewSubject,
+  PreviewSubjectKind,
 } from './kit/presentation.js';
 export {
   type CanonicalKitReceipt,

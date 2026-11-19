@@ -298,12 +298,7 @@ async function fixture(storageBuffer: boolean, published = false) {
     if (request !== undefined) result = renderer.draw(request);
     else {
       if (lease === undefined) throw new Error('Missing local Source read lease');
-      result = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      });
+      result = renderer.draw({ source: lease, geometryLane: 'direct' });
     }
     if (!result.ok)
       throw new Error(
@@ -633,6 +628,12 @@ it('roundtrips owned Worker mesh buffers/static Skin facts and records only the 
       assets: f.assets,
       capabilities: f.device.caps,
     }).unwrap();
+    for (const program of preparation.programs) {
+      const registered = f.assets.shaderRegistry.findMaterialArtifact(program.key).unwrap();
+      expect(program.shader.variantReferences).toEqual(registered.variantReferences);
+      for (const reference of registered.variantReferences ?? [])
+        expect(preparation.programs.some((row) => row.key === reference.identifier)).toBe(true);
+    }
     const owned = structuredClone({
       ...f.identity,
       meshHandle: f.next,

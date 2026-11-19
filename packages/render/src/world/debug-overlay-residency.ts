@@ -76,7 +76,7 @@ export class DebugOverlayResidency {
   /** `recover(device)`: bind to the host's current device, retiring objects of a former one. */
   private bind(host: DebugOverlayHost): Bound {
     const current = this.bound;
-    if (current?.device === host.device) return current;
+    if (current?.device === host.device && current.scope === host.scope) return current;
     this.release();
     this.bound = {
       device: host.device,

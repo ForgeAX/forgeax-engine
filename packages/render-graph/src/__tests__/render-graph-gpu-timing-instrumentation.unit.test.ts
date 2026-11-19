@@ -182,4 +182,55 @@ describe('RenderGraph actual-pass timing instrumentation', () => {
       { name: 'skipped', kind: 'compute', executionIndex: 3 },
     ]);
   });
+
+  it('preserves the scope receiver and keeps diagnostic throws behind render errors', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const color = graph.createTexture('diagnostic-color', {
+      format: 'rgba8unorm',
+      size: 'surface',
+    });
+    if (!color.ok) throw color.error;
+    const view = graph.view(color.value);
+    if (!view.ok) throw view.error;
+    const nativeFailure = new Error('native encode failure');
+    graph.addRasterPass('diagnostic-pass', {
+      accesses: [{ resource: view.value, usage: 'color-attachment' }],
+      colorAttachments: [{ view: view.value, loadOp: 'clear', storeOp: 'store' }],
+      encode: () => {
+        throw nativeFailure;
+      },
+    });
+    const compiled = graph.compile({
+      device: mockDevice(),
+      surfaceSize: { width: 1, height: 1 },
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+
+    let receiver: unknown;
+    const result = value(compiled).execute(
+      { encoder: mockEncoder([]), source: {} as Buffer },
+      undefined,
+      {
+        begin() {
+          const scope = {
+            label: 'scope receiver',
+            renderPassDescriptor(descriptor: RenderPassDescriptor) {
+              receiver = this;
+              expect(this.label).toBe('scope receiver');
+              void descriptor;
+              throw new Error('diagnostic decorator failure');
+            },
+          };
+          return scope;
+        },
+      },
+    );
+    expect(receiver).toMatchObject({ label: 'scope receiver' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('pass-encode-failed');
+      expect(result.error.detail).toMatchObject({ cause: nativeFailure });
+    }
+  });
 });

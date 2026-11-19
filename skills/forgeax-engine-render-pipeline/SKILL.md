@@ -5,6 +5,69 @@ description: ForgeAX render pipelines, post-processing, and typed RenderGraph ow
 
 # forgeax-engine-render-pipeline
 
+One full-size, full-rate, all-channel display CameraView uses the native surface
+directly. Partial/scaled, held, stereo-channel and multiple display views retain
+composition. Keep the view's preparation barrier, history, target readbacks and
+receipt observations; Surface UI captures final display only after its own draw.
+See [scene/output ownership](../../packages/render/README.md#native-output-core).
+
+A new capture pipeline may hold submission or submit only a preparation candidate.
+The current receipt stays pending in both cases, including after a ready frame.
+Keep presentation publication in RenderCommit; waiting consumers must never inherit
+prior readiness and sample an unwritten target. See the
+[Three target contract](../../packages/three/README.md#ordered-hdr-targets-and-cube-environments).
+
+## Volumetric clouds
+
+Use Standard HDR with a single-sample camera, an `Atmosphere`, a
+`DirectionalLight`, and one `VolumetricCloudLayer` per World. Copy the
+[Render package example](../../packages/render/examples/volumetric-clouds)
+into a project asset root. Find it at `examples/volumetric-clouds` in the
+installed `@forgeax/engine-render` package, or at
+`source/engine/packages/render/examples/volumetric-clouds` in the SDK ZIP.
+
+Load `cloudGuids.material` with `cloudMaterialKind` and both instance GUIDs
+with `cloudMaterialInstanceKind` from `@forgeax/engine/render/authoring`.
+Spawn `VolumetricCloudLayer` from `@forgeax/engine/render` with the material
+handle, altitude and thickness in meters. Keep the initial instance handle
+for the base option. Use keyboard press edges to set `materialInstance` on
+the same layer and bump `requestRevision` with each selection. See the
+[cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
+for the World code and inspection fields.
+
+For wind and ground shadows, advance the layer's `windOffsetMeters` in
+simulation and select Beer shadows with `shadowMode: 1` and
+`castCloudShadows: true`. Cloud quality presets can vary `viewSampleCountScale`.
+Mode 0 always traces at ceil-quarter dimensions and reconstructs at ceil-half
+dimensions. `shadowResolution` controls the shadow map.
+
+Verify each selection against `completedAdoption` and capture cloud silhouettes,
+shadow movement and a fast camera turn in the browser. In a game with a local
+renderer, inject `renderer` into the game plugin and read
+`ctx.renderer.inspect({ fields: ['cloudLayer'] })`. Send unavailable status
+to the HUD over the game's Host port. A fallback view using MSAA can keep
+the sky with `Atmosphere.backgroundOnly: true`. Verify a completed frame
+with the HUD notice in the browser.
+
+## Water
+
+For a lake with waves, surface queries or buoyancy, start at the Water package's
+[Lake Starter](../../packages/water/README.md#start-with-a-lake). It ships with
+the matching SDK and npm package. Select it explicitly for
+`test-experimental` Water work and verify a visible browser frame before
+adding interactions. For a standalone water-looking mesh, use the stock
+`single-layer-medium` material.
+
+## Render preparation
+
+For the opt-in dispersive Water producer, surface transport uses current native
+submerged unions and horizontal velocity at facing boundaries. Flux divergence
+drives the same depth-resolved wave modes with zero DC. Keep falling-object entry
+volume separate, union compound native geometry before deriving boundary normals,
+and preserve receiver-qualified buoyancy. Capture flux, projected rate and wave
+state to prove bow origin, two-sided propagation and stopped decay; nonzero foam
+alone does not establish sailing behavior. See [Render](../../packages/render/README.md#advanced-water-producer-entry).
+
 For live native compilation detail, read `renderer.inspect().pipelineLibrary.pending`
 or `execution.inspectRenderer({fields:['pipelineLibrary']})` in a Worker host.
 Rows contain the complete recorded recipe, semantic SHA-256 identity, shader
@@ -21,7 +84,179 @@ siblings cannot publish a partial picture. Inspect the pending receipt and
 actual tape before changing pipeline/shader work. See
 [preparation semantics](../../packages/render/README.md#preparing-hidden-loadout-pipelines).
 
+RenderGraph places private MSAA color resolves at the last unobserved writer.
+Declare the final resolve pass unconditionally when it must run even with no
+transparent draws; keep real producer predicates explicit. Intermediate sampled,
+copy or attachment accesses retain the required result, and imported targets keep
+their publication resolves. Count native attachments on the actual frame before
+claiming a whole-game resolve reduction or a performance gain.
+
+Compatible adjacent raster stages share one native pass by default. Inspect
+`passes[].rasterBatch` for logical membership and the actual tape for physical
+boundaries. GPU instrumentation times the group once; logical callbacks retain
+their own resolvers/debug groups. CPU wrappers preserve batching. A replay runner
+that observes or copies a logical result declares `requiresPassBoundary(name)`;
+wrappers preserve it. Do not split ordinary passes merely to retain old timing rows.
+
+For ordered offscreen draws use `Renderer.draw({ source, camera, targetWrite })` and
+await a ready receipt when later operations require the written image. Target writes
+reuse the primary capture graph; they reject destination sampling feedback. HDR cube
+lighting uses `prepareRenderTargetEnvironment` after six completed faces, then
+`RenderTargetEnvironment` on the Skylight entity; retain/release its native lease.
+See [target lifecycle](../../packages/render/README.md#explicit-ordered-target-submissions)
+and [Three initialization](../../packages/three/README.md#ordered-hdr-targets-and-cube-environments).
+
 ## Quick contract
+
+Standard Deferred is single-sample. Explicit Deferred with MSAA returns a structured
+admission error; `auto` selects real Forward unless Deferred-only work forbids it.
+SSR and Water must preserve that MSAA choice. Inspect `viewConfiguration` for the
+last submitted requested/effective path, AA and scene sampling; `profile` remains
+the device default. See [Render admission](../../packages/render/README.md#standard-lighting-contract).
+
+`Camera.postProcessing` defaults to true and gates optional post effects and
+their preparation/work scopes while preserving authored effect settings.
+Tone/output transfer, manual exposure and raster MSAA retain their own
+contracts. Water still extracts reset metadata when disabled; visual
+underwater intent, intersection and audio state have separate consumers.
+See the [Water entry](../../packages/water/README.md#material-family) before
+changing underwater selection or optional Water work admission.
+
+Advanced shallow and World Ocean FFT producers use the existing Water
+RenderFeature and renderer-owned compute/copy lifetime. Follow the
+[advanced Water entry](../../packages/water/README.md#advanced-simulation-entry)
+for recipe/body/World ownership and named material outputs. Keep actual stage
+readbacks and completion receipts distinct from extraction and submission.
+The explicit `mode-projected-gravity/1` OceanPatch source follows the completed
+native Physics clock and consumes its full elapsed interval. It must not clip
+that interval, acknowledge partial work or reseed ordinary source motion.
+Its reference depth and source slabs qualify a linear model, not Terrain depth;
+the published mapping marks residual-only height/normal/foam material input.
+Recipe `entryWaveMultiplier` defaults to 1 and scales only full-displacement
+changes before evolution. Apply the same value to visual and receiver-qualified
+fields; retain independent surface-transport flux and initialization baselines.
+Producer history uses the same persistent outputs and submit/abort boundary:
+copy accepted current fields before writers, seed previous after initialization,
+and converge held/paused rendered frames. Declare those sampled/storage accesses
+so RenderGraph supplies their RAW/WAR ordering; never advance history on abort.
+The WaterBody shallow profile remaps sampled height/velocity and rebuilds
+nonnegative depth against the current bed. Bottom-contour change suppression is disabled; do not reset wet remapped cells to the bed.
+Shallow rigid capture consumes Physics' accepted native primitive snapshot and
+held MeshAsset fields. Reuse the existing submission owner for prior poses and
+use one grid-relative origin before f32 upload. Its end-of-step fraction `1` is
+independent of solver substeps.
+Select complete components through Physics' native OBB query at WaterSystem's
+current `ComputeLocation` surface height and identity rotation. Full Y size is
+the required authored `rigidMeshCollisions.overlapThicknessCells` times the
+actual X-axis cell size; no implicit thickness is supplied.
+Pass full side lengths to Physics for its single native half-extent conversion. Preserve
+raw-empty-only held mesh bounds fallback and explicit component-bounds identity;
+filtered-out native geometry never grants fallback. The field scalar is the
+minimum accepted transform axis scale, while its coordinates use the full inverse.
+
+The v2 visual FFT child reuses this World OceanPatch feature but keeps its
+noise revision, scratch and `visualNormal` target separate from residual history.
+After a complete child pass roster submits, retain the same target allocation on
+held, paused and collision-pending frames only while parent generation, child
+revision, noise revision, size and device still match. A new revision/device
+must drop that resource; never declare a neutral visual texture current. Paused
+frames with a new child revision still run the visual producer at the held clock.
+The target is current only after matching completion. See the [v2 output
+lifecycle](../../packages/render/src/water/advanced-feature.ts).
+
+WaterInfo input wire v6 carries detached GPU WaterMesh sources, accepted WaveSet
+readiness and the source loader's exact owner-qualified
+availability alongside independent Body inputs. Prepared Water waits only for
+pending dependencies; failed, missing and incompatible sources remain explicit.
+Metadata never substitutes for the reflected shader's real WaterInfo target and
+descriptor. Producers and receivers reject older WaterInfo input versions.
+The shared builtin roster owns registration. Publication selects each Feature's
+optional `source` adapter and retains it for the publisher lifetime; WaterInfo's
+adapter emits the v6 DTO, never its renderer-owned frame. Local source capture
+retains exact asset versions and renderer-owned view/device/graph facts. Plan
+resolves captured revisions first. Shared fluid impulse noise residency consumes
+the validated captured TextureAsset with its owning source scope; do not
+re-resolve a released extraction snapshot through a live exact-version lookup. GPU WaterMesh consumes the same-frame
+WaterInfo publication after WaterInfo plans, retaining normal generation fences.
+GPU near sources derive their flat-far boundary mask only from the selected
+same-view/Zone far receipt, with matching Body generation and mean height.
+Scatter carries it at tile schema v7 byte 92, preserving the 96-byte stride;
+transition tiles retain zero. A sliding near window does not establish adjacency.
+Only an actual pending dependency may return a RenderFeature plan with
+`pendingSource: { resource, reason }` and empty work. Such plans forbid native work and source
+feedback. The Host aborts every producer in the held frame; ready sources still
+require exact same-frame rows, and late callbacks cannot revive aborted inputs.
+
+Optional saved Zone `gpuMesh` selects static-mesh raster/mips and actual GPU
+traversal/count/prefix/scatter/indirect work. Require compute, storage and indirect
+drawing; never substitute CPU-selected tiles. Params has seven fixed vec4 records
+plus a variable-length mip tail. Use actual device limits instead of a 256-grid
+cap. Per-view occlusion consumes the current graph depth. See the
+[Render ABI](../../packages/render/README.md#gpu-water-mesh) before changing
+binding offsets, static reuse or view/device/source retirement.
+
+All per-view WaterInfo work and persistent history use the shared frame graph,
+including fluid-disabled and constant-depth frames. Preserve World/view/Zone/
+device isolation and stable view-scoped physical pass names. Producer feedback
+keeps logical names; each view imports its own outputs. View order must not
+transfer history to a view graph, force unchanged recaptures or rerun the solver.
+
+Advanced shallow and World Ocean producers always retain shared graph ownership
+with their original view scope, including frames without admitted contact foam
+materials and pending-source holds. Skip those same pass identities in each view
+graph. When Ocean contact FoamRT consumes shallow foam, admit both foam and mapping only from
+one current publish pass with exact Body/simulation allocation generations.
+Retained, blocked, unsupported and disabled plans must not re-inject old foam.
+Released pixels stay in the existing shared history and decay in world space;
+local material fallback remains active outside its finite capture coverage.
+Preserve the additive four-cell edge weight.
+Foam draw inspection reads the installed graph's exact uploaded Body descriptor
+flag and reflected Water bindings. Require same-frame/device producer, imported
+physical allocation and material consumer; a matching label or descriptor alone
+is unavailable evidence. Failed import resolution withdraws its allocation key.
+
+Local Water fluid fields follow the [Water runtime contract](../../packages/water/README.md#local-fluid-simulation).
+Draw forces before fixed callbacks move the grid; a zero-step frame retains the
+solver center. Ripple solver reads clamp, while normals and Shallow retain the
+texture address mode. Movement retains history; disable/re-enable starts a new
+generation with cleared targets and rejects old submission feedback. Accepted
+queued impulses retain their payload/sequence and active impulses freeze while
+disabled. Both survive mode/recipe edits while Body identity/generation and reset
+revision match; explicit reset, Body replacement or removal clears both. Persistent
+fluid history uses `World.identity` plus Scene-local instance identity; composition
+indices route current assets/material rows only. Within a device generation,
+source frame numbers advance strictly even for equal-time zero-step submissions;
+old and duplicate acknowledgments cannot roll back force or capture-center history.
+One force image is reused by
+all catch-up callbacks; active lifetimes age once by the uncapped outer delta,
+and normal/optional wave-foam passes run once per outer frame.
+`foamFadePerFrame` and `foamWetFadePerFrame` use that outer-frame cadence.
+Fluid configuration version 1 selects audited built-in kernels; it rejects
+nonempty `materialGuids` and `textureGuids` rather than accepting unused shader
+overrides. `impulseNoiseGuid` supplies the actual default force texture.
+`waveFoam` owns its scalar capture extent and resolution separately from the
+solver; the same Scene component supplies explicit world-space `waveFoamCenterM`.
+Its submitted outer-frame history advances independently of fixed callbacks.
+BeachFoam consumes that producer mapping with its existing linear-clamp amount
+and linear-wrap height sampling, without duplicating author inputs in materials.
+Preserve the Wave material's normalized-UV Shallow height sample.
+
+The shared material field array preserves native texels, dimensions and each
+field's declared nearest/linear and repeat/clamp semantics. Current and previous
+displacement retain their submitted grid centers. Shadow, color, prepass and
+motion consumers bind reflected resources through graph accesses; no pass may
+omit WPO to avoid a missing binding. BeachFoam keeps its independent amount
+clamp and height-wrap sampling. New source/plan boundaries clear stale fluid
+candidates; a late abort can discard only its own token. Pending source is an
+ordinary deferred frame; failed, missing and incompatible inputs stay errors.
+
+RenderFeature plans explicitly wait for in-flight source inputs with
+`ok({ pendingSource: { resource, reason }, work: [] })`. This branch keeps the
+frame pending, aborts extracted ownership once and acknowledges no source intents.
+Dependent view graphs wait before compiling missing shared exports. It cannot
+declare graph work or native preparation. Missing, failed and
+incompatible inputs retain their structured errors. See the
+[producer contract](../../packages/render/README.md#renderfeature-the-producer-seam).
 
 Covers making a game scene visible; stop here unless a task needs a section below.
 Import components from `@forgeax/engine/render` and `Transform` from
@@ -30,8 +265,8 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Entity | Components and defaults | Limits |
 |:--|:--|:--|
 | Camera | `Transform` + `Camera { fov }` (vertical radians strictly in `(0, Math.PI)`; convert degrees with `degrees * Math.PI / 180`; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
-| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first owns CSM shadows and the View sun lane; later ones are unshadowed Cluster lights (Three.js semantics) that count toward the local-light budget; no `Transform` needed. `Atmosphere` needs exactly one |
-| Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
+| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first with `castShadow` (else the first) owns CSM shadows and the View sun lane; later ones are unshadowed lights (Three.js semantics) shaded in their own loop outside the light grid and not counted in `lightCount`; no `Transform` needed. `Atmosphere` needs exactly one |
+| Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | `StandardProfile.lightCount` (integer 1..1024, default 1024) local lights share one cluster path; past it the first lights by (kind, world, entity) are kept and the renderer warns once instead of rejecting the frame; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
 | Sky | Generate a linear HDR `EquirectAsset` in a Pack; bind it to `SkyboxBackground` and `Skylight` | One asset supplies the background and IBL. Use `Atmosphere` for physical air. |
 | Mesh | `Transform` + `MeshFilter { assetHandle }` + `MeshRenderer { materials: [handle] }` | Handles come from `assets.load(guid, 'mesh' \| 'material')` |
@@ -39,13 +274,19 @@ Import components from `@forgeax/engine/render` and `Transform` from
 - Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,
   emissive, emissiveIntensity })` or `Materials.unlit(...)`; CSS/hex strings are sRGB,
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
-- Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
-  `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
+- Camera output: `tonemap` defaults to `TONEMAP_NONE`; `TONEMAP_ACES_FILMIC` is the
+  filmic curve (`TONEMAP_AGX` is the desaturated base curve, only for a
   muted grade; presets in the SDK effects/lighting.md). `exposure` is Three's
   `toneMappingExposure` under every curve; Three WebGPU ignores `material.toneMapped`
   (see render README "Three material.toneMapped"). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
+- Colours and ambient units: write sRGB hex through
+  `color.linearRgb(0xRRGGBB)` from `@forgeax/engine/math` (same as `THREE.Color`; `definePack` parameter defaults must stay literal linear `[r, g, b]`);
+  bare tuples are already linear. Skylight is radiance, not irradiance, like Unreal
+  `SkyLight`: Three `HemisphereLight`/`AmbientLight` intensity I is `intensity` I/π.
+  Under `Atmosphere` the ambient is the sky's radiance, so it follows the sun
+  (like Unreal's real-time SkyLight capture); Three's ambient stays fixed.
 - Shadows: set `castShadow: true` on the light, then choose
   `shadowFilter: DirectionalShadowFilterValue.<label>`; opt entities out with
   `ShadowParticipation`. See [Directional shadow entry](#directional-shadow-entry).
@@ -73,6 +314,16 @@ must complete its real per-device HDR/depth resolve probe; inspect structured
 capability errors rather than falling back to a retained single-sample graph.
 AO, SSR, decals and screen shadows use independent single-sample surface data.
 See [MSAA readiness](../../packages/render/README.md#msaa-on-webgl2).
+
+Use `ANTIALIAS_MSAA_FXAA` for native four-sample Forward coverage followed by
+FXAA. Ordinary Forward analytic `Fog` uses native vertex height fog before
+blending; no screen/MSAA fog pass is added. Raw WGSL color writers publish
+`program.forwardFog: 'height-vertex/1'` or explicitly use `renderState.fog: false`.
+Full Atmosphere, Deferred and capture fog retain their screen transport.
+Local `VolumetricFog` resolves nearest Reverse-Z depth on GPU for its per-pixel
+integral. Keep full `Atmosphere` single-sampled and qualify WebGL2 fog separately.
+Run the complete fog pixel owners and exercise the actual game; helper GPU
+pixels and fewer graph passes alone do not establish whole-game performance.
 
 Author instance transforms and Mesh LODs normally. Opaque uniform-only CPU
 collections batch each 128-instance page by resident level. Preserve source
@@ -106,8 +357,19 @@ Use one default `Atmosphere` and one `DirectionalLight` for full outdoor air. Au
 in metres, coefficients in inverse metres, and solar intensity as outer-space
 lux. Atmosphere Transform defines the ground reference; Skylight Transform
 selects its independent capture position. Ordinary haze comes from Rayleigh/Mie
-transport; `Fog` adds an extra height medium. Read the
+transport; `Fog` adds an extra height medium. Without `Atmosphere`, `Fog` leaves
+the authored background unfogged; with it, `Fog` also covers the sky at the camera
+far depth, independently of the planet intersection. Default `Fog` has positive
+height falloff: add `Fog: {}` to fill the lower hemisphere while keeping the upper
+sky visible. `Fog.skyOpacity`
+scales that sky fog (1 physical, 0 sky unfogged). Read the
 [physical atmosphere contract](../../packages/render/README.md#atmosphere-and-aerial-perspective).
+
+Keep `groundAlbedo` at its default for Earth-like multiple scattering. Background
+rays stop at the planet and show accumulated air radiance; author a mesh for a
+visible ground surface. Do not add a sun-lit virtual ground overlay or mask all
+downward display rays black. Validate both the absent surface term and retained
+lower-sky air with `atmosphere-fog-background.browser.test.ts`.
 
 Keep sky, AP, solar attenuation and captures on the shared optical kernel. AP
 stores RGB luminance and RGB transmittance. Camera-specific tables belong to their
@@ -153,6 +415,24 @@ a post-translucency fog pass or composite particles before fog. The
 [Render contract](../../packages/render/README.md#fog-and-translucency) states the
 composition rules and limits; prove a fog-order bug with an RHI capture (fog work
 before the translucent work, bound View offset `translucentViewOffset(...)`).
+Forward MSAA uses that same fog kernel at each sample depth on the original
+4x color producer, with an average display resolve. Water's late nearest-color
+gather retains the opaque sample ID across underwater translucency.
+
+Water SSR borrows the existing temporal color owner: main TAA color when enabled,
+otherwise a color-only HDR snapshot after DoF and before Motion Blur/Bloom.
+Set `ScreenSpaceReflection.waterTemporal` with `WaterSsrTemporalValue.auto`
+(default: own Water resolve only without main TAA), `.always` or `.off`.
+Water MSAA selects the real Forward 4x opaque producer; full SLW/SSR raster
+remains 1x with matched opaque normal, velocity and legal depth.
+
+An after-tonemap raster pass that reads depth declares `sceneDepth` on the
+pass. With TAA, Standard then supplies full-output geometry coverage and a
+matching unjittered View, using the authored deformation/alpha/cull rules.
+This Engine adaptation adds one depth target and coverage work only on demand;
+do not substitute TAA's dilated temporal metadata for geometry depth.
+Water coverage carries SLW's existing FoamRT through the lane output and declares
+its sampled read, retaining the same producer and graph lifetime for every pass.
 
 ## Transmission/refraction
 
@@ -549,9 +829,7 @@ completeness, and `latestKnownGood` are distinct projections, and an omitted
 
 Render owns the session, generation fence, parser, retention, and recovery
 publication. The bounded fact contract is
-[`packages/render/src/record/gpu-pass-timing/contract.ts`](../../packages/render/src/record/gpu-pass-timing/contract.ts);
-the fail-closed benchmark validator is
-[`packages/render/bench/gpu-pass-timing/validator.ts`](../../packages/render/bench/gpu-pass-timing/validator.ts).
+[`packages/render/src/record/gpu-pass-timing/contract.ts`](../../packages/render/src/record/gpu-pass-timing/contract.ts).
 RenderGraph contributes only neutral pass-boundary seams such as
 `timestampWrites` and `after(frame)`; it never owns timing policy or status.
 
@@ -727,7 +1005,9 @@ return graph.addRasterPass('visible-raster', {
 For a separate Render Worker, keep `extract` beside World and construct the same
 declared feature in the receiver bootstrap. Use `assetDependencies(data)` for
 GUID resources and `onSourceFrameSubmitted(data, feedback)` for source-owned
-intent acknowledgment. Keep GPU state in receiver-local planning/submission.
+intent acknowledgment. `onSourceFrameCompleted` receives the same submitted
+source data and actual Renderer receipt facts in publication order, before
+storage returns. Keep GPU state in receiver-local planning/submission.
 Bootstrap `configureRenderer` owns pipeline/post-effect installation;
 `executionBootstrapHost.renderTargets` owns source target descriptions. Follow
 [Render publication](../../packages/render/README.md#render-publication) for
@@ -753,7 +1033,7 @@ Rules:
 - Share prepared buffer refs between compute and raster; do not duplicate handle registries.
 - Include topology changes in the contribution signature; compile and atomically replace the last-known-good graph next frame.
 - Missing capabilities require structured errors or an explicit fallback lane; never silently submit invalid compute.
-- Multi-World worldId is a renderer-local attachment identity, not this frame's worlds[] index. Reattachment after detach must get a new generation.
+- One Renderer consumes one source World. Caches belong to that Renderer; source epochs, full entity handles and device/target generations still guard replacement and retirement.
 
 Prepared-compute VFX authoring: forgeax-engine-vfx. Builder/error contracts: packages/render-graph/README.md.
 
@@ -966,9 +1246,14 @@ substitute bind-pose geometry to admit an effect. GPU VFX
 retains its independent compute/indirect capability gate; route CPU-updated
 particle sprites through `Points` rather than treating them as GPU VFX fallback.
 
-Render benchmark evidence contracts under `bench/*/__tests__/*.test.mjs` use
-`node:test`; run them with the CI guide's bounded Node command. Keep them out of
-the package Vitest collector without dropping their CI owner.
+## Editor assistance
+
+The built-in editor assistance Feature consumes the single source frame. Use
+`editorAssistance(world)` for editor selection and bounded geometry contributions;
+ordinary games leave it disabled. It owns no helper World or entity. Author
+Outline remains unchanged. View controls use the App target tools; projection,
+asset versions, GPU resources and submitted-frame picking remain Engine-owned.
+See the Render README's Editor assistance contract before extending its inputs.
 
 ## Portable temporal antialiasing
 

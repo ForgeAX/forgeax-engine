@@ -6,6 +6,8 @@ import browserLaunch from '../../scripts/ci/browser-launch.json' with { type: 'j
 // This document-local DOM gate needs a real browser, but no renderer shaders or asset cook.
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
+  // Transform under the shared compiler policy; tsc owns project references.
+  tsconfig: fileURLToPath(new URL('../../tsconfig.base.json', import.meta.url)),
   server: { fs: { allow: [fileURLToPath(new URL('../..', import.meta.url))] } },
   test: {
     name: 'ui-blitz-browser',

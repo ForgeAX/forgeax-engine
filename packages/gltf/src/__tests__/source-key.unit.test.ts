@@ -139,6 +139,14 @@ describe('glTF producer sourceKey', () => {
       { guid: '01928000-7c00-7000-8000-000000000004', sourceKey: 'mesh:Hero' },
       { guid: '01928000-7c00-7000-8000-000000000005', sourceKey: 'mesh:Body' },
     ]);
+    expect(new Set(result.value.subAssets.map((entry) => entry.guid)).size).toBe(3);
+    const created = result.value.subAssets[0];
+    const firstExisting = existing.subAssets[0];
+    const secondExisting = existing.subAssets[1];
+    if (!created || !firstExisting || !secondExisting)
+      throw new Error('Expected all source-key fixtures');
+    expect(created.guid).not.toBe(firstExisting.guid);
+    expect(created.guid).not.toBe(secondExisting.guid);
   });
 
   it('reuses an anonymous semantic kind key when its sourceIndex changes', () => {

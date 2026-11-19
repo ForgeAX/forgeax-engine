@@ -82,11 +82,7 @@ it('keeps shared GPU material edits free of per-entity validation and selector a
     for (let frame = 0; frame < 3; frame++) {
       if (frame === 2) assets.update(material, { values: { roughness: 0.2 } }).unwrap();
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
     }
     expect(errors).toEqual([]);
@@ -101,11 +97,7 @@ it('keeps shared GPU material edits free of per-entity validation and selector a
     ] as const) {
       assets.update(material, { values: { transmission, roughness } }).unwrap();
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
       if (drawn.value !== undefined) {
         const completed = await drawn.value.completed;

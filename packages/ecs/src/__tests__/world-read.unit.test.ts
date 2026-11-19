@@ -148,4 +148,51 @@ describe('World semantic read seam', () => {
     expect(read.getArrayLength(last, values, 'dynamic')).toBe(0);
     expect(read.getArrayElement(last, values, 'dynamic', 0)).toBeUndefined();
   });
+
+  it('reads per-entity change epochs and the global mutation epoch without writes', () => {
+    const values = defineComponent('WorldReadChangedEpoch', { scalar: 'f32' });
+    const world = new World();
+    const read = world[worldRead];
+    const watched = world.spawn({ component: values, data: { scalar: 1 } }).unwrap();
+    const other = world.spawn({ component: values, data: { scalar: 2 } }).unwrap();
+    const before = read.getChangedEpoch(watched, values);
+    const mutation = read.getMutationEpoch();
+    expect(read.getChangedEpoch(watched, values)).toBe(before);
+    expect(read.getMutationEpoch()).toBe(mutation);
+    expect(before).toBeGreaterThan(0);
+
+    world.set(watched, values, { scalar: 3 }).unwrap();
+    expect(read.getChangedEpoch(watched, values)).toBeGreaterThan(before);
+    expect(read.getChangedEpoch(other, values)).toBe(read.getChangedEpoch(other, values));
+    expect(read.getMutationEpoch()).toBeGreaterThan(mutation);
+    expect(read.getComponentEpoch(values)).toBeGreaterThan(before);
+  });
+
+  it('streams removals and despawns per reader for two updates', () => {
+    const tag = defineComponent('WorldReadRemovedTag', { scalar: 'f32' });
+    const world = new World();
+    const read = world[worldRead];
+    const first = { value: 0 };
+    const second = { value: 0 };
+    const seen = (cursor: { value: number }) => {
+      const out: number[] = [];
+      read.readRemoved(tag, cursor, (entity) => out.push(entity as number));
+      return out;
+    };
+    expect(seen(first)).toEqual([]);
+    const removed = world.spawn({ component: tag, data: { scalar: 1 } }).unwrap();
+    const despawned = world.spawn({ component: tag, data: { scalar: 2 } }).unwrap();
+    world.removeComponent(removed, tag).unwrap();
+    world.despawn(despawned).unwrap();
+    expect(seen(first)).toEqual([removed as number, despawned as number]);
+    expect(seen(first)).toEqual([]);
+    world.update(0).unwrap();
+    const late = world.spawn({ component: tag, data: { scalar: 3 } }).unwrap();
+    world.despawn(late).unwrap();
+    expect(seen(second)).toEqual([removed as number, despawned as number, late as number]);
+    expect(seen(first)).toEqual([late as number]);
+    world.update(0).unwrap();
+    world.update(0).unwrap();
+    expect(seen({ value: 0 })).toEqual([]);
+  });
 });

@@ -5,8 +5,16 @@ import { assetLoadCancelled as cancelled, waitForAsset } from './wait-for-asset.
 
 interface AssetGraphOptions<
   P extends { readonly value: unknown; readonly refs: readonly string[] },
+  S,
 > {
-  readonly read: (guid: string, signal: AbortSignal) => Promise<Result<P, AssetLoadError>>;
+  /** `scope` lives for one closure load and is shared by every read in it. */
+  readonly read: (
+    guid: string,
+    signal: AbortSignal,
+    scope: S,
+  ) => Promise<Result<P, AssetLoadError>>;
+  /** Opens the per-load scope; reads without shared state may omit it. */
+  readonly openScope?: () => S;
   readonly maxConcurrentReads?: number;
 }
 
@@ -66,8 +74,12 @@ function freezeSnapshot(snapshot: AssetGraphSnapshot): AssetGraphSnapshot {
   });
 }
 
-export class AssetGraph<P extends { readonly value: unknown; readonly refs: readonly string[] }> {
-  private readonly read: AssetGraphOptions<P>['read'];
+export class AssetGraph<
+  P extends { readonly value: unknown; readonly refs: readonly string[] },
+  S = undefined,
+> {
+  private readonly read: AssetGraphOptions<P, S>['read'];
+  private readonly openScope: () => S;
   private readonly limit: number;
   private readonly ready = new Map<string, P>();
   private readonly forward = new Map<string, Set<string>>();
@@ -90,8 +102,9 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
   };
   private currentSnapshot: AssetGraphSnapshot | undefined;
 
-  constructor(options: AssetGraphOptions<P>) {
+  constructor(options: AssetGraphOptions<P, S>) {
     this.read = options.read;
+    this.openScope = options.openScope ?? (() => undefined as S);
     this.limit = Math.max(1, Math.floor(options.maxConcurrentReads ?? 8));
     this.currentSnapshot = freezeSnapshot({
       epoch: 0,
@@ -103,7 +116,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     });
   }
 
-  load(guid: string, signal = new AbortController().signal): Promise<GraphResult<P>> {
+  load(guid: string, signal = new AbortController().signal, scope?: S): Promise<GraphResult<P>> {
     const canonicalGuid = guid.toLowerCase();
     if (this.disposed) return Promise.resolve(err(disposed()));
     if (signal.aborted) return Promise.resolve(err(cancelled(canonicalGuid)));
@@ -126,7 +139,9 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     const ticketEpoch = this.epoch;
     const current = () => this.requests.get(canonicalGuid) === request;
     const request = Promise.resolve()
-      .then(() => this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current))
+      .then(() =>
+        this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current, scope),
+      )
       .finally(() => {
         if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
         this.publish();
@@ -214,10 +229,11 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     signal: AbortSignal,
     ticketEpoch: number,
     current: () => boolean,
+    scope = this.openScope(),
   ): Promise<GraphResult<P>> {
     const values = new Map<string, P>();
     const seen = new Map<string, number>();
-    const result = await this.visit(root, signal, seen, values, ticketEpoch, current);
+    const result = await this.visit(root, signal, seen, values, ticketEpoch, current, scope);
     if (this.disposed) return err(disposed());
     if (!current()) return err(superseded(root, ticketEpoch));
     if (!result.ok) return result;
@@ -239,12 +255,13 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     values: Map<string, P>,
     ticketEpoch: number,
     current: () => boolean,
+    scope: S,
   ): Promise<GraphResult<void>> {
     if (seen.has(guid)) return ok(undefined);
     const generation = this.generations.get(guid) ?? 0;
     seen.set(guid, generation);
     const cached = this.ready.get(guid);
-    const read = cached === undefined ? await this.readOnce(guid, signal) : ok(cached);
+    const read = cached === undefined ? await this.readOnce(guid, signal, scope) : ok(cached);
     if (!read.ok) return read;
     if (this.disposed) return err(disposed());
     if (!current() || generation !== (this.generations.get(guid) ?? 0))
@@ -253,7 +270,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     const references = (read.value as P & { readonly references?: 'eager' | 'deferred' })
       .references;
     for (const ref of references === 'deferred' ? [] : read.value.refs) {
-      const child = await this.visit(ref, signal, seen, values, ticketEpoch, current);
+      const child = await this.visit(ref, signal, seen, values, ticketEpoch, current, scope);
       if (!child.ok) {
         seen.delete(guid);
         return err({
@@ -267,14 +284,14 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     return ok(undefined);
   }
 
-  private readOnce(guid: string, signal: AbortSignal): Promise<GraphResult<P>> {
+  private readOnce(guid: string, signal: AbortSignal, scope: S): Promise<GraphResult<P>> {
     const existing = this.reads.get(guid);
     if (existing !== undefined) return existing;
     const request = this.withPermit(async () => {
       if (this.disposed) return err(disposed());
       if (signal.aborted) return err(cancelled(guid));
       try {
-        const result = await waitForAsset(this.read(guid, signal), signal, guid);
+        const result = await waitForAsset(this.read(guid, signal, scope), signal, guid);
         if (signal.aborted) return err(cancelled(guid));
         if (!result.ok)
           this.counters = { ...this.counters, readErrors: this.counters.readErrors + 1 };

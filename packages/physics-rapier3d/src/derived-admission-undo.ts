@@ -1,4 +1,9 @@
-import type { DerivedPhysicsMotion, DerivedPhysicsPublication } from '@forgeax/engine-physics';
+import type {
+  DerivedPhysicsMotion,
+  DerivedPhysicsPublication,
+  PhysicsVector,
+} from '@forgeax/engine-physics';
+import { allowedBodyVelocity } from './body-axis-locks.js';
 import type {
   DerivedBodyRecord,
   DerivedBodySource,
@@ -33,6 +38,7 @@ export interface DerivedAdmissionUndo {
   readonly old: DerivedBodyRecord | undefined;
   readonly automaticAdditionalMass: number;
   readonly automaticRecordMass: number | undefined;
+  readonly entityScale: PhysicsVector | undefined;
   readonly source: DerivedBodySource | undefined;
   readonly publication: DerivedPhysicsPublication | undefined;
   readonly colliders: readonly {
@@ -94,6 +100,8 @@ export function applyDerivedMotion(
   body: RapierRigidBody,
   motion: DerivedPhysicsMotion,
   lockRotation: boolean,
+  translationAxes = 7,
+  rotationAxes = 7,
 ): void {
   const currentCom = body.worldCom();
   const targetCom = motion.centerOfMass;
@@ -106,18 +114,14 @@ export function applyDerivedMotion(
     },
     true,
   );
-  body.setLinvel(
+  const linear = allowedBodyVelocity(
     { x: motion.linearVelocity[0], y: motion.linearVelocity[1], z: motion.linearVelocity[2] },
-    true,
+    translationAxes,
   );
-  body.setAngvel(
-    lockRotation
-      ? { x: 0, y: 0, z: 0 }
-      : {
-          x: motion.angularVelocity[0],
-          y: motion.angularVelocity[1],
-          z: motion.angularVelocity[2],
-        },
-    true,
+  const angular = allowedBodyVelocity(
+    { x: motion.angularVelocity[0], y: motion.angularVelocity[1], z: motion.angularVelocity[2] },
+    lockRotation ? 0 : rotationAxes,
   );
+  body.setLinvel(linear, true);
+  body.setAngvel(lockRotation ? { x: 0, y: 0, z: 0 } : angular, true);
 }

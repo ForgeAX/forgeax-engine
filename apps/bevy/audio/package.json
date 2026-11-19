@@ -49,13 +49,14 @@
     "@forgeax/engine-audio": "workspace:*",
     "@forgeax/engine-audio-webaudio": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-types": "workspace:*",
-    "@forgeax/engine-geometry": "workspace:*"
+    "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

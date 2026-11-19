@@ -32,6 +32,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
 import threePixels from './continuous-lines-three.json';
@@ -238,14 +239,7 @@ export async function verifyContinuousLines(options: {
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = renderValue(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: 'direct',
-        }),
-      );
+      const receipt = await drawReadyFrame(renderer, { source: lease, geometryLane: 'direct' });
       renderValue(await receipt.completed);
       frames++;
       await new Promise((resolve) => setTimeout(resolve, 0));

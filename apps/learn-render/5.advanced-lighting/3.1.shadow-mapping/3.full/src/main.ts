@@ -29,10 +29,7 @@ import { addFirstPersonSystem } from '../../../../../shared/src/learn-render-fir
 import { captureCanvasPixels } from '../../../../../shared/src/canvas-capture';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
-
 // 2. scene constants
-
-
 
 // Wood texture GUID from forgeax-engine-assets/learn-opengl/textures/wood.png.meta.json.
 const WOOD_GUID_STR = '019e3969-1d48-7c3b-ac24-6d68f457065f';
@@ -262,7 +259,7 @@ function installCaptureHook(app: App, world: App['world'], target: HTMLCanvasEle
   const lease = attached.value;
   win.__captureShadowFull = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     const observed = await renderer.observe(frame.value, { include: ['draws'] });
     if (!observed.ok) throw observed.error;

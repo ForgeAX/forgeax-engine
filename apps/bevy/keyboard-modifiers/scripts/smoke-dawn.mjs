@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { encodePng } from '@forgeax/engine-image/png';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { runSmokeAppFrames, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
@@ -60,7 +61,7 @@ const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(await buildEngi
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { Update } = await import('@forgeax/engine-ecs');
-const { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY } = await import('@forgeax/engine-input');
+const { InputFrameStartScan, INPUT_SNAPSHOT_RESOURCE_KEY } = await import('@forgeax/engine-input');
 const { buildKeyboardModifiersWorld, readKeyboardModifiersState, stepKeyboardModifiers } = await import(resolve(appRoot, 'src', 'keyboard-modifiers.ts'));
 const mockCanvas = { tagName: 'CANVAS', isConnected: true, width, height, getContext(kind) { if (kind !== 'webgpu') return null; return { configure(desc) { ensureRenderTarget(desc.device, desc.format ?? 'rgba8unorm'); }, unconfigure() {}, getCurrentTexture() { return ensureRenderTarget(sharedDevice, 'rgba8unorm'); } }; }, addEventListener() {}, removeEventListener() {} };
 const appResult = await createApp(mockCanvas, { input, platform: createSmokePlatform(mockCanvas) }, { shaderManifestUrl: manifestUrl });
@@ -71,7 +72,8 @@ const errors = [];
 subscribeSmokeErrors(app.renderer, (error) => errors.push(error));
 app.onError((error) => errors.push(error));
 buildKeyboardModifiersWorld(app.world);
-app.world.addSystem(Update, { name: 'bevy-keyboard-modifiers-read', after: [FRAME_START_SCAN_SYSTEM_NAME], queries: [], fn: (world) => stepKeyboardModifiers(world, world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)) });
+const systemToken1 = defineSystem({ name: 'bevy-keyboard-modifiers-read', after: [InputFrameStartScan], queries: [], fn: (world) => stepKeyboardModifiers(world, world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)) });
+app.world.addSystem(Update, systemToken1);
 const frames = await runSmokeAppFrames(app, () => {
   const callback = rafQueue.shift();
   if (!callback) return false;

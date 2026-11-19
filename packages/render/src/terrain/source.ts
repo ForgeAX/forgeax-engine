@@ -58,6 +58,39 @@ export interface TerrainDrawSection {
   readonly heights: Uint8Array;
 }
 
+/** Per-view geometric facts that remain valid for one exact accepted Terrain input. */
+export interface TerrainProjectionSectionFacts {
+  readonly lod: number;
+  readonly grid: number;
+  readonly neighbors: readonly number[];
+  readonly localAabb: readonly number[];
+  /** Current producer authority, checked before these facts may be reused. */
+  readonly materialSource: MaterialResource;
+  readonly materialSnapshot: MaterialResource['snapshot'];
+  readonly layerFrame: object | undefined;
+  readonly dispatch: readonly DispatchEntry[];
+}
+
+/** Candidate proof is carried by section rows and promoted only with that view's submit. */
+export interface TerrainProjectionFacts {
+  readonly world: RenderResourceScope;
+  readonly source: TerrainDrawSource;
+  readonly sourceVersion: number;
+  readonly handle: number;
+  readonly lod0Diameter: number;
+  readonly forcedLod: number;
+  readonly layer: number;
+  /** Copy of every matrix element: pose arrays may be mutated in place between frames. */
+  readonly transform: readonly number[];
+  /** position xyz, near, fov, projection, and orthographic top/bottom. */
+  readonly camera: readonly [number, number, number, number, number, string, number, number];
+  readonly shadowFamily: number;
+  readonly authorVisible: boolean | undefined;
+  readonly shadowCaster: false | undefined;
+  readonly shadowReceiver: false | undefined;
+  readonly sections: readonly TerrainProjectionSectionFacts[];
+}
+
 const rootMaterial = MaterialResource.from({ ...defaultMaterialSnapshot(), passes: [] });
 
 function fixedAsset(asset: TerrainAsset): TerrainDrawSource['asset'] {
@@ -79,7 +112,7 @@ function fixedSection(
   if (section === undefined || typeof section.heightTexture !== 'number')
     terrainSourceError('terrain-query-unavailable', 'section', 'an admitted Terrain section');
   const texture = world.resolveAsset<TextureAsset>(section.heightTexture).unwrap();
-  if (texture.kind !== 'texture' || texture.format !== 'rgba8unorm')
+  if (texture.kind !== 'texture' || texture.format !== 'rgba8unorm' || texture.data === undefined)
     terrainSourceError('terrain-query-unavailable', 'height', 'packed f32 height mip bytes');
   const n = asset.subsectionVertices;
   const atlas = terrainHeightAtlas(asset);
@@ -102,10 +135,17 @@ function fixedSection(
 
 /** Renderer-owned geometry projection; the existing source change stream drives path copies. */
 export class TerrainSourceCache {
-  private worlds = new WeakMap<RenderResourceScope, Map<number, TerrainDrawSource>>();
-
+  private source: RenderResourceScope | undefined;
+  private readonly roots = new Map<number, TerrainDrawSource>();
+  private rootsFor(source: RenderResourceScope): Map<number, TerrainDrawSource> {
+    if (this.source !== source) {
+      this.clear();
+      this.source = source;
+    }
+    return this.roots;
+  }
   resolve(world: RenderResourceScope, handle: AssetHandle<'terrain'>): TerrainDrawSource {
-    let roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     const cached = roots?.get(handle);
     if (cached !== undefined) return cached;
     const resolved = world.resolveAsset<TerrainAsset>(handle);
@@ -140,16 +180,12 @@ export class TerrainSourceCache {
       sectionCount: asset.sections.length,
       sections,
     };
-    if (roots === undefined) {
-      roots = new Map();
-      this.worlds.set(world, roots);
-    }
     roots.set(handle, result);
     return result;
   }
 
   adopt(world: RenderResourceScope, changes: readonly AssetChange[]): void {
-    const roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     if (roots === undefined) return;
     for (const change of changes) {
       const before = roots.get(change.handle);
@@ -202,10 +238,11 @@ export class TerrainSourceCache {
   }
 
   detach(world: RenderResourceScope): void {
-    this.worlds.delete(world);
+    if (this.source === world) this.clear();
   }
   clear(): void {
-    this.worlds = new WeakMap();
+    this.roots.clear();
+    this.source = undefined;
   }
 }
 
@@ -234,7 +271,6 @@ export function extractTerrainSources(
   world: World,
   _assets: AssetRegistry,
   _context: MaterialCookRasterContext | undefined,
-  worldId: number,
   renderables: RenderableSnapshot[],
   _dispatch: DispatchEntry[],
   selected?: ReadonlySet<number>,
@@ -301,7 +337,6 @@ export function extractTerrainSources(
       material: rootMaterial,
       materials: [rootMaterial],
       materialBindingSources: ['mesh-default'],
-      worldId,
       entityKey: row.entity,
       ...(authorVisible ? {} : { authorVisible: false }),
       ...(receive === 0 ? { shadowReceiver: false } : {}),

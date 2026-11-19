@@ -6,6 +6,8 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { err, type MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { copyPublishedMesh } from '../publication/mesh';
+import { beforePublishedMeshBufferWrite } from '../publication/mesh-buffer-ownership';
 import { worldRenderResources } from '../publication/resource-scope';
 import { editResidentMesh } from './managed-mesh-edit';
 
@@ -73,6 +75,30 @@ async function fixture() {
   };
   return { device, store, worlds, upload };
 }
+
+it('borrows publication-owned comparison bytes and rejects a changed source even at a real hash collision', async () => {
+  const { store, upload } = await fixture();
+  const source = copyPublishedMesh(mesh(new Uint32Array([16, 12, 22, 6, 21, 14])));
+  const first = upload(source);
+  const indices = source.indices;
+  assert(indices);
+  const owner = (buffer: unknown) => {
+    const result = (
+      store as unknown as { meshBufferOwners: WeakMap<object, { bytes: Uint32Array }> }
+    ).meshBufferOwners.get(buffer as object);
+    assert(result);
+    return result;
+  };
+  expect(owner(first.entry.vertexBuffer).bytes.buffer).toBe(source.vertices.buffer);
+  expect(owner(first.entry.indexBuffer).bytes.buffer).toBe(indices.buffer);
+  beforePublishedMeshBufferWrite(indices.buffer);
+  indices.set([3, 9, 8, 15, 13, 1]);
+  const collision = upload(mesh(new Uint32Array([3, 9, 8, 15, 13, 1]), 1));
+  expect(collision.entry.indexBuffer).not.toBe(first.entry.indexBuffer);
+  expect(owner(first.entry.indexBuffer).bytes.byteLength).toBe(0);
+  expect(first.entry.indexBuffer?.isDestroyed).toBe(false);
+  store.destroyAll();
+});
 
 it.each([
   'uint16',

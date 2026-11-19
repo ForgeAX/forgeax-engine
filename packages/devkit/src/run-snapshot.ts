@@ -122,6 +122,8 @@ interface PnpmContext {
   readonly lock: PnpmLockfile;
   readonly modules: PnpmModulesState;
   readonly proofs: Map<string, SnapshotProof>;
+  readonly snapshotKey?: string;
+  readonly sourceRoot?: string;
   readonly workspace?: {
     readonly state: PnpmWorkspaceState;
     readonly overrides: Readonly<Record<string, string>>;
@@ -338,24 +340,153 @@ function parsePnpmLockfile(bytes: Buffer): PnpmLockfile {
   return lock;
 }
 
-async function pnpmContext(
-  packageRootInput: string,
-  expectedPnpmVersion: string,
-): Promise<PnpmContext> {
-  const packageRoot = await realpath(packageRootInput);
+async function readPnpmWorkspace(
+  root: string,
+  lock: PnpmLockfile,
+  modules: PnpmModulesState,
+  proofs: Map<string, SnapshotProof>,
+): Promise<NonNullable<PnpmContext['workspace']>> {
+  let workspaceManifest: unknown;
+  let state: PnpmWorkspaceState;
+  try {
+    const workspacePath = join(root, 'pnpm-workspace.yaml');
+    const workspaceStatePath = join(root, 'node_modules', '.pnpm-workspace-state-v1.json');
+    const [workspaceBytes, workspaceStateBytes] = await Promise.all([
+      readProvenFile(proofs, workspacePath),
+      readProvenFile(proofs, workspaceStatePath),
+    ]);
+    workspaceManifest = parse(workspaceBytes.toString('utf8')) as unknown;
+    state = JSON.parse(workspaceStateBytes.toString('utf8')) as PnpmWorkspaceState;
+  } catch (cause) {
+    if (isDependencySourceChanged(cause)) throw cause;
+    throw dependencyClosureError(
+      'project-pnpm-workspace-state-missing',
+      'pnpm workspace patterns or installed workspace state are unavailable.',
+      {
+        root,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      },
+    );
+  }
+  const configuredPatterns = (workspaceManifest as { readonly packages?: unknown } | null)
+    ?.packages;
+  const patterns = configuredPatterns === undefined ? [] : configuredPatterns;
+  // pnpm 12's native writer may omit this optional setting. Installed
+  // project identities and lock locators remain the workspace authority.
+  const recordedPatterns = state.settings?.workspacePackagePatterns;
+  // A configuration-only workspace has an implicit root package. pnpm 12
+  // records that root as ['.']; explicit package selections remain exact.
+  const implicitRoot =
+    configuredPatterns === undefined &&
+    Array.isArray(recordedPatterns) &&
+    recordedPatterns.length === 1 &&
+    recordedPatterns[0] === '.';
+  if (
+    !Array.isArray(patterns) ||
+    patterns.some((pattern) => typeof pattern !== 'string') ||
+    (recordedPatterns !== undefined &&
+      (!Array.isArray(recordedPatterns) ||
+        (!implicitRoot && JSON.stringify(patterns) !== JSON.stringify(recordedPatterns))))
+  )
+    throw dependencyClosureError(
+      'project-pnpm-workspace-state-stale',
+      'pnpm installed workspace patterns do not match pnpm-workspace.yaml.',
+      {
+        root,
+      },
+    );
+  const configuredOverrides = pnpmOverrides(
+    (workspaceManifest as { readonly overrides?: unknown }).overrides,
+    root,
+  );
+  const lockedOverrides = pnpmOverrides(lock.overrides, root);
+  if (JSON.stringify(configuredOverrides) !== JSON.stringify(lockedOverrides))
+    throw dependencyClosureError(
+      'project-pnpm-overrides-mismatch',
+      'The installing workspace overrides differ from the project lockfile.',
+      { root },
+    );
+  if (Object.keys(configuredOverrides).length > 0) {
+    if (typeof modules.virtualStoreDir !== 'string')
+      throw dependencyClosureError(
+        'project-pnpm-overrides-mismatch',
+        'The overridden dependency graph has no installed virtual-store identity.',
+        { root },
+      );
+    const installedLockBytes = await readProvenFile(
+      proofs,
+      join(resolve(root, modules.virtualStoreDir), 'lock.yaml'),
+    );
+    const installedLock = parsePnpmLockfile(installedLockBytes);
+    if (
+      JSON.stringify(pnpmOverrides(installedLock.overrides, root)) !==
+        JSON.stringify(lockedOverrides) ||
+      JSON.stringify(installedLock.importers) !== JSON.stringify(lock.importers)
+    )
+      throw dependencyClosureError(
+        'project-pnpm-overrides-mismatch',
+        'The installed override graph or importers differ from the project lockfile.',
+        { root },
+      );
+  }
+  return { state, overrides: configuredOverrides };
+}
+
+async function pnpmRoots(packageRoot: string): Promise<{
+  readonly root: string | undefined;
+  readonly workspaceRoot: string | undefined;
+}> {
   let workspaceRoot: string | undefined;
   let lockRoot: string | undefined;
   for (let directory = packageRoot; ; directory = dirname(directory)) {
     if (lockRoot === undefined && (await pathIsFile(join(directory, 'pnpm-lock.yaml'))))
       lockRoot = directory;
     if (await pathIsFile(join(directory, 'pnpm-workspace.yaml'))) {
-      workspaceRoot = directory;
-      break;
+      if (
+        (await pathIsFile(join(directory, 'pnpm-lock.yaml'))) ||
+        (await pathIsFile(join(directory, 'node_modules/.modules.yaml')))
+      ) {
+        workspaceRoot = directory;
+        break;
+      }
+      const manifest = parse(await readFile(join(directory, 'pnpm-workspace.yaml'), 'utf8')) as {
+        readonly packages?: unknown;
+      } | null;
+      // Template policy files without an installation do not own source-workspace packages.
+      if (Array.isArray(manifest?.packages)) {
+        workspaceRoot = directory;
+        break;
+      }
     }
     const parent = dirname(directory);
     if (parent === directory) break;
   }
   const root = workspaceRoot ?? (lockRoot === packageRoot ? packageRoot : undefined);
+  return { root, workspaceRoot };
+}
+
+/** Require an Engine binding even when pnpm supplies the local specifier via an override. */
+export async function hasLocalEngineDependencyOverride(projectRoot: string): Promise<boolean> {
+  const { workspaceRoot } = await pnpmRoots(await realpath(projectRoot));
+  if (workspaceRoot === undefined) return false;
+  const manifest = parse(await readFile(join(workspaceRoot, 'pnpm-workspace.yaml'), 'utf8')) as {
+    readonly overrides?: unknown;
+  } | null;
+  return Object.entries(pnpmOverrides(manifest?.overrides, workspaceRoot)).some(
+    ([name, specifier]) =>
+      isEngineDependency(name) &&
+      (specifier.startsWith('link:') ||
+        specifier.startsWith('workspace:') ||
+        specifier.startsWith('file:')),
+  );
+}
+
+async function pnpmContext(
+  packageRootInput: string,
+  expectedPnpmVersion: string,
+): Promise<PnpmContext> {
+  const packageRoot = await realpath(packageRootInput);
+  const { root, workspaceRoot } = await pnpmRoots(packageRoot);
   if (root === undefined)
     throw dependencyClosureError(
       'project-pnpm-record-missing',
@@ -439,83 +570,7 @@ async function pnpmContext(
 
   let workspace: PnpmContext['workspace'];
   if (workspaceRoot !== undefined) {
-    let workspaceManifest: unknown;
-    let state: PnpmWorkspaceState;
-    try {
-      const workspacePath = join(root, 'pnpm-workspace.yaml');
-      const workspaceStatePath = join(root, 'node_modules', '.pnpm-workspace-state-v1.json');
-      const [workspaceBytes, workspaceStateBytes] = await Promise.all([
-        readProvenFile(proofs, workspacePath),
-        readProvenFile(proofs, workspaceStatePath),
-      ]);
-      workspaceManifest = parse(workspaceBytes.toString('utf8')) as unknown;
-      state = JSON.parse(workspaceStateBytes.toString('utf8')) as PnpmWorkspaceState;
-    } catch (cause) {
-      if (isDependencySourceChanged(cause)) throw cause;
-      throw dependencyClosureError(
-        'project-pnpm-workspace-state-missing',
-        'pnpm workspace patterns or installed workspace state are unavailable.',
-        {
-          root,
-          reason: cause instanceof Error ? cause.message : String(cause),
-        },
-      );
-    }
-    const configuredPatterns = (workspaceManifest as { readonly packages?: unknown } | null)
-      ?.packages;
-    const patterns = configuredPatterns === undefined ? [] : configuredPatterns;
-    // pnpm 12's native writer may omit this optional setting. Installed
-    // project identities and lock locators remain the workspace authority.
-    const recordedPatterns = state.settings?.workspacePackagePatterns;
-    if (
-      !Array.isArray(patterns) ||
-      patterns.some((pattern) => typeof pattern !== 'string') ||
-      (recordedPatterns !== undefined &&
-        (!Array.isArray(recordedPatterns) ||
-          JSON.stringify(patterns) !== JSON.stringify(recordedPatterns)))
-    )
-      throw dependencyClosureError(
-        'project-pnpm-workspace-state-stale',
-        'pnpm installed workspace patterns do not match pnpm-workspace.yaml.',
-        {
-          root,
-        },
-      );
-    const configuredOverrides = pnpmOverrides(
-      (workspaceManifest as { readonly overrides?: unknown }).overrides,
-      root,
-    );
-    const lockedOverrides = pnpmOverrides(lock.overrides, root);
-    if (JSON.stringify(configuredOverrides) !== JSON.stringify(lockedOverrides))
-      throw dependencyClosureError(
-        'project-pnpm-overrides-mismatch',
-        'The installing workspace overrides differ from the project lockfile.',
-        { root },
-      );
-    if (Object.keys(configuredOverrides).length > 0) {
-      if (typeof modules.virtualStoreDir !== 'string')
-        throw dependencyClosureError(
-          'project-pnpm-overrides-mismatch',
-          'The overridden dependency graph has no installed virtual-store identity.',
-          { root },
-        );
-      const installedLockBytes = await readProvenFile(
-        proofs,
-        join(resolve(root, modules.virtualStoreDir), 'lock.yaml'),
-      );
-      const installedLock = parsePnpmLockfile(installedLockBytes);
-      if (
-        JSON.stringify(pnpmOverrides(installedLock.overrides, root)) !==
-          JSON.stringify(lockedOverrides) ||
-        JSON.stringify(installedLock.importers) !== JSON.stringify(lock.importers)
-      )
-        throw dependencyClosureError(
-          'project-pnpm-overrides-mismatch',
-          'The installed override graph or importers differ from the project lockfile.',
-          { root },
-        );
-    }
-    workspace = { state, overrides: configuredOverrides };
+    workspace = await readPnpmWorkspace(root, lock, modules, proofs);
   }
   return {
     root,
@@ -534,6 +589,7 @@ function assertWorkspaceProject(
   manifest: Record<string, unknown>,
   dependency: string,
 ): void {
+  if (context.snapshotKey !== undefined && packageRoot === context.packageRoot) return;
   if (context.workspace === undefined) return;
   const installed = workspaceProject(context.workspace.state, packageRoot);
   if (
@@ -553,6 +609,10 @@ function assertWorkspaceProject(
         installedVersion: installed?.version ?? null,
       },
     );
+}
+
+function isEngineDependency(name: string): boolean {
+  return name === '@forgeax/engine' || name.startsWith('@forgeax/engine-');
 }
 
 function pnpmOverrides(value: unknown, root: string): Readonly<Record<string, string>> {
@@ -575,12 +635,18 @@ function pnpmOverrides(value: unknown, root: string): Readonly<Record<string, st
 
 function dependencySpecifier(context: PnpmContext, name: string, declared: string): string {
   const overrides = context.workspace?.overrides ?? {};
-  const selected = Object.hasOwn(overrides, name) ? overrides[name] : undefined;
-  if (selected === undefined) return declared;
-  // Only an unqualified, unconditional rule has a unique meaning without a
-  // second pnpm selector resolver. Never guess precedence against scoped rules.
+  const owner =
+    context.workspace === undefined
+      ? undefined
+      : workspaceProject(context.workspace.state, context.packageRoot)?.name;
+  const scoped = typeof owner === 'string' ? `${owner}>${name}` : undefined;
+  const selectedRule = scoped !== undefined && Object.hasOwn(overrides, scoped) ? scoped : name;
+  if (!Object.hasOwn(overrides, selectedRule)) return declared;
+  const selected = overrides[selectedRule] as string;
+  // Resolve only unambiguous exact selectors. Other matching selector shapes
+  // are left to pnpm and cannot be independently proven by this local doctor.
   const competing = Object.keys(overrides).some((selector) => {
-    if (selector === name) return false;
+    if (selector === selectedRule) return false;
     const target = selector.slice(selector.lastIndexOf('>') + 1).trim();
     return target === name || target.startsWith(`${name}@`);
   });
@@ -590,10 +656,28 @@ function dependencySpecifier(context: PnpmContext, name: string, declared: strin
       'This dependency override needs selector, removal, or catalog resolution that is not proven by the local doctor.',
       { root: context.root, dependency: name, declared, override: selected },
     );
-  return selected;
+  if (!selected.startsWith('link:./') && !selected.startsWith('link:../')) return selected;
+  const target = resolve(context.root, selected.slice('link:'.length));
+  return `link:${relative(context.packageRoot, target).split(sep).join('/') || '.'}`;
 }
 
 function lockEntry(context: PnpmContext, name: string, specifier: string): string {
+  if (context.snapshotKey !== undefined) {
+    const snapshot = context.lock.snapshots?.[context.snapshotKey] as
+      | {
+          readonly dependencies?: Record<string, unknown>;
+          readonly optionalDependencies?: Record<string, unknown>;
+        }
+      | undefined;
+    const locator = snapshot?.dependencies?.[name] ?? snapshot?.optionalDependencies?.[name];
+    if (typeof locator !== 'string')
+      throw dependencyClosureError(
+        'project-pnpm-dependency-mismatch',
+        'The installed file package dependency has no selected pnpm snapshot locator.',
+        { dependency: name, from: context.packageRoot, snapshot: context.snapshotKey },
+      );
+    return locator;
+  }
   const candidates = [
     context.importer.dependencies?.[name],
     context.importer.devDependencies?.[name],
@@ -805,25 +889,19 @@ async function verifyFileDependencyPlacement(
       'The installed virtual-store lock does not match the project lockfile.',
     );
 
-  const packageKey = `${name}@${locator}`;
-  const snapshotKeys = Object.keys(context.lock.snapshots ?? {}).filter(
-    (key) => key === packageKey || key.startsWith(`${packageKey}(`),
-  );
-  if (context.lock.packages?.[packageKey] === undefined || snapshotKeys.length !== 1)
+  const identity = pnpmLocatorIdentity(`${name}@${locator}`);
+  const packageKey = identity === undefined ? undefined : `${identity.name}@${identity.version}`;
+  const snapshotKey = `${name}@${locator}`;
+  if (
+    packageKey === undefined ||
+    context.lock.packages?.[packageKey] === undefined ||
+    !Object.hasOwn(context.lock.snapshots ?? {}, snapshotKey)
+  )
     fileDependencyUnverified(
       name,
       declaredTarget,
       actual.root,
-      'The current lockfile does not resolve one installed package snapshot for this locator.',
-    );
-
-  const snapshotKey = snapshotKeys[0];
-  if (snapshotKey === undefined)
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      'The current lockfile does not resolve one installed package snapshot for this locator.',
+      'The current lockfile does not resolve the declared installed package snapshot for this locator.',
     );
   const entryName = pnpmVirtualStoreEntry(snapshotKey, virtualStoreMaxLength);
   if (entryName === undefined)
@@ -889,157 +967,255 @@ async function packagePayloadMatches(source: string, installed: string): Promise
   return true;
 }
 
-async function verifyLocalDependency(
-  source: string,
-  name: string,
-  specifier: string,
-  actual: InstalledPackage,
-  actualManifest: Record<string, unknown>,
-  context: PnpmContext,
-  boundPackage?: string,
-): Promise<string> {
-  const locator = lockEntry(context, name, specifier);
-  if (specifier.startsWith('workspace:')) {
-    if (!locator.startsWith('link:'))
-      throw dependencyClosureError(
-        'project-workspace-locator-mismatch',
-        'A workspace dependency is not recorded as a pnpm workspace link.',
-        {
-          dependency: name,
-          from: source,
-          specifier,
-          locator,
-        },
-      );
-    if (context.workspace === undefined)
-      throw dependencyClosureError(
-        'project-workspace-state-missing',
-        'A workspace dependency has no normal pnpm workspace state.',
-        {
-          dependency: name,
-          from: source,
-        },
-      );
-    const target = await realpath(resolve(context.packageRoot, locator.slice('link:'.length)));
-    if (target !== actual.root || (boundPackage !== undefined && target !== boundPackage))
-      throw dependencyClosureError(
-        'project-workspace-locator-mismatch',
-        'The installed workspace package does not resolve to the lockfile and Engine binding target.',
-        {
-          dependency: name,
-          from: source,
-          locator,
-          installed: actual.root,
-          boundPackage: boundPackage ?? null,
-          target,
-        },
-      );
-    const targetManifest = await readPackageManifest(target);
-    if (targetManifest.name !== name)
-      throw dependencyClosureError(
-        'project-dependency-identity-mismatch',
-        'The workspace target package name does not match its requested name.',
-        {
-          dependency: name,
-          target,
-          actualName: targetManifest.name ?? null,
-        },
-      );
-    assertWorkspaceProject(context, target, targetManifest, name);
-    return target;
-  }
+interface DependencyPlacement {
+  readonly source: string;
+  readonly name: string;
+  readonly specifier: string;
+  readonly actual: InstalledPackage;
+  readonly actualManifest: Record<string, unknown>;
+  readonly context: PnpmContext;
+  readonly boundPackage: string | undefined;
+  readonly locator: string;
+}
 
-  if (specifier.startsWith('file:')) {
-    if (!locator.startsWith('file:'))
-      throw dependencyClosureError(
-        'project-file-locator-mismatch',
-        'A file dependency is not recorded as a pnpm file locator.',
-        {
-          dependency: name,
-          from: source,
-          specifier,
-          locator,
-        },
-      );
-    const declaredTarget = await realpath(
-      resolve(context.packageRoot, specifier.slice('file:'.length)),
+async function verifyLinkedDependency({
+  source,
+  name,
+  specifier,
+  actual,
+  context,
+  boundPackage,
+  locator,
+}: DependencyPlacement): Promise<string> {
+  if (context.snapshotKey !== undefined && isEngineDependency(name) && boundPackage === undefined)
+    throw dependencyClosureError(
+      'project-local-dependency',
+      'Local Engine packages require an explicit healthy Engine source binding.',
+      { dependencies: [name] },
     );
-    const targetStat = await stat(declaredTarget);
-    if (!targetStat.isDirectory())
-      throw dependencyClosureError(
-        'project-file-dependency-unsupported',
-        'Only file: directory dependencies are supported; archive inputs are not proven by this doctor leaf.',
-        {
-          dependency: name,
-          from: source,
-          target: declaredTarget,
-        },
-      );
-    const packageRecord = context.lock.packages?.[`${name}@${locator}`];
-    const resolution = packageRecord?.resolution;
-    if (resolution?.type !== 'directory' || typeof resolution.directory !== 'string')
-      throw dependencyClosureError(
-        'project-file-dependency-unsupported',
-        'The pnpm lockfile does not identify a file directory source for this dependency.',
-        {
-          dependency: name,
-          locator,
-          resolution: resolution ?? null,
-        },
-      );
-    const lockedTarget = await realpath(resolve(context.root, resolution.directory));
-    if (
-      lockedTarget !== declaredTarget ||
-      (boundPackage !== undefined && lockedTarget !== boundPackage)
-    )
-      throw dependencyClosureError(
-        'project-file-locator-mismatch',
-        'The file dependency source differs from its pnpm lock locator or Engine binding.',
-        {
-          dependency: name,
-          from: source,
-          specifier,
-          locator,
-          lockedTarget,
-          declaredTarget,
-          boundPackage: boundPackage ?? null,
-        },
-      );
-    const sourceManifest = await readPackageManifest(declaredTarget);
-    if (sourceManifest.name !== name || actualManifest.name !== name)
-      throw dependencyClosureError(
-        'project-dependency-identity-mismatch',
-        'The file dependency package name does not match its requested name.',
-        {
-          dependency: name,
-          declaredTarget,
-          actualName: actualManifest.name ?? null,
-          sourceName: sourceManifest.name ?? null,
-        },
-      );
-    if (actual.root !== declaredTarget) {
-      await verifyFileDependencyPlacement(context, name, locator, declaredTarget, actual);
-      if (!(await packagePayloadMatches(declaredTarget, actual.root)))
-        fileDependencyUnverified(
-          name,
-          declaredTarget,
-          actual.root,
-          'The installed package payload differs from its declared directory source.',
-        );
-    }
-    if (boundPackage !== undefined && declaredTarget !== boundPackage)
-      throw dependencyClosureError(
-        'project-file-locator-mismatch',
-        'The file dependency does not resolve to the selected Engine binding.',
-        {
-          dependency: name,
-          declaredTarget,
-          boundPackage,
-        },
-      );
-    return boundPackage ?? actual.root;
+  if (!locator.startsWith('link:'))
+    throw dependencyClosureError(
+      'project-pnpm-dependency-mismatch',
+      'A linked dependency is not recorded as a pnpm link locator.',
+      { dependency: name, from: source, specifier, locator },
+    );
+  let declaredTarget: string;
+  let lockedTarget: string;
+  try {
+    // Snapshot links are relative to the install root, unlike importer links.
+    lockedTarget = await realpath(
+      resolve(
+        context.snapshotKey === undefined ? context.packageRoot : context.root,
+        locator.slice('link:'.length),
+      ),
+    );
+    declaredTarget = specifier.startsWith('link:')
+      ? await realpath(
+          resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('link:'.length)),
+        )
+      : lockedTarget;
+  } catch (cause) {
+    throw dependencyClosureError(
+      'project-dependency-link-unresolved',
+      'The declared or locked dependency link target is unavailable.',
+      {
+        dependency: name,
+        from: source,
+        specifier,
+        locator,
+        cause: cause instanceof Error ? cause.message : String(cause),
+      },
+    );
   }
+  if (
+    !(await lstat(actual.path)).isSymbolicLink() ||
+    declaredTarget !== lockedTarget ||
+    actual.root !== declaredTarget ||
+    (boundPackage !== undefined && declaredTarget !== boundPackage)
+  )
+    throw dependencyClosureError(
+      'project-dependency-identity-mismatch',
+      'The installed symbolic link must match its declaration, pnpm locator and Engine binding.',
+      {
+        dependency: name,
+        from: source,
+        specifier,
+        locator,
+        declaredTarget,
+        lockedTarget,
+        installed: actual.root,
+        boundPackage: boundPackage ?? null,
+      },
+    );
+  return declaredTarget;
+}
 
+async function verifyWorkspaceDependency({
+  source,
+  name,
+  specifier,
+  actual,
+  context,
+  boundPackage,
+  locator,
+}: DependencyPlacement): Promise<string> {
+  if (!locator.startsWith('link:'))
+    throw dependencyClosureError(
+      'project-workspace-locator-mismatch',
+      'A workspace dependency is not recorded as a pnpm workspace link.',
+      {
+        dependency: name,
+        from: source,
+        specifier,
+        locator,
+      },
+    );
+  if (context.workspace === undefined)
+    throw dependencyClosureError(
+      'project-workspace-state-missing',
+      'A workspace dependency has no normal pnpm workspace state.',
+      {
+        dependency: name,
+        from: source,
+      },
+    );
+  const target = await realpath(
+    resolve(
+      context.snapshotKey === undefined ? context.packageRoot : context.root,
+      locator.slice('link:'.length),
+    ),
+  );
+  if (target !== actual.root || (boundPackage !== undefined && target !== boundPackage))
+    throw dependencyClosureError(
+      'project-workspace-locator-mismatch',
+      'The installed workspace package does not resolve to the lockfile and Engine binding target.',
+      {
+        dependency: name,
+        from: source,
+        locator,
+        installed: actual.root,
+        boundPackage: boundPackage ?? null,
+        target,
+      },
+    );
+  const targetManifest = await readPackageManifest(target);
+  if (targetManifest.name !== name)
+    throw dependencyClosureError(
+      'project-dependency-identity-mismatch',
+      'The workspace target package name does not match its requested name.',
+      {
+        dependency: name,
+        target,
+        actualName: targetManifest.name ?? null,
+      },
+    );
+  assertWorkspaceProject(context, target, targetManifest, name);
+  return target;
+}
+
+async function verifyFileDependency({
+  source,
+  name,
+  specifier,
+  actual,
+  actualManifest,
+  context,
+  boundPackage,
+  locator,
+}: DependencyPlacement): Promise<string> {
+  if (!locator.startsWith('file:'))
+    throw dependencyClosureError(
+      'project-file-locator-mismatch',
+      'A file dependency is not recorded as a pnpm file locator.',
+      {
+        dependency: name,
+        from: source,
+        specifier,
+        locator,
+      },
+    );
+  const declaredTarget = await realpath(
+    resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('file:'.length)),
+  );
+  const targetStat = await stat(declaredTarget);
+  if (!targetStat.isDirectory())
+    throw dependencyClosureError(
+      'project-file-dependency-unsupported',
+      'Only file: directory dependencies are supported; archive inputs are not proven by this doctor leaf.',
+      {
+        dependency: name,
+        from: source,
+        target: declaredTarget,
+      },
+    );
+  const identity = pnpmLocatorIdentity(`${name}@${locator}`);
+  const packageRecord =
+    identity === undefined
+      ? undefined
+      : context.lock.packages?.[`${identity.name}@${identity.version}`];
+  const resolution = packageRecord?.resolution;
+  if (resolution?.type !== 'directory' || typeof resolution.directory !== 'string')
+    throw dependencyClosureError(
+      'project-file-dependency-unsupported',
+      'The pnpm lockfile does not identify a file directory source for this dependency.',
+      {
+        dependency: name,
+        locator,
+        resolution: resolution ?? null,
+      },
+    );
+  const lockedTarget = await realpath(resolve(context.root, resolution.directory));
+  if (
+    lockedTarget !== declaredTarget ||
+    (boundPackage !== undefined && lockedTarget !== boundPackage)
+  )
+    throw dependencyClosureError(
+      'project-file-locator-mismatch',
+      'The file dependency source differs from its pnpm lock locator or Engine binding.',
+      {
+        dependency: name,
+        from: source,
+        specifier,
+        locator,
+        lockedTarget,
+        declaredTarget,
+        boundPackage: boundPackage ?? null,
+      },
+    );
+  const sourceManifest = await readPackageManifest(declaredTarget);
+  if (sourceManifest.name !== name || actualManifest.name !== name)
+    throw dependencyClosureError(
+      'project-dependency-identity-mismatch',
+      'The file dependency package name does not match its requested name.',
+      {
+        dependency: name,
+        declaredTarget,
+        actualName: actualManifest.name ?? null,
+        sourceName: sourceManifest.name ?? null,
+      },
+    );
+  if (actual.root !== declaredTarget) {
+    await verifyFileDependencyPlacement(context, name, locator, declaredTarget, actual);
+    if (!(await packagePayloadMatches(declaredTarget, actual.root)))
+      fileDependencyUnverified(
+        name,
+        declaredTarget,
+        actual.root,
+        'The installed package payload differs from its declared directory source.',
+      );
+  }
+  return boundPackage ?? actual.root;
+}
+
+async function verifyRegistryDependency({
+  name,
+  specifier,
+  actual,
+  actualManifest,
+  context,
+  boundPackage,
+  locator,
+}: DependencyPlacement): Promise<string> {
   const resolvedVersion = locator.split('(')[0];
   if (typeof actualManifest.version !== 'string' || resolvedVersion !== actualManifest.version)
     throw dependencyClosureError(
@@ -1071,6 +1247,22 @@ async function verifyLocalDependency(
   await assertPublicPackageExports(actual.root);
   await rememberEngineRuntimeProof(context.proofs, actual.root);
   return boundPackage ?? actual.root;
+}
+
+async function verifyLocalDependency(
+  dependency: Omit<DependencyPlacement, 'locator'>,
+): Promise<string> {
+  const { context, name, specifier } = dependency;
+  const locator = lockEntry(context, name, specifier);
+  const placement = { ...dependency, locator };
+  if (
+    specifier.startsWith('link:') ||
+    (context.snapshotKey !== undefined && locator.startsWith('link:'))
+  )
+    return verifyLinkedDependency(placement);
+  if (specifier.startsWith('workspace:')) return verifyWorkspaceDependency(placement);
+  if (specifier.startsWith('file:')) return verifyFileDependency(placement);
+  return verifyRegistryDependency(placement);
 }
 
 async function installedPackage(from: string, name: string): Promise<InstalledPackage | undefined> {
@@ -1265,7 +1457,15 @@ async function planSnapshot(
           'The linked package has no importer in its installing pnpm lockfile.',
           { packageRoot: canonical, root: installedBy.root, importer: importerKey },
         );
-      const context = { ...installedBy, packageRoot: canonical, importer };
+      const context: PnpmContext = {
+        root: installedBy.root,
+        packageRoot: canonical,
+        importer,
+        lock: installedBy.lock,
+        modules: installedBy.modules,
+        proofs: installedBy.proofs,
+        ...(installedBy.workspace === undefined ? {} : { workspace: installedBy.workspace }),
+      };
       contexts.set(canonical, context);
       return context;
     }
@@ -1300,11 +1500,110 @@ async function planSnapshot(
       if (!omitted.has(name)) await tree(join(canonical, name), join(target, name), next);
     }
   }
+  function peerFromLink(
+    consumer: PnpmContext | undefined,
+    name: string,
+    specifier: string,
+  ): { context: PnpmContext; specifier: string } | undefined {
+    if (consumer === undefined || specifier !== '*' || !isEngineDependency(name)) return undefined;
+    const entry =
+      consumer.importer.dependencies?.[name] ?? consumer.importer.peerDependencies?.[name];
+    return typeof entry?.specifier === 'string'
+      ? { context: consumer, specifier: entry.specifier }
+      : undefined;
+  }
+
+  async function proveDependencyPlacement(
+    context: PnpmContext | undefined,
+    name: string,
+    specifier: string,
+    actual: InstalledPackage,
+    actualManifest: Record<string, unknown>,
+    boundPackage: string | undefined,
+    source: string,
+    installed: string,
+  ): Promise<{ installed: string; context: PnpmContext | undefined }> {
+    const alias = npmAliasTarget(specifier);
+    const enginePackage = isEngineDependency(name);
+    // Published registry bundles own their nested aliases; only project/workspace
+    // importers have pnpm placement records in this installation.
+    if (specifier.startsWith('npm:') && context !== undefined) {
+      if (alias === undefined || alias.name !== actualManifest.name)
+        throw dependencyClosureError(
+          'project-dependency-identity-mismatch',
+          'The npm alias target does not match the installed package manifest.',
+          {
+            dependency: name,
+            from: source,
+            specifier,
+            installed: actual.root,
+            actualName: actualManifest.name ?? null,
+          },
+        );
+      const locator = lockEntry(context, name, specifier);
+      await verifyNpmAliasPlacement(context, name, alias.name, locator, actual, actualManifest);
+    } else if (
+      specifier.startsWith('workspace:') ||
+      specifier.startsWith('file:') ||
+      specifier.startsWith('link:') ||
+      boundPackage !== undefined ||
+      (enginePackage && context !== undefined)
+    ) {
+      context ??= await contextFor(source);
+      const sourceManifest = await readPackageManifest(context.packageRoot);
+      assertWorkspaceProject(context, context.packageRoot, sourceManifest, name);
+      installed = await verifyLocalDependency({
+        source: context.packageRoot,
+        name,
+        specifier,
+        actual,
+        actualManifest,
+        context,
+        boundPackage,
+      });
+      if (
+        specifier.startsWith('file:') &&
+        boundPackage === undefined &&
+        installed === actual.root
+      ) {
+        const snapshotKey = `${name}@${lockEntry(context, name, specifier)}`;
+        const sourceRoot = await realpath(
+          resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('file:'.length)),
+        );
+        if (installed !== sourceRoot)
+          contexts.set(installed, {
+            ...context,
+            packageRoot: installed,
+            importer: {},
+            snapshotKey,
+            sourceRoot,
+          });
+      }
+    }
+    return { installed, context };
+  }
+  function requireLocalEngineBinding(name: string, specifier: string): void {
+    if (
+      options.verifyLocalDependencies &&
+      binding === null &&
+      isEngineDependency(name) &&
+      (specifier.startsWith('workspace:') ||
+        specifier.startsWith('file:') ||
+        specifier.startsWith('link:'))
+    )
+      throw dependencyClosureError(
+        'project-local-dependency',
+        'Local Engine packages require an explicit healthy Engine source binding.',
+        { dependencies: [name] },
+      );
+  }
+
   async function dependencies(
     source: string,
     target: string,
     project = false,
     installedBy?: PnpmContext,
+    linkConsumer?: PnpmContext,
   ): Promise<void> {
     const manifest = packageManifest(
       JSON.parse(await readFile(join(source, 'package.json'), 'utf8')),
@@ -1325,7 +1624,10 @@ async function planSnapshot(
       ...manifest.optionalDependencies,
     };
     let context: PnpmContext | undefined;
-    if (options.verifyLocalDependencies && (project || installedBy !== undefined)) {
+    if (
+      options.verifyLocalDependencies &&
+      (project || installedBy !== undefined || contexts.has(source))
+    ) {
       context = await contextFor(source, installedBy);
       assertWorkspaceProject(context, context.packageRoot, manifest, '@project');
     }
@@ -1345,18 +1647,11 @@ async function planSnapshot(
         context === undefined
           ? declaredSpecifier
           : dependencySpecifier(context, name, declaredSpecifier);
-      const enginePackage = name === '@forgeax/engine' || name.startsWith('@forgeax/engine-');
-      if (
-        options.verifyLocalDependencies &&
-        binding === null &&
-        enginePackage &&
-        (specifier.startsWith('workspace:') || specifier.startsWith('file:'))
-      )
-        throw dependencyClosureError(
-          'project-local-dependency',
-          'Local Engine packages require an explicit healthy Engine source binding.',
-          { dependencies: [name] },
-        );
+      const peer =
+        specifier === manifest.peerDependencies?.[name]
+          ? peerFromLink(linkConsumer, name, specifier)
+          : undefined;
+      requireLocalEngineBinding(name, specifier);
       const boundPackage = boundPackages.get(name);
       const actual = await installedPackage(source, name);
       if (actual === undefined) {
@@ -1394,42 +1689,18 @@ async function planSnapshot(
               actualName: actualManifest.name ?? null,
             },
           );
-        // Published registry bundles own their nested aliases; only project/workspace
-        // importers have pnpm placement records in this installation.
-        if (specifier.startsWith('npm:') && context !== undefined) {
-          if (alias === undefined || alias.name !== actualManifest.name)
-            throw dependencyClosureError(
-              'project-dependency-identity-mismatch',
-              'The npm alias target does not match the installed package manifest.',
-              {
-                dependency: name,
-                from: source,
-                specifier,
-                installed: actual.root,
-                actualName: actualManifest.name ?? null,
-              },
-            );
-          const locator = lockEntry(context, name, specifier);
-          await verifyNpmAliasPlacement(context, name, alias.name, locator, actual, actualManifest);
-        } else if (
-          specifier.startsWith('workspace:') ||
-          specifier.startsWith('file:') ||
-          boundPackage !== undefined ||
-          (enginePackage && context !== undefined)
-        ) {
-          context ??= await contextFor(source);
-          const sourceManifest = await readPackageManifest(context.packageRoot);
-          assertWorkspaceProject(context, context.packageRoot, sourceManifest, name);
-          installed = await verifyLocalDependency(
-            context.packageRoot,
-            name,
-            specifier,
-            actual,
-            actualManifest,
-            context,
-            boundPackage,
-          );
-        }
+        const placement = await proveDependencyPlacement(
+          peer?.context ?? context,
+          name,
+          peer?.specifier ?? specifier,
+          actual,
+          actualManifest,
+          boundPackage,
+          source,
+          installed,
+        );
+        installed = placement.installed;
+        if (peer === undefined) context = placement.context;
       }
       let destination = packages.get(installed);
       const existing = destination !== undefined;
@@ -1462,6 +1733,7 @@ async function planSnapshot(
           options.verifyLocalDependencies && specifier.startsWith('workspace:')
             ? context
             : undefined,
+          options.verifyLocalDependencies && specifier.startsWith('link:') ? context : undefined,
         );
       }
     }

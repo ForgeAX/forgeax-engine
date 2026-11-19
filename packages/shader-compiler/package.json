@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
+    "./program": {
+      "types": "./dist/program.d.ts",
+      "import": "./dist/program.mjs"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.mjs",

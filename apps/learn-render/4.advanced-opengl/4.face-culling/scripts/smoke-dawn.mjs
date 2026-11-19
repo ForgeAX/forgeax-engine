@@ -297,11 +297,7 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

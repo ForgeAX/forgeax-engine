@@ -145,7 +145,11 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
         }
         (await recorder.frameBoundary()).unwrap();
         const tape = (await captured).unwrap().bytes;
-        const model = buildFrameModel(decodeTape(tape).unwrap());
+        const decoded = decodeTape(tape).unwrap();
+        const model = buildFrameModel(decoded);
+        expect(
+          decoded.events.filter((event) => event.kind === 'copyTextureToTexture'),
+        ).toHaveLength(0);
         const directory = process.env.FORGEAX_RAY_EVIDENCE;
         if (directory) {
           await mkdir(directory, { recursive: true });

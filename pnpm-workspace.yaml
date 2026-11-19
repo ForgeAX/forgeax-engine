@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "apps/*"
+  - "apps/water/*"
   - "apps/showcase/*"
   - "apps/hello/*"
   - "apps/perf/*"
@@ -43,11 +44,15 @@ patchedDependencies:
   vitest@4.1.12: patches/vitest@4.1.12.patch
 
 overrides:
-  "@hono/node-server": "2.1.3"
+  # These links keep the private demo runnable without requiring its assets in SDK source installs.
+  "@forgeax/app-vc-ue5>@forgeax-assets/ue-volumetric-clouds": "link:./forgeax-engine-assets/demo-assets/volumetric-clouds/sample-ue"
+  "@forgeax/app-vc-ue5>@forgeax-assets/volumetric-clouds": "link:./forgeax-engine-assets/demo-assets/volumetric-clouds"
+  "@hono/node-server": "2.1.6"
   body-parser: "^2.4.0"
   fast-uri: "^3.1.9"
   follow-redirects: "^1.16.2"
   glob: "^14.0.2"
+  hono: "4.13.18"
   joi: "^18.3.1"
   minimatch: "^11.0.1"
   qs: "^6.16.1"

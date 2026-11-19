@@ -15,7 +15,11 @@ describe('workspace modeling operations', () => {
   }, async () => {
     const backend = await createBackendHost({});
     const provider: EngineWorkspaceProvider = {
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root, generation }) => ({
+        project: { id: root, root },
+        status: { phase: 'preparing', sessionId: `model:${generation}`, generation },
+        subscribeStatus: () => () => {},
+      }),
       closeProject() {},
       listAssets: () => [],
       openPreview() {

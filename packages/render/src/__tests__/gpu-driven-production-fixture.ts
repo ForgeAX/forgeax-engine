@@ -176,7 +176,6 @@ export function snapshot(entityKey: number, assetHandle: number): RenderableSnap
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -218,7 +217,6 @@ export function withoutPrepared(
 export function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -295,7 +293,7 @@ export function admitGpuFixture(
     if (slot === undefined) continue;
     dispatch.bind(slot.slot, slot.snapshot);
     const mesh = input.meshBySlot?.get(slot.slot);
-    if (mesh !== undefined) meshes.set(`${slot.worldId}:${slot.snapshot.assetHandle}`, mesh);
+    if (mesh !== undefined) meshes.set(`${slot.snapshot.assetHandle}`, mesh);
   }
   const slotOwner = new SceneSlots();
   for (const slot of slots) setSceneRow(slotOwner, slot.slot, slot);
@@ -330,7 +328,7 @@ export function admitGpuFixture(
   for (const batch of input.scene?.plan.batches ?? []) {
     const binding = batch.binding;
     if (binding === undefined) throw new Error('Missing shared fixture binding');
-    const mesh = meshes.get(`${binding.worldId}:${binding.assetHandle}`);
+    const mesh = meshes.get(`${binding.assetHandle}`);
     if (mesh !== undefined) meshByBinding.set(binding, mesh);
   }
   return {

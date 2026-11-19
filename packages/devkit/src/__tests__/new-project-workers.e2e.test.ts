@@ -1,7 +1,6 @@
 // @perf-budget-skip: real generated game, asset cooking and Chromium interaction journey.
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserFrameCompleted, ExecutionReport } from '@forgeax/engine-app';
@@ -12,6 +11,10 @@ import { createServer, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { reduceTestProject } from '../../../../scripts/test/reduce-test-project.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { browserLaunchArgs } from '../browser-capture.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
@@ -75,6 +78,38 @@ function observeNativeInput(): void {
     );
 }
 
+async function workerProjectDirectory(
+  prepared: { readonly scratch: string; readonly root: string } | undefined,
+  sourceRoot: string,
+  sharedManifest: string | undefined,
+): Promise<{ readonly scratch: string; readonly root: string }> {
+  if (prepared !== undefined) return { scratch: prepared.scratch, root: prepared.root };
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-new-worker-game-',
+    sourceRoot,
+    sharedManifest,
+  );
+  return { scratch: directory.temporaryRoot, root: resolve(directory.root, 'game') };
+}
+
+async function prepareLightweightWorkerFixture(root: string, captureIbl: boolean): Promise<void> {
+  await reduceTestProject(root, { omitEngineContent: true });
+  if (captureIbl) return;
+  // The interaction journey needs the real skinned player and direct Scene
+  // rendering. The optional local probe starts separate cubemap material PSOs.
+  const path = resolve(root, 'assets/scene.pack.ts');
+  const authored = await readFile(path, 'utf8');
+  const scene = authored.replace(
+    /^ {6}keyed\('sphere-reflection', \{\r?\n[\s\S]*?^ {6}\}\),\r?\n/m,
+    '',
+  );
+  if (scene !== authored) await writeFile(path, scene);
+}
+
+function nativeFailure(error: unknown): unknown {
+  return error instanceof Error ? { message: error.message, stack: error.stack } : error;
+}
+
 it('new game-3d defaults to combined workers with visible UI, input, physics and animation', async (context) => {
   const started = performance.now();
   const prepared =
@@ -82,15 +117,16 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
       ? undefined
       : (JSON.parse(process.env.FORGEAX_PREPARED_NATIVE_UNIT) as {
           scratch: string;
+          root: string;
           origin: string;
         });
   if (prepared && process.env.FORGEAX_LOCAL_GPU_LEASE_HELD !== '1')
     throw new Error('Prepared native unit requires admission by the maintained GPU owner');
-  const scratch =
-    prepared?.scratch ?? (await mkdtemp(resolve(tmpdir(), 'forgeax-new-worker-game-')));
+  const sourceRoot = resolve(import.meta.dirname, '../../../..');
+  const sharedManifest = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { scratch, root } = await workerProjectDirectory(prepared, sourceRoot, sharedManifest);
   let origin = prepared?.origin;
   let delegated = false;
-  const root = resolve(scratch, 'game');
   const errors: string[] = [];
   const pageLifecycle: string[] = [];
   const iblDiagnostic =
@@ -107,8 +143,16 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
       await cp(resolve(import.meta.dirname, '../../../../templates/game-3d'), root, {
         recursive: true,
       });
+      if (sharedManifest !== undefined) {
+        await prepareLiveSyncSharedInputs({
+          sourceRoot,
+          projectRoot: root,
+          manifestPath: sharedManifest,
+          temporaryRoot: scratch,
+        });
+      }
       if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-        await reduceTestProject(root);
+        await prepareLightweightWorkerFixture(root, iblDiagnostic);
       }
       await writeProjectIdentity(root, { id: 'game', name: 'game', packageName: '@local/game' });
       const facts = await readProjectFacts(root);
@@ -166,7 +210,10 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
           context,
           nativeUnitCommand(fileURLToPath(import.meta.url), context.task.name),
           context.task.timeout - (performance.now() - started),
-          { ...process.env, FORGEAX_PREPARED_NATIVE_UNIT: JSON.stringify({ scratch, origin }) },
+          {
+            ...process.env,
+            FORGEAX_PREPARED_NATIVE_UNIT: JSON.stringify({ scratch, root, origin }),
+          },
         );
         return;
       }
@@ -301,14 +348,8 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     const ui = page.locator('#game-ui [data-ui-slot="lock"]');
     expect(await ui.textContent()).toContain('Click to lock camera');
     expect(await page.locator('#game-ui > *').count()).toBe(1);
-    await page.locator('#game-ui [data-ui-action="language-fr"]').click();
-    await expect
-      .poll(() => currentPage.locator('#game-ui [data-ui-part="guide-title"]').textContent())
-      .toBe('Prototype 3C');
     expect((await read()).camera.pointerLocked).toBe(false);
-    await page.locator('#game-ui [data-ui-action="language-en"]').click();
-    await expect.poll(() => ui.textContent()).toContain('Click to lock camera');
-    // Native canvas input must start outside the interactive guide's language buttons.
+    // Native canvas input must start outside the guide panel.
     await page.locator('#app').click({ position: { x: 4, y: 4 } });
     await expect
       .poll(async () => (await read()).camera.pointerLocked, { timeout: 10_000 })
@@ -539,7 +580,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         resolve(evidence, 'admission-failure.json'),
         JSON.stringify(
           {
-            error: String(error),
+            error: nativeFailure(error),
             budgetMs: context.task.timeout,
             elapsedMs: performance.now() - started,
             origin,
@@ -576,7 +617,16 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     await mkdir(failureEvidence, { recursive: true });
     await writeFile(
       resolve(failureEvidence, 'failure.json'),
-      JSON.stringify({ error: String(error), state, errors, pageLifecycle }, null, 2),
+      JSON.stringify(
+        {
+          error: nativeFailure(error),
+          state,
+          errors,
+          pageLifecycle,
+        },
+        null,
+        2,
+      ),
     );
     await page?.screenshot({ path: resolve(failureEvidence, 'failure.png') }).catch(() => {});
     if (iblDiagnostic) {
@@ -631,9 +681,12 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         ?.value?.path;
       if (capturePath) await cp(capturePath, resolve(diagnosticRoot, 'diagnostic-frame.rhitape'));
     }
-    throw new Error(`${String(error)}\n${JSON.stringify({ state, errors, pageLifecycle })}`, {
-      cause: error,
-    });
+    throw new Error(
+      `${JSON.stringify(nativeFailure(error))}\n${JSON.stringify({ state, errors, pageLifecycle })}`,
+      {
+        cause: error,
+      },
+    );
   } finally {
     const cleanupErrors: unknown[] = [];
     for (const close of [

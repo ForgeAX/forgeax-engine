@@ -1,8 +1,10 @@
 import { animationClipContribution, animationGraphContribution } from '@forgeax/engine-animation';
 import {
   type AssetRegistry,
+  gpuTextureContribution,
   iesProfileContribution,
   terrainContribution,
+  textureGeneratorContribution,
 } from '@forgeax/engine-assets-runtime';
 import { audioContribution } from '@forgeax/engine-audio';
 import { fontContribution } from '@forgeax/engine-font';
@@ -16,10 +18,15 @@ import {
   renderPipelineContribution,
   samplerContribution,
 } from '@forgeax/engine-render';
+import {
+  cloudMaterialDecoder,
+  cloudMaterialInstanceDecoder,
+} from '@forgeax/engine-render/authoring';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { skeletonContribution, skinContribution } from '@forgeax/engine-skinning';
 import type { AssetDecoderContributionRef, AssetKind } from '@forgeax/engine-types';
 import { particleEffectContribution } from '@forgeax/engine-vfx';
+import { waterAssetDecoderContributions } from '@forgeax/engine-water';
 
 /**
  * The built-in decoder set assembled by the host/runtime boundary.
@@ -31,9 +38,13 @@ import { particleEffectContribution } from '@forgeax/engine-vfx';
 const typedDefaultAssetDecoderContributions = [
   meshAssetContribution,
   materialContribution,
+  cloudMaterialDecoder,
+  cloudMaterialInstanceDecoder,
   irradianceVolumeContribution,
   sceneAssetContribution,
   textureContribution,
+  textureGeneratorContribution,
+  gpuTextureContribution,
   equirectContribution,
   samplerContribution,
   fontContribution,
@@ -48,6 +59,7 @@ const typedDefaultAssetDecoderContributions = [
   particleEffectContribution,
   terrainContribution,
   navigationMeshContribution,
+  ...waterAssetDecoderContributions,
   iesProfileContribution,
 ] as const;
 

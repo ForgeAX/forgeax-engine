@@ -1,5 +1,6 @@
 // Realm-neutral App assembly and frame/lifecycle ownership.
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { stepRetainedBytes } from '@forgeax/engine-assets-runtime/internal';
 import type { AudioBackend } from '@forgeax/engine-audio';
 import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, type World } from '@forgeax/engine-ecs';
@@ -21,6 +22,7 @@ import {
   unavailableExecutionCapabilities,
 } from './execution';
 import { createLocalExecutionControl } from './execution/control';
+import { createLocalHdrFrameObserver } from './execution/hdr-frame-observation';
 import { assembledEngineProfile } from './internal/assembled-engine-profile';
 import { projectComponentIntrospection } from './internal/component-introspection';
 import { ErrorFanoutRegistry } from './internal/error-fanout';
@@ -206,8 +208,8 @@ export async function createAppFromAssemble(
     Object.assign(buildArgs, { silenceUnhandledErrors: args.silenceUnhandledErrors });
   }
   // M2 / D-3: assemble form forwards the host-supplied draw-source pull.
-  if (args.drawSource !== undefined) {
-    Object.assign(buildArgs, { drawSource: args.drawSource });
+  if (args.sceneAdmission !== undefined) {
+    Object.assign(buildArgs, { sceneAdmission: args.sceneAdmission });
   }
   if (args.profiler !== undefined) {
     Object.assign(buildArgs, { profiler: args.profiler });
@@ -251,16 +253,20 @@ export interface BuildAppArgs {
    * the allocation-free primary-World path. Both createApp forms (canvas + assemble) forward
    * it from their respective options object.
    */
-  readonly drawSource?: import('./types').DrawSource | undefined;
+  readonly sceneAdmission?: (() => import('./types').SceneAdmission) | undefined;
   readonly profiler?: import('@forgeax/engine-profiler').Profiler | undefined;
   readonly executionControl?: import('./execution/control').LocalExecutionControl;
   /** Mutable indirection lets the pre-loop execution control observe its owner. */
   readonly frameInspection?: FrameInspectionRef;
   /** Canvas-form projection of the Renderer frame-submitted event. */
   readonly onFrameSubmitted?: (event: {
+    readonly configurationRevision?: number;
+    readonly presentation?: import('@forgeax/engine-render').FramePresentation;
+    readonly editorAssistance?: import('@forgeax/engine-render').SubmittedEditorAssistanceFrame;
     readonly frameId: number;
     readonly deviceGeneration: number;
     readonly graphGeneration?: number;
+    readonly renderDrawCpuMs?: number;
     readonly receipt: FrameReceipt;
     readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
     readonly worldIdentity?: string;
@@ -269,6 +275,7 @@ export interface BuildAppArgs {
   readonly onFrameCompleted?: (event: {
     readonly frameId: number;
     readonly deviceGeneration: number;
+    readonly profileFrame?: FrameReceipt['profileFrame'];
     readonly presentation: import('@forgeax/engine-render').FramePresentation;
     readonly presentationPendingReason?: import('@forgeax/engine-render').FramePresentationPendingReason;
     readonly worldIdentity?: string;
@@ -344,7 +351,18 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     args.wireOnLockErrorDispatch(dispatch);
   }
 
-  const observation = createAppObservation(world, renderer, execution);
+  // Live HDR observation is one-shot: frames pay one undefined check until a
+  // luminance or pick request arms the next draw's linear-hdr copy.
+  const localHdr = createLocalHdrFrameObserver();
+  const observation = createAppObservation(
+    world,
+    renderer,
+    {
+      report: () => execution.report(),
+      observeNextHdrFrame: (options) => localHdr.request(options),
+    },
+    assets,
+  );
   const captureSubmittedListeners = new Set<(receipt: FrameReceipt) => void>();
   const loopOpts: Parameters<typeof createFrameLoop>[0] = {
     world,
@@ -353,45 +371,58 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onError: dispatch,
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
-    beforeDraw: observation.prepareFrame,
+    beforeDraw: () => {
+      stepRetainedBytes();
+      observation.prepareFrame();
+      localHdr.beforeDraw(renderer);
+    },
     onFrameSkipped: () => args.debugDraw?.discard(),
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
-  if (args.onFrameSubmitted !== undefined || rhiCapture !== undefined) {
-    Object.assign(loopOpts, {
-      onSubmitted: (receipt: FrameReceipt) => {
-        for (const listener of captureSubmittedListeners) listener(receipt);
-        args.onFrameSubmitted?.({
-          frameId: receipt.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          ...(receipt.shadowWorkload === undefined
-            ? {}
-            : { shadowWorkload: receipt.shadowWorkload }),
-          ...(receipt.graphGeneration === undefined
-            ? {}
-            : { graphGeneration: receipt.graphGeneration }),
-          receipt,
-          ...(receipt.barrelDistortion === undefined
-            ? {}
-            : { barrelDistortion: receipt.barrelDistortion }),
-          worldIdentity: world.identity,
-        });
-      },
-    });
-  }
+  Object.assign(loopOpts, {
+    onSubmitted: (receipt: FrameReceipt, renderDrawCpuMs: number | undefined) => {
+      localHdr.submitted(renderer, receipt);
+      for (const listener of captureSubmittedListeners) listener(receipt);
+      args.onFrameSubmitted?.({
+        frameId: receipt.frameId,
+        ...(receipt.editorAssistance === undefined
+          ? {}
+          : { editorAssistance: receipt.editorAssistance }),
+        deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+        receipt,
+        presentation: receipt.presentation,
+        ...(renderDrawCpuMs === undefined ? {} : { renderDrawCpuMs }),
+        ...(receipt.barrelDistortion === undefined
+          ? {}
+          : { barrelDistortion: receipt.barrelDistortion }),
+        worldIdentity: world.identity,
+      });
+    },
+  });
   if (args.onFrameCompleted !== undefined) {
     Object.assign(loopOpts, {
       onCompleted: (receipt: FrameReceipt) =>
         args.onFrameCompleted?.({
           frameId: receipt.frameId,
           deviceGeneration: receipt.deviceGeneration,
+          ...(receipt.profileFrame === undefined ? {} : { profileFrame: receipt.profileFrame }),
           ...(receipt.shadowWorkload === undefined
             ? {}
             : { shadowWorkload: receipt.shadowWorkload }),
           // A receipt produced by the current Render contract always carries
           // presentation. If a legacy adapter omits it, do not turn an
           // unproven frame into startup success.
+          ...(receipt.configurationRevision === undefined
+            ? {}
+            : { configurationRevision: receipt.configurationRevision }),
           presentation: receipt.presentation ?? 'pending',
           ...(receipt.barrelDistortion === undefined
             ? {}
@@ -405,8 +436,8 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
   }
   // M2 / D-3: forward the optional draw-source pull into the frame-loop. Absent
   // => the loop keeps the allocation-free primary-World draw path.
-  if (args.drawSource !== undefined) {
-    Object.assign(loopOpts, { drawSource: args.drawSource });
+  if (args.sceneAdmission !== undefined) {
+    Object.assign(loopOpts, { sceneAdmission: args.sceneAdmission });
   }
   if (profiler !== undefined) {
     Object.assign(loopOpts, { profiler });
@@ -421,16 +452,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         return () => captureSubmittedListeners.delete(listener);
       },
       getState: () => loop.getState(),
-      pause: () => {
-        const result = loop.pause();
-        if (result.ok) execution.setEngineHealth('idle');
-        return result;
-      },
-      resume: () => {
-        const result = loop.resume();
-        if (result.ok) execution.setEngineHealth('running');
-        return result;
-      },
+      suspendScheduling: () => loop.suspendScheduling(),
       stepFrame: (deltaSeconds) => loop.stepFrame(deltaSeconds),
     });
   }
@@ -597,6 +619,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         args.onTerminal?.();
       }
       observation.release();
+      localHdr.close();
       unsubscribeRendererErrors();
       execution.setEngineHealth('stopped');
       return stopped;
@@ -616,9 +639,6 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     },
     onError(cb: (e: AppDispatchError) => void): () => void {
       return fanout.add(cb);
-    },
-    setDrawSource(drawSource): void {
-      loop.setDrawSource(drawSource);
     },
     /**
      * Most recent dispatched error retained for host self-inspection.

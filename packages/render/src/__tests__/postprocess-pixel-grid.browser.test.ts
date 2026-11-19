@@ -1,5 +1,5 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { BindGroupLayout, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
+import type { BindGroup, BindGroupLayout, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import {
   createShaderModule as createWebGpuShader,
   requestAdapter as webgpuAdapter,
@@ -297,7 +297,6 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
           .compile({ device, surfaceSize: { width: 911, height: 503 } })
           .unwrap();
         const empty = device.createBindGroupLayout({ entries: [] }).unwrap();
-        const emptyGroup = device.createBindGroup({ layout: empty, entries: [] }).unwrap();
         const encoder = device.createCommandEncoder().unwrap();
         const frame = {
           encoder,
@@ -329,15 +328,25 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
                 .unwrap(),
           },
         } as unknown as RenderPipelineFrame;
-        // Empty group zero is still required by the explicit WebGPU pipeline layout.
+        // Observe production bindings without repairing the pass in the fixture.
+        // Older WebGPU implementations require even empty explicit layout slots.
+        const boundGroups: number[] = [];
         const original = encoder.beginRenderPass.bind(encoder);
         encoder.beginRenderPass = (descriptor) => {
           const pass = original(descriptor);
-          pass.setBindGroup(0, emptyGroup);
+          const bind = pass.setBindGroup.bind(pass);
+          pass.setBindGroup = (
+            ...args: [number, BindGroup, (readonly number[] | Uint32Array)?, number?, number?]
+          ) => {
+            boundGroups.push(args[0]);
+            Reflect.apply(bind, pass, args);
+          };
           return pass;
         };
         try {
           compiled.execute(frame).unwrap();
+          expect(boundGroups).toContain(0);
+          expect(boundGroups).toContain(1);
           device.queue.submit([encoder.finish().unwrap()]).unwrap();
           if (outputTexture === undefined) throw new Error('declared output was not resolved');
           const result = await read(device, outputTexture, w, h, mip, bytesPerPixel);

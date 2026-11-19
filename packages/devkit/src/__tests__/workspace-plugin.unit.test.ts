@@ -2,11 +2,41 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EngineWorkspaceProvider } from '@forgeax/engine-app';
+import { EngineWorkspaceError, type EngineWorkspaceProvider } from '@forgeax/engine-app';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { describe, expect, it, vi } from 'vitest';
 import { createOperationHistoryStore } from '../operation-history.js';
 import { devKitWorkspacePlugin } from '../workspace-plugin.js';
+import { createWorkspaceSelection } from '../workspace-selection.js';
+
+const opened = (
+  root: string,
+  target?: import('@forgeax/engine-app').EngineWorkspaceTarget,
+  handle?: unknown,
+) => {
+  const sessionId = target?.sessionId ?? `session:${root}`;
+  const status = target
+    ? {
+        phase: 'running' as const,
+        sessionId,
+        generation: 1,
+        document: {
+          sessionId,
+          targetId: target.targetId,
+          url: 'http://localhost:4173',
+          browserGeneration: 1,
+        },
+        target,
+        browserGeneration: 1,
+      }
+    : { phase: 'preparing' as const, sessionId, generation: 1 };
+  return {
+    project: { id: root, root },
+    status,
+    subscribeStatus: () => () => {},
+    ...(handle === undefined ? {} : { handle }),
+  };
+};
 
 // Native Host/ToolApi lifecycle evidence; this fixture does not render.
 describe('Engine workspace capability plugin', () => {
@@ -18,7 +48,7 @@ describe('Engine workspace capability plugin', () => {
     vi.stubEnv('FORGEAX_HISTORY_DIR', join(root, 'history'));
     const backend = await createBackendHost({});
     const provider: EngineWorkspaceProvider = {
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root }) => opened(root),
       closeProject() {},
       listAssets: () => [],
       openPreview() {
@@ -73,7 +103,7 @@ describe('Engine workspace capability plugin', () => {
     };
     const runtimePack = vi.fn(async () => ({ marker: 'runtime-content' }));
     const provider: EngineWorkspaceProvider = {
-      openProject: ({ root }) => ({ project: { id: root, root }, target }),
+      openProject: ({ root }) => opened(root, target),
       closeProject() {},
       listAssets: () => [],
       openPreview: () => {
@@ -139,7 +169,7 @@ describe('Engine workspace capability plugin', () => {
   it('rejects run control through both transport and direct ToolApi in an observer workspace', async () => {
     const backend = await createBackendHost({});
     const provider: EngineWorkspaceProvider = {
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root }) => opened(root),
       closeProject() {},
       listAssets: () => [],
       openPreview: () => {
@@ -186,7 +216,7 @@ describe('Engine workspace capability plugin', () => {
     const closeProject = vi.fn();
     const dispose = vi.fn();
     const provider: EngineWorkspaceProvider = {
-      openProject: ({ root }) => ({ project: { id: root, root } }),
+      openProject: ({ root }) => opened(root),
       closeProject,
       listAssets: () => [{ guid: 'asset', kind: 'mesh' }],
       openPreview: () => {
@@ -246,25 +276,109 @@ describe('Engine workspace capability plugin', () => {
 });
 
 describe('admitted independent workspace sessions', () => {
-  it('routes project ownership, target queries and close to the exact frontend session', async () => {
+  it.each([
+    false,
+    true,
+  ])('retains the original failed project diagnostic with a published target: %s', async (publishedTarget) => {
+    const backend = await createBackendHost({});
+    const target = {
+      targetId: 'failed-target',
+      sessionId: 'failed-session',
+      worldId: 'failed-world',
+      headed: true,
+      width: 320,
+      height: 240,
+    };
+    const admitted = opened('/failed-project', target);
+    const failure = new EngineWorkspaceError(
+      'engine-workspace-bootstrap-failed',
+      'graphics unavailable',
+      'Inspect the renderer failure.',
+    );
+    const listAssets = vi.fn(() => {
+      throw failure;
+    });
+    const provider: EngineWorkspaceProvider = {
+      openProject: () => ({
+        ...admitted,
+        status: {
+          phase: 'failed',
+          sessionId: target.sessionId,
+          generation: 1,
+          document: {
+            sessionId: target.sessionId,
+            targetId: target.targetId,
+            url: 'http://localhost:4173',
+            browserGeneration: 1,
+          },
+          ...(publishedTarget ? { target } : {}),
+          failure,
+        },
+      }),
+      closeProject() {},
+      listAssets,
+      openPreview() {
+        throw new Error('unused');
+      },
+    };
+    const fiber = backend.context.plugin(devKitWorkspacePlugin, {
+      provider,
+      hostBinding: { backend },
+    });
+    try {
+      await fiber.await();
+      const runtime = backend.context.engineWorkspace;
+      await runtime.openProject({ root: '/failed-project' });
+      const api = backend.context.get('toolApi');
+      assert.ok(api);
+      const request = (targetId: string) =>
+        api.run(
+          'engine.assets.list',
+          { projectId: '/failed-project', targetId },
+          { sourceId: 'engine-workspace' },
+        ).terminal;
+      const failed = await request(target.targetId);
+      expect(failed.outcome).toBe('failed');
+      if (failed.outcome === 'failed')
+        expect(failed.failure).toMatchObject({
+          expected: failure.expected,
+          hint: failure.hint,
+          detail: { code: failure.code },
+        });
+      expect(listAssets).toHaveBeenCalledTimes(1);
+      expect(
+        await api.run('engine.workspace.get', {}, { sourceId: 'engine-workspace' }).terminal,
+      ).toMatchObject({
+        outcome: 'succeeded',
+        result: { projectTarget: null, projectPhase: 'failed' },
+      });
+      const foreign = await request('foreign-target');
+      if (foreign.outcome === 'failed')
+        expect(foreign.failure.detail).toMatchObject({ code: 'engine-workspace-target-mismatch' });
+      expect(foreign.outcome).toBe('failed');
+      expect(listAssets).toHaveBeenCalledTimes(1);
+    } finally {
+      await fiber.dispose();
+      await backend.dispose();
+    }
+  });
+
+  it('shares the backend project owner across View frontend connections', async () => {
     const backend = await createBackendHost({});
     let sequence = 0;
     const closed = vi.fn();
     const provider: EngineWorkspaceProvider = {
       openProject: ({ root }) => {
         const id = ++sequence;
-        return {
-          project: { id: root, root },
-          handle: id,
-          target: {
-            targetId: `target-${id}`,
-            sessionId: `session-${id}`,
-            worldId: `world-${id}`,
-            headed: true,
-            width: 320,
-            height: 240,
-          },
+        const target = {
+          targetId: `target-${id}`,
+          sessionId: `session-${id}`,
+          worldId: `world-${id}`,
+          headed: true,
+          width: 320,
+          height: 240,
         };
+        return opened(root, target, id);
       },
       closeProject: closed,
       listAssets: ({ handle }) => [
@@ -284,19 +398,25 @@ describe('admitted independent workspace sessions', () => {
     const call = (client: typeof first, operation: string, args: unknown = {}) =>
       client.request('engine.workspace.call', { operation, args });
     try {
-      const a = (await call(first, 'engine.project.open', { root: '/same-project' })) as {
+      const a = (await call(first, 'engine.project.open', {
+        root: '/same-project',
+        expectedProject: { kind: 'empty' },
+      })) as {
         projectTarget: { targetId: string };
       };
-      const b = (await call(second, 'engine.project.open', { root: '/same-project' })) as {
-        projectTarget: { targetId: string };
-      };
-      expect(a.projectTarget.targetId).not.toBe(b.projectTarget.targetId);
+      await expect(
+        call(second, 'engine.project.open', {
+          root: '/same-project',
+          expectedProject: { kind: 'empty' },
+        }),
+      ).rejects.toThrow();
+      expect(sequence).toBe(1);
       expect(closed).not.toHaveBeenCalled();
       expect(await call(first, 'engine.workspace.get')).toMatchObject({
         projectTarget: a.projectTarget,
       });
       expect(await call(second, 'engine.workspace.get')).toMatchObject({
-        projectTarget: b.projectTarget,
+        projectTarget: a.projectTarget,
       });
       const headed = backend.transport.connect({
         kind: 'frontend',
@@ -306,15 +426,13 @@ describe('admitted independent workspace sessions', () => {
         expect(await call(headed, 'engine.workspace.get')).toMatchObject({
           projectTarget: a.projectTarget,
         });
-        await call(second, 'engine.project.close', { projectId: '/same-project' });
-        expect(await call(headed, 'engine.workspace.get')).toMatchObject({
-          projectTarget: a.projectTarget,
-        });
-        expect(closed).toHaveBeenCalledTimes(1);
       } finally {
         headed.close();
       }
-      expect(backend.context.engineWorkspace.project).toBeUndefined();
+      first.close();
+      second.close();
+      expect(backend.context.engineWorkspace.project?.project.root).toBe('/same-project');
+      expect(closed).not.toHaveBeenCalled();
       const api = backend.context.get('toolApi');
       if (!api) throw new Error('workspace must install ToolApi');
       const invalid = await api.run(
@@ -337,4 +455,61 @@ describe('admitted independent workspace sessions', () => {
       await backend.dispose();
     }
   });
+});
+
+it('persists only successful backend project selections and retains the chooser on closure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-workspace-selection-'));
+  const selection = createWorkspaceSelection(root);
+  const backend = await createBackendHost({});
+  const provider: EngineWorkspaceProvider = {
+    openProject: ({ root, generation }) => {
+      if (root === 'broken') throw new Error('failed admission');
+      const value = opened(root);
+      return { ...value, status: { ...value.status, generation } };
+    },
+    closeProject() {},
+    listAssets: () => [],
+    openPreview() {
+      throw new Error('unused');
+    },
+  };
+  const client = backend.transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
+  try {
+    const fiber = await backend.context.plugin(devKitWorkspacePlugin, {
+      provider,
+      selection,
+      hostBinding: { backend },
+    });
+    await fiber.await();
+    const call = (operation: string, args: Record<string, unknown>) =>
+      client.request('engine.workspace.call', { operation, args });
+    expect(await selection.read()).toBeUndefined();
+    await call('engine.project.open', { root: 'first' });
+    expect(await selection.read()).toBe('first');
+    await expect(
+      call('engine.project.open', {
+        root: 'broken',
+        expectedProject: { kind: 'session', sessionId: 'session:first', generation: 1 },
+      }),
+    ).rejects.toThrow();
+    expect(await selection.read()).toBe('first');
+    const current = backend.context.engineWorkspace.project;
+    assert.ok(current);
+    await call('engine.project.open', {
+      root: 'second',
+      expectedProject: {
+        kind: 'session',
+        sessionId: current.status.sessionId,
+        generation: current.status.generation,
+      },
+    });
+    expect(await selection.read()).toBe('second');
+    await call('engine.project.close', { projectId: 'second' });
+    expect(await selection.read()).toBeNull();
+    expect(await createWorkspaceSelection(root).read()).toBeNull();
+  } finally {
+    client.close();
+    await backend.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
 });

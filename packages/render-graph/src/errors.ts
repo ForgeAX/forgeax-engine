@@ -177,6 +177,7 @@ export interface CapabilityDetail extends ResourceAccessDetail {
 }
 
 export interface DescriptorDetail {
+  readonly passName?: string | undefined;
   readonly resourceLabel: string;
   readonly field: string;
   readonly expected: string;

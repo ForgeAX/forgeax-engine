@@ -1,9 +1,16 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { definePackageId } from '@forgeax/engine-pack/source';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { propagateTransforms, Transform, WaterBodyInstance } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import {
+  buildWaterPackOutputs,
+  WATER_SYSTEM_RESOURCE,
+  type WaterBodySourceAsset,
+  WaterSystem,
+} from '@forgeax/engine-water';
 import { expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
@@ -14,6 +21,7 @@ import { renderPublicationTransfers } from '../publication/record';
 import { RenderPublicationTargetOwner } from '../publication/targets';
 import * as extraction from '../render-system-extract-tail';
 import { MaterialDispatch } from '../scene/material-dispatch';
+import { SceneComposition } from '../scene/scene-composition';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it.each(
@@ -103,7 +111,7 @@ it.each(
   const publisher = published
     ? createRenderPublisher(world, assets, source, undefined, [], targetOwner)
     : undefined;
-  const extract = vi.spyOn(extraction, 'extractFrames');
+  const extract = vi.spyOn(extraction, 'extractSource');
   const query = vi.spyOn(MaterialDispatch.prototype, 'query');
   const draw = async () => {
     const candidate = publisher?.prepare(0).unwrap();
@@ -120,13 +128,14 @@ it.each(
     if (publication !== undefined) request = { publication };
     else {
       if (lease === undefined) throw new Error('local scene needs an attached World lease');
-      request = { leases: [lease], camera: { lease }, environment: { lease } };
+      request = { source: lease };
     }
     const frame = renderer.draw(request);
+    expect(frame.ok, frame.ok ? '' : JSON.stringify(frame.error)).toBe(true);
     if (!frame.ok) throw frame.error;
     expect((await frame.value.completed).ok).toBe(true);
     expect(query).toHaveBeenCalledTimes(1);
-    return extract.mock.calls.filter((call) => call[4]?.renderables !== 'none').length;
+    return extract.mock.calls.filter((call) => call[3]?.renderables !== 'none').length;
   };
   try {
     expect(await draw()).toBe(published ? 0 : 1);
@@ -141,5 +150,152 @@ it.each(
     expect((await renderer.dispose()).ok).toBe(true);
     publisher?.dispose();
     targetOwner?.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('refreshes retained ordinary Water owners without an ECS write (published=%s)', async (published) => {
+  const source = { source: 'ordinary-water-generation', epoch: 1 };
+  const host = await createRenderer(
+    { width: 64, height: 64, getContext: () => null } as unknown as HTMLCanvasElement,
+    { rhi, ...(published ? { publicationSource: source } : {}) },
+    { shaderManifestUrl: renderLifecycleManifestUrl() },
+  );
+  const initialized = await host.initialization;
+  if (!initialized.ok) throw initialized.error;
+  const renderer = exposeRenderer(host);
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: {} },
+      { component: WaterBodyInstance, data: { body: 0 as never } },
+    )
+    .unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 8] } },
+      {
+        component: Camera,
+        data: {
+          ...perspective({ fov: Math.PI / 3, aspect: 1 }),
+          antialias: ANTIALIAS_NONE,
+          bloom: BLOOM_DISABLED,
+        },
+      },
+    )
+    .unwrap();
+  const bodySource: WaterBodySourceAsset = {
+    kind: 'water-body',
+    type: 'custom',
+    baseHeightM: 0,
+    maxWaveHeightM: 0,
+    overlapPriority: 0,
+    surfaceMaterialGuid: '00000000-0000-7000-8000-000000000001',
+    spline: {
+      closed: false,
+      points: [0, 1].map((x) => ({
+        inputKey: x,
+        positionM: [x, 0, 0] as const,
+        arriveTangentM: [1, 0, 0] as const,
+        leaveTangentM: [1, 0, 0] as const,
+        up: [0, 1, 0] as const,
+        rollAngle: 0,
+        angleUnit: 'degrees' as const,
+        widthM: 1,
+        depthM: 2,
+        velocityMPerSec: 0,
+        audioIntensity: 0,
+      })),
+    },
+    flags: { affectsWaterInfo: false, affectsWaterMesh: false, affectsLandscape: false },
+    collision: { type: 'none', enabled: false },
+    queryFootprint: [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ],
+  };
+  const packed = (
+    await buildWaterPackOutputs(
+      { body: bodySource },
+      { packageId: definePackageId('019a0000-0000-7000-8000-000000000987') },
+    )
+  ).unwrap();
+  const body = packed.body;
+  if (body?.kind !== 'water-body') throw new Error('Missing cooked Body');
+  const water = new WaterSystem(
+    () => undefined,
+    () => [],
+  );
+  const guid = `scene-entity:${entity}`;
+  water.mountBody(guid, '1', body).unwrap();
+  world.insertResource(WATER_SYSTEM_RESOURCE, water);
+  world.update(1 / 60).unwrap();
+  propagateTransforms(world).unwrap();
+  const attached = published ? undefined : renderer.attach(world);
+  if (attached !== undefined && !attached.ok) throw attached.error;
+  const lease = attached?.value;
+  const publisher = published ? createRenderPublisher(world, assets, source) : undefined;
+  const slots = vi.spyOn(SceneComposition.prototype, 'compositionSlot');
+  let composition: SceneComposition | undefined;
+  const draw = async () => {
+    const candidate = publisher?.prepare(0).unwrap();
+    const publication =
+      candidate === undefined
+        ? undefined
+        : structuredClone(candidate.message, {
+            transfer: renderPublicationTransfers(candidate.message),
+          });
+    candidate?.accept();
+    let request: Parameters<typeof renderer.draw>[0];
+    if (publication !== undefined) request = { publication };
+    else {
+      if (lease === undefined) throw new Error('Missing local read lease');
+      request = { source: lease };
+    }
+    const drawn = renderer.draw(request);
+    expect(drawn.ok, drawn.ok ? '' : JSON.stringify(drawn.error)).toBe(true);
+    if (!drawn.ok) throw drawn.error;
+    const receipt = drawn.value;
+    const completed = await receipt.completed;
+    if (!completed.ok) throw completed.error;
+    if (publication !== undefined)
+      publisher?.recycle(publication.revision, renderPublicationTransfers(publication)).unwrap();
+    const heldComposition = slots.mock.contexts[0];
+    if (heldComposition instanceof SceneComposition) composition ??= heldComposition;
+    if (composition === undefined) throw new Error('Missing retained composition');
+    return composition.compositionSlot(entity)?.snapshot;
+  };
+  try {
+    const held = await draw();
+    expect(held?.waterOwner?.generation).toBe(water.snapshot(guid)?.sceneGeneration);
+    water.hotReloadBody(guid, '2', body).unwrap();
+    const discarded = publisher?.prepare(0).unwrap();
+    discarded?.discard();
+    const current = await draw();
+    expect(current?.waterOwner?.generation).toBe(water.snapshot(guid)?.sceneGeneration);
+    expect(current?.waterOwner?.generation).not.toBe(held?.waterOwner?.generation);
+    expect(held?.waterOwner?.generation).toBe(1);
+    expect(await draw()).toBe(current);
+    water.unmountBody(guid);
+    expect((await draw())?.waterOwner).toBeUndefined();
+    water.mountBody(guid, '3', body).unwrap();
+    expect((await draw())?.waterOwner?.generation).toBe(water.snapshot(guid)?.sceneGeneration);
+    expect(held?.waterOwner?.generation).toBe(1);
+  } finally {
+    slots.mockRestore();
+    lease?.dispose();
+    publisher?.dispose();
+    const disposed = await renderer.dispose();
+    expect(disposed.ok, disposed.ok ? '' : JSON.stringify(disposed.error)).toBe(true);
   }
 });

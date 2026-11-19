@@ -3,7 +3,6 @@ import {
   BasicShadowMap,
   DirectionalLight,
   PCFShadowMap,
-  PCFSoftShadowMap,
   PointLight,
   type ShadowMapType,
   type SpotLight,
@@ -28,11 +27,9 @@ function filter(light: ShadowLight, settings?: ShadowMapSettings) {
       ? DirectionalShadowFilterValue.pcf1
       : settings.type === PCFShadowMap
         ? DirectionalShadowFilterValue.pcfVogel
-        : settings.type === PCFSoftShadowMap
-          ? DirectionalShadowFilterValue.pcfSoft
-          : settings.type === VSMShadowMap
-            ? DirectionalShadowFilterValue.variance
-            : unsupported('Unknown shadow filter', light.uuid).unwrap();
+        : settings.type === VSMShadowMap
+          ? DirectionalShadowFilterValue.variance
+          : unsupported('Shadow filter unavailable in r187 WebGPU', light.uuid).unwrap();
   if (
     ![shadow.mapSize.x, shadow.mapSize.y].every((value) => Number.isInteger(value) && value > 0) ||
     ![shadow.bias, shadow.normalBias, shadow.radius, shadow.intensity].every(Number.isFinite) ||

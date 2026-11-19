@@ -9,6 +9,7 @@ import * as batchTopology from '../gpu-driven/batch-topology';
 import * as cameraProjection from '../gpu-driven/production-raster-camera';
 import * as shadowLod from '../gpu-driven/production-raster-lod';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
+import type { ShadowViewIdentity } from '../gpu-driven/shadow-views';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import { buildDispatchPlan } from '../record/frame';
@@ -136,7 +137,7 @@ describe('GPU-driven production shadow projection', () => {
       expect(steady.views.every((view) => view.submission.cache === 'hit')).toBe(true);
       const moved = mat4.identity(mat4.create());
       moved[12] = 0.5;
-      f.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: moved }]);
+      f.apply([{ kind: 'update', entityKey: 1, world: moved }]);
       const changed = f.prepare(false);
       expect(changed.views.every((view) => view.submission.plan.candidateCount === 1)).toBe(true);
       changed.frame._abortResourceReplacement?.();
@@ -153,7 +154,7 @@ describe('GPU-driven production shadow projection', () => {
         });
       });
       moved[0] = -1;
-      f.apply([{ kind: 'update', worldId: 0, entityKey: 1, world: moved }]);
+      f.apply([{ kind: 'update', entityKey: 1, world: moved }]);
       const mirrored = f.prepare();
       const projections = mirrored.views.flatMap((view) => [...view.bindings.values()]);
       expect(projections.length).toBeGreaterThan(0);
@@ -342,11 +343,11 @@ describe('GPU-driven production shadow projection', () => {
       );
       const replacement = { ...required(f.rows[0]), entityKey: 3, mobility: 'static' as const };
       f.apply([
-        { kind: 'remove', worldId: 0, entityKey: 1 },
-        { kind: 'remove', worldId: 0, entityKey: 2 },
+        { kind: 'remove', entityKey: 1 },
+        { kind: 'remove', entityKey: 2 },
         updateSnapshot(replacement),
       ]);
-      const reused = required(f.projection.slot(0, 3));
+      const reused = required(f.projection.slot(3));
       expect(reused.generation).not.toBe(beforeSlots.get(reused.slot));
       f.meshes.clear();
       f.meshes.set(reused.slot, pending);
@@ -534,6 +535,7 @@ describe('GPU-driven production shadow projection', () => {
       draw: () => undefined,
     } as unknown as RhiRenderPassEncoder;
     const context = {
+      camera: {},
       runtime: {
         device,
         getMaterialShaderPipelineEntry: (...args: unknown[]) => {
@@ -663,6 +665,7 @@ describe('GPU-driven production shadow projection', () => {
     });
     const feature = vi.fn();
     const context = {
+      camera: {},
       runtime: { device, getMaterialShaderPipeline: () => pipeline },
       pipelineState: {
         projectorAvailable: false,
@@ -711,7 +714,15 @@ describe('GPU-driven production shadow projection', () => {
       shadowViewPlanesByView: new Map([
         [key, frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()))],
       ]),
-      gpuDrivenShadowViews: { submission: () => ({ identity, view, plan }) },
+      gpuDrivenShadowViews: {
+        submission: (requested: ShadowViewIdentity) =>
+          requested.kind === identity.kind &&
+          requested.index === identity.index &&
+          requested.face === identity.face &&
+          requested.layer === undefined
+            ? { identity, view, plan, selection: receiptSelection([], () => false) }
+            : undefined,
+      },
       gpuDrivenShadowBatchProjections: new Map([[key, new Map()]]),
       bindGroupCounts: { createBindGroup: 0, keys: [] },
     } as never;
@@ -748,6 +759,7 @@ describe('GPU-driven production shadow projection', () => {
       materialProgramKeys: { shadow: 'forgeax::default-shadow-caster' },
     });
     const context = {
+      camera: {},
       runtime: {
         device: { caps: { storageBuffer: false } },
         getMaterialShaderPipeline: () => null,

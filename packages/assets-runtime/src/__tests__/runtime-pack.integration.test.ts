@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   buildVisibilityDistanceField,
+  copyMeshAttribute,
   createBoxGeometry,
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
@@ -106,6 +107,58 @@ function outputGuid(packageId: string) {
   return AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
 }
 
+it('loads a selected output while a sibling requires a decoder owned by another realm', async () => {
+  const source = producer();
+  const assets = createAssetSource({
+    scopeId: 'test-runtime',
+    catalog: source.catalog,
+    fetcher: source.fetch,
+    decoders: new DecoderRegistry(),
+  });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  const program = preparePackProgram({
+    entry: 'behavior.js',
+    export: 'default',
+    modules: { 'behavior.js': 'export default { apply() {} };' },
+  }).unwrap();
+  const programs = { 'project:behavior.js#default': { artifact: program } };
+  const module = { specifier: './behavior.js' };
+  try {
+    const dependency = (
+      await prepareRuntimePackContent(id, { behavior: { kind: 'plugin', module } }, { programs })
+    ).unwrap();
+    const published = (await source.admit(dependency)).unwrap();
+    const external = defined(defined(published.publication).outputs[0]);
+    const combined = (
+      await prepareRuntimePackContent(
+        other,
+        {
+          box: createBoxGeometry(1, 2, 3).unwrap(),
+          behavior: { kind: 'plugin', module, config: { required: { $asset: external.guid } } },
+        },
+        { programs, dependencies: { [external.guid]: external.digest } },
+      )
+    ).unwrap();
+    const publication = defined((await source.admit(combined)).unwrap().publication);
+    expect(publication.externalEvidence).toContainEqual({
+      guid: external.guid,
+      digest: external.digest,
+      usage: 'both',
+    });
+    expect(defined(publication.outputs.find((output) => output.sourceKey === 'box')).refs).toEqual(
+      [],
+    );
+    expect(await assets.load(external.guid, 'plugin')).toMatchObject({
+      ok: false,
+      error: { code: 'asset-decoder-missing' },
+    });
+    expect(await assets.load(outputGuid(other), 'mesh')).toMatchObject({ ok: true });
+  } finally {
+    assets.dispose();
+    source.dispose();
+  }
+});
+
 it('publishes regenerated content immediately while keeping receipts stable across restore', async () => {
   const source = producer(new Map());
   const assets = reader(source);
@@ -189,8 +242,8 @@ describe('resolved runtime parameter anchors', () => {
       };
       (await source.generate(selection)).unwrap();
       const defaults = (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap();
-      expect(defaults.attributes.position).toEqual(
-        createBoxGeometry(4, 2, 3).unwrap().attributes.position,
+      expect(copyMeshAttribute(defaults, 'position')).toEqual(
+        copyMeshAttribute(createBoxGeometry(4, 2, 3).unwrap(), 'position'),
       );
       const changed = { ...selection, values: { width: 2 } };
       (await source.generate(changed)).unwrap();
@@ -198,7 +251,10 @@ describe('resolved runtime parameter anchors', () => {
       (await source.generate(copy)).unwrap();
       const expected = createBoxGeometry(2, 2, 3).unwrap().attributes.position;
       expect(
-        (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap().attributes.position,
+        copyMeshAttribute(
+          (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap(),
+          'position',
+        ),
       ).toEqual(expected);
       expect(cache.size).toBe(3);
       (await source.generate(copy)).unwrap();
@@ -213,8 +269,10 @@ describe('resolved runtime parameter anchors', () => {
       (await restored.restore(saved)).unwrap();
       for (const packageId of [id, other])
         expect(
-          (await loadFixtureAsset(recovered, outputGuid(packageId), 'mesh')).unwrap().attributes
-            .position,
+          copyMeshAttribute(
+            (await loadFixtureAsset(recovered, outputGuid(packageId), 'mesh')).unwrap(),
+            'position',
+          ),
         ).toEqual(expected);
       (await restored.generate(selection)).unwrap();
       (
@@ -223,8 +281,11 @@ describe('resolved runtime parameter anchors', () => {
         })
       ).unwrap();
       expect(
-        (await loadFixtureAsset(recovered, outputGuid(id), 'mesh')).unwrap().attributes.position,
-      ).toEqual(defaults.attributes.position);
+        copyMeshAttribute(
+          (await loadFixtureAsset(recovered, outputGuid(id), 'mesh')).unwrap(),
+          'position',
+        ),
+      ).toEqual(copyMeshAttribute(defaults, 'position'));
       expect(
         await restored.generate({ ...selection, packageId: parent, parent: id }),
       ).toMatchObject({ ok: false });
@@ -295,8 +356,11 @@ describe('resolved runtime parameter anchors', () => {
       source.dispose();
       (await restored.restore(saved)).unwrap();
       expect(
-        (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap().attributes.position,
-      ).toEqual(createBoxGeometry(3, 2, 3).unwrap().attributes.position);
+        copyMeshAttribute(
+          (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap(),
+          'position',
+        ),
+      ).toEqual(copyMeshAttribute(createBoxGeometry(3, 2, 3).unwrap(), 'position'));
     } finally {
       source.dispose();
       restored.dispose();
@@ -328,9 +392,11 @@ describe('resolved runtime parameter anchors', () => {
           await source.generate({ schemaVersion: '3.0.0', packageId, parent: anchor, values: {} })
         ).unwrap();
         expect(
-          (await loadFixtureAsset(assets, outputGuid(packageId), 'mesh')).unwrap().attributes
-            .position,
-        ).toEqual(createBoxGeometry(width, 2, 3).unwrap().attributes.position);
+          copyMeshAttribute(
+            (await loadFixtureAsset(assets, outputGuid(packageId), 'mesh')).unwrap(),
+            'position',
+          ),
+        ).toEqual(copyMeshAttribute(createBoxGeometry(width, 2, 3).unwrap(), 'position'));
       }
       expect(source.programEntries().size).toBe(1);
     } finally {
@@ -939,7 +1005,7 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect(admitted.ok, JSON.stringify(admitted)).toBe(true);
     const guid = outputGuid(id);
     const loaded = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
-    expect(loaded.attributes.position).toEqual(mesh.attributes.position);
+    expect(copyMeshAttribute(loaded, 'position')).toEqual(copyMeshAttribute(mesh, 'position'));
     expect((await source.admit(structuredClone(content))).ok).toBe(true);
     const conflicting = (
       await prepareRuntimePackContent(id, { box: createBoxGeometry(4, 3, 4).unwrap() })
@@ -954,8 +1020,11 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect((await restored.restore(JSON.parse(saved))).ok).toBe(true);
     const restoredAssets = reader(restored);
     expect(
-      (await loadFixtureAsset(restoredAssets, guid, 'mesh')).unwrap().attributes.position,
-    ).toEqual(mesh.attributes.position);
+      copyMeshAttribute(
+        (await loadFixtureAsset(restoredAssets, guid, 'mesh')).unwrap(),
+        'position',
+      ),
+    ).toEqual(copyMeshAttribute(mesh, 'position'));
     restored.dispose();
     assets.clearCatalogSource();
     restoredAssets.clearCatalogSource();
@@ -979,7 +1048,7 @@ describe('runtime Pack production through real codecs and readers', () => {
       await assets.reload(defined(runtimeAssetReference(assets, guid)), { conflict: 'overwrite' })
     ).unwrap();
     const next = (await loadFixtureAsset(assets, guid, 'mesh')).unwrap();
-    expect(next.attributes.position).not.toEqual(first.attributes.position);
+    expect(copyMeshAttribute(next, 'position')).not.toEqual(copyMeshAttribute(first, 'position'));
     expect((await source.generate(instance(id, 100))).ok).toBe(false);
     expect(
       source.inspect().executions.find((item) => item.instance.packageId === id),
@@ -992,8 +1061,11 @@ describe('runtime Pack production through real codecs and readers', () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const recoveredAssets = reader(restored);
     expect(
-      (await loadFixtureAsset(recoveredAssets, guid, 'mesh')).unwrap().attributes.position,
-    ).toEqual(next.attributes.position);
+      copyMeshAttribute(
+        (await loadFixtureAsset(recoveredAssets, guid, 'mesh')).unwrap(),
+        'position',
+      ),
+    ).toEqual(copyMeshAttribute(next, 'position'));
     restored.dispose();
     assets.clearCatalogSource();
     recoveredAssets.clearCatalogSource();
@@ -1150,8 +1222,11 @@ it('captures an external PluginAsset whose saved source retains another asset re
   const consumerReader = reader(consumer);
   expect((await consumerReader.readPluginDefinition(plugin.guid)).ok).toBe(true);
   expect(
-    (await loadFixtureAsset(consumerReader, mesh.guid, 'mesh')).unwrap().attributes.position,
-  ).toEqual(createBoxGeometry(3, 4, 5).unwrap().attributes.position);
+    copyMeshAttribute(
+      (await loadFixtureAsset(consumerReader, mesh.guid, 'mesh')).unwrap(),
+      'position',
+    ),
+  ).toEqual(copyMeshAttribute(createBoxGeometry(3, 4, 5).unwrap(), 'position'));
   consumerReader.clearCatalogSource();
   consumer.dispose();
 });
@@ -1305,7 +1380,9 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   expect(recovery.ok, JSON.stringify(recovery)).toBe(true);
   const assets = reader(restored);
   const mesh = (await loadFixtureAsset(assets, outputGuid(dependentId), 'mesh')).unwrap();
-  expect(mesh.attributes.position).toEqual(createBoxGeometry(2, 2, 3).unwrap().attributes.position);
+  expect(copyMeshAttribute(mesh, 'position')).toEqual(
+    copyMeshAttribute(createBoxGeometry(2, 2, 3).unwrap(), 'position'),
+  );
   expect(restored.rows().some((row) => row.guid === dependency.guid)).toBe(false);
   restored.withdraw(other);
   expect(restored.snapshot().closure).toBeUndefined();
@@ -1421,11 +1498,17 @@ it('discards corrupted or cross-instance cache entries and rebuilds from preserv
   (await source.generate(instance(id, 2))).unwrap();
   const assets = reader(source);
   expect(
-    (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap().attributes.position,
-  ).toEqual(createBoxGeometry(2, 2, 3).unwrap().attributes.position);
+    copyMeshAttribute(
+      (await loadFixtureAsset(assets, outputGuid(id), 'mesh')).unwrap(),
+      'position',
+    ),
+  ).toEqual(copyMeshAttribute(createBoxGeometry(2, 2, 3).unwrap(), 'position'));
   expect(
-    (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap().attributes.position,
-  ).toEqual(createBoxGeometry(4, 2, 3).unwrap().attributes.position);
+    copyMeshAttribute(
+      (await loadFixtureAsset(assets, outputGuid(other), 'mesh')).unwrap(),
+      'position',
+    ),
+  ).toEqual(copyMeshAttribute(createBoxGeometry(4, 2, 3).unwrap(), 'position'));
   source.dispose();
   assets.clearCatalogSource();
 });
@@ -1574,8 +1657,8 @@ it.each([
     const result = await pending;
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(opens).toBe(1);
-    expect(result.unwrap().attributes.position).toEqual(
-      createBoxGeometry(2, 2, 3).unwrap().attributes.position,
+    expect(copyMeshAttribute(result.unwrap(), 'position')).toEqual(
+      copyMeshAttribute(createBoxGeometry(2, 2, 3).unwrap(), 'position'),
     );
   } finally {
     resume();

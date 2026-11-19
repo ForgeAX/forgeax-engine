@@ -59,7 +59,7 @@ export function attachProbeRecords(
   const probeAt = projection.captureRecordLookup();
   const attachments = memo.bySnapshot;
   const value = new FrameProjection(candidates, (candidate) => {
-    const slot = slots.lookup(candidate.worldId, candidate.entityKey);
+    const slot = slots.lookup(candidate.entityKey);
     return attachProbeRecord(
       candidate,
       slot === undefined ? undefined : probeAt(slot.slot),

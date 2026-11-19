@@ -1,4 +1,4 @@
-import type { World } from '@forgeax/engine-ecs';
+import { defineResource, type World } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { registerPhysicsComponents } from './components.js';
@@ -6,6 +6,9 @@ import { PhysicsError } from './errors.js';
 import { registerMobilityPhysicsConflict } from './mobility-conflict.js';
 import type { PhysicsWorld, PhysicsWorld2D } from './physics-world.js';
 import type { PhysicsOptions } from './solver-options.js';
+
+export const PHYSICS_STARTUP_OPTIONS =
+  defineResource<Readonly<PhysicsOptions>>('PhysicsStartupOptions');
 
 /**
  * Install the built-in physics component vocabulary without starting a
@@ -24,10 +27,11 @@ export function physicsComponentsPlugin(): Plugin {
 }
 
 /** Backend-owned operations; this contract imports no backend implementation. */
-export interface PhysicsPluginBackend {
+export interface PhysicsPluginBackend<T extends PhysicsWorld | PhysicsWorld2D> {
+  readonly resource: import('@forgeax/engine-ecs').Resource<T>;
   readonly name: string;
   load(): Promise<unknown>;
-  create(native: unknown, options: PhysicsOptions): PhysicsWorld | PhysicsWorld2D;
+  create(native: unknown, options: PhysicsOptions): T;
   registerSystems(world: World): () => void;
 }
 
@@ -38,16 +42,36 @@ declare module '@forgeax/engine-plugin' {
 }
 
 /** Share native lifetime and failure handling after the caller statically selects a backend. */
-export function definePhysicsPlugin(
-  backend: PhysicsPluginBackend,
+export function definePhysicsPlugin<T extends PhysicsWorld | PhysicsWorld2D>(
+  backend: PhysicsPluginBackend<T>,
 ): Plugin.Object<PhysicsOptions | undefined> {
   return {
     name: 'physics',
     inject: ['world'],
     provide: 'physics',
-    async apply(ctx, options = {}) {
+    async apply(ctx, options) {
       await ctx.plugin(scenePlugin());
       const world = ctx.world;
+      const startup = world.hasResource(PHYSICS_STARTUP_OPTIONS)
+        ? world.getResource(PHYSICS_STARTUP_OPTIONS)
+        : undefined;
+      const authoredOptions = options;
+      if (
+        startup !== undefined &&
+        authoredOptions !== undefined &&
+        Object.entries(startup).some(
+          ([key, value]) =>
+            key in authoredOptions && authoredOptions[key as keyof PhysicsOptions] !== value,
+        )
+      ) {
+        throw new PhysicsError({
+          code: 'invalid-body-config',
+          expected: 'one physics constructor configuration',
+          hint: 'remove conflicting plugin arguments or project physics settings',
+          detail: { code: 'invalid-body-config', field: 'startup', value: options },
+        });
+      }
+      options = { ...options, ...startup };
       let native: unknown;
       try {
         native = await backend.load();
@@ -65,9 +89,9 @@ export function definePhysicsPlugin(
       const physics = backend.create(native, options);
       ctx.effect(() => registerPhysicsComponents(world), 'physics/components');
       ctx.effect(() => {
-        world.insertResource('PhysicsWorld', physics);
+        world.insertResource(backend.resource, physics);
         return () => {
-          world.removeResource('PhysicsWorld');
+          world.removeResource(backend.resource);
           physics.dispose();
         };
       }, 'physics/resource');

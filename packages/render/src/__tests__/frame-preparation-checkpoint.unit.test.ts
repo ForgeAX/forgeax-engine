@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -5,6 +6,7 @@ import { expect, it, vi } from 'vitest';
 import { createRenderFeatureHost, type RenderFeatureFrameBatch } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { endRenderFrame } from '../world/render-world';
@@ -126,6 +128,7 @@ async function fixture(abortThrows = false) {
   const created = vi.spyOn(device, 'createBuffer');
   const destroyed = vi.spyOn(device, 'destroyBuffer');
   // RenderPrepare seals the frame's Feature batch over every view's input.
+  const sources = new Map<string, World>();
   function views(
     identities: readonly string[],
     frameNumber = 1,
@@ -133,23 +136,26 @@ async function fixture(abortThrows = false) {
   ): FrameRecording[] {
     const outcome = stageFeatureFrame(
       host,
-      identities.map((identity) => ({
-        identity,
-        render: true,
-        worlds: [],
-        owner: 0,
-        frameNumber,
-        caps: device.caps,
-        gpuWork,
-        sceneResources: {
-          prepare: () => {
-            throw new Error('No scene input');
+      identities.map((identity) => {
+        const world = new World();
+        sources.set(identity, world);
+        return {
+          identity,
+          render: true,
+          world,
+          frameNumber,
+          caps: device.caps,
+          gpuWork,
+          sceneResources: {
+            prepare: () => {
+              throw new Error('No scene input');
+            },
+            abortFeature() {},
+            begin() {},
+            complete: sceneComplete,
           },
-          abortFeature() {},
-          begin() {},
-          complete: sceneComplete,
-        },
-      })),
+        };
+      }),
     );
     if (outcome.kind !== 'sealed') throw new Error(`Feature frame ${outcome.kind}`);
     recordEncoder = frameEncoder;
@@ -160,7 +166,12 @@ async function fixture(abortThrows = false) {
       const prepared = batch.views.get(identity);
       expect(prepared?.errors).toEqual([]);
       events.push(`accept:${identity}`);
-      yield { kind: 'shared-work', internals, sceneInputs: false };
+      yield {
+        kind: 'shared-work',
+        internals,
+        sourceScope: worldRenderResources(sources.get(identity) as World),
+        sceneInputs: false,
+      };
       // The view's graph compiles in RenderRecord, before any view encodes.
       if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
       events.push(`record:${identity}`);

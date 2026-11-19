@@ -33,7 +33,7 @@ export default defineFeature({
   summary:
     'An AssetRegistry with an in-memory Catalog row and a fetcher serving a Pack v2 body loads a sampler by GUID and returns its owner-scoped runtime handle.',
   expect:
-    'The GUID resolves to kind "sampler" with the authored filters, a second load retains the same runtime identity without fetching, and an uncatalogued GUID fails with a structured code.',
+    'The GUID resolves to kind "sampler" with the authored filters, repeated and finite-batch loads retain the same runtime identity without fetching, and an uncatalogued GUID fails with a structured code.',
   async run(checks) {
     const registry = new AssetRegistry();
     registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
@@ -57,6 +57,13 @@ export default defineFeature({
       first.ok && second.ok && first.value === second.value,
     );
     checks.equal('ready source is reused (one fetch)', fetched.length, 1);
+    const batch = await registry.loadMany([GUID, GUID], 'sampler');
+    checks.ok(
+      'finite batch grants retain the same source identity',
+      batch.ok && first.ok && batch.value.every((handle) => handle === first.value),
+    );
+    if (batch.ok) for (const handle of batch.value) registry.release(handle).unwrap();
+    checks.equal('batch retains ready source without transport', fetched.length, 1);
     const missing = await registry.load(UNKNOWN, 'sampler');
     checks.ok('uncatalogued GUID fails', !missing.ok);
     if (!missing.ok) {

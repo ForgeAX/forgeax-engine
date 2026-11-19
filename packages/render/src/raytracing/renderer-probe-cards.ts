@@ -107,7 +107,8 @@ export async function prepareProbeCards(
     readonly handle: number;
     references: number;
   }
-  const pools = new Map<RenderResourceScope, Map<number, PoolEntry>>();
+  let poolScope: RenderResourceScope | undefined;
+  const pool = new Map<number, PoolEntry>();
   const textureEntries: TexturePreparation[] = [];
   const textureIndices = new Map<TexturePreparation, number>();
   const pendingTextures = new Set<PoolEntry>();
@@ -115,8 +116,7 @@ export async function prepareProbeCards(
   let textureRevision = 0;
   const releasePool = (entry: PoolEntry) => {
     if (entry.references !== 0) return;
-    const pool = pools.get(entry.scope);
-    if (pool?.get(entry.handle) === entry) pool.delete(entry.handle);
+    if (poolScope === entry.scope && pool.get(entry.handle) === entry) pool.delete(entry.handle);
     pendingTextures.delete(entry);
     const index = textureIndices.get(entry.preparation);
     if (index === undefined) return;
@@ -131,13 +131,12 @@ export async function prepareProbeCards(
   };
   const referenceTexture = (
     scope: RenderResourceScope,
-    handle: import('@forgeax/engine-types').AssetHandle<'texture'>,
-    payload: import('@forgeax/engine-types').TextureAsset,
+    handle: import('@forgeax/engine-types').AssetHandle<'texture' | 'gpu-texture'>,
+    payload: import('@forgeax/engine-types').SampledTextureAsset,
   ) => {
-    let pool = pools.get(scope);
-    if (pool === undefined) {
-      pool = new Map();
-      pools.set(scope, pool);
+    if (poolScope !== scope) {
+      poolScope = scope;
+      pool.clear();
     }
     let entry = pool.get(handle);
     const revision = scope.assetRevision(handle);
@@ -376,7 +375,7 @@ export async function prepareProbeCards(
     const { mesh } = source;
     if (mesh.cardLayout === undefined)
       throw new Error(
-        `native Card source ${source.worldId}:${source.entityKey}:${source.slot} has no cooked whole-Mesh cardLayout`,
+        `native Card source ${source.entityKey}:${source.slot} has no cooked whole-Mesh cardLayout`,
       );
     const geometry = meshGeometry(source);
     const cardInstance = {
@@ -408,7 +407,7 @@ export async function prepareProbeCards(
     for (const source of sources) {
       if (source.mesh.cardLayout === undefined)
         throw new Error(
-          `native Card source ${source.worldId}:${source.entityKey}:${source.slot} has no cooked whole-Mesh cardLayout`,
+          `native Card source ${source.entityKey}:${source.slot} has no cooked whole-Mesh cardLayout`,
         );
       const sections = lowerSections(source);
       for (let ordinal = 0; ordinal < (source.instances?.instanceCount ?? 1); ordinal++) {

@@ -1,3 +1,9 @@
+declare module '@forgeax/engine-plugin' {
+  interface EngineContextServices {
+    workspaceTestResource?: import('@forgeax/engine-ecs').Resource<Set<number>>;
+  }
+}
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -8,13 +14,15 @@ import {
   createApp,
   createEngineWorkspaceRuntime,
   ENGINE_WORKSPACE_COMMAND_TOPIC,
+  type EngineWorkspaceProjectHandle,
+  type EngineWorkspaceRuntime,
   type EngineWorkspaceRuntimePackRequest,
   type EngineWorkspaceTarget,
   engineWorkspaceBrowserPlugin,
   engineWorkspaceResultService,
 } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import { defineResource, World } from '@forgeax/engine-ecs';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
 import type { HostTransportClient } from '@forgeax/engine-host/transport';
@@ -111,12 +119,100 @@ async function ready(client: HostTransportClient, target: EngineWorkspaceTarget,
 
 function frontendPage(
   backend: Awaited<ReturnType<typeof createBackendHost>>,
-  target: EngineWorkspaceTarget,
+  target: Pick<EngineWorkspaceTarget, 'sessionId' | 'targetId'>,
 ): HostTransportClient {
   return backend.transport.connect({
     kind: 'frontend',
     sourceId: `forgeax-workspace:${target.sessionId}:${target.targetId}`,
   });
+}
+
+type OpenedWorkspaceFixture = EngineWorkspaceProjectHandle & {
+  /** Browser handshake target manufactured by this test after document admission. */
+  readonly testWorldTarget: EngineWorkspaceTarget;
+};
+
+function projectFailure(owner: EngineWorkspaceProjectHandle): unknown {
+  const status = owner.status;
+  return status.phase === 'failed' ? status.failure : undefined;
+}
+
+function projectBrowserGeneration(owner: EngineWorkspaceProjectHandle): number {
+  const status = owner.status;
+  return 'browserGeneration' in status ? (status.browserGeneration ?? 0) : 0;
+}
+
+async function attachDocumentFixture(
+  admitted: EngineWorkspaceProjectHandle,
+): Promise<OpenedWorkspaceFixture> {
+  const document = await new Promise<
+    NonNullable<Extract<EngineWorkspaceProjectHandle['status'], { phase: 'starting' }>['document']>
+  >((resolve, reject) => {
+    let unsubscribe = () => {};
+    const inspect = () => {
+      const status = admitted.status;
+      if (status.phase === 'failed') {
+        unsubscribe();
+        reject(status.failure);
+      } else if (status.phase !== 'preparing') {
+        unsubscribe();
+        resolve(status.document);
+      }
+    };
+    unsubscribe = admitted.subscribeStatus(inspect);
+    inspect();
+  });
+  return {
+    get project() {
+      return admitted.project;
+    },
+    get handle() {
+      return admitted.handle;
+    },
+    get status() {
+      return admitted.status;
+    },
+    subscribeStatus: admitted.subscribeStatus,
+    get testWorldTarget() {
+      const status = admitted.status;
+      if (status.phase !== 'preparing' && status.target !== undefined) return status.target;
+      return {
+        sessionId: document.sessionId,
+        targetId: document.targetId,
+        worldId: `test-world:${document.sessionId}`,
+        headed: true,
+        width: 1280,
+        height: 720,
+        url: document.url,
+      };
+    },
+  };
+}
+
+async function openProviderProject(
+  provider: Pick<ReturnType<typeof createDevKitWorkspaceProvider>, 'openProject'>,
+  input: {
+    root: string;
+    signal?: AbortSignal;
+    generation?: number;
+    expectedTargetId?: string | null;
+    expectedTargetState?: 'lost';
+  },
+): Promise<OpenedWorkspaceFixture> {
+  const { generation = 1, ...rest } = input;
+  return attachDocumentFixture(await provider.openProject({ ...rest, generation }));
+}
+
+async function openRuntimeProject(
+  runtime: Pick<EngineWorkspaceRuntime, 'openProject'>,
+  input: {
+    root: string;
+    signal?: AbortSignal;
+    expectedTargetId?: string | null;
+    expectedTargetState?: 'lost';
+  },
+): Promise<OpenedWorkspaceFixture> {
+  return attachDocumentFixture(await runtime.openProject(input));
 }
 
 type WorkspaceCommandFixture = {
@@ -136,6 +232,104 @@ type WorkspaceCommandFixture = {
 };
 
 describe('DevKit workspace provider', () => {
+  it('admits the facts owner before backend preparation and joins its cleanup on close', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const dispose = vi.spyOn(backend, 'dispose');
+    let releaseBackend!: () => void;
+    let backendFactoryStarted!: () => void;
+    const backendStarted = new Promise<void>((resolve) => {
+      backendFactoryStarted = resolve;
+    });
+    const backendGate = new Promise<void>((resolve) => {
+      releaseBackend = resolve;
+    });
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => {
+        backendFactoryStarted();
+        await backendGate;
+        return backend;
+      },
+      viteServerFactory: vi.fn(async () => fakeServer()),
+    });
+    const opening = await provider.openProject({ root, generation: 41 });
+    await backendStarted;
+    expect(opening.status).toMatchObject({
+      phase: 'preparing',
+      sessionId: expect.any(String),
+      generation: 41,
+    });
+    const closing = Promise.resolve(
+      provider.closeProject({ project: opening.project, handle: opening.handle }),
+    );
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    await setImmediate();
+    expect(closed).toBe(false);
+    releaseBackend();
+    await closing;
+    expect(dispose).toHaveBeenCalledOnce();
+    await provider.dispose?.();
+  });
+
+  it('retains the cleanup failure from a backend acquired after close was requested', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const cleanupFailure = new Error('backend disposal failed');
+    vi.spyOn(backend, 'dispose').mockRejectedValue(cleanupFailure);
+    let releaseBackend!: () => void;
+    let backendFactoryStarted!: () => void;
+    const backendStarted = new Promise<void>((resolve) => {
+      backendFactoryStarted = resolve;
+    });
+    const backendGate = new Promise<void>((resolve) => {
+      releaseBackend = resolve;
+    });
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => {
+        backendFactoryStarted();
+        await backendGate;
+        return backend;
+      },
+      viteServerFactory: vi.fn(async () => fakeServer()),
+    });
+    const opened = await provider.openProject({ root, generation: 42 });
+    await backendStarted;
+    const closing = provider.closeProject({ project: opened.project, handle: opened.handle });
+    releaseBackend();
+    await expect(closing).rejects.toBe(cleanupFailure);
+    await expect(provider.dispose?.()).rejects.toBe(cleanupFailure);
+  });
+
+  it('retains the original Vite startup failure and the owner cleanup failure separately', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const startupFailure = new Error('Vite listen failed');
+    const cleanupFailure = new Error('Vite close failed');
+    const server = {
+      ...fakeServer(),
+      listen: vi.fn(async () => {
+        throw startupFailure;
+      }),
+      close: vi.fn(async () => {
+        throw cleanupFailure;
+      }),
+    } as unknown as ViteDevServer;
+    const provider = createDevKitWorkspaceProvider({
+      hostBinding: { backend },
+      viteServerFactory: async () => server,
+    });
+    const opened = await provider.openProject({ root, generation: 43 });
+    await vi.waitFor(() => expect(opened.status.phase).toBe('failed'));
+    expect(opened.status).toMatchObject({ phase: 'failed', failure: startupFailure });
+    const close = provider.closeProject({ project: opened.project, handle: opened.handle });
+    await expect(close).rejects.toBe(cleanupFailure);
+    await expect(provider.dispose?.()).rejects.toBe(cleanupFailure);
+    await backend.dispose();
+  });
+
   it.each([
     false,
     true,
@@ -150,9 +344,9 @@ describe('DevKit workspace provider', () => {
     let page: HostTransportClient | undefined;
     let closing: Promise<void> | undefined;
     try {
-      const opened = await provider.openProject({ root });
-      assert(opened.target);
-      const target = { ...opened.target, worldId: 'closing-world' };
+      const opened = await openProviderProject(provider, { root });
+      assert(opened.testWorldTarget);
+      const target = { ...opened.testWorldTarget, worldId: 'closing-world' };
       page = frontendPage(backend, target);
       const client = page;
       client.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) => {
@@ -185,7 +379,7 @@ describe('DevKit workspace provider', () => {
       await setImmediate();
       expect(server.close).toHaveBeenCalledOnce();
       await closing;
-      expect(opened.failure).toMatchObject({
+      expect(projectFailure(opened)).toMatchObject({
         code: 'engine-workspace-page-lost',
         detail: { cleanup: 'unconfirmed' },
       });
@@ -225,14 +419,14 @@ describe('DevKit workspace provider', () => {
     });
     let page: HostTransportClient | undefined;
     try {
-      const session = await provider.openProject({ root });
-      assert(session.target);
-      page = frontendPage(backend, session.target);
-      await ready(page, session.target, root);
-      expect(session.phase).toBe('running');
+      const session = await openProviderProject(provider, { root });
+      assert(session.testWorldTarget);
+      page = frontendPage(backend, session.testWorldTarget);
+      await ready(page, session.testWorldTarget, root);
+      expect(session.status.phase).toBe('running');
       await frontend.dispose();
-      expect(session.phase).toBe('failed');
-      expect(session.failure).toMatchObject({ code: 'engine-workspace-page-lost' });
+      expect(session.status.phase).toBe('failed');
+      expect(projectFailure(session)).toMatchObject({ code: 'engine-workspace-page-lost' });
       expect(backend.context.fiber.uid).not.toBeNull();
     } finally {
       await provider.dispose?.();
@@ -256,9 +450,9 @@ describe('DevKit workspace provider', () => {
     let page: HostTransportClient | undefined;
     let replacement: HostTransportClient | undefined;
     try {
-      const opened = await runtime.openProject({ root });
-      assert(opened.target);
-      const target = { ...opened.target, worldId: 'unacknowledged-world' };
+      const opened = await openRuntimeProject(runtime, { root });
+      assert(opened.testWorldTarget);
+      const target = { ...opened.testWorldTarget, worldId: 'unacknowledged-world' };
       page = frontendPage(backend, target);
       let acknowledge!: () => void;
       const sent = new Promise<void>((resolve) => {
@@ -282,13 +476,13 @@ describe('DevKit workspace provider', () => {
       if (reconnect) replacement = frontendPage(backend, target);
       await closing;
       page.close();
-      const reopened = await runtime.openProject({
+      const reopened = await openRuntimeProject(runtime, {
         root,
         expectedTargetId: target.targetId,
         expectedTargetState: 'lost',
       });
-      expect(reopened.target?.sessionId).not.toBe(target.sessionId);
-      expect(opened.failure).toMatchObject({
+      expect(reopened.testWorldTarget?.sessionId).not.toBe(target.sessionId);
+      expect(projectFailure(opened)).toMatchObject({
         code: 'engine-workspace-page-lost',
         detail: { cleanup: 'unconfirmed' },
       });
@@ -309,9 +503,9 @@ describe('DevKit workspace provider', () => {
     });
     let page: HostTransportClient | undefined;
     try {
-      const opened = await provider.openProject({ root });
-      assert(opened.target);
-      const target = { ...opened.target, worldId: 'cleanup-world' };
+      const opened = await openProviderProject(provider, { root });
+      assert(opened.testWorldTarget);
+      const target = { ...opened.testWorldTarget, worldId: 'cleanup-world' };
       page = frontendPage(backend, target);
       const client = page;
       client.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) => {
@@ -342,7 +536,7 @@ describe('DevKit workspace provider', () => {
         code: 'engine-workspace-plugin-cleanup-timeout',
       });
       client.close();
-      await expect(provider.openProject({ root })).rejects.toMatchObject({
+      await expect(provider.openProject({ root, generation: 44 })).rejects.toMatchObject({
         code: 'engine-workspace-plugin-cleanup-timeout',
       });
       expect(servers).toHaveBeenCalledOnce();
@@ -360,6 +554,8 @@ describe('DevKit workspace provider', () => {
     'failed',
     'lost',
   ] as const)('closes pre-preview Workspace installations in a %s borrowed page while retaining the game App across project reopen', async (health) => {
+    const resource1 = defineResource<Set<number>>('project-plugin-fibers');
+
     const root = await projectRoot();
     const backend = await createBackendHost({});
     const provider = createDevKitWorkspaceProvider({
@@ -368,7 +564,7 @@ describe('DevKit workspace provider', () => {
     });
     const world = new World();
     const runtime = createEngineWorkspaceRuntime(provider);
-    world.insertResource('project-plugin-fibers', new Set<number>());
+    world.insertResource(resource1, new Set<number>());
     const app = (
       await createApp({
         platform: {
@@ -409,12 +605,13 @@ describe('DevKit workspace provider', () => {
         runtimePacks: { scopeId: 'workspace-close-test' },
       })
     ).unwrap();
+    app.pluginContext.provide('workspaceTestResource', resource1);
     let page: HostTransportClient | undefined;
     try {
-      const opened = await runtime.openProject({ root });
-      assert(opened.target && provider.runtimePack);
-      page = frontendPage(backend, opened.target);
-      const target = { ...opened.target, worldId: world.identity };
+      const opened = await openRuntimeProject(runtime, { root });
+      assert(opened.testWorldTarget && provider.runtimePack);
+      page = frontendPage(backend, opened.testWorldTarget);
+      const target = { ...opened.testWorldTarget, worldId: world.identity };
       const browser = await app.pluginContext.plugin(engineWorkspaceBrowserPlugin, {
         app,
         project: opened.project,
@@ -451,8 +648,8 @@ describe('DevKit workspace provider', () => {
                   entry: 'behavior.js',
                   export: 'default',
                   modules: {
-                    'behavior.js': `export default { inject: ['world'], apply(ctx) {
-            const entries = ctx.world.getResource('project-plugin-fibers'); const id = ctx.fiber.uid;
+                    'behavior.js': `export default { inject: ['world', 'workspaceTestResource'], apply(ctx) {
+            const entries = ctx.world.getResource(ctx.workspaceTestResource); const id = ctx.fiber.uid;
             ctx.effect(() => { entries.add(id); return () => entries.delete(id); });
           } };`,
                   },
@@ -466,7 +663,7 @@ describe('DevKit workspace provider', () => {
       expect(
         await provider.runtimePack({ ...input, request: { operation: 'plugin-install', guid } }),
       ).toMatchObject({ state: 'active' });
-      const entries = world.getResource<Set<number>>('project-plugin-fibers');
+      const entries = world.getResource(resource1);
       expect(entries?.size).toBe(2);
       if (health === 'failed')
         await page.request(engineWorkspaceResultService(target.targetId), {
@@ -483,20 +680,20 @@ describe('DevKit workspace provider', () => {
       if (health === 'lost') {
         page.close();
         await vi.waitFor(() => expect(entries?.size).toBe(1));
-        expect(opened.phase).toBe('starting');
-        expect(opened.failure).toBeUndefined();
+        expect(opened.status.phase).toBe('starting');
+        expect(projectFailure(opened)).toBeUndefined();
       } else await runtime.closeProject(opened);
       expect(entries?.size).toBe(1);
       assert(game.uid !== null);
       expect(entries?.has(game.uid)).toBe(true);
       expect(page.connected).toBe(health !== 'lost');
       expect(app.pluginContext.runtimePacks?.producer.inspect().packs).toHaveLength(1);
-      const reopened = await runtime.openProject({ root });
-      if (health === 'lost') expect(opened.failure).toBeUndefined();
+      const reopened = await openRuntimeProject(runtime, { root });
+      if (health === 'lost') expect(projectFailure(opened)).toBeUndefined();
       await expect(
         provider.runtimePack({ ...input, request: { operation: 'plugin-install', guid } }),
       ).rejects.toMatchObject({ code: 'engine-workspace-session-closed' });
-      expect(reopened.target?.sessionId).not.toBe(target.sessionId);
+      expect(reopened.testWorldTarget?.sessionId).not.toBe(target.sessionId);
       assert(game.uid !== null);
       expect(entries?.has(game.uid)).toBe(true);
       await runtime.closeProject(reopened);
@@ -518,10 +715,10 @@ describe('DevKit workspace provider', () => {
     });
     let page: HostTransportClient | undefined;
     try {
-      const project = await provider.openProject({ root });
-      assert(project.target && provider.runtimePack && provider.prepareRuntimePackProgram);
-      page = frontendPage(backend, project.target);
-      const target = { ...project.target, worldId: 'actual-content-world' };
+      const project = await openProviderProject(provider, { root });
+      assert(project.testWorldTarget && provider.runtimePack && provider.prepareRuntimePackProgram);
+      page = frontendPage(backend, project.testWorldTarget);
+      const target = { ...project.testWorldTarget, worldId: 'actual-content-world' };
       const prepared = await provider.prepareRuntimePackProgram({
         ...project,
         source: {
@@ -571,7 +768,7 @@ describe('DevKit workspace provider', () => {
       expect(commands).toHaveLength(0);
       await ready(page, target, root);
       await expect(inspection).resolves.toEqual({ imports: {}, packs: [], executions: [] });
-      expect(project.target.worldId).toBe(target.worldId);
+      expect(project.testWorldTarget.worldId).toBe(target.worldId);
       expect(commands[0]?.input).toEqual({
         targetId: target.targetId,
         worldId: target.worldId,
@@ -622,7 +819,7 @@ describe('DevKit workspace provider', () => {
       viteServerFactory: async () => fakeServer(),
     });
     try {
-      await provider.openProject({ root });
+      await openProviderProject(provider, { root });
       const call = mocks.createViteConfig.mock.calls[0] as unknown as [
         unknown,
         unknown,
@@ -655,17 +852,17 @@ describe('DevKit workspace provider', () => {
       },
     });
     try {
-      const project = await provider.openProject({ root });
-      assert(project.target && provider.startPlay);
-      const editor = frontendPage(backend, project.target);
-      await ready(editor, { ...project.target, worldId: 'editor-world' }, root);
+      const project = await openProviderProject(provider, { root });
+      assert(project.testWorldTarget && provider.startPlay);
+      const editor = frontendPage(backend, project.testWorldTarget);
+      await ready(editor, { ...project.testWorldTarget, worldId: 'editor-world' }, root);
       const oldAssembly = backend.assembly.current.revision;
       for (let cycle = 0; cycle < 10; cycle++) {
         const game = await provider.startPlay(project);
         assert(game.tools && game.close && game.target.url);
         expect(game.browserGeneration).toBe(0);
         const gameTools = game.tools;
-        expect(game.target.targetId).not.toBe(project.target.targetId);
+        expect(game.target.targetId).not.toBe(project.testWorldTarget.targetId);
         expect(new URL(game.target.url).searchParams.get('forgeaxWorkspace')).toBe('game');
         const call = mocks.createViteConfig.mock.calls.at(-1) as unknown as [
           { root: string },
@@ -684,31 +881,51 @@ describe('DevKit workspace provider', () => {
         expect(call[3].host.backend).toBe(backend);
         expect(call[3].host.frontendAssembly).toBeUndefined();
         expect(call[3].host.frontendModule).toEqual(frontendModule);
-        expect(call[3].host.workspace.execution).toBe('game');
+        expect(call[3].host.workspace.execution).toBe('preview');
+        expect(mocks.createViteConfig).toHaveBeenCalledOnce();
+        expect(servers).toHaveLength(1);
+        expect(servers[0]?.listen).toHaveBeenCalledOnce();
+        expect(game.target.worldId).toBeUndefined();
+        expect(new URL(game.target.url).origin).toBe(
+          new URL(project.testWorldTarget.url ?? '').origin,
+        );
         const page = frontendPage(backend, game.target);
         const commands: WorkspaceCommandFixture[] = [];
+        const cancelled: string[] = [];
+        let replyToDeferredRead: (() => Promise<unknown>) | undefined;
         const respond = (connection: typeof page) => (payload: unknown) => {
           const command = payload as WorkspaceCommandFixture;
-          if (command.operation === 'closeWorkspace') return;
-          if (command.sessionId !== game.target.sessionId || command.kind !== 'command') return;
+          if (command.sessionId !== game.target.sessionId) return;
+          if (command.kind === 'cancel') {
+            cancelled.push(command.id);
+            return;
+          }
+          if (command.operation === 'closeWorkspace' || command.kind !== 'command') return;
           commands.push(command);
-          void connection.request(engineWorkspaceResultService(game.target.targetId), {
-            kind: 'result',
-            id: command.id,
-            sessionId: game.target.sessionId,
-            targetId: game.target.targetId,
-            ok: true,
-            value:
-              command.operation === 'resize'
-                ? {
-                    target: {
-                      ...game.target,
-                      width: (command.input as { width: number }).width,
-                      height: (command.input as { height: number }).height,
-                    },
-                  }
-                : { marker: 'actual-game' },
-          });
+          const reply = () =>
+            connection.request(engineWorkspaceResultService(game.target.targetId), {
+              kind: 'result',
+              id: command.id,
+              sessionId: game.target.sessionId,
+              targetId: game.target.targetId,
+              ok: true,
+              value:
+                command.operation === 'resize'
+                  ? {
+                      target: {
+                        ...game.target,
+                        width: (command.input as { width: number }).width,
+                        height: (command.input as { height: number }).height,
+                      },
+                    }
+                  : { marker: 'actual-game' },
+            });
+          if (
+            command.operation === 'entity.inspect' &&
+            (command.input as { entityId?: string }).entityId === 'deferred'
+          ) {
+            replyToDeferredRead = reply;
+          } else void reply();
         };
         const unsubscribe = page.subscribe(ENGINE_WORKSPACE_COMMAND_TOPIC, respond(page));
         let earlyTreeSettled = false;
@@ -739,6 +956,17 @@ describe('DevKit workspace provider', () => {
         expect(resized).toMatchObject({ width: 777, height: 444 });
         expect(game.target).toMatchObject({ width: 777, height: 444 });
         if (cycle === 0) {
+          const controller = new AbortController();
+          const pending = gameTools.inspect({ entityId: 'deferred', signal: controller.signal });
+          const rejected = expect(pending).rejects.toThrow('Selection retired');
+          await vi.waitFor(() => expect(replyToDeferredRead).toBeDefined());
+          const inspect = commands.at(-1);
+          assert(inspect);
+          expect(inspect.input).not.toHaveProperty('signal');
+          controller.abort(new Error('Selection retired'));
+          await rejected;
+          await vi.waitFor(() => expect(cancelled).toContain(inspect.id));
+          await replyToDeferredRead?.();
           page.close();
           await vi.waitFor(() => expect(game.phase).toBe('starting'));
           await expect(Promise.resolve().then(() => gameTools.tree())).rejects.toMatchObject({
@@ -759,7 +987,6 @@ describe('DevKit workspace provider', () => {
         }
         await game.close();
         await game.close();
-        expect(servers.at(-1)?.close).toHaveBeenCalledOnce();
         expect(servers[0]?.close).not.toHaveBeenCalled();
         expect(backend.assembly.current.revision).toBe(oldAssembly);
         unsubscribe();
@@ -829,27 +1056,106 @@ describe('DevKit workspace provider', () => {
     });
   });
 
-  it('cancels the real Pack catalog readiness probe with the caller signal', async () => {
-    const root = await projectRoot();
+  it('cancels a real Pack catalog readiness wait with its operation signal', async () => {
     const controller = new AbortController();
+    const reason = new Error('catalog probe cancelled');
     const fetchMock = vi.fn(async () => {
-      controller.abort(new Error('catalog probe cancelled'));
+      controller.abort(reason);
       return { status: 503, ok: false, body: null };
     });
     vi.stubGlobal('fetch', fetchMock);
-    let server: ReturnType<typeof fakeServer> | undefined;
-    const provider = createDevKitWorkspaceProvider({
-      readyTimeoutMs: 1_000,
-      backendFactory: async () => createBackendHost(),
-      viteServerFactory: async () => {
-        server = { ...fakeServer(), httpServer: {} } as ReturnType<typeof fakeServer>;
-        return server;
-      },
+    await expect(
+      waitForRuntimeCatalog('http://127.0.0.1:43123', 'workspace-scope', 1_000, controller.signal),
+    ).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('rejects cancelled project admission before allocating a backend or server', async () => {
+    const root = await projectRoot();
+    const controller = new AbortController();
+    const reason = new Error('project admission cancelled');
+    controller.abort(reason);
+    const backendFactory = vi.fn(async () => createBackendHost());
+    const viteServerFactory = vi.fn(async () => fakeServer());
+    const provider = createDevKitWorkspaceProvider({ backendFactory, viteServerFactory });
+    try {
+      await expect(
+        provider.openProject({ root, generation: 1, signal: controller.signal }),
+      ).rejects.toBe(reason);
+      expect(backendFactory).not.toHaveBeenCalled();
+      expect(viteServerFactory).not.toHaveBeenCalled();
+    } finally {
+      await provider.dispose?.();
+    }
+  });
+
+  it('keeps admitted project preparation alive after the real ToolApi terminal settles', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    let releasePreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
     });
-    const pending = provider.openProject({ root, signal: controller.signal });
-    await expect(pending).rejects.toThrow('catalog probe cancelled');
-    expect(fetchMock).toHaveBeenCalled();
-    expect(server?.close).toHaveBeenCalledOnce();
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => {
+        await preparation;
+        return createBackendHost();
+      },
+      viteServerFactory: async () => fakeServer(),
+    });
+    const fiber = await backend.context.plugin(devKitWorkspacePlugin, {
+      provider,
+      hostBinding: { backend },
+    });
+    await fiber.await();
+    const client = backend.transport.connect({ kind: 'cli', sourceId: 'test-cli' });
+    try {
+      await client.request('engine.workspace.call', {
+        operation: 'engine.project.open',
+        args: { root },
+      });
+      await setImmediate();
+      const admitted = backend.context.engineWorkspace?.project;
+      expect(admitted?.status.phase).toBe('preparing');
+      if (!admitted) throw new Error('Project must be admitted before its preparation completes');
+      releasePreparation();
+      await attachDocumentFixture(admitted);
+      expect(admitted.status.phase).toBe('starting');
+    } finally {
+      releasePreparation();
+      client.close();
+      await backend.dispose();
+      await provider.dispose?.();
+    }
+  });
+
+  it('transfers preparation cancellation to the session at progressive admission', async () => {
+    const root = await projectRoot();
+    const controller = new AbortController();
+    let releasePreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => {
+        await preparation;
+        return createBackendHost();
+      },
+      viteServerFactory: async () => fakeServer(),
+    });
+    const admitted = await provider.openProject({ root, generation: 1, signal: controller.signal });
+    try {
+      expect(admitted.status.phase).toBe('preparing');
+      controller.abort(new Error('caller ended after admission'));
+      expect(admitted.status.phase).toBe('preparing');
+      releasePreparation();
+      await attachDocumentFixture(admitted);
+      expect(admitted.status.phase).toBe('starting');
+    } finally {
+      releasePreparation();
+      await provider.closeProject(admitted);
+      await provider.dispose?.();
+    }
   });
 
   it('returns a provisional loopback target and uses the display host page as the only browser realm', async () => {
@@ -868,7 +1174,7 @@ describe('DevKit workspace provider', () => {
       },
     });
 
-    const opened = await provider.openProject({ root });
+    const opened = await openProviderProject(provider, { root });
     const canonicalRoot = await realpath(root);
     expect(opened.project).toEqual({
       id: 'workspace-game',
@@ -876,10 +1182,14 @@ describe('DevKit workspace provider', () => {
       name: 'Workspace Game',
       assetRoots: ['assets'],
     });
-    const target = opened.target;
+    const target = opened.testWorldTarget;
     if (target === undefined) throw new Error('provider fixture did not return a target');
     expect(target.url).toMatch(/^http:\/\/127\.0\.0\.1:43123\/\?forgeaxWorkspace=1/);
-    expect(target.worldId).toMatch(/^pending:workspace-/);
+    expect(opened.status.phase).toBe('starting');
+    if (opened.status.phase !== 'starting')
+      throw new Error('document must precede real World readiness');
+    expect(opened.status.target).toBeUndefined();
+    expect(target.worldId).toMatch(/^test-world:workspace-/);
     expect(server?.listen).toHaveBeenCalledOnce();
     expect(mocks.createViteConfig).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'workspace-game', root: canonicalRoot }),
@@ -1024,8 +1334,8 @@ describe('DevKit workspace provider', () => {
       },
       viteServerFactory: async () => fakeServer(),
     });
-    const opened = await provider.openProject({ root });
-    const openedTarget = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    const openedTarget = opened.testWorldTarget;
     if (backend === undefined || openedTarget === undefined)
       throw new Error('provider fixture did not open');
     const page = frontendPage(backend, openedTarget);
@@ -1190,7 +1500,15 @@ describe('DevKit workspace provider', () => {
       expect(await replacement.getCamera({ targetId: replacement.target.targetId })).toMatchObject({
         version: 0,
       });
-    await provider.closeProject({ project: opened.project, handle: opened.handle });
+    const closingProject = provider.closeProject({
+      project: opened.project,
+      handle: opened.handle,
+    });
+    if (failClose)
+      await expect(closingProject).rejects.toMatchObject({
+        code: 'engine-workspace-session-closed',
+      });
+    else await closingProject;
     const closes = commands.filter((command) => command.operation === 'closePreview');
     expect(closes).toHaveLength(2);
     expect(closes.map((command) => command.input?.targetId)).toEqual([
@@ -1215,9 +1533,9 @@ describe('DevKit workspace provider', () => {
         return server;
       },
     });
-    const opened = await provider.openProject({ root });
+    const opened = await openProviderProject(provider, { root });
     if (backend === undefined) throw new Error('provider fixture did not open');
-    const target = opened.target;
+    const target = opened.testWorldTarget;
     if (target === undefined) throw new Error('provider fixture did not return a target');
     const page = frontendPage(backend, target);
     const commands: unknown[] = [];
@@ -1232,8 +1550,8 @@ describe('DevKit workspace provider', () => {
     });
     controller.abort(new Error('test cancellation'));
     await expect(pending).rejects.toThrow('test cancellation');
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({ kind: 'cancel', sessionId: opened.target?.sessionId });
+    expect(commands).toHaveLength(0);
+    expect(opened.status.phase).not.toBe('failed');
     await provider.closeProject({ project: opened.project, handle: opened.handle });
     expect(server?.close).toHaveBeenCalledOnce();
     expect(page.connected).toBe(false);
@@ -1260,43 +1578,43 @@ describe('DevKit workspace provider', () => {
         return server;
       },
     });
-    const opened = await provider.openProject({ root });
-    if (backend === undefined || opened.target === undefined)
+    const opened = await openProviderProject(provider, { root });
+    if (backend === undefined || opened.testWorldTarget === undefined)
       throw new Error('provider fixture did not open');
-    const page = frontendPage(backend, opened.target);
+    const page = frontendPage(backend, opened.testWorldTarget);
     const commands: unknown[] = [];
     page.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) =>
       commands.push(command),
     );
-    await ready(page, { ...opened.target, worldId: 'world-1' }, root);
+    await ready(page, { ...opened.testWorldTarget, worldId: 'world-1' }, root);
     expect(changed).toHaveBeenCalledOnce();
-    expect(opened.failure).toBeUndefined();
+    expect(projectFailure(opened)).toBeUndefined();
     if (loss === 'disconnect') page.close();
     else
-      await page.request(engineWorkspaceResultService(opened.target.targetId), {
+      await page.request(engineWorkspaceResultService(opened.testWorldTarget.targetId), {
         kind: loss === 'failure' ? 'failed' : 'lost',
         error: {
           code: 'app-system-update-failed',
           expected: 'A healthy World',
           hint: 'Stop the failed run.',
         },
-        id: `page-lost:${opened.target.sessionId}`,
-        sessionId: opened.target.sessionId,
-        targetId: opened.target.targetId,
+        id: `page-lost:${opened.testWorldTarget.sessionId}`,
+        sessionId: opened.testWorldTarget.sessionId,
+        targetId: opened.testWorldTarget.targetId,
       });
     expect(commands).toHaveLength(0);
     if (loss === 'failure') {
       const failure = { code: 'app-system-update-failed' };
-      await vi.waitFor(() => expect(opened.failure).toMatchObject(failure));
-      expect(opened.phase).toBe('failed');
+      await vi.waitFor(() => expect(projectFailure(opened)).toMatchObject(failure));
+      expect(opened.status.phase).toBe('failed');
       await expect(
         provider.listAssets({ project: opened.project, handle: opened.handle }),
       ).rejects.toMatchObject(failure);
       expect(commands).toHaveLength(0);
     } else {
-      await vi.waitFor(() => expect(opened.phase).toBe('starting'));
-      expect(opened.failure).toBeUndefined();
-      expect(opened.browserGeneration).toBe(1);
+      await vi.waitFor(() => expect(opened.status.phase).toBe('starting'));
+      expect(projectFailure(opened)).toBeUndefined();
+      expect(projectBrowserGeneration(opened)).toBe(1);
       expect(server?.close).not.toHaveBeenCalled();
       const pendingAssets = provider.listAssets({
         project: opened.project,
@@ -1324,28 +1642,38 @@ describe('DevKit workspace provider', () => {
   it.each([
     'replacement',
     'failure',
-  ])('closes an in-flight Play server instead of adopting it after Editor %s', async (loss) => {
+  ])('revokes an in-flight Play admission after Editor %s without closing shared resources', async (loss) => {
     const root = await projectRoot();
     const backend = await createBackendHost();
     const editorServer = fakeServer();
-    const gameServer = fakeServer();
     let release!: () => void;
     const prepared = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const serverFactory = vi.fn(async () => {
-      if (serverFactory.mock.calls.length === 1) return editorServer;
-      await prepared;
-      return gameServer;
-    });
+    const serverFactory = vi.fn(async () => editorServer);
     const provider = createDevKitWorkspaceProvider({
       hostBinding: { backend },
       viteServerFactory: serverFactory,
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target || !provider.startPlay) throw new Error('workspace Play fixture missing');
-    const page = frontendPage(backend, opened.target);
-    await ready(page, { ...opened.target, worldId: 'old-world' }, root);
+    const opened = await openProviderProject(provider, { root });
+    const binding = (
+      mocks.createViteConfig.mock.calls.at(-1) as unknown as [
+        unknown,
+        unknown,
+        unknown,
+        { host: import('../host-binding.js').DevKitHostBinding },
+      ]
+    )[3].host;
+    const prepareGame = vi.fn(async () => {
+      await prepared;
+      return createHostAssembly();
+    });
+    if (!binding?.pages) throw new Error('shared page admissions missing');
+    binding.pages.prepareGame = prepareGame;
+    if (!opened.testWorldTarget || !provider.startPlay)
+      throw new Error('workspace Play fixture missing');
+    const page = frontendPage(backend, opened.testWorldTarget);
+    await ready(page, { ...opened.testWorldTarget, worldId: 'old-world' }, root);
     const pending = provider.startPlay(opened);
     const failure = {
       code: 'app-system-update-failed',
@@ -1355,24 +1683,24 @@ describe('DevKit workspace provider', () => {
     const rejected = expect(pending).rejects.toMatchObject(
       loss === 'failure' ? failure : { code: 'engine-workspace-browser-detached' },
     );
-    await vi.waitFor(() => expect(serverFactory).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(prepareGame).toHaveBeenCalledOnce());
     let replacement = page;
     if (loss === 'failure')
-      await page.request(engineWorkspaceResultService(opened.target.targetId), {
+      await page.request(engineWorkspaceResultService(opened.testWorldTarget.targetId), {
         kind: 'failed',
         id: 'failure',
-        sessionId: opened.target.sessionId,
-        targetId: opened.target.targetId,
+        sessionId: opened.testWorldTarget.sessionId,
+        targetId: opened.testWorldTarget.targetId,
         error: failure,
       });
     else {
       page.close();
-      replacement = frontendPage(backend, opened.target);
-      await ready(replacement, { ...opened.target, worldId: 'new-world' }, root);
+      replacement = frontendPage(backend, opened.testWorldTarget);
+      await ready(replacement, { ...opened.testWorldTarget, worldId: 'new-world' }, root);
     }
     release();
     await rejected;
-    expect(gameServer.close).toHaveBeenCalledOnce();
+    expect(serverFactory).toHaveBeenCalledOnce();
     expect(editorServer.close).not.toHaveBeenCalled();
     replacement.close();
     await provider.closeProject(opened);
@@ -1387,9 +1715,9 @@ describe('DevKit workspace provider', () => {
       hostBinding: { backend },
       viteServerFactory: async () => fakeServer(),
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const page = frontendPage(backend, target);
     const message = {
       kind: 'ready',
@@ -1403,13 +1731,13 @@ describe('DevKit workspace provider', () => {
       page.request(engineWorkspaceResultService(target.targetId), message),
       page.request(engineWorkspaceResultService(target.targetId), message),
     ]);
-    expect(opened.browserGeneration).toBe(1);
+    expect(projectBrowserGeneration(opened)).toBe(1);
     await page.request(engineWorkspaceResultService(target.targetId), {
       ...message,
       target: { ...target, worldId: 'unadmitted-world' },
     });
-    expect(opened.browserGeneration).toBe(1);
-    expect(opened.target?.worldId).toBe('world');
+    expect(projectBrowserGeneration(opened)).toBe(1);
+    expect(opened.testWorldTarget?.worldId).toBe('world');
     page.close();
     await provider.closeProject(opened);
     await backend.dispose();
@@ -1430,9 +1758,9 @@ describe('DevKit workspace provider', () => {
       viteServerFactory: async () => server,
       onTargetChanged: () => (retiring ? retirement : undefined),
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const page = frontendPage(backend, target);
     await ready(page, { ...target, worldId: 'old-world' }, root);
     retiring = true;
@@ -1453,8 +1781,8 @@ describe('DevKit workspace provider', () => {
     await provider.closeProject(opened);
     release();
     await retired;
-    expect(opened.browserGeneration).toBe(1);
-    expect(opened.target?.worldId).toBe('old-world');
+    expect(projectBrowserGeneration(opened)).toBe(1);
+    expect(opened.testWorldTarget?.worldId).toBe('old-world');
     expect(server.close).toHaveBeenCalledOnce();
     replacement.close();
     await backend.dispose();
@@ -1476,9 +1804,9 @@ describe('DevKit workspace provider', () => {
       readyTimeoutMs: 500,
       viteServerFactory: serverFactory,
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const old = frontendPage(backend, target);
     const commands: WorkspaceCommandFixture[] = [];
     old.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) =>
@@ -1536,9 +1864,9 @@ describe('DevKit workspace provider', () => {
       hostBinding: { backend },
       viteServerFactory: async () => fakeServer(),
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const old = frontendPage(backend, target);
     const oldCommands: WorkspaceCommandFixture[] = [];
     old.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) =>
@@ -1581,8 +1909,8 @@ describe('DevKit workspace provider', () => {
         }),
       ).rejects.toMatchObject({ code: 'engine-workspace-caller-mismatch' });
       old.close();
-      expect(opened.phase).toBe('running');
-      expect(opened.browserGeneration).toBe(2);
+      expect(opened.status.phase).toBe('running');
+      expect(projectBrowserGeneration(opened)).toBe(2);
     } finally {
       old.close();
       current.close();
@@ -1602,9 +1930,7 @@ describe('DevKit workspace provider', () => {
       release = resolve;
     });
     let losses = 0;
-    let opened: Awaited<
-      ReturnType<ReturnType<typeof createDevKitWorkspaceProvider>['openProject']>
-    >;
+    let opened: OpenedWorkspaceFixture;
     const failure = {
       code: 'engine-workspace-plugin-cleanup-timeout',
       expected: 'confirmed cleanup',
@@ -1615,14 +1941,14 @@ describe('DevKit workspace provider', () => {
       hostBinding: { backend },
       viteServerFactory: async () => fakeServer(),
       onTargetChanged: async () => {
-        if (opened?.phase !== 'starting' || ++losses !== 1) return;
+        if (opened?.status.phase !== 'starting' || ++losses !== 1) return;
         await retirement;
         if (fails) throw failure;
       },
     });
-    opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const canonicalRoot = await realpath(root);
     const first = frontendPage(backend, target);
     await ready(first, { ...target, worldId: 'old-world' }, root);
@@ -1640,14 +1966,14 @@ describe('DevKit workspace provider', () => {
     });
     await setImmediate();
     try {
-      expect(opened.phase).toBe('starting');
-      expect(opened.browserGeneration).toBe(1);
+      expect(opened.status.phase).toBe('starting');
+      expect(projectBrowserGeneration(opened)).toBe(1);
     } finally {
       release();
       await admission;
     }
-    expect(opened.phase).toBe(fails ? 'failed' : 'running');
-    if (fails) expect(opened.failure).toMatchObject(failure);
+    expect(opened.status.phase).toBe(fails ? 'failed' : 'running');
+    if (fails) expect(projectFailure(opened)).toMatchObject(failure);
     third.close();
     if (fails) await expect(provider.closeProject(opened)).rejects.toMatchObject(failure);
     else await provider.closeProject(opened);
@@ -1676,15 +2002,15 @@ describe('DevKit workspace provider', () => {
         return Promise.reject(failure);
       },
     });
-    const opened = await provider.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const page = frontendPage(backend, opened.target);
-    await ready(page, { ...opened.target, worldId: 'world' }, root);
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const page = frontendPage(backend, opened.testWorldTarget);
+    await ready(page, { ...opened.testWorldTarget, worldId: 'world' }, root);
     rejects = true;
     page.close();
     await setImmediate();
-    expect(opened.phase).toBe('failed');
-    expect(opened.failure).toMatchObject(failure);
+    expect(opened.status.phase).toBe('failed');
+    expect(projectFailure(opened)).toMatchObject(failure);
     await expect(provider.listAssets(opened)).rejects.toMatchObject(failure);
     await expect(provider.closeProject(opened)).rejects.toMatchObject(failure);
     await backend.dispose().catch(() => {});
@@ -1723,14 +2049,14 @@ describe('DevKit workspace provider', () => {
       },
       viteServerFactory: async () => fakeServer(),
     });
-    const opened = await provider.openProject({ root });
-    if (!backend || !opened.target) throw new Error('workspace fixture did not open');
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    if (!backend || !opened.testWorldTarget) throw new Error('workspace fixture did not open');
+    const target = opened.testWorldTarget;
     const page = frontendPage(backend, target);
     await ready(page, { ...target, worldId: 'world-old' }, root);
     retiring = true;
     page.close();
-    expect(opened.phase).toBe('starting');
+    expect(opened.status.phase).toBe('starting');
     const replacement = frontendPage(backend, target);
     const canonicalRoot = await realpath(root);
     const admission = replacement.request(engineWorkspaceResultService(target.targetId), {
@@ -1742,20 +2068,20 @@ describe('DevKit workspace provider', () => {
       target: { ...target, worldId: 'world-new' },
     });
     await setImmediate();
-    expect(opened.phase).toBe('starting');
-    expect(opened.browserGeneration).toBe(1);
+    expect(opened.status.phase).toBe('starting');
+    expect(projectBrowserGeneration(opened)).toBe(1);
     release?.();
     await admission;
     if (fails) {
-      expect(opened.phase).toBe('failed');
-      expect(opened.failure).toMatchObject(failure);
+      expect(opened.status.phase).toBe('failed');
+      expect(projectFailure(opened)).toMatchObject(failure);
       await expect(
         provider.listAssets({ project: opened.project, handle: opened.handle }),
       ).rejects.toMatchObject(failure);
     } else {
-      expect(opened.phase).toBe('running');
-      expect(opened.browserGeneration).toBe(2);
-      expect(opened.target?.worldId).toBe('world-new');
+      expect(opened.status.phase).toBe('running');
+      expect(projectBrowserGeneration(opened)).toBe(2);
+      expect(opened.testWorldTarget?.worldId).toBe('world-new');
     }
     replacement.close();
     await Promise.resolve(
@@ -1777,9 +2103,9 @@ describe('DevKit workspace provider', () => {
     await fiber.await();
     const runtime = backend.context.engineWorkspace;
     if (!runtime) throw new Error('workspace runtime not installed');
-    const opened = await runtime.openProject({ root });
-    if (!opened.target) throw new Error('workspace target missing');
-    const target = opened.target;
+    const opened = await openRuntimeProject(runtime, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
     const page = frontendPage(backend, target);
     page.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) => {
       if (command.operation !== 'openPreview') return;
@@ -1834,8 +2160,8 @@ describe('DevKit workspace provider', () => {
       target: { ...target, worldId: 'world-new' },
     });
     await setImmediate();
-    expect(runtime.project?.phase).toBe('starting');
-    expect(runtime.project?.browserGeneration).toBe(1);
+    expect(runtime.project?.status.phase).toBe('starting');
+    expect(runtime.project ? projectBrowserGeneration(runtime.project) : undefined).toBe(1);
     const failure = {
       code: 'engine-workspace-plugin-cleanup-timeout',
       expected: 'confirmed cleanup',
@@ -1856,16 +2182,149 @@ describe('DevKit workspace provider', () => {
     ).rejects.toMatchObject({ code: 'engine-workspace-preview-closed' });
     if (fails) {
       expect(runtime.play).toBe(play);
-      expect(runtime.project?.phase).toBe('failed');
+      expect(runtime.project?.status.phase).toBe('failed');
       await expect(runtime.listAssets(opened)).rejects.toMatchObject(failure);
     } else {
       expect(runtime.play).toBeUndefined();
-      expect(runtime.project?.phase).toBe('running');
-      expect(runtime.project?.browserGeneration).toBe(2);
+      expect(runtime.project?.status.phase).toBe('running');
+      expect(runtime.project ? projectBrowserGeneration(runtime.project) : undefined).toBe(2);
     }
     replacement.close();
     game.close();
     await backend.dispose().catch(() => {});
+  });
+
+  it.each([
+    'scene',
+    'mesh',
+  ])('retires a %s preview whose close command is interrupted by pagehide before admitting a replacement', async (kind) => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const fiber = backend.context.plugin(devKitWorkspacePlugin, {
+      hostBinding: { backend },
+      readyTimeoutMs: 500,
+      viteServerFactory: async () => fakeServer(),
+    });
+    await fiber.await();
+    const runtime = backend.context.engineWorkspace;
+    if (!runtime) throw new Error('workspace runtime not installed');
+    const opened = await openRuntimeProject(runtime, { root });
+    const target = opened.testWorldTarget;
+    const page = frontendPage(backend, target);
+    let closingCommand: WorkspaceCommandFixture | undefined;
+    page.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) => {
+      if (command.operation === 'closePreview') closingCommand = command;
+      if (command.operation !== 'openPreview') return;
+      void page.request(engineWorkspaceResultService(target.targetId), {
+        kind: 'result',
+        id: command.id,
+        sessionId: target.sessionId,
+        targetId: target.targetId,
+        ok: true,
+        value: {
+          previewOwner: command.id,
+          asset: command.input?.asset,
+          target: { ...target, targetId: command.input?.previewTargetId, worldId: 'old-world' },
+        },
+      });
+    });
+    await ready(page, { ...target, worldId: 'old-world' }, root);
+    const preview = await runtime.openPreview({
+      project: opened.project,
+      asset: { guid: kind, kind, previewable: true },
+      width: 64,
+      height: 64,
+    });
+    const close = runtime.closePreview(preview);
+    const settled = close.catch((error: unknown) => error);
+    await vi.waitFor(() => expect(closingCommand).toBeDefined());
+    await page.request(engineWorkspaceResultService(target.targetId), {
+      kind: 'lost',
+      id: 'pagehide',
+      sessionId: target.sessionId,
+      targetId: target.targetId,
+    });
+    expect(await settled).toBeUndefined();
+    const replacement = frontendPage(backend, target);
+    try {
+      await ready(replacement, { ...target, worldId: 'new-world' }, root);
+      expect(runtime.project?.status.phase).toBe('running');
+      expect(projectBrowserGeneration(opened)).toBe(2);
+      expect(runtime.previews).toEqual([]);
+    } finally {
+      page.close();
+      replacement.close();
+      await backend.dispose().catch(() => {});
+    }
+  });
+
+  it('fences pagehide results before the old socket disconnects and admits the refreshed page', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const provider = createDevKitWorkspaceProvider({
+      hostBinding: { backend },
+      viteServerFactory: async () => fakeServer(),
+    });
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
+    const old = frontendPage(backend, target);
+    await ready(old, { ...target, worldId: 'old-world' }, root);
+    await old.request(engineWorkspaceResultService(target.targetId), {
+      kind: 'lost',
+      id: 'pagehide',
+      sessionId: target.sessionId,
+      targetId: target.targetId,
+    });
+    await expect(
+      old.request(engineWorkspaceResultService(target.targetId), {
+        kind: 'failed',
+        id: 'late-teardown',
+        sessionId: target.sessionId,
+        targetId: target.targetId,
+        error: { code: 'old-realm-disposed', hint: 'The old page is leaving.' },
+      }),
+    ).rejects.toMatchObject({ code: 'engine-workspace-caller-mismatch' });
+    await expect(ready(old, { ...target, worldId: 'old-world' }, root)).rejects.toMatchObject({
+      code: 'engine-workspace-caller-mismatch',
+    });
+    expect(opened.status.phase).toBe('starting');
+    const replacement = frontendPage(backend, target);
+    await ready(replacement, { ...target, worldId: 'new-world' }, root);
+    old.close();
+    expect(opened.status.phase).toBe('running');
+    expect(projectBrowserGeneration(opened)).toBe(2);
+    expect(projectFailure(opened)).toBeUndefined();
+    replacement.close();
+    await provider.dispose?.();
+    await backend.dispose();
+  });
+
+  it('preserves the original browser failure when its socket subsequently disconnects', async () => {
+    const root = await projectRoot();
+    const backend = await createBackendHost();
+    const provider = createDevKitWorkspaceProvider({
+      hostBinding: { backend },
+      viteServerFactory: async () => fakeServer(),
+    });
+    const opened = await openProviderProject(provider, { root });
+    if (!opened.testWorldTarget) throw new Error('workspace target missing');
+    const target = opened.testWorldTarget;
+    const page = frontendPage(backend, target);
+    await ready(page, { ...target, worldId: 'world' }, root);
+    const error = { code: 'render-startup-failed', hint: 'Inspect the original failing frame.' };
+    await page.request(engineWorkspaceResultService(target.targetId), {
+      kind: 'failed',
+      id: 'failure',
+      sessionId: target.sessionId,
+      targetId: target.targetId,
+      error,
+    });
+    page.close();
+    expect(opened.status.phase).toBe('failed');
+    expect(projectFailure(opened)).toMatchObject(error);
+    await provider.dispose?.();
+    await backend.dispose();
   });
 
   it('reattaches a refreshed page without closing Vite or polling the catalog', async () => {
@@ -1883,8 +2342,8 @@ describe('DevKit workspace provider', () => {
         return server;
       },
     });
-    const opened = await provider.openProject({ root });
-    const target = opened.target;
+    const opened = await openProviderProject(provider, { root });
+    const target = opened.testWorldTarget;
     if (backend === undefined || target === undefined)
       throw new Error('provider fixture did not open');
     const page = frontendPage(backend, target);
@@ -1893,8 +2352,8 @@ describe('DevKit workspace provider', () => {
       if (command.kind === 'command' && command.operation === 'listAssets') sent.push(command);
     });
     await ready(page, { ...target, worldId: 'world-1' }, root);
-    expect(opened.phase).toBe('running');
-    expect(opened.browserGeneration).toBe(1);
+    expect(opened.status.phase).toBe('running');
+    expect(projectBrowserGeneration(opened)).toBe(1);
     const inflight = provider.listAssets({ project: opened.project, handle: opened.handle });
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     const detached = expect(inflight).rejects.toMatchObject({
@@ -1902,7 +2361,7 @@ describe('DevKit workspace provider', () => {
     });
     page.close();
     await detached;
-    await vi.waitFor(() => expect(opened.phase).toBe('starting'));
+    await vi.waitFor(() => expect(opened.status.phase).toBe('starting'));
     expect(server?.close).not.toHaveBeenCalled();
     const replacement = frontendPage(backend, target);
     const commands: WorkspaceCommandFixture[] = [];
@@ -1925,16 +2384,16 @@ describe('DevKit workspace provider', () => {
       { guid: 'scene-guid', kind: 'scene', name: 'Scene', previewable: true },
     ]);
     expect(commands).toHaveLength(1);
-    expect(opened.phase).toBe('running');
-    expect(opened.browserGeneration).toBe(2);
-    expect(opened.failure).toBeUndefined();
+    expect(opened.status.phase).toBe('running');
+    expect(projectBrowserGeneration(opened)).toBe(2);
+    expect(projectFailure(opened)).toBeUndefined();
     expect(server?.close).not.toHaveBeenCalled();
     expect(server?.listen).toHaveBeenCalledOnce();
     await provider.closeProject({ project: opened.project, handle: opened.handle });
     expect(server?.close).toHaveBeenCalledOnce();
   });
 
-  it('publishes the workspace URL after the Pack plugin ready promise and does not poll', async () => {
+  it('publishes the project document while the Pack Catalog is still preparing', async () => {
     const root = await projectRoot();
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -1963,18 +2422,18 @@ describe('DevKit workspace provider', () => {
           },
         }) as unknown as ViteDevServer,
     });
-    let settled = false;
-    const pending = Promise.resolve(provider.openProject({ root })).then((opened) => {
-      settled = true;
-      return opened;
-    });
+    const opened = await provider.openProject({ root, generation: 45 });
     await vi.waitFor(() => expect(readyCalls).toBe(1));
-    expect(settled).toBe(false);
+    await vi.waitFor(() => expect(opened.status.phase).toBe('starting'));
+    expect(opened.status).toMatchObject({
+      phase: 'starting',
+      document: { url: expect.any(String) },
+    });
     expect(fetchMock).not.toHaveBeenCalled();
     releaseCatalog?.();
-    const opened = await pending;
     expect(opened.project.id).toBe('workspace-game');
     expect(fetchMock).not.toHaveBeenCalled();
+    await provider.closeProject({ project: opened.project, handle: opened.handle });
     await provider.dispose?.();
   });
 
@@ -1988,21 +2447,21 @@ describe('DevKit workspace provider', () => {
       },
       viteServerFactory: async () => fakeServer(),
     });
-    const opened = await provider.openProject({ root });
-    if (backend === undefined || opened.target === undefined)
+    const opened = await openProviderProject(provider, { root });
+    if (backend === undefined || opened.testWorldTarget === undefined)
       throw new Error('provider fixture did not open');
     const oldPage = backend.transport.connect({
       kind: 'frontend',
-      sourceId: `forgeax-workspace:old:${opened.target.targetId}`,
+      sourceId: `forgeax-workspace:old:${opened.testWorldTarget.targetId}`,
     });
     await expect(
-      oldPage.request(engineWorkspaceResultService(opened.target.targetId), {
+      oldPage.request(engineWorkspaceResultService(opened.testWorldTarget.targetId), {
         kind: 'ready',
-        id: opened.target.sessionId,
-        sessionId: opened.target.sessionId,
-        targetId: opened.target.targetId,
+        id: opened.testWorldTarget.sessionId,
+        sessionId: opened.testWorldTarget.sessionId,
+        targetId: opened.testWorldTarget.targetId,
         project: opened.project,
-        target: opened.target,
+        target: opened.testWorldTarget,
       }),
     ).rejects.toMatchObject({ code: 'engine-workspace-caller-mismatch' });
     oldPage.close();
@@ -2027,12 +2486,12 @@ describe('DevKit workspace provider', () => {
         return serverReady;
       },
     });
-    const opening = provider.openProject({ root });
+    const opened = await provider.openProject({ root, generation: 1 });
     await serverStart;
     await backend.dispose();
     const lateServer = fakeServer();
     releaseServer?.(lateServer);
-    await expect(opening).rejects.toMatchObject({ code: 'engine-workspace-session-closed' });
+    await vi.waitFor(() => expect(opened.status.phase).toBe('failed'));
     expect(lateServer.close).toHaveBeenCalledOnce();
     await provider.dispose?.();
   });
@@ -2058,16 +2517,14 @@ describe('DevKit workspace provider', () => {
       },
       viteServerFactory: async () => fakeServer(),
     });
-    const opening = provider.openProject({ root });
+    const opened = await provider.openProject({ root, generation: 1 });
     await backendStart;
     const disposing = provider.dispose?.();
     if (releaseBackend === undefined)
       throw new Error('provider fixture did not expose backend gate');
     releaseBackend(await createBackendHost());
-    await expect(opening).rejects.toMatchObject({
-      code: 'engine-workspace-provider-disposed',
-    });
     await disposing;
+    expect(opened.status.phase).toBe('failed');
     expect(backend?.assembly.activation.state).toBe('disposed');
   });
 });
@@ -2089,7 +2546,7 @@ describe('DevKit workspace provider borrowed host lifecycle', () => {
       },
     });
     try {
-      const first = await provider.openProject({ root });
+      const first = await openProviderProject(provider, { root });
       expect(mocks.createViteConfig).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'workspace-game' }),
         'serve',
@@ -2098,7 +2555,7 @@ describe('DevKit workspace provider borrowed host lifecycle', () => {
         // borrowed binding; the Host itself stays the borrowed instance.
         expect.objectContaining({ host: expect.objectContaining({ backend }) }),
       );
-      const firstTarget = first.target;
+      const firstTarget = first.testWorldTarget;
       if (firstTarget === undefined) throw new Error('borrowed fixture did not return a target');
       const page = frontendPage(backend, firstTarget);
       page.subscribe<WorkspaceCommandFixture>(ENGINE_WORKSPACE_COMMAND_TOPIC, (command) => {
@@ -2129,8 +2586,8 @@ describe('DevKit workspace provider borrowed host lifecycle', () => {
       expect(ownerClient.connected).toBe(true);
       expect(page.connected).toBe(true);
 
-      const second = await provider.openProject({ root });
-      const secondTarget = second.target;
+      const second = await openProviderProject(provider, { root });
+      const secondTarget = second.testWorldTarget;
       if (secondTarget === undefined) throw new Error('borrowed rebind did not return a target');
       expect(secondTarget.sessionId).not.toBe(firstTarget.sessionId);
       const secondPage = frontendPage(backend, secondTarget);

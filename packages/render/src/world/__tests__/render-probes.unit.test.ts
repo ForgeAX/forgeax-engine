@@ -3,9 +3,8 @@ import type { ReflectionProbeFact } from '../../reflection/projection';
 import { RenderReflectionProbe, renderProbesOf } from '../render-probes';
 import { createRenderWorld } from '../render-world';
 
-function probe(entityKey: number, priority = 0, worldId = 0): ReflectionProbeFact {
+function probe(entityKey: number, priority = 0): ReflectionProbeFact {
   return {
-    worldId,
     entityKey,
     center: [entityKey, 0, 0],
     halfExtents: [1, 1, 1],
@@ -38,13 +37,9 @@ function fixture() {
 describe('RenderProbes', () => {
   it('holds one entity per source probe and sorts the roster by source identity', () => {
     const { frame, rows } = fixture();
-    const roster = frame([probe(9, 0, 1), probe(4, 0, 1), probe(7, 0, 0)]);
+    const roster = frame([probe(9, 0), probe(4, 0), probe(7, 0)]);
     expect(rows()).toBe(3);
-    expect(roster.facts.map((fact) => `${fact.worldId}:${fact.entityKey}`)).toEqual([
-      '0:7',
-      '1:4',
-      '1:9',
-    ]);
+    expect(roster.facts.map((fact) => `${fact.entityKey}`)).toEqual(['4', '7', '9']);
   });
 
   it('writes nothing and keeps the roster on a steady frame', () => {

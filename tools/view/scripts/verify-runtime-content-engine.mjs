@@ -20,8 +20,9 @@ import { AssetGuid, definePackageId, projectScriptablePackSceneComponents } from
 import { MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Name, Transform } from '@forgeax/engine/scene';
 import { connectViewWorkspace } from '@forgeax/view/workspace/resident';
-import { importRuntimeContent, openRuntimeContent } from './runtime-content-import.mjs';
+import { importRuntimeContent, openRuntimeContent, saveRuntimeContent } from './runtime-content-import.mjs';
 import { savePreviewRhiEvidence } from './preview-rhi-evidence.mjs';
+import { projectDocument } from './project-document.mjs';
 
 const viewRoot = resolve(dirname(fileURLToPath(import.meta.resolve('@forgeax/view'))), '../..');
 const enginePackage = await realpath(dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json'))));
@@ -38,7 +39,8 @@ const language = process.env.FORGEAX_RUNTIME_PACK_LANGUAGE ?? 'js';
 assert.ok(['js', 'ts'].includes(language));
 const parent = '01900000-0000-7000-8000-000000001101';
 const errors = [];
-let engine, browser, page, client;
+const downloadTransport = [];
+let engine, browser, page, client, game;
 let evidenceResult;
 let phase = 'prepare';
 let captureSubject;
@@ -99,6 +101,56 @@ try {
     headless: false, env: browserEnv,
     args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-unsafe-swiftshader', '--disable-vulkan-surface', '--ignore-gpu-blocklist', '--disable-gpu-watchdog', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'], chromiumSandbox: true});
   page = await browser.newPage({ viewport: workload.runtimeViewport, acceptDownloads: true });
+  await page.addInitScript(() => {
+    const events = [];
+    const record = (stage, detail = {}) => {
+      if (events.length === 16) events.shift();
+      events.push({ at: Date.now(), stage, ...detail });
+    };
+    globalThis.__runtimeContentDownloadEvidence = events;
+    for (const name of ['pointerdown', 'pointerup', 'click']) document.addEventListener(name, event => {
+      const button = event.target.closest?.('button');
+      if (button?.textContent === 'Save content') record(name, {
+        trusted: event.isTrusted, disabled: button.disabled, active: navigator.userActivation.isActive,
+      });
+    }, true);
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = blob => {
+      if (blob.type === 'application/json') record('blob', { bytes: blob.size });
+      return create(blob);
+    };
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function(...args) {
+      if (this.download) record('anchor', { connected: this.isConnected, active: navigator.userActivation.isActive });
+      return Reflect.apply(click, this, args);
+    };
+  });
+  const recordDownload = event => {
+    if (downloadTransport.length === 16) downloadTransport.shift();
+    downloadTransport.push({ at: Date.now(), ...event });
+  };
+  page.on('download', () => recordDownload({ stage: 'download' }));
+  page.on('websocket', socket => {
+    const requests = new Set();
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string' || payload.length > 65536) return;
+      try {
+        const message = JSON.parse(payload);
+        if (message.kind === 'request' && message.payload?.operation === 'runtime-pack.snapshot') {
+          requests.add(message.id);
+          recordDownload({ stage: 'snapshot-request' });
+        }
+      } catch { /* Binary frames are unrelated to workspace exports. */ }
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload !== 'string' || payload.length > 65536) return;
+      try {
+        const message = JSON.parse(payload);
+        if (message.kind === 'response' && requests.delete(message.id))
+          recordDownload({ stage: 'snapshot-response', failed: message.error !== undefined });
+      } catch { /* Binary frames are unrelated to workspace exports. */ }
+    });
+  });
   if (process.env.FORGEAX_RUNTIME_PACK_DIRECT === '1') {
     // Test observation of the live App reader, without adding a product API.
     await page.route('**/main.ts', async route => {
@@ -215,9 +267,11 @@ try {
   await page.getByRole('tab').filter({ hasText: /^Scene/ }).click();
   await page.getByRole('dialog', { name: 'Open project', exact: true }).waitFor();
   await page.getByLabel('Project path', { exact: true }).fill(projectRoot);
-  await page.getByRole('button', { name: 'Open project', exact: true }).click();
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
   phase = 'project';
-  await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 90000 });
+  game = await projectDocument(page);
+  const projectSurface = page.frameLocator('iframe[data-forgeax-project-document]');
+  assert.equal(page.url(), new URL(started.url).href, 'Project admission retains the Shell URL');
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 90000 });
   const contentBrowser = page.getByTestId('panel-content-browser');
   const revealContentBrowser = async () => {
@@ -244,7 +298,7 @@ try {
   await revealContentBrowser();
   assert.equal(state.project.id, 'runtime-content');
   assert.equal(await realpath(state.project.root), await realpath(projectRoot));
-  assert.equal(new URL(page.url()).searchParams.get('forgeaxWorkspaceTarget'), state.projectTarget.targetId);
+  assert.equal(new URL(game.url()).searchParams.get('forgeaxWorkspaceTarget'), state.projectTarget.targetId);
   assert.ok(state.projectTarget.worldId && !state.projectTarget.worldId.startsWith('pending:'));
   const target = { projectId: state.project.id, targetId: state.projectTarget.targetId, worldId: state.projectTarget.worldId };
   const runtime = (operation, args = {}) => client.call(`runtime-pack.${operation}`, { ...args, ...target });
@@ -322,13 +376,13 @@ try {
     assert.match(JSON.stringify(tree), /Runtime box/);
     const sceneCapture = await captureTarget(sceneState.preview.target, 'restored-scene');
     phase = `scene-${workload.sceneFrames}-frames`;
-    const frameStart = await page.evaluate(() => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed);
-    await page.waitForFunction(minimum => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed >= minimum,
+    const frameStart = await game.evaluate(() => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed);
+    await game.waitForFunction(minimum => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed >= minimum,
       frameStart + workload.sceneFrames, { timeout: 180000 });
-    const completedFrames = await page.evaluate(() => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed);
+    const completedFrames = await game.evaluate(() => globalThis.__forgeaxGameInspection.renderer().execution.frame.completed);
     const stableCapture = await captureTarget(sceneState.preview.target, phase);
     assert.ok(completedFrames - frameStart >= workload.sceneFrames);
-    assert.equal(await page.locator('vite-error-overlay').count(), 0, 'Scene UI must not retain a Vite error overlay');
+    assert.equal(await game.locator('vite-error-overlay').count(), 0, 'Scene document must not retain a Vite error overlay');
     await page.screenshot({ path: join(evidence, 'restored-scene-ui.png') });
     return { sceneCapture, frameStart, completedFrames, stableCapture };
   };
@@ -347,14 +401,14 @@ try {
         await client.closePreview({ targetId: preview.target.targetId, targetGeneration: preview.target.generation });
       }
     }
-    const sample = targetId => page.evaluate(id => globalThis.__runtimePackGpuSample(id), targetId);
+    const sample = targetId => game.evaluate(id => globalThis.__runtimePackGpuSample(id), targetId);
     const resourceCycles = [];
     for (let index = 0; index < workload.resourceCycles; index++) {
       const before = await sample();
       const cycle = await client.openAsset(meshGuid, { projectId: state.project.id });
       const subject = cycle.openRequest.preview.target;
       await captureTarget(subject, `resource-cycle-${index}`);
-      await page.locator(`canvas[data-forgeax-asset-preview="${subject.targetId}"]`).waitFor({ state: 'attached' });
+      await projectSurface.locator(`canvas[data-forgeax-asset-preview="${subject.targetId}"]`).waitFor({ state: 'attached' });
       const open = await sample(subject.targetId);
       const existing = new Set(before.devices.map(device => device.id));
       const created = open.devices.filter(device => !existing.has(device.id));
@@ -369,7 +423,7 @@ try {
       await writeFile(join(evidence, 'resource-cycles.json'), JSON.stringify(resourceCycles, null, 2));
       // RenderGraph retirement can finish after App disposal. Observe this
       // preview's actual destroys; the independently running Scene may resize.
-      await page.waitForFunction(id => {
+      await game.waitForFunction(id => {
         const device = globalThis.__runtimePackGpuSample().devices.find(device => device.id === id);
         return device !== undefined && device.buffers === 0 && device.textures === 0;
       }, previewDevice.id, { timeout: 30000 });
@@ -432,13 +486,14 @@ try {
     assert.deepEqual(admitted.executions, []);
     const rows = await client.listAssets(state.project.id, { targetId: state.projectTarget.targetId });
     assert.ok(rows.assets.some(asset => asset.guid === guid('box') && asset.kind === 'mesh'));
-    const loaded = await page.evaluate(guid => globalThis.__runtimePackReadDirect(guid), guid('box'));
+    const loaded = await game.evaluate(guid => globalThis.__runtimePackReadDirect(guid), guid('box'));
     assert.deepEqual(loaded, expected, 'the live browser AssetRegistry must restore every position and index as typed data');
     await writeFile(join(evidence, 'direct-expected.json'), JSON.stringify(expected));
     await writeFile(join(evidence, 'direct-loaded.json'), JSON.stringify(loaded));
     const opened = await client.openAsset(guid('box'), { projectId: state.project.id });
     const previewTarget = opened.openRequest.preview.target;
-    await page.getByTestId('panel-mesh-preview').locator(`canvas[data-forgeax-asset-preview="${previewTarget.targetId}"]`).waitFor({ state: 'visible' });
+    await page.getByTestId('panel-mesh-preview').waitFor({ state: 'visible' });
+    await projectSurface.locator(`canvas[data-forgeax-asset-preview="${previewTarget.targetId}"]`).waitFor({ state: 'visible' });
     const capture = await captureTarget(previewTarget, coldPath ? 'direct-cold-mesh' : 'direct-original-mesh');
     const binding = await readBinding(previewTarget);
     assert.deepEqual(binding.meta.aabb, [-1.5, -1, -1, 1.5, 1, 1]);
@@ -446,9 +501,8 @@ try {
     await page.screenshot({ path: join(evidence, 'direct-original-ui.png') });
     await sceneTab.click();
     await revealContentBrowser();
-    const downloadPromise = page.waitForEvent('download');
-    await panel.getByRole('button', { name: 'Save content', exact: true }).click();
-    await (await downloadPromise).saveAs(join(evidence, 'saved-content.json'));
+    const download = await saveRuntimeContent(page, panel);
+    await download.saveAs(join(evidence, 'saved-content.json'));
     const snapshot = JSON.parse(await readFile(join(evidence, 'saved-content.json'), 'utf8'));
     assert.equal(snapshot.schemaVersion, 'runtime-pack-source/2');
     assert.deepEqual(snapshot.instances, []);
@@ -483,7 +537,8 @@ try {
     assert.deepEqual(restored.executions.find(item => item.instance.packageId === instance.packageId).instance, instance);
     const opened = await client.openAsset(guid('box'), { projectId: state.project.id });
     const previewTarget = opened.openRequest.preview.target;
-    await page.getByTestId('panel-mesh-preview').locator(`canvas[data-forgeax-asset-preview="${previewTarget.targetId}"]`).waitFor({ state: 'visible' });
+    await page.getByTestId('panel-mesh-preview').waitFor({ state: 'visible' });
+    await projectSurface.locator(`canvas[data-forgeax-asset-preview="${previewTarget.targetId}"]`).waitFor({ state: 'visible' });
     const restoredCapture = await captureTarget(previewTarget, 'cold-mesh');
     const restoredBinding = await readBinding(previewTarget);
     await page.getByTestId('panel-mesh-properties').getByText(restoredBinding.publication.digest, { exact: true }).waitFor();
@@ -511,8 +566,7 @@ try {
         export default { name: 'runtime-content-behavior', inject: ['world'], apply(ctx${typed}) {
           ctx.effect(() => {
             const marker = ctx.world.spawn({ component: Transform, data: { pos: [9, 0, 0] } }).unwrap();
-            ctx.world.insertResource('runtime-content-behavior', { marker });
-            return () => { ctx.world.despawn(marker).unwrap(); ctx.world.removeResource('runtime-content-behavior'); };
+            return () => { ctx.world.despawn(marker).unwrap(); };
           });
         } };`,
     };
@@ -552,7 +606,8 @@ try {
     assert.ok(previewTarget, 'Engine must return a dedicated Mesh preview target');
     assert.notEqual(previewTarget.targetId, target.targetId);
     assert.notEqual(previewTarget.worldId, target.worldId);
-    await page.getByTestId('panel-mesh-preview').locator('canvas').waitFor({ state: 'visible' });
+    await page.getByTestId('panel-mesh-preview').waitFor({ state: 'visible' });
+    await projectSurface.locator(`canvas[data-forgeax-asset-preview="${previewTarget.targetId}"]`).waitFor({ state: 'visible' });
     await page.getByTestId('mesh-material-slot-0').getByText('0 · Default', { exact: true }).waitFor();
     const capture = await captureTarget(previewTarget, 'initial-mesh');
     const initialBinding = await readBinding(previewTarget);
@@ -594,7 +649,8 @@ try {
     const replacement = await client.openAsset(guid('box'), { projectId: state.project.id });
     const nextTarget = replacement.openRequest.preview.target;
     assert.equal(replacement.openRequest.asset.guid, guid('box'));
-    await page.getByTestId('panel-mesh-preview').locator(`canvas[data-forgeax-asset-preview="${nextTarget.targetId}"]`).waitFor({ state: 'visible' });
+    await page.getByTestId('panel-mesh-preview').waitFor({ state: 'visible' });
+    await projectSurface.locator(`canvas[data-forgeax-asset-preview="${nextTarget.targetId}"]`).waitFor({ state: 'visible' });
     const nextCapture = await captureTarget(nextTarget, 'updated-mesh');
     const nextBinding = await readBinding(nextTarget);
     assert.notEqual(nextBinding.publication.digest, initialBinding.publication.digest);
@@ -606,9 +662,7 @@ try {
     phase = 'persist';
     await sceneTab.click();
     await revealContentBrowser();
-    const downloadPromise = page.waitForEvent('download');
-    await panel.getByRole('button', { name: 'Save content', exact: true }).click();
-    const download = await downloadPromise;
+    const download = await saveRuntimeContent(page, panel);
     await download.saveAs(join(evidence, 'saved-content.json'));
     const persistedBytes = await readFile(join(evidence, 'saved-content.json'));
     const snapshot = JSON.parse(persistedBytes);
@@ -631,7 +685,8 @@ try {
     const restored = await runtime('inspect');
     assert.equal(restored.executions.find(item => item.instance.packageId === instanceId).instance.values.width, 4);
     const restoredPreview = await client.openAsset(guid('box'), { projectId: state.project.id });
-    await page.getByTestId('panel-mesh-preview').locator(`canvas[data-forgeax-asset-preview="${restoredPreview.openRequest.preview.target.targetId}"]`).waitFor({ state: 'visible' });
+    await page.getByTestId('panel-mesh-preview').waitFor({ state: 'visible' });
+    await projectSurface.locator(`canvas[data-forgeax-asset-preview="${restoredPreview.openRequest.preview.target.targetId}"]`).waitFor({ state: 'visible' });
     const restoredCapture = await captureTarget(restoredPreview.openRequest.preview.target, 'restored-mesh');
     assert.ok(Math.abs(restoredCapture.pixels.aspect - 2) < 0.05, 'restored source rebuilds matching geometry');
 
@@ -648,7 +703,7 @@ try {
   await writeFile(join(evidence, 'result.json'), JSON.stringify({ ...evidenceResult, workload }, null, 2));
   console.log(`Runtime content Engine/View probe passed: ${evidence}`);
 } catch (error) {
-  const observation = captureSubject && page && !page.isClosed() ? await page.evaluate(targetId => {
+  const observation = captureSubject && game && !game.isDetached() ? await game.evaluate(targetId => {
       const canvas = [...document.querySelectorAll('canvas[data-forgeax-asset-preview]')]
         .find(candidate => candidate.dataset.forgeaxAssetPreview === targetId);
       const encoded = canvas?.dataset.forgeaxPreviewRhiWindow;
@@ -661,21 +716,23 @@ try {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {});
     await writeFile(join(evidence, 'failure-dom.txt'), await page.locator('body').innerText().catch(() => 'unavailable'));
-    const diagnostics = await page.evaluate(() => {
+    const diagnostics = await Promise.all(page.frames().map(frame => frame.evaluate(() => {
       const frontend = globalThis.__forgeaxViewReady?.mounted?.frontendHost;
       return {
+        projectDocument: new URL(location.href).searchParams.get('forgeaxWorkspaceTarget'),
         workspaceReady: document.documentElement.dataset.forgeaxWorkspaceReady,
         nativeFibers: globalThis.__runtimeProofInspect?.(),
         state: frontend?.status,
         plugins: frontend?.assembly.inspection,
         inspection: globalThis.__forgeaxGameInspection?.renderer?.(),
         gpuResources: globalThis.__runtimePackGpuSample?.(),
+        contentDownloads: globalThis.__runtimeContentDownloadEvidence,
         resources: performance.getEntriesByType('resource').map(entry => ({ name: entry.name, duration: entry.duration })),
       };
-    }).catch(error => ({ error: String(error) }));
+    }).catch(error => ({ error: String(error) }))));
     await writeFile(join(evidence, 'failure-diagnostics.json'), JSON.stringify(diagnostics, null, 2));
   }
-  await writeFile(join(evidence, 'failure.json'), JSON.stringify({ phase, errors, message: String(error) }, null, 2));
+  await writeFile(join(evidence, 'failure.json'), JSON.stringify({ phase, errors, downloadTransport, message: String(error) }, null, 2));
   throw error;
 } finally {
   clearInterval(heartbeat);

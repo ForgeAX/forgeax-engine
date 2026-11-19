@@ -1,4 +1,5 @@
 import * as THREE from '@forgeax/engine/three';
+import { WebGLRenderer } from 'three/src/renderers/WebGLRenderer.js';
 import { expect, it } from 'vitest';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import { featureCases, required } from './features.fixture';
@@ -7,9 +8,29 @@ import {
   comparePixels,
   displayPixels,
   readyFrames,
+  SIZE,
   verifyReplay,
 } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
+
+function renderStockPointsReference(scene: THREE.Scene, camera: THREE.Camera): Uint8Array {
+  // Stock PointsMaterial projects the r187 WebGL size and attenuation contract.
+  // Three WebGPU draws a one-pixel primitive regardless of those material fields.
+  const reference = new WebGLRenderer({ alpha: true, preserveDrawingBuffer: true });
+  try {
+    reference.setSize(SIZE, SIZE, false);
+    reference.render(scene.clone(), camera.clone());
+    const readback = document.createElement('canvas');
+    readback.width = readback.height = SIZE;
+    const context = readback.getContext('2d');
+    if (context === null) throw new Error('Stock PointsMaterial reference requires pixel readback');
+    context.drawImage(reference.domElement, 0, 0);
+    return new Uint8Array(context.getImageData(0, 0, SIZE, SIZE).data);
+  } finally {
+    reference.dispose();
+    reference.forceContextLoss();
+  }
+}
 
 // Every declared case belongs to exactly one browser process, including new cases.
 export function testFeaturePartition(partition: 0 | 1 | 2 | 3): void {
@@ -30,7 +51,10 @@ export function testFeaturePartition(partition: 0 | 1 | 2 | 3): void {
         if (phase === 'edited') mutate();
         await readyFrames(renderer, scene, camera, phase === 'initial' ? 60 : 1);
         const capture = await renderer.captureFrame(scene, camera);
-        const reference = await renderReference(scene, camera, { stencil: name === 'stencil' });
+        const reference =
+          name === 'points'
+            ? renderStockPointsReference(scene, camera)
+            : await renderReference(scene, camera, { stencil: name === 'stencil' });
         await saveBrowserEvidence(`feature-${name}-${phase}`, capture, reference);
         comparePixels(displayPixels(capture), reference);
         if (['skin', 'skin-lit', 'morph', 'instance-colors-morph', 'batch'].includes(name)) {

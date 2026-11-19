@@ -1,0 +1,22 @@
+{
+  "runId": 43880193250,
+  "jobId": 133373067667,
+  "head": "351ca1676f677998c395c453e6074120cf5dfbfd",
+  "conclusion": "cancelled",
+  "completedOwnerSeconds": {
+    "contracts": 53.538553867999994,
+    "plugin": 967.2065427959999,
+    "runtime-js": 228.244820356,
+    "runtime-ts": 233.4771257349998,
+    "diagnostic-gpu-2d": 117.57803540199995,
+    "diagnostic-pack-save": 82.66823442400015
+  },
+  "partialOwnerStepSeconds": {
+    "tools/view/scripts/verify-owner-surface-resize.mjs": 2.9602531379999126
+  },
+  "uncompletedOwners": ["lifecycle"],
+  "prepareSeconds": 9.871043092,
+  "setupAndTransferReserveSeconds": 120,
+  "jobBudgetSeconds": 1800,
+  "note": "The 30-minute job was cancelled during the lifecycle owner. Completed owner timings are not a passing parent or lifecycle receipt; retain the original lifecycle forecast."
+}

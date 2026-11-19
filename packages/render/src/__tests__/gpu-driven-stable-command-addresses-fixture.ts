@@ -39,7 +39,6 @@ export async function stableCommandAddressFrames() {
       roughness: 1,
     });
     return {
-      worldId: 0,
       entityKey,
       assetHandle: entityKey + 3,
       transform: { world },
@@ -81,7 +80,6 @@ export async function stableCommandAddressFrames() {
   };
   const update = (value: RenderableSnapshot) => ({
     kind: 'update' as const,
-    worldId: 0,
     entityKey: value.entityKey,
     snapshot: value,
   });
@@ -109,11 +107,10 @@ export async function stableCommandAddressFrames() {
   const readback = device.createBuffer({ size: 3 * 3 * 2048, usage: 1 | 8 }).unwrap();
   try {
     for (let frame = 0; frame < 60; frame++) {
-      if (frame === 8) apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
+      if (frame === 8) apply([{ kind: 'remove', entityKey: 1 }]);
       if (frame === 16) apply([update(snapshot(1, -4, 65))]);
       if (frame === 24) apply([update(snapshot(1, -4))]);
-      if (frame === 32)
-        apply([{ kind: 'remove', worldId: 0, entityKey: 1 }, update(snapshot(4, -4))]);
+      if (frame === 32) apply([{ kind: 'remove', entityKey: 1 }, update(snapshot(4, -4))]);
       if (frame === 40) {
         pool.dispose();
         pool = ShadowViewStatePool.create({ device, shaderModuleFactory }).unwrap();

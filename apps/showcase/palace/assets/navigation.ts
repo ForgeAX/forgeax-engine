@@ -1,6 +1,8 @@
+import { InputFrameStartScan } from "@forgeax/engine/input";
+import { defineSystem } from "@forgeax/engine/ecs";
 import type {} from '@forgeax/engine/app';
 import { Time, Update } from '@forgeax/engine/ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { Camera } from '@forgeax/engine/render';
@@ -11,10 +13,10 @@ export default {
   name:'palace', inject:['world','gameHost','palaceScene'],
   apply(ctx){
     ctx.gameHost?.setPointerLockAllowed?.(false);
-    ctx.world.addSystem(Update,{
-      name:'palace-navigation',after:[FRAME_START_SCAN_SYSTEM_NAME],queries:[],
+    const systemToken1 = defineSystem({
+      name:'palace-navigation',after:[InputFrameStartScan],queries:[],
       fn:()=>{
-        const input=ctx.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const input=ctx.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         const dt=ctx.world.getResource(Time).delta;
         const forward=Number(input.keyboard.downCode('KeyW'))-Number(input.keyboard.downCode('KeyS'));
         const right=Number(input.keyboard.downCode('KeyD'))-Number(input.keyboard.downCode('KeyA'));
@@ -35,19 +37,20 @@ export default {
           if(forward||right||up||input.mouse.pointerLocked||input.mouse.button(2))ctx.world.set(row.entity,Transform,{pos,quat:orientation}).unwrap();
         }
       }
-    }).unwrap();
+    });
+ctx.world.addSystem(Update,systemToken1).unwrap();
     const unregister=ctx.gameHost?.gameProjection?.registerRead({
       id:'palace.camera',title:'Palace camera',description:'Authored camera pose and current input state.',
       read:()=>{
         for(const row of ctx.world.query({with:[Camera,Transform,Name]}).unwrap()){
           if(ctx.world.get(row.entity,Name).unwrap().value!=='Reference Camera')continue;
           const t=ctx.world.get(row.entity,Transform).unwrap();
-          const input=ctx.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+          const input=ctx.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
           return {position:Array.from(t.pos),orientation:Array.from(t.quat),pointerLocked:input.mouse.pointerLocked,dragging:input.mouse.button(2),forward:input.keyboard.downCode('KeyW')};
         }
         throw Error('Authored camera is missing');
       }
     });
-    ctx.effect(()=>()=>{unregister?.();ctx.world.removeSystem(Update,'palace-navigation');ctx.gameHost?.setPointerLockAllowed?.(false);}, 'palace/navigation');
+    ctx.effect(()=>()=>{unregister?.();ctx.world.removeSystem(Update,systemToken1);ctx.gameHost?.setPointerLockAllowed?.(false);}, 'palace/navigation');
   }
 } satisfies Plugin;

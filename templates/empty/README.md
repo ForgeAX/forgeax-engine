@@ -16,6 +16,19 @@ pnpm typecheck
 pnpm exec forgeax project package --output release/empty-game-web.zip --json
 ```
 
+## Optional View
+
+From this game root, open the View included in the installed Engine:
+
+```sh
+node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+```
+
+Keep the terminal open and open the returned URL. The page reports Backend and
+project readiness; the URL alone is not readiness. No global SDK or Engine build
+is needed. Agent guidance: `skills/forgeax-view-start/SKILL.md`, or the copy under
+`node_modules/@forgeax/engine/tools/view/skills/` for older projects.
+
 ## 工程边界
 
 | 路径 | 职责 |

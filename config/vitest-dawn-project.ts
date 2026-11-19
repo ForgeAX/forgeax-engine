@@ -1,4 +1,5 @@
 import { defineProject } from 'vitest/config';
+import { coreDeferredFiles } from '../scripts/ci/core-validation.mjs';
 import { DAWN_COMPACT_TEST_FILES } from '../scripts/ci/dawn-compact-roster.mjs';
 import {
   DAWN_ISOLATED_TEST_FILES,
@@ -47,6 +48,7 @@ export const dawnProject = defineProject({
       R32FLOAT_CAPABILITY_GENERATION_TEST,
     ],
     exclude: [
+      ...coreDeferredFiles(),
       '**/node_modules/**',
       '**/dist/**',
       '**/artifacts/**',
@@ -58,6 +60,11 @@ export const dawnProject = defineProject({
       ...(RUNNING_DAWN_ISOLATED ? [] : DAWN_ISOLATED_TEST_FILES),
       ...(RUNNING_DAWN_COMPACT ? [] : DAWN_COMPACT_TEST_FILES),
     ],
-    setupFiles: ['./config/vitest.setup-webgpu.ts'],
+    setupFiles: [
+      './config/vitest.setup-webgpu.ts',
+      ...(process.env.FORGEAX_DAWN_CAPTURE_TEST === undefined
+        ? []
+        : ['./config/vitest.setup-original-frame.ts']),
+    ],
   },
 });

@@ -62,6 +62,7 @@ export default defineConfig({
       'packages/*',
       'apps/*',
       'apps/showcase/*',
+      'apps/water/*/vitest.config.ts',
       // game-default owns small pure contract tests for authored template
       // assets; browser-marked HUD tests remain owned by the browser project.
       resolve(REPOSITORY_ROOT, 'apps/game-capability-lab'),

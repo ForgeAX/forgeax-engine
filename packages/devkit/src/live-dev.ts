@@ -24,6 +24,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
 import type { BrowserCapture, BrowserCaptureSession } from './browser-capture.js';
 import { captureRenderFailure } from './capture-render-failure.js';
+import { liveDevBrowserHeadless } from './chromium-sandbox.js';
 import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { failureSummary } from './failure-summary.js';
@@ -37,6 +38,7 @@ import {
   liveDaemonOrphans,
   liveDaemonProcess,
   liveDevBuildIdentity,
+  liveSessionRecordPath,
   processAlive,
   type RequestedOwnerOptions,
   terminateLiveDaemon,
@@ -50,6 +52,8 @@ import {
   parseLookRequest,
 } from './live-look.js';
 import { liveProjectReadyLogLine, readLiveProjectInputs } from './live-project-inputs.js';
+import type { LuminanceObservation } from './luminance-heatmap.js';
+import type { PlayOptions } from './play.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
 import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import { logLiveInputTiming, traceDevStartup } from './startup-timing.js';
@@ -151,9 +155,11 @@ type LiveOperation =
   | 'eval'
   | 'camera/get'
   | 'camera/set'
+  | 'pick'
   | 'camera/release'
   | 'find'
-  | 'focus';
+  | 'focus'
+  | 'play';
 
 interface LiveDevDaemonState {
   stopPromise?: Promise<void>;
@@ -179,6 +185,7 @@ interface LiveDevDaemonState {
   readonly animation: AnimationPlaybackOptions;
   /** Attach the existing RHI recorder to the live App when explicitly requested. */
   readonly rhiCapture: boolean;
+  readonly gpuPassTiming: boolean;
   session: BrowserCaptureSession | undefined;
   projectUrl: string | undefined;
   status: LiveDevStatus;
@@ -251,7 +258,7 @@ function ciCaptureViewport(): { readonly width?: number; readonly height?: numbe
 
 function sessionPath(root: string, snapshot = false): string {
   if (snapshot) return resolve(runStateDirectory(root), 'session.json');
-  return resolve(root, '.forgeax', 'dev-session.json');
+  return liveSessionRecordPath(root);
 }
 
 function publicStatus(status: LiveDevStatus): unknown {
@@ -271,9 +278,33 @@ function observationValue(value: unknown, revision: string): Record<string, unkn
         }),
       ),
     };
+  // A pick nests its entity facts; give them the same revision-scoped ref `find` uses.
+  const entity = result.entity as { readonly id?: unknown } | undefined;
+  if (typeof entity === 'object' && entity !== null && typeof entity.id === 'number')
+    return { ...result, entity: { ...entity, ref: `${revision}/${entity.id}` } };
   const { entity: _entity, ...rest } = result;
   return rest;
 }
+
+/** The realm script of one observation route; `pick` and reads leave the World unchanged. */
+function observationScript(operation: string, args: Record<string, unknown>): string {
+  switch (operation) {
+    case 'camera/get':
+      return 'return simulation.observation?.camera.get();';
+    case 'camera/release':
+      return 'simulation.observation.release(); return simulation.observation.camera.get();';
+    case 'find':
+      return `return simulation.observation.find(${JSON.stringify(args)});`;
+    case 'pick':
+      return `return simulation.observation.pick(${JSON.stringify({ x: args.x, y: args.y })});`;
+    case 'camera/set':
+      return `return simulation.observation?.camera.set(${JSON.stringify(args)});`;
+    default:
+      return `return simulation.observation?.focus(${JSON.stringify(args)});`;
+  }
+}
+
+const READ_ONLY_OBSERVATIONS: ReadonlySet<string> = new Set(['camera/get', 'find', 'pick']);
 
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
   response.statusCode = status;
@@ -354,6 +385,7 @@ async function writeSessionRecord(state: LiveDevDaemonState): Promise<void> {
         headless: state.status.headless,
         backend: state.status.backendRequested,
         rhiCapture: state.rhiCapture,
+        gpuPassTiming: state.gpuPassTiming,
         workers: state.requestedWorkers ?? {},
         animation: state.animation,
       },
@@ -873,12 +905,23 @@ const LIVE_OBSERVATIONS: ReadonlySet<string> = new Set([
   'profile/capture',
   'camera/get',
   'find',
+  'pick',
 ]);
 const LIVE_MUTATIONS: ReadonlySet<string> = new Set([
   'eval',
   'camera/set',
   'camera/release',
   'focus',
+  'play',
+]);
+/** Routes that act on the observation: camera control, find, pick and focus. */
+const LIVE_OBSERVATION_ROUTES: ReadonlySet<string> = new Set([
+  '/camera/get',
+  '/camera/set',
+  '/camera/release',
+  '/find',
+  '/pick',
+  '/focus',
 ]);
 /** Self-resolving rejections: a reload, a replaced World, or another request still running. */
 const LIVE_TRANSIENT_CODES: ReadonlySet<string> = new Set([
@@ -1213,7 +1256,25 @@ function liveArtifactDirectory(revision: string): string {
   );
 }
 
-async function openSession(state: LiveDevDaemonState): Promise<void> {
+/** A kept project child already serves this generation; otherwise a fresh one replaces it. */
+async function ensureProjectProcess(
+  state: LiveDevDaemonState,
+  keepProject: boolean,
+): Promise<void> {
+  if (keepProject) return;
+  await traceDevStartup('project-process-ready', () =>
+    replaceProjectProcess(state, state.status.generation),
+  );
+}
+
+/**
+ * Opens the page of a new generation. `keepProject` reuses the running project child
+ * (its Vite server and built inputs) and only replaces the page.
+ */
+async function openSession(
+  state: LiveDevDaemonState,
+  options: { readonly keepProject?: boolean } = {},
+): Promise<void> {
   const stopped = () => state.status.phase === 'stopped';
   if (stopped()) return;
   const loadId = randomUUID();
@@ -1240,9 +1301,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
   };
   await writeSessionFile(state);
   try {
-    await traceDevStartup('project-process-ready', () =>
-      replaceProjectProcess(state, state.status.generation),
-    );
+    await ensureProjectProcess(state, options.keepProject === true);
     if (stopped()) return;
     const { createBrowserCapture } = await traceDevStartup(
       'browser-module-import',
@@ -1264,7 +1323,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
         outputDir: liveArtifactDirectory(revision),
         ...(state.projectUrl === undefined
           ? {}
-          : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken) }),
+          : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken, state.gpuPassTiming) }),
         ...(state.carrier === undefined
           ? {}
           : {
@@ -1352,7 +1411,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
       state.status = {
         ...state.status,
         phase: 'reloading',
-        error: `${LIVE_STARTUP_SUPERSEDED}: ${error instanceof Error ? error.message : String(error)}`,
+        error: `${LIVE_STARTUP_SUPERSEDED}: ${failureSummary(error)}`,
       };
       await writeSessionFile(state);
       return;
@@ -1360,7 +1419,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
     state.status = {
       ...state.status,
       phase: 'failed',
-      error: error instanceof Error ? error.message : String(error),
+      error: failureSummary(error),
     };
   }
   await writeSessionFile(state);
@@ -1378,15 +1437,25 @@ async function inputsSuperseded(state: LiveDevDaemonState): Promise<boolean> {
   }
 }
 
-async function reloadSession(state: LiveDevDaemonState): Promise<void> {
+/**
+ * Replaces the page and project child with the current inputs. `pageOnly` keeps a
+ * running project child whose inputs are still current and opens only a fresh page
+ * in the warm browser; any change, or a reload already under way, replaces both.
+ */
+async function reloadSession(
+  state: LiveDevDaemonState,
+  options: { readonly pageOnly?: boolean } = {},
+): Promise<void> {
   if (state.reloadInFlight !== undefined) {
     state.reloadRequested = 'explicit';
     return state.reloadInFlight;
   }
   const operation = (async () => {
+    let pageOnly = options.pageOnly === true;
     do {
       state.reloadRequested = false;
-      await reloadSessionOwned(state);
+      await reloadSessionOwned(state, pageOnly);
+      pageOnly = false;
     } while (state.reloadRequested && state.status.phase !== 'stopped');
   })();
   state.reloadInFlight = operation.finally(() => {
@@ -1395,8 +1464,22 @@ async function reloadSession(state: LiveDevDaemonState): Promise<void> {
   return state.reloadInFlight;
 }
 
-async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
+/** The running project child still serves the inputs this reload scanned. */
+function projectChildServes(state: LiveDevDaemonState, served: unknown): boolean {
+  const child = state.projectProcess;
+  return (
+    !state.snapshot &&
+    served !== undefined &&
+    served === state.inputs &&
+    child !== undefined &&
+    child.exitCode === null &&
+    child.signalCode === null
+  );
+}
+
+async function reloadSessionOwned(state: LiveDevDaemonState, pageOnly = false): Promise<void> {
   if (state.status.phase === 'stopped') return;
+  const served = state.inputs;
   try {
     state.inputs = await traceDevStartup('input-scan-before-reload', () =>
       checkProjectInputs(state),
@@ -1405,6 +1488,7 @@ async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
     failProjectInputs(state, error);
     return;
   }
+  const keepProject = pageOnly && projectChildServes(state, served);
   if (isStopped(state)) return;
   state.observation = undefined;
   state.status = {
@@ -1420,7 +1504,7 @@ async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
     bridgeError('live-reload-cancelled', 'The previous App execution was destroyed by reload.'),
   );
   state.bridge?.close();
-  await stopProjectProcess(state);
+  if (!keepProject) await stopProjectProcess(state);
   await state.session?.close();
   state.session = undefined;
   state.evaluation = undefined;
@@ -1432,11 +1516,12 @@ async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
   // window instead of serialising multiple browser launches.
   const latestInputs = await checkProjectInputs(state);
   if (latestInputs !== state.inputs) {
+    if (keepProject) await stopProjectProcess(state);
     state.inputs = latestInputs;
     state.reloadRequested ||= 'inputs';
     return;
   }
-  await openSession(state);
+  await openSession(state, { keepProject });
   const current = await reconcileProjectInputs(state);
   const accepted =
     state.status.bridgeConnected &&
@@ -2044,6 +2129,10 @@ function lookDriver(
     releaseCamera: async () => {
       await camera('simulation.observation?.release();');
     },
+    // The HDR observation waits for the next presented frame (30 s realm bound).
+    luminance: async () =>
+      (await bridgeCall(state, 'return simulation.observation.luminance();', 35_000)
+        .promise) as LuminanceObservation,
   };
 }
 
@@ -2056,21 +2145,35 @@ function lookResponse(
   const report = session.report();
   return {
     ok: true,
-    artifacts: look.views.map((view) => ({
-      kind: 'png',
-      uri: view.screenshot,
-      mediaType: 'image/png',
-      digest: view.digest,
-    })),
+    artifacts: look.views.flatMap((view) => [
+      { kind: 'png', uri: view.screenshot, mediaType: 'image/png', digest: view.digest },
+      ...(view.luminance === undefined
+        ? []
+        : [
+            {
+              kind: 'png',
+              uri: view.luminance.heatmap,
+              mediaType: 'image/png',
+              digest: view.luminance.heatmapDigest,
+            },
+            {
+              kind: 'tool-result',
+              uri: view.luminance.summary,
+              mediaType: 'application/json',
+              digest: view.luminance.summaryDigest,
+            },
+          ]),
+    ]),
     value: {
       revision: status.revision,
       frameId: status.frameId,
       elapsedMs,
-      views: look.views.map(({ name, screenshot, metrics, findings }) => ({
+      views: look.views.map(({ name, screenshot, metrics, findings, luminance }) => ({
         name,
         screenshot,
         metrics,
         findings,
+        ...(luminance === undefined ? {} : { luminance }),
       })),
       ...(look.rendererError === null ? {} : { rendererError: look.rendererError }),
       errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
@@ -2423,6 +2526,87 @@ async function routeLiveOperation(
     }
   }
 
+  /**
+   * `project play --session`: reloads through the ordinary reload, then runs the
+   * playthrough in the replacement page of this warm browser. Unchanged inputs keep
+   * the running project child and replace only the page; edited inputs replace the
+   * child as any reload does. Captures,
+   * evaluations and the cached observation wait until the play ends.
+   */
+  async function playInPage(): Promise<void> {
+    if (state.snapshot || state.carrier !== undefined) {
+      reply(409, {
+        ok: false,
+        error: commandError(
+          'live-play-unavailable',
+          state.snapshot
+            ? 'A sealed run snapshot cannot host a play; use `forgeax dev start`.'
+            : 'A borrowed display carrier cannot host a play; rerun without --session.',
+        ),
+      });
+      return;
+    }
+    if (state.captureRunning) {
+      reply(409, {
+        ok: false,
+        error: commandError('run-capture-busy', 'Wait for the current capture or play.'),
+      });
+      return;
+    }
+    if (state.evaluation !== undefined) {
+      reply(409, {
+        ok: false,
+        error: commandError(
+          'live-eval-running',
+          'A play is blocked until the current evaluation completes.',
+        ),
+      });
+      return;
+    }
+    // The first page is still opening; the play reloads only an owner past startup.
+    if (state.status.phase === 'starting') {
+      reply(409, {
+        ok: false,
+        error: commandError('live-not-ready', 'Wait for the live instance to finish starting.'),
+      });
+      return;
+    }
+    if (!admit()) return;
+    state.captureRunning = true;
+    // A caller that disconnects cancels the play instead of leaving it to run unseen.
+    const cancel = new AbortController();
+    const watch = setInterval(() => {
+      if (attempt.abandoned()) cancel.abort();
+    }, 500);
+    try {
+      await state.observationInFlight;
+      const { playCommand } = await import('./play.js');
+      const { root: _root, session: _session, ...options } = input as Record<string, unknown>;
+      const result = await playCommand(
+        { ...(options as Omit<PlayOptions, 'root'>), root: state.root, progress: false },
+        {
+          signal: cancel.signal,
+          sessionHost: {
+            open: async () => {
+              await reloadSession(state, { pageOnly: true });
+              if (state.session === undefined || state.status.phase !== 'ready')
+                throw commandError(
+                  'live-not-ready',
+                  state.status.error ?? 'The reloaded page did not become ready.',
+                  { phase: state.status.phase },
+                );
+              return state.session;
+            },
+          },
+        },
+      );
+      reply(200, result);
+    } finally {
+      clearInterval(watch);
+      state.captureRunning = false;
+    }
+  }
+
   /** `dev look`: views of the current revision with an automatic visual report. */
   async function captureLook(): Promise<void> {
     if (state.captureRunning) {
@@ -2548,19 +2732,11 @@ async function routeLiveOperation(
     }
     const before = state.status;
     const operation = url.pathname.slice(1);
-    const script =
-      operation === 'camera/get'
-        ? 'return simulation.observation?.camera.get();'
-        : operation === 'camera/release'
-          ? 'simulation.observation.release(); return simulation.observation.camera.get();'
-          : operation === 'find'
-            ? `return simulation.observation.find(${JSON.stringify(args)});`
-            : operation === 'camera/set'
-              ? `return simulation.observation?.camera.set(${JSON.stringify(args)});`
-              : `return simulation.observation?.focus(${JSON.stringify(args)});`;
+    const script = observationScript(operation, args);
     if (!admit()) return;
-    const result = await bridgeEval(state, script);
-    if (operation !== 'camera/get' && operation !== 'find')
+    // A pick samples the next presented HDR frame, which the realm bounds at 30 s.
+    const result = await bridgeEval(state, script, operation === 'pick' ? 35_000 : undefined);
+    if (!READ_ONLY_OBSERVATIONS.has(operation))
       await waitForFrameAfter(state.session, before.frameId);
     if (!(await requireCurrentBridge(state, reply))) return;
     await refreshFrameStatus(state);
@@ -2900,13 +3076,11 @@ async function routeLiveOperation(
       await captureLook();
       return;
     }
-    if (
-      url.pathname === '/camera/get' ||
-      url.pathname === '/camera/set' ||
-      url.pathname === '/camera/release' ||
-      url.pathname === '/find' ||
-      url.pathname === '/focus'
-    ) {
+    if (url.pathname === '/play') {
+      await playInPage();
+      return;
+    }
+    if (LIVE_OBSERVATION_ROUTES.has(url.pathname)) {
       await applyObservation();
       return;
     }
@@ -2920,7 +3094,10 @@ async function routeLiveOperation(
     }
     reply(404, {
       ok: false,
-      error: commandError('live-route-not-found', 'Use status, reload, stop, eval, or capture.'),
+      error: commandError(
+        'live-route-not-found',
+        'Use status, reload, stop, eval, capture, or play.',
+      ),
     });
   } catch (error) {
     if (profileCaptureId !== undefined) {
@@ -3086,6 +3263,7 @@ export async function runLiveDevDaemon(
         ? environmentAnimationPlayback()
         : animationPlayback(options.animation),
     rhiCapture,
+    gpuPassTiming: process.env.FORGEAX_GPU_PASS_TIMING === '1',
     session: undefined,
     projectUrl: undefined,
     status: {
@@ -3114,7 +3292,7 @@ export async function runLiveDevDaemon(
       carrier: 'private-browser',
       carrierTarget: undefined,
       carrierFallbackReason: undefined,
-      headless: options.headless ?? process.env.FORGEAX_DEV_HEADLESS === 'true',
+      headless: liveDevBrowserHeadless(options.headless, options.carrier !== undefined),
       bridgeConnected: false,
       rhiCapture,
       error: undefined,
@@ -3195,6 +3373,7 @@ async function requestJson(
   method: 'GET' | 'POST',
   value?: unknown,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   return new Promise((resolveResponse, rejectResponse) => {
     const request = httpRequest(
@@ -3230,6 +3409,12 @@ async function requestJson(
       request.destroy(new Error(LIVE_DEV_REQUEST_TIMEOUT)),
     );
     request.on('error', rejectResponse);
+    if (signal !== undefined) {
+      const abort = () => request.destroy(new Error('The request was cancelled.'));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      request.once('close', () => signal.removeEventListener('abort', abort));
+    }
     if (value !== undefined) request.write(JSON.stringify(value));
     request.end();
   });
@@ -3503,19 +3688,25 @@ export async function liveDevControl(
   rootInput: string,
   operation: Exclude<LiveOperation, 'status'>,
   value?: unknown,
-  options: { readonly snapshot?: boolean } = {},
+  options: {
+    readonly snapshot?: boolean;
+    /** Response deadline for an operation that runs longer than the default (a play). */
+    readonly requestTimeoutMs?: number;
+    /** Aborting closes the request; the owner cancels an admitted play. */
+    readonly signal?: AbortSignal;
+  } = {},
 ): Promise<unknown> {
   const root = resolve(rootInput);
   if (operation === 'stop') return stopRecordedOwner(root, options.snapshot === true);
   const onDemand = options.snapshot !== true && ON_DEMAND_OPERATIONS.has(operation);
-  const first = await sendToRecordedOwner(root, operation, value, options.snapshot);
+  const first = await sendToRecordedOwner(root, operation, value, options);
   if (first.kind === 'response') return first.value;
   if (!onDemand || first.kind === 'unreachable') return first.result;
   // Nothing received the request, so starting an owner and sending it once is
   // the same operation the agent would get after `dev start`.
   const started = (await startLiveDev(root)) as { readonly ok?: unknown };
   if (started.ok !== true) return started;
-  const second = await sendToRecordedOwner(root, operation, value, options.snapshot);
+  const second = await sendToRecordedOwner(root, operation, value, options);
   return second.kind === 'response' ? second.value : second.result;
 }
 
@@ -3538,8 +3729,13 @@ async function sendToRecordedOwner(
   root: string,
   operation: Exclude<LiveOperation, 'status'>,
   value: unknown,
-  snapshot: boolean | undefined,
+  options: {
+    readonly snapshot?: boolean;
+    readonly requestTimeoutMs?: number;
+    readonly signal?: AbortSignal;
+  },
 ): Promise<OwnerDelivery> {
+  const snapshot = options.snapshot;
   const record = await readSessionRecord(root, snapshot);
   if (record.kind !== 'record') {
     const result =
@@ -3563,7 +3759,14 @@ async function sendToRecordedOwner(
   try {
     return {
       kind: 'response',
-      value: await requestJson(record.session, `/${operation}`, 'POST', value),
+      value: await requestJson(
+        record.session,
+        `/${operation}`,
+        'POST',
+        value,
+        options.requestTimeoutMs,
+        options.signal,
+      ),
     };
   } catch (error) {
     const result = {
@@ -3650,6 +3853,7 @@ function requestedOptions(options: LiveStartOptions): RequestedLiveOptions {
     headless: options.headless,
     backend: options.backend,
     rhiCapture: options.rhiCapture,
+    gpuPassTiming: process.env.FORGEAX_GPU_PASS_TIMING === '1',
     workers: options.workers,
     animation: options.animation === undefined ? undefined : animationPlayback(options.animation),
   };

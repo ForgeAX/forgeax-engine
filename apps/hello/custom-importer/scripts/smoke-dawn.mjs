@@ -48,6 +48,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { createDistAssetFetch } from '../../../../scripts/lib/dist-asset-fetch.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -103,9 +105,9 @@ const structuralOk =
   !Object.hasOwn(reelRow, 'relative' + 'Url');
 let packageV2Ok = false;
 if (structuralOk) {
-  const packagePath = resolveDistUrl(reelRow.packageUrl);
-  if (existsSync(packagePath)) {
-    const pack = JSON.parse(readFileSync(packagePath, 'utf8'));
+  const packageResponse = await createDistAssetFetch(distDir)(reelRow.packageUrl);
+  if (packageResponse.ok) {
+    const pack = await packageResponse.json();
     const asset = pack.assets?.find((entry) => entry.guid === REEL_GAME_LEVEL_1_GUID);
     const payloadArtifact = asset?.artifacts?.payload;
     const thumbnailArtifact = asset?.artifacts?.thumbnail;
@@ -160,42 +162,7 @@ gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 // map the production fetch URLs (/pack-index.json + the Pack v2 packageUrl)
 // onto the on-disk dist/ tree. This is the SAME chain a browser drives -- the
 // importer ran at vite build time and the runtime never re-imports.
-function resolveDistUrl(url) {
-  // url is e.g. '/pack-index.json' or '/assets/<guid>-<hash>.pack.json'
-  const clean = url.split('?')[0].split('#')[0];
-  const rel = clean.startsWith('/') ? clean.slice(1) : clean;
-  return resolve(distDir, rel);
-}
-const nativeFetch = globalThis.fetch?.bind(globalThis);
-globalThis.fetch = async (url, init) => {
-  const urlStr = typeof url === 'string' ? url : String(url);
-  // data: URLs (e.g. the shader manifest encoded by the smoke) are handled by
-  // the native fetch -- only the production pack-index / .pack.json URLs map
-  // onto the on-disk dist/ tree.
-  if (urlStr.startsWith('data:')) {
-    if (nativeFetch) return nativeFetch(url, init);
-    const comma = urlStr.indexOf(',');
-    const body = decodeURIComponent(urlStr.slice(comma + 1));
-    return {
-      ok: true,
-      status: 200,
-      json: async () => JSON.parse(body),
-      text: async () => body,
-    };
-  }
-  const filePath = resolveDistUrl(urlStr);
-  if (!existsSync(filePath)) {
-    return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
-  }
-  const buf = readFileSync(filePath);
-  return {
-    ok: true,
-    status: 200,
-    json: async () => JSON.parse(buf.toString('utf8')),
-    text: async () => buf.toString('utf8'),
-    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-  };
-};
+globalThis.fetch = createDistAssetFetch(distDir);
 
 // capture the raw device for readback (mirrors hello-cube smoke)
 let sharedDevice;
@@ -266,7 +233,7 @@ if (!existsSync(MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing (${MANIFEST_PATH})`);
   process.exit(1);
 }
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 let assets;
@@ -345,7 +312,7 @@ if (recoveryOk) {
   console.error(
     `[smoke] fault/recovery failed: malformed=${
       malformedGuid.ok ? 'accepted' : malformedGuid.error.code
-    }, catalogMiss=${catalogMissLoad?.ok ? 'accepted' : catalogMissLoad?.error.code ?? 'parse-failed'}, recoveryLoad=${loadOk ? 'succeeded' : 'failed'}`,
+    }, catalogMiss=${catalogMissLoad?.ok ? 'accepted' : ( catalogMissLoad?.error.code ?? 'parse-failed')}, recoveryLoad=${loadOk ? 'succeeded' : 'failed'}`,
   );
 }
 
@@ -388,11 +355,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 }
 const device = sharedDevice;

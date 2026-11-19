@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs
@@ -29,7 +30,7 @@ import { Update } from '@forgeax/engine-ecs';
 //      (d) insertResource INPUT_BACKEND_KEY + addSystem InputFrameStartScan so each
 //          world.update(1 / 60).unwrap() refreshes the InputSnapshot Resource.
 //      (e) Spawn cube + camera + first-person camera system that reads
-//          InputSnapshot from world.getResource('InputSnapshot') and
+//          InputSnapshot from world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY) and
 //          accumulates yaw/pitch (+/-89 deg clamp) + reconstructs the
 //          camera direction (sphere -> Cartesian).
 //      (f) lease-bound renderer.draw 300x with the synthetic input pump.
@@ -276,7 +277,7 @@ let pitch = 0; // radians, around X axis
 let camPosX = 0;
 let camPosY = 0;
 let camPosZ = 3;
-const cameraSystem = {
+const cameraSystem = defineSystem({
   name: 'learn-render-camera-first-person',
   queries: [],
   fn() {
@@ -318,7 +319,7 @@ const cameraSystem = {
       camPosZ += rightZ * KEYBOARD_SPEED;
     }
   },
-};
+});
 
 const world = new World({ assets: assets });
 const sceneAssets = world.assets;
@@ -378,19 +379,15 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
     heldKeys.delete('KeyW');
     heldKeys.add('KeyD');
   }
-  if (i === Math.floor(2 * TARGET_FRAMES / 3)) {
+  if (i === Math.floor((2 * TARGET_FRAMES) / 3)) {
     heldKeys.delete('KeyD');
   }
-  if (i >= Math.floor(TARGET_FRAMES / 3) && i < Math.floor(2 * TARGET_FRAMES / 3)) mvxPending += 4;
-  if (i >= Math.floor(2 * TARGET_FRAMES / 3)) mvyPending += -2;
+  if (i >= Math.floor(TARGET_FRAMES / 3) && i < Math.floor((2 * TARGET_FRAMES) / 3)) mvxPending += 4;
+  if (i >= Math.floor((2 * TARGET_FRAMES) / 3)) mvyPending += -2;
   // Note: world.update(1 / 60).unwrap() runs the frame-start scan system (refreshing
   // InputSnapshot) + the camera system (consuming it) in DAG order.
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 }
 const device = sharedDevice;

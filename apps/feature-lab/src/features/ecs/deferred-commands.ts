@@ -1,4 +1,4 @@
-import { defineComponent, Update, World } from '@forgeax/engine/ecs';
+import { defineComponent, defineSystem, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
 
 export default defineFeature({
@@ -16,7 +16,7 @@ export default defineFeature({
     const gun = world.spawn({ component: Ammo, data: { n: 3 } }).unwrap();
     let seenInside = -1;
     let deferred = false;
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-cmd-fire',
       queries: [{ read: [Ammo] }],
       fn: (world, [guns], commands) => {
@@ -28,6 +28,7 @@ export default defineFeature({
         seenInside = [...world.query({ read: [Bullet] }).unwrap()].length;
       },
     });
+    world.addSystem(Update, systemToken1);
     checks.ok('update ok', world.update(1 / 60).ok);
     checks.equal('bullet not visible inside system', seenInside, 0);
     checks.ok('pending handle marked deferred', deferred);
@@ -40,7 +41,7 @@ export default defineFeature({
 
     const bad = new World();
     const e = bad.spawn({ component: Ammo, data: { n: 1 } }).unwrap();
-    bad.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'fl-cmd-dup',
       queries: [],
       fn: (_world, _r, commands) => {
@@ -48,6 +49,7 @@ export default defineFeature({
         commands.addComponent(e, { component: Ammo, data: { n: 2 } });
       },
     });
+    bad.addSystem(Update, systemToken2);
     const before = bad.inspect().entityCount;
     const failed = bad.update(1 / 60);
     checks.equal(

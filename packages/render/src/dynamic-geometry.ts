@@ -1,4 +1,8 @@
 import { assetDataBytes } from '@forgeax/engine-assets-runtime/internal';
+import {
+  deriveVertexLayoutProjection,
+  interleavedMeshFiniteFailure,
+} from '@forgeax/engine-geometry';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { attributeChannelBytes, packedRowsEligible } from './publication/packed-rows-mesh';
@@ -326,9 +330,11 @@ function validateMesh(mesh: MeshAsset, admitted: boolean): string | undefined {
     if (vertices.some((value) => !Number.isFinite(value)))
       return 'MeshAsset.vertices must be finite';
   } else {
-    for (let index = 0, length = vertices.length; index < length; index++) {
-      if (!Number.isFinite(vertices[index])) return 'MeshAsset.vertices must be finite';
-    }
+    if (
+      interleavedMeshFiniteFailure(vertices, deriveVertexLayoutProjection(mesh.attributes)) !==
+      undefined
+    )
+      return 'MeshAsset.vertices must be finite';
   }
   return undefined;
 }
@@ -384,7 +390,7 @@ export interface DynamicGeometryLifecycle {
       readonly deviceGeneration: number;
       readonly completed?: Promise<unknown>;
     },
-    worlds?: readonly object[],
+    world: object,
     fixedStep?: number,
     canPublish?: (candidate: DynamicGeometryCandidate) => boolean,
     recordStageLane?: (
@@ -1272,7 +1278,7 @@ export function createDynamicGeometryLifecycle(
       release(candidate.candidateId, record);
       return ok(undefined);
     },
-    publishFrame(frame, worlds, fixedStep, canPublish, recordStageLane) {
+    publishFrame(frame, world, fixedStep, canPublish, recordStageLane) {
       if (disposed || frame.deviceGeneration !== currentGeneration) return [];
       const receipts: DynamicGeometryReceipt[] = [];
       let sharedFrame: DynamicGeometryReceipt['frame'] | undefined;
@@ -1286,7 +1292,7 @@ export function createDynamicGeometryLifecycle(
           // remains one-shot once that history is invalidated.
           (canPublish !== undefined || !record.historyInvalidated);
         if (record.candidate.state !== 'accepted' && !canRepeatPublished) continue;
-        if (worlds !== undefined && !worlds.includes(record.world)) continue;
+        if (record.world !== world) continue;
         if (
           record.candidate.fixedStep !== undefined &&
           (fixedStep === undefined || record.candidate.fixedStep > fixedStep)

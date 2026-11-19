@@ -52,9 +52,10 @@ export const viewWorkspaceCoreBackendPlugin = {
     const unregister = transport ? workspace.registerTransport(transport, {
       routeThroughTools: Boolean(revokeTools),
     }) : undefined;
+    const unsubscribeProjectStatus = workspace.engine?.subscribeProjectStatus?.(() => workspace.changed());
     ctx.provide('viewWorkspaceCore', workspace);
     ctx.provide('viewWorkspaceAccessToken', workspace.accessToken);
-    ctx.effect(() => async () => { unregister?.(); await revokeTools?.(); await workspace.dispose(); });
+    ctx.effect(() => async () => { unsubscribeProjectStatus?.(); unregister?.(); await revokeTools?.(); await workspace.dispose(); });
   },
 };
 export default viewWorkspaceCoreBackendPlugin;

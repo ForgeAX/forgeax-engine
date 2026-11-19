@@ -105,9 +105,7 @@ it('renders distance UV on uneven and closed transported profiles for 60 complet
           const receipt = renderValue(
             host.renderer.draw({
               geometryLane: 'direct',
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             }),
           );
           renderValue(await receipt.completed);

@@ -10,6 +10,11 @@
 import type { PackErrorCode, PackErrorDetail } from '@forgeax/engine-types';
 import type { PackAuthoringError } from './pack-authoring.js';
 
+function sourceModuleContext(detail: PackErrorDetail): string {
+  if (!('code' in detail) || detail.code !== 'pack-module-not-found') return '';
+  return `; import ${JSON.stringify(detail.specifier)} from ${JSON.stringify(detail.sourcePath)}`;
+}
+
 /**
  * Structured error for the engine-pack disk scanner fail-fast chain.
  *
@@ -40,7 +45,9 @@ export class PackError extends Error {
     detail: PackErrorDetail;
     cause?: PackAuthoringError;
   }) {
-    super(`[PackError ${args.code}] expected: ${args.expected}; hint: ${args.hint}`);
+    super(
+      `[PackError ${args.code}] expected: ${args.expected}; hint: ${args.hint}${sourceModuleContext(args.detail)}`,
+    );
     this.name = 'PackError';
     this.code = args.code;
     this.expected = args.expected;

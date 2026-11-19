@@ -22,7 +22,7 @@ export class ResidualBoundsProof {
       source.generatedMesh === undefined &&
       source.terrainSection === undefined
     ) {
-      const mesh = meshes.get(source.worldId, source.assetHandle);
+      const mesh = meshes.get(source.assetHandle);
       if (mesh === undefined) this.meshReads = undefined;
       else this.meshReads?.add(mesh);
     }

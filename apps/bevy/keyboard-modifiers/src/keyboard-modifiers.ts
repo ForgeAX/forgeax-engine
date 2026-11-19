@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 
 import { World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -8,7 +9,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const KEYBOARD_MODIFIERS_STATE = 'bevyKeyboardModifiersState';
+export const KEYBOARD_MODIFIERS_STATE = defineResource<KeyboardModifiersState>("bevyKeyboardModifiersState");
 
 export interface KeyboardModifiersState {
   heldShift: boolean;
@@ -47,7 +48,7 @@ export function buildKeyboardModifiersWorld(world: World): KeyboardModifiersStat
 }
 
 export function stepKeyboardModifiers(world: World, snapshot: InputSnapshot): void {
-  const state = world.getResource<KeyboardModifiersState>(KEYBOARD_MODIFIERS_STATE);
+  const state = world.getResource(KEYBOARD_MODIFIERS_STATE);
   state.heldShift = snapshot.keyboard.downCode('ShiftLeft') || snapshot.keyboard.downCode('ShiftRight');
   state.heldCtrl = snapshot.keyboard.downCode('ControlLeft') || snapshot.keyboard.downCode('ControlRight');
   state.heldA = snapshot.keyboard.downCode('KeyA');
@@ -58,5 +59,5 @@ export function stepKeyboardModifiers(world: World, snapshot: InputSnapshot): vo
 }
 
 export function readKeyboardModifiersState(world: World): KeyboardModifiersState {
-  return { ...world.getResource<KeyboardModifiersState>(KEYBOARD_MODIFIERS_STATE) };
+  return { ...world.getResource(KEYBOARD_MODIFIERS_STATE) };
 }

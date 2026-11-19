@@ -18,6 +18,8 @@ import {
   type SubmittedTerrainHeightRequest,
 } from '@forgeax/engine-render';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { freezeConfiguration } from '../configuration-data';
+import { EngineConfigurationError } from '../configuration-error';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import type { RuntimePackOptions } from '../runtime-packs.js';
 import type { CanvasDrawingBufferSize } from '../types';
@@ -32,7 +34,7 @@ export interface PreparedExecutionBootstrap {
   readonly features?: readonly RenderFeature<unknown>[];
   /** Caller-provided source/build identity; App transports it without deriving provenance. */
   readonly ssrIdentity?: SsrAdmissionIdentity;
-  /** Runs in the actual Renderer realm, before source plugins and the first draw. */
+  /** @deprecated Removed in 0.7. Managed Apps require constructor configuration instead. */
   readonly configureRenderer?: (renderer: Renderer) => void | Promise<void>;
   /** Plugins constructed in the realm that will own the World. */
   readonly plugins?: readonly Plugin[];
@@ -126,6 +128,7 @@ export function executionBootstrapHostPlugin(
 /** Default export contract for `ExecutionOptions.bootstrap`. */
 export type ExecutionBootstrapEntry = (
   data: ExecutionBootstrapValue | undefined,
+  startup?: import('../configuration-types').EngineStartupPlan,
 ) => PreparedExecutionBootstrap | Promise<PreparedExecutionBootstrap>;
 
 function bootstrapError(
@@ -187,13 +190,15 @@ function isSsrAdmissionIdentity(value: unknown): value is SsrAdmissionIdentity {
 export async function prepareBootstrapEntry(
   moduleUrl: string,
   data: ExecutionBootstrapValue | undefined,
+  localEntry?: ExecutionBootstrapEntry,
+  startup?: import('../configuration-types').EngineStartupPlan,
 ): Promise<Result<PreparedExecutionBootstrap, AppErrorType>> {
   const valid = validateExecutionBootstrapData(data, moduleUrl);
   if (!valid.ok) return valid;
-  const loaded = await loadBootstrapEntry(moduleUrl);
+  const loaded = localEntry === undefined ? await loadBootstrapEntry(moduleUrl) : ok(localEntry);
   if (!loaded.ok) return loaded;
   try {
-    const prepared = await loaded.value(data);
+    const prepared = await loaded.value(data, freezeConfiguration(startup));
     if (
       typeof prepared !== 'object' ||
       prepared === null ||
@@ -213,6 +218,17 @@ export async function prepareBootstrapEntry(
         ),
       );
     }
+    if (startup !== undefined && prepared.configureRenderer !== undefined)
+      return err(
+        bootstrapError(
+          'prepare',
+          moduleUrl,
+          new EngineConfigurationError('configuration-invalid', {
+            path: 'execution.bootstrap.configureRenderer',
+            reason: 'late Renderer configuration cannot accompany a startup configuration',
+          }),
+        ),
+      );
     return ok(prepared);
   } catch (cause) {
     return err(bootstrapError('prepare', moduleUrl, cause));

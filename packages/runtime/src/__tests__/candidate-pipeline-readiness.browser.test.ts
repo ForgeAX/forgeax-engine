@@ -159,11 +159,7 @@ it.each([
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      const drawn = renderer.draw({ source: lease });
       if (!drawn.ok) throw drawn.error;
       const receipt = drawn.value;
       const completed = await receipt.completed;

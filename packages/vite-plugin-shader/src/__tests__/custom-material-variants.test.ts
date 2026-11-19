@@ -270,7 +270,9 @@ describe('user material shader variant manifest', () => {
     expect(manifestAsset).toBeDefined();
     if (manifestAsset === undefined) return;
     const raw = JSON.parse(manifestAsset.source) as {
+      readonly schemaVersion: string;
       readonly reflections: readonly unknown[];
+      readonly reflectionBindings: readonly unknown[];
       readonly entryPoints: readonly unknown[];
       readonly materialShaders: readonly {
         readonly identifier: string;
@@ -300,8 +302,23 @@ describe('user material shader variant manifest', () => {
     const rawEntry = raw.materialShaders.find(
       (candidate) => candidate.identifier === entry.identifier,
     );
+    expect(raw.schemaVersion).toBe('6.0.0');
+    const rawReflection = (index: number) => {
+      const { bindingIndices, entryPointsIndex, ...facts } = raw.reflections[index] as {
+        readonly bindingIndices: readonly number[];
+        readonly entryPointsIndex?: number;
+        readonly [field: string]: unknown;
+      };
+      return {
+        ...facts,
+        boundGlobals: bindingIndices.map((binding) => raw.reflectionBindings[binding]),
+        ...(entryPointsIndex === undefined
+          ? {}
+          : { entryPoints: raw.entryPoints[entryPointsIndex] }),
+      };
+    };
     expect(rawEntry?.reflectionIndex).toEqual(expect.any(Number));
-    expect(raw.reflections[rawEntry?.reflectionIndex ?? -1]).toEqual(entry.reflection);
+    expect(rawReflection(rawEntry?.reflectionIndex ?? -1)).toEqual(entry.reflection);
     expect(rawEntry?.entryPointsIndex).toEqual(expect.any(Number));
     expect(raw.entryPoints[rawEntry?.entryPointsIndex ?? -1]).toEqual(entry.entryPoints);
     for (const [index, variant] of entry.variants.entries()) {
@@ -310,7 +327,7 @@ describe('user material shader variant manifest', () => {
       expect(variant.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
       expect(variant.reflection?.schemaVersion).toBe('shader-reflection/3');
       expect(rawEntry?.variants[index]?.reflectionIndex).toEqual(expect.any(Number));
-      expect(raw.reflections[rawEntry?.variants[index]?.reflectionIndex ?? -1]).toEqual(
+      expect(rawReflection(rawEntry?.variants[index]?.reflectionIndex ?? -1)).toEqual(
         variant.reflection,
       );
       expect(rawEntry?.variants[index]?.entryPointsIndex).toEqual(expect.any(Number));

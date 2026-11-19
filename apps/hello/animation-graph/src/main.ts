@@ -26,10 +26,12 @@
 // HUD shows weights[] + total sum; when overlay is on, sum > 1 (Add is
 // non-normalizing, so the additive layer's 0.3 stacks on top).
 
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { ENTITY_NULL_RAW, Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
@@ -286,12 +288,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // ag-graph-keyboard system: reads input each frame and updates nodeWeights.
   // Runs after input-frame-start-scan, before animation eval.
   // Only nodeWeights are written -- weights[] is NEVER touched directly.
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'ag-graph-keyboard',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
 
       if (snap !== undefined) {
         let changed = false;
@@ -324,6 +326,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       refreshHud(hudEl, world, playerEnt!, { locomotion, walkRunRatio, overlayOn, paused });
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Kick initial HUD render on the first frame.
   applyParams(playerEnt);

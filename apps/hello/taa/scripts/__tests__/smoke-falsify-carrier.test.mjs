@@ -1,9 +1,24 @@
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import { carrierRepoRoot, runCarrier } from '../smoke-carrier.mjs';
 
 const falsifierSource = readFileSync(new URL('../smoke-falsify.mjs', import.meta.url), 'utf8');
+
+test('falsifier readbacks honor the inherited external evidence directory', () => {
+  const expression = falsifierSource.match(/const EVIDENCE_DIR = (.+);/)[1];
+  const appRoot = resolve(carrierRepoRoot, 'apps/hello/taa');
+  const external = resolve(carrierRepoRoot, '..', '.tmp', 'taa readbacks');
+  const evaluate = (env) => runInNewContext(expression, {
+    APP_ROOT: appRoot,
+    process: { env },
+    resolve,
+  });
+  assert.equal(evaluate({ SMOKE_EVIDENCE_DIR: external }), external);
+  assert.equal(evaluate({}), resolve(appRoot, 'evidence', 'readback'));
+});
 
 test('carrier failure preserves structured child stdout and launch context', () => {
   assert.throws(
@@ -24,7 +39,8 @@ test('carrier launches children from the worktree repository root', () => {
   assert.throws(
     () => runCarrier('__tests__/fixtures/structured-unavailable.mjs', { SMOKE_CASE: 'static' }),
     (error) => {
-      assert.match(error.message, new RegExp(`cwd.*${carrierRepoRoot.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`));
+      const stdout = JSON.parse(error.message.match(/ stdout=(.+) stderr=/)[1]);
+      assert.equal(JSON.parse(stdout.trim()).cwd, carrierRepoRoot);
       return true;
     },
   );

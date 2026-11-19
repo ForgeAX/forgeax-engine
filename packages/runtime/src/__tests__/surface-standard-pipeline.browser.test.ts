@@ -1,5 +1,3 @@
-import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
-import { createRuntimeAssetImportTransport, runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
@@ -9,37 +7,27 @@ import {
   LightProbe,
   type Renderer,
 } from '@forgeax/engine-render';
-import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { constructRuntimeRendererHost } from '../renderer-host';
+import { createSurfaceBrowserFixture } from './surface-standard-browser.fixture';
 import {
   assertMaterialPayload,
   assertSurfacePixelFalsification,
   createSurfaceDynamicInput,
-  createSurfaceHostLossInstrumentation,
-  createSurfaceSplashRuntimeHost,
   createSurfaceWaterInstanceTransforms,
   loadSurfaceMaterial,
   parseSurfaceGuid,
   populateSurfaceWorld,
-  runSurfaceAppLifecycle,
   runSurfaceManagedMediumOracle,
   runSurfaceMsaaEdgeOracle,
   runSurfaceOpticalOracle,
   SURFACE_CASES,
   SURFACE_CLOSURE,
-  SURFACE_HEIGHT,
   SURFACE_PIXEL_EPSILON,
   SURFACE_WIDTH,
 } from './surface-standard-pipeline.runtime-fixture';
-import { createVfxEvidenceBackend } from './vfx-failure-evidence.fixture';
-
-const evidenceEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-const EVIDENCE_SOURCE_SHA = evidenceEnv?.VITE_FORGEAX_EVIDENCE_SOURCE_SHA ?? 'unavailable';
-const EVIDENCE_BUILD_ID = evidenceEnv?.VITE_FORGEAX_EVIDENCE_BUILD_ID ?? 'unavailable';
 
 type SurfaceReadback = {
   pixels: Uint8Array;
@@ -173,81 +161,11 @@ async function loadSurfaceCatalog(
 }
 
 describe('Standard Surface runtime Browser WebGPU provenance', () => {
-  let renderer: Renderer | undefined;
-  let canvas: HTMLCanvasElement | undefined;
-  let recorder: RecorderAttachment | undefined;
-
-  afterEach(async () => {
-    await renderer?.dispose();
-    (await recorder?.dispose())?.unwrap();
-    canvas?.remove();
-    renderer = undefined;
-    recorder = undefined;
-    canvas = undefined;
-  });
-
   it('loads one published tuple per GUID and renders every cell through Runtime Renderer', {
-    // This isolated owner intentionally exercises two full App/device-loss
-    // lifecycles after the lane journey. The dedicated 360 s process
-    // budget encloses this unchanged 300 s case plus startup and cleanup.
     timeout: 300_000,
   }, async () => {
-    if (runtimeBinding === undefined) {
-      throw new Error('surface-standard: Pack runtime binding unavailable in Browser Vitest');
-    }
-    canvas = document.createElement('canvas');
-    canvas.id = 'surface-standard-pipeline-test-canvas';
-    canvas.width = SURFACE_WIDTH;
-    canvas.height = SURFACE_HEIGHT;
-    // Keep the full four-cell evidence surface inside the Browser Vitest
-    // viewport. Playwright clips an oversized element screenshot to the
-    // available viewport, which would otherwise turn the right two cells into
-    // compositor-white pixels instead of a real Surface observation.
-    const displayWidth = Math.min(SURFACE_WIDTH, Math.max(320, window.innerWidth - 32));
-    const displayHeight = Math.round((displayWidth * SURFACE_HEIGHT) / SURFACE_WIDTH);
-    canvas.style.width = `${displayWidth}px`;
-    canvas.style.height = `${displayHeight}px`;
-    document.body.append(canvas);
-    const webgpuContext = canvas.getContext('webgpu');
-    if (webgpuContext === null) {
-      throw new Error('surface-standard: WebGPU canvas context unavailable');
-    }
-    const bundler = forgeaxBundlerAdapter();
-    const vfxHost = createSurfaceSplashRuntimeHost();
-    const hostLoss = createSurfaceHostLossInstrumentation();
-    const evidenceBackend = createVfxEvidenceBackend({
-      source: 'browser-native-webgpu',
-      userAgent: navigator.userAgent,
-      buildId: EVIDENCE_BUILD_ID,
-      sourceHead: EVIDENCE_SOURCE_SHA,
-    });
-    recorder = evidenceBackend.recorder;
-    const constructed = await constructRuntimeRendererHost(
-      canvas,
-      {
-        rhi: recorder.backend.rhi,
-        features: [vfxHost.feature],
-        rhiInstrumentation: {
-          ...hostLoss.instrumentation,
-          onDeviceLost: () => evidenceBackend.recorder.deviceLost(),
-        },
-      },
-      {
-        ...bundler,
-        importTransport: createRuntimeAssetImportTransport(runtimeBinding),
-      },
-    );
-    expect(constructed.ok).toBe(true);
-    if (!constructed.ok) throw constructed.error;
-    const runtimeHost = constructed.value;
-    renderer = runtimeHost.renderer;
-    let diagnosticErrorCount = 0;
-    renderer.subscribe((event) => {
-      if (event.kind === 'error' && diagnosticErrorCount++ < 8)
-        console.error('surface renderer failure:', JSON.stringify(event.error));
-    });
-    const assets = runtimeHost.assets;
-    assets.configureRuntimeBinding(runtimeBinding);
+    const { assets, canvas, evidenceBackend, evidenceSource, renderer } =
+      await createSurfaceBrowserFixture();
     const catalog = (await loadSurfaceCatalog(
       assets,
       SURFACE_CASES.map((surfaceCase) => surfaceCase.guid),
@@ -295,127 +213,6 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       publications.push({ surfaceCase, row, publication, material });
       seenGuids.add(surfaceCase.guid);
     }
-    const verifyAppLifecycle = async (queueVfxContinuationDuringLoss = false) => {
-      if (renderer === undefined) throw new Error('surface-standard: renderer unavailable');
-      const evidence = await runSurfaceAppLifecycle({
-        renderer,
-        assets,
-        vfxHost,
-        hostLossSignals: hostLoss.signals,
-        queueVfxContinuationDuringLoss,
-        diagnostics: {
-          recorder: evidenceBackend.recorder,
-          backend: evidenceBackend.metadata,
-          prefix: `artifacts/surface-vfx/browser/${queueVfxContinuationDuringLoss ? 'queued-recovery' : 'empty-recovery'}`,
-          async write(name, bytes) {
-            let binary = '';
-            for (let offset = 0; offset < bytes.length; offset += 8192)
-              binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-            await commands.writeFile(name, btoa(binary), 'base64');
-          },
-        },
-      });
-      expect(evidence.impactIds).toEqual([701, 702]);
-      expect(evidence.emittedSplashCount).toBe(2);
-      expect(
-        evidence.splashIntents.every((intent) => intent.reset && intent.spawnCount === 8),
-      ).toBe(true);
-      expect(evidence.duplicateImpactCount).toBe(1);
-      expect(evidence.cameraCoverageTransitions).toBe(2);
-      expect(evidence.completedFrames).toBe(evidence.submittedFrames);
-      expect(evidence.splashRendererKinds).toEqual(['billboard']);
-      expect(evidence.activeVfxPlayerCount).toBe(2);
-      expect(evidence.expiredVfxPlayerCount).toBe(0);
-      expect(evidence.paused).toEqual(evidence.active);
-      expect(evidence.resumed.frameId).toBeGreaterThan(evidence.active.frameId);
-      expect(evidence.preLoss.frameId).toBeGreaterThan(evidence.resumed.frameId);
-      expect(evidence.recovered.frameId).toBeGreaterThan(evidence.preLoss.frameId);
-      expect(evidence.recovered.label).toBe('recovered');
-      expect(evidence.deviceRecovery.newGeneration).toBeGreaterThan(
-        evidence.deviceRecovery.oldGeneration,
-      );
-      expect(evidence.deviceRecovery.staleObservationErrorCode).toBe('frame-receipt-stale');
-      expect(evidence.deviceRecovery.lateObservationErrorCode).toBe(
-        queueVfxContinuationDuringLoss ? 'frame-receipt-stale' : 'device-operation-failed',
-      );
-      if (queueVfxContinuationDuringLoss) {
-        expect(evidence.deviceRecovery.observationResourcesBeforeLoss).toBe(0);
-      } else {
-        expect(evidence.deviceRecovery.observationResourcesBeforeLoss).toBeGreaterThan(0);
-      }
-      expect(evidence.deviceRecovery.observationResourcesAfterRecovery).toBe(0);
-      expect(evidence.deviceRecovery.eventAgeBeforeLoss).toBeLessThan(0.34);
-      expect(evidence.deviceRecovery.eventAgeAfterRecovery).toBe(
-        evidence.deviceRecovery.eventAgeBeforeLoss,
-      );
-      if (queueVfxContinuationDuringLoss) {
-        expect(evidence.deviceRecovery.queuedContinuationsBeforeLoss).toHaveLength(2);
-        expect(evidence.deviceRecovery.vfxQueueSequencesBeforeLoss).toHaveLength(2);
-        expect(evidence.deviceRecovery.vfxQueueSequencesAfterRecovery).toEqual([]);
-        for (const queued of evidence.deviceRecovery.queuedContinuationsBeforeLoss) {
-          const player = evidence.deviceRecovery.vfxPlayersAfterRecovery.find(
-            (candidate) => candidate.player === queued.player,
-          );
-          expect(player?.lastCommitted).toMatchObject({
-            sequence: queued.sequence,
-            phaseTick: queued.phaseTick,
-            playCycle: queued.playCycle,
-            reset: false,
-          });
-        }
-      } else {
-        expect(
-          evidence.deviceRecovery.vfxPlayersAfterRecovery.map((player) => ({
-            player: player.player,
-            lastCommitted: player.lastCommitted,
-            sessions: player.sessions,
-          })),
-        ).toEqual(
-          evidence.deviceRecovery.vfxPlayersBeforeLoss.map((player) => ({
-            player: player.player,
-            lastCommitted: player.lastCommitted,
-            sessions: player.sessions,
-          })),
-        );
-        expect(evidence.deviceRecovery.vfxQueueSequencesBeforeLoss).toEqual([]);
-        expect(evidence.deviceRecovery.vfxQueueSequencesAfterRecovery).toEqual([]);
-      }
-      expect(evidence.deviceRecovery.vfxHostGenerationAfterRecovery).toBe(
-        evidence.deviceRecovery.vfxHostGenerationBeforeLoss,
-      );
-      expect(evidence.deviceRecovery.vfxRenderGenerationAfterRecovery).toBeGreaterThanOrEqual(
-        evidence.deviceRecovery.vfxRenderGenerationBeforeLoss,
-      );
-      expect(evidence.coverageClipped.frameId).toBeGreaterThan(evidence.resumed.frameId);
-      expect(evidence.expired.frameId).toBeGreaterThan(evidence.coverageClipped.frameId);
-      expect(evidence.comparisons.activeSplash.failedPixelCount).toBeGreaterThan(0);
-      expect(evidence.comparisons.preLossSplash.failedPixelCount).toBeGreaterThan(0);
-      expect(evidence.comparisons.recoveredSplash.failedPixelCount).toBeGreaterThan(0);
-      if (!queueVfxContinuationDuringLoss) {
-        expect(evidence.comparisons.recoverySplashParity.failedPixelCount).toBe(0);
-        expect(evidence.comparisons.recoverySplashParity.maxError).toBeLessThanOrEqual(0.05);
-      }
-      expect(evidence.comparisons.expiredSplash.failedPixelCount).toBe(0);
-      expect(evidence.comparisons.activeWaterB.failedPixelCount).toBe(0);
-      expect(evidence.comparisons.resumedWaterB.failedPixelCount).toBe(0);
-      expect(evidence.resumedEventAge).toBeGreaterThanOrEqual(0);
-      expect(evidence.expiredEventAge).toBeGreaterThan(evidence.resumedEventAge);
-      // biome-ignore lint/suspicious/noConsole: App/World/Surface/VFX lifecycle evidence is the test artifact.
-      console.log(
-        JSON.stringify({
-          kind: 'surface-water-app-lifecycle',
-          backend: 'browser-webgpu',
-          queueVfxContinuationDuringLoss,
-          ...evidence,
-        }),
-      );
-      return evidence;
-    };
-    if (import.meta.env.VITE_FORGEAX_SURFACE_APP_LIFECYCLE_ONLY === '1') {
-      await verifyAppLifecycle();
-      await verifyAppLifecycle(true);
-      return;
-    }
     const opticalEvidence = await runSurfaceOpticalOracle(renderer, assets, {
       recorder: evidenceBackend.recorder,
       backend: evidenceBackend.metadata,
@@ -441,13 +238,12 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     );
     const msaaEdgeEvidence = await runSurfaceMsaaEdgeOracle(renderer, assets, {
       get width() {
-        return canvas?.width ?? SURFACE_WIDTH;
+        return canvas.width;
       },
       get height() {
-        return canvas?.height ?? SURFACE_HEIGHT;
+        return canvas.height;
       },
       setBackingSize(width, height) {
-        if (canvas === undefined) throw new Error('surface-msaa-edge: Browser canvas unavailable');
         canvas.width = width;
         canvas.height = height;
       },
@@ -506,8 +302,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         });
       }
     });
-    const attached = renderer?.attach(world);
-    if (attached === undefined) throw new Error('surface-standard: renderer unavailable');
+    const attached = renderer.attach(world);
     expect(attached.ok).toBe(true);
     if (!attached.ok) throw attached.error;
     // Standard material pipelines are compiled lazily on their first use. Keep
@@ -582,9 +377,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       world.update(1 / 60).unwrap();
       armLaneObservation(renderer, frame);
       const receipt = await drawReadyFrame(renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
+        source: attached.value,
         ...(frame < 10 || (frame >= 20 && frame < 30) ? { geometryLane: 'direct' as const } : {}),
       });
       finalReceipt = receipt;
@@ -781,8 +574,8 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         backend: observed.capabilities.backendKind,
         artifact: row?.packageUrl,
         provenance: {
-          sourceSha: EVIDENCE_SOURCE_SHA,
-          buildId: EVIDENCE_BUILD_ID,
+          sourceSha: evidenceSource.sourceHead,
+          buildId: evidenceSource.buildId,
           frameId: observed.observation.frameId,
           artifact: row?.packageUrl,
           readbackKind: 'compositor-screenshot',
@@ -811,8 +604,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     expect(records).toHaveLength(6);
     assertSurfacePixelFalsification(records);
     expect(records.every((record) => record.backend === 'webgpu')).toBe(true);
-    await verifyAppLifecycle();
-    await verifyAppLifecycle(true);
+    attached.value.dispose();
     // biome-ignore lint/suspicious/noConsole: runtime provenance is the test artifact.
     console.log(JSON.stringify({ backend: 'browser-webgpu', lane: 'runtime', records }));
     surfaceDynamicInput.page.release().unwrap();

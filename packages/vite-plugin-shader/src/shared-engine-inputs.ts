@@ -32,7 +32,10 @@ export interface ShaderManifestInput extends Omit<ManifestEntry, 'glsl'> {
 }
 
 /** Node publications share strict expansion and native source-byte verification. */
-function readNodePublication(value: unknown): {
+function readNodePublication(
+  value: unknown,
+  options: { readonly ownedReflections?: boolean } = {},
+): {
   entries: ShaderManifestInput[];
   materialShaders: MaterialShaderManifestEntry[];
   publication: ShaderManifestPublication;
@@ -45,12 +48,13 @@ function readNodePublication(value: unknown): {
   ) {
     throw new Error('Unsupported shader manifest publication; rebuild shared shader inputs');
   }
-  const expanded = expandShaderManifestPublication(value);
+  const expanded = expandShaderManifestPublication(value, options);
   const fragmentDigests = expanded.fragmentTable.map((fragment) =>
     createHash('sha256').update(fragment).digest(),
   );
-  for (const [digest] of expanded.sourceFragments) {
-    const indices = expanded.sourceIndices.get(digest) as readonly number[];
+  // Diagnostic projections snapshot the complete table on every read. Traverse
+  // one index snapshot instead of rebuilding it once per admitted source.
+  for (const [digest, indices] of expanded.sourceIndices) {
     const actual = createHash('sha256')
       .update(shaderSourceDigestInput(indices.map((index) => fragmentDigests[index] as Buffer)))
       .digest('hex');
@@ -99,6 +103,18 @@ const REQUIRED_RESAMPLING_PROGRAMS = [
       { name: 'light_texture_resample_fragment', stage: 'fragment' },
     ],
   },
+] as const;
+
+const REQUIRED_WATER_INFO_RASTER_SHADERS = [
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+] as const;
+
+const REQUIRED_WATER_MESH_PRECISE_SHADERS = [
+  'forgeax::water-mesh-precise',
+  'forgeax::water-mesh-precise-msaa',
 ] as const;
 
 function hasCurrentCompilerProfile(value: unknown): boolean {
@@ -157,6 +173,28 @@ export function hasCompleteEngineShaderProfile(input: {
     !input.entries.every(hasCurrentSourceReflection) ||
     !input.materialShaders.every(
       (entry) => hasCurrentArtifactFacts(entry) && entry.variants.every(hasCurrentArtifactFacts),
+    )
+  )
+    return false;
+
+  if (
+    !REQUIRED_WATER_INFO_RASTER_SHADERS.every((identifier) => {
+      const material = input.materialShaders.find((entry) => entry.identifier === identifier);
+      return (
+        input.entries.some((entry) => entry.identifier === identifier) &&
+        material?.receipt?.bindings === 'group-0' &&
+        material.variants.every((variant) => variant.receipt?.bindings === 'group-0')
+      );
+    })
+  )
+    return false;
+
+  // Precise programs bind native resources; they do not use zero-resource material receipts.
+  if (
+    !REQUIRED_WATER_MESH_PRECISE_SHADERS.every(
+      (identifier) =>
+        input.entries.some((entry) => entry.identifier === identifier) &&
+        input.materialShaders.some((entry) => entry.identifier === identifier),
     )
   )
     return false;
@@ -277,7 +315,10 @@ export function loadPackagedEngineShaderInputs(
     };
   }
   const publication = packagedProfilePublication(container, profile);
-  if (publication === undefined) return null;
+  if (publication === undefined) {
+    reportUnavailableProfile(label, profile, 'requested profile is absent');
+    return null;
+  }
   if (
     publication.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION ||
     !Array.isArray(publication.receipts)
@@ -289,7 +330,14 @@ export function loadPackagedEngineShaderInputs(
   }
   const manifest = readNodePublication(publication);
   const imports = container.imports;
-  if (!hasCompleteEngineShaderProfile(manifest)) return null;
+  if (!hasCompleteEngineShaderProfile(manifest)) {
+    reportUnavailableProfile(
+      label,
+      profile,
+      'publication is incomplete or has stale compiler facts',
+    );
+    return null;
+  }
   if (typeof imports[SURFACE_SLOT_MODULE] !== 'string') {
     throw new Error(`packaged engine shader imports are missing ${SURFACE_SLOT_MODULE}: ${label}`);
   }
@@ -301,6 +349,15 @@ export function loadPackagedEngineShaderInputs(
     imports,
     publication: manifest.publication,
   };
+}
+
+function reportUnavailableProfile(label: string, profile: string, reason: string): void {
+  const key = `${label}:${reason}`;
+  if (reportedStaleProfiles.has(key)) return;
+  reportedStaleProfiles.add(key);
+  console.warn(
+    `[forgeax-shader] packaged engine shader profile ${label}: ${reason}; compiling engine shaders from source. Prepare it from the Engine checkout with: node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile ${profile}`,
+  );
 }
 
 /** The source producer adds SSAO as one independent fullscreen utility. */
@@ -325,14 +382,60 @@ export function projectShaderManifestEntries(
   // `undefined` disappears during JSON serialization, but `glsl` is a required
   // manifest field at the runtime boundary. The empty string is the declared
   // WebGPU-only placeholder and survives serialization.
-  return [...entries.values()].map((entry) => ({ ...entry, glsl: '' }));
+  return [...entries.values()].map((entry) => projectShaderManifestInput(entry, { glsl: '' }));
 }
 
-export async function loadSharedEngineShaderManifest(manifestPath: string): Promise<{
+/** Copy row fields without materializing its admitted, lazy WGSL source. */
+export function projectShaderManifestInput<
+  T extends ShaderManifestInput,
+  F extends { glsl?: ''; uvSetCount?: number },
+>(entry: T, fields: F): T & F {
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(entry);
+  for (const [key, value] of Object.entries(fields))
+    descriptors[key] = { value, enumerable: true, configurable: true, writable: true };
+  return Object.defineProperties({}, descriptors) as T & F;
+}
+
+interface SharedEngineShaderManifest {
   readonly entries: ShaderManifestInput[];
   readonly materialShaders: MaterialShaderManifestEntry[];
   readonly publication: ShaderManifestPublication;
-}> {
+}
+
+// An active publication owns its admitted rows. Weak keys and the weak digest
+// lookup let plugin close retire the entire graph rather than retaining it globally.
+const sharedPublicationInputs = new WeakMap<
+  ShaderManifestPublication,
+  SharedEngineShaderManifest
+>();
+let lastSharedPublication:
+  | { digest: string; publication: WeakRef<ShaderManifestPublication> }
+  | undefined;
+
+function freezeSharedInput(value: unknown, seen = new WeakSet<object>()): void {
+  // This private walk only receives our JSON snapshot plus native expansion facts.
+  // JSON is unfrozen; expansion owns and transitively freezes its pooled ABI facts.
+  // No externally supplied shallow-frozen tree enters this boundary.
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value) || seen.has(value))
+    return;
+  seen.add(value);
+  // Expanded WGSL is lazy. Inspect data descriptors without invoking its getters.
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value)))
+    if ('value' in descriptor) freezeSharedInput(descriptor.value, seen);
+  Object.freeze(value);
+}
+
+/** JSON.parse owns an acyclic data-only tree, so no descriptor snapshot is needed. */
+function freezeJsonPublication(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const child of Object.values(value)) freezeJsonPublication(child);
+}
+
+export async function loadSharedEngineShaderManifest(
+  manifestPath: string,
+  repositoryRoot: string,
+): Promise<SharedEngineShaderManifest> {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     readonly schemaVersion?: number;
     readonly producer?: string;
@@ -343,7 +446,6 @@ export async function loadSharedEngineShaderManifest(manifestPath: string): Prom
   const path = manifest.payload?.engineShaderManifest;
   if (path === undefined)
     throw new Error(`shared shader manifest lacks serialized payload: ${manifestPath}`);
-  const repositoryRoot = dirname(dirname(manifestPath));
   if (manifest.schemaVersion === 2) {
     if (manifest.producer !== 'repo-build-inputs' || manifest.inputFingerprint === undefined) {
       throw new Error(`shared shader manifest has invalid producer metadata: ${manifestPath}`);
@@ -359,5 +461,25 @@ export async function loadSharedEngineShaderManifest(manifestPath: string): Prom
       }
     }
   }
-  return readNodePublication(JSON.parse(readFileSync(resolve(repositoryRoot, path), 'utf8')));
+  const bytes = readFileSync(resolve(repositoryRoot, path), 'utf8');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const publication =
+    lastSharedPublication?.digest === digest
+      ? lastSharedPublication.publication.deref()
+      : undefined;
+  let input = publication === undefined ? undefined : sharedPublicationInputs.get(publication);
+  if (input === undefined) {
+    // This parse is private and has no retained container or caller aliases.
+    // Packaged container projections keep the ordinary borrowed snapshot route.
+    input = readNodePublication(JSON.parse(bytes), { ownedReflections: true });
+    freezeJsonPublication(input.publication);
+    freezeSharedInput(input);
+    sharedPublicationInputs.set(input.publication, input);
+    lastSharedPublication = { digest, publication: new WeakRef(input.publication) };
+  }
+  return {
+    entries: [...input.entries],
+    materialShaders: [...input.materialShaders],
+    publication: input.publication,
+  };
 }

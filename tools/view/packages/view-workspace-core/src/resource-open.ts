@@ -7,7 +7,7 @@ const LOG_PREFIX = '[forgeax.view.resource-open]';
 
 /** Scene viewport hosts the scene world. Other kinds never acquire scene ownership. */
 export const SCENE_ASSET_KIND = 'scene';
-export const TYPE_PREVIEW_KINDS = Object.freeze(['material', 'mesh', 'texture', 'equirect']);
+export const TYPE_PREVIEW_KINDS = Object.freeze(['material', 'mesh', 'texture', 'equirect', 'texture-generator', 'gpu-texture']);
 
 export function summarizeResourceAsset(asset: WorkspaceAsset | null | undefined) {
   if (!asset || typeof asset !== 'object') return null;
@@ -47,8 +47,8 @@ export function selectSceneWorkspacePreview(previews: readonly WorkspacePreview[
 }
 
 /**
- * Viewport overlay target. Dock claim can render before scenePreview is
- * classified; only a Scene-bound preview can supply the scene world.
+ * Viewport overlay target. Project-document anchoring is a separate owning
+ * presentation path; only admitted Scene surfaces become Engine targets here.
  */
 export function selectWorkspaceSceneSurfaceTarget(state: WorkspaceState | null | undefined) {
   if (state?.scenePreview?.target) return state.scenePreview.target;

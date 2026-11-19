@@ -31,6 +31,7 @@ export { defineAssetKind } from './asset-kind.js';
 // ─── AssetRegistry + Asset / MeshAsset type aliases ─────────────────────────
 export type {
   Asset,
+  AssetBatchLoadOptions,
   AssetRegistryOptions,
   AssetReloadOptions,
   CatalogReconcileError,
@@ -72,9 +73,11 @@ export {
   DEFAULT_ASSET_BUDGET_BYTES,
   validateAssetBudgetBytes,
 } from './internal/asset-records.js';
+export { gpuTextureContribution } from './loaders/gpu-texture.js';
 // ─── Loader-injection surface ───────────────────────────────────────────────
 export { iesProfileContribution } from './loaders/ies-profile';
 export { terrainContribution } from './loaders/terrain';
+export { textureGeneratorContribution } from './loaders/texture-generator.js';
 export { MaterialGenerationCache } from './material/generation-cache.js';
 export {
   inspectMaterialRuntime,
@@ -120,6 +123,7 @@ export {
   type MipmapShaderModuleFactory,
   type MipmapTextureDescriptor,
   mipmapCacheSize,
+  mipmapTemporaryByteLength,
   prepareMipmaps,
 } from './mipmap-generator.js';
 // ─── Register-time payload validation ───────────────────────────────────────

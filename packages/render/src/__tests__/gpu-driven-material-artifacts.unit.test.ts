@@ -1,7 +1,19 @@
-import { expect, it } from 'vitest';
-import { gpuDrivenMaterialProgramSelection } from '../gpu-driven/material-artifacts';
+import { rhi } from '@forgeax/engine-rhi-null';
+import { expect, it, vi } from 'vitest';
+import {
+  gpuDrivenMaterialProgramSelection,
+  prepareHiddenGpuDrivenPipelines,
+} from '../gpu-driven/material-artifacts';
 import type { PreparedGpuDrivenDraw } from '../gpu-driven/prepared-draw';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { MaterialShaderPipelineEntry, RenderSystemInternals } from '../record/render-context';
 import { defaultMaterialSnapshot } from '../render-system-extract';
+import {
+  mesh,
+  preparedPbrSnapshot,
+  snapshot,
+  standardPbrInputs,
+} from './gpu-driven-production-fixture';
 
 const prepared = {
   identity: { material: 'game::surface', geometry: 'box', deformation: 'rigid' },
@@ -103,4 +115,59 @@ it('retains an explicit scene pair even when its key equals the direct identity'
     sceneIndexProgramKey: 'game::surface',
     materialShaderId: 'game::surface',
   });
+});
+
+it.each([
+  { simple: true, lean: true, fragment: 'fs_opaque', expectedSimple: true, expectedLean: true },
+  { simple: true, lean: false, fragment: 'fs_opaque', expectedSimple: true, expectedLean: false },
+  { simple: false, lean: true, fragment: 'fs_opaque', expectedSimple: false, expectedLean: true },
+  { simple: true, lean: true, fragment: 'fs_ao_input', expectedSimple: false, expectedLean: false },
+])('matches visible GPU receiver selection ($simple/$lean/$fragment)', async ({
+  simple,
+  lean,
+  fragment,
+  expectedSimple,
+  expectedLean,
+}) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+  const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
+  const base = standardPbrInputs(device, shader, layout).materialArtifact;
+  if (base === undefined) throw new Error('Missing fixture artifact');
+  const artifact = {
+    ...base,
+    variantSet:
+      'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=true+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=false+STANDARD_LEAN_INPUTS=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false',
+  };
+  const source = { ...preparedPbrSnapshot(snapshot(1, 10)), authorVisible: false };
+  const geometry = mesh(device);
+  const entry = { source, mesh: geometry } as ValidatedRenderable;
+  const factory = vi.fn<NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>>(
+    () => ({ pipeline: {} }) as MaterialShaderPipelineEntry,
+  );
+  try {
+    expect(
+      prepareHiddenGpuDrivenPipelines({
+        entries: [entry],
+        resolve: () => artifact,
+        artifacts: new Map([[artifact.material, artifact]]),
+        factory,
+        formats: ['rgba16float'],
+        sampleCount: 4,
+        shaderUvSetCount: 1,
+        filter: 'opaque',
+        fragmentEntry: fragment,
+        coverageOnly: false,
+        visibleSurface: false,
+        directionalShadowSimple: simple,
+        leanLighting: lean,
+      }),
+    ).toBe(true);
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[5]).toContain(`DIRECTIONAL_SHADOW_SIMPLE=${expectedSimple}`);
+    expect(factory.mock.calls[0]?.[5]).toContain(`LEAN_LIGHTING=${expectedLean}`);
+  } finally {
+    geometry.vertexBuffer.destroy().unwrap();
+    geometry.indexBuffer?.destroy().unwrap();
+  }
 });

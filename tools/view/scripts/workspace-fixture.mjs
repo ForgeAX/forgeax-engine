@@ -1,6 +1,8 @@
 // Browser acceptance composition; deliberately not a product startup API.
 import { startView } from '../dist/modules/index.mjs';
 import { VIEW_WORKSPACE_TAB_ID } from '../dist/modules/workspace/contract.mjs';
+import { openViewProject } from '../src/view-project-open.ts';
+import { setTimeout } from 'node:timers/promises';
 
 /** Await the product plugin mounted in the Engine-owned target document. */
 export async function waitForLiveViewerShell(page, { timeout = 30_000 } = {}) {
@@ -45,17 +47,29 @@ export async function startViewLiveIntegration({ page, projectRoot, config = {} 
       }
     })());
   try {
-    const state = await view.workspaceCore.openProject({
-      root: projectRoot,
-      tabId: VIEW_WORKSPACE_TAB_ID,
+    const opened = await openViewProject(view.workspaceCore, projectRoot, {
+      signal: AbortSignal.timeout(config.readyTimeout ?? 120_000),
     });
-    const target = state.projectTarget;
-    if (!target?.url) throw new Error('Engine did not publish its project target URL');
-    targetUrl = target.url;
-    await page.goto(target.url);
+    targetUrl = opened.projectTarget.url;
+    // Native Shell activation owns readiness, independently of pending page resources.
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     await waitForLiveViewerShell(page, {
       timeout: config.readyTimeout ?? 120_000,
     });
+    await page.waitForFunction(() => document.documentElement.dataset.forgeaxWorkspaceReady === 'true',
+      undefined, { timeout: config.readyTimeout ?? 120_000 });
+    const deadline = Date.now() + (config.readyTimeout ?? 120_000);
+    let state = view.workspaceCore.snapshot();
+    while (state.projectStatus?.phase !== 'running') {
+      if (state.projectStatus?.phase === 'failed') {
+        throw Object.assign(new Error(state.projectStatus.failure.hint), state.projectStatus.failure);
+      }
+      if (Date.now() >= deadline) throw new Error('Engine did not admit its live project target');
+      await setTimeout(20);
+      state = view.workspaceCore.snapshot();
+    }
+    const target = state.projectTarget;
+    if (!target?.url) throw new Error('Engine did not admit its live project target');
     await view.workspaceCore.listAssets({
       projectId: state.project.id,
       tabId: VIEW_WORKSPACE_TAB_ID,

@@ -1,9 +1,13 @@
+import { GameState, wireStates } from './state-lifecycle';
+
+export { GameState } from './state-lifecycle';
+
 import {
   configureRuntimeAssetCatalog,
   createRuntimeAssetImportTransport,
   runtimeBinding,
 } from '@forgeax/apps-shared/asset-runtime-config';
-import { Update } from '@forgeax/engine-ecs';
+
 import type { AssetHandle } from '@forgeax/engine-types';
 // apps/collectathon — 3D third-person collectathon showcase game.
 //
@@ -29,53 +33,21 @@ import {
   ANTIALIAS_FXAA,
   BLOOM_ENABLED,
   Camera,
-  DirectionalLight,
   perspective,
-  SKYBOX_MODE_CUBEMAP,
-  SkyboxBackground,
-  Skylight,
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { skinningPlugin } from '@forgeax/engine-skinning';
-import {
-  addOnEnter,
-  addOnExit,
-  defineState,
-  despawnOnExit,
-  getState,
-  inState,
-  setNextState,
-  setNextStateForce,
-} from '@forgeax/engine-state';
-import { createHUD, hideHUD, showHUD } from './hud';
-import { createGameProgress, GAME_PROGRESS_KEY, resetProgress } from './resources';
-import { CORE_POSITIONS, spawnCore } from './spawn/spawn-core';
-import { GUARDIAN_SPAWNS, spawnGuardian } from './spawn/spawn-guardian';
-import { LEVEL_HALF, spawnLevel } from './spawn/spawn-level';
-import { spawnPlayer } from './spawn/spawn-player';
-import { spawnPortal } from './spawn/spawn-portal';
-import { type AudioCueEntities, createAudioCueSystem, loadAudioCues } from './systems/audio-cue';
-import { createCollectSystem } from './systems/core-collect';
-import { createSpinSystem } from './systems/core-spin';
-import { createDebugOverlaySystem, resolveDebugEnabled } from './systems/debug-overlay';
-import { createGuardianAISystem, guardianWaypoints } from './systems/guardian-ai';
-import { createGuardianHitSystem } from './systems/guardian-hit';
-import { createHudSyncSystem, createTimerSystem } from './systems/hud-sync';
-import { createPickupTextSystem } from './systems/pickup-text';
-import { createAnimSystem } from './systems/player-anim';
-import {
-  CAMERA_OFFSET_Y,
-  CAMERA_OFFSET_Z,
-  cameraLookAtQuat,
-  createMoveSystem,
-  createPlayerMoveSignal,
-} from './systems/player-move';
-import { createPortalSystem } from './systems/portal-activate';
-import { createArbiterSystem } from './systems/win-lose-arbiter';
+import { getState, setNextStateForce } from '@forgeax/engine-state';
+import { createHUD } from './hud';
+
+import { loadAudioCues } from './systems/audio-cue';
+
+import { resolveDebugEnabled } from './systems/debug-overlay';
+
+import { CAMERA_OFFSET_Y, CAMERA_OFFSET_Z, cameraLookAtQuat } from './systems/player-move';
 
 // Four-state machine for game lifecycle: Title -> Play -> Win/Lose -> Title.
-export const GameState = defineState('GameState', ['Title', 'Play', 'Win', 'Lose'] as const);
 
 // Title -> Play is two deferred setNextState hops (F-08): force-Title applies +
 // queues Play on update 1, Play applies + spawnCamera on update 2. bootstrap()
@@ -97,7 +69,6 @@ const RUN_CLIP_GUID = '019ecd87-179b-71f7-b9f8-4c8518326b65';
 // and surfaces it through the binding's scoped Catalog, the same
 // declarative equirect IBL path the learn-render PBR demos + templates/game-3d
 // use (Skylight/SkyboxBackground hold the equirect handle; projection is internal).
-const SKY_HDR_GUID = '81eec382-392f-5a93-8998-0ecf11ef7990';
 
 // DejaVu Sans Mono MSDF font; its source publication includes the sampler closure.
 const FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
@@ -254,186 +225,7 @@ function installSmokeHook(world: World): void {
  * no longer needed — the eval server makes World access zero-cost present.
  */
 
-function wireStates(
-  app: import('@forgeax/engine-app').App,
-  assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
-  sceneHandle: AssetHandle<'scene'>,
-  runClip: AssetHandle<'animation-clip'>,
-  debugEnabled: boolean,
-  hud: import('./hud').HudHandles,
-  cues: AudioCueEntities,
-  fontHandle: AssetHandle<'font'> | undefined,
-  camera: EntityHandle,
-): void {
-  // Title -> Play. On every Title entry (initial + each Win/Lose replay) reset
-  // the scoreboard SSOT so a replay starts clean (AC-11). The Play-scoped
-  // entities are despawned by transitionStatesSystem on the Play->Title exit, so
-  // the only carry-over to clear is the GameProgress resource.
-  addOnEnter(GameState, 'Title', (w: World) => {
-    resetProgress(w, CORE_POSITIONS.length);
-    void setNextState(w, GameState, 'Play');
-  });
-
-  // Play: spawn light (D-7, before any standard material) -> camera -> level
-  // (ground + boundary walls) -> Cores -> Portal -> player. All spawned entities
-  // are state-scoped (despawnOnExit) so a Win/Lose -> Title -> Play replay starts
-  // clean (AC-11). Movement / animation / collect / spin / portal systems are
-  // gated to Play via inState runIf.
-  addOnEnter(GameState, 'Play', (w: World) => {
-    showHUD(hud);
-    const light = spawnLight(w);
-    // Environment lighting (F-05 / AC-08): spawn a Skylight now (frame-1 white
-    // ambient via the engine fallback cube), then load the sky.hdr equirect and
-    // attach its handle + the visible SkyboxBackground once available. The engine
-    // record arm projects the equirect->cubemap + IBL lazily (caps-gated, white
-    // fallback while pending) -- no manual upload call, no WebKit UA guard.
-    const skylight = spawnSkylight(w);
-    // The camera is app-lifetime (spawned once in bootstrap, passed in) so it
-    // survives Title<->Play replays without a camera-less draw frame. player-move
-    // re-aims it at the fresh player each run via followCamera.
-    void attachSkyEquirect(w, assets, skylight).then((skybox) => {
-      // The skybox spawns after the async equirect load; scope it for replay
-      // cleanup (best-effort -- the load may resolve after a fast Play->Title).
-      if (skybox !== undefined) despawnOnExit(w, skybox, GameState, 'Play');
-    });
-    const levelEntities = spawnLevel(w);
-
-    // Cores: one per CORE_POSITIONS entry. CORE_POSITIONS.length is the SSOT for
-    // the level Core count, so GameProgress.total derives from it (no second
-    // hand-kept count). The collect system reads/writes the score on this SSOT.
-    const cores = CORE_POSITIONS.map((p) => spawnCore(w, p));
-    w.insertResource(GAME_PROGRESS_KEY, createGameProgress(cores.length));
-
-    // Portal at the far end of the level (-Z edge, inside the boundary wall).
-    const portal = spawnPortal(w, { x: 0, z: -13 });
-
-    const playerRes = spawnPlayer(w, assets, sceneHandle, runClip);
-    if (!playerRes.ok) {
-      throw new Error(
-        `collectathon: spawnPlayer failed: ${playerRes.error.code} - ${playerRes.error.hint}`,
-      );
-    }
-    const player = playerRes.value;
-    // Collision-group membership + the CollidingEntities receiver component are
-    // set in spawnPlayer (SSOT); the Core/Portal/Guardian sensors filter to
-    // PLAYER only and register the player there (R-D1).
-
-    // Guardians (1-3): a KCC body + an armed-on-attack sensor child each. Spawned
-    // clear of the Core cluster and off the player->Portal corridor (M4 fail path).
-    const guardians = GUARDIAN_SPAWNS.map((p) => spawnGuardian(w, p));
-
-    // State-scoped despawn for every Play entity (AC-11). The Core list, level
-    // pieces, and Guardian body + sensor pairs flatten into the scoped set.
-    const guardianEntities = guardians.flatMap((g) => [g.body, g.attackSensor]);
-    for (const e of [
-      light,
-      skylight,
-      portal,
-      player.parent,
-      player.sceneRoot,
-      ...levelEntities,
-      ...cores,
-      ...guardianEntities,
-    ]) {
-      despawnOnExit(w, e, GameState, 'Play');
-    }
-
-    // Register the per-frame gameplay systems once, gated to Play. The move
-    // signal flows player-move -> player-anim (one-way producer).
-    const signal = createPlayerMoveSignal();
-    const playOnly = inState(GameState, 'Play');
-    w.addSystem(Update, {
-      ...createMoveSystem(player.parent, camera, signal),
-      runIf: playOnly,
-    });
-    w.addSystem(Update, {
-      ...createAnimSystem(app, player.animationPlayer, signal),
-      runIf: playOnly,
-    });
-    w.addSystem(Update, { ...createSpinSystem(cores), runIf: playOnly });
-    w.addSystem(Update, { ...createCollectSystem(player.parent), runIf: playOnly });
-    w.addSystem(Update, {
-      ...createPortalSystem(player.parent, portal, GameState),
-      runIf: playOnly,
-    });
-
-    // M4 fail-path systems: guardian-ai (per-entity sub-machine) -> guardian-hit
-    // (Health--) -> win-lose-arbiter (single Win/Lose verdict), plus the debug
-    // overlay. The arbiter runs after portal-activate + guardian-hit so its
-    // verdict reads the freshest score/health (same-frame mutual exclusion).
-    const guardianRuntime = guardians.map((g, i) => ({
-      ...g,
-      waypoints: guardianWaypoints(GUARDIAN_SPAWNS[i] ?? { x: 0, z: 0 }),
-    }));
-    w.addSystem(Update, {
-      ...createGuardianAISystem(app, guardianRuntime, player.parent),
-      runIf: playOnly,
-    });
-    w.addSystem(Update, { ...createGuardianHitSystem(player.parent), runIf: playOnly });
-    w.addSystem(Update, {
-      ...createArbiterSystem(player.parent, portal, GameState),
-      runIf: playOnly,
-    });
-    w.addSystem(Update, {
-      ...createDebugOverlaySystem(
-        app,
-        {
-          player: player.parent,
-          cores,
-          guardianBodies: guardians.map((g) => g.body),
-          levelHalf: LEVEL_HALF,
-        },
-        debugEnabled,
-      ),
-      runIf: playOnly,
-    });
-
-    // M5 presentation systems: hud-timer accumulates elapsed into GameProgress
-    // (sole elapsed writer); hud-sync renders the SSOT into the DOM (one-way,
-    // AC-18); pickup-text spawns floating "+1" MSDF GlyphText on Core pickup
-    // (AC-12, after core-collect); audio-cue drives the 3D spatial cue playing
-    // edges off the move signal + score/health deltas (F-07 / AC-10).
-    w.addSystem(Update, { ...createTimerSystem(), runIf: playOnly });
-    w.addSystem(Update, { ...createHudSyncSystem(hud), runIf: playOnly });
-    if (fontHandle !== undefined) {
-      w.addSystem(Update, { ...createPickupTextSystem(fontHandle, GameState), runIf: playOnly });
-    }
-    w.addSystem(Update, { ...createAudioCueSystem(cues, signal), runIf: playOnly });
-
-    // Dev-only verification hook deleted (M5 w24): createApp auto-wires
-    // app.remote in dev mode — host reads player pose / fixes camera via
-    // client.eval(script) against the eval channel. The old __cg hook is
-    // replaced by the zero-cost present remote eval server.
-  });
-
-  // Hide the HUD when leaving Play (Win/Lose result screens land later); the
-  // Title OnEnter resets GameProgress for the replay.
-  addOnExit(GameState, 'Play', () => {
-    hideHUD(hud);
-  });
-
-  // Win / Lose return to Title (the Title OnEnter resets the scoreboard for the
-  // replay). Real result screens land in M5 HUD.
-  addOnEnter(GameState, 'Win', (w: World) => {
-    void setNextState(w, GameState, 'Title');
-  });
-  addOnEnter(GameState, 'Lose', (w: World) => {
-    void setNextState(w, GameState, 'Title');
-  });
-}
-
 // ── Play-state spawn helpers ──────────────────────────────────────────────
-
-function spawnLight(world: World): EntityHandle {
-  // D-7 / F-04: a DirectionalLight (default castShadow:true, real CSM) must
-  // exist before any standard-material entity or the scene renders black.
-  return world
-    .spawn({
-      component: DirectionalLight,
-      data: { castShadow: true, direction: [-0.4, -1, -0.3], color: [1, 1, 1], intensity: 1 },
-    })
-    .unwrap();
-}
 
 function spawnCamera(world: World): EntityHandle {
   // Third-person camera; player-move repositions it to follow the player each
@@ -504,14 +296,6 @@ function spawnCamera(world: World): EntityHandle {
  * attachSkyEquirect attaches the sky.hdr equirect handle once it loads. Returned so
  * the caller state-scopes it.
  */
-function spawnSkylight(world: World): EntityHandle {
-  return world
-    .spawn({
-      component: Skylight,
-      data: { color: [0.9, 0.95, 1.0], intensity: 0.35 },
-    })
-    .unwrap();
-}
 
 /**
  * Attach the sky.hdr equirect to an existing Skylight + spawn the visible
@@ -521,36 +305,6 @@ function spawnSkylight(world: World): EntityHandle {
  * The loaded source handle drives both lighting and the background. The renderer
  * projects the equirect source according to the device capabilities.
  */
-async function attachSkyEquirect(
-  world: World,
-  assets: import('@forgeax/engine-assets-runtime').AssetRegistry,
-  skylight: EntityHandle,
-): Promise<EntityHandle | undefined> {
-  const sceneAssets = world.assets;
-  if (!(sceneAssets instanceof AssetRegistry) || sceneAssets !== assets)
-    throw new Error('Scene requires its runtime asset owner');
-
-  const guidRes = AssetGuid.parse(SKY_HDR_GUID);
-  if (!guidRes.ok) return undefined;
-  const podRes = await assets.load(guidRes.value, 'equirect');
-  if (!podRes.ok) return undefined;
-  const equirect = podRes.value;
-
-  // Attach the equirect to the Skylight for image-based lighting (neutral tint
-  // lets the HDR drive the color); the same handle feeds the visible
-  // SkyboxBackground (F-05). Projection happens lazily inside the renderer.
-  world.set(skylight, Skylight, {
-    equirect,
-    color: [1, 1, 1],
-    intensity: 0.25,
-  });
-  return world
-    .spawn({
-      component: SkyboxBackground,
-      data: { equirect, mode: SKYBOX_MODE_CUBEMAP },
-    })
-    .unwrap();
-}
 
 // ── Asset load helpers (Fail Fast) ────────────────────────────────────────
 

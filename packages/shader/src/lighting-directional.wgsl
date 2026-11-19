@@ -7,7 +7,7 @@
 // native point loads where available and a portable comparison fallback.
 
 #import forgeax_view::common::{view, shadowMap, shadowSampler, shadowCasterCascade, directionalShadowCasterBias}
-#import forgeax_pbr::brdf::{standardOpaqueBrdfEnergy, halfVectorTerms, directLightingAlpha, sunDiscSpecularTerms}
+#import forgeax_pbr::brdf::{DirectLobes, directLobesRadiance, standardOpaqueSpecularEnergy, halfVectorTerms, directLightingAlpha, sunDiscSpecularTerms}
 #import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance, shadow_vogel_rotation, SHADOW_VOGEL_OFFSETS, shadow_sample_compare}
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
 #import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth}
@@ -420,7 +420,7 @@ fn _sampleShadowForCascade(
 // @internal — exported for sprite-lit re-use inside the engine; external
 // material shaders should keep calling `evalDirectional` for backward
 // compat with the cascaded-shadow pipeline.
-fn evalDirectionalNoShadow(
+fn evalDirectionalNoShadowLobes(
   normal     : vec3<f32>,
   viewDir    : vec3<f32>,
   baseColor  : vec3<f32>,
@@ -432,7 +432,7 @@ fn evalDirectionalNoShadow(
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
-) -> vec3<f32> {
+) -> DirectLobes {
   let l = normalize(-view.lightDir);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
@@ -457,14 +457,36 @@ fn evalDirectionalNoShadow(
     nDotH = halfTerms.x;
     vDotH = halfTerms.y;
   }
-  let brdf = standardOpaqueBrdfEnergy(baseColor, metallic, directAlpha, F0, nDotV, nDotL, nDotH, vDotH, dEnergy,
+  let specular = standardOpaqueSpecularEnergy(directAlpha, F0, nDotV, nDotL, nDotH, vDotH, dEnergy,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
   let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
-  return brdf * view.lightColor * nDotL + transmitted * view.lightColor;
+  let diffuse = (1.0 - metallic) * baseColor / 3.14159265;
+  return DirectLobes((diffuse + specular) * view.lightColor * nDotL + transmitted * view.lightColor,
+    diffuse * view.lightColor * nDotL, specular * view.lightColor * nDotL + transmitted * view.lightColor);
+}
+
+fn evalDirectionalNoShadow(
+  normal     : vec3<f32>,
+  viewDir    : vec3<f32>,
+  baseColor  : vec3<f32>,
+  metallic   : f32,
+  alphaSq    : f32,
+  F0         : vec3<f32>,
+  transmission : vec3<f32>,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return directLobesRadiance(evalDirectionalNoShadowLobes(normal, viewDir, baseColor, metallic, alphaSq, F0, transmission, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+));
 }
 
 // Surface callers supply the actual receiver plane normal, independently of

@@ -1,10 +1,10 @@
 #define_import_path forgeax_ssr::temporal
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardSceneSurfaceValid, loadStandardNormalRoughness, encodeStandardNormalRoughness, decodeStandardNormalRoughness}
+#import forgeax_scene_temporal::{unpackSceneTemporalV1}
 
 // SSR temporal resolve keeps history as a renderer-owned consumer resource.
-// History alpha stores absolute source view depth; its sign records whether
-// that lattice point missed last frame. This distinguishes transient thin
-// coverage from consecutive loss without a new allocation.
+// The opaque profile stores signed source depth in alpha; Water stores its
+// reflection fallback-suppression alpha directly in independent RGBA history.
 struct SsrTemporalParams {
   historyValid : u32,
   maxHistoryWeight : f32,
@@ -41,6 +41,16 @@ struct SsrTemporalParams {
 @group(0) @binding(10) var surfaceOutput : texture_storage_2d<rgba8unorm, write>;
 #endif
 @group(0) @binding(11) var currentHitReactivity : texture_2d<f32>;
+@group(0) @binding(12) var waterCoverage : texture_2d<f32>;
+struct WaterSsrParams {
+  historyUvScaleBias: vec4<f32>,
+  historyUvClamp: vec4<f32>,
+  hitColorUvScaleBias: vec4<f32>,
+  hitColorUvClamp: vec4<f32>,
+  hitColorParams: vec4<f32>,
+  traceParams: vec4<f32>,
+};
+@group(0) @binding(13) var<uniform> waterParams: WaterSsrParams;
 
 fn isFinite(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
@@ -99,7 +109,7 @@ struct SsrHistorySample {
 fn ssrHistoryTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, footprintWeight : f32) -> SsrHistorySample {
   // The nearest miss state always has positive bilinear weight. Zero-weight
   // taps contribute neither history nor source state, so do not fetch them.
-  if (footprintWeight <= 0.0) { return SsrHistorySample(vec4<f32>(0.0), false, 0.0); }
+  if (footprintWeight <= 0.0 || !loadStandardSceneSurfaceValid(currentNormal, pixel)) { return SsrHistorySample(vec4<f32>(0.0), false, 0.0); }
   let history = textureLoad(previousHistory, pixel, 0);
   let surface = textureLoad(previousSurface, pixel, 0);
   let packedNormalSource = u32(round(surface.g * 255.0));
@@ -144,8 +154,12 @@ struct SsrCurrentSample {
 // A tap carries confidence-premultiplied color until the footprint is summed.
 fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, footprintWeight : f32) -> SsrCurrentSample {
   if (footprintWeight <= 0.0) { return SsrCurrentSample(vec4<f32>(0.0), 0.0); }
-  let sourceNormal = loadStandardNormalRoughness(currentNormal, pixel).xyz;
-  let sourceDepth = viewDistance(textureLoad(currentDepth, pixel, 0));
+  let fullSize = textureDimensions(currentDepth, 0);
+  let traceSize = textureDimensions(currentTrace, 0);
+  let receiver = min(vec2<i32>((vec2<f32>(pixel) + vec2<f32>(0.5)) * vec2<f32>(fullSize) / vec2<f32>(traceSize)), vec2<i32>(fullSize) - vec2<i32>(1));
+  if (!loadStandardSceneSurfaceValid(currentNormal, receiver)) { return SsrCurrentSample(vec4<f32>(0.0), 0.0); }
+  let sourceNormal = loadStandardNormalRoughness(currentNormal, receiver).xyz;
+  let sourceDepth = viewDistance(textureLoad(currentDepth, receiver, 0));
   if (depthReject(expectedDepth, sourceDepth) || normalReject(normal, sourceNormal)) {
     return SsrCurrentSample(vec4<f32>(0.0), 0.0);
   }
@@ -160,7 +174,7 @@ fn ssrCurrentTap(pixel : vec2<i32>, expectedDepth : f32, normal : vec3<f32>, foo
 }
 
 fn sampleCurrentSsr(uv : vec2<f32>, fullSize : vec2<u32>, expectedDepth : f32, normal : vec3<f32>) -> SsrCurrentSample {
-  let coordinate = ssrLatticeCoordinate(uv, fullSize);
+  let coordinate = ssrLatticeCoordinate(uv, textureDimensions(currentTrace, 0));
   let first = vec2<i32>(floor(coordinate));
   let fraction = fract(coordinate);
   let last = vec2<i32>(textureDimensions(currentTrace, 0)) - vec2<i32>(1);
@@ -295,7 +309,7 @@ fn resolveSsrAt(uv : vec2<f32>, fullSize : vec2<u32>) -> SsrTemporalSample {
   let normal = loadStandardNormalRoughness(currentNormal, vec2<i32>(fullPixel)).xyz;
   // Empty depth cannot admit a current ray or compatible receiver history.
   // Retire it without reconstructing world position or fetching eight taps.
-  if (currentDepthSample <= 0.0) {
+  if (currentDepthSample <= 0.0 || !loadStandardSceneSurfaceValid(currentNormal, fullPixel)) {
     return SsrTemporalSample(vec4<f32>(0.0), normal, 0.0, 0.0, true, false);
   }
   let sourceUv = (vec2<f32>(fullPixel) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
@@ -309,7 +323,7 @@ fn resolveSsrAt(uv : vec2<f32>, fullSize : vec2<u32>) -> SsrTemporalSample {
   }
   let history = sampleSsrHistory(historyUv, fullSize, previousDepth, normal);
   let size = textureDimensions(currentTrace, 0);
-  let pixel = clamp(vec2<i32>(floor(ssrLatticeCoordinate(currentUv, fullSize) + vec2<f32>(0.5))), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
+  let pixel = clamp(vec2<i32>(floor(currentUv * vec2<f32>(size))), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
   // No current hit means the existing resolver deliberately accepts straight
   // history without color clipping. Do not fetch the unused nine-tap bounds.
   var bounds = NeighborhoodBounds(vec3<f32>(0.0), vec3<f32>(0.0));
@@ -346,7 +360,7 @@ struct SsrTemporalOutput {
 }
 fn evaluateSsrTemporal(globalId : vec3<u32>) -> SsrTemporalOutput {
   var output : SsrTemporalOutput;
-  let size = textureDimensions(currentTrace, 0);
+  let size = textureDimensions(currentDepth, 0);
   if (any(globalId.xy >= size)) { return output; }
   let pixel = vec2<i32>(globalId.xy);
   let fullSize = textureDimensions(currentDepth, 0);
@@ -384,7 +398,7 @@ fn evaluateSsrTemporal(globalId : vec3<u32>) -> SsrTemporalOutput {
 #else
 @compute @workgroup_size(8, 8, 1)
 fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
-  if (any(globalId.xy >= textureDimensions(currentTrace, 0))) { return; }
+  if (any(globalId.xy >= textureDimensions(currentDepth, 0))) { return; }
   let output = evaluateSsrTemporal(globalId);
   let pixel = vec2<i32>(globalId.xy);
   textureStore(historyOutput, pixel, output.history);
@@ -396,5 +410,93 @@ fn ssr_reflection_mip(@builtin(global_invocation_id) id : vec3<u32>) {
   let size = textureDimensions(resolvedOutput);
   if (any(id.xy >= size)) { return; }
   textureStore(resolvedOutput, vec2<i32>(id.xy), evaluateSsrReflectionMip(id, size));
+}
+#endif
+
+#if !PORTABLE_FRAGMENT
+fn waterWorkingColor(rgba: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(rgba.r + 2.0 * rgba.g + rgba.b, 2.0 * rgba.r - 2.0 * rgba.b,
+    -rgba.r + 2.0 * rgba.g - rgba.b, rgba.a);
+}
+
+fn waterLinearColor(working: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(vec3<f32>(working.x + working.y - working.z, working.x + working.z,
+    working.x - working.y - working.z) * 0.25, working.a);
+}
+
+fn waterHistoryBilinear(uv: vec2<f32>) -> vec4<f32> {
+  let size = vec2<i32>(textureDimensions(previousHistory));
+  let mapped = clamp(uv * waterParams.historyUvScaleBias.xy + waterParams.historyUvScaleBias.zw,
+    waterParams.historyUvClamp.xy, waterParams.historyUvClamp.zw);
+  let coordinate = mapped * vec2<f32>(size) - vec2<f32>(0.5);
+  let first = vec2<i32>(floor(coordinate));
+  let fraction = fract(coordinate);
+  let last = size - vec2<i32>(1);
+  let top = mix(textureLoad(previousHistory, clamp(first, vec2<i32>(0), last), 0),
+    textureLoad(previousHistory, clamp(first + vec2<i32>(1, 0), vec2<i32>(0), last), 0), fraction.x);
+  let bottom = mix(textureLoad(previousHistory, clamp(first + vec2<i32>(0, 1), vec2<i32>(0), last), 0),
+    textureLoad(previousHistory, clamp(first + vec2<i32>(1, 1), vec2<i32>(0), last), 0), fraction.x);
+  return mix(top, bottom, fraction.y);
+}
+
+// Water's SSR TAA uses the five-sample plus filter and clamps all RGBA lanes.
+// It retains suppression alpha, without an opaque history depth/normal payload.
+fn resolveWaterSsr(pixel: vec2<i32>, size: vec2<u32>) -> vec4<f32> {
+  if (textureLoad(waterCoverage, pixel, 0).r <= 0.0) { return vec4<f32>(0.0); }
+  let offsets = array<vec2<i32>, 5>(vec2<i32>(0, -1), vec2<i32>(-1, 0), vec2<i32>(0, 0), vec2<i32>(1, 0), vec2<i32>(0, 1));
+  let jitterPixels = params.currentJitterUv * vec2<f32>(size);
+  let last = vec2<i32>(size) - vec2<i32>(1);
+  var filtered = vec4<f32>(0.0);
+  var lower = vec4<f32>(3.402823e+38);
+  var upper = vec4<f32>(-3.402823e+38);
+  var total = 0.0;
+  for (var index = 0u; index < 5u; index++) {
+    let offset = offsets[index];
+    let color = waterWorkingColor(textureLoad(currentTrace, clamp(pixel + offset, vec2<i32>(0), last), 0));
+    let position = vec2<f32>(offset) - jitterPixels;
+    let weight = exp(-2.29 * dot(position, position));
+    filtered += color * weight;
+    total += weight;
+    lower = min(lower, color);
+    upper = max(upper, color);
+  }
+  filtered /= max(total, 1e-8);
+  let uv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / vec2<f32>(size);
+  let depth = textureLoad(currentDepth, pixel, 0);
+  let worldH = view.inverseViewProj * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth, 1.0);
+  var historyUv = vec2<f32>(-1.0);
+  if (isFinite(worldH.w) && abs(worldH.w) > 1e-8) {
+    let world = vec4<f32>(worldH.xyz / worldH.w, 1.0);
+    let currentClip = view.temporalCurrentViewProj * world;
+    let previousClip = view.temporalPreviousViewProj * world;
+    if (isFinite(previousClip.w) && previousClip.w > 1e-8 && isFinite(currentClip.w) && currentClip.w > 1e-8) {
+      let motion = (currentClip.xy / currentClip.w - previousClip.xy / previousClip.w) * vec2<f32>(0.5, -0.5);
+      historyUv = uv - motion;
+    }
+  }
+  let temporal = unpackSceneTemporalV1(textureLoad(currentTemporal, pixel, 0));
+  if (temporal.validDepth && temporal.motionValid && isFinite(temporal.motionUv.x) && isFinite(temporal.motionUv.y)) {
+    historyUv = uv - temporal.motionUv;
+  }
+  var resolved = filtered;
+  if (params.historyValid != 0u && all(historyUv >= vec2<f32>(0.0)) && all(historyUv <= vec2<f32>(1.0))) {
+    let history = clamp(waterWorkingColor(waterHistoryBilinear(historyUv)), lower, upper);
+    // Engine scene HDR is not pre-exposed, so FrameExposureScale is one.
+    let historyWeight = params.maxHistoryWeight / (max(history.x, 0.0) + 4.0);
+    let currentWeight = (1.0 - params.maxHistoryWeight) / (max(filtered.x, 0.0) + 4.0);
+    resolved = (history * historyWeight + filtered * currentWeight) / max(historyWeight + currentWeight, 1e-8);
+  }
+  resolved.a = select(clamp(resolved.a, 0.0, 1.0), 1.0, resolved.a > 0.995);
+  return waterLinearColor(resolved);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn ssr_water_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  let size = textureDimensions(currentTrace);
+  if (any(globalId.xy >= size)) { return; }
+  let pixel = vec2<i32>(globalId.xy);
+  let resolved = resolveWaterSsr(pixel, size);
+  textureStore(historyOutput, pixel, resolved);
+  textureStore(resolvedOutput, pixel, resolved);
 }
 #endif

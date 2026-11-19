@@ -117,7 +117,7 @@ publication, including edit and retirement evidence.
 
 `await assets.readMeshGeometry(guid, { signal })` reads independently owned
 published base geometry for CPU processing. The `MeshGeometry` result contains
-vertices, attributes, optional indices, submeshes and optional AABB, with no
+vertices, empty attribute layout declarations, `attributeStorage: 'interleaved'`, optional indices, submeshes and optional AABB, with no
 Asset `kind`, runtime handle or render-readiness receipt. It uses the configured
 source's verified Pack/artifact transport and Mesh decoder, checks canonical
 geometry, and rejects cancellation, invalidation, decoder retirement, changed
@@ -193,9 +193,11 @@ An injected import transport can request a declared unpublished output. Runtime
 writes do not invoke Import, Cook, DDC or a filesystem save.
 
 A source read verifies the complete Pack tuple, artifact lengths and SHA-256,
-then invokes installed domain decoders. New dependencies and content become
-visible together. A failed read, stale publication or decoder failure cannot
-replace the previously accepted runtime closure.
+then invokes installed domain decoders. The runtime graph follows the selected
+output's declared references. Publication evidence records versions and digests
+for the complete package. New dependencies and content become visible together.
+A failed read, stale publication or decoder failure cannot replace the previously
+accepted runtime closure.
 
 ## Domain preparation
 
@@ -257,14 +259,20 @@ Publication reference checks index each shared output table once per check,
 including deferred references. The index is discarded when the check returns;
 subsequent reads still validate current dependency digests and generations.
 
-Verified Pack documents are held strongly through a burst of sibling reads, then
-kept through weak references after two seconds without a read. When the host
-reports memory pressure, `trimReadCache` demotes those documents immediately.
-A live document can be reused; after collection, a later request fetches and
-verifies the same complete publication tuple again. Decoded runtime content and
-shared immutable material facts stay with their accepted consumers. This cache
-release never invalidates a publication or retires a live asset. Hosts without
-`WeakRef` retain the strong read cache.
+`assets.loadMany(guids, kind, { signal })` loads a finite homogeneous roster
+serially. Its closure reads share verified Pack documents and GUID indexes until
+the operation settles, then release them. Ordinary independent loads retain only
+in-flight Pack reads; there are no retention timers or weak document caches.
+Each returned entry owns one grant, including duplicate GUIDs. Failure or
+cancellation releases earlier grants and admits no later read. Existing runtime
+handles keep their gameplay edits, and Catalog replacement cannot mix sources
+within a batch. Decoded runtime content and shared immutable material facts stay
+with their accepted consumers. Use this operation for a known startup roster,
+rather than reopening the same large Pack for each asset or increasing decode
+concurrency to hide repeated parsing. An optional awaited `onProgress(completed, total)`
+callback can report progress or yield to the host without closing the shared
+read scope. It receives no grants; handles stay batch-owned until success.
+Cancellation, source replacement or a thrown callback rolls back admitted grants.
 
 Transient network/body failures and HTTP 408/429/500/502/503/504 retry twice,
 after 250 ms and 750 ms, with `cache: 'reload'`. Aborts and permanent errors fail
@@ -289,6 +297,11 @@ contract. It does not decode or analyze every WGSL variant. The first selected-p
 lookup prepares that source in ShaderRegistry, and later users share its immutable
 CPU facts. All program bytes, references and receipts still pass the existing loader
 verification; asset readiness does not imply that every source has been analyzed.
+
+View-clipping contexts project their already cooked program keys into the
+ShaderRegistry's ordinary variant manifest. Families preserve pass, address and
+vertex-color ABI; their referenced sources remain lazy. Worker publication carries
+the complete key closure and rejects a missing program before adopting any row.
 
 Runtime selects only prepared program contexts. Root and child source materials
 preserve explicit static choices; parent inheritance is flattened at admission.
@@ -356,6 +369,17 @@ Performance evidence and remaining acceptance belong to the
 [managed asset measurements](../render/bench/managed-assets/README.md).
 
 ## Runtime content
+
+Mesh content has one retained vertex representation: interleaved rows. Full
+authoring channels are validated before admission and then discarded from the
+owned runtime value. The native binary decoder validates rows directly without
+allocating duplicate channels. Read CPU lanes through geometry's
+`meshAttributeWindow`; request explicit contiguous output with `copyMeshAttribute`
+when needed. Attribute range edits write the corresponding strided row lanes;
+complete row edits do not regenerate a channel mirror. `attributes` on reads
+declares layout, so its empty array lengths are not vertex counts. Detached
+authoring edits can use `meshAttributeChannels(read)` and pass the resulting
+complete channels to `update`; ordinary `writeRange` avoids that conversion.
 
 `update` merges owned fields, `replace` validates complete content, and `writeRange`
 updates mesh attribute or texture pixel ranges. A successful operation commits
@@ -564,22 +588,62 @@ generation prewarms the pipeline and uses the synchronous submission path; error
 remain `RhiError` throughout.
 
 The internal `encodeMipmaps` helper records into a caller encoder and returns
-scratch cleanup without finishing or submitting. `prepareMipmaps` delegates to
+backend-temporary cleanup without finishing or submitting. `prepareMipmaps` delegates to
 it and retains its finish/discard transaction. Dynamic Canvas updates share the
 Renderer's submission rather than opening a separate queue path.
 
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
-cube textures; omission retains the single-layer 2D path. Every layer samples
-only its preceding mip and copies the result back into the same layer. All
-layers share one transient 2D render scratch chain. Array and cube sources also
-share a 2D staging chain: each source layer/mip is copied there before sampling.
-WebGL2 cannot reinterpret an array slice as a physical `sampler2D` texture;
-sampling such a view produces invalid lower mips. Staging preserves sRGB
-filtering, layer identity and the feedback-loop workaround without disabling
-mips or changing authored samplers. Renderer residency supplies the layer count
-from the existing texture layout. Recovery preparation still records without
-submitting, and its owner finishes or discards the same transaction.
+cube textures; omission retains the single-layer 2D path. All layers retain the
+same linear-light filter and format, including sRGB decode and encode.
+
+| Backend | Generation and temporary storage |
+|:--|:--|
+| WebGPU / native wgpu | Read one mip/layer view and render directly into the next disjoint mip of the same layer; no scratch, array staging or copies. Targets need `TEXTURE_BINDING` and `RENDER_ATTACHMENT`. |
+| WebGL2 | Keep physical 2D images and copies. Array/cube slices cannot be reinterpreted as physical `sampler2D` textures, and mip views share mutable texture levels. Ordinary 2D source inputs retain their `TEXTURE_BINDING` / `COPY_DST` contract. |
+
+Renderer residency supplies layer count and usage from the existing texture
+layout. Recovery records without submitting; its owner finishes or discards
+that same transaction, retiring any backend temporaries exactly once.
 
 Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
 root membership, monotonicity and single-step rules in Pack production and Runtime
 replica admission. Shape validation and replica row/scope checks remain separate.
+
+For generated normal outputs, `GeneratedTextureDescriptor.mipFilter` may select
+`normal-roughness` (default: `box`). This mode requires linear `rgba8unorm` and
+`mips: { kind: 'generate' }`. Level zero is an encoded RGB unit normal with zero
+alpha. Generated RGB stores the mean normal; alpha stores a perceptual roughness
+floor. Consumers add its fourth power to authored roughness's fourth power and
+normalize or otherwise decode the filtered normal. This is a normal-variance
+model, not an arbitrary alpha-preserving filter or an exact composite of dynamic
+material layers. A 0.001 mean-length dead zone bounds half-float roundoff.
+
+The normal filter lazily prepares two MRT pipelines (RGBA8 result + half-float
+mean), using a transient mean chain shared across array layers. WebGL2 stages the
+first source/output to avoid physical texture feedback. `mipmapTemporaryByteLength`
+reports setup storage; Renderer includes it in its reservation and releases it
+at queue completion. No pixel readback occurs. Box mip generation is unchanged.
+
+## Runtime GPU texture assets
+
+`GpuTextureAsset` has the independent `gpu-texture` kind and references a named
+`texture-generator` output. Its decoder derives shape, format, color space and mip
+policy from that generator, retaining the dependency through normal preparation.
+Generator edits adopt all loaded output descriptors atomically. Neither pixels nor
+RHI objects enter Registry content. `TextureAsset`, the `texture` kind and existing
+CPU image consumers retain their byte-backed contract. Renderer owns generation,
+mips, sampling, device recovery and the accepted GPU allocation lifetime.
+
+### Cooked surface coverage selection
+
+MaterialReady groups programs only when pass, base context, address and vertex-color
+ABI match. Independent `lodCoverage` and `viewClipping` contexts become immutable
+references in the existing ShaderRegistry manifest; ordinary lookup prepares only
+the selected program. A non-fading draw does not request a LOD program. Worker
+publication and device adoption retain the complete family closure without eagerly
+decoding sibling source. Material-local clipping stays within the authored contract.
+
+Retiring a publication source releases its Catalog replica directory and cached
+snapshot. Runtime handles keep their accepted content and provenance; immutable
+observations already returned to callers remain valid. A retired source refuses
+new reads, and a replacement source builds its own current directory.

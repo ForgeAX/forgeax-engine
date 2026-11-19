@@ -18,6 +18,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { bundleEngineArchive } from './engine-bundle.mjs';
+import { sdkBuildEnvironment } from './sdk-build-environment.mjs';
 import { sdkLauncherSource } from './sdk-launcher.mjs';
 import {
   artifact,
@@ -52,7 +53,7 @@ import {
 import { archiveEngineSource, seedSourcePackageBuilds } from './sdk-source.mjs';
 import { sdkStage } from './sdk-stage.mjs';
 import { seedTemplateBuildCache } from './sdk-template-cache.mjs';
-import { stageViewToolPackage } from './sdk-view.mjs';
+import { stageViewConsumerSkills, stageViewToolPackage } from './sdk-view.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -100,16 +101,21 @@ function processInvocation(file, commandArgs) {
 }
 
 async function run(file, commandArgs, options = {}) {
-  const { env, ...rest } = options;
+  const { env, streamOutput = false, ...rest } = options;
   const invocation = processInvocation(file, commandArgs);
-  return sdkStage([file, ...commandArgs].join(' ').slice(0, 240), () =>
-    execFileAsync(invocation.file, invocation.args, {
+  return sdkStage([file, ...commandArgs].join(' ').slice(0, 240), () => {
+    const pending = execFileAsync(invocation.file, invocation.args, {
       cwd: root,
       maxBuffer: 64 * 1024 * 1024,
       ...rest,
       env: { ...process.env, CI: process.env.CI ?? 'true', ...env },
-    }),
-  );
+    });
+    if (streamOutput) {
+      pending.child.stdout?.on('data', (chunk) => process.stderr.write(chunk));
+      pending.child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+    }
+    return pending;
+  });
 }
 
 async function git(commandArgs) {
@@ -250,10 +256,11 @@ try {
   await rm(nativeInputs, { recursive: true, force: true });
 }
 await run('pnpm', ['build:engine'], {
+  streamOutput: true,
   // Stage the selected environment and receipt together. The SDK transport
   // variant is overlaid only while the Preview package is packed.
   env: {
-    ...process.env,
+    ...sdkBuildEnvironment(),
     FORGEAX_SDK_BUILD: '0',
     FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitRoot,
   },
@@ -274,25 +281,34 @@ await run('node', ['packages/preview/scripts/build-canonical-kit.mjs'], {
 // Keep generated profile inputs as acceleration. The producer validates the
 // current compiler/source/profile and payload bytes before any reuse; disabled
 // task caches still compile from source. These inputs never enter the archive.
-const preparedShaders = await run('node', [
-  'scripts/forgeax/prepare-shader-release-inputs.mjs',
-  '--build',
-  '--shared-input-manifest',
-  'shared-build-inputs/manifest.json',
-]);
+const preparedShaders = await run(
+  'node',
+  [
+    'scripts/forgeax/prepare-shader-release-inputs.mjs',
+    '--build',
+    '--shared-input-manifest',
+    process.env.FORGEAX_SDK_SHADER_INPUTS
+      ? 'shared-app-inputs/manifest.json'
+      : 'shared-build-inputs/manifest.json',
+  ],
+  { env: sdkBuildEnvironment() },
+);
 // Keep cache admission visible without changing the builder's final JSON stdout.
 for (const line of preparedShaders.stdout.split('\n')) {
   if (line.startsWith('[shader-profile]')) console.error(line);
 }
 for (const profile of ['base-ssao', 'point-ssao']) {
   await sdkStage(`admit ${profile} shader publication within memory budget`, () =>
-    run('node', [
-      '--expose-gc',
-      '--max-old-space-size=512',
-      'scripts/forgeax/check-shader-publication.mjs',
-      'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
-      profile,
-    ]),
+    run(
+      'node',
+      [
+        '--expose-gc',
+        'scripts/forgeax/check-shader-publication.mjs',
+        'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
+        profile,
+      ],
+      { env: sdkBuildEnvironment() },
+    ),
   );
 }
 const publicPackages = [];
@@ -429,6 +445,7 @@ const engineBundle = await sdkStage('bundle complete npm Engine', () =>
       .filter((entry) => entry.name.startsWith('@forgeax/engine-'))
       .map((entry) => ({ ...entry, archive: tarballs.get(entry.name).path })),
     version,
+    viewTool: { root: resolve(stage, 'tools/view'), dependencySource: viewRoot },
   }),
 );
 // Bare SDK package contracts remain inspectable. Only complete delivery units
@@ -738,11 +755,14 @@ for (const id of sdkSkillIds) {
   }
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
+sdkSkillIds.push(...(await stageViewConsumerSkills(viewRoot, resolve(stage, 'skills'))));
+sdkSkillIds.sort();
 // Source-derived SDK discovery is generated into the distribution, not committed documentation.
-const { renderApiIndex } = await import('./sdk-api-index.mjs');
+// `api-index.md` is the directory; each domain file lands beside it under `api/`.
+const { writeApiReference } = await import('./sdk-api-index.mjs');
 const sdkReferenceRoot = resolve(stage, 'skills/forgeax-engine-sdk/references');
 await mkdir(sdkReferenceRoot, { recursive: true });
-await writeFile(resolve(sdkReferenceRoot, 'api-index.md'), renderApiIndex());
+writeApiReference(sdkReferenceRoot);
 const capabilityFacts = JSON.parse(
   await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
 );

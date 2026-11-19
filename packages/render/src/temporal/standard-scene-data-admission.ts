@@ -5,6 +5,8 @@ import {
   deriveRenderFeaturePassAccess,
   type RenderFeatureDerivedAccess,
   type RenderFeaturePlannedFrame,
+  type RenderFeatureWorkPlan,
+  renderFeaturePlanDeclarations,
 } from '../features/plan';
 import type { MaterialResource } from '../material-resource';
 import { runtimeMaterialShaderIdForMaterial } from '../material-resource';
@@ -17,7 +19,7 @@ import type { RenderPipelineTopology } from '../render-pipeline';
 import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
-import { materialProgramFact, retainedMaterialProgramFacts } from './material-program-facts';
+import { materialProgramFact } from './material-program-facts';
 import type {
   SceneDataLane,
   StandardSceneDataContributorProgramFact,
@@ -29,6 +31,7 @@ import type {
 } from './scene-data';
 import {
   isSceneDataTarget,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataSchemaId,
@@ -95,14 +98,29 @@ function sceneDataOwnerKey(owner: SceneDataBindingOwner, schema: SceneDataSchema
   ]);
 }
 
+/**
+ * Whether any pass of the plan can derive a SceneData `sampled-read`. Pass
+ * access only yields a non-string resource from a `prepared-gpu-resource`
+ * declaration's `logicalTarget` (raster `sampledTargets` keep strings only),
+ * so a plan without such a SceneData declaration contributes no binding.
+ */
+function declaresSceneDataTarget(plan: RenderFeatureWorkPlan): boolean {
+  return plan.resources.some(
+    (resource) =>
+      resource.kind === 'prepared-gpu-resource' && isSceneDataTarget(resource.logicalTarget),
+  );
+}
+
 export function sceneDataSurfaceBindings(
   plans: readonly RenderFeaturePlannedFrame[],
   admission?: StandardSceneSurfaceAdmission,
 ): readonly SceneDataSurfaceBinding[] {
   const owners = new Map<SceneDataSchemaId, Map<string, SceneDataBindingOwner>>();
   for (const planned of plans) {
+    if (!declaresSceneDataTarget(planned.plan)) continue;
+    const declarations = renderFeaturePlanDeclarations(planned.plan);
     for (const pass of planned.plan.passes) {
-      for (const access of deriveRenderFeaturePassAccess(planned.plan, pass)) {
+      for (const access of deriveRenderFeaturePassAccess(planned.plan, pass, declarations)) {
         const binding = sceneDataOwnerForAccess(planned, access, admission);
         if (binding === undefined) continue;
         const schemaOwners = owners.get(binding.schema) ?? new Map();
@@ -133,6 +151,8 @@ export interface StandardSceneDataContributor {
   readonly deformation: 'rigid' | 'skin' | 'morph' | 'unknown';
   readonly entryPoint: string | undefined;
   readonly selectedProgram: string;
+  /** Actual captured program authority; absent for all borrowed program inputs. */
+  readonly programIdentity?: object | undefined;
   readonly facts?: {
     readonly sourceTuple: StandardSceneDataContributorTuple | undefined;
     readonly dispatchProgramKey: string;
@@ -249,8 +269,8 @@ function completeNegativeContributor(row: StandardSceneDataContributor): boolean
     facts !== undefined &&
     !facts.materialSnapshotMissing &&
     facts.selectedPassFound &&
-    // The private marker is issued only after fixedProgramSnapshot's deep, plain,
-    // dense program proof. These exact links cover all nested diagnostic facts.
+    // The private marker is issued only for the MaterialResource's captured
+    // program authority. These exact links cover all nested diagnostic facts.
     facts.publishedFragmentEntries === program.fragmentEntryPoints &&
     facts.publicationIdentity === program.publicationIdentity &&
     facts.selectedProgramFacts === program.program &&
@@ -380,7 +400,10 @@ export function standardAoSceneDataUnavailable(input: {
     reason === 'coverage-incomplete' ? (unavailable?.missingContributorIds ?? []) : [];
   return new SceneDataUnavailableError({
     featureIdentity: 'forgeax::standard',
-    schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+    schema:
+      input.renderPath === 'deferred'
+        ? SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
+        : SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
     lane: admission?.lane ?? input.fallbackLane,
     reason,
     missingContributorIds,
@@ -605,7 +628,7 @@ type ContributorRow = Pick<RenderableSnapshot, 'morph' | 'skinBinding'>;
 type ContributorMaterials = Pick<RenderableSnapshot, 'material' | 'materials'>;
 type ContributorSource = ContributorRow &
   ContributorMaterials &
-  Pick<RenderableSnapshot, 'worldId' | 'entityKey'>;
+  Pick<RenderableSnapshot, 'entityKey'>;
 
 function materialForDispatch(
   row: ContributorMaterials | undefined,
@@ -678,24 +701,14 @@ export function standardSceneDataContributorForDispatch(
 ): StandardSceneDataContributor | undefined {
   // Observe identity before material selection, but materialize it only for
   // passes that actually contribute. The existing dispatch is the sole source.
-  const worldId = row?.worldId ?? -1;
   const entityKey = row?.entityKey ?? -1;
-  return standardSceneDataContributorFromColumns(
-    row,
-    row,
-    worldId,
-    entityKey,
-    dispatch,
-    lane,
-    previous,
-  );
+  return standardSceneDataContributorFromColumns(row, row, entityKey, dispatch, lane, previous);
 }
 
 /** Native Scene columns share the judgement without assembling a snapshot-shaped wrapper. */
 export function standardSceneDataContributorFromColumns(
   row: ContributorRow | undefined,
   materials: ContributorMaterials | undefined,
-  worldId: number,
   entityKey: number,
   dispatch: StandardSceneDataDispatch,
   lane: 'forward' | 'deferred',
@@ -713,7 +726,7 @@ export function standardSceneDataContributorFromColumns(
   )
     return undefined;
   const prior = previous !== undefined && ownedContributors.has(previous) ? previous : undefined;
-  const sourceTuple = contributorSourceTuple(prior, worldId, entityKey, materialHandle, passIndex);
+  const sourceTuple = contributorSourceTuple(prior, entityKey, materialHandle, passIndex);
   const expectedFragmentEntry = lane === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
   if (material === undefined)
     return ownContributor(
@@ -748,7 +761,6 @@ export function standardSceneDataContributorFromColumns(
 
 function contributorSourceTuple(
   previous: StandardSceneDataContributor | undefined,
-  worldId: number,
   entityKey: number,
   materialHandle: number,
   passIndex: number,
@@ -756,17 +768,15 @@ function contributorSourceTuple(
   const tuple = previous?.facts?.sourceTuple;
   if (
     tuple !== undefined &&
-    typeof worldId === 'number' &&
     typeof entityKey === 'number' &&
     typeof materialHandle === 'number' &&
     typeof passIndex === 'number' &&
-    Object.is(tuple[0], worldId) &&
-    Object.is(tuple[1], entityKey) &&
-    Object.is(tuple[2], materialHandle) &&
-    Object.is(tuple[3], passIndex)
+    Object.is(tuple[0], entityKey) &&
+    Object.is(tuple[1], materialHandle) &&
+    Object.is(tuple[2], passIndex)
   )
     return tuple;
-  return Object.freeze([worldId, entityKey, materialHandle, passIndex] as const);
+  return Object.freeze([entityKey, materialHandle, passIndex] as const);
 }
 
 function missingSnapshotContributor(
@@ -858,8 +868,9 @@ function selectedPassContributor(
   previous: StandardSceneDataContributor | undefined,
 ): StandardSceneDataContributor {
   const snapshot = material.snapshot;
-  const retained = retainedMaterialProgramFacts(material, snapshot, pass, materialShaderId);
-  const selectedProgramFact = retained?.fact ?? materialProgramFact(material, pass);
+  const observation = material.programObservation(pass);
+  const retained = observation.identity === undefined ? undefined : observation;
+  const selectedProgramFact = observation.fact;
   const forwardOnly = lane === 'deferred' && matchPass(tags, FORWARD_PASS_SELECTOR);
   // Publishing fs_gbuffer in the same WGSL module does not select a GBuffer
   // draw. The later Forward-only pass cannot certify that producer's coverage.
@@ -963,7 +974,7 @@ function contributorFragmentEntry(
     return selectedProgramFact.fragmentEntryPoints.includes(expectedFragmentEntry)
       ? expectedFragmentEntry
       : undefined;
-  return (snapshot.materialEntryPoints?.[pass.name] ?? []).find(
+  return (snapshot.materialProgramInputs?.[pass.name]?.entryPoints ?? []).find(
     (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
   )?.name;
 }

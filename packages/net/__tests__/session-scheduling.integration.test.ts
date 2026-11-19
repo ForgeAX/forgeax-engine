@@ -1,3 +1,6 @@
+import { NetSessionResource } from '../src/session/session-plugin';
+
+import { defineSystem } from "@forgeax/engine-ecs";
 import { describe, expect, it } from 'vitest';
 import { createWorldContext, defineComponent, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createMemoryEndpointPair } from '../src/endpoint/memory';
@@ -49,6 +52,8 @@ describe('NetSession scheduling integration', () => {
   });
 
   it('applies received replication before fixed simulation and publishes after it via World.update', async () => {
+
+
     const [authorityEndpoint, replicaEndpoint] = createMemoryEndpointPair();
     const profile = scheduledProfile();
     const authorityWorld = new World({ time: { fixedDeltaSeconds: 1, maxDeltaSeconds: 5 } });
@@ -62,27 +67,29 @@ describe('NetSession scheduling integration', () => {
 
     await createWorldContext(authorityWorld, [netPlugin({ endpoint: authorityEndpoint })]);
     await createWorldContext(replicaWorld, [netPlugin({ endpoint: replicaEndpoint })]);
-    const authoritySession = authorityWorld.getResource<NetSession>('net-session');
-    const replicaSession = replicaWorld.getResource<NetSession>('net-session');
+    const authoritySession = authorityWorld.getResource(NetSessionResource);
+    const replicaSession = replicaWorld.getResource(NetSessionResource);
     authoritySession.attachAuthority(createAuthorityCoordinator(authorityWorld, profile));
     const replica = createReplicaCoordinator(replicaWorld, profile);
     replicaSession.attachReplica(replica, profile.limits);
     replicaSession.receiveEvents(); // Announce identity before the first simulation tick.
 
-    replicaWorld.addSystem(FixedUpdate, {
+    const systemToken1 = defineSystem({
       name: 'observe-replica-before-simulation',
       queries: [],
       fn: () => {
         expect(replica.readComponent(1, PositionScheduled)).toEqual({ x: 2 });
       },
     });
-    authorityWorld.addSystem(FixedUpdate, {
+replicaWorld.addSystem(FixedUpdate, systemToken1);
+    const systemToken2 = defineSystem({
       name: 'simulate-authority',
       queries: [],
       fn: () => {
         authorityWorld.set(authorityEntity, PositionScheduled, { x: 2 }).unwrap();
       },
     });
+authorityWorld.addSystem(FixedUpdate, systemToken2);
 
     authorityWorld.update(1).unwrap();
     replicaWorld.update(1).unwrap();
@@ -91,6 +98,8 @@ describe('NetSession scheduling integration', () => {
   });
 
   it('keeps the World healthy when the authority ACK ledger applies backpressure', async () => {
+
+
     const [authorityEndpoint, replicaEndpoint] = createMemoryEndpointPair();
     const profile = scheduledProfile();
     const authorityWorld = new World({ time: { fixedDeltaSeconds: 1, maxDeltaSeconds: 5 } });
@@ -103,7 +112,7 @@ describe('NetSession scheduling integration', () => {
       authorityWorld,
       [netPlugin({ endpoint: authorityEndpoint, recovery: { maxPendingPackets: 1 } })],
     );
-    const authoritySession = authorityWorld.getResource<NetSession>('net-session');
+    const authoritySession = authorityWorld.getResource(NetSessionResource);
     authoritySession.attachAuthority(createAuthorityCoordinator(authorityWorld, profile));
     replicaEndpoint.send(1 as PeerId, encodeReplicationPacket({
       version: 2, kind: 'session-open', sessionId: createSessionId(2).unwrap(), epoch: 0, sequence: 0,

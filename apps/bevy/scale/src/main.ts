@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 // apps/bevy/scale — reproduction of Bevy's `transforms/scale` example.
 // The shared src/scale.ts scene and step are the SSOT for this browser app and
@@ -28,14 +29,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const app = appResult.value;
   console.warn(`[bevy-scale] state=${app.renderer.inspect().state}`);
   buildScaleWorld(app.world);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'scale-cube',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
       stepScale(world, dt);
     },
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) console.error('[bevy-scale] app.start failed:', started.error);
   else globalThis.__bevyScaleReady = true;

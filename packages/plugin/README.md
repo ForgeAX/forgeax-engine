@@ -15,10 +15,6 @@ directly when the native event bus has no read interceptors. It consults current
 Fiber storage on every read; it does not retain a second service value. Accessors,
 interceptors, custom event accessors/overrides and missing/retired implementations
 keep the ordinary resolution and diagnostic path, including caller tracing.
-Run [`bench/service-reads.mjs`](bench/service-reads.mjs) against a built Cordis
-entry and private output for the allocation regression and positive control.
-Provider retirement/reinstall is a semantic control; its cold cost is separate
-from that bench's steady read rates.
 
 | Identity | Authority |
 |:--|:--|
@@ -33,7 +29,7 @@ definition. Larger implementations can live in ordinary TypeScript modules refer
 Pack. There is no required `plugin.ts` filename or independent file-based activation path.
 
 `build()` generates definitions and configuration; runtime `apply()` owns the reversible work.
-See the feature Packs in [game-3d](../../templates/game-3d/README.md#behavior-packs) for same-file,
+See the feature Packs in [game-3d](../../templates/game-3d/docs/guide.md#behavior-packs) for same-file,
 separate-module, and npm implementations with cross-Pack GUID references.
 
 `assets.load(guid, 'plugin')` returns a definition handle without evaluating its code or preloading deferred references; `assets.read(handle)` returns detached definition content. Release the caller handle when finished. Runtime edits affect later activations and do not reconfigure existing Fibers. `mountPluginAsset(ctx, guid)` resolves a compiled implementation, clones configuration, establishes asset origin before installation, and returns the actual native Fiber in a Result. The host injects `assets.readPluginDefinition` and `pluginPrograms`; this package does not import the asset runtime.
@@ -65,6 +61,10 @@ despawn the child still reads.
 `timeoutMs` defaults to 30,000 ms; pass a positive value to override it or `null`
 to wait until completion or explicit cancellation. `cleanupTimeoutMs` remains a
 separate bounded cleanup policy.
+
+`onFiber` observes the installed native root immediately, while startup is
+pending. If the observer throws, the startup owner aborts and performs the same
+bounded Fiber cleanup before returning a structured startup failure.
 
 `inspectPluginFiber` projects native state and missing services. Asset origin carries the source and session identity, not another installation state. Disposal remains native; domain owners must verify their contributions were released. Source/config updates rebuild the session in a fresh page or Worker. Compilation failure may retain the running session; startup failure after replacement does not restore game progress.
 

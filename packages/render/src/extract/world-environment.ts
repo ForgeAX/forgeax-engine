@@ -1,18 +1,18 @@
-import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+﻿import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { Component, EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
 import {
   readEntityComponentEpoch,
   readMutationEpoch,
   readRenderArrayView,
   routeWorldError,
-  SpawnLightInvalidBoundsError,
 } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import { GlobalTransform, Transform, TransformInterpolation } from '@forgeax/engine-scene';
 import type { AssetHandle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
-import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
+import { type ExtractedCloudLayer, extractStandardCloudLayer } from '../cloud/extract';
+import { selectCloudLightingEnvironment } from '../cloud/lighting/environment';
 import {
   Atmosphere,
   DirectionalLight,
@@ -35,7 +35,13 @@ import {
 } from '../components/light-helpers';
 import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
+import { RenderFeatureEnvironment } from '../components/render-feature-environment';
+import {
+  RenderTargetEnvironment,
+  type RenderTargetEnvironmentSource,
+} from '../components/render-target-environment';
 import { selectEnvironment } from '../environment/frame';
+import { SpawnLightInvalidBoundsError } from '../errors/component-validation';
 import { createLightResourceUnavailable } from '../errors/render';
 import type { EnvironmentCandidate, EnvironmentFrame } from '../extract/environment';
 import {
@@ -112,7 +118,7 @@ type RgbTuple = readonly [number, number, number];
 /** Produces light, camera and atmosphere facts once, before renderable projection. */
 export function extractWorldEnvironment(
   world: World,
-  context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'worldId' | 'view'> & {
+  context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'view'> & {
     readonly environmentGate?: EnvironmentLightingReader;
   },
   worldInternal: WorldInternalView,
@@ -133,7 +139,12 @@ export function extractWorldEnvironment(
   const volumetricFogSource = extractVolumeSnapshot(world, assets, worldInternal);
   const cloudLayer = extractCloudLayerOrRoute(world, worldInternal);
 
-  const cameraRoles = selectCameraRoles(world, context.cameraEntityKey, context.view);
+  const cameraRoles = selectCameraRoles(
+    world,
+    context.cameraEntityKey,
+    context.view,
+    context.environmentGate,
+  );
   const cameras = [...cameraRoles.display];
   const auxiliaryCameras = cameraRoles.auxiliary;
   const cubeCameras = collectCubeCameraSnapshots(world);
@@ -147,7 +158,7 @@ export function extractWorldEnvironment(
   const lighting =
     context.environmentGate === undefined
       ? extractWorldLighting(world, context, worldInternal)
-      : context.environmentGate.readLighting(world, context.worldId, (routedError) => ({
+      : context.environmentGate.readLighting(world, (routedError) => ({
           value: extractWorldLighting(world, context, {
             ...worldInternal,
             _routeError(error, errorContext) {
@@ -165,7 +176,7 @@ export function extractWorldEnvironment(
   // camera culling so the direct extraction path and persistent composition
   // retain the same shadow-only rule.
   const { skylight, skylightCount } = extractSkylight(world);
-  const lightProbes = extractLightProbes(world, context.worldId, worldInternal);
+  const lightProbes = extractLightProbes(world, worldInternal);
   const { skybox, skyboxCount } = extractSkybox(world);
   const environment = selectWorldEnvironment(world, skylight, skybox, directional, fog);
 
@@ -177,7 +188,26 @@ export function extractWorldEnvironment(
     lights,
     environment,
     volumetricFog,
-    cloudLayer,
+    cloudLayer:
+      cloudLayer === undefined
+        ? cloudLayer
+        : {
+            ...cloudLayer,
+            lightEnvironment: selectCloudLightingEnvironment(
+              environment.source.kind === 'atmosphere',
+              skylight,
+              environment.source.kind === 'atmosphere' && directional !== undefined
+                ? {
+                    atmosphere: environment.source.atmosphere,
+                    directionToLight: [
+                      -(directional.direction[0] ?? 0),
+                      -(directional.direction[1] ?? 0),
+                      -(directional.direction[2] ?? 0),
+                    ],
+                  }
+                : undefined,
+            ),
+          },
     skylight,
     skylightCount,
     lightProbes,
@@ -195,7 +225,9 @@ export interface WorldLightingPart {
 /** Light content changes independently of the display camera's pose. */
 function extractWorldLighting(
   world: World,
-  context: Pick<PreparedExtractContext, 'assets' | 'worldId'>,
+  context: Pick<PreparedExtractContext, 'assets'> & {
+    readonly environmentGate?: EnvironmentLightingReader;
+  },
   worldInternal: WorldInternalView,
 ): WorldLightingPart {
   const sun = extractDirectionalLights(world, worldInternal);
@@ -206,7 +238,8 @@ function extractWorldLighting(
   // one light-texture array. A slice is keyed by the TextureAsset handle, so
   // every consumer of the same asset reads the same prepared mip chain.
   const lightTextureSlices = new Map<number, number>();
-  const points = extractPointLights(world, context.worldId, worldInternal, iesProfiles);
+  const cache = sourceLightingCache(world, context.environmentGate);
+  const points = extractPointLights(world, worldInternal, iesProfiles, cache.points);
   const spotSnapshots = extractSpotLights(
     world,
     context,
@@ -222,7 +255,7 @@ function extractWorldLighting(
   );
 
   const directionalShadow = directionalShadowSource(sun, directionalShadowError);
-  const pointShadowSnapshots = extractPointShadows(world, context.worldId, worldInternal);
+  const pointShadowSnapshots = extractPointShadows(world, worldInternal, cache);
   joinPointShadowLayers(points.snapshots, points.entities, pointShadowSnapshots);
   const castsShadow = sun.castShadow === true;
 
@@ -257,7 +290,7 @@ function extractCloudLayerOrRoute(
   world: World,
   worldInternal: WorldInternalView,
 ): ExtractedCloudLayer | undefined {
-  const extractedCloudLayer = extractCloudLayer(world);
+  const extractedCloudLayer = extractStandardCloudLayer(world);
   if (extractedCloudLayer.ok) return extractedCloudLayer.value;
   routeExtractError(worldInternal, extractedCloudLayer.error, 'RenderSystem.extract (cloud-layer)');
   return undefined;
@@ -604,7 +637,6 @@ interface CachedPointLight {
   readonly snapshot: PointLightSnapshot;
   /** World mutation epoch read before the snapshot was built. */
   readonly stamp: number;
-  readonly worldId: PreparedExtractContext['worldId'];
   readonly hasGlobal: boolean;
   seen: number;
 }
@@ -612,18 +644,32 @@ interface PointLightCache {
   readonly lights: Map<number, CachedPointLight>;
   frame: number;
 }
-const pointLightCaches = new WeakMap<World, PointLightCache>();
+interface SourceLightingCache {
+  readonly world: World;
+  readonly points: PointLightCache;
+  shadows?: Map<number, PackedPointShadow>;
+}
+const sourceLightingCaches = new WeakMap<EnvironmentLightingReader, SourceLightingCache>();
+
+function sourceLightingCache(
+  world: World,
+  owner: EnvironmentLightingReader | undefined,
+): SourceLightingCache {
+  const previous = owner === undefined ? undefined : sourceLightingCaches.get(owner);
+  if (previous?.world === world) return previous;
+  const cache: SourceLightingCache = { world, points: { lights: new Map(), frame: 0 } };
+  if (owner !== undefined) sourceLightingCaches.set(owner, cache);
+  return cache;
+}
 
 function cachedPointLight(
   world: World,
   cache: PointLightCache,
   entity: EntityHandle,
-  worldId: PreparedExtractContext['worldId'],
   hasGlobal: boolean,
 ): PointLightSnapshot | undefined {
   const cached = cache.lights.get(entity);
-  if (cached === undefined || cached.worldId !== worldId || cached.hasGlobal !== hasGlobal)
-    return undefined;
+  if (cached === undefined || cached.hasGlobal !== hasGlobal) return undefined;
   // An interpolated pose follows Time, so it is never reusable; epoch -1 is a
   // removed component. Every other input of the snapshot is a PointLight field
   // or the propagated pose.
@@ -644,9 +690,9 @@ function cachedPointLight(
 
 function extractPointLights(
   world: World,
-  worldId: PreparedExtractContext['worldId'],
   worldInternal: WorldInternalView,
   iesProfiles: Map<number, IesProfileSnapshot>,
+  cache: PointLightCache,
 ) {
   const snapshots: PointLightSnapshot[] = [];
   // feat-20260612-point-light-shadows-urp-hdrp M4 / T-M4-4: track entity per
@@ -654,16 +700,11 @@ function extractPointLights(
   // `shadowAtlasLayer + shadowNear + shadowFar` onto the matching PointLight.
   const entities: number[] = [];
   const pointLightQuery = extractPointLightsQuery(world).unwrap();
-  let cache = pointLightCaches.get(world);
-  if (cache === undefined) {
-    cache = { lights: new Map(), frame: 0 };
-    pointLightCaches.set(world, cache);
-  }
   cache.frame += 1;
   const stamp = readMutationEpoch(world);
   for (const row of pointLightQuery) {
     const hasGlobal = row.has(GlobalTransform);
-    const reused = cachedPointLight(world, cache, row.entity, worldId, hasGlobal);
+    const reused = cachedPointLight(world, cache, row.entity, hasGlobal);
     if (reused !== undefined) {
       snapshots.push(reused);
       entities.push(row.entity);
@@ -703,7 +744,6 @@ function extractPointLights(
       decay: Math.fround(pDecay),
       lightingChannels: pLightingChannels,
       entity: entityId,
-      worldId,
       position,
       color: scaledLightColor(world, row.entity, PointLight, pIntensity),
       intensity: pIntensity,
@@ -715,7 +755,7 @@ function extractPointLights(
     entities.push(entityId);
     // An IES profile resolves through per-frame shared state; keep those lights uncached.
     if (Number(pIesProfile) === 0)
-      cache.lights.set(entityId, { snapshot, stamp, worldId, hasGlobal, seen: cache.frame });
+      cache.lights.set(entityId, { snapshot, stamp, hasGlobal, seen: cache.frame });
     else cache.lights.delete(entityId);
   }
   if (cache.lights.size > entities.length)
@@ -859,7 +899,7 @@ function spotProjectorIdentityFields(projector: ReturnType<typeof resolveSpotPro
 
 function extractSpotLights(
   world: World,
-  context: Pick<PreparedExtractContext, 'assets' | 'worldId'>,
+  context: Pick<PreparedExtractContext, 'assets'>,
   worldInternal: WorldInternalView,
   iesProfiles: Map<number, IesProfileSnapshot>,
   lightTextureSlices: Map<number, number>,
@@ -885,6 +925,12 @@ function extractSpotLights(
     ) as Float32Array;
     const sCastShadow = world[worldRead].getFieldValue(row.entity, SpotLight, 'castShadow') === 1;
     const sRange = world[worldRead].getFieldValue(row.entity, SpotLight, 'range') as number;
+    const sDecay = world[worldRead].getFieldValue(row.entity, SpotLight, 'decay') as number;
+    const decayError = validatePointLightDecay(sDecay, 'SpotLight');
+    if (decayError !== null) {
+      routeExtractError(worldInternal, decayError, 'RenderSystem.extract (spot-light-decay)');
+      continue;
+    }
     const sNearPlane = world[worldRead].getFieldValue(row.entity, SpotLight, 'nearPlane') as number;
     const authoredFarPlane = world[worldRead].getFieldValue(
       row.entity,
@@ -1027,7 +1073,6 @@ function extractSpotLights(
       kind: 'spot',
       lightingChannels: sLightingChannels,
       entity: row.entity,
-      worldId: context.worldId,
       // D-6: position reflects world transform; direction stays sourced
       // from SpotLight.direction (NOT rotated by the parent).
       position,
@@ -1035,6 +1080,7 @@ function extractSpotLights(
       color: scaledLightColor(world, row.entity, SpotLight, sIntensity),
       intensity: sIntensity,
       invRangeSquared: computeInvRangeSquared(sRange),
+      decay: Math.fround(sDecay),
       cosInner: degToCos(sInnerConeDeg),
       cosOuter: degToCos(sOuterConeDeg),
       ...resolveIesProfile(world, worldInternal, iesProfiles, sIesProfile, row.entity),
@@ -1275,7 +1321,7 @@ function directionalCsmConfigOf(
     shadowAngularRadius: sf.shadowAngularRadius,
     maxPenumbraTexels: sf.maxPenumbraTexels,
     ...(sf.staggerCascades ? { staggerCascades: true } : {}),
-    ...(sf.staticShadowCache ? {} : { staticShadowCache: false as const }),
+    ...(sf.staticShadowCache ? { staticShadowCache: true as const } : {}),
   };
 }
 
@@ -1306,7 +1352,6 @@ interface PackedPointShadow {
   far: number;
   packed: Float32Array;
 }
-const packedPointShadows = new WeakMap<object, Map<number, PackedPointShadow>>();
 const PACKED_POINT_SHADOW_LIMIT = 4096;
 
 /**
@@ -1315,21 +1360,18 @@ const PACKED_POINT_SHADOW_LIMIT = 4096;
  * previous frame's array (same identity) instead of rebuilding 18 matrices.
  */
 function packPointShadowMatrices(
-  world: object,
+  cache: SourceLightingCache,
   entity: number,
   lightPos: Vec3,
   nearPlane: number,
   farPlane: number,
 ) {
-  let perWorld = packedPointShadows.get(world);
-  if (perWorld === undefined) {
-    perWorld = new Map();
-    packedPointShadows.set(world, perWorld);
-  }
+  cache.shadows ??= new Map();
+  const perSource = cache.shadows;
   const x = lightPos[0] ?? 0;
   const y = lightPos[1] ?? 0;
   const z = lightPos[2] ?? 0;
-  const hit = perWorld.get(entity);
+  const hit = perSource.get(entity);
   if (
     hit !== undefined &&
     hit.x === x &&
@@ -1349,8 +1391,8 @@ function packPointShadowMatrices(
       packed[f * 16 + k] = m[k] ?? 0;
     }
   }
-  if (perWorld.size >= PACKED_POINT_SHADOW_LIMIT) perWorld.clear();
-  perWorld.set(entity, { x, y, z, near: nearPlane, far: farPlane, packed });
+  if (perSource.size >= PACKED_POINT_SHADOW_LIMIT) perSource.clear();
+  perSource.set(entity, { x, y, z, near: nearPlane, far: farPlane, packed });
   return packed;
 }
 
@@ -1364,8 +1406,8 @@ function packPointShadowMatrices(
  */
 function extractPointShadows(
   world: World,
-  worldId: PreparedExtractContext['worldId'],
   worldInternal: WorldInternalView,
+  cache: SourceLightingCache,
 ): PointShadowSnapshot[] {
   const pointShadowSnapshots: PointShadowSnapshot[] = [];
   const pointShadowQuery = extractPointShadowsQuery(world).unwrap();
@@ -1475,7 +1517,6 @@ function extractPointShadows(
     const farPlane = projection.value;
     pointShadowSnapshots.push({
       entity: row.entity,
-      worldId,
       position: lightPos,
       mapSize: psMapSize,
       nearPlane: psNearPlane,
@@ -1492,7 +1533,7 @@ function extractPointShadows(
       // The Render World assigns each request a stable cube layer.
       shadowAtlasLayer: -1,
       shadowMatrices: packPointShadowMatrices(
-        world,
+        cache,
         row.entity as number,
         lightPos,
         psNearPlane,
@@ -1541,7 +1582,19 @@ function joinPointShadowLayers(
  */
 function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapshot {
   const captureWorld = readEnvironmentPose(world, entity);
+  const targetEnvironment = world.get(entity, RenderTargetEnvironment);
+  const featureEnvironment = world.get(entity, RenderFeatureEnvironment);
   return {
+    ...(targetEnvironment.ok
+      ? {
+          targetEnvironment: world.sharedRefs
+            .resolve<'RenderTargetEnvironmentSource', RenderTargetEnvironmentSource>(
+              targetEnvironment.value.source,
+            )
+            .unwrap(),
+        }
+      : {}),
+    ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
     ...(captureWorld === undefined
       ? {}
       : {
@@ -1599,11 +1652,7 @@ function extractSkylight(world: World) {
   return { skylight, skylightCount };
 }
 
-function extractLightProbes(
-  world: World,
-  worldId: PreparedExtractContext['worldId'],
-  worldInternal: WorldInternalView,
-): LightProbeSnapshot[] {
+function extractLightProbes(world: World, worldInternal: WorldInternalView): LightProbeSnapshot[] {
   const lightProbeQuery = extractLightProbesQuery(world).unwrap();
   const lightProbes: LightProbeSnapshot[] = [];
   lightProbeQuery.forEach((row) => {
@@ -1626,7 +1675,6 @@ function extractLightProbes(
     if (transform === undefined) return;
     lightProbes.push({
       identity: String(row.entity),
-      worldId,
       position: [transform[12] ?? 0, transform[13] ?? 0, transform[14] ?? 0],
       radius: probeRadius,
       irradiance: new Float32Array(probeIrradiance),
@@ -1653,9 +1701,11 @@ function extractSkybox(world: World) {
     ) as ShapeOf<SchemaOf<typeof SkyboxBackground>>['equirect'];
     const sMode = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'mode') as number;
     skyboxCount += 1;
-    if (skybox === undefined && sEquirect !== undefined) {
+    const featureEnvironment = world.get(row.entity, RenderFeatureEnvironment);
+    if (skybox === undefined && (sEquirect !== undefined || featureEnvironment.ok)) {
       skybox = {
-        equirectHandle: Math.round(sEquirect),
+        equirectHandle: sEquirect === undefined ? 0 : Math.round(sEquirect),
+        ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
         mode: sMode,
         rotation: quaternionOf(world, row.entity, SkyboxBackground),
         // w19: winning entity handle for the multi-SkyboxBackground warn (F-8).

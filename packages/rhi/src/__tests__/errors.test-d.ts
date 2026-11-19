@@ -174,10 +174,6 @@ describe('MVP-1.7 — RhiErrorCode closed union 20 members', () => {
           return 'descriptor-invalid';
         case 'instancing-exceeds-uniform-cap':
           return 'instancing-cap';
-        case 'render-system-empty-worlds':
-          return 'empty-worlds';
-        case 'render-system-owner-out-of-range':
-          return 'owner-oob';
         case 'rhi-texture-format-capability-unavailable':
           return 'texture-format-unavailable';
       }

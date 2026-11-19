@@ -17,6 +17,7 @@ import {
   deriveAnimationTargetId,
   subscribeAnimationDiagnostics,
 } from '../index';
+import { AdvanceAnimationPlayer } from '../systems/advance-animation-player';
 
 const lowerId = deriveAnimationTargetId(['Rig', 'Lower']);
 const upperId = deriveAnimationTargetId(['Rig', 'Upper']);
@@ -102,7 +103,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
     const { world, context, player, target } = await fixture();
     try {
       const mask = world.allocSharedRef('AnimationMask', JSON.parse(JSON.stringify(definition)));
-      world.set(player, AnimationPlayer, { masks: [0, mask] }).unwrap();
+      world.set(player, AnimationPlayer, { masks: [toShared<'AnimationMask'>(0), mask] }).unwrap();
       world.update(0).unwrap();
       expect(world.get(target, Transform).unwrap().pos[0]).toBeCloseTo(6);
     } finally {
@@ -164,7 +165,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
           graph: runtimeAssetRegistry(world.assets).create(graph).unwrap(),
           nodeWeights: [0.25, 0.75, 1],
           nodeSpeeds: [1, 1, 0],
-          nodeMasks: [0, mask],
+          nodeMasks: [toShared<'AnimationMask'>(0), mask],
         })
         .unwrap();
       for (let i = 0; i < 60; i++) world.update(1 / 60).unwrap();
@@ -194,7 +195,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
     }
     const { world, context, player, target } = await fixture();
     try {
-      world.set(player, AnimationPlayer, { masks: [0] }).unwrap();
+      world.set(player, AnimationPlayer, { masks: [toShared<'AnimationMask'>(0)] }).unwrap();
       const failed = world.update(0.1);
       expect(failed.ok).toBe(false);
       expect([...world.get(player, AnimationPlayer).unwrap().times]).toEqual([0, 0]);
@@ -245,7 +246,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
           defineSystem({
             name: 'testCodeAnimationControl',
             queries: [],
-            before: ['advanceAnimationPlayer'],
+            before: [AdvanceAnimationPlayer],
             fn() {
               space.sample(weights, speed).unwrap();
               world
@@ -310,7 +311,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
             runtimeAssetRegistry(world.assets).create(curves(0)).unwrap(),
             runtimeAssetRegistry(world.assets).create(curves(10)).unwrap(),
           ],
-          masks: [0, half],
+          masks: [toShared<'AnimationMask'>(0), half],
         })
         .unwrap();
       world.update(0).unwrap();
@@ -344,7 +345,7 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
           graph: runtimeAssetRegistry(world.assets).create(graph).unwrap(),
           nodeTimes: [0, 0, 0],
           nodeSpeeds: [1, 1, 0],
-          nodeMasks: [0, 0, mask],
+          nodeMasks: [toShared<'AnimationMask'>(0), toShared<'AnimationMask'>(0), mask],
         })
         .unwrap();
       expect(world.update(0.2).ok).toBe(false);

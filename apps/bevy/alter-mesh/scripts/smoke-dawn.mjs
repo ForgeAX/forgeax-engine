@@ -3,10 +3,11 @@ import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -92,7 +93,7 @@ const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const here = dirname(fileURLToPath(import.meta.url));
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
 
 let renderer;
 try {

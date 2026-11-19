@@ -27,6 +27,7 @@ export default defineConfig({
             '@forgeax/engine-pack > @noble/hashes/utils.js',
             '@forgeax/engine-pack > acorn',
             '@forgeax/engine-geometry > earcut',
+            '@forgeax/engine-runtime > @forgeax/engine-water > clipper2-ts',
             '@forgeax/engine-image > @forgeax/engine-codec > fzstd',
             '@forgeax/engine-image > @forgeax/engine-codec > @hpcc-js/wasm-zstd',
             '@forgeax/engine-image > jpeg-js',

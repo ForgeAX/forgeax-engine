@@ -1,4 +1,9 @@
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
+import {
+  templateManifestAxes,
+  templateManifestVariant,
+  templateManifestVariantByDefines,
+} from './program-template-manifest.js';
 // @forgeax/engine-shader/types — shared variant types consumed by the runtime
 // variant resolution layer (createRenderer.ts M3). The SSOT for the manifest
 // schema stays in @forgeax/engine-vite-plugin-shader; this file re-declares the
@@ -32,6 +37,8 @@ export interface ExpandedShaderManifest {
 }
 
 export interface MaterialShaderManifestVariant {
+  readonly forwardFog?: 'height-vertex/1';
+  readonly uvSetCount?: number;
   readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly hash?: string;
   readonly sourceDigest?: string;
@@ -83,5 +90,28 @@ export function findVariantByKey(
   entry: MaterialShaderManifestEntry,
   definesKey: string,
 ): MaterialShaderManifestVariant | undefined {
+  if (templateManifestAxes(entry) !== undefined) return templateManifestVariant(entry, definesKey);
   return entry.variants.find((v) => v.definesKey === definesKey);
+}
+
+/** First legal selection matching partial axes, with omitted axes counting as false. */
+export function findVariantByDefines(
+  entry: MaterialShaderManifestEntry,
+  constraints: Readonly<Record<string, boolean>>,
+): MaterialShaderManifestVariant | undefined {
+  if (templateManifestAxes(entry) !== undefined)
+    return templateManifestVariantByDefines(entry, constraints);
+  const fields = Object.entries(constraints);
+  return entry.variants.find(({ defines }) =>
+    fields.every(([axis, value]) => (defines[axis] ?? false) === value),
+  );
+}
+
+/** Axes are source declarations; inspecting them never composes a program or expands permutations. */
+export function materialShaderAxes(entry: MaterialShaderManifestEntry): readonly string[] {
+  return (
+    templateManifestAxes(entry) ?? [
+      ...new Set(entry.variants.flatMap((variant) => Object.keys(variant.defines))),
+    ]
+  );
 }

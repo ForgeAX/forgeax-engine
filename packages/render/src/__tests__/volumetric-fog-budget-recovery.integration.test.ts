@@ -44,7 +44,11 @@ import {
 } from '../volume/resources';
 import { resolveVolumeTemporalReset } from '../volume/temporal';
 import { testAssets } from './helpers/runtime-assets';
-import { standardPbrManifestRow } from './shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from './shader-manifest-fixture';
 
 const MAX_MEMORY_BYTES = 48 * 1024 * 1024;
 
@@ -58,8 +62,14 @@ const VOLUME_MANIFEST = `data:application/json,${encodeURIComponent(
       { hash: 'volume-temporal', wgsl: 'fn volume_temporal() {}', glsl: '', bindings: '' },
       { hash: 'volume-integrate', wgsl: 'fn volume_integrate() {}', glsl: '', bindings: '' },
       { hash: 'volume-composite', wgsl: 'fn volume_fs() {}', glsl: '', bindings: '' },
+      ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
     ],
-    materialShaders: [standardPbrManifestRow('f_schlick')],
+    materialShaders: [
+      standardPbrManifestRow('f_schlick'),
+      ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
+    ],
   }),
 )}`;
 
@@ -254,13 +264,13 @@ describe('volumetric fog budget and recovery contract', () => {
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value,
-      request = { leases: [lease], camera: { lease }, environment: { lease } };
+      request = { source: lease };
     const scissors = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setScissorRect');
     const draw = async () => {
       scissors.mockClear();
       world.update(1 / 60).unwrap();
       const result = renderer.draw(request);
-      if (!result.ok) throw result.error;
+      if (!result.ok) throw new Error(JSON.stringify(result.error), { cause: result.error });
       const done = await result.value.completed;
       if (!done.ok) throw done.error;
       return scissors.mock.calls.filter((_row, index) => {
@@ -348,7 +358,7 @@ describe('volumetric fog budget and recovery contract', () => {
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
-    const request = { leases: [lease], camera: { lease }, environment: { lease } };
+    const request = { source: lease };
     let device = adapter.devices.at(-1);
     if (device === undefined) throw Error('missing device');
     let created = vi.spyOn(device, 'createTexture');
@@ -786,11 +796,7 @@ describe('volumetric fog budget and recovery contract', () => {
     const lease = renderer.attach(world);
     expect(lease.ok).toBe(true);
     if (!lease.ok) return;
-    const request = {
-      leases: [lease.value],
-      camera: { lease: lease.value },
-      environment: { lease: lease.value },
-    } as const;
+    const request = { source: lease.value } as const;
     const drawAndRead = async (): Promise<{
       readonly history: number;
       readonly worldTime: number;
@@ -964,11 +970,7 @@ describe('volumetric fog budget and recovery contract', () => {
     const lease = renderer.attach(world);
     expect(lease.ok).toBe(true);
     if (!lease.ok) return;
-    const request = {
-      leases: [lease.value],
-      camera: { lease: lease.value },
-      environment: { lease: lease.value },
-    } as const;
+    const request = { source: lease.value } as const;
     const draw = async () => {
       const frame = renderer.draw(request);
       expect(frame.ok).toBe(true);

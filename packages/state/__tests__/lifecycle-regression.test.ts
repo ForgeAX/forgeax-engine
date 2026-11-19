@@ -1,3 +1,4 @@
+import { stateResource } from '../src/resources';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import { addOnEnter, defineState, despawnOnExit, getState, registerStatesPlugin, setNextState } from '@forgeax/engine-state';
 import { expect, test } from 'vitest';
@@ -95,7 +96,7 @@ test('failed activation releases earlier token leases and resources without reti
     expect.objectContaining({ code: 'component-name-conflict' }),
   );
   expect(world.components.resolve(`__scopedTo__${first.name}`)).toBeUndefined();
-  expect(world.hasResource(`__state__${first.name}`)).toBe(false);
+  expect(world.hasResource(stateResource(first))).toBe(false);
   expect(world.components.resolve(foreign.name)).toBe(foreign);
   expect(world.inspect().systems.some((system) => system.name === 'transitionStates')).toBe(false);
 
@@ -118,11 +119,11 @@ test('failed activation retains an in-use rollback lease until activation can re
   expect(() => registerStatesPlugin(world)).toThrowError(
     expect.objectContaining({code: 'component-in-use'}),
   );
-  expect(world.hasResource(`__state__${first.name}`)).toBe(false);
+  expect(world.hasResource(stateResource(first))).toBe(false);
   expect(world.components.resolve(foreign.name)).toBe(foreign);
 
-  const releasedKey = `__state__${first.name}`;
-  const laterResource = { owner: 'another contributor' };
+  const releasedKey = stateResource(first);
+  const laterResource = { current: 0, previous: 0, next: undefined, owner: 'another contributor' };
   world.insertResource(releasedKey, laterResource);
   expect(() => registerStatesPlugin(world)).toThrowError(
     expect.objectContaining({ code: 'component-in-use' }),

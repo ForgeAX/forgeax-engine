@@ -77,7 +77,7 @@ export default definePack({
 });`,
   );
   const built = await buildProject({ root });
-  expect(built).toMatchObject({ ok: true });
+  expect(built, JSON.stringify(built)).toMatchObject({ ok: true });
   // Start: read the built dist the way the player does and load each material.
   const dist = resolve(root, 'dist');
   const fetch = async (input: RequestInfo | URL) => {
@@ -96,8 +96,7 @@ export default definePack({
   try {
     for (const key of ['material/declared', 'material/baked']) {
       const loaded = await registry.load(guidOf(paintPack, key), 'material');
-      if (!loaded.ok) console.log(key, JSON.stringify(loaded.error).slice(0, 800));
-      expect(loaded, key).toMatchObject({ ok: true });
+      expect(loaded, `${key}: ${JSON.stringify(loaded)}`).toMatchObject({ ok: true });
     }
   } finally {
     lease.dispose();

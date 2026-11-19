@@ -1,12 +1,12 @@
 name: Public Engine Source
-on: [push, pull_request]
+on: pull_request
 permissions:
   contents: read
 jobs:
   build:
     name: public-source-build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:

@@ -80,6 +80,7 @@ it.each([
         'forgeax_view::common': shader('common'),
         'forgeax_pbr::gbuffer': gbufferSource,
         'forgeax_depth_pyramid::sample': shader('depth-pyramid-sample'),
+        forgeax_scene_temporal: shader('scene-temporal'),
       },
     },
   );

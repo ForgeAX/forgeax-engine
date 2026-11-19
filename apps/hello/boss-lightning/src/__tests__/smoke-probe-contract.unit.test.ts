@@ -1,5 +1,8 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { posix, resolve, win32 } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   classifyDawnErrors,
@@ -13,6 +16,41 @@ const browserSource = readFileSync(resolve(appRoot, 'scripts/smoke-browser.mjs')
 const falsifySource = readFileSync(resolve(appRoot, 'scripts/smoke-falsify.mjs'), 'utf8');
 
 describe('Boss Lightning smoke probe contract', () => {
+  it('admits the ordinary fields script before a native device is launched', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--check', resolve(appRoot, 'scripts/smoke-fields-dawn.mjs')],
+      { encoding: 'utf8', timeout: 5000 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('admits child asset paths while rejecting sibling and traversal paths on each platform', () => {
+    for (const script of ['smoke-fields-dawn.mjs', 'smoke-sdf-dawn.mjs', 'prepare-sdf-lifecycle.mjs']) {
+      const source = readFileSync(resolve(appRoot, 'scripts', script), 'utf8');
+      const guard = source.match(
+        /const (?:file|path) = resolve\(dist, url\.pathname\.slice\(1\)\);\s+assert\([^;]+\);/,
+      );
+      expect(guard, script).not.toBeNull();
+      for (const platform of [win32, posix]) {
+        const sandbox = {
+          assert,
+          dist: platform === win32 ? 'F:\\fixture\\dist' : '/fixture/dist',
+          resolve: platform.resolve,
+          sep: platform.sep,
+          existsSync: () => true,
+          url: { pathname: '/textures/field.bin' },
+        };
+        const check = () => runInNewContext(guard?.[0] ?? '', { ...sandbox });
+        expect(check).not.toThrow();
+        for (const pathname of ['/../dist-sibling/field.bin', '/../outside.bin']) {
+          sandbox.url.pathname = pathname;
+          expect(check).toThrow(assert.AssertionError);
+        }
+      }
+    }
+  });
+
   it('counts separate and fused simulation updates without counting auxiliary dispatches', () => {
     expect(isSimulationUpdate('forgeax_vfx_update_main')).toBe(true);
     expect(isSimulationUpdate('forgeax_vfx_update_compact_main')).toBe(true);

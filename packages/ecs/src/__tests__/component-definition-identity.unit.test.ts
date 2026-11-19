@@ -1,6 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 describe('component definition identity', () => {
+  it('still rejects a corrupt Entity identity at the root entry', async () => {
+    vi.resetModules();
+    const { componentDefinition } = await import('../component');
+    const { Entity } = await import('../entity');
+    const original = componentDefinition(Entity);
+    const registry = Reflect.get(globalThis, Symbol.for('forgeax.ecs.componentRegistry.v3')) as {
+      definitions: WeakMap<object, object>;
+    };
+    registry.definitions.set(Entity, Object.freeze({ ...original, id: 17 }));
+    try {
+      await expect(import('../index')).rejects.toThrow('expected id=0, got 17');
+    } finally {
+      registry.definitions.set(Entity, original);
+    }
+  });
+
   it('preserves relationship ownership when a session World receives canonical component tokens', async () => {
     const indexPath = '../../dist/index.mjs';
     const sessionPath = `${indexPath}?forgeax-program-session=relationship-identity`;
@@ -47,4 +63,26 @@ describe('component definition identity', () => {
       targets: [8, 9],
     });
   });
+});
+
+it('isolates the component registry layout from earlier bundle versions', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const entry = new URL('../../dist/index.mjs', import.meta.url).href;
+  const script = `
+    globalThis[Symbol.for('forgeax.ecs.componentRegistry')] = {
+      definitions: new WeakMap(), relationships: new WeakMap()
+    };
+    const ecs = await import(${JSON.stringify(entry)});
+    const component = ecs.defineComponent('RegistryLayoutProbe', { value: 'u32' });
+    const definition = ecs.componentDefinition(component);
+    if (!Number.isSafeInteger(definition.id)) throw new Error('invalid component identity');
+    const world = new ecs.World();
+    const entity = world.spawn({ component, data: { value: 7 } }).unwrap();
+    if (world.get(entity, component).unwrap().value !== 7) throw new Error('invalid row');
+  `;
+  expect(() =>
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      stdio: 'pipe',
+    }),
+  ).not.toThrow();
 });

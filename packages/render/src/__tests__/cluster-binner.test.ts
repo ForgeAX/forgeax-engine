@@ -61,7 +61,7 @@ describe('cluster binner scratch path', () => {
     expect(Array.from(secondIndices)).toEqual(Array.from(firstIndices));
   });
 
-  it('reports overflow before writing a partial cluster layout', () => {
+  it('caps an overflowing list to K = 0 without writing past capacity', () => {
     const { view, proj, grid } = makeInputs();
     const clusterGrid = new Uint32Array(grid.x * grid.y * grid.z * 2).fill(7);
     const lightIndexList = new Uint32Array(8).fill(9);
@@ -78,7 +78,7 @@ describe('cluster binner scratch path', () => {
       createClusterBinScratch(),
     );
 
-    expect(result.ok).toBe(false);
+    expect(result.ok && result.value).toBe(0);
     expect(clusterGrid.every((value) => value === 0)).toBe(true);
     expect(lightIndexList.every((value) => value === 9)).toBe(true);
   });

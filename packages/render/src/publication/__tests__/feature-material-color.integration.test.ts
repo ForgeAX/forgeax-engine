@@ -31,7 +31,8 @@ async function fixture(includePlain: boolean) {
   if (original === undefined) throw new Error('Missing fixture program');
   const abi = {
     directEntry: 'vs_main',
-    materialRow: { byteLength: 16, fields: [] },
+    sceneIndexEntry: 'vs_scene_index',
+    materialRow: { addressUnitBytes: 16, byteLength: 16, fields: [] },
     resourceSlots: [],
     uvSets: [],
     vertexInputs: [],
@@ -42,12 +43,7 @@ async function fixture(includePlain: boolean) {
   } satisfies MaterialProgramAbi;
   const plain = {
     ...original,
-    selections: original.selections.map((selection) => ({
-      ...selection,
-      address: 'direct' as const,
-      entry: 'vs_main',
-      abi,
-    })),
+    selections: original.selections.map((selection) => ({ ...selection, abi })),
   };
   const bytes = new TextEncoder().encode('published intrinsic color fixture');
   const colored = {

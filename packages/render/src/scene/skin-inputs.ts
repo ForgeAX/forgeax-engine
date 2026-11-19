@@ -12,6 +12,7 @@ const ABSENT = 0xffffffff;
 const PAGE_WORDS = 256;
 const SKELETONS = 0;
 const BINDINGS = 1;
+const POSES = 2;
 
 type Shift = 0 | 8 | 16 | 24 | 32 | 40 | 48 | 56;
 
@@ -82,6 +83,7 @@ function validateMatrixOutputs(a: Mat4, b: Mat4): void {
 interface State {
   readonly slots: StableRangeAllocator;
   frames: number;
+  revision: number;
   disposed: boolean;
   failed: boolean;
 }
@@ -133,7 +135,7 @@ class Slot implements SkinInputSlot {
 interface Row {
   readonly address: number;
   readonly words: number;
-  readonly kind: 'joint' | 'skeleton' | 'binding';
+  readonly kind: 'pose' | 'skeleton' | 'binding';
   readonly owner: Slot;
   readonly skeleton: Slot | undefined;
   holders: number;
@@ -247,23 +249,73 @@ function retirePage(inputs: GpuInputArena, state: State, page: Page | undefined)
   if (failure !== undefined) throw failure;
 }
 
+/** Latest joint matrices of one source namespace. Joints reach the GPU only
+ * as whole Binding poses, so a joint edit costs no row or tree path. */
+class JointStore {
+  readonly cells = new Map<number, number>();
+  matrices = new Float32Array(64 * 16);
+  /** Change epoch per cell; 0 is absent. Doubles stay exact past u32 epochs. */
+  stamps = new Float64Array(64);
+  readonly free: number[] = [];
+  size = 0;
+  /** Bumped when an entity gains or loses its cell; Bindings then re-resolve. */
+  layout = 0;
+  cell(entity: number): number {
+    const known = this.cells.get(entity);
+    if (known !== undefined) return known;
+    let cell = this.free.pop();
+    if (cell === undefined) {
+      cell = this.size++;
+      if (cell === this.stamps.length) {
+        const stamps = new Float64Array(cell * 2);
+        stamps.set(this.stamps);
+        this.stamps = stamps;
+        const matrices = new Float32Array(cell * 32);
+        matrices.set(this.matrices);
+        this.matrices = matrices;
+      }
+    }
+    this.stamps[cell] = 0;
+    this.cells.set(entity, cell);
+    this.layout++;
+    return cell;
+  }
+}
+
+interface PoseBinding {
+  readonly source: Slot;
+  readonly entities: Uint32Array;
+  readonly cells: Int32Array;
+  layout: number;
+  /** Epoch of the last published pose; -1 republishes once complete. */
+  published: number;
+}
+
 /** All GPU-readable Skin facts have one owning root, including static Binding bytes. */
 export class SkinInputs {
   private current: Page | undefined;
   private readonly state: State = {
     slots: new StableRangeAllocator(),
     frames: 0,
+    revision: 0,
     disposed: false,
     failed: false,
   };
   /** Last exclusive leaf path. Sharing only changes through capture (root
    * holders) or path copy (a new root), so the root identity validates it. */
   private leaf: { root: Page; space: number; high: number; page: LeafPage } | undefined;
-  private readonly jointScratch = new DataView(new ArrayBuffer(17 * 4));
+  private readonly scratch = new DataView(new ArrayBuffer(4));
+  private readonly stores = new Map<Slot, JointStore>();
+  private readonly poses = new Map<number, PoseBinding>();
+  private epoch = 1;
+  private flushed = 1;
+  private poseWords = new Uint32Array(1 + 64 * 16);
+  private poseFloats = new Float32Array(this.poseWords.buffer);
+  private poseView = new DataView(this.poseWords.buffer);
   private readonly pageWords = new Uint32Array(PAGE_WORDS);
   private readonly pageView = new DataView(this.pageWords.buffer);
   constructor(private readonly inputs: GpuInputArena) {
-    this.state.slots.reset(2);
+    this.state.slots.reset(3);
   }
 
   private healthy(): void {
@@ -379,37 +431,97 @@ export class SkinInputs {
     const slot = this.slot(source, 'source');
     u32(entity);
     if (world.length !== 16) throw invalid('one finite presentation matrix per joint');
-    // No allocation for an equal row; never borrow caller iterators or views.
-    const previous =
-      this.exclusiveLeaf(slot.id, entity)?.entries.get(entity & 255) ??
-      find(this.current, slot.id, entity);
-    this.jointScratch.setUint32(0, entity, true);
-    let equal = previous !== undefined;
+    let store = this.stores.get(slot);
+    const known = store?.cells.get(entity);
+    const base = known === undefined ? -1 : known * 16;
+    let equal = known !== undefined && store?.stamps[known] !== 0;
     for (let lane = 0; lane < 16; lane++) {
       const value = world[lane];
       if (value === undefined || !Number.isFinite(value))
         throw invalid('finite presentation joint matrices');
-      this.jointScratch.setFloat32((lane + 1) * 4, value, true);
-      const captured = this.jointScratch.getFloat32((lane + 1) * 4, true);
+      const captured = Math.fround(value);
       if (!Number.isFinite(captured))
         throw invalid('representable finite presentation joint matrices');
-      if (
-        previous !== undefined &&
-        this.jointScratch.getUint32((lane + 1) * 4, true) !==
-          this.inputs.readWord(previous.address + lane + 1)
-      )
-        equal = false;
+      // Bitwise f32 identity: a signed zero is a changed word.
+      if (equal && !Object.is(store?.matrices[base + lane], captured)) equal = false;
     }
     if (equal) return;
-    const row = this.allocate(17, 'joint', slot);
-    this.publish(slot.id, entity, row, this.jointScratch);
+    if (store === undefined) {
+      store = new JointStore();
+      this.stores.set(slot, store);
+    }
+    const cell = known ?? store.cell(entity);
+    const matrices = store.matrices;
+    for (let lane = 0; lane < 16; lane++) matrices[cell * 16 + lane] = world[lane] as number;
+    store.stamps[cell] = ++this.epoch;
   }
 
   removeJoint(source: SkinInputSlot, entity: number): void {
     this.healthy();
     const slot = this.slot(source, 'source');
     u32(entity);
-    if (find(this.current, slot.id, entity) !== undefined) this.replace(slot.id, entity, undefined);
+    const store = this.stores.get(slot);
+    const cell = store?.cells.get(entity);
+    if (store === undefined || cell === undefined) return;
+    store.cells.delete(entity);
+    store.stamps[cell] = 0;
+    store.free.push(cell);
+    store.layout++;
+    this.epoch++;
+  }
+
+  /** Publish each Binding whose joints changed as one immutable pose row:
+   * [count, count × 16 f32] in Binding order. An incomplete pose has no row. */
+  private flushPoses(): void {
+    if (this.flushed === this.epoch) return;
+    for (const [bindingSlot, pose] of this.poses) {
+      const store = this.stores.get(pose.source);
+      const count = pose.entities.length;
+      let complete = store !== undefined;
+      let changed = pose.published < 0;
+      if (store !== undefined) {
+        if (pose.layout !== store.layout) {
+          for (let index = 0; index < count; index++)
+            pose.cells[index] = store.cells.get(pose.entities[index] as number) ?? -1;
+          pose.layout = store.layout;
+        }
+        const stamps = store.stamps;
+        for (let index = 0; index < count; index++) {
+          const cell = pose.cells[index] as number;
+          const stamp = cell < 0 ? 0 : (stamps[cell] as number);
+          if (stamp === 0) {
+            complete = false;
+            break;
+          }
+          if (stamp > pose.published) changed = true;
+        }
+      }
+      if (!complete || store === undefined) {
+        if (find(this.current, POSES, bindingSlot) !== undefined)
+          this.replace(POSES, bindingSlot, undefined);
+        pose.published = -1;
+        continue;
+      }
+      if (!changed) continue;
+      const words = 1 + count * 16;
+      if (this.poseWords.length < words) {
+        this.poseWords = new Uint32Array(words);
+        this.poseFloats = new Float32Array(this.poseWords.buffer);
+        this.poseView = new DataView(this.poseWords.buffer);
+      }
+      const out = this.poseFloats,
+        matrices = store.matrices;
+      this.poseWords[0] = count;
+      for (let index = 0; index < count; index++) {
+        const from = (pose.cells[index] as number) * 16,
+          to = 1 + index * 16;
+        for (let lane = 0; lane < 16; lane++) out[to + lane] = matrices[from + lane] as number;
+      }
+      const row = this.allocate(words, 'pose', pose.source);
+      this.publish(POSES, bindingSlot, row, this.poseView);
+      pose.published = this.epoch;
+    }
+    this.flushed = this.epoch;
   }
 
   updateSkeleton(
@@ -446,13 +558,13 @@ export class SkinInputs {
       const value = inverseBinds[lane];
       if (value === undefined || !Number.isFinite(value))
         throw invalid('finite shared inverse binds');
-      this.jointScratch.setFloat32(0, value, true);
-      if (!Number.isFinite(this.jointScratch.getFloat32(0, true)))
+      this.scratch.setFloat32(0, value, true);
+      if (!Number.isFinite(this.scratch.getFloat32(0, true)))
         throw invalid('representable finite inverse binds');
       if (
         equal &&
         previous !== undefined &&
-        this.jointScratch.getUint32(0, true) !== this.inputs.readWord(previous.address + 1 + lane)
+        this.scratch.getUint32(0, true) !== this.inputs.readWord(previous.address + 1 + lane)
       )
         equal = false;
     }
@@ -470,17 +582,17 @@ export class SkinInputs {
           equal = false;
         for (let lane = 0; lane < SHADOW_CAPSULE_STRIDE; lane++) {
           const value = capsuleShapes[index * SHADOW_CAPSULE_STRIDE + lane] as number;
-          this.jointScratch.setFloat32(0, value, true);
+          this.scratch.setFloat32(0, value, true);
           if (
             !Number.isFinite(value) ||
-            !Number.isFinite(this.jointScratch.getFloat32(0, true)) ||
-            (lane === 6 && !(this.jointScratch.getFloat32(0, true) > 0))
+            !Number.isFinite(this.scratch.getFloat32(0, true)) ||
+            (lane === 6 && !(this.scratch.getFloat32(0, true) > 0))
           )
             throw invalid('finite representable Skeleton capsules with positive radii');
           if (
             equal &&
             previous !== undefined &&
-            this.jointScratch.getUint32(0, true) !==
+            this.scratch.getUint32(0, true) !==
               this.inputs.readWord(previous.address + base + 1 + lane)
           )
             equal = false;
@@ -573,6 +685,13 @@ export class SkinInputs {
     }
     if (joints.length !== count) throw invalid('stable ordered Skin binding extent');
     if (equal) return;
+    const pose: PoseBinding = {
+      source: namespace,
+      entities: Uint32Array.from(joints),
+      cells: new Int32Array(count),
+      layout: -1,
+      published: -1,
+    };
     const row = this.allocate(3 + count, 'binding', namespace, asset);
     let data: DataView;
     try {
@@ -598,11 +717,16 @@ export class SkinInputs {
       throw cause;
     }
     this.publish(BINDINGS, bindingSlot, row, data);
+    this.poses.set(bindingSlot, pose);
+    this.epoch++;
   }
 
   unbind(bindingSlot: number): void {
     this.healthy();
     u32(bindingSlot);
+    this.poses.delete(bindingSlot);
+    if (find(this.current, POSES, bindingSlot) !== undefined)
+      this.replace(POSES, bindingSlot, undefined);
     if (find(this.current, BINDINGS, bindingSlot) !== undefined)
       this.replace(BINDINGS, bindingSlot, undefined);
   }
@@ -610,8 +734,11 @@ export class SkinInputs {
   remove(value: SkinInputSlot): void {
     this.healthy();
     const slot = this.slot(value, value.kind);
-    if (slot.kind === 'source') this.replace(slot.id, undefined, undefined);
-    else if (find(this.current, SKELETONS, slot.id) !== undefined)
+    if (slot.kind === 'source') {
+      // Its Bindings stay admitted but can never complete a pose again.
+      this.stores.delete(slot);
+      this.epoch++;
+    } else if (find(this.current, SKELETONS, slot.id) !== undefined)
       this.replace(SKELETONS, slot.id, undefined);
     slot.retire();
   }
@@ -675,6 +802,7 @@ export class SkinInputs {
             }
           }
           if (previous !== undefined) retireRow(this.inputs, this.state, previous);
+          this.state.revision++;
           return;
         }
       }
@@ -683,6 +811,7 @@ export class SkinInputs {
     const previous = this.current;
     this.current = next;
     retirePage(this.inputs, this.state, previous);
+    this.state.revision++;
   }
 
   private copy(
@@ -763,7 +892,8 @@ export class SkinInputs {
 
   capture(): SkinInputFrame {
     this.healthy();
-    return retainFrame(this.inputs, this.state, this.current);
+    this.flushPoses();
+    return retainFrame(this.inputs, this.state, this.current, this.state.revision);
   }
 
   dispose(): void {
@@ -772,16 +902,23 @@ export class SkinInputs {
     const previous = this.current;
     this.current = undefined;
     this.leaf = undefined;
+    this.stores.clear();
+    this.poses.clear();
     retirePage(this.inputs, this.state, previous);
   }
 }
 
 /** One reference increment on the exact fixed root; never samples the latest Scene. */
-function retainFrame(inputs: GpuInputArena, state: State, page: Page | undefined): SkinInputFrame {
+function retainFrame(
+  inputs: GpuInputArena,
+  state: State,
+  page: Page | undefined,
+  revision: number,
+): SkinInputFrame {
   if (state.frames >= 128) throw invalid('fewer than 128 retained Skin frames');
   if (page !== undefined) page.holders++;
   try {
-    const frame = new SkinInputFrame(inputs, state, page);
+    const frame = new SkinInputFrame(inputs, state, page, revision);
     state.frames++;
     return frame;
   } catch (cause) {
@@ -807,7 +944,13 @@ export class SkinInputFrame {
     number,
     { envelopes: Float32Array; radius: number; ok: boolean; box: Float32Array }
   >();
-  constructor(inputs: GpuInputArena, state: State, page: Page | undefined) {
+  constructor(
+    inputs: GpuInputArena,
+    state: State,
+    page: Page | undefined,
+    /** Semantic input version remains fixed even after a released physical page is reused. */
+    readonly inputRevision: number,
+  ) {
     this.root = page?.address ?? ABSENT;
     this.jointCapacity = page?.jointCount ?? 0;
     this.#inputs = inputs;
@@ -826,20 +969,10 @@ export class SkinInputFrame {
     inputs.assertLive();
     return inputs;
   }
-  readJoint(source: SkinInputSlot, entity: number, out: Float32Array): boolean {
-    const inputs = this.live();
-    u32(entity);
-    if (
-      !(source instanceof Slot) ||
-      !source.belongsTo(this.#state as State) ||
-      source.kind !== 'source' ||
-      out.length !== 16
-    )
-      throw invalid('a source namespace and one complete joint output matrix');
-    const row = find(this.#page, source.id, entity);
-    if (row?.kind !== 'joint') return false;
-    inputs.readFloatWords(row.address + 1, out);
-    return true;
+  /** The complete pose row for a Binding of `count` joints. */
+  #pose(inputs: GpuInputArena, slot: number, count: number): Row | undefined {
+    const pose = find(this.#page, POSES, slot);
+    return pose?.kind === 'pose' && inputs.readWord(pose.address) === count ? pose : undefined;
   }
   jointCount(slot: number): number | undefined {
     const inputs = this.live();
@@ -855,13 +988,7 @@ export class SkinInputFrame {
     const count = inputs.readWord(binding.address);
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2));
     if (skeleton?.kind !== 'skeleton' || inputs.readWord(skeleton.address) !== count) return false;
-    const namespace = inputs.readWord(binding.address + 1);
-    for (let index = 0; index < count; index++) {
-      const entity = inputs.readWord(binding.address + 3 + index);
-      const joint = find(this.#page, namespace, entity);
-      if (joint?.kind !== 'joint' || inputs.readWord(joint.address) !== entity) return false;
-    }
-    return true;
+    return this.#pose(inputs, slot, count) !== undefined;
   }
   matrix(slot: number, index: number, out: Mat4, inverse: Mat4): boolean {
     const inputs = this.live();
@@ -878,10 +1005,9 @@ export class SkinInputFrame {
       inputs.readWord(skeleton.address) !== count
     )
       return false;
-    const entity = inputs.readWord(binding.address + 3 + index);
-    const joint = find(this.#page, inputs.readWord(binding.address + 1), entity);
-    if (joint?.kind !== 'joint' || inputs.readWord(joint.address) !== entity) return false;
-    inputs.readFloatWords(joint.address + 1, out);
+    const pose = this.#pose(inputs, slot, count);
+    if (pose === undefined) return false;
+    inputs.readFloatWords(pose.address + 1 + index * 16, out);
     inputs.readFloatWords(skeleton.address + 1 + index * 16, inverse);
     mat4.multiply(out, out, inverse);
     for (let lane = 0; lane < 16; lane++)
@@ -964,7 +1090,7 @@ export class SkinInputFrame {
       return false;
     const binding = find(this.#page, BINDINGS, slot) as Row;
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2)) as Row;
-    const namespace = inputs.readWord(binding.address + 1);
+    const pose = find(this.#page, POSES, slot) as Row;
     const radius = Math.max(displacementRadius, Math.fround(displacementRadius));
     let minX = Infinity,
       minY = Infinity,
@@ -978,12 +1104,7 @@ export class SkinInputFrame {
       const base = 4 + index * 8,
         jointIndex = envelopes[base + 3] as number;
       if (!Number.isInteger(jointIndex) || jointIndex < 0 || jointIndex >= count) return false;
-      const joint = find(
-        this.#page,
-        namespace,
-        inputs.readWord(binding.address + 3 + jointIndex),
-      ) as Row;
-      inputs.readFloatWords(joint.address + 1, matrix);
+      inputs.readFloatWords(pose.address + 1 + jointIndex * 16, matrix);
       inputs.readFloatWords(skeleton.address + 1 + jointIndex * 16, inverse);
       // Requiring both source matrices affine avoids accepting a projective
       // cancellation that only rounds to an affine matrix on one processor.
@@ -1215,14 +1336,9 @@ export class SkinInputFrame {
     // The complete-pose check precedes all output writes, including joints not used by this mesh.
     const binding = find(this.#page, BINDINGS, slot) as Row;
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2)) as Row;
-    const namespace = inputs.readWord(binding.address + 1);
+    const pose = find(this.#page, POSES, slot) as Row;
     for (let index = 0; index < count; index++) {
-      const joint = find(
-        this.#page,
-        namespace,
-        inputs.readWord(binding.address + 3 + index),
-      ) as Row;
-      inputs.readFloatWords(joint.address + 1, matrix);
+      inputs.readFloatWords(pose.address + 1 + index * 16, matrix);
       inputs.readFloatWords(skeleton.address + 1 + index * 16, inverse);
       mat4.multiply(matrix, matrix, inverse);
       for (let lane = 0; lane < 16; lane++) {
@@ -1293,7 +1409,8 @@ export class SkinInputFrame {
 
   /**
    * The captured root this live frame reads. A held root is immutable, so two
-   * frames with the same live root compose equal palettes.
+   * frames with the same live root compose equal palettes. A memo that outlives
+   * the frame must compare inputRevision too: exclusive writes may reuse its page.
    */
   inputRoot(): object | undefined {
     return this.#state === undefined ? undefined : this.#page;
@@ -1319,7 +1436,7 @@ export class SkinInputFrame {
   /** Transfer a submitted frame's input lifetime to history/completion without per-Binding pins. */
   retain(): SkinInputFrame {
     const inputs = this.live();
-    return retainFrame(inputs, this.#state as State, this.#page);
+    return retainFrame(inputs, this.#state as State, this.#page, this.inputRevision);
   }
   release(): void {
     const state = this.#state;

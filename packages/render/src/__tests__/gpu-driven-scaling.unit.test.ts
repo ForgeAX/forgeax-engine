@@ -10,7 +10,7 @@ import type { FrameList } from '../scene/frame-list';
 import { RenderScene } from '../scene/render-scene';
 import { projectedHeight as measureProjectedHeight } from '../scene/visibility/lod-selector';
 
-const ENTITY_COUNT = 100_000;
+const ENTITY_COUNT = 100000;
 const material = new MaterialResource({
   baseColor: new Float32Array([0.25, 0.5, 0.75]),
   metallic: 0,
@@ -26,7 +26,6 @@ function snapshot(entityKey: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -70,7 +69,7 @@ describe('GPU-driven scaling contract', () => {
 
     const moved = mat4.identity(mat4.create());
     moved[12] = 3;
-    delta = projection.apply([{ kind: 'update', worldId: 0, entityKey: 50_000, world: moved }]);
+    delta = projection.apply([{ kind: 'update', entityKey: 50000, world: moved }]);
     topologyChanged = topology.apply(delta);
   });
 

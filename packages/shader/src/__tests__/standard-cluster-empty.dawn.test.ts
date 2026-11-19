@@ -1,9 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { composeShader } from '../../../naga/src/index';
+import {
+  composeShader,
+  emit_reflection,
+  parse,
+  parseReflectionWire,
+  validate,
+} from '../../../naga/src/index';
 import { projectShaderConditionals } from '../../../shader-compiler/src/conditionals';
 
 const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+
+async function storageLightDataBytes(code: string): Promise<number> {
+  const module = (await validate((await parse(code)).unwrap())).unwrap();
+  try {
+    const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
+    const bytes = reflection.boundGlobals.find(({ group, binding }) => group === 2 && binding === 3)
+      ?.typeDescriptor?.byteSize;
+    if (bytes === undefined) throw new Error('Missing reflected storage light-data size');
+    return bytes;
+  } finally {
+    module.free();
+  }
+}
 
 function countedCluster(): string {
   const text = source('standard-cluster.wgsl');
@@ -179,7 +198,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
     // Match all six reflected vec4 rows in the 96-byte Standard Cluster uniform ABI.
     const uniform = buffer(96, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     // Match the renderer's 96-byte DirectLightSlot and grid.w admitted-count ABI.
-    const lightData = new ArrayBuffer(256 * 96);
+    const lightData = new ArrayBuffer(storage ? await storageLightDataBytes(code) : 256 * 96);
     const lightFloats = new Float32Array(lightData);
     const lightWords = new Uint32Array(lightData);
     lightFloats.set([-0.5, 0, 2, 0.01, 4, 2, 1, 2]);

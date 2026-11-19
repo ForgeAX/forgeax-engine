@@ -13,6 +13,8 @@
     "channel": "{{channel}} 通道",
     "mip": "Mip",
     "slice": "切片",
+    "atlas": "展开切片",
+    "volume": "三维体积",
     "projection": "视图",
     "environment": "环境漫游",
     "flat": "二维全景",
@@ -43,7 +45,18 @@
       "colorSpace": "色彩空间",
       "mipPolicy": "Mip 策略",
       "packedMips": "已打包 Mip 层数",
-      "dataBytes": "像素数据（字节）"
+      "dataBytes": "像素数据（字节）",
+      "outputs": "输出数量",
+      "passes": "光栅 Pass 数量"
+    },
+    "output": "输出",
+    "gpuGenerated": "GPU 生成 · 无 CPU 像素副本",
+    "status": {
+      "preparing": "准备程序中",
+      "queued": "等待生成",
+      "generating": "生成中",
+      "ready": "已就绪",
+      "failed": "生成失败"
     }
   }
 }

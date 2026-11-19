@@ -357,9 +357,9 @@ const strongMat = world.assets.create({
     baseColor: [1.0, 1.0, 1.0, 1.0],
     metallic: 0.0,
     roughness: 0.4,
-    // feat-20260621 M-B1 (R-B2): light-box emissive DEMOTED to a dim marker;
-    // the overbright comes from the strong PointLight below, not self-emission.
-    emissive: [1.0, 1.0, 1.0],
+      // feat-20260621 M-B1 (R-B2): light-box emissive DEMOTED to a dim marker;
+      // the overbright comes from the strong PointLight below, not self-emission.
+      emissive: [1.0, 1.0, 1.0],
     emissiveIntensity: 0.4,
   },
 }).unwrap();
@@ -452,11 +452,7 @@ let framesObserved = 0;
 // Pending receipts waited on pipeline preparation and presented nothing.
 for (let i = 0; i < PER_MODE_FRAMES; ) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  const r = renderer.draw({ source: lease });
   if (!r.ok) {
     console.error(`[smoke] draw hdr frame ${i} error: ${r.error.code}`);
     i++;
@@ -491,11 +487,7 @@ world.set(exposureEntity, PostProcessParams, {data: packExposureBytes(1.0, 1)}).
 // Pending receipts waited on pipeline preparation and presented nothing.
 for (let i = 0; i < PER_MODE_FRAMES; ) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  const r = renderer.draw({ source: lease });
   if (!r.ok) {
     console.error(`[smoke] draw ldr frame ${i} error: ${r.error.code}`);
     i++;

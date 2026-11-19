@@ -19,6 +19,11 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  nativeOutputShaderFixture,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
+import { NULL_LIMITS } from '../../../rhi-null/src/device';
 import { createRenderer } from '../createRenderer';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 
@@ -88,6 +93,9 @@ function makeRenderPassEncoder(): Record<string, unknown> {
     setBindGroup: () => undefined,
     setViewport: () => undefined,
     setScissorRect: () => undefined,
+    setBlendConstant: () => undefined,
+    pushDebugGroup: () => undefined,
+    popDebugGroup: () => undefined,
     draw: () => undefined,
     drawIndexed: () => undefined,
     setStencilReference: () => undefined,
@@ -101,7 +109,7 @@ function makeMockGPUDevice(log: CaptureLog): unknown {
     __mockTag: 'gpu-device',
     lost,
     features: new Set(),
-    limits: {},
+    limits: { ...NULL_LIMITS },
     queue: {
       submit: () => undefined,
       writeBuffer: () => undefined,
@@ -159,6 +167,8 @@ function buildManifestDataUrl(): string {
   });
   const manifest = {
     entries: [
+      ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
       {
@@ -169,6 +179,8 @@ function buildManifestDataUrl(): string {
       },
     ],
     materialShaders: [
+      ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       materialShaderStub('forgeax::default-standard-pbr'),
       materialShaderStub('forgeax::default-unlit'),
       materialShaderStub(
@@ -246,7 +258,7 @@ async function drawCsmScene(cascadeCount: number): Promise<CaptureLog> {
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
     world.update().unwrap();
-    const submitted = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const submitted = renderer.draw({ source: lease });
     if (!submitted.ok) throw submitted.error;
     const completed = await submitted.value.completed;
     if (!completed.ok) throw completed.error;

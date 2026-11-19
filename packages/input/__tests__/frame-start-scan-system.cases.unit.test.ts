@@ -1,3 +1,5 @@
+import { INPUT_SNAPSHOT_RESOURCE_KEY, INPUT_BACKEND_KEY } from '../src/resources';
+
 import { Update } from '@forgeax/engine-ecs';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
@@ -33,16 +35,7 @@ import type {
   PointerPhaseEvent,
   VirtualJoystickConfig,
 } from '../src/input-snapshot';
-import {
-  createInputSnapshot,
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  InputFrameStartScan,
-  type InputSnapshot,
-  type PointerType,
-  snapshotFromSample,
-} from '../src/index';
+import { createInputSnapshot, type InputBackend, InputFrameStartScan, type InputSnapshot, type PointerType, snapshotFromSample } from '../src/index';
 import { diffGamepadFrame, type RawGamepadStub } from '../src/gamepad-frame';
 import {
   deriveVirtualAxes,
@@ -186,10 +179,10 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.insertResource(INPUT_BACKEND_KEY, backend);
         world.addSystem(Update, InputFrameStartScan);
 
-        expect(world.hasResource('InputSnapshot')).toBe(false);
+        expect(world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)).toBe(false);
         world.update(1 / 60).unwrap();
-        expect(world.hasResource('InputSnapshot')).toBe(true);
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        expect(world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)).toBe(true);
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         expect(snap.keyboard.down('shift')).toBe(true);
         expect(snap.mouse.button(0)).toBe(true);
         expect(snap.mouse.movementDelta).toEqual({ x: 3, y: -2 });
@@ -214,7 +207,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
         world.addSystem(Update, InputFrameStartScan);
 
         world.update(1 / 60).unwrap();
-        const snap = world.getResource<InputSnapshot>('InputSnapshot');
+        const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         const before = snap.mouse.movementDelta;
         snap.mouse.button(1);
         snap.keyboard.down('q');

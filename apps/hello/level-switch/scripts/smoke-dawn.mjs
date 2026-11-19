@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { defineSystem } from "@forgeax/engine-ecs";
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
@@ -136,7 +137,7 @@ const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
 
 const {
   addOnEnter, defineState, despawnOnEnter, despawnOnExit,
-  getPreviousState, getState, registerStatesPlugin, setNextState, setNextStateForce,
+  getPreviousState, getState, registerStatesPlugin, setNextState, setNextStateForce, stateResource,
 } = await import('@forgeax/engine-state');
 
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
@@ -189,11 +190,7 @@ const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 const drawFrame = async () => {
-  const receipt = await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  const receipt = await drawReadyFrame(renderer, { source: lease });
   successfulFrameCount++;
   return { ok: true, value: receipt };
 };
@@ -369,13 +366,14 @@ addOnEnter(LevelId, 'street-a', (w) => {
 
 // --- Step 4: Draw-counter system ---
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'smoke-draw-counter',
   queries: [],
   fn: () => {
     globalThis.__smokeDrawCount += 1;
   },
 });
+world.addSystem(Update, systemToken1);
 
 // --- Step 5: Warm both transition paths, then measure 10 alternating switches ---
 
@@ -574,7 +572,6 @@ for (let i = 0; i < remainingFrames; i++) {
 
 // --- M41: invalid variant refusal and same-World recovery ------------------
 
-const m41StateKey = '__state__LevelId';
 const m41InvalidVariant = String('m41-runtime-invalid');
 const m41ExecutionSignature = () => {
   const inspection = world.inspect();
@@ -589,7 +586,7 @@ const m41ExecutionSignature = () => {
 };
 const m41Snapshot = (mainMenuExit, tutorialEnter, repairEntity, callbackRuns) => {
   const inspection = world.inspect();
-  const pending = world.getResource(m41StateKey).next;
+  const pending = world.getResource(stateResource(LevelId)).next;
   const meshRows = world.query({ with: [MeshFilter] }).unwrap();
   let meshCount = 0;
   for (const _row of meshRows) meshCount += 1;

@@ -23,7 +23,7 @@
       },
       "fps": {
         "enabled": false,
-        "reason": "fps no-regression covered by hello-cube / hello-app gates; sprite-lit perf is bounded by 1 sprite + 3 lights (URP cap 4) and falls under hello-pbr-style lighting cost already gated by packages/render/bench/transparent-sort.bench.ts (sprite-lit reuses the same splitLdrSprite sub-pass per plan-strategy D-4)"
+        "reason": "fps no-regression covered by hello-cube / hello-app gates; sprite-lit perf is bounded by 1 sprite + 3 lights (URP cap 4) and falls under hello-pbr-style lighting cost"
       },
       "bench": {
         "enabled": false,

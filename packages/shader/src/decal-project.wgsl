@@ -1,6 +1,6 @@
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal}
 #import forgeax_view::common::{View}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid}
 
 struct DecalParams {
   inverse : mat4x4<f32>,
@@ -72,6 +72,7 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalOutput {
   let dx1 = dpdx(uv1); let dy1 = dpdy(uv1);
   let dx2 = dpdx(uv2); let dy2 = dpdy(uv2);
   if (depth >= 1.0 || any(abs(local) > vec3<f32>(0.5))) { discard; }
+  if (!loadStandardSceneSurfaceValid(sceneNormal, coord)) { discard; }
   let receiverNormal = loadStandardNormalRoughness(sceneNormal, coord).xyz;
   let direction = normalize(decal.transform[2].xyz);
   if (dot(receiverNormal, direction) < decal.settings.w) { discard; }

@@ -11,6 +11,21 @@ import { createViewService } from '../../src/app/service.mjs';
 import { readResourceBytes } from '../../src/app/resource-bytes.ts';
 import { loadDocumentReference } from '../../src/app/document-reference.ts';
 
+test('fixed presentations answer carrier binding heartbeats through the service', async () => {
+  let opens = 0;
+  const service = createViewService({ root: '/fixed', async request(operation) {
+    opens++;
+    assert.equal(operation, 'view.start');
+    return { ok: true, value: { url: 'http://localhost:41001/', presentationId: 'fixed' } };
+  } });
+  try {
+    const heartbeat = { action: 'binding-read', appDocumentId: 'carrier', entryScope: 'workspace' };
+    assert.deepEqual(await service.invoke(heartbeat), { phase: 'ready', revision: 0 });
+    assert.deepEqual(await service.invoke(heartbeat), { phase: 'ready', revision: 0 });
+    assert.equal(opens, 1, 'heartbeats reuse the admitted presentation');
+  } finally { service.close(); }
+});
+
 test('cold document compilation releases its transport request before source readiness', async () => {
   let release;
   let reads = 0;
@@ -104,6 +119,23 @@ test('document source failures remain failures after asynchronous admission', as
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('one App cancellation cannot retire a sibling compilation of the same URL', async () => {
+  const server = createServer((_request, response) => response.end('<html><head></head><body><script type="module">globalThis.sharedSource = 42;</script></body></html>'));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  const service = createViewService({ root: '/shared', async request() { return { ok: true, value: { url, presentationId: 'shared' } }; } });
+  try {
+    await service.invoke({ action: 'document', appDocumentId: 'first', url });
+    await service.invoke({ action: 'document', appDocumentId: 'second', url });
+    await service.invoke({ action: 'app-close', appDocumentId: 'first' });
+    assert.deepEqual(await service.invoke({ action: 'document-cancel', appDocumentId: 'first', url }), { cancelled: false });
+    const ref = await loadDocumentReference(args => service.invoke({ ...args, appDocumentId: 'second' }), url);
+    const bytes = await readResourceBytes(ref, args => service.invoke(args));
+    assert.match(new TextDecoder().decode(bytes), /sharedSource\s*=\s*42/);
+  } finally { service.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
 
 test('an old frame can acknowledge cancellation after its presentation changes origin', async () => {

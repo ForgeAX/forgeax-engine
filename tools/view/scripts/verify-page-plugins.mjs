@@ -20,7 +20,7 @@ export async function waitForRenderedViewport(page) {
   const sample = await page.evaluateHandle(() => ({ width: 0, height: 0, submitted: 0 }));
   try {
     const handle = await page.waitForFunction(sample => {
-      const canvas = document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas');
+      const canvas = document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app');
       if (!canvas) return false;
       const rect = canvas.getBoundingClientRect();
       const dpr = Math.max(1, devicePixelRatio);

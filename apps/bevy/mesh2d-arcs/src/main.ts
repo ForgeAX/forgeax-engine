@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -32,11 +33,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const scene = buildMesh2dArcsWorld(app.world, textureHandle);
   const debugDraw = app.debugDraw;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'draw-mesh2d-arcs-bounds',
     queries: [],
     fn: () => drawMesh2dArcsBounds(debugDraw, scene),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) return console.error('[bevy-mesh2d-arcs] app.start failed:', started.error);
   (globalThis as { __bevyMesh2dArcsReady?: boolean }).__bevyMesh2dArcsReady = true;

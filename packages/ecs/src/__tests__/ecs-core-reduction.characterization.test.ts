@@ -1,5 +1,6 @@
 import { defineComponent, defineRelationship, Update, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
+import { defineSystem } from '../schedule';
 
 const { source: ChildOf, target: Children } = defineRelationship({
   sourceName: 'ReductionChildOf',
@@ -19,7 +20,7 @@ describe('M0 ECS reduction characterization', () => {
     const Marker = defineComponent('M0PendingMarker', {});
     const world = new World();
 
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'throw-after-reservation',
       queries: [],
       fn: (_world, _queries, commands) => {
@@ -27,6 +28,7 @@ describe('M0 ECS reduction characterization', () => {
         throw new Error('M0 system failure');
       },
     });
+    world.addSystem(Update, systemToken1);
 
     const result = world.update(0);
     expect(result.ok).toBe(false);
@@ -45,13 +47,14 @@ describe('M0 ECS reduction characterization', () => {
     const entity = world.spawn({ component: Marker, data: {} }).unwrap();
     const before = world.inspect().entityCount;
 
-    world.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'duplicate-component-command',
       queries: [],
       fn: (_world, _queries, commands) => {
         commands.addComponent(entity, { component: Marker, data: {} });
       },
     });
+    world.addSystem(Update, systemToken2);
 
     const result = world.update(0);
     expect(result.ok).toBe(false);
@@ -60,6 +63,7 @@ describe('M0 ECS reduction characterization', () => {
       if (result.error.code === 'command-failed') {
         expect(result.error.detail.systemName).toBe('duplicate-component-command');
         expect(result.error.detail.commandKind).toBe('addComponent');
+        expect(result.error.message).toContain('at command 0 (addComponent)');
         expect((result.error.detail.cause as { readonly code?: string }).code).toBe(
           'component-already-present',
         );

@@ -4,11 +4,16 @@
 // Global `generation` counter incremented on each new archetype creation
 // (ArchetypeGeneration for query cache incremental update).
 
-import type { Component, ComponentId } from '../component';
-import * as componentOwner from '../component';
-import { type Archetype, type ArchetypeId, archetypeKey, createArchetype } from './archetype';
+import { type Component, type ComponentId, componentId } from '../component';
+import { Entity } from '../entity';
+import {
+  type Archetype,
+  type ArchetypeId,
+  archetypeComponentIndex,
+  createArchetype,
+} from './archetype';
 import type { SparseTagSet } from './change-detection';
-import { canonicalComponents, createTable, type Table, type TableId, tableKey } from './table';
+import { createTable, type Table } from './table';
 
 /**
  * The ArchetypeGraph owns all archetypes and their edge caches.
@@ -26,13 +31,8 @@ export interface ArchetypeGraph {
   archetypes: Archetype[];
   /** Derived dedup index: canonical-key string → ArchetypeId. */
   dedupByKey: Map<string, ArchetypeId>;
-  /** Global generation counter. Incremented on each new archetype. */
-  generation: number;
   tables: Table[];
-  activeTables: Set<Table>;
-  activeTablesByComponent: Map<ComponentId, Set<Table>>;
-  tableDedupByKey: Map<string, TableId>;
-  tableGeneration: number;
+  tableDedupByKey: Map<string, Table>;
   sparseTags: Map<ComponentId, SparseTagSet>;
   readonly shared: boolean;
 }
@@ -44,70 +44,57 @@ export function createArchetypeGraph(shared = false): ArchetypeGraph {
   return {
     archetypes: [],
     dedupByKey: new Map(),
-    generation: 0,
     tables: [],
-    activeTables: new Set(),
-    activeTablesByComponent: new Map(),
     tableDedupByKey: new Map(),
-    tableGeneration: 0,
     sparseTags: new Map(),
     shared,
   };
 }
 
-export function getTable(graph: ArchetypeGraph, id: TableId): Table {
-  const table = graph.tables[id];
-  if (table === undefined) throw new Error(`Table ${id} does not exist.`);
-  return table;
-}
-
-function getOrCreateTable(graph: ArchetypeGraph, components: ReadonlyArray<Component>): Table {
-  const tableComponents = canonicalComponents(
-    components.filter((component) => component.storage === 'table'),
-  );
-  const key = tableKey(tableComponents.map((component) => componentOwner.componentId(component)));
-  const existingId = graph.tableDedupByKey.get(key);
-  if (existingId !== undefined) return getTable(graph, existingId);
-  const directories = [graph.activeTables];
-  for (const component of tableComponents) {
-    const id = componentOwner.componentId(component);
-    let directory = graph.activeTablesByComponent.get(id);
-    if (directory === undefined) {
-      directory = new Set();
-      graph.activeTablesByComponent.set(id, directory);
-    }
-    directories.push(directory);
+function getOrCreateTable(
+  graph: ArchetypeGraph,
+  components: readonly Component[],
+  archetypeKey: string,
+): Table {
+  let tableComponents = components;
+  let key = archetypeKey;
+  if (components.some((component) => component.storage === 'sparse')) {
+    const dense = components.filter((component) => component.storage === 'table');
+    // The physical Entity column is required even if a sparse token uses its id.
+    if (components[0]?.storage === 'sparse') dense.unshift(Entity);
+    tableComponents = dense;
+    key = dense.map(componentId).join('+');
   }
-  const table = createTable(tableComponents, graph.tables.length, graph.shared, directories);
+  const existing = graph.tableDedupByKey.get(key);
+  if (existing !== undefined) return existing;
+  const table = createTable(tableComponents, key, graph.tables.length, graph.shared);
   graph.tables.push(table);
-  graph.tableDedupByKey.set(key, table.id);
-  graph.tableGeneration += 1;
+  graph.tableDedupByKey.set(key, table);
   return table;
 }
 
-/**
- * Get or create an archetype for the given component set.
- * ComponentIds are sorted to produce a canonical key.
- */
+/** Canonicalize logical membership once; the table uses its dense subsequence. */
 export function getOrCreateArchetype(
   graph: ArchetypeGraph,
-  componentIds: ReadonlyArray<ComponentId>,
-  components: ReadonlyArray<Component>,
+  components: readonly Component[],
 ): Archetype {
-  const key = archetypeKey(componentIds);
+  const byId = new Map<ComponentId, Component>();
+  byId.set(componentId(Entity), Entity);
+  for (const component of components) byId.set(componentId(component), component);
+  const ids = [...byId.keys()].sort((a, b) => a - b);
+  const key = ids.join('+');
   const existingId = graph.dedupByKey.get(key);
   if (existingId !== undefined) {
     // biome-ignore lint/style/noNonNullAssertion: dedupByKey only ever holds ids that were pushed into archetypes[].
     return graph.archetypes[existingId]!;
   }
 
-  const fullComponents = canonicalComponents(components);
-  const table = getOrCreateTable(graph, fullComponents);
+  const sorted = ids.map((id) => byId.get(id) as Component);
+  const table = getOrCreateTable(graph, sorted, key);
   const archId = graph.archetypes.length;
-  const arch = createArchetype(fullComponents, archId, table.id);
+  const arch = createArchetype(archId, table, key, sorted, ids);
   graph.archetypes.push(arch);
   graph.dedupByKey.set(key, archId);
-  graph.generation += 1;
   return arch;
 }
 
@@ -129,21 +116,12 @@ export function getAddEdge(
     }
   }
 
-  // Compute target archetype: src components + new component.
-  const newIds = [...src.components.map((c) => componentOwner.componentId(c)), componentId];
-  const newComponents = [...src.components, component];
-  const target = getOrCreateArchetype(graph, newIds, newComponents);
+  const target = getOrCreateArchetype(graph, [...src.components, component]);
   src.addEdges.set(componentId, target.id);
   return target;
 }
 
-/**
- * Get the target archetype after removing `componentId` from `src`.
- * Caches the edge for O(1) subsequent lookups.
- *
- * Component list is derived from `src.components.filter(c => componentOwner.componentId(c) !== componentId)`
- * (no separate componentRegistry — feat-20260611 AC-09).
- */
+/** Get and cache the target formed by removing one component from `src`. */
 export function getRemoveEdge(
   graph: ArchetypeGraph,
   src: Archetype,
@@ -157,13 +135,29 @@ export function getRemoveEdge(
     }
   }
 
-  // Compute target archetype: src components minus removed component.
-  // Derive componentIds from src.components (single-field Archetype).
-  const newIds = src.components
-    .map((c) => componentOwner.componentId(c))
-    .filter((id) => id !== componentId);
-  const newComponents = src.components.filter((c) => componentOwner.componentId(c) !== componentId);
-  const target = getOrCreateArchetype(graph, newIds, newComponents);
+  const target = getOrCreateArchetype(
+    graph,
+    src.components.filter((_, index) => src.ids[index] !== componentId),
+  );
   src.removeEdges.set(componentId, target.id);
   return target;
+}
+
+export function spawnRosterMatches(
+  archetype: Archetype,
+  componentDatas: readonly { readonly component: Component }[],
+): boolean {
+  const count = componentDatas.length;
+  if (archetype.ids.length !== count + 1) return false;
+  for (let index = 0; index < count; index++) {
+    const component = (componentDatas[index] as { readonly component: Component }).component;
+    if (
+      archetype.components[archetypeComponentIndex(archetype, componentId(component))] !== component
+    )
+      return false;
+    for (let other = 0; other < index; other++)
+      if ((componentDatas[other] as { readonly component: Component }).component === component)
+        return false;
+  }
+  return true;
 }

@@ -1,12 +1,15 @@
-import type { World } from '@forgeax/engine-ecs';
+import { defineSystem, type World } from '@forgeax/engine-ecs';
+import type { CompiledRenderGraph, RenderGraphFrame } from '@forgeax/engine-render-graph';
+
 import type { RendererFrameStage } from '../assembly/renderer-frame-transaction';
 import type { FrameDiffuseGi } from '../record/frame-diffuse-gi';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
 import { recordFailureError } from '../render-system-record-attempt';
+import { GiSubmissionCommitOrder, RenderGraphSettleOrder } from '../system-order';
 import { requireGiSubmissions } from './gi-systems';
-import { RENDER_GRAPH_SETTLE_SYSTEM } from './graph-systems';
+
 import { ViewRecorder, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit, renderSubmission } from './render-world';
 import { requireViewField } from './view-field';
@@ -20,6 +23,9 @@ export const RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM = 'render-graph-submission-abo
 /** One graph execution's submission-sensitive products; recording only stages them. */
 export interface GraphSubmission {
   readonly frame: number;
+  readonly graph?:
+    | Pick<CompiledRenderGraph<RenderGraphFrame>, 'commitExecution' | 'discardExecution'>
+    | undefined;
   readonly timing: GpuTimingCapture | undefined;
   readonly passTiming: RenderSystemInternals['gpuPassTimingCapture'];
   readonly gi: FrameDiffuseGi | undefined;
@@ -37,6 +43,7 @@ export function commitGraphSubmission(
 ): void {
   if (candidate.settled) return;
   candidate.settled = true;
+  candidate.graph?.commitExecution();
   candidate.timing?.markSubmitted();
   if (candidate.gi !== undefined) requireGiSubmissions(internals).submitted.push(candidate.gi);
   candidate.onAccepted?.();
@@ -48,6 +55,7 @@ export function abortGraphSubmission(
 ): void {
   if (candidate.settled) return;
   candidate.settled = true;
+  candidate.graph?.discardExecution();
   const stage = candidate.rejectedStage ?? 'submit';
   frameState.rejectedStage = stage;
   candidate.passTiming?.abort({ code: stage });
@@ -56,59 +64,57 @@ export function abortGraphSubmission(
 
 /** Graph promotion precedes these products; every GI history consumer follows them. */
 export function registerGraphSubmissionSystems(world: World): void {
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM,
-      after: [RENDER_GRAPH_SETTLE_SYSTEM],
-      before: ['gi-submission-commit'],
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [rows]) => {
-        const { frame } = renderSubmission(world);
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM,
+    after: [RenderGraphSettleOrder],
+    before: [GiSubmissionCommitOrder],
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [rows]) => {
+      const { frame } = renderSubmission(world);
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const { internals, frameState } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const candidate = frameState.graphSubmission;
-          if (candidate?.frame !== frame || !candidate.submitted || !viewAccepted(world, entity))
-            return;
-          try {
-            commitGraphSubmission(internals, candidate);
-          } catch (cause) {
-            internals.errorRegistry.fire(recordFailureError(cause));
-          }
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM,
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [rows]) => {
-        rows.forEach((row) => {
-          const entity = row.entity;
+        const { internals, frameState } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const candidate = frameState.graphSubmission;
+        if (candidate?.frame !== frame || !candidate.submitted || !viewAccepted(world, entity))
+          return;
+        try {
+          commitGraphSubmission(internals, candidate);
+        } catch (cause) {
+          internals.errorRegistry.fire(recordFailureError(cause));
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM,
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [rows]) => {
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const { internals, frameState } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const candidate = frameState.graphSubmission;
-          frameState.featureGraphReceipt = undefined;
-          frameState.graphSubmission = undefined;
-          if (candidate === undefined) return;
-          try {
-            abortGraphSubmission(frameState, candidate);
-          } catch (cause) {
-            internals.errorRegistry.fire(recordFailureError(cause));
-          }
-        });
-      },
-    })
-    .unwrap();
+        const { internals, frameState } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const candidate = frameState.graphSubmission;
+        frameState.featureGraphReceipt = undefined;
+        frameState.graphSubmission = undefined;
+        if (candidate === undefined) return;
+        try {
+          abortGraphSubmission(frameState, candidate);
+        } catch (cause) {
+          internals.errorRegistry.fire(recordFailureError(cause));
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
 }

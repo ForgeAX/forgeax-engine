@@ -122,7 +122,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
     skinFrames.discardFrame();
     const delta = scene.apply(rows.map(updateSnapshot));
     skinInputs.apply(delta);
-    skinInputs.joint(0, 19, mat4.identity(mat4.create()));
+    skinInputs.joint(19, mat4.identity(mat4.create()));
     skinFrame = skinFrames.prepareFrame(scene.slotsSnapshot());
     available.scene.sync(delta).unwrap();
     topology.apply(delta);

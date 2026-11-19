@@ -22,8 +22,6 @@ export const SUT_ATTRIBUTABLE_CODES: ReadonlySet<string> = new Set([
   'rhi-not-available',
   'queue-submit-failed',
   'queue-write-buffer-out-of-bounds',
-  'render-system-empty-worlds',
-  'render-system-owner-out-of-range',
   'render-system-no-camera',
   'render-system-multi-camera',
   'render-system-multi-light',

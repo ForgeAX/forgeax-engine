@@ -103,31 +103,28 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
     };
     const frame = {
       frameNumber: sequence,
-      worlds: [
-        {
-          sourceWorldIndex: 0,
-          worldId: 0,
-          runtimeId: 0,
-          renderGeneration: 0,
-          camera,
-          views: [{ identity: 'main', camera }],
-          intents: [intent],
-          retained: [],
-          materials: new Map(),
-          meshes: new Map(),
-          emitterState: new Map([
-            [
-              `${Number(player)}:${emitter.id}`,
-              {
-                enabled: true,
-                localToWorld: identity(),
-                player,
-                emitter: reference,
-              },
-            ],
-          ]),
-        },
-      ],
+      source: {
+        worldId: 0,
+        runtimeId: 0,
+        renderGeneration: 0,
+        camera,
+        views: [{ identity: 'main', camera }],
+        intents: [intent],
+        retained: [],
+        materials: new Map(),
+        meshes: new Map(),
+        emitterState: new Map([
+          [
+            `${Number(player)}:${emitter.id}`,
+            {
+              enabled: true,
+              localToWorld: identity(),
+              player,
+              emitter: reference,
+            },
+          ],
+        ]),
+      },
     };
     const plan = feature
       .plan(
@@ -135,7 +132,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         singleViewContext({
           targets: [],
           caps: {} as never,
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
           generation: 0,
           frame: { frameNumber: sequence } as never,
@@ -180,7 +177,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } }),
       ]),
     );
-    const sizeWords = [capacity * 28, 80, capacity, 6, 5, capacity * 2 + groups, capacity * 31];
+    const sizeWords = [capacity * 28, 80, capacity, 7, 5, capacity * 2 + groups, capacity * 31];
     const states = (groups === 1 ? [0, 1] : [0, 1, 2]).map(() => {
       const buffers = sizeWords.map((words, binding) =>
         make(words, binding === 1 ? GPUBufferUsage.UNIFORM : GPUBufferUsage.STORAGE),

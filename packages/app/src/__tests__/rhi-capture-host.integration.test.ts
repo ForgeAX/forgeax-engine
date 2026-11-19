@@ -1,15 +1,16 @@
-import { World } from '@forgeax/engine-ecs';
-import type { Renderer } from '@forgeax/engine-render';
+import { Time, World } from '@forgeax/engine-ecs';
+import type { FrameReceipt, Renderer, RenderFrameInput } from '@forgeax/engine-render';
 import type { RhiBackendInstrumentation } from '@forgeax/engine-render/internal/construct-renderer';
 import {
   attachRecorder,
+  createRhiDebugError,
   type EncodedTape,
   type RecorderAttachment,
   type RhiDebugError,
   tapeArtifact,
 } from '@forgeax/engine-rhi-debug';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
-import { ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../create-app';
 import {
@@ -67,21 +68,40 @@ function deferredAttachment(): {
   });
   let resolveCapture!: (result: Result<EncodedTape, RhiDebugError>) => void;
   let boundaryCount = 0;
+  let recording = false;
   const deferred: RecorderAttachment = {
     backend: {} as RecorderAttachment['backend'],
     captureGeneration: 0,
-    isRecordingCapture: () => true,
+    isRecordingCapture: () => recording,
     readPipelineReference: () => undefined,
-    captureFrame: () =>
+    captureFrame: (options) =>
       new Promise((resolve) => {
+        recording = true;
         resolveCapture = resolve;
+        options?.signal?.addEventListener(
+          'abort',
+          () => {
+            recording = false;
+            resolveCapture(
+              err(
+                createRhiDebugError('capture-unavailable', {
+                  stage: 'capture',
+                  cause: 'fixture capture cancelled',
+                }),
+              ),
+            );
+          },
+          { once: true },
+        );
       }),
     frameBoundary: async () => {
+      if (!recording) return ok(undefined);
       boundaryCount += 1;
       if (boundaryCount === 1) {
         await snapshotReleased;
         return ok(undefined);
       }
+      recording = false;
       resolveCapture(ok(encoded));
       return ok(undefined);
     },
@@ -96,38 +116,128 @@ function driverFor(
   initialState: 'running' | 'paused',
 ): {
   readonly driver: Parameters<typeof bindRhiCaptureFrameDriver>[1];
-  readonly pause: ReturnType<typeof vi.fn>;
-  readonly resume: ReturnType<typeof vi.fn>;
+  readonly suspendScheduling: ReturnType<typeof vi.fn>;
+  readonly restoreScheduling: ReturnType<typeof vi.fn>;
   readonly stepFrame: ReturnType<typeof vi.fn>;
 } {
-  let state = initialState;
-  const pause = vi.fn(() => {
-    state = 'paused';
-    return ok(undefined);
-  });
-  const resume = vi.fn(() => {
-    state = 'running';
+  const restoreScheduling = vi.fn(() => {
     if (initialState === 'running') void attachment.frameBoundary();
     return ok(undefined);
   });
+  const suspendScheduling = vi.fn(() => ok(restoreScheduling));
   const stepFrame = vi.fn((_deltaSeconds: number) => {
     void attachment.frameBoundary();
     return ok(undefined);
   });
   return {
     driver: {
-      getState: () => state,
-      pause,
-      resume,
+      getState: () => initialState,
+      suspendScheduling,
       stepFrame,
     },
-    pause,
-    resume,
+    suspendScheduling,
+    restoreScheduling,
     stepFrame,
   };
 }
 
 describe('RHI capture host capability', () => {
+  it.each([
+    'complete',
+    'abort',
+    'arm-throw',
+    'pause',
+    'stop',
+  ] as const)('preserves the running App frame authority after snapshot %s', async (outcome) => {
+    const deferred = deferredAttachment();
+    const capture = createRhiCapture(deferred.attachment);
+    const world = new World();
+    let timestamp = 1000;
+    let callback: ((timestamp: number) => void) | undefined;
+    const inputs: RenderFrameInput[] = [];
+    const renderer = {
+      ready: Promise.resolve(ok(undefined)),
+      state: () => 'alive',
+      backend: 'null',
+      attach: () => ok({ dispose() {} }),
+      draw(input: RenderFrameInput) {
+        inputs.push(input);
+        void deferred.attachment.frameBoundary();
+        return ok({
+          frameId: inputs.length,
+          deviceGeneration: 0,
+          presentation: 'ready',
+          completed: Promise.resolve(ok(undefined)),
+        } satisfies FrameReceipt);
+      },
+      subscribe: () => () => {},
+    } as unknown as Renderer;
+    const app = (
+      await createApp({
+        platform: testPlatform({
+          now: () => timestamp,
+          raf: (next) => {
+            callback = next;
+            return 1;
+          },
+          caf: () => {
+            callback = undefined;
+          },
+        }),
+        renderer,
+        world,
+        rhiCapture: capture,
+      })
+    ).unwrap();
+    const tick = (nextTimestamp: number) => {
+      timestamp = nextTimestamp;
+      const next = callback;
+      callback = undefined;
+      next?.(timestamp);
+    };
+    try {
+      app.start().unwrap();
+      tick(1016);
+      await Promise.resolve();
+      if (outcome === 'arm-throw') {
+        vi.spyOn(deferred.attachment, 'captureFrame').mockImplementationOnce(() => {
+          timestamp = 6016;
+          throw new Error('recorder arm failed');
+        });
+      }
+      const controller = new AbortController();
+      const pending = capture.captureFrame({ signal: controller.signal });
+      await Promise.resolve();
+      timestamp = 6016;
+      if (outcome === 'abort') controller.abort();
+      if (outcome === 'pause') app.pause().unwrap();
+      if (outcome === 'stop') app.stop().unwrap();
+      deferred.releaseSnapshot();
+      await Promise.resolve();
+      await Promise.resolve();
+      const failure = outcome === 'complete' ? undefined : await pending;
+      tick(6032);
+      const result = failure ?? (await pending);
+      expect(result.ok).toBe(outcome === 'complete');
+      if (outcome === 'pause' || outcome === 'stop') {
+        expect(inputs).toHaveLength(1);
+        if (outcome === 'pause') {
+          app.resume().unwrap();
+          tick(6048);
+          expect(inputs[1]?.temporalReset).toBe(true);
+        }
+        return;
+      }
+      expect(inputs.map((input) => input.temporalReset === true)).toEqual([false, false]);
+      expect(inputs[0]?.sampleTimeSeconds).toBeCloseTo(1.016);
+      expect(inputs[1]?.sampleTimeSeconds).toBeCloseTo(1.032);
+      expect(world.getResource(Time).delta).toBeCloseTo(0.016);
+      expect(app.execution.report().engine.health).toBe('running');
+    } finally {
+      (await app.dispose()).unwrap();
+    }
+  });
+
   it('binds native assembly capture to the actual App frame and refuses it after disposal', async () => {
     const deferred = deferredAttachment();
     const capture = createRhiCapture(deferred.attachment);
@@ -211,8 +321,7 @@ describe('RHI capture host capability', () => {
     const capture = createRhiCapture(a);
     bindRhiCaptureFrameDriver(capture, {
       getState: () => 'paused',
-      pause: () => ok(undefined),
-      resume: () => ok(undefined),
+      suspendScheduling: () => ok(() => ok(undefined)),
       stepFrame: step,
     });
     try {
@@ -288,7 +397,7 @@ describe('RHI capture host capability', () => {
     const pending = capture.captureFrame();
     await Promise.resolve();
 
-    expect(driver.pause).toHaveBeenCalledTimes(1);
+    expect(driver.suspendScheduling).toHaveBeenCalledTimes(1);
     expect(driver.stepFrame).not.toHaveBeenCalled();
 
     deferred.releaseSnapshot();
@@ -296,7 +405,7 @@ describe('RHI capture host capability', () => {
 
     expect(artifactFacts(result)).toEqual(expectedFacts);
     expect(driver.stepFrame).not.toHaveBeenCalled();
-    expect(driver.resume).toHaveBeenCalledTimes(1);
+    expect(driver.restoreScheduling).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a previously paused loop paused while capture advances one frame', async () => {
@@ -307,11 +416,11 @@ describe('RHI capture host capability', () => {
 
     const pending = capture.captureFrame();
     await Promise.resolve();
-    expect(driver.pause).not.toHaveBeenCalled();
+    expect(driver.suspendScheduling).not.toHaveBeenCalled();
 
     deferred.releaseSnapshot();
     expect((await pending).ok).toBe(true);
     expect(driver.stepFrame).toHaveBeenCalledWith(0);
-    expect(driver.resume).not.toHaveBeenCalled();
+    expect(driver.restoreScheduling).not.toHaveBeenCalled();
   });
 });

@@ -8,9 +8,13 @@ import type {
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import type { cameraViewExtent } from '../components/camera-view';
-import { createPassTimingInstrumentation } from '../record/gpu-pass-timing/instrumentation';
+import {
+  createRenderGraphPassInstrumentation,
+  renderGraphPassInstrumentationActive,
+} from '../record/frame-targets';
 import { encodeFrameObservationCapture } from '../record/observation-capture';
-import type { RenderSystemInternals } from '../record/render-context';
+import { activeRenderProfileSession } from '../record/profile-session';
+import { beginProfiledRenderPhase, type RenderSystemInternals } from '../record/render-context';
 import type { RenderTargetDescriptor } from '../targets/contracts';
 
 const SOURCE = `
@@ -56,7 +60,12 @@ export function createViewCompositor(internals: RenderSystemInternals) {
         format: TextureFormat;
       }
     | undefined;
-  type Frame = { encoder: RhiCommandEncoder; views: readonly CompositeView[]; output: Texture };
+  type Frame = {
+    encoder: RhiCommandEncoder;
+    views: readonly CompositeView[];
+    output: Texture;
+    graphGeneration: number;
+  };
   let compiled: CompiledRenderGraph<Frame> | undefined;
   const variants = new Map<boolean, CompiledRenderGraph<Frame>>();
   const retireGraphs = () => {
@@ -292,30 +301,49 @@ export function createViewCompositor(internals: RenderSystemInternals) {
                   format: base.format,
                   width: internals.canvas.width,
                   height: internals.canvas.height,
-                  graphGeneration: compiled?.inspect().generation ?? 0,
+                  graphGeneration: _frame.graphGeneration,
                   frameNumber: internals.observationFrameId ?? 0,
                 }),
             }),
           );
-        const next = unwrap(
-          graph.compile({
-            device,
-            surfaceSize: { width, height },
-          }),
+        const endCompile = beginProfiledRenderPhase(
+          activeRenderProfileSession(internals),
+          'graph/compile',
         );
+        let next: CompiledRenderGraph<Frame>;
+        try {
+          next = unwrap(graph.compile({ device, surfaceSize: { width, height } }));
+        } finally {
+          endCompile?.();
+        }
         compiled = next;
         variants.set(observeRawDisplay, next);
       }
-      const capture = internals.gpuPassTimingCapture;
-      const executed = compiled.execute(
-        { encoder, views, output },
+      const activeGraph = compiled;
+      if (activeGraph === undefined) throw new Error('The view compositor has no compiled graph');
+      const graphGeneration = activeGraph.inspect().generation;
+      internals.observationGraphGeneration = graphGeneration;
+      const instrumentation = !renderGraphPassInstrumentationActive(internals)
+        ? undefined
+        : createRenderGraphPassInstrumentation({
+            internals,
+            graph: activeGraph,
+            owner: 'composition',
+          });
+      const executed = activeGraph.execute(
+        { encoder, views, output, graphGeneration },
         undefined,
-        capture === undefined ? undefined : createPassTimingInstrumentation<Frame>(capture),
+        instrumentation,
       );
       if (!executed.ok) throw executed.error;
-      internals.framePassNames?.push(...compiled.inspect().passes.map((pass) => pass.name));
+      if (internals.observationFrameId !== undefined)
+        internals.observationCaptureOwner?.recordGraph(
+          internals.observationFrameId,
+          activeGraph.inspect().generation,
+        );
+      internals.framePassNames?.push(...activeGraph.inspect().passes.map((pass) => pass.name));
       if (target === undefined)
-        internals.observationGraphGeneration = compiled.inspect().generation;
+        internals.observationGraphGeneration = activeGraph.inspect().generation;
       return true;
     },
   };

@@ -6,6 +6,7 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
+import { copyMeshAttribute } from './mesh-storage';
 
 function failure(reason: string): Result<never, AssetError> {
   return err(
@@ -18,9 +19,12 @@ function failure(reason: string): Result<never, AssetError> {
   );
 }
 
-/** Weld exact positions across material/UV seams; include only authored triangle coverage. */
-export function buildMeshCollision(mesh: MeshAsset): Result<MeshCollision, AssetError> {
-  const source = mesh.attributes?.position;
+/** Admit the static position stream before any section traversal or welding. */
+function collisionSourcePositions(mesh: MeshAsset): Result<Float32Array, AssetError> {
+  const source =
+    mesh.attributeStorage === 'interleaved'
+      ? copyMeshAttribute(mesh, 'position')
+      : mesh.attributes?.position;
   if (
     !(source instanceof Float32Array) ||
     source.length < 9 ||
@@ -34,6 +38,14 @@ export function buildMeshCollision(mesh: MeshAsset): Result<MeshCollision, Asset
     return failure(
       'collision cooking requires a static mesh with at most 1,048,576 vertices and triangles',
     );
+  return ok(source);
+}
+
+/** Weld exact positions across material/UV seams; include only authored triangle coverage. */
+export function buildMeshCollision(mesh: MeshAsset): Result<MeshCollision, AssetError> {
+  const admitted = collisionSourcePositions(mesh);
+  if (!admitted.ok) return admitted;
+  const source = admitted.value;
   if (
     !Array.isArray(mesh.submeshes) ||
     !mesh.submeshes.length ||

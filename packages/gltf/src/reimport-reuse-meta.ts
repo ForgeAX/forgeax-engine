@@ -72,12 +72,30 @@ export function reimportReuseMeta(
     }
   }
 
+  // Semantic owners win across the entire new declaration, even when they
+  // appear after an inserted output whose locator points at the same old slot.
+  const reservedGuids = new Set(
+    sourceKeys.items.flatMap((item) => {
+      const prior = stage1Index.get(item.sourceKey);
+      return prior === undefined ? [] : [prior.guid.toLowerCase()];
+    }),
+  );
+  const assignedGuids = new Set<string>();
   const subAssets: ImportSubAsset[] = [];
   for (const item of sourceKeys.items) {
+    const semantic = stage1Index.get(item.sourceKey);
+    const locator = stage2Index.get(`${item.kind} ${item.sourceIndex}`);
     const reused =
-      stage1Index.get(item.sourceKey) ?? stage2Index.get(`${item.kind} ${item.sourceIndex}`);
+      semantic ??
+      (locator !== undefined &&
+      !reservedGuids.has(locator.guid.toLowerCase()) &&
+      !assignedGuids.has(locator.guid.toLowerCase())
+        ? locator
+        : undefined);
+    const guid = reused?.guid ?? AssetGuid.format(AssetGuid.random());
+    assignedGuids.add(guid.toLowerCase());
     subAssets.push({
-      guid: reused?.guid ?? AssetGuid.format(AssetGuid.random()),
+      guid,
       sourceIndex: item.sourceIndex,
       kind: item.kind,
       sourceKey: item.sourceKey,

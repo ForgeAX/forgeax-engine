@@ -19,7 +19,6 @@ function fixture(count: number) {
   const values = Array.from(
     { length: count },
     (_, entityKey): RenderableSnapshot => ({
-      worldId: 0,
       entityKey,
       transform: { world: pose },
       material,
@@ -31,7 +30,6 @@ function fixture(count: number) {
   rows.apply(
     values.map((snapshot) => ({
       kind: 'update',
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -98,12 +96,12 @@ it('keeps raster membership with old roots through visibility, instance count, r
   };
   for (let cycle = 0; cycle < 20; cycle++) {
     f.rows.apply(
-      [{ kind: 'update', worldId: 0, entityKey: 7, snapshot: { ...source, authorVisible: false } }],
+      [{ kind: 'update', entityKey: 7, snapshot: { ...source, authorVisible: false } }],
       [],
       true,
     );
     expect([...rasterRowsOf(readCurrent())].map((row) => row.entityKey)).toEqual([127]);
-    f.rows.apply([{ kind: 'update', worldId: 0, entityKey: 7, snapshot: source }], [], true);
+    f.rows.apply([{ kind: 'update', entityKey: 7, snapshot: source }], [], true);
     expect([...rasterRowsOf(readCurrent())].map((row) => row.entityKey)).toEqual([7, 127]);
     expect([...rasterRowsOf(f.list)].map((row) => row.entityKey)).toEqual([7, 127]);
   }
@@ -111,7 +109,6 @@ it('keeps raster membership with old roots through visibility, instance count, r
     [
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 7,
         instances: {
           transforms: new Float32Array(0),
@@ -125,9 +122,9 @@ it('keeps raster membership with old roots through visibility, instance count, r
     true,
   );
   expect([...rasterRowsOf(readCurrent())].map((row) => row.entityKey)).toEqual([127]);
-  f.rows.apply([{ kind: 'remove', worldId: 0, entityKey: 7 }], [], true);
+  f.rows.apply([{ kind: 'remove', entityKey: 7 }], [], true);
   f.rows.apply(
-    [{ kind: 'update', worldId: 0, entityKey: 999, snapshot: { ...source, entityKey: 999 } }],
+    [{ kind: 'update', entityKey: 999, snapshot: { ...source, entityKey: 999 } }],
     [],
     true,
   );

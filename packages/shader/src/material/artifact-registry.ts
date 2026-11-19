@@ -1,3 +1,4 @@
+import { type RetainedZstdBytes, retainedZstdBytes } from '@forgeax/engine-codec';
 import { err, isDeepFrozenJson, ok, type Result } from '@forgeax/engine-types';
 
 export interface MaterialRuntimeArtifact {
@@ -5,6 +6,31 @@ export interface MaterialRuntimeArtifact {
   readonly bytes: Uint8Array;
   readonly digest?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+const retainedStorage = new WeakMap<MaterialRuntimeArtifact, RetainedZstdBytes>();
+
+/**
+ * An explicitly owned artifact may restore its already-validated transport
+ * bytes on cold access. Ordinary borrowed artifacts keep their existing owner.
+ * This factory does not establish a digest: admission still verifies it.
+ */
+export function retainMaterialRuntimeArtifact(
+  artifact: MaterialRuntimeArtifact,
+): MaterialRuntimeArtifact {
+  const storage = retainedZstdBytes(artifact.bytes);
+  if (storage === undefined) return artifact;
+  const { key, digest, metadata } = artifact;
+  const owned: MaterialRuntimeArtifact = {
+    key,
+    get bytes() {
+      return storage.read();
+    },
+    ...(digest === undefined ? {} : { digest }),
+    ...(metadata === undefined ? {} : { metadata }),
+  };
+  retainedStorage.set(owned, storage);
+  return owned;
 }
 
 export interface MaterialArtifactInspection {
@@ -277,8 +303,47 @@ export class MaterialArtifactRegistry {
     return {
       key: artifact.key,
       ...(artifact.digest === undefined ? {} : { digest: artifact.digest }),
-      byteLength: artifact.bytes.byteLength,
+      byteLength: retainedStorage.get(artifact)?.byteLength ?? artifact.bytes.byteLength,
       ...(artifact.metadata === undefined ? {} : { metadata: artifact.metadata }),
+    };
+  }
+
+  /** Storage recipe budget, not allocated RAM; never restores a cold program. */
+  storageStats(): {
+    readonly artifacts: number;
+    readonly logicalBytes: number;
+    readonly compressedArtifacts: number;
+    readonly compressedGroups: number;
+    readonly compressedBytes: number;
+    readonly ordinaryBytes: number;
+  } {
+    const groups = new Set<object>();
+    let logicalBytes = 0,
+      compressedArtifacts = 0,
+      compressedBytes = 0,
+      ordinaryBytes = 0;
+    for (const artifact of this.#artifacts.values()) {
+      const storage = retainedStorage.get(artifact);
+      if (storage === undefined) {
+        const length = artifact.bytes.byteLength;
+        ordinaryBytes += length;
+        logicalBytes += length;
+      } else {
+        logicalBytes += storage.byteLength;
+        compressedArtifacts++;
+        if (!groups.has(storage.storageIdentity)) {
+          groups.add(storage.storageIdentity);
+          compressedBytes += storage.storedByteLength;
+        }
+      }
+    }
+    return {
+      artifacts: this.#artifacts.size,
+      logicalBytes,
+      compressedArtifacts,
+      compressedGroups: groups.size,
+      compressedBytes,
+      ordinaryBytes,
     };
   }
 }

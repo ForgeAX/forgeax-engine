@@ -15,6 +15,7 @@ import {
 } from '../../raytracing/screen-probe-kernels';
 import { packScreenProbeFrame, ScreenProbeRayStatus } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
+import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 
 it('samples Screen Probe irradiance continuously across the octahedral seam', async () => {
   const read = (name: string) =>
@@ -552,12 +553,12 @@ function supportPreviousHistory() {
 
 function createSupportSurface(device: GPUDevice, textures: GPUTexture[]) {
   const depth = device.createTexture({ size: [8, 4], format: 'depth32float', usage: 4 | 16 });
-  const normal = device.createTexture({ size: [8, 4], format: 'r32uint', usage: 4 | 2 });
+  const normal = device.createTexture({ size: [8, 4], format: 'rg32uint', usage: 4 | 2 });
   textures.push(depth, normal);
   device.queue.writeTexture(
     { texture: normal },
-    new Uint32Array(32).fill(2048 | (2048 << 12)),
-    { bytesPerRow: 32 },
+    gbufferNormalPixels(32),
+    { bytesPerRow: 64 },
     [8, 4],
   );
   const clear = device.createCommandEncoder();
@@ -1030,7 +1031,7 @@ it('traces the whole unresolved world ray when a thin wall has no raster coverag
       rays = buffer(rayBytes);
     const previousScene = buffer(new Uint8Array(8 * 4 * 8));
     const depth = texture('depth32float', 4 | 16);
-    const normal = texture('r32uint', 4 | 2);
+    const normal = texture('rg32uint', 4 | 2);
     const pyramid = texture('r32float', 4 | 2);
     device.queue.writeTexture(
       { texture: pyramid },

@@ -4,6 +4,7 @@ import { compileShader } from '../../../../shader-compiler/src/index';
 import { SCREEN_PROBE_BINDINGS, SCREEN_PROBE_STAGES } from '../../raytracing/screen-probe-kernels';
 import { packScreenProbeFrame } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
+import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 
 it('reprojects only geometrically supported Screen Probe history taps', async () => {
   const read = (name: string) =>
@@ -80,11 +81,11 @@ it('reprojects only geometrically supported Screen Probe history taps', async ()
     metaIn = make(new Uint8Array(64)),
     metaOut = make(new Uint8Array(64));
   const depth = device.createTexture({ size: [2, 2], format: 'depth32float', usage: 4 | 16 });
-  const normal = device.createTexture({ size: [2, 2], format: 'r32uint', usage: 4 | 2 });
+  const normal = device.createTexture({ size: [2, 2], format: 'rg32uint', usage: 4 | 2 });
   device.queue.writeTexture(
     { texture: normal },
-    new Uint32Array(4).fill(2048 | (2048 << 12)),
-    { bytesPerRow: 8 },
+    gbufferNormalPixels(4),
+    { bytesPerRow: 16 },
     [2, 2],
   );
   const clear = device.createCommandEncoder();

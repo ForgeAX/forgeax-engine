@@ -1,3 +1,5 @@
+import { Time } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createFullscreenRenderFeature } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
@@ -39,17 +41,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     data: { shader: FULLSCREEN_MATERIAL_ID, data: initialParams },
   }).unwrap();
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fullscreen-material-intensity',
     queries: [],
     fn: (world) => {
-      const elapsed = world.hasResource('Time')
-        ? world.getResource<{ elapsed: number }>('Time').elapsed
+      const elapsed = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       const intensity = 0.002 + (0.014 * (Math.sin(elapsed * 2) + 1)) / 2;
       world.set(paramsEntity, PostProcessParams, { data: packFullscreenParams(intensity) });
     },
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-fullscreen-material] app error:', error.code, error.hint));
   const started = app.start();
   if (!started.ok) console.error('[bevy-fullscreen-material] app.start failed:', started.error);

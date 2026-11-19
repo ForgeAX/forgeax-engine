@@ -38,3 +38,31 @@ it('compares typed views by bytes, Maps by entries and skips top-level ignored k
   expect(sameValue({ layer: 1 }, {}, ignore)).toBe(true);
   expect(sameValue({ nested: { layer: 1 } }, { nested: { layer: 3 } }, ignore)).toBe(false);
 });
+
+it('records proven pairs, reuses them, and never records an ignore-key comparison', () => {
+  const shared = { entries: [{ a: 1 }, { b: [2, 3] }] };
+  const left = structuredClone(shared);
+  const proven = new Map<object, object>();
+  expect(sameValue(left, shared, undefined, proven)).toBe(true);
+  expect(proven.get(shared)).toBe(left);
+  expect(proven.get(shared.entries)).toBe(left.entries);
+  // A recorded pair ends the comparison without walking the subtree.
+  const keys = vi.fn();
+  const guarded = new Proxy(shared.entries, {
+    get(target, property, receiver) {
+      keys(property);
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  proven.set(guarded, left.entries);
+  expect(sameValue({ x: left.entries }, { x: guarded }, undefined, proven)).toBe(true);
+  expect(keys).not.toHaveBeenCalled();
+  // A different owned node is compared in full and a difference is found.
+  expect(sameValue({ entries: [{ a: 1 }, { b: [2, 4] }] }, shared, undefined, proven)).toBe(false);
+  // Equality that skipped keys is not recorded for the node.
+  const ignore = new Set(['layer']);
+  const top = { layer: 2, x: 1 };
+  const memo = new Map<object, object>();
+  expect(sameValue({ layer: 1, x: 1 }, top, ignore, memo)).toBe(true);
+  expect(memo.has(top)).toBe(false);
+});

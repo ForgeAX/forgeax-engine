@@ -151,7 +151,7 @@ const NOTHING: RowProjectionSync<never> = Object.freeze({
   cold: false,
 });
 
-const meshKey = (worldId: number, handle: number) => worldId * 0x1_0000_0000 + handle;
+const meshKey = (handle: number) => handle;
 
 /**
  * A secondary consumer's per-row projection of the retained scene, kept
@@ -185,7 +185,8 @@ export class RowProjection<T> {
   readonly #materialReaders = new Map<MaterialResource, Readers>();
   /** An adopted payload may arrive under a new resource: handles name every resource that carried them. */
   readonly #handleResources = new Map<number, Set<MaterialResource>>();
-  readonly #assetReaders = new Map<RenderResourceScope, Map<number, Readers>>();
+  readonly #assetReaders = new Map<number, Readers>();
+  #assetScope: RenderResourceScope | undefined;
   #visits = 0;
   #revision = 0;
   /** The slot being projected, for declared asset reads. */
@@ -240,6 +241,7 @@ export class RowProjection<T> {
     this.#materialReaders.clear();
     this.#handleResources.clear();
     this.#assetReaders.clear();
+    this.#assetScope = undefined;
     this.#revision++;
   }
 
@@ -253,6 +255,14 @@ export class RowProjection<T> {
         previous.revision === rows.revision)
     )
       return NOTHING;
+    if (previous !== undefined && previous.identity !== rows.identity) {
+      this.#links = new RowLinks();
+      this.#meshReaders.clear();
+      this.#materialReaders.clear();
+      this.#handleResources.clear();
+      this.#assetReaders.clear();
+      this.#assetScope = undefined;
+    }
     const dirty = new Set<number>();
     const linked =
       previous !== undefined &&
@@ -365,8 +375,7 @@ export class RowProjection<T> {
     if (previous.meshes !== rows.meshes)
       rows.meshes.changesSince(previous.meshes, (before, after) => {
         const geometry = after ?? before;
-        if (geometry !== undefined)
-          fireKey(this.#meshReaders, meshKey(geometry.worldId, geometry.handle));
+        if (geometry !== undefined) fireKey(this.#meshReaders, meshKey(geometry.handle));
       });
     if (previous.materials !== rows.materials)
       rows.materials.changesSince(previous.materials, (before, after) => {
@@ -381,23 +390,21 @@ export class RowProjection<T> {
         }
       });
     // O(distinct assets read), independent of the rows that share them.
-    for (const [scope, handles] of this.#assetReaders) {
-      for (const [handle, readers] of handles)
+    const scope = this.#assetScope;
+    if (scope !== undefined)
+      for (const [handle, readers] of this.#assetReaders)
         if (scope.assetRevision(handle) !== readers.revision) {
-          handles.delete(handle);
+          this.#assetReaders.delete(handle);
           fire(readers);
         }
-      if (handles.size === 0) this.#assetReaders.delete(scope);
-    }
     return true;
   }
 
   readonly #read: ReadAsset = (scope, handle) => {
-    let handles = this.#assetReaders.get(scope);
-    if (handles === undefined) {
-      handles = new Map();
-      this.#assetReaders.set(scope, handles);
-    }
+    this.#assetScope ??= scope;
+    if (this.#assetScope !== scope)
+      throw new Error('A row projection reads assets from its current source scope');
+    const handles = this.#assetReaders;
     const revision = scope.assetRevision(handle);
     let readers = handles.get(handle);
     if (readers === undefined) {
@@ -412,7 +419,7 @@ export class RowProjection<T> {
     this.#versions[slot] = record.version;
     const source = record.snapshot;
     if (source.assetHandle !== undefined) {
-      const key = meshKey(record.worldId, source.assetHandle);
+      const key = meshKey(source.assetHandle);
       let readers = this.#meshReaders.get(key);
       if (readers === undefined) {
         readers = readersOf();
@@ -424,7 +431,7 @@ export class RowProjection<T> {
     for (let index = 0; index < materials.length; index++)
       this.#linkMaterial(materials[index], slot);
     this.#linkMaterial(source.material, slot);
-    const geometry = rows.meshes.get(record.worldId, source.assetHandle);
+    const geometry = rows.meshes.get(source.assetHandle);
     if (geometry === undefined) return;
     for (const resource of geometry.materials) this.#linkMaterial(resource, slot);
     // Mesh defaults with per-row overrides resolve to their own effective bindings.

@@ -95,7 +95,7 @@ it('keeps the Render World entity count independent of the staged renderable row
   try {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     expect((await frame.value.completed).ok).toBe(true);
 

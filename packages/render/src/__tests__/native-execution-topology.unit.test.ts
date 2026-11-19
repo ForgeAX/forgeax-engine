@@ -16,6 +16,7 @@ import type {
 } from '../features/prepared-gpu-work';
 import type {
   RenderFeatureDrawRecord,
+  RenderFeatureGraphicsStorageBinding,
   RenderFeaturePreparedRef,
 } from '../features/prepared-graphics';
 import { createRenderFeatureTarget } from '../features/targets';
@@ -285,6 +286,50 @@ function compute(
   });
 }
 describe('native execution topology', () => {
+  it('compares graphics storage slots, access roles and captured physical buffers', () => {
+    const p = pool();
+    const original: readonly RenderFeatureGraphicsStorageBinding[] = [
+      { binding: 0, resource: 'material', access: 'read' },
+    ];
+    const graphicsStorage = (
+      entries = original,
+      buffer = p.materialBuffer,
+      size = 512,
+      physicalUsage = 255,
+    ) =>
+      pass(execution(p), 2, (row) => {
+        const snapshot = required(row.resolvedGraphics);
+        return {
+          ...row,
+          resolvedGraphics: {
+            ...snapshot,
+            resolve: (reference) => {
+              const resource = snapshot.resolve(reference);
+              return resource?.kind === 'bindings'
+                ? {
+                    ...resource,
+                    descriptor: { pipeline: p.pipeline, values: { bufferBindings: entries } },
+                  }
+                : resource;
+            },
+            resolveGpuResource: (name) =>
+              name === 'material' ? { buffer, size, physicalUsage } : undefined,
+          },
+        };
+      });
+    const before = graphicsStorage();
+    expect(same(before, graphicsStorage(original.map((entry) => ({ ...entry }))))).toBe(true);
+    for (const after of [
+      graphicsStorage([{ binding: 1, resource: 'material', access: 'read' }]),
+      graphicsStorage([{ binding: 0, resource: 'material', access: 'read-write' }]),
+      graphicsStorage([{ binding: 0, resource: 'foreign', access: 'read' }]),
+      graphicsStorage([]),
+      graphicsStorage(original, physical()),
+      graphicsStorage(original, p.materialBuffer, 256),
+      graphicsStorage(original, p.materialBuffer, 512, 1),
+    ])
+      expect(same(before, after)).toBe(false);
+  });
   it('shares fresh views/snapshot closures while excluding frame enablement and zero/nonzero direct counts', () => {
     const p = pool();
     const before = execution(p);
@@ -419,6 +464,47 @@ describe('native execution topology', () => {
           pass(before, 1, (p) => ({ ...p, resolvedGpuCopies })),
         ),
       ).toBe(false);
+  });
+  it('retains ordered texture readback names and targets while excluding frame enablement', () => {
+    const target = (name: string) =>
+      createRenderFeatureTarget({
+        name,
+        kind: 'scene-color',
+        format: 'rgba16float',
+        sampleCount: 1,
+      });
+    const readbacks = [
+      { name: 'first', target: target('color') },
+      { name: 'second', target: target('other') },
+    ];
+    const before = pass(execution(pool()), 1, (p) => ({ ...p, textureReadbacks: readbacks }));
+    expect(
+      same(
+        before,
+        pass(before, 1, (p) => ({
+          ...p,
+          enabled: false,
+          textureReadbacks: readbacks.map((r) => ({ ...r, target: target(r.target.name ?? '') })),
+        })),
+      ),
+    ).toBe(true);
+    for (const textureReadbacks of [
+      undefined,
+      readbacks.slice(1),
+      [...readbacks].reverse(),
+      readbacks.map((r, index) => (index === 0 ? { ...r, name: 'replacement' } : r)),
+      readbacks.map((r, index) => (index === 0 ? { ...r, target: target('replacement') } : r)),
+    ]) {
+      expect(
+        same(
+          before,
+          pass(before, 1, (p) => {
+            const { textureReadbacks: _readbacks, ...rest } = p;
+            return { ...rest, ...(textureReadbacks === undefined ? {} : { textureReadbacks }) };
+          }),
+        ),
+      ).toBe(false);
+    }
   });
   it('keeps ordered draw refs, slots, index format and indirect offsets in topology', () => {
     const p = pool();

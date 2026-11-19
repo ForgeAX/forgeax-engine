@@ -6,11 +6,42 @@ import {
   validateHostAssembly,
 } from '@forgeax/engine-host/protocol';
 
+export type DevKitWorkspacePage = NonNullable<DevKitHostBinding['workspace']> & {
+  readonly assembly?: HostAssembly;
+};
+
+/** One resource server admits pages; revoking a page never closes the server. */
+export class DevKitProjectPages {
+  private readonly pages = new Map<string, DevKitWorkspacePage>();
+  private readonly revoked = new Set<(page: DevKitWorkspacePage) => void>();
+  prepareGame: (() => Promise<HostAssembly>) | undefined;
+
+  register(page: DevKitWorkspacePage): () => void {
+    if (this.pages.has(page.sessionId)) hostBindingError('workspace page already admitted');
+    this.pages.set(page.sessionId, page);
+    return () => {
+      if (this.pages.get(page.sessionId) !== page) return;
+      this.pages.delete(page.sessionId);
+      for (const listener of this.revoked) listener(page);
+    };
+  }
+
+  resolve(sessionId: string | null): DevKitWorkspacePage | undefined {
+    return sessionId === null ? undefined : this.pages.get(sessionId);
+  }
+
+  onRevoke(listener: (page: DevKitWorkspacePage) => void): () => void {
+    this.revoked.add(listener);
+    return () => this.revoked.delete(listener);
+  }
+}
+
 /** A project server borrows transport and authority; it never disposes the owner. */
 export interface DevKitHostBinding {
   /** An author session consumes preview edits; saved sources still republish the Catalog. */
   readonly authoringSourceChanged?: (sourcePath: string) => boolean | Promise<boolean>;
   readonly backend: BackendHost;
+  readonly pages?: DevKitProjectPages;
   /** Optional connection projection; does not mutate the borrowed Host's assembly. */
   readonly frontendAssembly?: HostAssembly | undefined;
   /** Trusted immutable module supplied by the frontend owner, separate from wire program identity. */

@@ -456,13 +456,7 @@ Catalog revisions must fence asynchronous loads with its UI signal before refres
 
 Run `node packages/ui/scripts/bench-localization.mjs` after building to retain hardware,
 sampling conditions, initialization/lookup/refresh times and bundle bytes in
-`.forgeax-debug/g09/benchmark.json`. The template smoke also measures actual language
-actions and saves English/French screenshots. The production probe additionally switches
-the browser offline after loading; the development smoke retains its live HMR transport.
-After `forgeax project build --root templates/game-3d --out-dir .forgeax/g09-production`,
-run `node apps/preview/scripts/smoke-game3d-localization-production.mjs` from the repository
-root. This contributor gate serves only the built files, rejects external requests,
-requires 60 completed frames and a nonblank canvas, and saves offline action evidence.
+`.forgeax-debug/g09/benchmark.json`.
 
 HTML and CSS authoring parsers return `UiAuthoringParse`. Companion URL categories
 and precedence come from the authoring profile; blocking is derived from diagnostic

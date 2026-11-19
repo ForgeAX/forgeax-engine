@@ -41,7 +41,7 @@ function fixture() {
     calls++;
     return native(...args);
   };
-  return { cook: createMaterialPackVariantCompiler(compile), calls: () => calls };
+  return { cook: createMaterialPackVariantCompiler(compile).raster, calls: () => calls };
 }
 
 describe('Pack variant compilation ownership', () => {
@@ -81,7 +81,7 @@ describe('Pack variant compilation ownership', () => {
     expect(second.passes).toEqual(first.passes);
   });
 
-  it('owns cached metadata against edits to a returned pass or the original schema', async () => {
+  it('keeps cached metadata read-only and independent of the first caller', async () => {
     const f = fixture();
     const input = request('first');
     const first = (await f.cook(input, 'snapshot')).unwrap();
@@ -90,7 +90,9 @@ describe('Pack variant compilation ownership', () => {
     const next = (await f.cook(nextRequest, 'snapshot')).unwrap();
     expect(f.calls()).toBe(1);
     expect(next).toEqual((await cookMaterialAsset(nextRequest)).unwrap());
-    Object.assign(next.passes[0]?.paramSchema[0] ?? {}, { name: 'borrowed-edit' });
+    expect(() =>
+      Object.assign(next.passes[0]?.paramSchema[0] ?? {}, { name: 'borrowed-edit' }),
+    ).toThrow(TypeError);
     expect((await f.cook(request('third'), 'snapshot')).unwrap().passes).toEqual(
       (await cookMaterialAsset(request('third'))).unwrap().passes,
     );
@@ -191,6 +193,22 @@ describe('Pack variant compilation ownership', () => {
       expect(result.unwrap()).toEqual(
         (await cookMaterialAsset(requests[index] as MaterialCookRequest)).unwrap(),
       );
+  });
+
+  it('bounds compressed context retention and evicts the least recently used source identity', async () => {
+    const f = fixture();
+    const capacity = 256;
+    for (let index = 0; index <= capacity; index++)
+      expect((await f.cook(request(`bounded-${index}`), `namespace-${index}`)).ok).toBe(true);
+    expect(f.calls()).toBe(capacity + 1);
+    // The latest identity survives; the oldest must be admitted again even
+    // when compression makes all of these tiny programs fit the byte budget.
+    expect((await f.cook(request('latest'), `namespace-${capacity}`)).ok).toBe(true);
+    expect(f.calls()).toBe(capacity + 1);
+    expect((await f.cook(request('evicted'), 'namespace-0')).ok).toBe(true);
+    expect(f.calls()).toBe(capacity + 2);
+    expect((await f.cook(request('retained'), `namespace-${capacity - 1}`)).ok).toBe(true);
+    expect(f.calls()).toBe(capacity + 2);
   });
 
   it('lets concurrent requests retry after a shared compilation fails', async () => {

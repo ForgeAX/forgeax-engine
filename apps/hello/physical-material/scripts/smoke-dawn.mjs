@@ -20,6 +20,7 @@ import { buildFrameModel, decodeTape, readbackTexturePixels } from '@forgeax/eng
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { physicalMaterialChild, physicalMaterialRoots, withPhysicalMaterialModule } from '../src/material-contract.ts';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const caseInputPath = resolve(here, '..', 'evidence', 'case-input.json');
@@ -165,7 +166,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { resolveMaterialAsset } = await import('@forgeax/engine-types');
 const { Skin } = await import('@forgeax/engine-skinning');
 const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
-const productManifestBytes = readFileSync(manifestPath, 'utf8');
+const productManifestBytes = readShaderManifestText(manifestPath);
 const productManifest = await readShaderManifestPublication(JSON.parse(productManifestBytes));
 const shaderManifest = structuredClone(productManifest);
 const PHYSICAL_MATERIAL_MODULES = {
@@ -207,7 +208,7 @@ const additiveMutantShader = {
 // The expanded manifest repeats every Standard variant's full WGSL and exceeds
 // V8's string limit once URI-encoded, so the mutant stays in the deduplicated
 // publication form and only the clearcoat rows point at new mutated sources.
-const productManifestUrl = `data:application/json,${encodeURIComponent(productManifestBytes)}`;
+const productManifestUrl = processShaderManifestUrl(manifestPath);
 const mutantPublication = await createAdditiveCoatMutantPublication(
   JSON.parse(productManifestBytes), productShader.identifier, productShader.identifier,
 );
@@ -555,11 +556,7 @@ renderer.subscribe((event) => {
     }
   }
 });
-const frameRequest = {
-  leases: [attachment.value],
-  camera: { lease: attachment.value },
-  environment: { lease: attachment.value },
-};
+const frameRequest = { source: attachment.value };
 const observationHost = debugDrawHost;
 const expectedMaterials = () => [...directEntityByCaseId.values()].map((entityKey) => ({
   entityKey,
@@ -797,13 +794,12 @@ if (captureDirectory !== undefined) {
   const preview = Uint8Array.from({ length: WIDTH * HEIGHT * 4 }, (_, index) => {
     if (index % 4 === 3) return 255;
     const linear = Math.max(0, Math.min(1, halfFloat.f16ToF32(view.getUint16(index * 2, true))));
-    return Math.round((linearChannelToSrgb(linear)) * 255);
+    return Math.round(linearChannelToSrgb(linear) * 255);
   });
   writeFileSync(resolve(captureDirectory, 'direct-linear-hdr-preview.png'), encodePng(WIDTH, HEIGHT, preview));
   writeFileSync(resolve(captureDirectory, 'direct-linear-hdr.bin'), directPixels);
 }
 const directMaterialBindingReceipt = renderer.inspect().meshMaterialBindings.map((entry) => ({
-  worldId: entry.worldId,
   entityKey: entry.entityKey,
   bindings: entry.bindings,
   diagnostics: entry.diagnostics,
@@ -919,12 +915,12 @@ const pairedBaseColor = [1, 1, 1, 1];
 if (anchorEntity !== undefined) {
   world.set(anchorEntity, Transform, {
     pos: [0, 0, 0],
-    // Put the paired witness at a controlled 85-degree grazing angle. A
-    // head-on box makes the fixed-IOR clearcoat Fresnel only ~4%, so the
-    // additive mutant can be numerically hidden by a linear-HDR ROI mean even
-    // when the shader is genuinely different. This rotation keeps the same
-    // geometry and light while making the energy-layer falsifier observable.
-    quat: [0, 0.6755902, 0, 0.7372773],
+      // Put the paired witness at a controlled 85-degree grazing angle. A
+      // head-on box makes the fixed-IOR clearcoat Fresnel only ~4%, so the
+      // additive mutant can be numerically hidden by a linear-HDR ROI mean even
+      // when the shader is genuinely different. This rotation keeps the same
+      // geometry and light while making the energy-layer falsifier observable.
+      quat: [0, 0.6755902, 0, 0.7372773],
     scale: [1, 1, 1],
   }).unwrap();
 }
@@ -1101,11 +1097,7 @@ if (!mutantConstructed.ok) {
     errors.push('additive-mutant-attach-failed');
     mutantRenderer = undefined;
   } else {
-    mutantFrameRequest = {
-      leases: [mutantAttachment.value],
-      camera: { lease: mutantAttachment.value },
-      environment: { lease: mutantAttachment.value },
-    };
+    mutantFrameRequest = { source: mutantAttachment.value };
   }
 }
 const additiveMutation = await capturePairMaterial(
@@ -1340,7 +1332,8 @@ if (evidence.status === 'pass') emitSmokeReceipt('hello-physical-material/smoke'
 // Flush the complete receipt before terminating the native Dawn worker host.
 // A successful verdict otherwise leaves Dawn's event loop alive indefinitely.
 await new Promise((resolve, reject) =>
-  process.stdout.write(`${JSON.stringify(evidence)}\n`, (error) => (error ? reject(error) : resolve())),
+  process.stdout.write(`${JSON.stringify(evidence)}\n`, (error) =>error ? reject(error) : resolve(),
+  ),
 );
 restoreConsole();
 delete globalThis.navigator.gpu;

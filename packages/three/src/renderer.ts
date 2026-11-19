@@ -1,11 +1,20 @@
 import { createRhiInstrumentation } from '@forgeax/engine-app';
 import {
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+  AMBIENT_OCCLUSION_QUALITY_LOW,
+  AMBIENT_OCCLUSION_QUALITY_MEDIUM,
+  AmbientOcclusion,
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
+  BLOOM_ENABLED,
+  buildCubeCameraFaceViews,
   type FrameReceipt,
   type FrameReceiptObservation,
+  PlanarReflection,
+  type PlanarReflectionData,
   type Renderer,
   type RendererOptions,
+  type RenderTargetWrite,
   type RenderWorldLease,
 } from '@forgeax/engine-render';
 import {
@@ -20,13 +29,17 @@ import {
   type BundlerOptions,
   constructRuntimeRendererHost,
 } from '@forgeax/engine-runtime/internal/renderer-host';
+import CanvasTarget from 'three/src/renderers/common/CanvasTarget.js';
 import type Color4 from 'three/src/renderers/common/Color4.js';
+import type { RenderItem } from 'three/src/renderers/common/Renderer.js';
 import type { WebGPURendererParameters as UpstreamParameters } from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import {
   type BufferGeometry,
   type Camera,
   Color,
   type ColorRepresentation,
+  CubeCamera,
+  CubeTexture,
   HalfFloatType,
   Line,
   LinearToneMapping,
@@ -37,6 +50,7 @@ import {
   PCFShadowMap,
   PerspectiveCamera,
   Points,
+  type RenderTarget,
   Scene,
   type ShadowMapType,
   Sprite,
@@ -44,16 +58,20 @@ import {
   Texture,
   type ToneMapping,
   UnsignedByteType,
-  type Vector2,
+  Vector2,
   Vector4,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
-import { cameraData } from './camera';
+import { cameraData, writeSceneClearColor } from './camera';
 import { invalid, ThreeCompatibilityError, unsupported } from './errors';
 import { ExternalTextures, isExternalTexture } from './external-textures';
 import { materialTextures, validateMaterial } from './material';
 import { prepareMaterialPrograms } from './material-programs';
-import { threePipeline } from './pipeline';
+import { surfaceInput } from './node-inputs';
+import { createThreePipeline } from './pipeline';
+import { renderThreePostProcessing, type ThreePostProcessing } from './post-processing';
+import { RenderTargets } from './render-targets';
+import { forwardRendererEvents, type RendererCallbacks } from './renderer-events';
 import { SceneProjection, type ThreeSourceIdentity } from './scene';
 
 export interface WebGPURendererParameters extends Omit<UpstreamParameters, 'canvas'> {
@@ -76,6 +94,19 @@ export interface ThreeFrameCapture {
   readonly observation: FrameReceiptObservation;
 }
 
+/** Settings for a native capture owned by a projected display camera. */
+export type ThreePlanarReflectionOptions = Partial<Omit<PlanarReflectionData, 'target'>>;
+const configurePlanarReflection = Symbol('configurePlanarReflection');
+
+/** ForgeaX integration entry; source cameras retain the upstream Three contract. */
+export function setThreePlanarReflection(
+  renderer: WebGPURenderer,
+  camera: Camera,
+  options: ThreePlanarReflectionOptions | null,
+): void {
+  renderer[configurePlanarReflection](camera, options);
+}
+
 function value<T>(
   result:
     | { readonly ok: true; readonly value: T }
@@ -85,9 +116,62 @@ function value<T>(
   return result.value;
 }
 
+async function targetWork<T>(work: Promise<T>, deadline: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new ThreeCompatibilityError(
+                'renderer-not-ready',
+                'RenderTarget preparation deadline',
+                'Inspect the native receipt preparation blocker.',
+              ),
+            ),
+          Math.max(0, deadline - Date.now()),
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Three's authoring objects, one Forgeax Renderer, and no upstream GPU renderer. */
 export class WebGPURenderer {
+  private planarReflections?: WeakMap<Camera, ThreePlanarReflectionOptions>;
+
+  [configurePlanarReflection](camera: Camera, options: ThreePlanarReflectionOptions | null): void {
+    const { projection } = this.ready();
+    const entity = projection.entityFor(camera);
+    const world = projection.world;
+    if (entity !== undefined && world.hasComponent(entity, PlanarReflection)) {
+      world.removeComponent(entity, PlanarReflection).unwrap();
+    }
+    if (options === null) {
+      this.planarReflections?.delete(camera);
+      return;
+    }
+    this.planarReflections ??= new WeakMap();
+    this.planarReflections.set(camera, {
+      ...options,
+      ...(options.normal === undefined ? {} : { normal: new Float32Array(options.normal) }),
+    });
+  }
+
   readonly domElement: HTMLCanvasElement | OffscreenCanvas;
+  onDeviceLost: RendererCallbacks['onDeviceLost'] = (info) => {
+    console.error(`THREE.WebGPURenderer: ${info.message}`, info);
+  };
+  onError: RendererCallbacks['onError'] = (info) => {
+    console.error(`THREE.WebGPURenderer: Uncaptured ${info.api} ${info.type}: ${info.message}`);
+  };
+  private textureInitializationRetries: WeakMap<Texture, number> | undefined;
+  private opaqueSort: ((a: RenderItem, b: RenderItem) => number) | null = null;
+  private transparentSort: ((a: RenderItem, b: RenderItem) => number) | null = null;
   autoClear = true;
   autoClearColor = true;
   autoClearDepth = true;
@@ -95,8 +179,9 @@ export class WebGPURenderer {
   sortObjects = true;
   transparent = true;
   opaque = true;
-  readonly shadowMap: { enabled: boolean; type: ShadowMapType } = {
+  readonly shadowMap: { enabled: boolean; transmitted: boolean; type: ShadowMapType } = {
     enabled: false,
+    transmitted: false,
     type: PCFShadowMap,
   };
   readonly coordinateSystem = WebGPUCoordinateSystem;
@@ -108,6 +193,10 @@ export class WebGPURenderer {
   readonly logarithmicDepthBuffer = false;
   readonly alpha: boolean;
   private sampleCount = 0;
+  private renderTarget: RenderTarget | null = null;
+  private asyncTargetOperation = false;
+  private activeCubeFace = 0;
+  private activeMipmapLevel = 0;
   private readonly outputType: typeof HalfFloatType | typeof UnsignedByteType;
   toneMapping: ToneMapping = NoToneMapping;
   toneMappingExposure = 1;
@@ -120,17 +209,16 @@ export class WebGPURenderer {
         projection: SceneProjection;
         lease: RenderWorldLease;
         external: ExternalTextures;
+        targets: RenderTargets;
+        unsubscribe: () => void;
       }
     | undefined;
   private disposed = false;
   private disposing: Promise<void> | undefined;
   private captureAbort: AbortController | undefined;
-  private pixelRatio = 1;
-  private readonly viewport = new Vector4();
-  private readonly scissor = new Vector4();
-  private scissorTest = false;
-  private width: number;
-  private height: number;
+  private canvasTarget: CanvasTarget;
+  private readonly canvasSize = new Vector2();
+  private readonly canvasRectangle = new Vector4();
   private readonly clearColorValue = new Color(0);
   private clearAlpha = 1;
   private get antialias(): number {
@@ -180,10 +268,7 @@ export class WebGPURenderer {
     if (parameters.canvas === undefined && typeof document === 'undefined')
       unsupported('WebGPURenderer requires canvas outside a browser').unwrap();
     this.domElement = parameters.canvas ?? document.createElement('canvas');
-    this.width = this.domElement.width;
-    this.height = this.domElement.height;
-    this.viewport.set(0, 0, this.width, this.height);
-    this.scissor.copy(this.viewport);
+    this.canvasTarget = new CanvasTarget(this.domElement);
     this.recorder = attachRecorder(parameters.forgeax?.backend ?? webgpu).unwrap();
     this.initializing = this.initialize(
       parameters.forgeax,
@@ -205,7 +290,7 @@ export class WebGPURenderer {
           this.domElement,
           {
             ...options?.renderer,
-            pipeline: threePipeline(format),
+            pipeline: createThreePipeline(format),
             rhi: this.recorder.backend.rhi,
             rhiInstrumentation: createRhiInstrumentation(this.recorder),
           },
@@ -219,13 +304,16 @@ export class WebGPURenderer {
         return;
       }
       const external = new ExternalTextures(native);
+      const targets = new RenderTargets(native);
       projection = new SceneProjection(
         host.assets,
         external,
         await prepareMaterialPrograms(host.assets, options?.materialPrograms),
+        { targets },
       );
       const lease = value(native.attach(projection.world));
-      this.runtime = { native, projection, lease, external };
+      const unsubscribe = forwardRendererEvents(native, this);
+      this.runtime = { native, projection, lease, external, targets, unsubscribe };
     } catch (error) {
       try {
         projection?.dispose();
@@ -264,44 +352,107 @@ export class WebGPURenderer {
     return this.getOutputBufferType();
   }
   get currentToneMapping(): ToneMapping {
-    return this.toneMapping;
+    return this.renderTarget === null ? this.toneMapping : NoToneMapping;
   }
   get currentColorSpace(): string {
-    return this.outputColorSpace;
+    return (
+      this.renderTarget?.texture.colorSpace ||
+      (this.renderTarget === null ? this.outputColorSpace : 'srgb-linear')
+    );
   }
   get isOutputTarget(): boolean {
-    return true;
+    return this.renderTarget === null;
   }
   get needsFrameBufferTarget(): boolean {
     return true;
   }
   get currentSamples(): number {
-    return 0;
+    return this.renderTarget?.samples ?? this.samples;
   }
   getActiveCubeFace(): number {
-    return 0;
+    return this.activeCubeFace;
   }
   getActiveMipmapLevel(): number {
-    return 0;
+    return this.activeMipmapLevel;
+  }
+
+  getCanvasTarget(): CanvasTarget {
+    return this.canvasTarget;
+  }
+
+  setCanvasTarget(target: CanvasTarget): void {
+    this.assertNotCapturing();
+    this.validateCanvasTarget(target);
+    this.applyCanvasExtent(target);
+    this.canvasTarget = target;
+  }
+
+  private fullCanvasRectangle(rectangle: Vector4): boolean {
+    const size = this.canvasTarget.getSize(this.canvasSize);
+    return (
+      rectangle.x === 0 && rectangle.y === 0 && rectangle.z === size.x && rectangle.w === size.y
+    );
+  }
+
+  /** Direct edits to the public target must pass the same admission as renderer setters. */
+  private validateCanvasTarget(target: CanvasTarget): void {
+    if (target.domElement !== this.domElement)
+      unsupported(
+        'CanvasTarget switching to another canvas requires native surface rebinding',
+      ).unwrap();
+    const size = target.getSize(this.canvasSize);
+    const ratio = target.getPixelRatio();
+    if (
+      !Number.isFinite(size.x) ||
+      !Number.isFinite(size.y) ||
+      !Number.isFinite(ratio) ||
+      size.x <= 0 ||
+      size.y <= 0 ||
+      ratio <= 0
+    )
+      invalid('CanvasTarget size/pixelRatio').unwrap();
+    this.validateCanvasViewport(target, size.x, size.y);
+    const scissor = target.getScissor(this.canvasRectangle);
+    if (
+      target.getScissorTest() &&
+      (scissor.x !== 0 || scissor.y !== 0 || scissor.z !== size.x || scissor.w !== size.y)
+    )
+      unsupported('Partial scissor requires native per-draw scissor state').unwrap();
+  }
+
+  private validateCanvasViewport(target: CanvasTarget, width: number, height: number): void {
+    // r187's backend reads this same source-owned viewport for depth bounds.
+    const viewport = (
+      target as CanvasTarget & {
+        _viewport: Vector4 & { minDepth?: number; maxDepth?: number };
+      }
+    )._viewport;
+    if (
+      viewport.x !== 0 ||
+      viewport.y !== 0 ||
+      viewport.z !== width ||
+      viewport.w !== height ||
+      (viewport.minDepth ?? 0) !== 0 ||
+      (viewport.maxDepth ?? 1) !== 1
+    )
+      unsupported('Partial viewport/depth ranges require native per-draw viewport state').unwrap();
+  }
+
+  private applyCanvasExtent(target: CanvasTarget): void {
+    const size = target.getDrawingBufferSize(this.canvasSize);
+    if (this.domElement.width !== size.x) this.domElement.width = size.x;
+    if (this.domElement.height !== size.y) this.domElement.height = size.y;
   }
 
   setSize(width: number, height: number, updateStyle = true): void {
     this.assertNotCapturing();
     if (![width, height].every((dimension) => Number.isFinite(dimension) && dimension > 0))
       invalid('Renderer.setSize').unwrap();
-    this.width = width;
-    this.height = height;
-    this.viewport.set(0, 0, width, height);
-    this.domElement.width = Math.floor(width * this.pixelRatio);
-    this.domElement.height = Math.floor(height * this.pixelRatio);
-    if (updateStyle && 'style' in this.domElement) {
-      this.domElement.style.width = `${width}px`;
-      this.domElement.style.height = `${height}px`;
-    }
+    this.canvasTarget.setSize(width, height, updateStyle && 'style' in this.domElement);
   }
 
   getViewport(target: Vector4): Vector4 {
-    return target.copy(this.viewport);
+    return this.canvasTarget.getViewport(target);
   }
   setViewport(
     x: number | Vector4,
@@ -313,56 +464,50 @@ export class WebGPURenderer {
   ): void {
     this.assertNotCapturing();
     const rectangle = typeof x === 'number' ? new Vector4(x, y, width, height) : x;
-    if (
-      minDepth !== 0 ||
-      maxDepth !== 1 ||
-      !rectangle.equals(new Vector4(0, 0, this.width, this.height))
-    )
+    if (minDepth !== 0 || maxDepth !== 1 || !this.fullCanvasRectangle(rectangle))
       unsupported('Partial viewport/depth ranges require native per-draw viewport state').unwrap();
-    this.viewport.copy(rectangle);
+    this.canvasTarget.setViewport(rectangle);
   }
   getScissor(target: Vector4): Vector4 {
-    return target.copy(this.scissor);
+    return this.canvasTarget.getScissor(target);
   }
   setScissor(x: number | Vector4, y?: number, width?: number, height?: number): void {
     this.assertNotCapturing();
     const rectangle = typeof x === 'number' ? new Vector4(x, y, width, height) : x;
     if (!rectangle.toArray().every(Number.isFinite)) invalid('Renderer.setScissor').unwrap();
-    if (this.scissorTest && !rectangle.equals(new Vector4(0, 0, this.width, this.height)))
+    if (this.getScissorTest() && !this.fullCanvasRectangle(rectangle))
       unsupported('Partial scissor requires native per-draw scissor state').unwrap();
-    this.scissor.copy(rectangle);
+    this.canvasTarget.setScissor(rectangle);
   }
   getScissorTest(): boolean {
-    return this.scissorTest;
+    return this.canvasTarget.getScissorTest();
   }
   setScissorTest(enabled: boolean): void {
     this.assertNotCapturing();
-    if (enabled && !this.scissor.equals(new Vector4(0, 0, this.width, this.height)))
+    if (enabled && !this.fullCanvasRectangle(this.getScissor(this.canvasRectangle)))
       unsupported('Partial scissor requires native per-draw scissor state').unwrap();
-    this.scissorTest = enabled;
+    this.canvasTarget.setScissorTest(enabled);
   }
 
   getSize(target: Vector2): Vector2 {
-    return target.set(this.width, this.height);
+    return this.canvasTarget.getSize(target);
   }
   getDrawingBufferSize(target: Vector2): Vector2 {
-    return target.set(this.domElement.width, this.domElement.height);
+    return this.canvasTarget.getDrawingBufferSize(target);
   }
   setDrawingBufferSize(width: number, height: number, pixelRatio: number): void {
     this.assertNotCapturing();
     if (![width, height, pixelRatio].every((value) => Number.isFinite(value) && value > 0))
       invalid('Renderer.setDrawingBufferSize').unwrap();
-    this.pixelRatio = pixelRatio;
-    this.setSize(width, height, false);
+    this.canvasTarget.setDrawingBufferSize(width, height, pixelRatio);
   }
   getPixelRatio(): number {
-    return this.pixelRatio;
+    return this.canvasTarget.getPixelRatio();
   }
   setPixelRatio(ratio = 1): void {
     this.assertNotCapturing();
     if (!Number.isFinite(ratio) || ratio <= 0) invalid('Renderer.setPixelRatio').unwrap();
-    this.pixelRatio = ratio;
-    this.setSize(this.width, this.height, false);
+    this.canvasTarget.setPixelRatio(ratio);
   }
   setClearColor(color: ColorRepresentation, alpha = 1): void {
     this.assertAlive();
@@ -371,6 +516,7 @@ export class WebGPURenderer {
   }
   getClearColor(target: Color4): Color4;
   getClearColor<T extends Color>(target: T): T;
+  getClearColor(target: Color): Color;
   getClearColor<T extends Color>(target: T): T {
     target.copy(this.clearColorValue);
     if ('a' in target) target.a = this.clearAlpha;
@@ -426,30 +572,112 @@ export class WebGPURenderer {
 
   clear(color = true, depth = true, stencil = true): void {
     this.assertNotCapturing();
+    if (this.asyncTargetOperation)
+      invalid('Await the active target operation before clearing').unwrap();
+    if (this.renderTarget === null) {
+      this.validateCanvasTarget(this.canvasTarget);
+      this.applyCanvasExtent(this.canvasTarget);
+    }
     if (!color && (!this.depth || !depth) && (!this.stencil || !stencil)) return;
-    if (!color || (this.depth && !depth) || (this.stencil && !stencil))
+    if (
+      this.renderTarget === null &&
+      (!color || (this.depth && !depth) || (this.stencil && !stencil))
+    )
       unsupported('Partial clears require native attachment load/store control').unwrap();
     const { projection } = this.ready();
     const camera = new PerspectiveCamera();
-    const entity = projection.sync(new Scene(), camera, {
-      ...cameraData(
-        camera,
-        this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
-        this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
-      ),
-      antialias: this.antialias,
-      clearColor: new Float32Array([...this.clearColorValue.toArray(), this.clearAlpha]),
-    });
-    this.submit(entity);
+    const entity = projection.sync(
+      new Scene(),
+      camera,
+      {
+        ...cameraData(
+          camera,
+          this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
+          this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
+        ),
+        antialias: this.antialias,
+        clearColor: new Float32Array([...this.clearColorValue.toArray(), this.clearAlpha]),
+      },
+      {
+        deferResourceSweep: true,
+        depth: this.depth,
+        stencil: this.stencil,
+        sortObjects: false,
+        opaque: false,
+        transparent: false,
+        updateMatrices: true,
+      },
+    );
+    const receipt = this.submit(entity, this.targetWrite(true, color, depth, stencil));
+    if (this.renderTarget !== null && receipt.presentation !== 'ready')
+      throw new ThreeCompatibilityError(
+        'renderer-not-ready',
+        'RenderTarget clear preparation',
+        'Await clearAsync before consuming this target.',
+      );
   }
   async clearAsync(color = true, depth = true, stencil = true): Promise<void> {
+    const target = this.renderTarget,
+      face = this.activeCubeFace,
+      mip = this.activeMipmapLevel;
     await this.init();
-    this.clear(color, depth, stencil);
+    if (
+      target !== this.renderTarget ||
+      face !== this.activeCubeFace ||
+      mip !== this.activeMipmapLevel
+    )
+      invalid('Render target changed during clearAsync; await the active operation').unwrap();
+    const deadline = Date.now() + 20000;
+    for (;;) {
+      if (
+        target !== this.renderTarget ||
+        face !== this.activeCubeFace ||
+        mip !== this.activeMipmapLevel
+      )
+        invalid('Render target changed during clearAsync; await the active operation').unwrap();
+      try {
+        this.clear(color, depth, stencil);
+        break;
+      } catch (error) {
+        if (
+          !(error instanceof ThreeCompatibilityError) ||
+          error.code !== 'renderer-not-ready' ||
+          Date.now() >= deadline
+        )
+          throw error;
+        const receipt = this.receipt;
+        if (receipt !== undefined) {
+          value(await targetWork(receipt.completed, deadline));
+          if (receipt.preparationCompleted !== undefined)
+            value(await targetWork(receipt.preparationCompleted, deadline));
+        }
+      }
+    }
+    if (this.renderTarget !== null && this.receipt !== undefined)
+      value(await targetWork(this.receipt.completed, deadline));
   }
 
   render(scene: Object3D, camera: Camera): void {
+    this.renderScene(scene, camera);
+  }
+
+  [renderThreePostProcessing](scene: Object3D, camera: Camera, post: ThreePostProcessing): void {
+    if (this.renderTarget !== null)
+      unsupported('EffectComposer requires the renderer display target').unwrap();
+    this.renderScene(scene, camera, post);
+  }
+
+  private renderScene(scene: Object3D, camera: Camera, post?: ThreePostProcessing): void {
     this.assertNotCapturing();
-    this.submit(this.prepare(scene, camera));
+    if (this.asyncTargetOperation)
+      invalid('Await the active target operation before rendering').unwrap();
+    const receipt = this.submit(this.prepare(scene, camera, false, post));
+    if (this.renderTarget !== null && receipt.presentation !== 'ready')
+      throw new ThreeCompatibilityError(
+        'renderer-not-ready',
+        'RenderTarget preparation',
+        'Await renderAsync(scene, camera) before consuming this target. No deferred scene draw is queued.',
+      );
     this.sceneCallback(scene, camera, 'onAfterRender');
   }
 
@@ -509,6 +737,7 @@ export class WebGPURenderer {
     options: CaptureFrameOptions = {},
   ): Promise<ThreeFrameCapture> {
     this.assertNotCapturing();
+    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
     const entity = this.prepare(scene, camera);
     const { native, projection } = this.ready();
     const sources = projection.sources();
@@ -553,13 +782,19 @@ export class WebGPURenderer {
       await this.initializing.catch(() => undefined);
       const runtime = this.runtime;
       this.runtime = undefined;
+      runtime?.unsubscribe();
       runtime?.lease.dispose();
       runtime?.projection.dispose();
       runtime?.external.dispose();
+      runtime?.targets.dispose();
       try {
         if (runtime !== undefined) value(await runtime.native.dispose());
       } finally {
-        (await this.recorder.dispose()).unwrap();
+        try {
+          (await this.recorder.dispose()).unwrap();
+        } finally {
+          this.canvasTarget.dispose();
+        }
       }
     })();
     return this.disposing;
@@ -574,7 +809,40 @@ export class WebGPURenderer {
   }
 
   async renderAsync(scene: Object3D, camera: Camera): Promise<void> {
+    const target = this.renderTarget,
+      face = this.activeCubeFace,
+      mip = this.activeMipmapLevel;
     await this.init();
+    if (
+      target !== this.renderTarget ||
+      face !== this.activeCubeFace ||
+      mip !== this.activeMipmapLevel
+    )
+      invalid('Render target changed during renderAsync; await the active operation').unwrap();
+    this.assertNotCapturing();
+    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
+    await this.prepareAsyncScene(scene, camera);
+    if (
+      target !== this.renderTarget ||
+      face !== this.activeCubeFace ||
+      mip !== this.activeMipmapLevel
+    )
+      invalid('Render target changed during renderAsync; await the active operation').unwrap();
+    this.assertNotCapturing();
+    if (this.renderTarget === null) this.submit(this.prepare(scene, camera, true));
+    else {
+      if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
+      this.asyncTargetOperation = true;
+      try {
+        await this.submitTargetReady(scene, camera);
+      } finally {
+        this.asyncTargetOperation = false;
+      }
+    }
+    this.sceneCallback(scene, camera, 'onAfterRender');
+  }
+
+  private async prepareAsyncScene(scene: Object3D, camera: Camera): Promise<void> {
     this.updateScene(scene, camera);
     scene.traverseVisible((object) => {
       if (object instanceof LOD && object.autoUpdate && object.layers.test(camera.layers))
@@ -612,10 +880,11 @@ export class WebGPURenderer {
           scene instanceof Scene && material.allowOverride && scene.overrideMaterial !== null
             ? scene.overrideMaterial
             : material;
-        // Overrides inherit coverage from the original material in r184.
+        // Overrides inherit coverage from the original material in r187.
         const textures = materialTextures(validateMaterial(effective).unwrap());
         if (
           effective !== material &&
+          surfaceInput(effective, 'opacityNode') === null &&
           'alphaMap' in material &&
           material.alphaMap instanceof Texture
         )
@@ -625,18 +894,215 @@ export class WebGPURenderer {
       }
     });
     await Promise.all(pending);
+  }
+
+  /** Full-target raw readback. Region copies and depth readback are explicit gaps. */
+  async readRenderTargetPixelsAsync(
+    target: RenderTarget,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    textureIndex = 0,
+    activeCubeFace = 0,
+  ): Promise<Uint8Array | Uint16Array> {
+    await this.init();
     this.assertNotCapturing();
-    this.submit(this.prepare(scene, camera, true));
-    this.sceneCallback(scene, camera, 'onAfterRender');
+    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
+    if (x !== 0 || y !== 0 || width !== target.width || height !== target.height)
+      unsupported('RenderTarget readback currently requires the complete mip-0 extent').unwrap();
+    if (textureIndex !== 0) unsupported('RenderTarget readback MRT attachment index').unwrap();
+    const buffer =
+      target.texture.type === HalfFloatType
+        ? new Uint16Array(width * height * 4)
+        : new Uint8Array(width * height * 4);
+    const previous = this.renderTarget,
+      face = this.activeCubeFace,
+      mip = this.activeMipmapLevel;
+    try {
+      this.setRenderTarget(target, activeCubeFace, 0);
+      const { native, targets, projection } = this.ready();
+      const nativeTarget = targets.target(target);
+      const layer =
+        target.texture instanceof CubeTexture && activeCubeFace < 2
+          ? 1 - activeCubeFace
+          : activeCubeFace;
+      const ticket = value(native.requestTargetReadback(nativeTarget, { mipLevel: 0, layer }));
+      const camera = new PerspectiveCamera();
+      const entity = projection.sync(new Scene(), camera, cameraData(camera, LinearToneMapping, 1));
+      const receipt = this.submit(entity, this.targetWrite(true, false, false, false));
+      value(await receipt.completed);
+      if (receipt.presentation !== 'ready')
+        throw new ThreeCompatibilityError(
+          'renderer-not-ready',
+          'RenderTarget readback preparation',
+          'Complete a target renderAsync before readback.',
+        );
+      const observed = value(
+        await native.observe(receipt, { include: ['target-readbacks'], targetReadbacks: [ticket] }),
+      );
+      const image = observed.targetReadbacks?.[0];
+      if (image === undefined) throw new Error('missing target readback');
+      const rowBytes = width * (target.texture.type === HalfFloatType ? 8 : 4);
+      const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      for (let row = 0; row < height; row++)
+        destination.set(
+          image.bytes.subarray(row * image.bytesPerRow, row * image.bytesPerRow + rowBytes),
+          row * rowBytes,
+        );
+      return buffer;
+    } finally {
+      this.setRenderTarget(previous, face, mip);
+    }
+  }
+
+  /** Six ordered native face writes followed by one native IBL filter. */
+  async captureCubeAsync(camera: CubeCamera, scene: Scene): Promise<void> {
+    if (camera.activeMipmapLevel !== 0)
+      unsupported(
+        'Cube environment capture requires mip 0; use explicit target writes for other mips',
+        camera.uuid,
+      ).unwrap();
+    await this.init();
+    this.assertNotCapturing();
+    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
+    const target = this.renderTarget,
+      face = this.activeCubeFace,
+      mip = this.activeMipmapLevel;
+    if (camera.parent === null) camera.updateMatrixWorld();
+    if (camera.coordinateSystem !== this.coordinateSystem) {
+      camera.coordinateSystem = this.coordinateSystem;
+      camera.updateCoordinateSystem();
+    }
+    const cubeTarget = camera.renderTarget;
+    const texture = cubeTarget.texture;
+    const generateMipmaps = texture.generateMipmaps;
+    texture.generateMipmaps = false;
+    try {
+      camera.updateWorldMatrix(true, false);
+      const world = camera.matrixWorld.elements;
+      if (
+        world.some(
+          (value, index) =>
+            index !== 12 &&
+            index !== 13 &&
+            index !== 14 &&
+            Math.abs(value - (index % 5 === 0 ? 1 : 0)) > 1e-6,
+        )
+      )
+        unsupported(
+          'Native cube capture accepts world translation; rotation/scale require an explicit environment transform',
+          camera.uuid,
+        ).unwrap();
+      const source = camera.children[0];
+      if (!(source instanceof PerspectiveCamera))
+        invalid('CubeCamera requires its original PerspectiveCamera children').unwrap();
+      const near = (source as PerspectiveCamera).near,
+        far = (source as PerspectiveCamera).far;
+      if (!Number.isFinite(near) || near <= 0 || !Number.isFinite(far) || far <= near)
+        invalid('CubeCamera near/far').unwrap();
+      const original = new CubeCamera(near, far, cubeTarget);
+      original.coordinateSystem = this.coordinateSystem;
+      original.updateCoordinateSystem();
+      if (
+        camera.children.length !== 6 ||
+        camera.children.some((child, index) => {
+          const expected = original.children[index];
+          return (
+            !(child instanceof PerspectiveCamera) ||
+            expected === undefined ||
+            child.fov !== -90 ||
+            child.aspect !== 1 ||
+            child.near !== near ||
+            child.far !== far ||
+            child.zoom !== 1 ||
+            child.view !== null ||
+            child.filmOffset !== 0 ||
+            !child.position.equals(expected.position) ||
+            !child.scale.equals(expected.scale) ||
+            !child.quaternion.equals(expected.quaternion) ||
+            child.layers.mask !== camera.layers.mask
+          );
+        })
+      )
+        unsupported(
+          'CubeCamera requires six original, matching face lenses and transforms',
+          camera.uuid,
+        ).unwrap();
+      const faces = buildCubeCameraFaceViews({
+        position: [world[12] ?? 0, world[13] ?? 0, world[14] ?? 0],
+        near,
+        far,
+      });
+      const { lease, targets } = this.ready();
+      this.renderTarget = cubeTarget;
+      this.activeMipmapLevel = 0;
+      this.asyncTargetOperation = true;
+      let projected: PerspectiveCamera;
+      await targets.captureEnvironment(cubeTarget, {
+        prepareFace: async (layer) => {
+          const view = faces[layer];
+          if (view === undefined) throw new Error('Missing cube camera face');
+          this.activeCubeFace = layer < 2 ? 1 - layer : layer;
+          projected = new PerspectiveCamera(90, 1, near, far);
+          projected.layers.mask = camera.layers.mask;
+          projected.matrixAutoUpdate = false;
+          projected.matrix.fromArray(Array.from(view.view)).invert();
+          projected.matrixWorld.copy(projected.matrix);
+          await this.prepareAsyncScene(scene, projected);
+          const entity = this.prepare(scene, projected, true);
+          return {
+            source: lease,
+            camera: { entityKey: entity },
+            geometryLane: 'direct',
+            clearColor: this.autoClear && this.autoClearColor,
+            clearDepth: this.autoClear && this.autoClearDepth,
+            clearStencil: this.autoClear && this.autoClearStencil,
+          };
+        },
+        onFaceSubmitted: (_layer, receipt) => {
+          this.noteSubmission(receipt);
+          this.sceneCallback(scene, projected, 'onAfterRender');
+        },
+      });
+    } finally {
+      this.asyncTargetOperation = false;
+      texture.generateMipmaps = generateMipmaps;
+      this.renderTarget = target;
+      this.activeCubeFace = face;
+      this.activeMipmapLevel = mip;
+    }
+  }
+
+  /** Explicit GPU cube radiance -> native diffuse/PMREM, with no CPU readback. */
+  async prepareEnvironment(texture: Texture): Promise<void> {
+    await this.init();
+    this.assertNotCapturing();
+    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
+    await this.ready().targets.prepareEnvironment(texture);
   }
 
   async initTextureAsync(texture: Texture): Promise<void> {
     await this.init();
-    if (!isExternalTexture(texture))
-      return unsupported(
-        'initTexture for asset textures requires native eager upload admission',
-      ).unwrap();
-    await this.ready().external.initialize(texture);
+    if (isExternalTexture(texture)) await this.ready().external.initialize(texture);
+    else this.initTexture(texture);
+  }
+
+  initTexture(texture: Texture): void {
+    this.assertNotCapturing();
+    if (isExternalTexture(texture))
+      unsupported('External textures require await initTextureAsync()', texture.uuid).unwrap();
+    const { projection, native } = this.ready();
+    const prepared = projection.prepareTexture(texture);
+    const result = native.prepareTextureResidency(projection.world, prepared.handle);
+    if (!result.ok) {
+      this.textureInitializationRetries ??= new WeakMap();
+      this.textureInitializationRetries.set(texture, texture.version);
+      throw result.error;
+    }
+    const retry = this.textureInitializationRetries?.get(texture) === texture.version;
+    this.textureInitializationRetries?.delete(texture);
+    projection.textureInitialized(texture, prepared.uploaded || retry);
   }
 
   hasFeature(name: string): boolean {
@@ -647,16 +1113,81 @@ export class WebGPURenderer {
     return this.hasFeature(name);
   }
 
+  /** Legacy declaration API: waits for physical completion of prior queue work. */
+  async waitForGPU(): Promise<void> {
+    await value(this.ready().native.nativeDevice()).queue.onSubmittedWorkDone();
+  }
+
+  hasCompatibility(name: string): boolean {
+    // Comparison sampling is part of this WebGPU route; unknown hints are never granted.
+    value(this.ready().native.nativeDevice());
+    return name === 'texture-compare';
+  }
+
+  setOpaqueSort(method: ((a: RenderItem, b: RenderItem) => number) | null): void {
+    this.assertNotCapturing();
+    this.opaqueSort = method;
+  }
+
+  setTransparentSort(method: ((a: RenderItem, b: RenderItem) => number) | null): void {
+    this.assertNotCapturing();
+    this.transparentSort = method;
+  }
+
+  resetState(): void {
+    // WebGPU state belongs to individual passes. Native recording binds every pass anew.
+    this.ready();
+  }
+
   getMaxAnisotropy(): number {
     this.ready();
     return 16;
   }
 
-  setRenderTarget(target: null): void {
-    if (target !== null) unsupported('Renderer.setRenderTarget').unwrap();
-  }
-  getRenderTarget(): null {
+  /** Default-state edges used by RendererUtils; GPU overrides remain explicit gaps. */
+  getMRT(): null {
     return null;
+  }
+  setMRT(
+    value: Parameters<import('three/src/renderers/common/Renderer.js').default['setMRT']>[0],
+  ): this {
+    if (value !== null) unsupported('Renderer.setMRT').unwrap();
+    return this;
+  }
+  getRenderObjectFunction(): null {
+    return null;
+  }
+  setRenderObjectFunction(
+    value: Parameters<
+      import('three/src/renderers/common/Renderer.js').default['setRenderObjectFunction']
+    >[0],
+  ): void {
+    if (value !== null) unsupported('Renderer.setRenderObjectFunction').unwrap();
+  }
+  setRenderTarget(
+    target: import('three/src/Three.Core.js').RenderTarget | null,
+    activeCubeFace = 0,
+    activeMipmapLevel = 0,
+  ): void {
+    this.assertNotCapturing();
+    if (this.asyncTargetOperation)
+      invalid('Await the active target operation before switching targets').unwrap();
+    if (target !== null) this.ready().targets.target(target);
+    if (
+      !Number.isInteger(activeCubeFace) ||
+      activeCubeFace < 0 ||
+      activeCubeFace > 5 ||
+      !Number.isSafeInteger(activeMipmapLevel) ||
+      activeMipmapLevel < 0
+    )
+      invalid('Renderer.setRenderTarget face/mip selectors').unwrap();
+    // r187 retains these selectors even on the default framebuffer; they do not select a GPU subresource there.
+    this.renderTarget = target;
+    this.activeCubeFace = activeCubeFace;
+    this.activeMipmapLevel = activeMipmapLevel;
+  }
+  getRenderTarget(): RenderTarget | null {
+    return this.renderTarget;
   }
 
   private sceneCallback(
@@ -664,7 +1195,8 @@ export class WebGPURenderer {
     camera: Camera,
     event: 'onBeforeRender' | 'onAfterRender',
   ): void {
-    if (scene instanceof Scene) Reflect.apply(scene[event], scene, [this, scene, camera, null]);
+    if (scene instanceof Scene)
+      Reflect.apply(scene[event], scene, [this, scene, camera, this.renderTarget]);
   }
 
   private updateScene(scene: Object3D, camera: Camera): void {
@@ -682,19 +1214,24 @@ export class WebGPURenderer {
     this.sceneCallback(scene, camera, 'onBeforeRender');
   }
 
-  private prepare(scene: Object3D, camera: Camera, updated = false) {
+  private prepare(scene: Object3D, camera: Camera, updated = false, post?: ThreePostProcessing) {
     const { projection, native } = this.ready();
+    if (this.shadowMap.transmitted)
+      unsupported('Transmitted-color shadow maps require native colored shadow transport').unwrap();
     if (
-      !this.autoClear ||
-      !this.autoClearColor ||
-      (this.depth && !this.autoClearDepth) ||
-      (this.stencil && !this.autoClearStencil)
+      this.renderTarget === null &&
+      (!this.autoClear ||
+        !this.autoClearColor ||
+        (this.depth && !this.autoClearDepth) ||
+        (this.stencil && !this.autoClearStencil))
     )
       unsupported('Renderer partial/no-clear rendering').unwrap();
     if (this.outputColorSpace !== SRGBColorSpace && this.outputColorSpace !== 'display-p3')
       unsupported('Renderer.outputColorSpace outside sRGB/Display P3').unwrap();
-    if (this.scissorTest && !this.scissor.equals(new Vector4(0, 0, this.width, this.height)))
-      unsupported('Partial scissor requires native per-draw scissor state').unwrap();
+    if (this.renderTarget === null) {
+      this.validateCanvasTarget(this.canvasTarget);
+      this.applyCanvasExtent(this.canvasTarget);
+    }
     value(
       native.setOutputColorSpace(this.outputColorSpace === 'display-p3' ? 'display-p3' : 'srgb'),
     );
@@ -704,46 +1241,145 @@ export class WebGPURenderer {
       this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
       this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
     );
-    const background =
-      scene instanceof Scene && scene.background instanceof Color
-        ? scene.background
-        : this.clearColorValue;
-    return projection.sync(
+    const entity = projection.sync(
       scene,
       camera,
       {
         ...data,
+        ...(post?.bloom === undefined
+          ? {}
+          : {
+              bloom: BLOOM_ENABLED,
+              bloomIntensity: post.bloom.intensity,
+              bloomRadius: post.bloom.radius,
+              bloomThreshold: post.bloom.threshold,
+            }),
         antialias: this.antialias,
-        clearColor: new Float32Array([
-          ...background.toArray(),
-          scene instanceof Scene && scene.background instanceof Color ? 1 : this.clearAlpha,
-        ]),
+        clearColor: writeSceneClearColor(
+          new Float32Array(4),
+          scene,
+          this.clearColorValue,
+          this.clearAlpha,
+        ),
       },
       {
-        depth: this.depth,
-        stencil: this.stencil,
+        deferResourceSweep: this.renderTarget !== null,
+        pixelRatio: this.getPixelRatio(),
+        depth: this.renderTarget?.depthBuffer ?? this.depth,
+        stencil: this.renderTarget?.stencilBuffer ?? this.stencil,
         sortObjects: this.sortObjects,
+        transparentSort: this.transparentSort,
+        opaqueOrder: true,
+        opaqueSort: this.opaqueSort,
         opaque: this.opaque,
         transparent: this.transparent,
         updateMatrices: false,
         shadowMap: { ...this.shadowMap, cameraLayers: camera.layers.mask },
       },
     );
+    this.projectCameraEffects(projection, entity, camera, post);
+    return entity;
   }
 
-  private submit(entity: ReturnType<SceneProjection['sync']>): FrameReceipt {
+  private projectCameraEffects(
+    projection: SceneProjection,
+    entity: ReturnType<SceneProjection['sync']>,
+    camera: Camera,
+    post: ThreePostProcessing | undefined,
+  ): void {
+    const hasAO = projection.world.hasComponent(entity, AmbientOcclusion);
+    if (post?.ao !== undefined) {
+      const { samples, ...settings } = post.ao;
+      const quality =
+        samples === undefined || samples > 16
+          ? AMBIENT_OCCLUSION_QUALITY_HIGH
+          : samples > 8
+            ? AMBIENT_OCCLUSION_QUALITY_MEDIUM
+            : AMBIENT_OCCLUSION_QUALITY_LOW;
+      const data = { ...settings, quality };
+      if (hasAO) projection.world.set(entity, AmbientOcclusion, data).unwrap();
+      else projection.world.addComponent(entity, { component: AmbientOcclusion, data }).unwrap();
+    } else if (hasAO) {
+      projection.world.removeComponent(entity, AmbientOcclusion).unwrap();
+    }
+    const reflection = this.renderTarget === null ? this.planarReflections?.get(camera) : undefined;
+    if (reflection !== undefined && !projection.world.hasComponent(entity, PlanarReflection)) {
+      projection.world
+        .addComponent(entity, { component: PlanarReflection, data: reflection })
+        .unwrap();
+    }
+  }
+
+  private targetWrite(
+    clearOnly = false,
+    color = this.autoClear && this.autoClearColor,
+    depth = this.autoClear && this.autoClearDepth,
+    stencil = this.autoClear && this.autoClearStencil,
+  ): RenderTargetWrite | undefined {
+    const target = this.renderTarget;
+    if (target === null) return undefined;
+    const cube = target.texture instanceof CubeTexture;
+    if (
+      (!cube && this.activeCubeFace !== 0) ||
+      this.activeMipmapLevel > Math.floor(Math.log2(Math.max(target.width, target.height)))
+    )
+      invalid('Renderer target face/mip extent').unwrap();
+    return {
+      target: this.ready().targets.target(target),
+      layer: cube && this.activeCubeFace < 2 ? 1 - this.activeCubeFace : this.activeCubeFace,
+      mipLevel: this.activeMipmapLevel,
+      clearColor: color,
+      clearDepth: depth,
+      clearStencil: stencil,
+      clearOnly,
+    };
+  }
+
+  private async submitTargetReady(scene: Object3D, camera: Camera): Promise<void> {
+    const deadline = Date.now() + 20000;
+    const entity = this.prepare(scene, camera, true);
+    const write = this.targetWrite();
+    for (;;) {
+      const receipt = this.submit(entity, write);
+      const completed = await targetWork(receipt.completed, deadline);
+      value(completed);
+      if (receipt.presentation === 'ready') return;
+      if (Date.now() >= deadline)
+        throw new ThreeCompatibilityError(
+          'renderer-not-ready',
+          'RenderTarget preparation deadline',
+          'Inspect the native receipt preparation blocker.',
+        );
+      if (receipt.preparationCompleted !== undefined)
+        value(await targetWork(receipt.preparationCompleted, deadline));
+      else await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  private submit(
+    entity: ReturnType<SceneProjection['sync']>,
+    targetWrite = this.targetWrite(),
+  ): FrameReceipt {
     const { native, lease } = this.ready();
     const receipt = value(
       native.draw({
-        leases: [lease],
-        camera: { lease, entityKey: entity },
-        environment: { lease },
+        source: lease,
+        camera: { entityKey: entity },
         geometryLane: 'direct',
+        ...(targetWrite === undefined ? {} : { targetWrite }),
       }),
     );
-    this.receipt = receipt;
-    if (receipt.presentation === 'ready') this.ready().projection.submitted();
+    this.noteSubmission(receipt);
     return receipt;
+  }
+
+  private noteSubmission(receipt: FrameReceipt): void {
+    this.receipt = receipt;
+    if (receipt.presentation === 'ready') {
+      this.ready().projection.submitted();
+      if (this.renderTarget !== null && this.activeMipmapLevel === 0)
+        this.ready().targets.submitted(this.renderTarget);
+    }
   }
 
   private assertAlive(): void {

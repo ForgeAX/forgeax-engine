@@ -6,6 +6,7 @@ import {
   createAutoExposureGpuResources,
   importAutoExposureGraphResources,
   retireAutoExposureGpuResources,
+  submitAutoExposureGpuFrame,
   writeAutoExposureParameters,
 } from '../pipeline/standard-output/auto-exposure/gpu';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
@@ -203,18 +204,9 @@ export async function runPortableExposure(
   width: number,
   height: number,
   inputPixels?: Float32Array,
+  deltas: readonly number[] = [1 / 60],
 ) {
   const gpu = createAutoExposureGpuResources(device, 7, execution).unwrap();
-  writeAutoExposureParameters(gpu, {
-    compensationEv: 0,
-    rangeMinEv: -8,
-    rangeMaxEv: 8,
-    upRate: 3,
-    downRate: 1,
-    deltaTime: 1 / 60,
-    fallback: 1,
-    generation: 7,
-  }).unwrap();
   const source = device
     .createTexture({
       format: 'rgba32float',
@@ -256,10 +248,12 @@ export async function runPortableExposure(
       height,
     },
   ).unwrap();
-  const readback = device.createBuffer({ size: 1040, usage: 1 | 8 }).unwrap();
+  const readbackSize = 1024 + 16 * deltas.length;
+  const readback = device.createBuffer({ size: readbackSize, usage: 1 | 8 }).unwrap();
   const output = graph
-    .importBuffer('fixture-readback', { size: 1040, usage: 1 | 8 }, () => readback)
+    .importBuffer('fixture-readback', { size: readbackSize, usage: 1 | 8 }, () => readback)
     .unwrap();
+  let frameIndex = 0;
   graph
     .addCopyPass('fixture-readback', {
       accesses: [
@@ -268,22 +262,36 @@ export async function runPortableExposure(
         { resource: output, usage: 'copy-dst' },
       ],
       encodeDirect: (encoder) => {
-        encoder.copyBufferToBuffer(gpu.histogram, 0, readback, 0, 1024);
-        encoder.copyBufferToBuffer(gpu.candidate, 0, readback, 1024, 16);
+        if (frameIndex === 0) encoder.copyBufferToBuffer(gpu.histogram, 0, readback, 0, 1024);
+        encoder.copyBufferToBuffer(gpu.candidate, 0, readback, 1024 + 16 * frameIndex, 16);
       },
     })
     .unwrap();
   const compiled = graph.compile({ device, surfaceSize: { width, height } }).unwrap();
   try {
-    const encoder = device.createCommandEncoder().unwrap();
-    const executed = compiled.execute({
-      runtime: runtime(device, factory),
-      encoder,
-      bindGroupCounts: { createBindGroup: 0, keys: [] },
-      frameState: { autoExposureGpuResources: gpu },
-    } as unknown as RenderPipelineFrame);
-    if (!executed.ok) throw new Error(JSON.stringify(executed.error));
-    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    for (const [index, deltaTime] of deltas.entries()) {
+      frameIndex = index;
+      writeAutoExposureParameters(gpu, {
+        compensationEv: 0,
+        rangeMinEv: -8,
+        rangeMaxEv: 8,
+        upRate: 3,
+        downRate: 1,
+        deltaTime,
+        fallback: 1,
+        generation: 7,
+      }).unwrap();
+      const encoder = device.createCommandEncoder().unwrap();
+      const executed = compiled.execute({
+        runtime: runtime(device, factory),
+        encoder,
+        bindGroupCounts: { createBindGroup: 0, keys: [] },
+        frameState: { autoExposureGpuResources: gpu },
+      } as unknown as RenderPipelineFrame);
+      if (!executed.ok) throw new Error(JSON.stringify(executed.error));
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      submitAutoExposureGpuFrame(gpu, () => {});
+    }
     await device.queue.onSubmittedWorkDone();
     const mapped = (await readback.mapAsync(1)).unwrap();
     const bytes = mapped.getMappedRange().unwrap().slice(0);
@@ -291,6 +299,7 @@ export async function runPortableExposure(
     return {
       histogram: [...new Uint32Array(bytes, 0, 256)],
       candidate: [...new Float32Array(bytes, 1024, 4)],
+      timeline: deltas.map((_, index) => new Float32Array(bytes, 1024 + index * 16, 1)[0]),
       pixels,
     };
   } finally {

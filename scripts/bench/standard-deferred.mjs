@@ -192,7 +192,7 @@ async function frame(x) {
   let t, submitted, receipt;
   for (;;) {
     t = performance.now();
-    receipt = value(renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }));
+    receipt = value(renderer.draw({ source: lease }));
     submitted = performance.now();
     if (receipt.presentation === 'ready') break;
     value(await receipt.completed);

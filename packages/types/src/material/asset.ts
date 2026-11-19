@@ -1,9 +1,13 @@
 import type { AssetHandle } from '../asset-handle.js';
 import type { AssetGuid } from '../index.js';
 import type { ParamSchemaEntry } from '../material-contracts.js';
-import { isMaterialProgramBindingContract } from '../material-program-abi.js';
+import {
+  isMaterialPostProcessContract,
+  isMaterialProgramBindingContract,
+} from '../material-program-abi.js';
 import { err, ok, type Result } from '../result.js';
 import type { MaterialColorSpace } from './color-space.js';
+import { isMaterialDeformationDeclaration } from './deformation.js';
 import {
   createMaterialError,
   MATERIAL_ERROR_EXPECTED,
@@ -12,6 +16,7 @@ import {
   type MaterialError,
 } from './errors.js';
 import type { MaterialParticleInput } from './particle-input.js';
+import { materialPassTags } from './pass-tags.js';
 import {
   MATERIAL_STATIC_SWITCH_NAMES,
   type MaterialStaticSwitches,
@@ -176,14 +181,19 @@ export function resolveMaterialTextureCoordinates(
   };
 }
 
-export type MaterialTextureReference = AssetGuid | AssetHandle<'texture' | 'video'> | string;
+export type MaterialTextureReference =
+  | AssetGuid
+  | AssetHandle<'texture' | 'gpu-texture' | 'video'>
+  | string;
 
 /** Copyable reference to one native texture producer; its owner retains native lifetime. */
 export interface RenderTextureSourceToken {
   readonly kind: 'render-texture-source';
   readonly owner: string;
   readonly id: number;
-  readonly source: 'target' | 'canvas' | 'external';
+  readonly source: 'target' | 'canvas' | 'external' | 'feature';
+  /** Named generation-owned texture when source is feature. */
+  readonly name?: string;
 }
 
 export type MaterialTextureValue = {
@@ -198,9 +208,14 @@ export type MaterialTextureValue = {
 export type MaterialValue = boolean | number | readonly number[] | string | MaterialTextureValue;
 
 export interface MaterialProgram {
+  /** The program writes the complete versioned Standard GBuffer. */
+  readonly gbuffer?: import('../material-program-abi.js').MaterialGBufferLayout;
+  /** The program evaluates height fog at vertices and applies it before color blending. */
+  readonly forwardFog?: 'height-vertex/1';
   /** Defaults to the ordinary Render material interface. Cook checks reflected resources. */
   readonly bindings?: import('../material-program-abi.js').MaterialProgramBindingContract;
   readonly sceneDepth?: import('../material-program-abi.js').MaterialSceneDepth;
+  readonly postProcess?: import('../material-program-abi.js').MaterialPostProcessContract;
   readonly module: string;
   readonly vertexEntry?: string;
   readonly fragmentEntry?: string;
@@ -392,16 +407,38 @@ function assertMaterialStaticSwitches(staticSwitches: unknown): void {
   }
 }
 
+function assertMaterialModuleSlots(moduleSlots: unknown, context: string, index: number): void {
+  if (moduleSlots === undefined) return;
+  if (!isRecord(moduleSlots)) {
+    throw new Error(`${context}: pass ${index} has malformed module slots`);
+  }
+  for (const [name, slot] of Object.entries(moduleSlots)) {
+    if (typeof slot !== 'string')
+      throw new Error(`${context}: module slot ${name} is not a string`);
+  }
+}
+
 function assertMaterialProgram(
   program: Record<string, unknown>,
   context: string,
   index: number,
 ): void {
+  if (program.gbuffer !== undefined && program.gbuffer !== 'standard-gbuffer/2')
+    throw new Error(`${context}: pass ${index} has an unsupported Standard GBuffer contract`);
+  if (program.forwardFog !== undefined && program.forwardFog !== 'height-vertex/1')
+    throw new Error(`${context}: pass ${index} has an unsupported Forward fog contract`);
   if (typeof program.module !== 'string' || program.module.length === 0) {
     throw new Error(`${context}: pass ${index} has no module identity`);
   }
   if (program.bindings !== undefined && !isMaterialProgramBindingContract(program.bindings))
     throw new Error(`${context}: pass ${index} has an invalid binding contract`);
+  if (
+    (program.bindings === 'post-process') !== (program.postProcess !== undefined) ||
+    (program.postProcess !== undefined && !isMaterialPostProcessContract(program.postProcess))
+  )
+    throw new Error(
+      `${context}: pass ${index} requires a supported explicit post-process stage and color contract`,
+    );
   if (
     program.sceneDepth !== undefined &&
     program.sceneDepth !== 'read-only' &&
@@ -414,14 +451,7 @@ function assertMaterialProgram(
   ) {
     throw new Error(`${context}: pass ${index} has malformed entry points`);
   }
-  if (program.moduleSlots === undefined) return;
-  if (!isRecord(program.moduleSlots)) {
-    throw new Error(`${context}: pass ${index} has malformed module slots`);
-  }
-  for (const [name, slot] of Object.entries(program.moduleSlots)) {
-    if (typeof slot !== 'string')
-      throw new Error(`${context}: module slot ${name} is not a string`);
-  }
+  assertMaterialModuleSlots(program.moduleSlots, context, index);
 }
 
 function assertMaterialPasses(passes: unknown, context: string): void {
@@ -436,6 +466,7 @@ function assertMaterialPasses(passes: unknown, context: string): void {
     const outputs = validateMaterialOutputs(pass.outputs, context, pass.name);
     if (!outputs.ok) throw Object.assign(new Error(outputs.error.expected), outputs.error);
     assertMaterialProgram(pass.program, context, index);
+    materialPassTags(pass);
   }
 }
 
@@ -522,6 +553,9 @@ function assertMaterialSurface(surface: unknown, context: string): void {
   }
   if (typeof surface.module !== 'string' || surface.module.length === 0) {
     throw new Error(`${context}: Surface module must be a non-empty string`);
+  }
+  if (surface.deformation !== undefined && !isMaterialDeformationDeclaration(surface.deformation)) {
+    throw new Error(`${context}: invalid root deformation version, module or input layout`);
   }
   if (surface.dynamicInput === undefined) return;
   const dynamic = surface.dynamicInput;

@@ -28,7 +28,6 @@ function scene(entities: readonly { key: number; x: number; mesh?: object; mater
   const sources = entities.map(
     (e, i) =>
       ({
-        worldId: 0,
         entityKey: e.key,
         slot: e.key,
         generation: 1,
@@ -69,7 +68,7 @@ it('replaces managed Mesh field rows when an in-place publication preserves payl
     const current = capture();
     const edit = diffFieldEdit(state, { sources: [current], instances: base.instances });
     expect(edit.removed.map((row) => row.index)).toEqual([0]);
-    expect(edit.added.map((row) => row.id)).toEqual(['0:1:1:1:0']);
+    expect(edit.added.map((row) => row.id)).toEqual(['1:1:1:0']);
     adoptFieldEdit(state, edit, [0]);
     expect(diffFieldEdit(state, { sources: [current], instances: base.instances })).toEqual(none);
   } finally {
@@ -162,12 +161,12 @@ it('diffs new identities as adds and owns them at the rows the field assigns', (
   expect(edit.moved).toEqual([]);
   expect(edit.removed).toEqual([]);
   expect(edit.rematerialized).toEqual([]);
-  expect(edit.added.map((a) => [a.id, a.instance.instanceId])).toEqual([['0:3:3:1:0', 1]]);
+  expect(edit.added.map((a) => [a.id, a.instance.instanceId])).toEqual([['3:3:1:0', 1]]);
   // Only the add's own box changes the Global SDF.
   expect(fieldEditBounds(edit)).toEqual([{ min: [8.5, -0.5, -0.5], max: [9.5, 0.5, 0.5] }]);
   expect(() => adoptFieldEdit(state, edit)).toThrow(/one row each/);
   adoptFieldEdit(state, edit, [7]);
-  expect(state.get('0:3:3:1:0')?.index).toBe(7);
+  expect(state.get('3:3:1:0')?.index).toBe(7);
   expect(diffFieldEdit(state, added)).toEqual(none);
 });
 
@@ -198,11 +197,11 @@ it('diffs material-only changes in place and mesh changes as removal plus add', 
   ]);
   const replaced = diffFieldEdit(state, remeshed);
   expect(replaced.removed.map((r) => r.index)).toEqual([0]);
-  expect(replaced.added.map((a) => a.id)).toEqual(['0:1:1:1:0']);
+  expect(replaced.added.map((a) => a.id)).toEqual(['1:1:1:0']);
   expect(replaced.rematerialized).toEqual([]);
   // The replacement may reuse its own freed row.
   adoptFieldEdit(state, replaced, [0]);
-  expect(state.get('0:1:1:1:0')?.index).toBe(0);
+  expect(state.get('1:1:1:0')?.index).toBe(0);
   expect(diffFieldEdit(state, remeshed)).toEqual(none);
 });
 
@@ -307,7 +306,7 @@ it('updates the SDF exterior proof from adopted rows without scanning clean entr
   expect(fieldOutsideEmpty(state, grid)).toBe(true);
   const enumerate = vi.spyOn(state, 'values');
   const moved = scene([{ key: 7, x: 2 }]);
-  const changedSources = [{ worldId: 0, slot: 7 }];
+  const changedSources = [{ slot: 7 }];
   adoptFieldEdit(state, diffFieldEdit(state, { ...moved, changedSources }));
   expect(fieldOutsideEmpty(state, grid)).toBe(false);
   adoptFieldEdit(state, diffFieldEdit(state, { sources: [], instances: [], changedSources }));

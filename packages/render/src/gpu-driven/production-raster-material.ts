@@ -99,7 +99,6 @@ interface SurfaceFrameRange {
   readonly frameIndex: number;
   readonly range?: DynamicInputRange;
   readonly directMember?: {
-    readonly worldId: number;
     readonly entityKey: number;
     readonly drawItemIndex: number;
     readonly instanceOrdinal: number;
@@ -455,6 +454,8 @@ export function requestMaterialAbiRasterPipeline(
       receipt,
       surfaceDiscards,
       artifact.fragmentEntry,
+      artifact.program,
+      input.renderState?.alphaToCoverageEnabled === true,
     ),
     undefined,
     materialAbiRasterConstants(input.standardTextureMask, surfaceDiscards),
@@ -1048,7 +1049,7 @@ export class MaterialAbiRasterAdapter {
     for (const entry of frameRanges) {
       const member = entry.directMember;
       if (member === undefined) continue;
-      const key = JSON.stringify([member.worldId, member.entityKey, member.drawItemIndex]);
+      const key = JSON.stringify([member.entityKey, member.drawItemIndex]);
       const group = members.get(key);
       if (group === undefined) members.set(key, [entry]);
       else group.push(entry);
@@ -1123,7 +1124,6 @@ export class MaterialAbiRasterAdapter {
   }
 
   directSurfaceInstances(input: {
-    readonly worldId: number;
     readonly entityKey: number;
     readonly drawItemIndex: number;
     readonly instanceCount: number;
@@ -1148,7 +1148,7 @@ export class MaterialAbiRasterAdapter {
         ),
       );
     }
-    const drawKey = JSON.stringify([input.worldId, input.entityKey, input.drawItemIndex]);
+    const drawKey = JSON.stringify([input.entityKey, input.drawItemIndex]);
     const firstInstanceOrdinal = input.firstInstanceOrdinal ?? 0;
     const key = `${drawKey}:${firstInstanceOrdinal}`;
     const address = this.directAddresses.get(key);
@@ -1193,7 +1193,7 @@ export class MaterialAbiRasterAdapter {
       });
     }
     const created = this.device.createBindGroup({
-      label: `surface-direct-instances-${input.worldId}-${input.entityKey}-${input.drawItemIndex}`,
+      label: `surface-direct-instances--${input.entityKey}-${input.drawItemIndex}`,
       layout,
       entries: [
         { binding: 0, resource: bufferBinding(input.instanceBuffer) },
@@ -1687,6 +1687,8 @@ export class MaterialAbiRasterAdapter {
       receipt,
       surfaceDiscards,
       selectedArtifact.fragmentEntry,
+      selectedArtifact.program,
+      pipelineRenderState?.alphaToCoverageEnabled === true,
     );
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.
@@ -2013,7 +2015,6 @@ interface ProjectedSurfaceFrameRange {
   readonly range?: DynamicInputRange;
   readonly directMember: {
     readonly worldIdentity: string;
-    readonly worldId: number;
     readonly entityKey: number;
     readonly drawItemIndex: number;
     readonly instanceOrdinal: number;
@@ -2055,7 +2056,7 @@ function buildProjectedSurfaceFrameRanges(
     for (const candidate of prepared.batch.candidates) {
       const index = nextIndex++;
       const slot = scene.slotAt(candidate.primitiveIndex);
-      const worldIdentity = slot === undefined ? undefined : scene.worldIdentities?.[slot.worldId];
+      const worldIdentity = slot === undefined ? undefined : scene.sourceIdentity;
       const frameIndex = firstRow + index;
       if (slot === undefined || worldIdentity === undefined) {
         return err(
@@ -2071,7 +2072,6 @@ function buildProjectedSurfaceFrameRanges(
         frameIndex,
         directMember: {
           worldIdentity,
-          worldId: slot.worldId,
           entityKey: slot.entityKey,
           drawItemIndex: prepared.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
           instanceOrdinal: candidate.instanceOrdinal,
@@ -2281,7 +2281,6 @@ export class SurfaceFrameProjectionOwner {
     for (let index = 0; index < directInput.instanceCount; index += 1) {
       const instanceOrdinal = firstInstanceOrdinal + index;
       const memberId = this.memberId(
-        directInput.worldId,
         directInput.entityKey,
         directInput.drawItemIndex,
         instanceOrdinal,
@@ -2290,7 +2289,7 @@ export class SurfaceFrameProjectionOwner {
         return err(
           surfaceDynamicInputError(
             'every direct Surface command resolves the retained public member identity',
-            `rebuild the Surface projection for world=${directInput.worldId}, entity=${directInput.entityKey}, draw=${directInput.drawItemIndex}, instance=${instanceOrdinal}`,
+            `rebuild the Surface projection for world=, entity=${directInput.entityKey}, draw=${directInput.drawItemIndex}, instance=${instanceOrdinal}`,
           ),
         );
       }
@@ -2321,15 +2320,9 @@ export class SurfaceFrameProjectionOwner {
           );
   }
 
-  memberId(
-    worldId: number,
-    entityKey: number,
-    drawItemIndex: number,
-    instanceOrdinal: number,
-  ): string | undefined {
+  memberId(entityKey: number, drawItemIndex: number, instanceOrdinal: number): string | undefined {
     const frameRange = this.surfaceFrameRangeCache?.value.ranges.find(
       ({ directMember }) =>
-        directMember.worldId === worldId &&
         directMember.entityKey === entityKey &&
         directMember.drawItemIndex === drawItemIndex &&
         directMember.instanceOrdinal === instanceOrdinal,

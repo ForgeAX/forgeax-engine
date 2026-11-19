@@ -267,7 +267,7 @@ it.each([
           (await recorder.frameBoundary()).unwrap();
         const frame = await drawReadyFrame(
           renderer,
-          { leases: [lease], camera: { lease }, environment: { lease } },
+          { source: lease },
           last ? ['linear-hdr'] : undefined,
         );
         if (capture !== undefined && artifactDir !== undefined && recorder !== undefined) {

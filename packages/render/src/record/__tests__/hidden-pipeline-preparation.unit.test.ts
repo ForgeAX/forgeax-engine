@@ -1,4 +1,8 @@
-import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  DEFAULT_VERTEX_ATTRIBUTE_MAP,
+  deriveVertexLayoutProjection,
+} from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import {
   createMaterialShaderProgram,
@@ -7,7 +11,12 @@ import {
   STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
+import { DeviceScope } from '../../device/device-scope';
+import { MorphGeometry } from '../../device/morph-geometry';
+import { createPointsLinesSnapshot, type PointsLinesStyle } from '../../points-lines/snapshot';
+import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchEntry } from '../../render-system-extract';
+import { morphSnapshotFor } from '../../render-system-extract-tail';
 import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
@@ -380,6 +389,142 @@ it('shares one PSO between receiver and nonreceiver draws of a program during pr
     expect(constants.length).toBeGreaterThan(0);
     expect(constants.every((value) => value === undefined)).toBe(true);
     expect(f.receipts).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});
+
+it.each([
+  'entry',
+  'view',
+])('prepares idle morph metadata from its %s scope for a selected explicit pass', async (scope) => {
+  const f = await setup();
+  const device = f.c.runtime.device;
+  const box = createBoxGeometry(1, 1, 1).unwrap();
+  const mesh = {
+    ...box,
+    morphTargets: [
+      { position: new Float32Array((box.attributes.position as Float32Array).length) },
+    ],
+  };
+  expect(morphSnapshotFor(mesh, [0])).toBeUndefined();
+  const morphGeometry = new MorphGeometry();
+  Object.assign(f.c.runtime, {
+    deviceScope: DeviceScope.create(0, 'hidden-morph'),
+    immediateShaderModuleFactory: {
+      createShaderModule: (desc: { code: string }) => rhi.createShaderModuleImmediate(device, desc),
+    },
+  });
+  Object.assign(f.c, { store: { morphGeometry } });
+  Object.assign(f.entry.source, { assetHandle: 1 });
+  Object.assign(scope === 'entry' ? f.entry : f.c, {
+    world: { resolveAsset: () => ({ ok: true, value: mesh }) } as unknown as RenderResourceScope,
+  });
+  const pipelines = vi.spyOn(device, 'createComputePipeline');
+  const buffers = vi.spyOn(device, 'createBuffer');
+  const encoders = vi.spyOn(device, 'createCommandEncoder');
+  try {
+    f.acceptMaterials();
+    prepareMainPassPipelines(f.c, { LightMode: ['Unmatched'] }, {}, 1, ['rgba8unorm']);
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, {}, 1, ['rgba8unorm'], () => true);
+    expect(pipelines).not.toHaveBeenCalled();
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, {}, 1, ['rgba8unorm']);
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, {}, 1, ['rgba8unorm']);
+    expect(pipelines).toHaveBeenCalledOnce();
+    expect(buffers).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(morphGeometry.size).toBe(0);
+    expect(f.entry.source.authorVisible).toBe(false);
+    expect(f.entry.source.morph).toBeUndefined();
+  } finally {
+    morphGeometry.dispose(() => {});
+    f.dispose();
+  }
+});
+
+it.each([
+  { style: { kind: 'points', size: 4, sizeUnits: 'pixels', shape: 'circle' }, fragment: undefined },
+  { style: { kind: 'lines', width: 2, widthUnits: 0, cap: 0 }, fragment: undefined },
+  { style: { kind: 'lines', width: 2, widthUnits: 0, cap: 1 }, fragment: 'fs_round' },
+] as const)('prepares $style.kind using its expanded triangle ABI ($fragment)', async ({
+  style,
+  fragment,
+}) => {
+  const f = await setup();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry').mockReturnValueOnce(null);
+  const buffers = vi.spyOn(f.c.runtime.device, 'createBuffer');
+  const encoders = vi.spyOn(f.c.runtime.device, 'createCommandEncoder');
+  Object.assign(f.entry.source, {
+    shadowCaster: false,
+    pointsLines: createPointsLinesSnapshot({
+      entityKey: f.entry.source.entityKey,
+      component: style.kind === 'points' ? 'Points' : 'Lines',
+      meshHandle: 1,
+      materialHandle: 7,
+      style: style as PointsLinesStyle,
+      layer: 0,
+      visible: false,
+      sourceBounds: [0, 0, 0, 1, 1, 1],
+      viewport: { width: 1280, height: 720, dpr: 1 },
+      projection: new Float32Array(16),
+    }),
+  });
+  f.entry.source.material.adopt({
+    ...f.entry.source.material.snapshot,
+    materialShaderId: 'forgeax::default-unlit',
+  });
+  Object.assign(f.authoredPass, { materialShaderId: 'forgeax::default-unlit' });
+  f.acceptMaterials();
+  try {
+    prepareMainPassPipelines(f.c, { LightMode: ['Unmatched'] }, {}, 4, ['rgba16float']);
+    expect(lookup).not.toHaveBeenCalled();
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, {}, 4, ['rgba16float']);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+    expect(f.c.frameState.pipelinePreparationPendingReason).toMatchObject({
+      shader: 'forgeax::points-lines',
+    });
+    f.c.frameState.pipelinePreparationPending = false;
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, {}, 4, ['rgba16float']);
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(f.c.frameState.pipelinePreparationPending).toBe(false);
+    expect(lookup.mock.calls[1]).toEqual(lookup.mock.calls[0]);
+    expect(lookup.mock.calls[0]?.[0]).toBe('forgeax::points-lines');
+    expect(lookup.mock.calls[0]?.[3]).toBe('triangle-list');
+    expect(lookup.mock.calls[0]?.[4]).toBe('uint32');
+    expect(lookup.mock.calls[0]?.[13]).toEqual(
+      deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP),
+    );
+    expect(lookup.mock.calls[0]?.[18]).toBeUndefined();
+    expect(lookup.mock.calls[0]?.[19]).toBe(fragment);
+    expect(buffers).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(f.entry.source.authorVisible).toBe(false);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('does not prepare ShadowCaster pipelines for an explicit noncaster', async () => {
+  const f = await setup();
+  f.entry.source.material.adopt({
+    ...f.entry.source.material.snapshot,
+    passes: [
+      {
+        name: 'ShadowCaster',
+        program: { module: 'test::prepared', vertexEntry: 'vertex', fragmentEntry: 'fragment' },
+        renderState: { tags: { LightMode: 'ShadowCaster' } },
+      },
+    ],
+    materialProgramKeys: { ShadowCaster: 'test::prepared' },
+  });
+  Object.assign(f.entry.source, { shadowCaster: false });
+  f.acceptMaterials();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  try {
+    prepareShadowMaterialPipelines(f.c, true, () => false);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(f.c.frameState.pipelinePreparationPending).not.toBe(true);
   } finally {
     f.dispose();
   }

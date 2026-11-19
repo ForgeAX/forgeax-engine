@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { collectCodeFileLineFindings } from '../check-code-file-lines.mjs';
+import { coverageGroupConcurrency, runnerResources } from '../lib/runner-resources.mjs';
 import { ensureGateSubmodules, ensurePnpm } from './prepare-modeling-gate.mjs';
 
 // `pnpm test:modeling [-- --candidate] [-- --modeling-shard=1/4] [-- --dawn] [-- --mech-gt]`: the Engine x forgeax-modeling pair.
@@ -26,6 +27,11 @@ if (modelingShard !== undefined) {
     throw new Error(`invalid modeling shard: ${modelingShard}; index exceeds count`);
 }
 const modeling = resolve(root, 'packages/modeling');
+const modelingWorkers = `--maxWorkers=${coverageGroupConcurrency(runnerResources())}`;
+const modelingReporters = [
+  '--reporter=default',
+  `--reporter=${join(root, 'scripts/ci/modeling-file-phase-reporter.mjs')}`,
+];
 
 if (!existsSync(resolve(modeling, 'package.json'))) {
   console.error(
@@ -104,13 +110,6 @@ run('biome', process.execPath, [
 ]);
 // Keep candidate admission aligned with primary-pnpm's internal API convention gate.
 run('internal', process.execPath, ['scripts/lint-internal.mjs']);
-// A stale kernel digest (forgotten FORGEAX_UPDATE_GOLDEN=1) fails in seconds, naming the files.
-run(
-  'kernel-digest',
-  'pnpm',
-  ['exec', 'vitest', 'run', 'src/__tests__/kernel-digest.unit.test.ts'],
-  modeling,
-);
 // Modeling resolves its Engine closure through each package's dist, and Isolation and capture
 // Workers import the built modeling dist. The input-keyed package builder rebuilds exactly the
 // packages whose content changed (a no-op takes under a second).
@@ -122,6 +121,13 @@ const rebuilt = JSON.parse(readFileSync(facts, 'utf8'))
   .packages.results.filter((r) => r.status !== 'skipped' && r.name !== '@forgeax/engine-modeling')
   .map((r) => r.name);
 console.log(JSON.stringify({ stage: 'engine-rebuilt', rebuilt, candidate }));
+// Digest tests also import the built package to validate both invariant owners.
+run(
+  'kernel-digest',
+  'pnpm',
+  ['exec', 'vitest', 'run', 'src/__tests__/kernel-digest.unit.test.ts'],
+  modeling,
+);
 // tsc -b can trust a stale .tsbuildinfo and keep old declarations of a rebuilt Engine package.
 run('types', process.execPath, [
   'node_modules/typescript/bin/tsc',
@@ -139,8 +145,18 @@ run(
   'modeling',
   'pnpm',
   modelingShard === undefined
-    ? ['--filter', '@forgeax/engine-modeling', 'test']
-    : ['--dir', 'packages/modeling', 'exec', 'vitest', 'run', '--shard', modelingShard],
+    ? ['--filter', '@forgeax/engine-modeling', 'test', modelingWorkers, ...modelingReporters]
+    : [
+        '--dir',
+        'packages/modeling',
+        'exec',
+        'vitest',
+        'run',
+        '--shard',
+        modelingShard,
+        modelingWorkers,
+        ...modelingReporters,
+      ],
 );
 // Engine-side consumers of the modeling seams, each in its owning package project.
 for (const [pkg, file] of [

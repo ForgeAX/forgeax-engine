@@ -4,6 +4,7 @@
 // explicitly includes Disabled can inspect and re-enable those entities.
 
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Disabled,
   Time,
@@ -94,15 +95,14 @@ export function buildEntityDisablingWorld(world: World): EntityDisablingState {
     disabledCount: 0,
   };
 
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'entity-disabling-timeline',
       queries: [
         { with: [DisableOnClick] },
         { with: [DisableOnClick, Disabled] },
       ],
       fn: (world, queryResults, commands) => {
-        state.elapsed += world.getResource<typeof Time>(Time).delta;
+        state.elapsed += world.getResource(Time).delta;
         if (state.disabledAt === null && state.elapsed >= 0.5) {
           let first: EntityHandle | undefined;
           for (const row of queryResults[0]) {
@@ -118,7 +118,9 @@ export function buildEntityDisablingWorld(world: World): EntityDisablingState {
           state.reenabledAt = state.elapsed;
         }
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
 
   state.activeCount = countEntities(activeQuery);

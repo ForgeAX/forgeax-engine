@@ -68,6 +68,7 @@ it('descends a real depth-pyramid seed to each non-center source texel and rejec
   const common = {
     'forgeax_view::common': shader('common'),
     'forgeax_pbr::gbuffer': gbufferSource,
+    forgeax_scene_temporal: shader('scene-temporal'),
     'forgeax_depth_pyramid::sample': shader('depth-pyramid-sample'),
   };
   const rays = [...SOURCES, ...EMPTY]

@@ -55,12 +55,15 @@ describe('resident MeshMaterialBindingObservation', () => {
     const internals = {
       assets: new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
     } as RenderSystemInternals;
-    const observe = createMaterialResidencyObserver(internals);
+    const observers = worlds.map(() => createMaterialResidencyObserver(internals));
     const observations = worlds.map((world, index) =>
-      observe(worldRenderResources(world), {
-        ...defaultMaterialSnapshot(),
-        materialHandle: handles[index],
-      }),
+      (observers[index] as ReturnType<typeof createMaterialResidencyObserver>)(
+        worldRenderResources(world),
+        {
+          ...defaultMaterialSnapshot(),
+          materialHandle: handles[index],
+        },
+      ),
     );
     const repeated = [];
     for (let index = 0; index < 200; index++) {
@@ -73,7 +76,12 @@ describe('resident MeshMaterialBindingObservation', () => {
       };
       const world = worlds[scope];
       if (world === undefined) throw new Error('expected a World asset scope');
-      repeated.push(observe(worldRenderResources(world), material));
+      repeated.push(
+        (observers[scope] as ReturnType<typeof createMaterialResidencyObserver>)(
+          worldRenderResources(world),
+          material,
+        ),
+      );
     }
     expect(reads.map((read) => read.mock.calls.length)).toEqual([1, 1]);
     for (const [index, observation] of repeated.entries())
@@ -217,7 +225,7 @@ describe('resident MeshMaterialBindingObservation', () => {
 
   it('projects sampler, readiness, mip, and nearest preparation failure without producer fields', () => {
     const observation = projectMeshMaterialBindingObservation({
-      worldId: 2,
+      worldId: 0,
       entityKey: 9,
       bindings,
       diagnostics: [],
@@ -242,7 +250,6 @@ describe('resident MeshMaterialBindingObservation', () => {
     });
 
     expect(observation).toMatchObject({
-      worldId: 2,
       entityKey: 9,
       bindings,
       residency: [

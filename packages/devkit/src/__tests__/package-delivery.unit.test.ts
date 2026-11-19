@@ -2,12 +2,16 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inflateRawSync } from 'node:zlib';
+import { gunzipSync, inflateRawSync } from 'node:zlib';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { expect, it, vi } from 'vitest';
 import { packageCommand } from '../commands.js';
 import { writeDistManifest } from '../dist.js';
 
-vi.mock('../host.js', () => ({ buildProject: async () => ({ ok: true, value: {} }) }));
+vi.mock('../host.js', () => ({
+  buildProject: async () => ({ ok: true, value: {} }),
+  createEngineWorkspaceResolverForProject: async () => undefined,
+}));
 vi.mock('../engine-binding.js', () => ({
   engineStatusCommand: async () => ({
     ok: true,
@@ -104,6 +108,69 @@ it('preserves the exact player directory named by its receipt and preview comman
     expect((await packageCommand({ root, compress: false })).ok).toBe(true);
     await writeFile(join(receipt.delivery.servedDirectory, 'index.html'), 'tampered');
     expect((await packageCommand({ root, compress: false })).ok).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('keeps native compressed shader documents in ordinary single HTML delivery', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'single-html-native-documents-')));
+  const shader = JSON.stringify({
+    entries: [],
+    materialShaders: [],
+    diagnostic: 'shared shader facts '.repeat(8192),
+  });
+  try {
+    await mkdir(join(root, 'dist/shaders'), { recursive: true });
+    await writeFile(join(root, 'package.json'), '{"name":"native-documents-fixture"}');
+    await writeFile(
+      join(root, 'forge.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        id: 'native-documents',
+        name: 'Native documents',
+        roots: {},
+      }),
+    );
+    await writeFile(
+      join(root, 'dist/index.html'),
+      '<script type="module" src="./main.js"></script>',
+    );
+    await writeFile(join(root, 'dist/main.js'), 'globalThis.nativeDocumentFixture = true;');
+    await writeFile(join(root, 'dist/pack-index.json'), '[]');
+    await writeFile(join(root, 'dist/shaders/manifest.json'), shader);
+    await writeDistManifest(
+      {
+        root,
+        id: 'native-documents',
+        name: 'Native documents',
+        roots: {},
+        assetRoots: [],
+        assetLibraries: [],
+        packageJson: {},
+      },
+      './',
+    );
+    const result = await packageCommand({ root, format: 'single-html' });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (!result.ok) throw result.error;
+    const html = await readFile((result.value as { html: { path: string } }).html.path, 'utf8');
+    const manifest = JSON.parse(
+      html.match(/id="forgeax-asset-payload"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? '[]',
+    );
+    const row = manifest.find((item: { path: string }) => item.path === 'shaders/manifest.json');
+    expect(row).toBeDefined();
+    const source = html.match(
+      new RegExp(`data-forgeax-asset-index="${row.index}">([A-Za-z0-9+/=]+)</script>`),
+    )?.[1];
+    expect(source).toBeDefined();
+    if (source === undefined) throw new Error('Missing embedded shader document');
+    const stored = Buffer.from(source, 'base64');
+    const wire = row.encoding === 'gzip' ? gunzipSync(stored) : stored;
+    expect(wire.subarray(0, 4).toString('hex')).toBe('28b52ffd');
+    const decoded = await decodeDocumentText(wire);
+    if (!decoded.ok) throw decoded.error;
+    expect(decoded.value).toBe(shader);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

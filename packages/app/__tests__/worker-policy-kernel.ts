@@ -9,4 +9,4 @@ export function run(spans: readonly QuerySpan[]): void {
     }
   }
 }
-export default { run };
+export default { queries: [{ write: [WorkerCounter] }], run } as const;

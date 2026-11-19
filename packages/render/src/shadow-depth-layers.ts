@@ -20,7 +20,7 @@ interface ShadowDepthArray {
   readonly size: number;
   readonly format: 'depth32float' | 'rg16float';
   readonly layers: number;
-  readonly views: Map<number | undefined, TextureView>;
+  readonly views: Map<string, TextureView>;
   /** Layers whose raster reached a successful submit. */
   readonly retained: Set<number>;
   /** Layers rastered by the frame being staged. */
@@ -40,8 +40,8 @@ export class ShadowDepthLayers {
 
   constructor(private readonly device: RhiDevice) {}
 
-  /** Views resolve after their imported array and share its lifetime. */
-  view(label: string, layer?: number): TextureView {
+  /** Views, including an active array prefix, share their imported allocation's lifetime. */
+  view(label: string, layer?: number, arrayLayerCount?: number): TextureView {
     const array = this.arrays.get(label);
     if (array === undefined) {
       throw new RhiError({
@@ -50,17 +50,19 @@ export class ShadowDepthLayers {
         hint: 'import the static shadow array before resolving its views',
       });
     }
-    const current = array.views.get(layer);
+    const count = arrayLayerCount ?? (layer === undefined ? array.layers : 1);
+    const key = `${layer ?? 'array'}:${count}`;
+    const current = array.views.get(key);
     if (current !== undefined) return current;
     const created = this.device.createTextureView(array.texture, {
       label: layer === undefined ? `${label}.view` : `${label}.layer.${layer}`,
       dimension: layer === undefined ? '2d-array' : '2d',
       aspect: array.format === 'depth32float' ? 'depth-only' : 'all',
       baseArrayLayer: layer ?? 0,
-      arrayLayerCount: layer === undefined ? array.layers : 1,
+      arrayLayerCount: count,
     });
     if (!created.ok) throw created.error;
-    array.views.set(layer, created.value);
+    array.views.set(key, created.value);
     return created.value;
   }
 
@@ -150,6 +152,11 @@ export class ShadowDepthLayers {
   /** Whether `layer` of `label` holds depth from a submitted raster. */
   retained(label: string, layer: number): boolean {
     return this.arrays.get(label)?.retained.has(layer) === true;
+  }
+
+  /** Invalidate only this layer's submitted content before replacing it. */
+  _invalidate(label: string, layer: number): void {
+    this.arrays.get(label)?.retained.delete(layer);
   }
 
   /** Record that the staged frame rasters `layer` of `label`. */

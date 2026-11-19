@@ -3,11 +3,9 @@ import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { parse, validate } from '../../../naga/src/index';
-import {
-  collectRequiredFullscreenPostProcesses,
-  withBuiltinRenderFeatures,
-} from '../assembly/render-feature-post-processes';
+import { collectRequiredFullscreenPostProcesses } from '../assembly/render-feature-post-processes';
 import { ANTIALIAS_SMAA, antialiasFromF32, Camera } from '../components/camera';
+import { withBuiltinRenderFeatures } from '../features/builtins';
 import { createRenderFeatureHost } from '../features/host';
 import { smaaLookupData } from '../features/smaa/lookup-data';
 import { SMAA_PROGRAMS } from '../features/smaa/shaders';
@@ -27,7 +25,7 @@ describe('SMAA authoring and production programs', () => {
     propagateTransforms(world);
     expect(antialiasFromF32(ANTIALIAS_SMAA)).toBe('smaa');
     expect(extractCameraSnapshots(world)[0]?.antialias).toBe('smaa');
-    expect(() => antialiasFromF32(6)).toThrow();
+    expect(() => antialiasFromF32(7)).toThrow();
   });
   it('places SMAA after spatial effects and before the single output encoding', () => {
     const plan = createStandardOutputPlan({
@@ -51,7 +49,7 @@ describe('SMAA authoring and production programs', () => {
       'smaa',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.at(-2)).toEqual({
+    expect(plan.stageDomains.at(-2)).toEqual({
       name: 'smaa',
       input: 'linear-ldr',
       output: 'linear-ldr',
@@ -88,8 +86,7 @@ describe('SMAA authoring and production programs', () => {
         { identity: 'held', render: false, selectedCamera },
       ].map((view) => ({
         ...view,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber: 1,
         caps: { rgba16floatRenderable: true } as never,
       })),

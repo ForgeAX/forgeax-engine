@@ -1,18 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { mat4, quat, vec3 } from '../index';
 
+/** Test-only T * R * H * S: decomposeAffine reports shear, compose no longer authors it. */
+function composeSheared(
+  t: ArrayLike<number>,
+  r: ArrayLike<number>,
+  s: ArrayLike<number>,
+  h: ArrayLike<number>,
+): Float32Array {
+  const rot = mat4.compose(mat4.create(), [0, 0, 0], r as never, [1, 1, 1]);
+  const out = mat4.create();
+  for (let row = 0; row < 3; row++) {
+    out[row] = (rot[row] ?? 0) * (s[0] ?? 1);
+    out[4 + row] = ((rot[4 + row] ?? 0) + (h[0] ?? 0) * (rot[row] ?? 0)) * (s[1] ?? 1);
+    out[8 + row] =
+      ((rot[8 + row] ?? 0) + (h[1] ?? 0) * (rot[row] ?? 0) + (h[2] ?? 0) * (rot[4 + row] ?? 0)) *
+      (s[2] ?? 1);
+  }
+  out[12] = t[0] ?? 0;
+  out[13] = t[1] ?? 0;
+  out[14] = t[2] ?? 0;
+  out[15] = 1;
+  return out;
+}
+
 describe('affine transform composition', () => {
   it('round-trips shear, reflection and rotation without discarding the shear terms', () => {
     const rotation = quat.create();
     quat.fromEuler(rotation, 0.3, -0.7, 0.2, 'XYZ');
     for (const z of [0.25, -3]) {
-      const source = mat4.compose(mat4.create(), [3, -2, 1], rotation, [2, 4, z], [0.8, -0.4, 0.3]);
+      const source = composeSheared([3, -2, 1], rotation, [2, 4, z], [0.8, -0.4, 0.3]);
       const t = vec3.create(),
         r = quat.create(),
         s = vec3.create(),
         h = vec3.create();
       expect(mat4.decomposeAffine(t, r, s, h, source)).toBe(true);
-      const result = mat4.compose(mat4.create(), t, r, s, h);
+      const result = composeSheared(t, r, s, h);
       source.forEach((value, index) => {
         expect(result[index]).toBeCloseTo(value, 5);
       });
@@ -27,7 +50,7 @@ describe('affine transform composition', () => {
       s = vec3.create(),
       h = vec3.create();
     expect(mat4.decomposeAffine(t, r, s, h, source)).toBe(true);
-    const result = mat4.compose(mat4.create(), t, r, s, h);
+    const result = composeSheared(t, r, s, h);
     source.forEach((value, index) => {
       expect(result[index]).toBeCloseTo(value, 5);
     });
@@ -58,7 +81,7 @@ describe('affine transform composition', () => {
     for (const w of [1 - Number.EPSILON, 1 + Number.EPSILON]) {
       source[15] = w;
       expect(mat4.decomposeAffine(t, r, s, h, source)).toBe(true);
-      expect(Array.from(mat4.compose(mat4.create(), t, r, s, h))).toEqual(
+      expect(Array.from(composeSheared(t, r, s, h))).toEqual(
         Array.from(mat4.identity(mat4.create())),
       );
     }
@@ -76,7 +99,7 @@ describe('affine transform composition', () => {
     const s = source.subarray(4, 7) as ReturnType<typeof vec3.create>;
     const h = source.subarray(8, 11) as ReturnType<typeof vec3.create>;
     expect(mat4.decomposeAffine(t, r, s, h, source)).toBe(true);
-    const result = mat4.compose(mat4.create(), t, r, s, h);
+    const result = composeSheared(t, r, s, h);
     expected.forEach((value, index) => {
       expect(result[index]).toBeCloseTo(value, 5);
     });

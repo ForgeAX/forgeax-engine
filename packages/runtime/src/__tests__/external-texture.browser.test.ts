@@ -160,15 +160,18 @@ async function createHarness(label: string) {
     for (let i = 0; i < count; i++) {
       perFrame?.(frames);
       world.update(1 / 60).unwrap();
-      const receipt = renderValue(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: 'direct',
-        }),
-      );
-      renderValue(await receipt.completed);
+      let ready = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
+        if (receipt.preparationCompleted !== undefined)
+          renderValue(await receipt.preparationCompleted);
+        renderValue(await receipt.completed);
+        if (receipt.presentation === 'ready') {
+          ready = true;
+          break;
+        }
+      }
+      expect(ready, 'external texture frames require a prepared material pipeline').toBe(true);
       frames++;
     }
   };

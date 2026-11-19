@@ -30,6 +30,10 @@
   "scanline": { "y": 300, "xStart": 160, "xEnd": 640 },
   "lanes": ["direct", "clustered"],
   "backends": ["browser-webgpu", "dawn", "webkit-webgl2", "chromium-webgl2"],
+  "outputGraphs": [
+    { "passes": ["output-transform", "fxaa"], "format": "rgba16float", "domain": "display-encoded" },
+    { "passes": ["standard-grade", "standard-final"], "format": "rgba16float", "domain": "display-encoded" }
+  ],
   "thresholds": {
     "uniqueColorRatio": 0.75,
     "levelRatio": 0.7,

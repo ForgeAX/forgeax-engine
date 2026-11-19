@@ -4,9 +4,10 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { assert, expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
+import * as featureInspection from '../assembly/renderer-feature-inspection';
+import * as inspection from '../assembly/renderer-inspection';
 import { Camera, MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../components';
 import { Materials } from '../materials';
-import * as projections from '../render-system-projections';
 import * as views from '../view-inspection';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -56,14 +57,18 @@ it('selects status before source inventories while preserving an explicit full d
     vi.spyOn(views, 'viewRenderScene'),
     vi.spyOn(views, 'viewInstanceCollections'),
     vi.spyOn(views, 'viewMeshMaterialBindings'),
-    vi.spyOn(projections, 'createLodWorldInspections'),
+    vi.spyOn(views, 'viewRecoveryEvidence'),
+    vi.spyOn(views, 'viewFeatureGraph'),
+    vi.spyOn(views, 'viewTemporal'),
+    vi.spyOn(inspection, 'projectRendererOutputInspectionFromSurface'),
+    vi.spyOn(featureInspection, 'projectRendererFeatureInspection'),
   ] as const;
   try {
     let ready = false;
     for (let frame = 0; frame < 30 && !ready; frame++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      const drawn = renderer.draw({ source: lease });
       assert(drawn.ok);
       const receipt = drawn.value;
       expect((await receipt.completed).ok).toBe(true);
@@ -77,12 +82,30 @@ it('selects status before source inventories while preserving an explicit full d
     expect(status.state).toBe('alive');
     expect(status.frame.frameId).toBeGreaterThan(0);
     expect(renderer.inspect({ fields: [] })).toEqual({});
+    const nativeDevice = vi.spyOn(host.device, 'nativeDevice');
+    try {
+      renderer.inspect({ fields: ['state', 'frame'] });
+      expect(nativeDevice).not.toHaveBeenCalled();
+      const device = renderer.inspect({ fields: ['deviceInfo', 'frame'] });
+      expect(Object.keys(device).sort()).toEqual(['deviceInfo', 'frame']);
+      expect(device.deviceInfo).toEqual({
+        deviceGeneration: device.frame.deviceGeneration,
+        adapterInfo: null,
+      });
+      expect(nativeDevice).toHaveBeenCalledOnce();
+      expect(device.frame.frameId).toBe(status.frame.frameId);
+      expect(structuredClone(device)).toEqual(device);
+    } finally {
+      nativeDevice.mockRestore();
+    }
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
     const full = renderer.inspect();
     expect(full.renderScene.projectionRecords).toBe(128);
     expect(full.meshMaterialBindings).toHaveLength(1);
     expect(full.iblBinding).toBeUndefined();
     for (const spy of spies) expect(spy).toHaveBeenCalledOnce();
+    const explicitFull = renderer.inspect({ fields: Object.keys(full) as (keyof typeof full)[] });
+    expect(explicitFull).toEqual(full);
     const owner = spies[0]?.mock.calls[0]?.[0];
     expect(owner).toBeDefined();
     if (owner === undefined) throw new Error('Missing actual view owner');

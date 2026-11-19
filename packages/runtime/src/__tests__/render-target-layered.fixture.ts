@@ -1,6 +1,7 @@
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createPlaneGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
+import type { RenderReadLease } from '@forgeax/engine-render';
 import {
   Camera,
   Materials,
@@ -385,7 +386,7 @@ type Readbacks = 'none' | 'volume' | 'all';
 async function drawObserved(
   renderer: Renderer,
   scene: LayeredScene,
-  lease: Parameters<Renderer['draw']>[0]['leases'][number],
+  lease: RenderReadLease,
   readbacks: Readbacks,
   recorder?: RecorderAttachment,
 ): Promise<{
@@ -411,7 +412,7 @@ async function drawObserved(
   if (readbacks !== 'none') unwrap(renderer.requestObservation?.(['linear-hdr']));
   const pending = recorder?.captureFrame();
   if (pending !== undefined) (await recorder?.frameBoundary())?.unwrap();
-  const input = { leases: [lease], camera: { lease }, environment: { lease } };
+  const input = { source: lease };
   const frame =
     readbacks === 'none' && recorder === undefined
       ? await drawReadyFrame(renderer, input)
@@ -912,9 +913,7 @@ export async function measureLayeredCost(
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const start = performance.now();
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      );
+      const frame = unwrap(renderer.draw({ source: lease }));
       const cpuMs = performance.now() - start;
       unwrap(await frame.completed);
       const timings = unwrap(await renderer.observe(frame, { include: ['timings'] })).timings;

@@ -1,11 +1,6 @@
-import { isSharedImmutableAssetData } from './shared-immutable.js';
-
-/** Private runtime storage captures logical views, never their unrelated backing bytes.
- * Realm-shared immutable facts (deep-frozen JSON and verified content-addressed
- * bytes) keep their identity: copying them would only duplicate equal content.
- */
+/** Private runtime storage captures logical views, never their unrelated backing bytes. */
 export function copyAssetData<T>(input: T): T {
-  return captureAssetData(input, false, undefined) as T;
+  return captureAssetData(input, undefined) as T;
 }
 
 /**
@@ -16,34 +11,59 @@ export function copyAssetData<T>(input: T): T {
  * one another and never retain unrelated backing bytes.
  */
 export function takeAssetData<T>(input: T): T {
-  return captureAssetData(input, false, new Set()) as T;
+  return captureAssetData(input, new Set()) as T;
 }
 
 /**
- * Frozen plain nodes proven immutable by a frozen capture: every own field is
- * a primitive, a realm-shared immutable fact, or another such node. A frozen
- * node's fields cannot change and shared admission is permanent, so the proof
- * holds for the node's lifetime.
+ * The decoder boundary. The decoder gives up its output: plain nodes are
+ * validated and frozen in place, bottom-up, and binary views keep their
+ * storage, which owners treat as read-only by contract. A frozen node was
+ * adopted already and is not walked again.
  */
-const immutableNodes = new WeakSet<object>();
-
-/**
- * The decoder boundary: equivalent to `freezeRuntimePayload(copyAssetData(input))`,
- * with the same validation, except that a node no holder can change keeps its
- * identity. A frozen plain node whose fields all keep their identity is such a
- * node (deep-frozen JSON, such as a verified Pack document, optionally holding
- * shared facts). Every other node is copied, so mutable values and every
- * private binary view still become storage only the payload holds.
- */
-export function freezeAssetData<T>(input: T): T {
-  return captureAssetData(input, true, undefined) as T;
+function requireAdoptableView(value: ArrayBufferView): void {
+  if (!ARRAY_TYPES.some((candidate) => Object.getPrototypeOf(value) === candidate.prototype))
+    throw new TypeError('unsupported asset binary view');
+  if (!(value.buffer instanceof ArrayBuffer))
+    throw new TypeError('asset content requires private binary storage');
 }
 
-function captureAssetData(
-  input: unknown,
-  frozen: boolean,
-  taken: Set<ArrayBuffer> | undefined,
-): unknown {
+export function adoptAssetData<T>(input: T): T {
+  const active = new Set<object>();
+  const adopt = (value: unknown): void => {
+    if (value === null || value === undefined || typeof value !== 'object') {
+      if (typeof value === 'function' || typeof value === 'symbol')
+        throw new TypeError('asset content must be data');
+      return;
+    }
+    if (value instanceof ArrayBuffer) return;
+    if (ArrayBuffer.isView(value)) {
+      requireAdoptableView(value);
+      return;
+    }
+    if (Object.isFrozen(value)) return;
+    if (active.has(value)) throw new TypeError('asset content contains a cycle');
+    const array = Array.isArray(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (!array && prototype !== null && prototype !== Object.prototype)
+      throw new TypeError('asset content requires plain data objects');
+    active.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (array && key === 'length') continue;
+      if (typeof key !== 'string') throw new TypeError('asset content contains a symbol property');
+      const descriptor = descriptors[key];
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
+        throw new TypeError('asset content requires enumerable data properties');
+      adopt(descriptor.value);
+    }
+    active.delete(value);
+    Object.freeze(value);
+  };
+  adopt(input);
+  return input;
+}
+
+function captureAssetData(input: unknown, taken: Set<ArrayBuffer> | undefined): unknown {
   const active = new Set<object>();
   const takes = (buffer: ArrayBuffer): boolean => {
     if (
@@ -62,12 +82,10 @@ function captureAssetData(
       return value;
     }
     if (active.has(value)) throw new TypeError('asset content contains a cycle');
-    if (isSharedImmutableAssetData(value)) return value;
-    if (frozen && immutableNodes.has(value)) return value;
     if (value instanceof ArrayBuffer) return takes(value) ? value : value.slice(0);
     if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes);
     active.add(value);
-    const result = copyPlainNode(value, frozen, copy);
+    const result = copyPlainNode(value, copy);
     active.delete(value);
     return result;
   };
@@ -90,19 +108,12 @@ function copyBinaryView(
   return new Constructor(bytes.buffer);
 }
 
-function copyPlainNode(value: object, frozen: boolean, copy: (value: unknown) => unknown): unknown {
+function copyPlainNode(value: object, copy: (value: unknown) => unknown): unknown {
   const array = Array.isArray(value);
   const prototype = Object.getPrototypeOf(value);
   if (!array && prototype !== null && prototype !== Object.prototype)
     throw new TypeError('asset content requires plain data objects');
-  // A copy is a dense, ordinary-prototype tree; only such a frozen node may stand in for it.
-  const candidate =
-    frozen && Object.isFrozen(value) && prototype === (array ? Array.prototype : Object.prototype);
-  const { keys, fields, same } = copyPlainFields(value, array, copy);
-  if (candidate && same && (!array || keys.length === (value as unknown[]).length)) {
-    immutableNodes.add(value);
-    return value;
-  }
+  const { keys, fields } = copyPlainFields(value, array, copy);
   const result: Record<string, unknown> | unknown[] = array ? [] : {};
   for (const [index, key] of keys.entries())
     Object.defineProperty(result, key, {
@@ -111,18 +122,17 @@ function copyPlainNode(value: object, frozen: boolean, copy: (value: unknown) =>
       configurable: true,
       writable: true,
     });
-  return frozen ? Object.freeze(result) : result;
+  return result;
 }
 
-/** Validated enumerable data fields, copied; `same` when every field kept its identity at its dense index. */
+/** Validated enumerable data fields, copied. */
 function copyPlainFields(
   value: object,
   array: boolean,
   copy: (value: unknown) => unknown,
-): { keys: string[]; fields: unknown[]; same: boolean } {
+): { keys: string[]; fields: unknown[] } {
   const keys: string[] = [];
   const fields: unknown[] = [];
-  let same = true;
   const descriptors = Object.getOwnPropertyDescriptors(value);
   for (const key of Reflect.ownKeys(descriptors)) {
     if (array && key === 'length') continue;
@@ -130,12 +140,10 @@ function copyPlainFields(
     const descriptor = descriptors[key];
     if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
       throw new TypeError('asset content requires enumerable data properties');
-    const field = copy(descriptor.value);
-    if (field !== descriptor.value || (array && key !== String(keys.length))) same = false;
     keys.push(key);
-    fields.push(field);
+    fields.push(copy(descriptor.value));
   }
-  return { keys, fields, same };
+  return { keys, fields };
 }
 
 const ARRAY_TYPES = [

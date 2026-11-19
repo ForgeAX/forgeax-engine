@@ -7,7 +7,7 @@ import {
   createCubePlaneShadowContactFixture,
 } from './cube-plane-shadow-contact.fixture';
 
-/** Each render path owns one cold renderer and the complete contact matrix. */
+/** Each render path owns one cold renderer and the contact regression matrix. */
 export function registerCubePlaneShadowContactCases(renderPath: 'forward' | 'deferred'): void {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = CUBE_CONTACT_SIZE;

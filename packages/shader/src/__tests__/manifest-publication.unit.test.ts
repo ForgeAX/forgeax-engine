@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { manifestShaderSource, materialShaderSource } from '../manifest-publication';
 import {
+  expandShaderManifestPublication,
   materialShaderSourceEquals,
   readShaderManifestPublication,
   shaderSourceDigestInput,
@@ -35,6 +38,35 @@ const sourceDigest = (parts: readonly string[]) =>
     )
     .digest('hex');
 const digest = sourceDigest([wgsl]);
+
+it('releases publication source indices while deferred reflections remain readable', async () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const reflection = { schemaVersion: 'shader-reflection/3', uvSetCount: 0, boundGlobals: [] };
+  const capture = () => {
+    const value = publication();
+    const expanded = expandShaderManifestPublication(
+      {
+        ...value,
+        entries: value.entries.map((entry) => ({ ...entry, reflectionIndex: 0 })),
+        reflections: [reflection],
+      },
+      { deferReflections: true },
+    );
+    return {
+      manifest: expanded.manifest as { entries: { reflection: unknown; wgsl: string }[] },
+      indices: new WeakRef(expanded.sourceIndices),
+      fragments: new WeakRef(expanded.sourceFragments),
+    };
+  };
+  const { manifest, indices, fragments } = capture();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  gc();
+  expect(indices.deref()).toBeUndefined();
+  expect(fragments.deref()).toBeUndefined();
+  expect(manifest.entries[0]?.reflection).toEqual(reflection);
+  expect(manifest.entries[0]?.wgsl).toBe(wgsl);
+});
 
 it('loads before native text standards while retaining the source digest wire bytes', async () => {
   vi.resetModules();
@@ -150,6 +182,40 @@ describe('shader publication admission', () => {
     await expect(
       readShaderManifestPublication({ ...value, schemaVersion: '4.0.0' }),
     ).rejects.toThrow('Unsupported shader manifest publication version');
+  });
+
+  it('shares detached entry binding facts across distinct entry-read rows', async () => {
+    const reads = (name: string) => [
+      { name, stage: 'fragment', bindings: [{ group: 1, binding: 0, fields: ['roughness'] }] },
+    ];
+    const value = publication();
+    const input = {
+      ...value,
+      entryPoints: [reads('first'), reads('second')],
+      entries: [{ ...value.entries[0], entryPointsIndex: 0 }],
+      materialShaders: value.materialShaders.map((row) => ({ ...row, entryPointsIndex: 1 })),
+    };
+    const pending = readShaderManifestPublication(input);
+    const originalBinding = input.entryPoints[0]?.[0]?.bindings[0];
+    if (originalBinding === undefined) throw new Error('missing fixture binding');
+    originalBinding.fields[0] = 'changed';
+    const result = (await pending) as {
+      entries: { entryPoints: ReturnType<typeof reads> }[];
+      materialShaders: { entryPoints: ReturnType<typeof reads> }[];
+    };
+    const first = result.entries[0]?.entryPoints;
+    const second = result.materialShaders[0]?.entryPoints;
+    const firstRow = first?.[0];
+    const secondRow = second?.[0];
+    const firstBinding = firstRow?.bindings[0];
+    if (firstRow === undefined || secondRow === undefined || firstBinding === undefined)
+      throw new Error('missing admitted fixture binding');
+    expect(first).not.toBe(second);
+    expect(firstRow.name).toBe('first');
+    expect(secondRow.name).toBe('second');
+    expect(firstRow.bindings).toBe(secondRow.bindings);
+    expect(firstBinding.fields).toEqual(['roughness']);
+    expect(Object.isFrozen(firstBinding.fields)).toBe(true);
   });
 
   it('matches boot aliases without expanding unselected material sources', async () => {
@@ -553,4 +619,20 @@ it('keeps lazy source getters detached and publication-local while sharing equal
   expect(manifestShaderSource(entry)).toBe(selected);
   expect(materialShaderSource(other)).not.toBe(selected);
   expect(selected.read()).toBe(wgsl);
+});
+
+it('keeps indexed source owners independent of caller and diagnostic array mutations', () => {
+  const input = publication();
+  const expanded = expandShaderManifestPublication(input);
+  const manifest = expanded.manifest as { entries: { wgsl: string }[] };
+  const blocks = expanded.sourceFragments.get(digest) as string[];
+  const indices = expanded.sourceIndices.get(digest) as number[];
+  blocks[0] = 'modified diagnostic text';
+  indices[0] = 999;
+  input.fragments[0] = 'modified caller text';
+  input.sources[digest] = [999];
+  expect(manifest.entries[0]?.wgsl).toBe(wgsl);
+  expect(manifest.entries[0] && manifestShaderSource(manifest.entries[0]).identity).toBe(
+    `published:${digest}`,
+  );
 });

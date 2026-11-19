@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-shader';
 import { ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES } from '../environment/capability';
 import { EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES } from '../prepare/extended-lighting/resources';
+import type { RenderInspection } from '../render-contract';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { DEFERRED_ATTACHMENT_BYTES, SUBSURFACE_ATTACHMENT_BYTES } from '../standard-attachments';
 import { standardTransmissionValue } from '../transmission/projection';
@@ -110,11 +111,13 @@ export interface DeviceFeatureAdmission {
     readonly maxColorAttachmentBytesPerSample?: number;
     readonly maxComputeWorkgroupStorageSize?: number;
     readonly maxStorageBufferBindingSize?: number;
+    readonly maxStorageBuffersPerShaderStage?: number;
     readonly maxBufferSize?: number;
   };
 }
 
 const DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE = 134217728;
+const DEFAULT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
 const DEFAULT_MAX_BUFFER_SIZE = 268435456;
 
 /** An adapter value above the spec default, or undefined when nothing is gained. */
@@ -174,45 +177,87 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
     ),
     DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE,
   );
-  const requiredColorAttachmentBytes = visibleSurface
-    ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.visibleSurfaceTemporal)
-    : colorAttachmentBytes >= DEFERRED_ATTACHMENT_BYTES.surface
-      ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.temporal)
-      : undefined;
-  const requiredSampledTextureLimit =
-    adapterSampledTextureLimit >= ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES
-      ? ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES
-      : adapterSampledTextureLimit >= STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES
-        ? STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES
-        : adapterSampledTextureLimit >= EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES
-          ? EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES
-          : adapterSampledTextureLimit >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES
-            ? STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES
-            : undefined;
-  return {
-    requiredFeatures,
-    ...(requiredSampledTextureLimit === undefined &&
-    requiredColorAttachmentBytes === undefined &&
-    workgroupStorage === undefined &&
-    maxBufferSize === undefined &&
-    maxStorageBufferBindingSize === undefined
-      ? {}
-      : {
-          requiredLimits: {
-            ...(requiredSampledTextureLimit === undefined
-              ? {}
-              : { maxSampledTexturesPerShaderStage: requiredSampledTextureLimit }),
-            ...(requiredColorAttachmentBytes === undefined
-              ? {}
-              : { maxColorAttachmentBytesPerSample: requiredColorAttachmentBytes }),
-            ...(workgroupStorage === undefined
-              ? {}
-              : { maxComputeWorkgroupStorageSize: workgroupStorage }),
-            ...(maxBufferSize === undefined ? {} : { maxBufferSize }),
-            ...(maxStorageBufferBindingSize === undefined ? {} : { maxStorageBufferBindingSize }),
-          },
-        }),
+  // Material roots can be published after device creation. Preserve the actual
+  // adapter capacity; every concrete layout still admits its complete budget.
+  const maxStorageBuffersPerShaderStage = raisedLimit(
+    adapter.limits?.maxStorageBuffersPerShaderStage,
+    DEFAULT_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+  );
+  const selectRequestedLimits = (
+    visibleSurface: boolean,
+    colorAttachmentBytes: number,
+    adapterSampledTextureLimit: number,
+  ) => {
+    const requiredColorAttachmentBytes = visibleSurface
+      ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.visibleSurfaceTemporal)
+      : colorAttachmentBytes >= DEFERRED_ATTACHMENT_BYTES.surface
+        ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.temporal)
+        : undefined;
+    const requiredSampledTextureLimit =
+      adapterSampledTextureLimit >= ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES
+        ? ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES
+        : adapterSampledTextureLimit >= STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES
+          ? STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES
+          : adapterSampledTextureLimit >= EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES
+            ? EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES
+            : adapterSampledTextureLimit >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES
+              ? STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES
+              : undefined;
+
+    return { requiredColorAttachmentBytes, requiredSampledTextureLimit };
   };
+  const { requiredColorAttachmentBytes, requiredSampledTextureLimit } = selectRequestedLimits(
+    visibleSurface,
+    colorAttachmentBytes,
+    adapterSampledTextureLimit,
+  );
+  const publishRequestedLimits = (
+    requiredFeatures: GPUFeatureName[],
+    requiredSampledTextureLimit: number | undefined,
+    requiredColorAttachmentBytes: number | undefined,
+    workgroupStorage: number | undefined,
+    maxBufferSize: number | undefined,
+    maxStorageBufferBindingSize: number | undefined,
+    maxStorageBuffersPerShaderStage: number | undefined,
+  ): DeviceFeatureAdmission => {
+    return {
+      requiredFeatures,
+      ...(requiredSampledTextureLimit === undefined &&
+      requiredColorAttachmentBytes === undefined &&
+      workgroupStorage === undefined &&
+      maxBufferSize === undefined &&
+      maxStorageBufferBindingSize === undefined &&
+      maxStorageBuffersPerShaderStage === undefined
+        ? {}
+        : {
+            requiredLimits: {
+              ...(requiredSampledTextureLimit === undefined
+                ? {}
+                : { maxSampledTexturesPerShaderStage: requiredSampledTextureLimit }),
+              ...(requiredColorAttachmentBytes === undefined
+                ? {}
+                : { maxColorAttachmentBytesPerSample: requiredColorAttachmentBytes }),
+              ...(workgroupStorage === undefined
+                ? {}
+                : { maxComputeWorkgroupStorageSize: workgroupStorage }),
+              ...(maxBufferSize === undefined ? {} : { maxBufferSize }),
+              ...(maxStorageBufferBindingSize === undefined ? {} : { maxStorageBufferBindingSize }),
+              ...(maxStorageBuffersPerShaderStage === undefined
+                ? {}
+                : { maxStorageBuffersPerShaderStage }),
+            },
+          }),
+    };
+  };
+  return publishRequestedLimits(
+    requiredFeatures,
+    requiredSampledTextureLimit,
+    requiredColorAttachmentBytes,
+    workgroupStorage,
+    maxBufferSize,
+    maxStorageBufferBindingSize,
+    maxStorageBuffersPerShaderStage,
+  );
 }
 
 export function deviceOptionsForAdapter(
@@ -235,12 +280,50 @@ export function isTimestampQueryAdmitted(
   );
 }
 
+type DeviceInfo = NonNullable<RenderInspection['deviceInfo']>;
+
+function inspectDeviceInfo(device: RhiDevice, deviceGeneration: number): DeviceInfo {
+  let adapterInfo: DeviceInfo['adapterInfo'] = null;
+  try {
+    const native = device.nativeDevice();
+    const info = native.ok ? native.value.adapterInfo : undefined;
+    if (info !== undefined && info !== null) {
+      const { vendor, architecture, device: adapterDevice, description, isFallbackAdapter } = info;
+      if (
+        typeof vendor === 'string' &&
+        typeof architecture === 'string' &&
+        typeof adapterDevice === 'string' &&
+        typeof description === 'string'
+      ) {
+        adapterInfo = Object.freeze({
+          vendor,
+          architecture,
+          device: adapterDevice,
+          description,
+          isFallbackAdapter: typeof isFallbackAdapter === 'boolean' ? isFallbackAdapter : null,
+        });
+      }
+    }
+  } catch {
+    // Missing or inaccessible native metadata remains an unavailable observation.
+  }
+  return Object.freeze({ deviceGeneration, adapterInfo });
+}
+
 /** WebGPU limits may be prototype accessors; publish their numeric POD values. */
-export function inspectDeviceCapabilities(device: RhiDevice) {
+export function inspectDeviceCapabilities(
+  device: RhiDevice,
+  deviceGeneration: number,
+  includeDeviceInfo = true,
+) {
   const numeric: Record<string, number> = {};
   for (const key in device.limits) {
     const value = device.limits[key as keyof typeof device.limits];
     if (typeof value === 'number') numeric[key] = value;
   }
-  return { capabilities: Object.freeze({ ...device.caps }), limits: Object.freeze(numeric) };
+  return {
+    capabilities: Object.freeze({ ...device.caps }),
+    limits: Object.freeze(numeric),
+    ...(includeDeviceInfo ? { deviceInfo: inspectDeviceInfo(device, deviceGeneration) } : {}),
+  };
 }

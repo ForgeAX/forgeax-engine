@@ -103,7 +103,7 @@ it('refreshes hot composition recency and evicts validation beyond its aggregate
   expect(validation).toHaveBeenCalledTimes(validations + 1);
 });
 
-it('shares concurrent real composition and validation and keeps every result independently mutable', async () => {
+it('shares concurrent real composition and validation without exposing shared results to edits', async () => {
   const compose = vi.spyOn(naga, 'composeShader');
   const validation = vi.spyOn(compiler, 'compileShaderProgram');
   const compile = createShaderProgramCompiler();
@@ -114,11 +114,11 @@ it('shares concurrent real composition and validation and keeps every result ind
   const first = firstResult.unwrap();
   const second = secondResult.unwrap();
   expect(second).toEqual(first);
-  expect(second).not.toBe(first);
+  // The shared validated program is read-only; caller-owned fields stay independent.
+  for (const result of [first, second])
+    expect(() => Object.assign(result.reflection, { consumerMutation: true })).toThrow(TypeError);
   first.deps.push('consumer-mutation');
-  Object.assign(first.reflection, { consumerMutation: true });
   expect(second.deps).not.toContain('consumer-mutation');
-  expect(second.reflection).not.toHaveProperty('consumerMutation');
   expect(compose).toHaveBeenCalledTimes(1);
   expect(validation).toHaveBeenCalledTimes(1);
 });
@@ -181,13 +181,15 @@ it('shares composition across entry selections while validating every selected e
   expect(compose).toHaveBeenCalledTimes(1);
 });
 
-it('reuses composition without sharing mutable results or material state', async () => {
+it('reuses composition while keeping cached results read-only', async () => {
   const underlying = vi.spyOn(naga, 'composeShader');
   const compile = createShaderProgramCompiler();
   const first = (await compile(source, options)).unwrap();
   const expected = structuredClone(first);
-  first.deps.push('consumer-mutation');
-  Object.assign(first.reflection, { consumerMutation: true });
+  try {
+    first.deps.push('consumer-mutation');
+    Object.assign(first.reflection, { consumerMutation: true });
+  } catch {}
   const second = (await compile(source, options)).unwrap();
   expect(second).toEqual(expected);
   expect(underlying).toHaveBeenCalledTimes(1);
@@ -459,4 +461,64 @@ it('retires cold compositions before discarding the current validation working s
   expect((await compile(entry(6))).ok).toBe(true);
   expect(compose).toHaveBeenCalledTimes(compositions);
   expect(validation).toHaveBeenCalledTimes(validations);
+});
+
+it('keeps native conflict admission conservative for comment-only capability flags', async () => {
+  const entry = `${source}\n// OPTIONAL_LIGHTING is already projected by the source owner.\n`;
+  const baseline = (
+    await compiler.compileShader(entry, { ...options, defines: { OPTIONAL_LIGHTING: true } })
+  ).unwrap();
+  const compose = vi.spyOn(naga, 'composeShader');
+  const compile = createShaderProgramCompiler();
+  for (const enabled of [true, false]) {
+    expect(
+      (await compile(entry, { ...options, defines: { OPTIONAL_LIGHTING: enabled } })).unwrap(),
+    ).toEqual(baseline);
+  }
+  expect(compose).toHaveBeenCalledTimes(2);
+  expect(compose.mock.calls.map((call) => call[2])).toEqual([
+    { OPTIONAL_LIGHTING: true },
+    { OPTIONAL_LIGHTING: false },
+  ]);
+});
+
+it('consumes canonical writer IR for a cold build and frees it after reflection', async () => {
+  const expected = (await compiler.compileShader(source, options)).unwrap();
+  const preparation = await naga.prepareNagaCompiler();
+  const native = preparation.unwrap();
+  const parse = vi.spyOn(native, 'parse');
+  const reflect = vi.spyOn(native, 'emitReflection');
+  vi.spyOn(naga, 'prepareNagaCompiler').mockResolvedValue(ok(native));
+  const compile = createShaderProgramCompiler();
+  const first = (await compile(source, options)).unwrap();
+  expect(first).toEqual(expected);
+  expect(reflect).toHaveBeenCalledTimes(1);
+  // Native parse consumes main's one-shot checked IR; the JS entry still runs once.
+  expect(parse).toHaveBeenCalledExactlyOnceWith(first.wgsl);
+  const module = reflect.mock.calls[0]?.[0];
+  if (module === undefined) throw new Error('Missing actual reflected native module');
+  expect(() => native.emitReflection(module, '{}').unwrap()).toThrow();
+  reflect.mockClear();
+  expect((await compile(source, options)).unwrap()).toEqual(expected);
+  expect(reflect).not.toHaveBeenCalled();
+  expect(
+    (
+      await compile(source, {
+        ...options,
+        renderEntries: { vertex: 'missing', fragment: 'fs_main' },
+      })
+    ).ok,
+  ).toBe(false);
+});
+
+it('projects each selected compute entry before sharing program facts', async () => {
+  const source =
+    '@compute @workgroup_size(1) fn first() {}\n@compute @workgroup_size(1) fn second() {}';
+  const compile = createShaderProgramCompiler();
+  for (const computeEntry of ['first', 'second', 'first']) {
+    const options = { computeEntry };
+    const expected = (await compiler.compileShader(source, options)).unwrap();
+    expect((await compile(source, options)).unwrap()).toEqual(expected);
+  }
+  expect((await compile(source, { computeEntry: 'missing' })).ok).toBe(false);
 });

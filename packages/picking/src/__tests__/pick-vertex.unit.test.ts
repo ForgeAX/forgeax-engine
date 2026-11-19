@@ -15,6 +15,7 @@
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import { mat4, ray, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
 import {
   CAMERA_PROJECTION_PERSPECTIVE,
@@ -536,7 +537,7 @@ describe('pickVertexOnEntity', () => {
 
       const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
-      const position = meshRes.value.attributes.position as Float32Array;
+      const position = copyMeshAttribute(meshRes.value, 'position') as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
 
       const hits = pickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity, {
@@ -573,7 +574,7 @@ describe('pickVertexOnEntity', () => {
 
       const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
-      const position = meshRes.value.attributes.position as Float32Array;
+      const position = copyMeshAttribute(meshRes.value, 'position') as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
 
       // Verify world mat4 translation is correct
@@ -859,7 +860,7 @@ describe('pickVertexOnEntity', () => {
 
       const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
-      const position = meshRes.value.attributes.position as Float32Array;
+      const position = copyMeshAttribute(meshRes.value, 'position') as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
 
       // Verify world matrix reflects translation

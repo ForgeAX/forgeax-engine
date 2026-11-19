@@ -1,4 +1,4 @@
-import { defineComponent, Update } from '@forgeax/engine/ecs';
+import { defineComponent, defineSystem, Update } from '@forgeax/engine/ecs';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { ChildOf, Name, Transform, worldDespawnScene } from '@forgeax/engine/scene';
 
@@ -42,7 +42,7 @@ const plugin: Plugin.Object<{ readonly scene: string }> = {
     const branch = world.spawn({ component: Name, data: { value: 'Runtime branch' } }, { component: Transform, data: {} }).unwrap();
     let transient: typeof clock | undefined;
     let frame = 0;
-    world.addSystem(Update, {
+    const clockSystem = defineSystem({
       name: 'workspace-proof-clock', queries: [],
       fn() {
         if (fail) throw new Error('workspace-proof-intentional-system-failure');
@@ -60,9 +60,10 @@ const plugin: Plugin.Object<{ readonly scene: string }> = {
           transient = undefined;
         }
       },
-    }).unwrap();
+    });
+    world.addSystem(Update, clockSystem).unwrap();
     ctx.effect(() => () => {
-      world.removeSystem(Update, 'workspace-proof-clock').unwrap();
+      world.removeSystem(Update, clockSystem).unwrap();
       if (transient !== undefined) world.despawn(transient).unwrap();
       world.despawn(clock).unwrap();
       world.despawn(branch).unwrap();

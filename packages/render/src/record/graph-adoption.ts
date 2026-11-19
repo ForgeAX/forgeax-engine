@@ -1,4 +1,7 @@
-import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
+import {
+  type CompiledRenderGraph,
+  compiledRenderGraphGeneration,
+} from '@forgeax/engine-render-graph';
 import type { RenderError } from '../errors/render';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { retirePendingStandardOutputGpu } from '../pipeline/standard-output/resources';
@@ -87,6 +90,7 @@ export interface GraphEffects {
   readonly lightingSignature: string;
   /** Applied on `reused`, `promoted` and `compiled`. */
   readonly cloudHistoryActive: boolean;
+  readonly cloudHistoryFormat?: import('../cloud/reconstruction/history').CloudTransportFormat;
   readonly featureCandidate: RenderFeatureGraphCandidate | undefined;
   /** The post chain is still compiling: a settled candidate is abandoned rather than committed. */
   readonly postPending: boolean;
@@ -236,12 +240,13 @@ function installAdoptedGraph(
   stageCompiledFrameGraphCandidate(frameState, graph);
   frameState.compiledFrameGraphGeneration += 1;
   frameState.graphGeneration += 1;
+  const graphGeneration = compiledRenderGraphGeneration(graph);
   frameState.compiledFrameGraph =
-    installed.targets.graphGeneration === frameState.graphGeneration
+    installed.targets.graphGeneration === graphGeneration
       ? installed
       : {
           ...installed,
-          targets: { ...installed.targets, graphGeneration: frameState.graphGeneration },
+          targets: { ...installed.targets, graphGeneration },
         };
   commitGpuDrivenResourceReplacement(effects.gpuReplacement);
   if (fresh) recordGraphDeviceGeneration(internals, graph);
@@ -317,6 +322,8 @@ export function adoptViewGraph(
     };
   }
   frameState.pendingCloudHistoryActive = effects.cloudHistoryActive;
+  if (effects.cloudHistoryFormat === undefined) delete frameState.pendingCloudHistoryFormat;
+  else frameState.pendingCloudHistoryFormat = effects.cloudHistoryFormat;
   // The selected candidate owner retires the previous graph only after submit.
   return outcome.graph;
 }

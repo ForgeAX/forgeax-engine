@@ -43,6 +43,7 @@ import { buildFrameModel, decodeTape, replayDeviceRequest } from '@forgeax/engin
 import { createOwnedProcessGroupStopper } from './rhi-debug-process.mjs';
 import { pnpmCommand } from '../../../scripts/lib/pnpm-command.mjs';
 import browserLaunchConfig from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
+import { browserGpuLaunchOptions } from '../../../scripts/ci/browser-executable.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const RAW_TAPE_ROUTE = '/__forgeax-debug/tape';
@@ -83,12 +84,16 @@ const COMMON_BROWSER_WEBGPU_ARGS = Object.freeze([
  * Metal on a non-macOS host receives a setup error instead of an unrelated
  * backend being substituted.
  *
- * @param {{ platform?: string, backend?: string, ci?: boolean }} [options]
- * @returns {{ requestedBackend: string, selectedBackend: 'metal'|'swiftshader-vulkan', comparisonMode: string, args: string[] }}
+ * An explicit FORGEAX_BROWSER_GPU=native uses the maintained Windows native
+ * launch policy. An unset selector retains the software CI backend above.
+ *
+ * @param {{ platform?: string, backend?: string, gpu?: string, ci?: boolean }} [options]
+ * @returns {{ requestedBackend: string, selectedBackend: 'metal'|'swiftshader-vulkan'|'native', comparisonMode: string, args: string[] }}
  */
 export function resolveBrowserWebGpuLaunch({
   platform = process.platform,
   backend = process.env.FORGEAX_BROWSER_BACKEND ?? 'auto',
+  gpu = process.env.FORGEAX_BROWSER_GPU ?? 'software',
   ci = Boolean(process.env.CI),
 } = {}) {
   const requestedBackend = String(backend).trim().toLowerCase() || 'auto';
@@ -101,6 +106,23 @@ export function resolveBrowserWebGpuLaunch({
     throw new Error(
       `FORGEAX_BROWSER_BACKEND=metal requires macOS (platform=${platform}); refusing an implicit backend fallback`,
     );
+  }
+  if (!['software', 'native'].includes(gpu)) {
+    throw new Error('FORGEAX_BROWSER_GPU must be software or native');
+  }
+  if (gpu === 'native') {
+    if (requestedBackend !== 'auto') throw new Error('native requires the auto backend');
+    const launch = browserGpuLaunchOptions(
+      { args: [...COMMON_BROWSER_WEBGPU_ARGS, '--use-vulkan=swiftshader'] },
+      { FORGEAX_BROWSER_GPU: gpu, ...(ci ? { CI: 'true' } : {}) },
+      platform,
+    );
+    return {
+      requestedBackend,
+      selectedBackend: 'native',
+      comparisonMode: 'browser-native-vs-dawn-default',
+      args: launch.args,
+    };
   }
 
   const selectedBackend = requestedBackend === 'auto'

@@ -1,26 +1,28 @@
 {
   "schema": "forgeax-ui-blitz/2",
   "upstreamBase": "74fe1abf090732524c86d96e6cdb6f95d8f8d6dc",
-  "forkRevision": "45a003ce743e88d225eb0a8fc08ce37f50112317",
+  "forkRevision": "9018075413756f4e3196d4ad085c6a33bc9bb541",
   "forkDirty": false,
   "rust": "cargo 1.99.0 (5f94df478 2026-08-27)",
+  "rustToolchain": "1.99.0",
   "wasmBindgen": "0.2.129",
   "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
   "profile": "release",
-  "sourceDigest": "4c928bb10c5895a0be851ddd8b18035cc26e8bd92b8f9d1e2e032d7dbf03237d",
+  "sourceDigest": "ace9b4f72e9d3a8c3510e14bb7db15be532e361ff5ec967fd331ff1a3cef4b27",
   "inputs": {
     "packages/ui-blitz/Cargo.lock": "6dd8de56b7822694db88cc4cdb8bae4678347e50328bf3f1863e5b6d8daace0f",
     "packages/ui-blitz/Cargo.toml": "e64df485b0d0898a72e7fbe28eceb96cd2f9e53d71848e214f3b9da3a9ce42c4",
-    "packages/ui-blitz/rust/control_tests.rs": "f6dca194ef5391447897736303bd67789248b5b28da62d81796a80a1d52b13ee",
+    "packages/ui-blitz/rust/control_tests.rs": "b750f9c92bacb50c7683bf676609711cd1d06ffa9058c84a2cbff43b5a5d8572",
     "packages/ui-blitz/rust/focus_tests.rs": "edb3359f2b921a6f032c64aa924759479a472e24a84a4825b30b66a8bff9ec52",
     "packages/ui-blitz/rust/form_tests.rs": "29f0e6be07dcea666437a24d5396e81e7a94ca0952e7b5e33507b0180363001b",
     "packages/ui-blitz/rust/gpu.rs": "f51f309ff4071e79092648c302c98688201b2beeb0b60fbf14a00f9d2ae916f0",
     "packages/ui-blitz/rust/image_tests.rs": "0e6ffe0862c70043338c965757ae05bbce9f07e69c7fe2adf6472560bfde7c01",
-    "packages/ui-blitz/rust/lib.rs": "98f6d1899933f9c1084eaef32183a788c16aae669e9e404aba895818a3fe3370",
+    "packages/ui-blitz/rust/lib.rs": "73db70afca100d643fc156f2e57529a997b563ad5f820bcf9b2fa726a75dd939",
     "packages/ui-blitz/rust/resources.rs": "6b5a99190e2308a6535441139761a5eae9c7d05e22620bc8116af9d65a0f4564",
     "packages/ui-blitz/rust/scroll_tests.rs": "bad72d5586ce760630cac0d33b11e32ad04aecc347d5453c7646ac2e7250459e",
     "packages/ui-blitz/rust/test-assets/aspect-pattern.txt": "c9f46a837298d171e114a9b636266b453315b8e5b4d7527fa360559bc5886d98",
-    "packages/ui-blitz/scripts/build-wasm.mjs": "dbdd78e349c6e5ede08d21270c05bbe291d312d1637f4ab30ef971e55124b79e",
+    "packages/ui-blitz/rust/text_tests.rs": "dd3b0f6fe16d6f70b512cb11f76e50a4ebb0df39de1a50643a1065d6bcd81a3b",
+    "packages/ui-blitz/scripts/build-wasm.mjs": "cccd2a6b07e1371783e478c73e70f0daf826379c1c37e24f6c8330ede437ebb8",
     "packages/ui-blitz/scripts/content-key.mjs": "9844eb3aa7c41b27e37ae4f329c07f7b589c0ef10875f747fff9a7d831e62811",
     "packages/ui-blitz/scripts/ensure-wasm.mjs": "3086afdc1be6ad5a247b03fee526adb5e8bc08bbdd3c1bc83ad0803ab1a77fc4",
     "packages/ui-blitz/scripts/fetch-wasm.mjs": "52e8e503831130ad8a537e44f5e41f8634037574adcf9676927268667d69c598",
@@ -241,10 +243,10 @@
     "third_party/blitz/packages/blitz-paint/src/render/border.rs": "05f5d6c42dd85de15d0422242aa7dd04109c4e27ae05f8b31ec62b217a6025d3",
     "third_party/blitz/packages/blitz-paint/src/render/box_shadow.rs": "1dc357060cfb0c5d090a28563fb6169ef524566f2ef38e6878afa132154e45d3",
     "third_party/blitz/packages/blitz-paint/src/render/clip_path.rs": "7463a44e1ea20db001af5fa2fd20a0142a2bd091d50a83847be457bc41c30f87",
-    "third_party/blitz/packages/blitz-paint/src/render/form_controls.rs": "1ee6d01caacd63891219d5f64337d3eb2a9dea7609ef56c5acfcb82579cb7a5b",
+    "third_party/blitz/packages/blitz-paint/src/render/form_controls.rs": "9ca3600ffdae0252f76e3cc728287dbc9fddaaf441730c1421ce14d30ac10a6a",
     "third_party/blitz/packages/blitz-paint/src/render/mask.rs": "a2d7b3f97fdcc20a8c6d8ef3d2c325748e7863407d2035dcda62b04f64da3309",
     "third_party/blitz/packages/blitz-paint/src/sizing.rs": "c2d284d77f7e153793e820f93da61a237c5876f496a426e54a860e90489000db",
-    "third_party/blitz/packages/blitz-paint/src/text.rs": "f59e16e33068c9638d401442982bae1774208c9a1657dc040568b6cf10e2c24f",
+    "third_party/blitz/packages/blitz-paint/src/text.rs": "61582834c8c6f080e4a8151e966d1aaf63cd3c8b2a9bb1fd59b7d7ce36556beb",
     "third_party/blitz/packages/blitz-shell/Cargo.toml": "689bb0617bf69a84a90ccbf45f219e7a862403f699653be82e627a3e41a24b4d",
     "third_party/blitz/packages/blitz-shell/src/accessibility.rs": "27f343fe224d191e778e3c2ad4d299edf0f19fe63b51636027a43c3286472d7b",
     "third_party/blitz/packages/blitz-shell/src/application.rs": "7d45266958af1521e925287524e4cf41d0cb7d9e22c701244f8ec3a3cd053771",
@@ -416,13 +418,13 @@
     "third_party/blitz/vendor/stylo/properties/gecko.mako.rs": "894aa4b7e761318c397777e6b9360fcc875ae980e1131102767a98c52319b335",
     "third_party/blitz/vendor/stylo/properties/helpers.mako.rs": "5eef3226e991cf0647b8743680459971f8125f8461b431517b0c047da499c3dc",
     "third_party/blitz/vendor/stylo/properties/helpers/animated_properties.mako.rs": "53d661dd309afee7f375025eb36cef7c32304f361c764b4467394167954a804b",
-    "third_party/blitz/vendor/stylo/properties/longhands.toml": "4bc3139425754226519868cca013d2508f16351d4d74a7f13be09d2b286540cb",
+    "third_party/blitz/vendor/stylo/properties/longhands.toml": "495c15d978018f0097ecfc981b072b9fb95ac531989deb1c8e739c7b4a0f44dd",
     "third_party/blitz/vendor/stylo/properties/mod.rs": "2c0f82a3f6c93d56cf6a52b1c6e781547e7cf1e0f3ca5c7796a80d179397fe82",
     "third_party/blitz/vendor/stylo/properties/properties.html.mako": "97246aeb9b32acae09f616d88ce62e5fd580c6f07939b7900120d1cdd63949ce",
     "third_party/blitz/vendor/stylo/properties/properties.mako.rs": "5990df40508e435dc12132f10a69d6a1ac3897009235f5bd71a7a8452d9a40af",
     "third_party/blitz/vendor/stylo/properties/property_descriptors.toml": "c90685126a3f30a552cc4a6ef89985b40792a77e17ba9d2ae0b158d060bf5f70",
-    "third_party/blitz/vendor/stylo/properties/shorthands.rs": "189c5cdc2bd7938889ef0e172109925f69fb4b5bbf601247eef75933a0e93d63",
-    "third_party/blitz/vendor/stylo/properties/shorthands.toml": "d12c652a4f67bbd123d48d03df75ad0016fd647e4ed13c7d950dec30766331dd",
+    "third_party/blitz/vendor/stylo/properties/shorthands.rs": "da7ffefd3f308317ba60d2de04cc626aecff8d6859bd1a8f11c5aa0a353054a3",
+    "third_party/blitz/vendor/stylo/properties/shorthands.toml": "36333e5370e47e4e5467191ca28d2b48545168fb7054680b144d3c3edf17d0df",
     "third_party/blitz/vendor/stylo/properties/vendored_python/mako-1.3.10-py3-none-any.whl": "baef24a52fc4fc514a0887ac600f9f1cff3d82c61d4d700a1fa84d597b88db59",
     "third_party/blitz/vendor/stylo/properties/vendored_python/markupsafe/LICENSE.txt": "6baf29b91ec1ad4fce1bfd2e27abf84547d8f73e99f087ee9c63d3ae3296c7b2",
     "third_party/blitz/vendor/stylo/properties/vendored_python/markupsafe/__init__.py": "13d7034c5c70cf23c6e2200e3e7bdb05f5218a4953c99243da0ee00876519d40",
@@ -2217,8 +2219,8 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 17035120,
-      "sha256": "fa276ba25c91786b6db51c765f6f2ee75362530bf4eaa829ed7e84a8988f9851"
+      "bytes": 17073853,
+      "sha256": "ef8d40053d3c4358b298d5a127dbf12b2317eb175d5026843c60122c2dc8e48f"
     },
     "ui_blitz_bg.wasm.d.ts": {
       "bytes": 8798,
@@ -2234,7 +2236,7 @@
     },
     "ui-native.mjs": {
       "bytes": 44084,
-      "sha256": "5f6312192017710acacd9baeaaaf335627813c507f66632c99d29644957ad97e"
+      "sha256": "f2a4a36724d83dcc748e62d5f3098f147540862b1a7faf7c45280f02e51bafea"
     },
     "ui-native.d.mts": {
       "bytes": 5281,

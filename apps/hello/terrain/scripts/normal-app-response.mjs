@@ -30,7 +30,9 @@ try {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForFunction(() => window.__terrainHmrProbe && !window.__terrainHmrProbe.state().gate.blocked, {}, { timeout: 300000 });
   const hostRequestUtcMs = Date.now();
-  const report = await page.evaluate(async ({ queryUrl }) => {
+  const report = await page.evaluate(async ({ queryUrl, resourcesUrl, physicsUrl }) => {
+    const { TerrainWalkerResource } = await import(resourcesUrl);
+    const { PhysicsWorldResource } = await import(physicsUrl);
     const { terrainHeight } = await import(queryUrl);
     const { app } = window.__terrain;
     const probe = window.__terrainHmrProbe;
@@ -68,7 +70,7 @@ try {
             const [x,y,z] = submitted.position;
             const rayZ = z + 3;
             const expectedCollisionHeight = terrainHeight(root, x, rayZ);
-            const hit = app.world.getResource('PhysicsWorld').raycast(new Float32Array([x,y+20,rayZ]), new Float32Array([0,-1,0]), 100);
+            const hit = app.world.getResource(PhysicsWorldResource).raycast(new Float32Array([x,y+20,rayZ]), new Float32Array([0,-1,0]), 100);
             Object.assign(sample, { ray: { x, z: rayZ }, expectedCollisionHeight, hit: hit ? { entity: hit.entity, point: Array.from(hit.point), timeOfImpact: hit.timeOfImpact } : null,
               collisionError: hit && expectedCollisionHeight !== undefined ? Math.abs(expectedCollisionHeight-hit.point[1]) : null,
               walkerAuthorHeight: terrainHeight(root,x,z), walkerFootError: Math.abs(y-1-terrainHeight(root,x,z)) });
@@ -95,9 +97,9 @@ try {
       });
     } finally {
       clearTimeout(timer); unsubscribe?.();
-      app.world.getResource('TerrainWalker').speed = 0;
+      app.world.getResource(TerrainWalkerResource).speed = 0;
     }
-  }, { queryUrl: '/@fs' + resolve(root,'packages/terrain/src/query.ts') });
+  }, { queryUrl: '/@fs' + resolve(root,'packages/terrain/src/query.ts'), resourcesUrl: '/@fs' + resolve(root,'apps/hello/terrain/src/ecs-resources.ts'), physicsUrl: '/@fs' + resolve(root,'packages/physics/dist/index.mjs') });
   writeFileSync(resolve(dir,'report.json'), JSON.stringify({ ...report, hostRequestUtcMs, hostRequestToToolIntentAppliedMs: report.intentUtcMs - hostRequestUtcMs, browserBackend: resolveBrowserWebGpuLaunch(), browserConsoleErrors: errors, hostRequestBoundary: 'Host evaluate request to tool intent, including owner module import and fixture setup; not isolated transport latency.' }, null, 2));
   await page.screenshot({ path: resolve(dir,'normal-app-after-intent.png') });
   assert.equal(report.status,'COMPLETE');

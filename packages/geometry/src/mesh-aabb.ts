@@ -1,26 +1,19 @@
 import { isFiniteBounds3, type MeshAsset as TypesMeshAsset } from '@forgeax/engine-types';
+import { meshAttributeWindow } from './mesh-storage';
 
 /** Derive local bounds from canonical positions; empty geometry has finite zero bounds. */
 function computeAABB(asset: TypesMeshAsset): Float32Array {
-  const pos = asset.attributes.position;
-  // Canonical admission validates position storage before this bounds projection.
-  let floatPos: Float32Array;
-  if (pos instanceof Float32Array) {
-    floatPos = pos;
-  } else if (pos instanceof ArrayBuffer) {
-    floatPos = new Float32Array(pos);
-  } else {
-    return emptyBox();
-  }
-  if (floatPos.length < 3) return emptyBox();
-
-  let minX = floatPos[0] ?? 0;
-  let minY = floatPos[1] ?? 0;
-  let minZ = floatPos[2] ?? 0;
+  const position = meshAttributeWindow(asset, 'position');
+  if (position === undefined || position.count < 1) return emptyBox();
+  const { data: floatPos, stride, offset, count } = position;
+  let minX = floatPos[offset] ?? 0;
+  let minY = floatPos[offset + 1] ?? 0;
+  let minZ = floatPos[offset + 2] ?? 0;
   let maxX = minX;
   let maxY = minY;
   let maxZ = minZ;
-  for (let i = 3; i < floatPos.length; i += 3) {
+  for (let row = 1; row < count; row++) {
+    const i = offset + row * stride;
     const x = floatPos[i] ?? 0;
     const y = floatPos[i + 1] ?? 0;
     const z = floatPos[i + 2] ?? 0;
@@ -57,7 +50,11 @@ export function withMeshAabb(asset: TypesMeshAsset): TypesMeshAsset {
   // Packed mesh binaries intentionally omit `attributes.position`; their
   // producer-computed AABB is the only available culling fact. Preserve it
   // instead of replacing it with the empty-box result from computeAABB().
-  if (!hasPositionData(asset.attributes.position) && isFiniteAabb(asset.aabb)) {
+  if (
+    asset.attributeStorage !== 'interleaved' &&
+    !hasPositionData(asset.attributes.position) &&
+    isFiniteAabb(asset.aabb)
+  ) {
     return asset;
   }
   const aabb = computeAABB(asset);

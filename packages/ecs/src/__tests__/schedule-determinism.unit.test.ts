@@ -1,23 +1,27 @@
 import { describe, expect, it } from 'vitest';
+import { defineSystem } from '../schedule';
 import { FixedUpdate, Update } from '../schedule-token';
 import { World } from '../world';
 
 function runTrace(deltas: readonly number[]): string[] {
   const world = new World();
   const trace: string[] = [];
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'before-fixed',
     queries: [],
     before: [FixedUpdate],
     fn: () => trace.push('before'),
   });
-  world.addSystem(FixedUpdate, { name: 'fixed', queries: [], fn: () => trace.push('fixed') });
-  world.addSystem(Update, {
+  world.addSystem(Update, systemToken1);
+  const systemToken2 = defineSystem({ name: 'fixed', queries: [], fn: () => trace.push('fixed') });
+  world.addSystem(FixedUpdate, systemToken2);
+  const systemToken3 = defineSystem({
     name: 'after-fixed',
     queries: [],
     after: [FixedUpdate],
     fn: () => trace.push('after'),
   });
+  world.addSystem(Update, systemToken3);
 
   for (const delta of deltas) expect(world.update(delta).ok).toBe(true);
   return trace;

@@ -27,35 +27,64 @@ export function encodeFrameObservationCapture(
     readonly texture: Texture;
     readonly format: TextureFormat;
     readonly domain: FrameObservationDomain;
+    readonly featureTexture?: Readonly<{
+      featureIdentity: string;
+      name: string;
+      targetName: string;
+      viewIdentity?: string;
+    }>;
     readonly surfaceRecords?: Uint32Array | undefined;
     readonly width: number;
     readonly height: number;
     readonly frameNumber: number;
-    readonly graphGeneration: number;
+    readonly graphGeneration: number | undefined;
   },
 ): void {
   if (input.domain === 'final-display' && runtime.deferFinalDisplayObservation === true) return;
   const owner = recordContext(runtime).observationCaptureOwner;
   if (
     owner === undefined ||
-    !recordContext(runtime).observationCaptureDomains?.includes(input.domain)
+    (input.featureTexture === undefined &&
+      !recordContext(runtime).observationCaptureDomains?.includes(input.domain))
   )
     return;
-  if (
-    input.domain === 'visible-surface' &&
-    (input.format !== 'rgba32uint' || input.surfaceRecords === undefined)
-  ) {
-    throw new RhiError({
-      code: 'rhi-descriptor-invalid',
-      expected: 'visible-surface pixels and their same-frame row projection',
-      hint: 'retain the actual raster projection with its graph copy',
-    });
-  }
+  const validateCaptureContract = (): number => {
+    if (input.graphGeneration === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'the current compiled graph identity for a demanded frame observation',
+        hint: 'set the execution graph fence before recording its capture passes',
+      });
+    if (
+      input.domain === 'visible-surface' &&
+      (input.format !== 'rgba32uint' || input.surfaceRecords === undefined)
+    ) {
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'visible-surface pixels and their same-frame row projection',
+        hint: 'retain the actual raster projection with its graph copy',
+      });
+    }
+    return input.graphGeneration;
+  };
+  const graphGeneration = validateCaptureContract();
   const { bytesPerRow, byteLength } = textureReadbackLayout(
     input.width,
     input.height,
     textureFormatBlock(input.format),
   );
+  const frameNumber = runtime.observationFrameId ?? input.frameNumber;
+  if (input.featureTexture !== undefined) {
+    const claimed = owner.claimFeatureTextureReadback?.(frameNumber, {
+      ...input.featureTexture,
+      format: input.format,
+      width: input.width,
+      height: input.height,
+      bytesPerRow,
+      byteLength,
+    });
+    if (claimed !== undefined && !claimed.ok) throw claimed.error;
+  }
   const created = runtime.device.createBuffer({
     label: `${input.domain}-observation-readback`,
     size: byteLength,
@@ -69,10 +98,10 @@ export function encodeFrameObservationCapture(
       { buffer: created.value, bytesPerRow, rowsPerImage: input.height },
       { width: input.width, height: input.height, depthOrArrayLayers: 1 },
     );
-    runtime.observationGraphGeneration = input.graphGeneration;
     const { surfaceRecords: _records, ...captureInput } = input;
     owner.register({
       ...captureInput,
+      graphGeneration,
       ...(input.surfaceRecords === undefined
         ? {}
         : { surfaceRecords: input.surfaceRecords.slice() }),
@@ -81,7 +110,7 @@ export function encodeFrameObservationCapture(
         : {}),
       device: runtime.device,
       buffer: created.value,
-      frameNumber: runtime.observationFrameId ?? input.frameNumber,
+      frameNumber,
       deviceGeneration: recordContext(runtime).deviceGeneration ?? 0,
       backendId: runtime.device.caps.backendKind,
       bytesPerRow,

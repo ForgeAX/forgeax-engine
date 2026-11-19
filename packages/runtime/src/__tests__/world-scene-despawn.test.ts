@@ -11,7 +11,7 @@ import { testAssets } from './helpers/runtime-assets';
 //     (no SceneInstance required);
 //   - opts.keepDetached preserves members marked via detachSceneMember.
 
-import { World } from '@forgeax/engine-ecs';
+import { defineComponent, Entity, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { SceneInstance } from '@forgeax/engine-render';
 import {
   ChildOf,
@@ -19,6 +19,7 @@ import {
   worldDespawnDescendants,
   worldDespawnScene,
   worldDetachSceneMember,
+  worldGetSceneInstanceState,
   worldInstantiateScene,
 } from '@forgeax/engine-scene';
 import type { SceneAsset } from '@forgeax/engine-types';
@@ -62,6 +63,65 @@ describe('world.despawnScene (w19)', () => {
     expect(world.get(m1 as never, Transform).ok).toBe(false);
   });
 
+  it.each([
+    true,
+    false,
+  ])('retires the mount carrier and mapped members with ChildOf registered: %s', (hierarchy) => {
+    const world = new World();
+    world.components.register(SceneInstance).unwrap();
+    world.components.register(Transform).unwrap();
+    if (hierarchy) world.components.register(ChildOf).unwrap();
+    const assets = testAssets(world);
+    const nested = assets
+      .create({
+        kind: 'scene',
+        entities: { member: { components: { Transform: {} } } },
+      })
+      .unwrap();
+    const outer = assets
+      .create({
+        kind: 'scene',
+        entities: { carrier: { components: {}, instance: { source: nested } } },
+      })
+      .unwrap();
+    const { root } = worldInstantiateScene(world, outer).unwrap();
+    const [carrier, member] = world.get(root, SceneInstance).unwrap()
+      .mapping as unknown as readonly EntityHandle[];
+    const [nestedRoot] = worldGetSceneInstanceState(world, root).unwrap().mountRoots;
+    if (member === undefined || carrier === undefined || nestedRoot === undefined)
+      throw new Error('missing mount ownership fixture');
+    expect(world.hasComponent(member, Transform)).toBe(true);
+    expect(world.hasComponent(nestedRoot, SceneInstance)).toBe(true);
+    const external = world.spawn().unwrap();
+    if (hierarchy) world.reparent(member, external, ChildOf, {}).unwrap();
+
+    expect(worldDespawnDescendants(world, root).unwrap()).toBe(3);
+    for (const entity of [carrier, member, nestedRoot])
+      expect(world.hasComponent(entity, Entity)).toBe(false);
+    expect(world.hasComponent(external, Entity)).toBe(true);
+    expect(world.hasComponent(root, SceneInstance)).toBe(true);
+  });
+
+  it('uses live instance ownership when the physical mapping is empty', () => {
+    const world = new World();
+    world.components.register(SceneInstance).unwrap();
+    world.components.register(Transform).unwrap();
+    const source = testAssets(world)
+      .create({
+        kind: 'scene',
+        entities: { member: { components: { Transform: {} } } },
+      })
+      .unwrap();
+    const { root } = worldInstantiateScene(world, source).unwrap();
+    const [member] = worldGetSceneInstanceState(world, root).unwrap().entityToLocalId.keys();
+    if (member === undefined) throw new Error('missing owned member');
+    world.set(root, SceneInstance, { mapping: [] }).unwrap();
+
+    expect(worldDespawnDescendants(world, root).unwrap()).toBe(1);
+    expect(world.hasComponent(member, Entity)).toBe(false);
+    expect(world.hasComponent(root, SceneInstance)).toBe(true);
+  });
+
   it('keepDetached: true skips members marked detached', () => {
     const world = new World();
     const asset: SceneAsset = {
@@ -91,6 +151,19 @@ describe('world.despawnScene (w19)', () => {
 });
 
 describe('world.despawnDescendants (w19)', () => {
+  it('follows Scene children without retiring entities referenced by component data', () => {
+    const Links = defineComponent('SceneDespawnReferences', { entities: 'array<entity>' });
+    const world = new World();
+    const external = world.spawn().unwrap();
+    const root = world.spawn({ component: Links, data: { entities: [external] } }).unwrap();
+    const child = world.spawn({ component: ChildOf, data: { parent: root } }).unwrap();
+
+    expect(worldDespawnDescendants(world, root).unwrap()).toBe(1);
+    expect(world.hasComponent(root, Entity)).toBe(true);
+    expect(world.hasComponent(external, Entity)).toBe(true);
+    expect(world.hasComponent(child, Entity)).toBe(false);
+  });
+
   it('despawns descendants but keeps root alive', () => {
     const world = new World();
     const root = world.spawn({ component: Transform, data: {} });

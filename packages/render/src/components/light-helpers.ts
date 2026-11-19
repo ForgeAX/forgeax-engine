@@ -1,3 +1,4 @@
+import { SpawnLightInvalidBoundsError } from '../errors/component-validation';
 // @forgeax/engine-render - host-side light helpers (M2 / w12).
 //
 // Pure-function single-shot conversion helpers for the SpotLight + PointLight
@@ -15,7 +16,7 @@
 // invRangeSquared = 1e8 protects the 0 * Infinity = NaN intermediate).
 
 import { err, ok, R_MIN, type Result } from '@forgeax/engine-types';
-import { SpawnLightInvalidBoundsError } from '../errors/ecs-validation';
+
 import { ShadowInvalidConfigError } from '../errors/render';
 import { DirectionalLight } from './directional-light';
 import { DirectionalShadowFilterValue } from './directional-shadow-filter';

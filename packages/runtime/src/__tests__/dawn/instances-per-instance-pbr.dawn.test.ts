@@ -517,11 +517,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
 
     for (let i = 0; i < 5; i++) {
       worldN2.update(1 / 60).unwrap();
-      await drawReadyFrame(renderer2, {
-        leases: [attachmentN2.value],
-        camera: { lease: attachmentN2.value },
-        environment: { lease: attachmentN2.value },
-      });
+      await drawReadyFrame(renderer2, { source: attachmentN2.value });
     }
 
     const device2 = sharedDevice2;
@@ -591,17 +587,14 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
       },
       { component: Camera, data: { fov: (45 * Math.PI) / 180, aspect: 1, near: 0.1, far: 200 } },
     );
+    attachmentN2.value.dispose();
     const attachment12 = renderer2.attach(world12);
     expect(attachment12.ok).toBe(true);
     if (!attachment12.ok) throw attachment12.error;
 
     for (let i = 0; i < 5; i++) {
       world12.update(1 / 60).unwrap();
-      await drawReadyFrame(renderer2, {
-        leases: [attachment12.value],
-        camera: { lease: attachment12.value },
-        environment: { lease: attachment12.value },
-      });
+      await drawReadyFrame(renderer2, { source: attachment12.value });
     }
     await device2.queue.onSubmittedWorkDone();
 

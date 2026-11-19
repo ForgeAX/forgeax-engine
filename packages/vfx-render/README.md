@@ -2,6 +2,11 @@
 
 Production RenderFeature and host for persistent GPU particle simulation and indirect billboard, mesh, ribbon, trail, and beam drawing.
 
+Stock lit Mesh programs consume the receiving View's native lighting projection.
+Their prepared graphics resolver selects the same modifier-free lighting axis as
+ordinary geometry; per-view and per-frame variant identity preserves transitions
+back to the full program. Unlit and custom shaders retain their authored variants.
+
 ## Host recipe
 
 ```ts
@@ -27,6 +32,12 @@ Create the host before the Renderer and pass `host.feature` at Renderer
 construction. `attachWorld` installs the VFX asset decoder and one Update intent producer;
 `detachWorld` releases both. The asset owner resolves Material/Mesh dependencies at effect
 admission. The Host borrows those accepted handles and owns no GUID loader or asset cache.
+
+Each independent Renderer installs its own Feature instance. Use
+`host.createRenderFeature()` for another single-source Renderer sharing this
+host's World controls. Pass receiver-owned providers to that factory when GPU
+resources belong to another device; its plan caches and recovery state remain
+separate from `host.feature`.
 
 The stock host captures each material reference once per synchronous World extraction,
 sharing that frame's values and admitted program projection across particle Players.
@@ -113,7 +124,13 @@ empty view work. First playback enters ordinary planning; later empty frames
 retain the normal retirement and recovery path.
 
 A view plan includes only the shared resources its own declarations reference;
-per-tick simulation inputs stay in the frame graph. An emitter retains the tick slots of its largest admitted batch; fewer or zero queued ticks disable the unused simulation/history passes and omit their uploads. Fixed/render cadence changes do not rebuild that topology, and only submitted active ticks advance the source acknowledgement. View visibility toggles
+per-tick simulation inputs stay in the frame graph. Tick capacity grows immediately
+with admitted work and retains its slots across ordinary cadence changes. After
+120 plans below capacity it shrinks to the largest demand in that window; a full
+batch renews the window. This bounded hysteresis avoids permanent empty slots
+after one catch-up burst. Fewer or zero queued ticks disable unused passes and
+omit their uploads. Shrinking retains particle storage and does not reset live
+particles. Only submitted active ticks advance source acknowledgement. View visibility toggles
 execution of retained copy/projection/raster declarations through `enabled`.
 Camera motion and display cadence therefore do not invalidate view topology;
 resource replacement, capacity changes and emitter lifetime still follow
@@ -174,6 +191,27 @@ producer. Explicit unavailability, stale resources, wrong types, and duplicate
 providers defer the affected emitter stream. The feature only advances its
 submission ledger after all declared frame passes appear in the submission
 receipt; source feedback is acknowledged once after the Renderer submits.
+
+## Water-surface grid emission
+
+The `vfx:water-surface` provider returns one generation-qualified grid and
+solver-normal pair with Water body, source-lineage, source-frame and domain
+identity. Reject partial, stale or mixed-frame pairs. Asset-backed views carry
+exact asset GUID/revisions; same-frame graph outputs keep their logical target.
+
+Planning requires the accepted domain cell count to fit `scanCellCapacity`,
+then declares both views and the domain in the ordinary VFX RenderFeature plan.
+GPU scan, prefix and append work stays in shared simulation; it has no particle
+readback. `maxParticlesPerFrame` limits only Water appends, not scheduled
+births. Graph-produced views live with their graph target/frame; Pack views
+resolve and pin the accepted revision for the exact prepared texture view.
+That view keeps its residency lease until its graph resource item retires after
+the submission fence. The authoring contract is in the VFX package's
+[Water-grid emission section](../vfx/README.md#water-grid-emission-and-translucent-sphere-billboards).
+
+Engine Worker texture readbacks require explicit `featureTextureReadbackBudgetBytes`;
+a non-empty roster without the aggregate cap fails preflight. This readback
+budget does not limit VFX particles, and Water sampling uses GPU views directly.
 
 ## Managed scene SDF collision
 
@@ -243,8 +281,8 @@ world-distance and custom sorting keep their existing keys.
 | Shared indirect counts | Emitter instance | Compaction owns instance counts |
 | View indices, counters, indirect commands, trail scratch | View and renderer instance | GPU copy from shared state before view sorting and projection |
 | Tick uniforms | Bounded ring | One small write per tick |
-| Program v3 Parameters | Emitter instance | One snapshot write per tick when declared |
-| Program v3 Custom | Emitter instance | GPU-persistent; no per-particle CPU mirror |
+| Schema-v3 Parameters | Emitter instance | One snapshot write per tick when declared |
+| Schema-v3 Custom | Emitter instance | GPU-persistent; no per-particle CPU mirror |
 | Renderer projection instances | View and renderer instance | None after allocation |
 | Mesh geometry/index data | Prepared graphics cache | Initial upload |
 | Ribbon strip resources | Ribbon renderer | Initial allocation; GPU indirect count |
@@ -280,7 +318,7 @@ use the same owner path.
 
 - Billboard projection uses camera right/up, particle width/height, and the v3 `sprite_rotation`; color and HDR material values are packed per renderer on GPU.
 - Mesh renderers consume the explicitly selected `MeshAsset` submesh geometry/index data and one independent projected instance stream per renderer.
-- Program v3 Mesh projection writes world-space center and Quaternion/Scale3 basis
+- Schema-v3 Mesh projection writes world-space center and Quaternion/Scale3 basis
   data. The built-in Mesh adapter supplies geometry inputs to the same Standard
   surface evaluator as scene Mesh. Render owns lighting preparation, topology
   variants, effective material values, Skylight inputs, and Cluster bindings;
@@ -394,6 +432,12 @@ channel submissions retain the existing typed channel/event/sub-emitter path.
 Missing players, invalid instance input, stale generations, and detached
 worlds all return the closed `VfxRuntimeHostControlError` union. There is no
 open Data Interface or second channel registry.
+
+A render-prepared player may be paused with `preparePipelines: true` before it
+has a typed instance. Control lazily creates that instance from the already
+accepted reflected player state; this does not advance time or queue a
+simulation tick. A parameter patch made before play is consumed by the first
+active Update, together with the effect's time-zero burst.
 
 The render feature also exposes `feature.inspect()` as a bounded
 `VfxRenderObservation`. `frameNumber`, `dispatches`, `indirectDraws`, and

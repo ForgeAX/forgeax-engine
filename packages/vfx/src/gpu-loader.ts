@@ -85,7 +85,7 @@ export async function prepareVfxGpuEffect(
       'vfx-asset-version-unsupported',
       input.guid,
       'schemaVersion',
-      'schemaVersion 3 / forgeax-vfx-program-4',
+      'schemaVersion 3 / forgeax-vfx-program-5',
       'cold-cook the older source and publish a program format 4 payload; older versions are not executable',
     );
   }

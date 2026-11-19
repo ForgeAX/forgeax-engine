@@ -1,0 +1,121 @@
+@import "./suite.css";
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  color: #deebe7;
+  background: #10242b;
+  font:
+    13px / 1.5 system-ui,
+    sans-serif;
+}
+canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  outline: none;
+}
+#controls-panel {
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  width: 330px;
+  padding: 20px;
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  background: #10262bea;
+  border: 1px solid #82b4a940;
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+}
+h1 {
+  font-size: 24px;
+  line-height: 1.25;
+  margin: 8px 0 14px;
+}
+h2 {
+  font-size: 15px;
+}
+small {
+  color: #95cfc1;
+  letter-spacing: 0.12em;
+}
+p {
+  color: #adc4bf;
+}
+button,
+select,
+input {
+  color: #d7e9e3;
+  border: 1px solid #82b4a945;
+  background: #23453f;
+  padding: 7px 9px;
+  border-radius: 6px;
+  max-width: 100%;
+}
+button {
+  cursor: pointer;
+  margin: 5px 0;
+}
+pre {
+  font: 10px / 1.5 monospace;
+  max-height: 250px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+#hero {
+  position: fixed;
+  left: 24px;
+  top: 22px;
+  text-shadow: 0 2px 12px #0009;
+  pointer-events: none;
+  max-width: calc(100vw - 400px);
+}
+@media (max-width: 760px) {
+  #controls-panel {
+    right: 8px;
+    top: auto;
+    bottom: 8px;
+    width: calc(100vw - 16px);
+    max-height: 40vh;
+  }
+  #hero {
+    max-width: calc(100vw - 48px);
+  }
+}
+.r0-lifecycle-legend {
+  position: fixed;
+  left: 2%;
+  right: 32%;
+  bottom: 3%;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  pointer-events: none;
+}
+.r0-lifecycle-legend div {
+  padding: 12px 15px;
+  background: rgba(8, 23, 28, 0.88);
+  border: 1px solid #96794b;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0005;
+}
+.r0-lifecycle-legend strong,
+.r0-lifecycle-legend span {
+  display: block;
+  color: #ead2a5;
+}
+.r0-lifecycle-legend span {
+  color: #9bd6cb;
+  font-size: 12px;
+  margin-top: 6px;
+}
+@media (max-width: 700px) {
+  .r0-lifecycle-legend {
+    right: 2%;
+    grid-template-columns: repeat(2, 1fr);
+    top: 105px;
+    bottom: auto;
+  }
+}

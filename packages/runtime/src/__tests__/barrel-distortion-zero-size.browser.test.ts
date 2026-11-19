@@ -64,11 +64,7 @@ it('keeps a zero-size surface out of the accepted barrel frame and resumes after
         if (attached === undefined || !attached.ok) throw attached?.error;
         lease = attached.value;
         world.update(1 / 60).unwrap();
-        const result = renderer?.draw({
-          leases: [attached.value],
-          camera: { lease: attached.value, entityKey: camera },
-          environment: { lease: attached.value },
-        });
+        const result = renderer?.draw({ source: attached.value, camera: { entityKey: camera } });
         expect(result).toBeDefined();
         return result;
       };

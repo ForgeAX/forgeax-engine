@@ -160,7 +160,7 @@ it('prepares final-display observation before a generation-bound target copy', a
     { component: Transform, data: { pos: [0, 0, 4], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: Camera, data: perspective({ fov: Math.PI / 3, aspect: 1 }) },
   );
-  const input = { leases: [lease], camera: { lease }, environment: { lease } };
+  const input = { source: lease };
   const finalDisplayPassReceipts: number[] = [];
   const draw = async () => {
     if (renderer.requestObservation === undefined) {

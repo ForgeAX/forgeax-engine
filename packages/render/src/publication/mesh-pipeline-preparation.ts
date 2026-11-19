@@ -1,29 +1,15 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import type { MaterialShaderEntry, RegisteredMaterialShaderEntry } from '@forgeax/engine-shader';
 import { type AssetHandle, err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
 import { Instances } from '../components/instances';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { candidateSkinBindingValid, readCandidateSkinBinding } from './candidate-skin-binding';
 import type { MeshPipelinePreparation } from './contract';
-import { publicationMaterialProgramKeys } from './programs';
-
-// Program delivery is selected by the publisher after capture. Borrow text only
-// when an unpublished entry is actually serialized across the Worker boundary.
-function publicationShader(entry: RegisteredMaterialShaderEntry): MaterialShaderEntry {
-  const program = entry.program;
-  return {
-    get source() {
-      return program.source;
-    },
-    paramSchema: entry.paramSchema,
-    ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
-  };
-}
+import { capturePublicationProgram, publicationMaterialProgramKeys } from './programs';
 
 /** A Skin capture prepares only the exact Skin programs selected for its passes. */
 function skinPassProgramError(
@@ -74,11 +60,11 @@ export function captureMeshPipelinePreparation(input: {
       return invalid('candidate Skin layout, Skeleton or live joint membership is unavailable');
     if (skin !== undefined && input.world.hasComponent(input.entity as EntityHandle, Instances))
       return invalid('Skin and expanded instance geometry require distinct owners');
-    const frame = extractFrames([input.world], 0, input.assets, undefined, {
+    const frame = extractSource(input.world, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
       cull: 'none',
       retainHidden: true,
-      renderables: { kind: 'partial', entitiesByWorld: [new Set([input.entity])] },
+      renderables: { kind: 'partial', entities: new Set([input.entity]) },
       preparationMesh: input,
     });
     const row = frame.renderables.find((row) => row.entityKey === input.entity);
@@ -106,21 +92,16 @@ export function captureMeshPipelinePreparation(input: {
     );
     if (programError !== undefined) return invalid(programError);
     const programs = new Map<string, MeshPipelinePreparation['programs'][number]>();
-    for (const material of row.materials) {
-      for (const key of publicationMaterialProgramKeys(material.snapshot)) {
-        if (programs.has(key)) continue;
-        const shader = input.assets.shaderRegistry.findMaterialArtifact(key);
-        if (!shader.ok) return invalid(shader.error);
-        const artifact = input.assets.getMaterialArtifact(key);
-        programs.set(key, {
-          key,
-          shader: publicationShader(shader.value),
-          ...(artifact === undefined ? {} : { artifact }),
-        });
-      }
-    }
+    const captureProgram = (key: string): void => {
+      if (programs.has(key)) return;
+      const row = capturePublicationProgram(input.assets, key);
+      programs.set(key, row);
+      for (const reference of row.shader.variantReferences ?? [])
+        captureProgram(reference.identifier);
+    };
+    for (const material of row.materials)
+      for (const key of publicationMaterialProgramKeys(material.snapshot)) captureProgram(key);
     const {
-      worldId: _worldId,
       entityKey: _entityKey,
       transform,
       gpuDrivenDraws: _gpuDraws,

@@ -18,6 +18,7 @@ import { GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import { resolveVolumetricFogProfile } from '../pipeline/standard-profile';
+import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { VolumetricFogFrameContext, VolumetricFogShaderSources } from '../render-contract';
@@ -343,7 +344,7 @@ function addVolumetricFogPasses(
   let linearSampler: Sampler | undefined;
   let densitySampler: Sampler | undefined;
   let compositeSampler: Sampler | undefined;
-  const injected = graph.addComputePass('volume-inject', {
+  const injected = graph.addComputePass(SkyPass.volumeInject, {
     accesses: [
       { resource: inputs.params, usage: 'uniform-read' },
       { resource: inputs.view, usage: 'uniform-read' },
@@ -399,7 +400,7 @@ function addVolumetricFogPasses(
     },
   });
   if (!injected.ok) return injected;
-  const integratePass = graph.addComputePass('volume-integrate', {
+  const integratePass = graph.addComputePass(SkyPass.volumeIntegrate, {
     accesses: [
       ...(inputs.atmosphereTransmittance === undefined
         ? []
@@ -545,7 +546,7 @@ function addVolumetricFogPasses(
     },
   });
   if (!integratePass.ok) return integratePass;
-  const temporalPass = graph.addComputePass('volume-temporal', {
+  const temporalPass = graph.addComputePass(SkyPass.volumeTemporal, {
     accesses: [
       { resource: inputs.resources.resolvedView, usage: 'sampled-read' },
       { resource: inputs.resources.historyView, usage: 'sampled-storage-read-write' },
@@ -593,7 +594,7 @@ function addVolumetricFogPasses(
     },
   });
   if (!temporalPass.ok) return temporalPass;
-  return graph.addRasterPass('volume-composite', {
+  return graph.addRasterPass(SkyPass.volumeComposite, {
     accesses: [
       { resource: inputs.resources.historyView, usage: 'sampled-read' },
       { resource: inputs.resources.temporalView, usage: 'sampled-read' },

@@ -2,20 +2,27 @@
 
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_material::single_layer_medium_surface_v1::{SingleLayerMediumSurfaceInput, SingleLayerMediumSurfaceData}
-#import forgeax_view::common::{View, Mesh, InstanceData, view}
+#import forgeax_view::common::{View, Mesh, InstanceData, view, transformNormal, meshMotionValid}
 #import forgeax_view::fog::{view_fog}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances}
 #endif
-#import forgeax_scene_temporal::{sceneViewZ}
+#import forgeax_scene_temporal::{sceneViewZ, packSceneTemporalV1WithValidity}
+#pragma material_slot deformation
+#if WATER_WAVES_AVAILABLE == true
+#import forgeax_material::water_waves::{waterMeshTileVertex, waterMeshCoverageContains, waterDynamicBoundsContains, waterMaterialDrawData, waterMeshSourceBodyIndex, waterMeshInstanceTransformIndex}
+#if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
+#import forgeax_material::slot::deformation::{deform_water_vertex}
+#import forgeax_material::water_deformation_input::{waterDeformationInput, waterVertexFlowXZ, waterVertexFlowMPerSec, waterMeshFarContinuity}
+#endif
+#endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_material::parameters::{MATERIAL_SCENE_ROW_VEC4_COUNT}
 #endif
-#import forgeax_pbr::ibl_sampling::{sampleIblDiffuse, environmentReflectionDirection}
-#import forgeax_pbr::ibl_shared::{inverseRotateEnvironment}
-#import forgeax_pbr::pmrem::{samplePmrem}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleSkylightRadiance}
+#import forgeax_pbr::ibl_sampling::{environmentReflectionDirection}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
 #ifdef CLUSTER_FORWARD_AVAILABLE
@@ -29,19 +36,27 @@ struct VsIn {
   @location(1) normal: vec3<f32>,
   @location(2) uv: vec2<f32>,
   @location(3) tangent: vec4<f32>,
+#ifdef VERTEX_COLOR_AVAILABLE
+  @location(13) color: vec4<f32>,
+#endif
 };
 
 struct VsOut {
   @builtin(position) clipPosition: vec4<f32>,
   @location(0) positionOS: vec3<f32>,
   @location(1) positionWS: vec3<f32>,
-  @location(2) normalWS: vec3<f32>,
+  @location(2) normalWSAndMask: vec4<f32>,
   @location(3) tangentWS: vec4<f32>,
   @location(4) uv0: vec2<f32>,
   @location(5) viewDirectionWS: vec3<f32>,
   @location(6) @interpolate(flat) materialIndex: u32,
   @location(7) @interpolate(flat) surfaceInstanceIndex: u32,
   @location(8) @interpolate(flat) probeIdentity: vec2<u32>,
+  @location(9) waterCoverageXZ: vec2<f32>,
+  @location(10) @interpolate(flat) waterTileIndex: u32,
+  @location(11) currentClip: vec4<f32>,
+  @location(12) previousClip: vec4<f32>,
+  @location(13) @interpolate(flat) motionValid: u32,
 };
 
 #ifdef STORAGE_BUFFER_AVAILABLE
@@ -83,14 +98,8 @@ struct SingleLayerMediumSceneMaterialRow {
 @group(1) @binding(3) var mediumPrefilterMap: texture_2d<f32>;
 @group(1) @binding(4) var mediumPrefilterSampler: sampler;
 @group(1) @binding(5) var mediumBrdfLut: texture_2d<f32>;
-struct SurfaceSkylightUniforms {
-  intensity: f32,
-  colorR: f32,
-  colorG: f32,
-  colorB: f32,
-  rotation: vec4<f32>,
-};
-@group(1) @binding(6) var<uniform> mediumSkylight: SurfaceSkylightUniforms;
+@group(1) @binding(6) var<uniform> mediumSkylight: SkylightUniforms;
+@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>;
 @group(1) @binding(7) var surfaceBackdropSampler: sampler;
 @group(1) @binding(8) var surfaceBackdropTexture: texture_2d<f32>;
 
@@ -215,6 +224,8 @@ fn surfaceVertex(
   vertex: VsIn,
   entityWorld: mat4x4<f32>,
   localFromInstance: mat4x4<f32>,
+  previousEntityWorld: mat4x4<f32>,
+  previousLocalFromInstance: mat4x4<f32>,
   worldViewProj: mat4x4<f32>,
   cameraPos: vec3<f32>,
   inverseViewProj: mat4x4<f32>,
@@ -222,17 +233,42 @@ fn surfaceVertex(
   surfaceInstanceIndex: u32,
   materialIndex: u32,
   probeIdentity: vec2<u32>,
+  motionValid: bool,
 ) -> VsOut {
   let localFromWorld = entityWorld * localFromInstance;
-  let worldPosition = (localFromWorld * vec4<f32>(vertex.position, 1.0)).xyz;
-  let worldNormal = normalize((localFromWorld * vec4<f32>(vertex.normal, 0.0)).xyz);
+  let previousLocalFromWorld = previousEntityWorld * previousLocalFromInstance;
+  var localPosition = vertex.position;
+#if WATER_WAVES_AVAILABLE == true
+  let tile = waterMeshTileVertex(localPosition, surfaceInstanceIndex);
+  localPosition = tile.position;
+#endif
+  var worldPosition = (localFromWorld * vec4<f32>(localPosition, 1.0)).xyz;
+  var previousWorldPosition = (previousLocalFromWorld * vec4<f32>(localPosition, 1.0)).xyz;
+  var worldNormal = normalize(transformNormal(localFromWorld, vertex.normal));
+  var waterMask = 1.0;
+#if WATER_WAVES_AVAILABLE == true
+#if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
+  var waterVertexColor = vec4<f32>(1.0);
+#ifdef VERTEX_COLOR_AVAILABLE
+  waterVertexColor = vertex.color;
+#endif
+  let waterVertexFlow = waterVertexFlowMPerSec(waterVertexFlowXZ(waterVertexColor, localFromWorld));
+  let deformationInput = waterDeformationInput(tile.bodyIndex, tile.waveBodyIndex, worldPosition, previousWorldPosition,
+    worldNormal, cameraPos, tile.waveRelativeXZ, select(0u, 1u, tile.far), waterVertexFlow);
+  let deformation = waterMeshFarContinuity(deformationInput, deform_water_vertex(deformationInput), surfaceInstanceIndex);
+  worldPosition = deformation.currentPositionM;
+  previousWorldPosition = deformation.previousPositionM;
+  worldNormal = deformation.currentNormalYUp;
+  waterMask = deformation.waterMask;
+#endif
+#endif
   let worldTangent = normalize((localFromWorld * vec4<f32>(vertex.tangent.xyz, 0.0)).xyz);
 
   var output: VsOut;
   output.clipPosition = worldViewProj * vec4<f32>(worldPosition, 1.0);
   output.positionOS = vertex.position;
   output.positionWS = worldPosition;
-  output.normalWS = worldNormal;
+  output.normalWSAndMask = vec4<f32>(worldNormal, waterMask);
   output.tangentWS = vec4<f32>(worldTangent, vertex.tangent.w);
   output.uv0 = vertex.uv;
   output.viewDirectionWS = mediumSurfaceToCameraDirection(
@@ -244,6 +280,13 @@ fn surfaceVertex(
   output.materialIndex = materialIndex;
   output.surfaceInstanceIndex = surfaceInstanceIndex;
   output.probeIdentity = probeIdentity;
+  output.currentClip = view.temporalCurrentViewProj * vec4<f32>(worldPosition, 1.0);
+  output.previousClip = view.temporalPreviousViewProj * vec4<f32>(previousWorldPosition, 1.0);
+  output.motionValid = select(0u, 1u, motionValid);
+#if WATER_WAVES_AVAILABLE == true
+  output.waterCoverageXZ = tile.coverageXZ;
+  output.waterTileIndex = surfaceInstanceIndex;
+#endif
   return output;
 }
 
@@ -253,20 +296,38 @@ fn sceneIndexVertex(vertex: VsIn, drawIndex: u32) -> VsOut {
   // row, which keys the whole-bound surface frame input table per draw.
   let visibleItem = visibleItems[drawIndex];
   let draw = sceneIndexDraw(visibleItem.x);
-  return surfaceVertex(vertex, draw.world, SCENE_INDEX_LOCAL_IDENTITY, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, visibleItem.z, visibleItem.y, draw.probe);
+  return surfaceVertex(vertex, draw.world, SCENE_INDEX_LOCAL_IDENTITY, draw.previousWorld, SCENE_INDEX_LOCAL_IDENTITY,
+    view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5,
+    visibleItem.z, visibleItem.y, draw.probe, meshMotionValid(draw.temporal.y));
 }
 #endif
 
-@vertex
-fn vs_main(vertex: VsIn, @builtin(instance_index) instanceIndex: u32) -> VsOut {
+fn mediumVertex(vertex: VsIn, instanceIndex: u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   // This variant binds only the GPU Scene tables; every entry reads the
   // visible stream.
   return sceneIndexVertex(vertex, instanceIndex);
 #else
   let surfaceInstanceIndex = surfaceDirectFrameIndex(instanceIndex);
-  return surfaceVertex(vertex, meshes[0u].worldFromLocal, instances[instanceIndex].localFromInstance, view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5, surfaceInstanceIndex, 0u, vec2<u32>(0u));
+  var transformIndex = instanceIndex;
+#if WATER_WAVES_AVAILABLE == true
+  transformIndex = waterMeshInstanceTransformIndex(instanceIndex);
 #endif
+  return surfaceVertex(vertex, meshes[0u].worldFromLocal, instances[transformIndex].localFromInstance,
+    meshes[0u].previousWorldFromLocal, instances[transformIndex].previousLocalFromInstance,
+    view.worldViewProj, view.cameraPos, view.inverseViewProj, view.temporalProjection.z >= 0.5,
+    surfaceInstanceIndex, 0u, vec2<u32>(0u), meshMotionValid(meshes[0u].temporal.y));
+#endif
+}
+
+@vertex
+fn vs_main(vertex: VsIn, @builtin(instance_index) instanceIndex: u32) -> VsOut {
+  return mediumVertex(vertex, instanceIndex);
+}
+
+@vertex
+fn vs_temporal(vertex: VsIn, @builtin(instance_index) instanceIndex: u32) -> VsOut {
+  return mediumVertex(vertex, instanceIndex);
 }
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
@@ -276,11 +337,20 @@ fn vs_scene_index(vertex: VsIn, @builtin(instance_index) drawIndex: u32) -> VsOu
 }
 #endif
 
+fn mediumGeometryCovered(input: VsOut) -> bool {
+  if (input.normalWSAndMask.w <= 0.0) { return false; }
+#if WATER_WAVES_AVAILABLE == true
+  if (!waterMeshCoverageContains(input.waterTileIndex, input.waterCoverageXZ)) { return false; }
+  if (!waterDynamicBoundsContains(waterMeshSourceBodyIndex(input.waterTileIndex), input.positionWS)) { return false; }
+#endif
+  return true;
+}
+
 fn makeSurfaceInput(input: VsOut, frame: SurfaceFrameFacts, frontFacing: bool) -> SingleLayerMediumSurfaceInput {
   var surfaceInput: SingleLayerMediumSurfaceInput;
   surfaceInput.positionOS = input.positionOS;
   surfaceInput.positionWS = input.positionWS;
-  surfaceInput.geometricNormalWS = input.normalWS;
+  surfaceInput.geometricNormalWS = input.normalWSAndMask.xyz;
   surfaceInput.tangentWS = input.tangentWS;
   surfaceInput.viewDirectionWS = input.viewDirectionWS;
   surfaceInput.uv0 = input.uv0;
@@ -297,6 +367,12 @@ fn makeSurfaceInput(input: VsOut, frame: SurfaceFrameFacts, frontFacing: bool) -
   surfaceInput.eventRangeStart = frame.eventRangeStart;
   surfaceInput.eventRangeCount = frame.eventRangeCount;
   surfaceInput.instanceIndex = frame.instanceIndex;
+#ifdef SURFACE_MEDIUM_V2
+  surfaceInput.pixelPosition=input.clipPosition;
+  let raw=sampleRawDepth(input.clipPosition);surfaceInput.backgroundValid=raw>0.0&&frame.backgroundAvailable!=0u;
+  let uv=surfaceUv(surfacePixel(input.clipPosition,textureDimensions(surfaceRawDepthTexture)),textureDimensions(surfaceRawDepthTexture));
+  surfaceInput.backgroundDistanceMeters=select(10000.0,length(reconstructBackgroundWorld(uv,raw)-input.positionWS),surfaceInput.backgroundValid);
+#endif
   return surfaceInput;
 }
 
@@ -470,16 +546,9 @@ fn sampleNearestCoverage(pixelPosition: vec4<f32>, rawDepth: f32) -> f32 {
   return select(0.0, nearestCoverage, nearestValid);
 }
 
-fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32) -> vec3<f32> {
-  let reflectedDirection = environmentReflectionDirection(normal, viewDirection, roughness);
-  let rotated = inverseRotateEnvironment(reflectedDirection, mediumSkylight.rotation);
-  let environment = samplePmrem(
-    mediumPrefilterMap,
-    mediumPrefilterSampler,
-    vec3<f32>(rotated.x, -rotated.y, rotated.z),
-    roughness,
-  );
-  return environment * vec3<f32>(mediumSkylight.colorR, mediumSkylight.colorG, mediumSkylight.colorB) * max(mediumSkylight.intensity, 0.0);
+fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32, worldPosition: vec3<f32>) -> vec3<f32> {
+  return sampleSkylightRadiance(mediumSkylight, worldPosition, environmentReflectionDirection(normal, viewDirection, roughness), roughness,
+    mediumPrefilterMap, mediumPrefilterSampler, skylightPrefilterMap);
 }
 
 fn sampleMediumDiffuse(
@@ -487,17 +556,9 @@ fn sampleMediumDiffuse(
   pixelPosition: vec4<f32>,
   probeIdentity: vec2<u32>,
 ) -> vec3<f32> {
-  let skyScale = vec3<f32>(
-    mediumSkylight.colorR,
-    mediumSkylight.colorG,
-    mediumSkylight.colorB,
-  ) * max(mediumSkylight.intensity, 0.0);
-  let skyIrradiance = sampleIblDiffuse(
-    normal,
-    mediumSkylight.rotation,
-    mediumIrradianceMap,
-    mediumIrradianceSampler,
-  ) * skyScale;
+  let skyIrradiance = sampleSkylightDiffuse(
+    mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler,
+  );
   var diffuse = skyIrradiance;
 #ifdef PROBE_BLEND_AVAILABLE
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
@@ -530,6 +591,7 @@ fn sampleMediumDiffuse(
     );
   }
 #endif
+  diffuse += mediumSkylight.ambientIrradiance.xyz * 0.3183098861837907;
 #ifdef CLUSTER_FORWARD_AVAILABLE
   let dimensions = vec2<f32>(textureDimensions(surfaceBackdropTexture));
   let ssaoUv = clamp(pixelPosition.xy / max(dimensions, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
@@ -704,24 +766,66 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
   let footprintVariance = dot(normalFootprint, normalFootprint);
   let directLight = directionalShadow * max(dot(orientedNormal, lightDirection), 0.0) * view.lightColor;
   let light = directLight + sampleMediumDiffuse(orientedNormal, pixelPosition, probeIdentity);
-  let transmissionColor = background * transmittance + inScatter * light;
-  let fresnel = fresnelWeight(orientedNormal, viewDirection, ior);
-  let reflection = samplePlanarReflection(input.positionWS, orientedPlaneNormal, sampleSkyReflection(orientedNormal, viewDirection, roughness));
+  var transmissionColor = background * transmittance + inScatter * light;
+#ifdef SURFACE_MEDIUM_V2
+  transmissionColor=mix(transmissionColor+surface.transmissionEmission,surface.transmissionTint,clamp(surface.transmissionTintWeight,0.0,1.0));
+#endif
+  var fresnel = fresnelWeight(orientedNormal, viewDirection, ior);
+#ifdef SURFACE_MEDIUM_V2
+  fresnel*=clamp(surface.reflectionStrength,0.0,1.0);
+#endif
+  let reflection = samplePlanarReflection(input.positionWS, orientedPlaneNormal, sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS));
+
   let foam = clamp(surface.foam, 0.0, 1.0);
-  let foamColor = mix(transmissionColor, vec3<f32>(0.9, 0.95, 1.0), foam);
+  var foamTint=vec3<f32>(0.9,0.95,1.0);
+#ifdef SURFACE_MEDIUM_V2
+  let foamLight=sampleMediumDiffuse(orientedNormal,pixelPosition,probeIdentity)+(0.5*max(dot(orientedNormal,lightDirection),0.0)+0.3)*view.lightColor*directionalShadow;
+  foamTint=surface.foamColor*foamLight;
+#endif
+  let foamColor = mix(transmissionColor,foamTint,foam);
   // Fresnel is the sole energy split: the transmitted and reflected terms
   // sum to one even when the sampled background is a sky miss.
+#ifdef SURFACE_MEDIUM_V2
+  let halfVector=normalize(lightDirection+viewDirection);let dotNV=max(dot(orientedNormal,viewDirection),0.00002);
+  let alpha=max(surface.roughness*surface.roughness,0.002);let a2=alpha*alpha;let dotNH=max(dot(orientedNormal,halfVector),0.0);
+  let denominator=1.0+(a2-1.0)*dotNH*dotNH;let distribution=a2/(3.14159265359*denominator*denominator);
+  let f0=pow((ior-1.0)/(ior+1.0),2.0);let schlick=f0+(1.0-f0)*pow(1.0-max(dot(halfVector,viewDirection),0.0),5.0);
+  let spec=distribution*schlick/(4.0*dotNV+0.1);
+  let sparkle=pow(max(dot(reflect(-viewDirection,orientedNormal),lightDirection),0.0),2400.0)*surface.glintStrength;
+  let glint=min((spec+sparkle)*surface.sunSpecular,surface.sunSpecularMax)*(1.0-foam)*view.lightColor*directionalShadow;
+  let nl=dot(orientedNormal,lightDirection);let wrap=0.35+0.65*(0.5+0.5*nl);
+  let sss=max(0.0,surface.waveHeight+1.5)*pow(max(dot(lightDirection,-viewDirection),0.0),4.0)*pow(0.5-0.5*nl,3.0);
+  let nearScatter=0.25*dotNV*dotNV;let bodyDiffuse=(wrap*surface.bodyDiffuse+(sss*surface.sssStrength+nearScatter)*vec3<f32>(0.6,1.5,1.1))
+    *surface.bodyAlbedo*(vec3<f32>(1.0)-transmittance)*(1.0-fresnel)*(1.0-foam)*view.lightColor*directionalShadow;
+  let shaded=foamColor*(1.0-fresnel)+reflection*fresnel+glint+bodyDiffuse+surface.emission*(1.0-foam);
+#else
   let glint = mediumSunGlint(orientedNormal, viewDirection, lightDirection, roughness, footprintVariance)
     * fresnel * view.lightColor * directionalShadow * (1.0 - foam);
   let shaded = foamColor * (1.0 - fresnel) + reflection * fresnel + glint;
+#endif
   // The opaque fog pass already fogged the backdrop at its own depth. Fog the
   // water surface's own light at the water depth and keep that carried
   // backdrop as is, the way translucent_fog_transmission does for glass.
-  let carried = background * transmittance * (1.0 - foam) * (1.0 - fresnel);
+  var carried = background * transmittance * (1.0 - foam) * (1.0 - fresnel);
+#ifdef SURFACE_MEDIUM_V2
+  carried*=1.0-clamp(surface.transmissionTintWeight,0.0,1.0);
+#endif
   let fog = view_fog(view, input.positionWS);
   let waterOpacity = vec3<f32>(1.0) - transmittance * (1.0 - foam) * (1.0 - fresnel);
   let result = (shaded - carried) * fog.transmittance + carried + waterOpacity * fog.inscatter;
   return vec4<f32>(max(result, vec3<f32>(0.0)), clamp(surface.coverage, 0.0, 1.0));
+}
+
+@fragment
+fn fs_temporal(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) vec4<f32> {
+  let frame = surfaceFrameFacts(input.surfaceInstanceIndex);
+  let surfaceInput = makeSurfaceInput(input, frame, frontFacing);
+  applyViewClipping(surfaceInput.positionWS, false);
+  let surface = evaluate_surface(surfaceInput);
+  if (!mediumGeometryCovered(input)) { discard; }
+  if (!mediumColorVisible(input, surface, frame)) { discard; }
+  return packSceneTemporalV1WithValidity(input.currentClip, input.previousClip, view.temporalProjection,
+    1.0 - clamp(surface.coverage * input.normalWSAndMask.w, 0.0, 1.0), input.motionValid != 0u);
 }
 
 @fragment
@@ -730,6 +834,7 @@ fn fs_nearest_layer(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @
   let surfaceInput = makeSurfaceInput(input, frame, frontFacing);
   applyViewClipping(surfaceInput.positionWS, false);
   let surface = evaluate_surface(surfaceInput);
+  if (!mediumGeometryCovered(input)) { discard; }
   if (surface.coverage <= 0.0) {
     discard;
   }
@@ -742,6 +847,7 @@ fn fs_color(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @location
   let surfaceInput = makeSurfaceInput(input, frame, frontFacing);
   applyViewClipping(surfaceInput.positionWS, false);
   let surface = evaluate_surface(surfaceInput);
+  if (!mediumGeometryCovered(input)) { discard; }
   if (!mediumColorVisible(input, surface, frame)) {
     discard;
   }
@@ -757,6 +863,7 @@ fn fs_main(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(
   let surfaceInput = makeSurfaceInput(input, frame, frontFacing);
   applyViewClipping(surfaceInput.positionWS, false);
   let surface = evaluate_surface(surfaceInput);
+  if (!mediumGeometryCovered(input)) { discard; }
   if (!mediumColorVisible(input, surface, frame)) {
     discard;
   }

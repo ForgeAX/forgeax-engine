@@ -30,14 +30,14 @@ export async function prepareProbePlacementFixture() {
   const raster = (
     await compileShader(
       `
-#import forgeax_pbr::gbuffer::encodeStandardNormalRoughness
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardGBufferNormal}
 @group(0) @binding(0) var<uniform> fixture: vec4u;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   let p = array<vec2f,3>(vec2f(-1,-1),vec2f(3,-1),vec2f(-1,3));
   return vec4f(p[i],0.5,1);
 }
 struct Surface {
-  @location(0) normal: u32,
+  @location(0) normal: vec2u,
   @location(1) identity: vec4u,
   @builtin(frag_depth) depth: f32,
 }
@@ -48,7 +48,7 @@ struct Surface {
   let geometric = encodeStandardNormalRoughness(vec3f(0,0,-1),0.0);
   // Camera near=0.1, far=100, plane at view distance 4: reverse-Z.
   let z = (0.1 * 100.0 / 4.0 - 0.1) / (100.0 - 0.1);
-  return Surface(encodeStandardNormalRoughness(shading,0.5),
+  return Surface(encodeStandardGBufferNormal(shading,0.5,1.0,false),
     vec4u(select(1u,2u,mode == 2u),select(0u,1u,mode == 3u),geometric,
       select(select(3u,1u,mode == 6u),0u,mode == 4u)),
     select(z,0.0,mode == 5u));

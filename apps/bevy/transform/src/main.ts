@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -17,11 +18,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (!appResult.ok) return console.error('[bevy-transform] createApp failed:', appResult.error);
   const app = appResult.value;
   buildTransformWorld(app.world);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'orbit-transform',
     queries: [],
-    fn: (world) => stepTransform(world, world.hasResource('Time') ? world.getResource(Time).delta : 0),
+    fn: (world) => stepTransform(world, world.hasResource(Time) ? world.getResource(Time).delta : 0),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) console.error('[bevy-transform] app.start failed:', started.error);
 }

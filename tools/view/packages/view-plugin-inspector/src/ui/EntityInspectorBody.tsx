@@ -53,7 +53,7 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
   const [chosenGroup, setGroup] = useState<InspectorGroup>('common');
   const group = groups.includes(chosenGroup) ? chosenGroup : defaultGroup;
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState(new Set<string>());
+  const [collapsed, setCollapsed] = useState(() => new Set(inspectorSections(source, 'all').filter(section => section.defaultCollapsed).map(section => section.key)));
   const [menu, setMenu] = useState<{ anchor: AnchorRect; value?: unknown; settings?: boolean } | null>(null);
   const detailScroll = useRef<HTMLDivElement | null>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -61,8 +61,12 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
   const sections = inspectorSections(source, group);
   const title = (section: (typeof sections)[number]) => section.titleKey
     ? t(`inspector.${section.titleKey}`) : inspectorComponentDisplayName(section.component, t);
-  const labelFor = (component: string, field: InspectorField) => component === 'Transform' && ['pos', 'quat', 'scale'].includes(field.key)
-    ? t(`inspector.transformFields.${field.key}`) : field.label;
+  const labelFor = (component: string, field: InspectorField) => {
+    if (component === 'Transform' && ['pos', 'quat', 'scale'].includes(field.key)) return t(`inspector.transformFields.${field.key}`);
+    const key = `inspector.cloudFields.${field.key}`;
+    const translated = component === 'VolumetricCloudLayer' ? t(key) : key;
+    return translated === key ? field.label : translated;
+  };
   const shown = sections.filter(section => inspectorSectionMatches(section, source, query, title(section),
     field => labelFor(section.component, field)));
   const sectionMatches = (section: (typeof sections)[number]) => !queryText
@@ -80,7 +84,8 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
   useEffect(() => {
     if (componentNavigation && group === 'all') {
       const details = detailScroll.current;
-      const section = sectionRefs.current[componentNavigation.name];
+      const first = inspectorSections(source, 'all').find(section => section.component === componentNavigation.name);
+      const section = sectionRefs.current[first?.key ?? componentNavigation.name];
       if (details && section) details.scrollTo({
         top: details.scrollTop + section.getBoundingClientRect().top - details.getBoundingClientRect().top,
         behavior: 'smooth',
@@ -91,7 +96,8 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
     setComponentNavigation({ name });
     setGroup('all');
     setQuery('');
-    setCollapsed(current => { const next = new Set(current); next.delete(name); return next; });
+    const first = inspectorSections(source, 'all').find(section => section.component === name)?.key ?? name;
+    setCollapsed(current => { const next = new Set(current); next.delete(first); return next; });
     setMenu(null);
   };
   const chooseGroup = (next: InspectorGroup) => {

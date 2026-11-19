@@ -57,13 +57,13 @@
     "submissions": 40
   },
   "packages/runtime/src/__tests__/ies-local-lights.browser.test.ts": {
-    "deviceRequests": 9,
-    "minimumDeviceRequests": 9,
+    "deviceRequests": 5,
+    "minimumDeviceRequests": 5,
     "minimumCases": 2
   },
   "packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts": {
-    "deviceRequests": 10,
-    "minimumDeviceRequests": 10,
+    "deviceRequests": 6,
+    "minimumDeviceRequests": 6,
     "minimumCases": 2
   },
   "packages/three/src/__tests__/material-output-2.browser.test.ts": {

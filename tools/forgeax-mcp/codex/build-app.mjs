@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { build as viteBuild } from 'vite';
 import { build as bundle, transform } from 'esbuild';
+import { preparePackProgram } from '@forgeax/engine/pack/runtime';
 import { APP_VERSION, VIEW_TITLE, MCP_NATIVE_IMPORT_SOURCE } from '../src/contract.ts';
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, 'dist');
@@ -68,6 +69,17 @@ async function frontend(entry) {
   return { code: optimized.code, css };
 }
 const preview = await frontend('src/app/preview-runtime.ts');
+const previewModule = {
+  specifier: pathToFileURL(resolve(out, 'preview-runtime.mjs')).href,
+  prepare: 'preparePlatform',
+};
+// DevKit seals this product module before running either frontend export.
+for (const selected of ['default', previewModule.prepare])
+  preparePackProgram({
+    entry: 'program-0.mjs',
+    export: selected,
+    modules: { 'program-0.mjs': preview.code },
+  }).unwrap();
 await writeFile(resolve(out, 'preview-runtime.mjs'), preview.code);
 await writeFile(
   resolve(out, 'preview-manifest.mjs'),
@@ -76,10 +88,7 @@ await writeFile(
       program: 'forgeax.mcp.preview',
       codeRevision: createHash('sha256').update(preview.code).digest('hex'),
     },
-    module: {
-      specifier: pathToFileURL(resolve(out, 'preview-runtime.mjs')).href,
-      prepare: 'preparePlatform',
-    },
+    module: previewModule,
   })};\n`,
 );
 let viewBytes = 0;
@@ -109,7 +118,7 @@ const carrier = await bundle({
 });
 await writeFile(
   resolve(out, 'carrier.html'),
-  `<!doctype html><html data-forgeax-app-version="${APP_VERSION}"><head><meta charset="utf-8"><title>${VIEW_TITLE}</title><style>html,body{height:100%;margin:0;overflow:hidden}iframe{border:0;width:100%;height:100%}</style></head><body><iframe id="view" title="${VIEW_TITLE}" sandbox="allow-scripts" allow="clipboard-write *"></iframe><script>${escape(carrier.outputFiles[0].text)}</script></body></html>`,
+  `<!doctype html><html data-forgeax-app-version="${APP_VERSION}"><head><meta charset="utf-8"><title>${VIEW_TITLE}</title><style>html,body{height:100%;margin:0;overflow:hidden}html[data-forgeax-inline=true],html[data-forgeax-inline=true] body{height:auto}body{display:flex;flex-direction:column;background:Canvas;color:CanvasText;font:13px system-ui}iframe{border:0;width:100%;height:100%;flex:1;min-height:0}iframe[hidden]{display:none}#resource-card{padding:8px;box-sizing:border-box;flex:none;min-width:0}#resource-card nav{display:flex;flex-wrap:wrap;gap:6px}#resource-card button{font:inherit;line-height:18px;min-height:32px;max-width:100%;overflow-wrap:anywhere;padding:6px 10px;border:1px solid GrayText;border-radius:6px;background:Canvas;color:CanvasText;cursor:pointer}#resource-card button[aria-pressed=true]{border-color:Highlight;background:Highlight;color:HighlightText}#resource-card p{margin:6px 0 0;overflow-wrap:anywhere}#resource-card p[hidden]{display:none}#resource-card[hidden]{display:none}#carrier-error{padding:12px;overflow-wrap:anywhere}</style></head><body><script id="fx-entry-scope" type="application/json">__FX_VIEW_ENTRY_SCOPE__</script><script id="fx-entry-kind" type="application/json">__FX_VIEW_ENTRY_KIND__</script><iframe id="view" title="${VIEW_TITLE}" sandbox="allow-scripts" allow="clipboard-write *"></iframe><script>${escape(carrier.outputFiles[0].text)}</script></body></html>`,
 );
 console.log(
   JSON.stringify({

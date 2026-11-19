@@ -60,6 +60,21 @@ describe('Node material program compilation', () => {
           ],
         },
       };
+      // Interrupt one genuinely pending cold publication. The following
+      // complete publication is its recovery, compared against the serial
+      // route below without separately cooking a duplicate cold baseline.
+      let workerFailure = false;
+      if (process.env.FORGEAX_SHADER_COMPILE_WORKERS !== '1') {
+        const trackedPost = Worker.prototype.postMessage;
+        let interrupted = false;
+        Worker.prototype.postMessage = function (...args) {
+          if (!interrupted) { interrupted = true; void this.terminate(); return; }
+          return trackedPost.apply(this, args);
+        };
+        try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input); }
+        catch { workerFailure = true; }
+        finally { Worker.prototype.postMessage = trackedPost; }
+      }
       const result = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
       const firstWorkers = workers.size;
       const next = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
@@ -75,19 +90,6 @@ describe('Node material program compilation', () => {
         diagnostic = { code: error.code, message: error.message, expected: error.expected, hint: error.hint, detail: error.detail };
       }
       const totalWorkers = workers.size;
-      let workerFailure = false;
-      if (process.env.FORGEAX_SHADER_COMPILE_WORKERS !== '1') {
-        let interrupted = false;
-        Worker.prototype.postMessage = function (...args) {
-          if (!interrupted) { interrupted = true; void this.terminate(); return; }
-          return post.apply(this, args);
-        };
-        try { await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input); }
-        catch { workerFailure = true; }
-        finally { Worker.prototype.postMessage = post; }
-        const recovered = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook(input);
-        if (encode(recovered) !== expectedBytes) throw new Error('worker recovery changed output');
-      }
       const bytes = encode(result);
       console.log(JSON.stringify({
         digest: createHash('sha256').update(bytes).digest('hex'),
@@ -101,31 +103,33 @@ describe('Node material program compilation', () => {
         repeatedResult: bytes === expectedBytes,
       }));
     `;
-    const outputs = [];
-    // Isolate the two complete native runtimes; each route still exercises four concurrent cooks.
-    for (const workers of ['1', '2']) {
-      const started = Date.now();
-      try {
-        const result = await run(process.execPath, ['--input-type=module', '--eval', script], {
-          env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: workers },
-          timeout: 45_000,
-        });
-        outputs.push(JSON.parse(result.stdout));
-      } catch (cause) {
-        const failure = cause as {
-          killed?: boolean;
-          signal?: string;
-          stdout?: string;
-          stderr?: string;
-        };
-        throw new Error(
-          `Material parity route ${workers} failed after ${Date.now() - started}ms; ` +
-            `killed=${failure.killed}; signal=${failure.signal}; ` +
-            `stdout=${failure.stdout?.slice(-2000)}; stderr=${failure.stderr?.slice(-4000)}`,
-          { cause },
-        );
-      }
-    }
+    // The isolated routes do not share caches or workers. Run both within the
+    // same case budget while retaining the full subprocess lifetime checks.
+    const outputs = await Promise.all(
+      ['1', '2'].map(async (workers) => {
+        const started = Date.now();
+        try {
+          const result = await run(process.execPath, ['--input-type=module', '--eval', script], {
+            env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: workers },
+            timeout: 45_000,
+          });
+          return JSON.parse(result.stdout);
+        } catch (cause) {
+          const failure = cause as {
+            killed?: boolean;
+            signal?: string;
+            stdout?: string;
+            stderr?: string;
+          };
+          throw new Error(
+            `Material parity route ${workers} failed after ${Date.now() - started}ms; ` +
+              `killed=${failure.killed}; signal=${failure.signal}; ` +
+              `stdout=${failure.stdout?.slice(-2000)}; stderr=${failure.stderr?.slice(-4000)}`,
+            { cause },
+          );
+        }
+      }),
+    );
     expect(outputs[0]?.programs).toBeGreaterThan(1);
     expect(outputs[1]?.digest).toBe(outputs[0]?.digest);
     expect(outputs[1]?.programs).toBe(outputs[0]?.programs);

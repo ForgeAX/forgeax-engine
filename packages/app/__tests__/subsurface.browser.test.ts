@@ -2,6 +2,8 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '../src/browser-frame-signal';
+import { SubsurfacePictures } from './subsurface-picture.fixture';
 
 async function image(canvas: HTMLCanvasElement, name: string): Promise<ImageData> {
   const shot = await page.elementLocator(canvas).screenshot({ base64: true,
@@ -42,22 +44,27 @@ it('publishes skinned Standard diffusion through both real Worker layouts', asyn
       } }, { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href })).unwrap();
       const errors: unknown[] = [];
       app.onError((error) => errors.push(error));
-      const completed = () => renderWorker ? (app.execution?.report().render?.completedFrame ?? 0)
-        : (app.execution?.report().frame.completed ?? 0);
-      const request = (command: string) => new Promise<{ acknowledgments: number; errors: readonly string[] }>((resolve, reject) => {
+      const pictures = new SubsurfacePictures();
+      const onCompleted = (event: Event) => pictures.completed((event as CustomEvent<BrowserFrameCompleted>).detail);
+      canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+      const request = (command: string) => new Promise<{ revision: number; acknowledgedRevision: number; acknowledgments: number; errors: readonly string[] }>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('SSS source did not respond')), 5000);
         channel.port1.onmessage = (event) => { clearTimeout(timer); resolve(event.data); };
         channel.port1.postMessage(command);
       });
-      const advance = async () => {
-        const initial = completed();
-        await expect.poll(completed, { timeout: 60_000 }).toBeGreaterThanOrEqual(initial + 60);
+      const advance = async (revision = 0) => {
+        pictures.begin();
+        await expect.poll(async () => {
+          const reply = await request('inspect');
+          expect(reply.errors).toEqual([]);
+          return pictures.sinceAcknowledgment(reply.acknowledgedRevision, revision);
+        }, { timeout: 60_000 }).toBeGreaterThanOrEqual(60);
       };
       try {
         app.start().unwrap();
         await advance();
         const baseline = await image(canvas, `${mode}-${renderWorker}-zero`);
-        await request('enable'); await advance();
+        await advance((await request('enable')).revision);
         const active = await image(canvas, `${mode}-${renderWorker}-active`);
         expect(difference(baseline, active), 'published radius must change diffuse pixels').toBeGreaterThan(.001);
         images.push(active);
@@ -72,16 +79,17 @@ it('publishes skinned Standard diffusion through both real Worker layouts', asyn
         const model = buildFrameModel(decodeTape(capture as Uint8Array).unwrap());
         expect(model.works.some((work) => work.pipeline.shaders.some(shader => shader.entryPoint === 'cs_subsurface')),
           'actual Renderer realm capture must contain diffusion work').toBe(true);
-        await request('disable'); await advance();
+        await advance((await request('disable')).revision);
         expect(difference(baseline, await image(canvas, `${mode}-${renderWorker}-disabled`))).toBeLessThanOrEqual(.005);
-        await request('zero'); await advance();
+        await advance((await request('zero')).revision);
         expect(difference(baseline, await image(canvas, `${mode}-${renderWorker}-restored`))).toBeLessThanOrEqual(.005);
-        await request('enable'); await request('pose'); await advance();
+        await request('enable'); await advance((await request('pose')).revision);
         expect(difference(active, await image(canvas, `${mode}-${renderWorker}-posed`))).toBeGreaterThan(.001);
         expect((await request('inspect')).errors).toEqual([]);
         expect(errors).toEqual([]);
         expect(app.execution?.report().fault).toBeNull();
       } finally {
+        canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
         await app.dispose(); channel.port1.close(); canvas.remove();
       }
     }

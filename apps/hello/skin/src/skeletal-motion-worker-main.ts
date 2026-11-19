@@ -45,6 +45,12 @@ async function start(target: HTMLCanvasElement) {
       port.postMessage({ id, command });
     });
   const split = new URL(location.href).searchParams.get('split') !== 'false';
+const bootstrapUrl = new URL(
+            import.meta.env.DEV
+              ? '/src/skeletal-motion-worker-bootstrap.ts'
+              : '/assets/skeletal-motion-bootstrap.js',
+            location.href,
+          );
   const app = (
     await createApp(
       target,
@@ -54,12 +60,7 @@ async function start(target: HTMLCanvasElement) {
         ...(runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding }),
         execution: {
           workers: { engine: true, render: split, kernels: false },
-          bootstrap: new URL(
-            import.meta.env.DEV
-              ? '/src/skeletal-motion-worker-bootstrap.ts'
-              : '/assets/skeletal-motion-bootstrap.js',
-            location.href,
-          ),
+          bootstrap: bootstrapUrl,
           bootstrapData: { channel: name },
           bootstrapPort: source.port2,
           diagnostics: { rhiCapture: true },
@@ -142,7 +143,7 @@ async function start(target: HTMLCanvasElement) {
           // Inspection admission belongs to the next App frame even while paused.
           phase('queue-capture-admission');
           const armed = inspect(
-            "world.insertResource('SkeletalMotionProofCapture', rhiCapture.captureFrame()); return true;",
+            `world.insertResource((await _import(${JSON.stringify(bootstrapUrl.href)})).ProofCaptureResource, rhiCapture.captureFrame()); return true;`,
           );
           await pulse();
           phase('await-capture-admission-result');
@@ -159,7 +160,7 @@ async function start(target: HTMLCanvasElement) {
           });
           phase('queue-capture-read');
           const read = inspect(
-            "const r=await world.getResource('SkeletalMotionProofCapture');world.removeResource('SkeletalMotionProofCapture');if(!r.ok)throw r.error;world.getResource('SkeletalMotionProofPort').postMessage({kind:'skeletal-motion-tape',bytes:r.value.bytes,digest:r.value.digest},[r.value.bytes.buffer]);return {digest:r.value.digest};",
+            `const r=await world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).ProofCaptureResource);world.removeResource((await _import(${JSON.stringify(bootstrapUrl.href)})).ProofCaptureResource);if(!r.ok)throw r.error;world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).ProofPortResource).postMessage({kind:'skeletal-motion-tape',bytes:r.value.bytes,digest:r.value.digest},[r.value.bytes.buffer]);return {digest:r.value.digest};`,
           );
           let tape: { bytes: Uint8Array; digest: string };
           try {

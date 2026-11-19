@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -241,7 +242,7 @@ const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } =
   await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 
-const manifest = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const manifest = processShaderManifestUrl(MANIFEST_PATH);
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifest });
 assert(constructed.ok, constructed.ok ? undefined : `${constructed.error.code}: ${constructed.error.hint}`);
 const renderer = constructed.value.renderer;
@@ -363,11 +364,7 @@ async function readback(label) {
 let completedFrames = 0;
 async function drawFrame(_label) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   completedFrames++;
 }
 

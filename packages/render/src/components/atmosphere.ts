@@ -31,6 +31,7 @@ export const Atmosphere = defineComponent('Atmosphere', {
   },
   absorptionPeakHeight: { type: 'f32', default: 25_000 },
   absorptionHalfWidth: { type: 'f32', default: 15_000 },
+  /** Ground reflection in multiple scattering; does not draw a visible planet surface. */
   groundAlbedo: { type: 'array<f32, 3>', default: new Float32Array([0.4, 0.4, 0.4]) },
   multipleScattering: { type: 'f32', default: 1 },
   sunAngularRadius: { type: 'f32', default: 0.004675 },

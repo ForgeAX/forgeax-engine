@@ -1,7 +1,7 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { expectTypeOf } from 'vitest';
-import type { RenderFeatureWorkPlan } from '../features/plan';
+import type { RenderFeaturePlan, RenderFeatureWorkPlan } from '../features/plan';
 import type { RenderFeature } from '../features/types';
 import type { RenderFeatureRecovery } from '../features/vocabulary';
 import type { RenderFeaturePlanContext, SceneDataTarget } from '../index';
@@ -28,6 +28,23 @@ const plan: RenderFeatureWorkPlan = {
       draws: [],
     },
   ],
+};
+
+const pendingPlan: RenderFeaturePlan = {
+  pendingSource: { resource: 'wave-set', reason: 'asset-dependency-pending' },
+  work: [],
+};
+const pendingWork = {
+  pendingSource: pendingPlan.pendingSource,
+  work: [{ scope: 'frame' as const, ...plan }],
+};
+// @ts-expect-error A pending source cannot declare graph work before its input is ready.
+const invalidPendingWork: RenderFeaturePlan = pendingWork;
+// @ts-expect-error A pending source cannot acknowledge source intents.
+const pendingFeedback: RenderFeaturePlan = {
+  pendingSource: pendingPlan.pendingSource,
+  work: [],
+  sourceFeedback: {},
 };
 
 const feature = {
@@ -90,6 +107,9 @@ function recoveryLabel(recovery: RenderFeatureRecovery): string {
 }
 
 void format;
+void pendingWork;
+void invalidPendingWork;
+void pendingFeedback;
 void feature;
 void invalidFeature;
 void invalidDispatch;

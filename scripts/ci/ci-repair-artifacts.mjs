@@ -3,16 +3,19 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertCoverageInputsUnchanged,
   ciRepairQualification,
   coverageMembers,
+  createGitHubHistoryClient,
   inheritedSource,
   repairDeclaration,
-  requestGitHub,
   runArtifacts,
   runJobs,
 } from './ci-repair-qualification.mjs';
 
-async function executionSource(context, job, api) {
+export { assertCoverageInputsUnchanged } from './ci-repair-qualification.mjs';
+
+async function executionSource(context, job, api, qualificationOptions) {
   const marker = inheritedSource(job);
   if (marker === undefined) throw new Error('ci-repair-artifact-marker');
   if (marker === null)
@@ -30,6 +33,7 @@ async function executionSource(context, job, api) {
       checkName: job.name,
     },
     api,
+    qualificationOptions,
   );
   if (!proof.reused || marker.runId !== proof.sourceRunId || marker.jobId !== proof.sourceJobId)
     throw new Error('ci-repair-artifact-source-unqualified');
@@ -56,7 +60,13 @@ function resultArtifact(artifacts, checkName, source, artifactName) {
   return artifact;
 }
 
-export async function collectRepairArtifactSources(context, checks, artifactName, api) {
+export async function collectRepairArtifactSources(
+  context,
+  checks,
+  artifactName,
+  api,
+  qualificationOptions,
+) {
   if (
     context.eventName !== 'pull_request' ||
     !repairDeclaration(context.pr?.body, context.repository) ||
@@ -84,7 +94,7 @@ export async function collectRepairArtifactSources(context, checks, artifactName
       job.id <= 0
     )
       throw new Error(`ci-repair-artifact-consumer:${checkName}`);
-    const source = await executionSource(context, job, api);
+    const source = await executionSource(context, job, api, qualificationOptions);
     if (!artifactRuns.has(source.sourceRunId)) {
       const artifacts = await runArtifacts(api, context.repository, { id: source.sourceRunId });
       if (!artifacts) throw new Error('ci-repair-artifact-inventory');
@@ -101,23 +111,11 @@ export async function collectRepairArtifactSources(context, checks, artifactName
   return result;
 }
 
-export function assertCoverageInputsUnchanged(coveredFiles, changedFiles) {
-  const configuration =
-    /(^|\/)(?:package\.json|pnpm-lock\.yaml|bun\.lock|tsconfig[^/]*\.json)$|^(?:config\/vitest|vitest\.config\.|scripts\/ci\/run-split-vitest-coverage\.mjs)/;
-  const changed = changedFiles.filter(
-    (name) =>
-      configuration.test(name) ||
-      coveredFiles.some((covered) => covered === name || covered.startsWith(`${name}/`)),
-  );
-  if (changed.length) throw new Error(`coverage-repair-inputs-changed: ${changed.join(', ')}`);
-}
-
 async function restoreCoverageArtifacts(directory) {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const repository = process.env.GITHUB_REPOSITORY;
   const targetSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const api = (endpoint) =>
-    requestGitHub(endpoint, process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
+  const api = createGitHubHistoryClient(process.env.GH_TOKEN || process.env.GITHUB_TOKEN);
   const rows = await collectRepairArtifactSources(
     {
       eventName: process.env.GITHUB_EVENT_NAME,

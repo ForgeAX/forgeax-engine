@@ -8,14 +8,16 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { connectViewWorkspace } from '@forgeax/view/workspace/resident';
+import { projectDocument } from './project-document.mjs';
 
 const checkout = resolve(process.env.FORGEAX_ENGINE_CHECKOUT ?? '.ci/forgeax-engine');
+const browserLaunch = JSON.parse(await readFile(join(checkout, 'scripts/ci/browser-launch.json'), 'utf8'));
 const localEngine = process.env.FORGEAX_LOCAL_ENGINE === '1';
 const engine = localEngine ? join(checkout, 'packages/engine') : dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
 const { runUnifiedCli } = await import(localEngine ? pathToFileURL(join(engine, 'dist/facades/devkit.mjs')).href : '@forgeax/engine/devkit');
 const view = resolve(import.meta.dirname, '..');
 const root = await mkdtemp(join(tmpdir(), 'view-game3d-proof-'));
-const viewStartInput = JSON.stringify({ root, frontendConfig: { layout: { responsiveAutoTuck: false } } });
+const viewStartInput = JSON.stringify({ project: root, frontendConfig: { layout: { responsiveAutoTuck: false } } });
 let browser;
 let page;
 let workspace;
@@ -73,7 +75,7 @@ try {
       ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
       : {}),
     headless: false,
-    args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--disable-gpu-driver-bug-workarounds', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'],
+    args: [...browserLaunch.args, '--use-angle=swiftshader'],
     chromiumSandbox: true,
   });
   page = await browser.newPage({ viewport: workload.gameViewport });
@@ -142,13 +144,17 @@ try {
   page.on('requestfinished', request => requests.delete(request));
   page.on('requestfailed', request => {
     requests.delete(request);
-    const path = new URL(request.url()).pathname;
-    if (stoppingView) failuresDuringViewStop.push(path);
+    if (stoppingView) failuresDuringViewStop.push({ ...requestStarts.get(request), failure: request.failure() });
     console.error('REQUEST', { ...requestStarts.get(request), failedDuring: phase, failure: request.failure() });
   });
   page.on('pageerror', error => { errors.push(error.message); console.error('PAGE', error.message); });
   page.on('console', message => { if (message.type() === 'error') {
-    if (!(stoppingView && message.text() === 'Failed to load resource: net::ERR_CONNECTION_REFUSED')) errors.push(message.text());
+    const stoppedTransport = stoppingView && [
+      'Failed to load resource: net::ERR_CONNECTION_REFUSED',
+      'ForgeaX Host connection failed: host-transport-failure: service host/socket to remain connected',
+      'ForgeaX Host connection failed: Failed to fetch',
+    ].includes(message.text());
+    if (!stoppedTransport) errors.push(message.text());
     console.error('CONSOLE', message.text());
   } });
   backendPid = (await command('backend', 'start', '--host-pack', join(view, 'host.pack.json'))).pid;
@@ -156,10 +162,27 @@ try {
   const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap', viewState.url)).then(response => response.json());
   workspace = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'game3d-proof' });
   await page.goto(viewState.url);
-  assert.equal(new URL(viewState.url).searchParams.get('project'), await realpath(root));
+  assert.equal(new URL(viewState.url).searchParams.has('project'), false);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 60_000 });
-  await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 300_000 });
-  const originalWorkspaceTarget = new URL(page.url()).searchParams.get('forgeaxWorkspaceTarget');
+  await page.waitForFunction(() => {
+    const frame = document.querySelector('iframe[data-forgeax-project-document]');
+    return frame && new URL(frame.src).searchParams.has('forgeaxWorkspaceTarget');
+  }, undefined, { timeout: 300_000 });
+  const admittedDocument = await page.evaluate(() => {
+    const frames = [...document.querySelectorAll('iframe[data-forgeax-project-document]')];
+    const frame = frames[0];
+    return { count: frames.length, shellUrl: location.href, documentUrl: frame?.src ?? null,
+      targetId: frame?.dataset.forgeaxProjectDocument ?? null };
+  });
+  assert.equal(admittedDocument.count, 1, 'ordinary Host composition owns one project Frame');
+  assert.equal(admittedDocument.shellUrl, new URL(viewState.url).href, 'project startup retains the Shell URL');
+  assert.ok(admittedDocument.documentUrl?.includes('forgeaxWorkspaceTarget='));
+  const originalWorkspaceTarget = admittedDocument.targetId;
+  const project = await projectDocument(page, 300_000);
+  assert.equal((await workspace.getState()).project.root, await realpath(root));
+  assert.ok(originalWorkspaceTarget);
+  assert.ok(page.frames().some(frame => new URL(frame.url()).searchParams.get('forgeaxWorkspaceTarget') === originalWorkspaceTarget),
+    'the platform Frame loads the Host-published document');
   await workspace.listAssets(manifest.id, { targetId: originalWorkspaceTarget });
   console.error('default backend -> View URL -> automatic project opening passed');
   const content = page.getByTestId('panel-content-browser');
@@ -182,7 +205,13 @@ try {
   await scene.click();
   await page.screenshot({ path: '/tmp/view-game3d-open-asset.png' });
   await scene.press('Enter');
-  await page.getByTestId('panel-hierarchy').getByText('Ground', { exact: true }).waitFor({ timeout: 60_000 });
+  const sceneReadyDeadline = performance.now() + 60_000;
+  await page.getByTestId('panel-hierarchy').getByText('Ground', { exact: true }).waitFor({ timeout: Math.max(1, sceneReadyDeadline - performance.now()) });
+  // Hierarchy readiness precedes GPU readiness. Establish a presented Scene
+  // within the same startup budget before Play hides its presentation.
+  await project.waitForFunction(() =>
+    document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app')?.forgeaxFrameProgress?.completed?.presentation === 'ready',
+  undefined, { timeout: Math.max(1, sceneReadyDeadline - performance.now()) });
   const opened = await workspace.getState();
   const target = opened.preview.target;
   const args = { targetId: target.targetId, targetGeneration: target.generation };
@@ -255,10 +284,10 @@ try {
     throw error;
   } finally { clearInterval(progress); }
   console.error('game tools ready', { waitMs: Math.round(performance.now() - waitingSince) });
-  const sceneFrame = await page.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null);
+  const sceneFrame = await project.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? null);
   assert.ok(Number.isSafeInteger(sceneFrame) && sceneFrame > 0, 'the hidden Scene must have submitted a frame before checking that rendering stopped');
   await page.waitForTimeout(400);
-  assert.equal(await page.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas')?.forgeaxFrameProgress?.submitted?.frameId ?? null), sceneFrame, 'hidden scene preview must release continuous rendering');
+  assert.equal(await project.evaluate(() => document.querySelector('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app')?.forgeaxFrameProgress?.submitted?.frameId ?? null), sceneFrame, 'hidden scene preview must release continuous rendering');
   const hiddenCapture = await workspace.capture(args);
   assert.match(hiddenCapture.png, /^data:image\/png/);
   assert.equal((await workspace.getSceneTree(args)).worldId, target.worldId);
@@ -329,6 +358,7 @@ try {
   await assertDetached(game);
   assert.equal((await workspace.getState()).preview.target.targetId, target.targetId);
   assert.deepEqual(errors, []);
+  const beforeRestart = await workspace.getState();
   workspace.close('View restart proof'); workspace = undefined;
   stoppingView = true;
   phase = 'view-stop';
@@ -337,12 +367,31 @@ try {
   const restarted = await command('view', 'start', '--input', viewStartInput);
   phase = 'view-restart';
   await page.goto(restarted.url);
-  await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 300_000 });
+  const restartedProject = await projectDocument(page, 300_000);
+  const restartedBootstrap = await fetch(new URL('/__forgeax/view/bootstrap', restarted.url)).then(response => response.json());
+  workspace = await connectViewWorkspace({ endpoint: restartedBootstrap.endpoint, token: restartedBootstrap.token, clientId: 'game3d-restart-proof' });
   stoppingView = false;
   phase = 'restarted';
-  assert.notEqual(new URL(page.url()).searchParams.get('forgeaxWorkspaceTarget'), originalWorkspaceTarget);
-  console.error('View restart preserves backend; the returned URL directly opens a new target');
-  assert.ok(failuresDuringViewStop.every(path => path === '/__forgeax/view/health'), 'only the stopped View health probe may refuse a request');
+  const restartedDocument = await page.evaluate(() => ({ shellUrl: location.href,
+    targetId: document.querySelector('iframe[data-forgeax-project-document]')?.dataset.forgeaxProjectDocument ?? null }));
+  assert.equal(restartedDocument.shellUrl, new URL(restarted.url).href);
+  assert.notEqual(restartedDocument.targetId, originalWorkspaceTarget);
+  await workspace.listAssets(manifest.id, { targetId: restartedDocument.targetId });
+  const afterRestart = await workspace.getState();
+  assert.equal(afterRestart.projectPhase, 'running');
+  assert.notEqual(afterRestart.projectStatus.sessionId, beforeRestart.projectStatus.sessionId, 'restart must recover the retired frontend lease in a fresh session');
+  assert.equal(afterRestart.browserGeneration, 1);
+  await workspace.openAsset(sceneAsset.guid, { projectId: afterRestart.project.id });
+  await restartedProject.waitForFunction(() => {
+    const completed = document.querySelector('canvas#app')?.forgeaxFrameProgress?.completed;
+    return completed?.presentation === 'ready' && completed.frameId >= 60;
+  }, undefined, { timeout: 180_000 });
+  await page.getByTestId('panel-hierarchy').getByText('Ground', { exact: true }).waitFor();
+  console.error('View restart preserves backend, replaces the retired target and renders sixty completed frames');
+  assert.ok(failuresDuringViewStop.every(request => request.origin === new URL(viewState.url).origin
+    && request.path === '/__forgeax/view/bootstrap' && request.mainFrame
+    && request.phase === 'view-stop' && request.failure?.errorText === 'net::ERR_CONNECTION_REFUSED'),
+    `only the stopped Shell's Host bootstrap reconnect may refuse a request: ${JSON.stringify(failuresDuringViewStop)}`);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, boundary: 'game-3d-hierarchy-and-control', entities: tree.nodes.length, worldId: liveTree.worldId, workload }));
 } catch (error) {

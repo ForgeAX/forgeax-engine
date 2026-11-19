@@ -20,6 +20,7 @@
 // The cutscene <video> carries its own audio track (OOS-7); no audio-bus
 // routing and no third-party video/player library is used.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
@@ -107,8 +108,7 @@ world
 // visible spin and makes the pause/resume freeze observable.
 let angle = 0;
 const spin = quat.create();
-world
-  .addSystem(Update, {
+const systemToken1 = defineSystem({
     name: 'video-cutscene-spin',
     queries: [],
     fn: () => {
@@ -121,7 +121,9 @@ world
         quat: [spin[0] ?? 0, spin[1] ?? 0, spin[2] ?? 0, spin[3] ?? 1],
       });
     },
-  })
+  });
+world
+  .addSystem(Update, systemToken1)
   .unwrap();
 
 // --- Cutscene: pause -> overlay -> resume (contract section 4.2) ---

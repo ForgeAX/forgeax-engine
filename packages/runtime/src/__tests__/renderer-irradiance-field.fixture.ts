@@ -308,12 +308,7 @@ export async function createIrradianceFieldHarness(options: {
     ssao: false,
     visibleSurface: true,
   };
-  const request = {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-    geometryLane: 'direct' as const,
-  };
+  const request = { source: lease, geometryLane: 'direct' as const };
   const submit = () => renderer.draw(request);
   const advanceWorld = () => {
     world.update(1 / 60).unwrap();

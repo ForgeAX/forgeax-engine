@@ -4,6 +4,82 @@ import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
 
 describe('registry-owned material programs', () => {
+  it('owns entry effects and rejects contradictory facts for identical source', () => {
+    const effects = {
+      mayDiscard: false,
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    };
+    const reads = [{ name: 'main', stage: 'fragment' as const, bindings: [], effects }];
+    const program = programs.withMaterialShaderEntryPoints(
+      programs.createMaterialShaderProgram('@fragment fn main() {}'),
+      reads,
+    );
+    effects.mayDiscard = true;
+    expect(program.entryPoints?.[0]).toMatchObject({ effects: { mayDiscard: false } });
+    expect(() => programs.withMaterialShaderEntryPoints(program, reads)).toThrow('conflicting');
+  });
+
+  it('enriches legacy reads with native effects and never erases known facts', () => {
+    const legacyEntry = { name: 'main', stage: 'fragment' as const, bindings: [] };
+    const legacyReads = [legacyEntry];
+    const legacy = programs.withMaterialShaderEntryPoints(
+      programs.createMaterialShaderProgram('@fragment fn main() {}'),
+      legacyReads,
+    );
+    const knownReads = [
+      {
+        ...legacyEntry,
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      },
+    ];
+    const known = programs.withMaterialShaderEntryPoints(legacy, knownReads);
+    expect(legacy.entryPoints?.[0]).not.toHaveProperty('effects');
+    expect(known.entryPoints?.[0]).toMatchObject({ effects: { mayDiscard: true } });
+    expect(programs.withMaterialShaderEntryPoints(known, legacyReads)).toBe(known);
+    expect(programs.sameMaterialShaderEntryPoints(legacy.entryPoints, known.entryPoints)).toBe(
+      false,
+    );
+  });
+
+  it('retains native effects when a legacy registry transfers the same immutable source', () => {
+    const source = '@fragment fn main() {}';
+    const reads = [{ name: 'main', stage: 'fragment' as const, bindings: [] }];
+    const native = new ShaderRegistry({ manifestUrl: undefined });
+    native.installMaterialArtifact('game::native', {
+      source,
+      paramSchema: [],
+      entryPoints: reads.map((row) => ({
+        ...row,
+        effects: {
+          mayDiscard: true,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      })),
+    });
+    const legacy = new ShaderRegistry({ manifestUrl: undefined });
+    legacy.installMaterialArtifact('game::legacy', { source, paramSchema: [], entryPoints: reads });
+    legacy.installMaterialArtifactsFrom(native);
+    expect(
+      legacy.findMaterialArtifact('game::native').unwrap().program.entryPoints?.[0],
+    ).toMatchObject({ effects: { mayDiscard: true } });
+    native.installMaterialArtifactsFrom(legacy, ['game::legacy']);
+    expect(
+      native.findMaterialArtifact('game::legacy').unwrap().program.entryPoints?.[0],
+    ).toMatchObject({ effects: { mayDiscard: true } });
+    expect(native.materialProgram(source).entryPoints?.[0]).toMatchObject({
+      effects: { mayDiscard: true },
+    });
+  });
+
   it('adds published entry reads to warmed source facts without rescanning or retaining caller data', () => {
     const source = 'struct Input { @location(0) pos: vec3f } @vertex fn main(v: Input) {}';
     const receiving = new ShaderRegistry({ manifestUrl: undefined });

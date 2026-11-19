@@ -290,11 +290,7 @@ export async function runVisibilityDawnSmoke({ frames = 60 } = {}) {
     if (frame === Math.floor((frames * 5) / 6)) scene.setAncestorHidden();
     const updateResult = world.value.update(1 / 60);
     if (!updateResult.ok) errors.push(describeStructuredError(updateResult.error));
-    await drawReadyFrame(renderer, {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    await drawReadyFrame(renderer, { source: attachment.value });
     for (const [phase, captureFrame] of Object.entries(captureFrames)) {
       if (frame === captureFrame) {
         captures[phase] = await capturePhase(scene, diagnostics, sharedDevice.value, renderTarget.value);

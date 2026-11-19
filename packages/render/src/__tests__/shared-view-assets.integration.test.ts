@@ -10,7 +10,7 @@ import { Materials } from '../materials';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { renderPublicationTransfers } from '../publication/record';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -18,11 +18,7 @@ import {
 import { SceneComposition } from '../scene/scene-composition';
 import { registerMaterialSystems } from '../world/material-systems';
 import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
-import {
-  type RenderSceneAdoption,
-  RenderSceneDelta,
-  registerSceneSystem,
-} from '../world/scene-systems';
+import { RenderSceneDelta, registerSceneSystem } from '../world/scene-systems';
 
 function fixture() {
   const assets = new AssetRegistry();
@@ -42,11 +38,10 @@ function fixture() {
     .unwrap();
   const follow = (view: PersistentRenderScene) =>
     view.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
-      (request) => extractFrames([world], 0, assets, undefined, { renderables: request }),
-      [lease],
+      (request) => extractSource(world, assets, undefined, { renderables: request }),
+      lease,
     );
   const update = (red: number) => {
     assets.update(texture, { data: new Uint8Array([red, 0, 0, 255]) }).unwrap();
@@ -193,14 +188,12 @@ it('notifies a sleeping publication view for same-handle texture changes without
 });
 
 it('fences a later same-frame view resource frame against its own asset edits', () => {
-  const registries = [new AssetRegistry(), new AssetRegistry()];
-  const worlds = registries.map((assets) => new World({ assets }));
-  const leases = worlds.map((world) => createRenderReadLease(world));
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const lease = createRenderReadLease(world);
   const shared = new SceneComposition({});
-  const assets = registries[1];
-  if (assets === undefined) throw new Error('expected the sky asset owner');
   assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
-  const views = worlds.map(() => new PersistentRenderScene({}, shared));
+  const views = Array.from({ length: 2 }, () => new PersistentRenderScene({}, shared));
   const sky = assets
     .create({
       kind: 'equirect',
@@ -211,30 +204,25 @@ it('fences a later same-frame view resource frame against its own asset edits', 
       data: new Uint8Array(64),
     })
     .unwrap();
-  worlds[1]?.spawn({ component: SkyboxBackground, data: { equirect: sky } }).unwrap();
+  world.spawn({ component: SkyboxBackground, data: { equirect: sky } }).unwrap();
   // One renderer frame: view 0 owns the `render-scene` observation; every
   // view then follows it with its own resource frame.
   const renderWorld = createRenderWorld();
-  const source = registerSceneSystem(renderWorld, shared, registries[0]);
+  const source = registerSceneSystem(renderWorld, shared, assets);
   registerMaterialSystems(renderWorld);
-  const build = (index: number) => {
-    const owner = { cameraOwner: index, resourceOwner: index };
-    const resources = registries[index] ?? assets;
-    return (request: PersistentRenderCandidateRequest) =>
-      extractFrames(worlds, owner, resources, undefined, { renderables: request });
-  };
+  const build = (request: PersistentRenderCandidateRequest) =>
+    extractSource(world, assets, undefined, { renderables: request });
   let frame = 0;
   const draw = () => {
     source.staged = true;
-    source.worlds = worlds;
-    source.owner = { cameraOwner: 0, resourceOwner: 0 };
-    source.leases = leases;
-    source.buildCandidateFrame = build(0);
+    source.world = world;
+    source.lease = lease;
+    source.buildCandidateFrame = build;
     beginRenderFrame(renderWorld, ++frame);
     try {
-      const adoption = renderWorld.getResource<RenderSceneAdoption>(RenderSceneDelta);
-      views.forEach((view, index) => {
-        view.followAdoption(adoption, build(index), worlds[index]);
+      const adoption = renderWorld.getResource(RenderSceneDelta);
+      views.forEach((view) => {
+        view.followAdoption(adoption, build);
       });
     } finally {
       endRenderFrame(renderWorld);
@@ -244,7 +232,7 @@ it('fences a later same-frame view resource frame against its own asset edits', 
     draw();
     const retained = views[1]?.compositionRetainedScene();
     expect(retained?.isSourceCurrent()).toBe(true);
-    // Only the second view's resource World reads the sky.
+    // A resource edit invalidates the held view through its source asset closure.
     assets.update(sky, { data: new Uint8Array(64).fill(1) }).unwrap();
     expect(retained?.isSourceCurrent()).toBe(false);
     draw();
@@ -252,7 +240,7 @@ it('fences a later same-frame view resource frame against its own asset edits', 
   } finally {
     for (const view of views) view.dispose();
     shared.dispose();
-    for (const lease of leases) lease.dispose();
-    for (const registry of registries) registry.dispose();
+    lease.dispose();
+    assets.dispose();
   }
 });

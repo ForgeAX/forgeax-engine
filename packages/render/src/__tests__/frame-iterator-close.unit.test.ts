@@ -17,7 +17,6 @@ it('closes a slot traversal on break while keeping independent walks', () => {
   for (let slot = 0; slot < 2; slot++)
     setSceneRow(slots, slot, {
       slot,
-      worldId: 0,
       entityKey: slot,
       generation: 0,
       snapshot: {} as RenderableSnapshot,

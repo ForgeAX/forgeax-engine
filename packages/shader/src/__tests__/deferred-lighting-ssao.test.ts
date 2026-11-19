@@ -10,7 +10,9 @@ describe('Standard ambient occlusion consumer contract', () => {
     'standard-surface',
   ])('%s consumes the shared projected AO', (name) => {
     const code = source(name).replace(/\/\/[^\n]*/g, '');
-    expect(code).toContain('sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,');
+    expect(code).toMatch(
+      /sampleStandardAmbientOcclusion\((?:in\.worldPos|standardPositionWS), view\.worldViewProj,/,
+    );
     expect(code).toContain('ssaoBlurredTexture, ssaoBlurredSampler');
     expect(code).not.toMatch(/ssaoFactor\s*\*\s*ao/);
   });

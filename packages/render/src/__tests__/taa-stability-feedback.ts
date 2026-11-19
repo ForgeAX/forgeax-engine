@@ -19,7 +19,7 @@ import {
 
 type TaaScenario = 'feedback' | 'secondary-motion' | 'clipping-recovery';
 type Device = Awaited<ReturnType<typeof requestTaaDevice>>;
-type TemporalState = ReturnType<typeof getTemporalGpuState>;
+type TemporalState = Extract<ReturnType<typeof getTemporalGpuState>, { mode: 'taa' | 'tsr' }>;
 type TaaInput = { readonly texture: Texture; readonly view: TextureView };
 
 // Four 256-byte readback rows per frame: color, temporal, stability, flicker.
@@ -65,6 +65,7 @@ interface TaaFeedbackRig {
 
 function writeFrameInputs(rig: TaaFeedbackRig, frame: number, scenario: TaaScenario): void {
   const { device, state } = rig;
+  if (state.flicker === undefined) throw new Error('TAA requires flicker history');
   const secondaryMotion = scenario === 'secondary-motion';
   const reactive = secondaryMotion && frame === 528;
   const metadata = new Uint16Array(frameMetadata(frame));
@@ -405,6 +406,7 @@ export async function verifyTaaStabilityFeedback(
     2,
     1,
   );
+  if (state.mode !== 'taa') throw new Error('TAA feedback requires metadata history');
   const inputs = getTemporalBindGroupResources(state);
   if (inputs.sampler === null || inputs.temporalSampler === null)
     throw new Error('Missing TAA samplers');

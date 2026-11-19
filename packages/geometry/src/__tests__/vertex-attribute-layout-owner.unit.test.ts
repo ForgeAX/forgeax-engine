@@ -198,7 +198,7 @@ describe('vertex attribute layout owner', () => {
     expect(empty.ok).toBe(false);
     if (!empty.ok) expect(empty.error.detail.reason).toBe('empty');
 
-    const unknown = deriveVertexLayoutProjectionFromMask(1 << 14);
+    const unknown = deriveVertexLayoutProjectionFromMask(1 << 15);
     expect(unknown.ok).toBe(false);
     if (!unknown.ok) expect(unknown.error.detail.reason).toBe('unknown-bits');
   });

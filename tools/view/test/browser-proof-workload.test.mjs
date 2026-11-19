@@ -56,11 +56,11 @@ test('installed Game3D fixture needs no contributor helper and preserves every l
 test('CI admits sixty completed frames and repeated device retirement; full diagnostics remain available', () => {
   assert.deepEqual(browserProofWorkload(true), {
     runtimeViewport: { width: 1000, height: 700 }, gameViewport: { width: 1000, height: 700 },
-    sceneFrames: 60, resourceCycles: 2,
+    sceneFrames: 60, resourceCycles: 2, playCycles: 2,
   });
   assert.deepEqual(browserProofWorkload(false), {
     runtimeViewport: { width: 1440, height: 1000 }, gameViewport: { width: 1440, height: 900 },
-    sceneFrames: 300, resourceCycles: 6,
+    sceneFrames: 300, resourceCycles: 6, playCycles: 10,
   });
 });
 
@@ -106,7 +106,7 @@ test('the workflow uses every Engine-owned shard and rejects invalid matrix IDs'
   const selected = ids.flatMap(id => plan('--shard', String(id), '--dry-run').filter(([owner]) => owner !== 'prepare').map(step => JSON.stringify(step))).sort();
   assert.deepEqual(selected, all);
   assert.match(workflow, /FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1'/);
-  assert.match(workflow, /view_shards: \$\{\{ steps.view-shards.outputs.shards \}\}/);
+  assert.match(workflow, /view_shards: \$\{\{ steps\.view-shards\.outputs\.shards \|\| needs\.context\.outputs\.view_shards \}\}/);
   assert.match(workflow, /shard: \$\{\{ fromJSON\(needs.build.outputs.view_shards\) \}\}/);
   assert.match(workflow, /run: xvfb-run -a pnpm test:view -- --candidate --shard \$\{\{ matrix.shard \}\}/);
   assert.doesNotMatch(workflow, /--list-groups|VIEW_CONSUMER_GROUPS|--group|owner %/);
@@ -123,10 +123,12 @@ test('the Runtime Capture probe preserves its qualified independent-run dimensio
   assert.match(capture, /timeout: 30_000/);
 });
 
-test('the combined plugin probe bounds panel rendering while retaining its ten Play cycles and original capture gate', async () => {
+test('the combined plugin probe uses the selected Play workload and retains failure and capture checks', async () => {
   const source = await readFile(new URL('../scripts/verify-engine-plugin-boundary.mjs', import.meta.url), 'utf8');
   assert.match(source, /viewport: workload.gameViewport/);
-  assert.match(source, /FORGEAX_PLAY_CYCLES \?\? 10/);
+  assert.match(source, /FORGEAX_PLAY_CYCLES \?\? workload.playCycles/);
+  assert.match(source, /verifyScenePlay\(\{ page, live, sameRun, cycles: playCycles \}\)/);
+  assert.match(source, /verifyScenePlayFailure\(\{ page, live, sameRun \}\)/);
   const inline = await readFile(new URL('../scripts/verify-inline-previews.mjs', import.meta.url), 'utf8');
   assert.match(inline, /workspace.capture\(args\)/);
   assert.match(inline, /visible previews render at the panel device-pixel extent/);

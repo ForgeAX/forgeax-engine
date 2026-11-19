@@ -4,7 +4,7 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { type AssetHandle, ok, type RenderPipelineAsset } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
-import { CameraView } from '../components/camera-view';
+import { CAMERA_VIEW_DEFAULTS, CameraView } from '../components/camera-view';
 import { StereoCamera } from '../components/stereo-camera';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import {
@@ -27,10 +27,11 @@ import {
   recordClusterWorkFrameReceiptForConformance,
 } from '../record/cluster-work-conformance';
 import type { GpuTimingCapture } from '../record/gpu-timing';
-import type { RenderSystemInternals } from '../record/render-context';
+import { activeRenderProfileSession } from '../record/profile-session';
+import { type RenderSystemInternals, runProfiledRenderPhase } from '../record/render-context';
 import type {
   CameraSnapshot,
-  DrawOwnerOptions,
+  DrawOptions,
   FramePresentation,
   FramePresentationPendingReason,
 } from '../render-contract';
@@ -113,7 +114,11 @@ function adoptPublicationAssets(
       .adoptMeshChange(change, payload.kind === 'mesh' ? payload : undefined, resources)
       .unwrap();
     store
-      .adoptTextureChange(change, payload.kind === 'texture' ? payload : undefined, resources)
+      .adoptTextureChange(
+        change,
+        payload.kind === 'texture' || payload.kind === 'gpu-texture' ? payload : undefined,
+        resources,
+      )
       .unwrap();
     store.invalidateSampler(change.handle, resources);
     store.adoptCubemapChange(change, resources);
@@ -367,6 +372,21 @@ export function createCameraViews(
     get currentOwner(): ViewSettlementOwner {
       return active() ? (findDisplayRecorder()?.owner ?? primaryOwner) : primaryOwner;
     },
+    /** Held views retain the revision of their last accepted scene, never a newly compiled candidate. */
+    get configurationRevision(): number | undefined {
+      if (!active()) return viewRecordHistory(renderWorld, views.primary)?.configurationRevision;
+      const records = displayRecorders();
+      const revision =
+        records.length === 0
+          ? undefined
+          : viewRecordHistory(renderWorld, records[0]?.entity)?.configurationRevision;
+      return revision !== undefined &&
+        records.every(
+          (view) => viewRecordHistory(renderWorld, view.entity)?.configurationRevision === revision,
+        )
+        ? revision
+        : undefined;
+    },
     get lastLodObservationCapture(): LodObservationCapture | undefined {
       return lodObservationOf(renderWorld).capture;
     },
@@ -514,8 +534,8 @@ export function createCameraViews(
           entityKey: v.camera,
           ...(v.eye === undefined ? {} : { eye: v.eye }),
           viewport: [v.viewport.x, v.viewport.y, v.viewport.width, v.viewport.height],
-          width: v.output?.width ?? 0,
-          height: v.output?.height ?? 0,
+          width: v.output?.width ?? v.viewport.renderWidth,
+          height: v.output?.height ?? v.viewport.renderHeight,
           renderedFrames: v.renderedFrames,
           output: v.target === undefined ? 'screen' : 'texture',
           passes: [...viewPassNames(v.owner)],
@@ -543,9 +563,9 @@ export function createCameraViews(
       return drainFramePreparation(this.prepareSubmission(...args));
     },
     *prepareSubmission(
-      worlds: readonly World[],
-      opts: DrawOwnerOptions,
-      leases?: readonly RenderReadLease[],
+      world: World | undefined,
+      opts: DrawOptions,
+      lease?: RenderReadLease,
       timing?: GpuTimingCapture,
       source?: {
         readonly publication: PreparedRenderPublication;
@@ -563,7 +583,6 @@ export function createCameraViews(
       try {
         const publication = source?.publication;
         if (publication !== undefined) adoptPublicationAssets(internals, publication);
-        const world = worlds[opts.cameraOwner];
         // The primary system owns extraction and diagnostic publication when no
         // composed view is declared. This admission probe reads membership only.
         const declaresViews =
@@ -572,19 +591,37 @@ export function createCameraViews(
           Math.min(internals.canvas.width, internals.canvas.height) > maxRenderShortSide
             ? maxRenderShortSide
             : 0;
+        const qualityScale = internals.standardProfile?.quality?.resolutionScale ?? 1;
         const cameras =
-          publication?.frame.cameras ??
-          ((!declaresViews && cap === 0) || world === undefined
+          opts.targetWrite !== undefined
             ? []
-            : selectCameraRoles(world, opts.cameraEntityKey).display);
-        const captures = captureCameras(publication, world, opts.cameraEntityKey);
+            : (publication?.frame.cameras ??
+              ((!declaresViews && cap === 0 && qualityScale === 1) || world === undefined
+                ? []
+                : selectCameraRoles(world, opts.cameraEntityKey).display));
+        const captures =
+          opts.targetWrite !== undefined
+            ? []
+            : captureCameras(publication, world, opts.cameraEntityKey);
         assertViewCameras(cameras, cap > 0);
+        const profileSession = activeRenderProfileSession(internals);
+        const displayCameras =
+          qualityScale === 1
+            ? cameras
+            : cameras.map((camera) => {
+                if (camera.target !== undefined) return camera;
+                const view = camera.view ?? CAMERA_VIEW_DEFAULTS;
+                return {
+                  ...camera,
+                  view: { ...view, resolutionScale: Math.min(view.resolutionScale, qualityScale) },
+                };
+              });
         viewSource.stage(
-          cameras,
+          displayCameras,
           captures,
-          worlds,
+          world,
           opts,
-          leases,
+          lease,
           publication,
           source?.receiver,
           cap,
@@ -592,15 +629,24 @@ export function createCameraViews(
         stageRenderScene(
           renderWorld,
           primaryOwner,
-          worlds,
+          world,
           opts,
-          leases,
+          lease,
           viewPublication(viewSource, primaryOwner.scene),
+          profileSession,
         );
-        beginRenderFrame(renderWorld, frame);
+        beginRenderFrame(renderWorld, frame, profileSession, true);
         // The view owner, recorder and output systems ran inside beginRenderFrame.
-        throwViewFailure(renderWorld);
-        if (plan.blocked) return false;
+        let mayRecord: boolean;
+        if (profileSession === undefined) {
+          throwViewFailure(renderWorld);
+          mayRecord = !plan.blocked;
+        } else
+          mayRecord = runProfiledRenderPhase(profileSession, 'post-prepare', () => {
+            throwViewFailure(renderWorld);
+            return !plan.blocked;
+          });
+        if (!mayRecord) return false;
         frameSubmitted = yield* prepareRecordedSubmission(timing, isCurrent);
         return frameSubmitted;
       } finally {

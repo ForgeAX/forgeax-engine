@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -86,7 +87,7 @@ const shim = await setupGpuShim({
   height: 300,
   rerunCmd: 'pnpm --filter @forgeax/hello-lod-occlusion smoke',
 });
-const shaderManifest = new TextDecoder().decode(shaderBytes);
+const shaderManifestUrl = `data:application/octet-stream;base64,${Buffer.from(shaderBytes).toString('base64')}`;
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import(
   '@forgeax/engine-runtime/internal/renderer-host'
@@ -121,9 +122,9 @@ let lastLodEvidenceFailure;
 try {
   const constructed = await constructRuntimeRendererHost(
     shim.mockCanvas,
-    {},
+    { standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
     {
-      shaderManifestUrl: `data:application/json,${encodeURIComponent(shaderManifest)}`,
+      shaderManifestUrl,
     },
   );
   if (!constructed.ok) throw constructed.error;
@@ -167,11 +168,7 @@ try {
 
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
-  const frameRequest = {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  };
+  const frameRequest = { source: attached.value };
   const drawCompletedFrame = async () => {
     const drawPhase = phaseToken;
     world.update().unwrap();

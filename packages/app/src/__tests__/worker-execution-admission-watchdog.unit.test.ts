@@ -99,7 +99,8 @@ vi.mock('../execution/engine-worker', async () => {
   };
 });
 
-vi.mock('@forgeax/engine-input', () => ({
+vi.mock('@forgeax/engine-input', async (original) => ({
+  ...(await original<typeof import('@forgeax/engine-input')>()),
   attachBrowserInputBackend: vi.fn(() =>
     Object.assign(() => {}, {
       backend: {
@@ -526,6 +527,14 @@ describe('Worker frame admission watchdog', () => {
     expect(probes.platformListeners.size).toBe(0);
   });
 
+  it('forwards host memory pressure to the Worker realm', async () => {
+    const { app } = await createRunningApp();
+    for (const listener of probes.platformListeners)
+      listener({ kind: 'memory-pressure', level: 'critical' });
+    expect(probes.sessionPost).toHaveBeenCalledWith({ kind: 'memory-pressure' });
+    await app.dispose();
+  });
+
   it('discards the hidden interval before admitting the resumed Worker frame', async () => {
     const { app, callbacks, frame } = await createRunningApp();
     const emit = listener();
@@ -766,7 +775,6 @@ describe('Worker frame admission watchdog', () => {
     expect(callbacks).toHaveLength(requestedTicks);
     const pendingReason = {
       code: 'draw-terrain-missing',
-      worldId: 0,
       entity: 42,
       section: 3,
     } as const;

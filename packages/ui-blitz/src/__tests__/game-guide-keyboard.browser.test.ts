@@ -45,15 +45,18 @@ it('uses the ordinary game guide keyboard form through scrolling, busy recovery 
     return ((await import(/* @vite-ignore */ url.href)) as { default: string }).default;
   };
   const behavior = new URL(
-    '../../../../templates/game-3d/assets/ui/guide-controller.ts',
+    '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
     import.meta.url,
   );
   const [html, css, localization, controller] = await Promise.all([
-    authored('../../../../templates/game-3d/assets/guide.ui.html'),
-    authored('../../../../templates/game-3d/assets/guide.ui.css'),
-    fetch(new URL('../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url)).then(
-      (response) => response.json(),
-    ),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css'),
+    fetch(
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+        import.meta.url,
+      ),
+    ).then((response) => response.json()),
     import(/* @vite-ignore */ behavior.href) as Promise<{
       createGuideUi(
         asset: UiAsset,

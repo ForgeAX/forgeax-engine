@@ -1,7 +1,9 @@
 import {
   deriveTextureLayout,
   type EquirectAsset,
+  type GpuTextureAsset,
   type MaterialAsset,
+  type SampledTextureAsset,
   type TextureAsset,
 } from '@forgeax/engine-types';
 
@@ -46,10 +48,11 @@ export function createTextureViewMaterial(
 }
 
 export interface TextureViewOptions {
+  readonly output?: string;
   readonly channels: readonly [boolean, boolean, boolean, boolean];
   readonly mip: number;
   readonly layer: number;
-  readonly projection: 'flat' | 'environment' | 'cross' | 'face';
+  readonly projection: 'flat' | 'environment' | 'cross' | 'face' | 'atlas' | 'volume';
   readonly face: number;
   readonly exposure: number;
   readonly filter: 'nearest' | 'linear';
@@ -61,7 +64,7 @@ export interface TextureViewOptions {
 }
 
 export interface TextureViewInfo {
-  readonly kind: 'texture' | 'equirect';
+  readonly kind: 'texture' | 'gpu-texture' | 'equirect';
   readonly dimension: TextureAsset['shape']['viewDimension'];
   readonly width: number;
   readonly height: number;
@@ -71,6 +74,13 @@ export interface TextureViewInfo {
   readonly mipCount: number;
   readonly sourceBytes: number;
   readonly options: TextureViewOptions;
+  readonly generator?: {
+    readonly guid: string;
+    readonly outputs: readonly string[];
+    readonly status?: string;
+    readonly error?: string;
+  };
+  readonly storage?: 'gpu-generated' | 'bytes';
 }
 
 export interface TextureViewControl {
@@ -78,8 +88,14 @@ export interface TextureViewControl {
   readonly set: (options: unknown) => TextureViewInfo | Promise<TextureViewInfo>;
 }
 
-export function textureViewSource(asset: TextureAsset | EquirectAsset): TextureAsset {
-  if (asset.kind === 'texture') return asset;
+export function textureViewSource(
+  asset: EquirectAsset,
+): import('@forgeax/engine-types').TextureAsset;
+export function textureViewSource(asset: TextureAsset): TextureAsset;
+export function textureViewSource(asset: GpuTextureAsset): GpuTextureAsset;
+export function textureViewSource(asset: SampledTextureAsset | EquirectAsset): SampledTextureAsset;
+export function textureViewSource(asset: SampledTextureAsset | EquirectAsset): SampledTextureAsset {
+  if (asset.kind !== 'equirect') return asset;
   return {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: asset.width, height: asset.height } },
@@ -90,7 +106,7 @@ export function textureViewSource(asset: TextureAsset | EquirectAsset): TextureA
   };
 }
 
-export function describeTextureView(asset: TextureAsset | EquirectAsset): TextureViewInfo {
+export function describeTextureView(asset: SampledTextureAsset | EquirectAsset): TextureViewInfo {
   const source = textureViewSource(asset);
   if (
     /(?:uint|sint)$/.test(source.format) ||
@@ -103,7 +119,7 @@ export function describeTextureView(asset: TextureAsset | EquirectAsset): Textur
   }
   const layout = deriveTextureLayout({
     ...source,
-    actualByteLength: source.data.byteLength,
+    ...(source.kind === 'gpu-texture' ? {} : { actualByteLength: source.data.byteLength }),
   }).unwrap();
   return {
     kind: asset.kind,
@@ -119,12 +135,22 @@ export function describeTextureView(asset: TextureAsset | EquirectAsset): Textur
     format: source.format,
     colorSpace: source.colorSpace,
     mipCount: layout.levels.length,
-    sourceBytes: source.data.byteLength,
+    sourceBytes: source.kind === 'texture' ? source.data.byteLength : 0,
+    storage: source.kind === 'texture' ? 'bytes' : 'gpu-generated',
+    ...(source.kind === 'gpu-texture'
+      ? { generator: { guid: source.source.generator, outputs: [source.source.output] } }
+      : {}),
     options: {
-      channels: [true, true, true, true],
+      ...(source.kind === 'gpu-texture' ? { output: source.source.output } : {}),
+      channels: [true, true, true, false],
       mip: 0,
       layer: 0,
-      projection: asset.kind === 'equirect' ? 'environment' : 'flat',
+      projection:
+        asset.kind === 'equirect'
+          ? 'environment'
+          : source.shape.viewDimension === '3d'
+            ? 'atlas'
+            : 'flat',
       face: 0,
       exposure: 0,
       filter: 'linear',
@@ -148,6 +174,7 @@ export function validateTextureViewOptions(
     if (!Object.hasOwn(info.options, key))
       throw new TypeError(`Unknown texture view option: ${key}`);
   const value = { ...info.options, ...patch } as TextureViewOptions;
+  validateOutputSelection(info, value);
   const finite = (n: unknown, min: number, max: number) =>
     typeof n === 'number' && Number.isFinite(n) && n >= min && n <= max;
   const integer = (n: unknown, min: number, max: number) =>
@@ -161,8 +188,13 @@ export function validateTextureViewOptions(
     !value.channels.every((v) => typeof v === 'boolean') ||
     !integer(value.mip, 0, info.mipCount - 1) ||
     !integer(value.layer, 0, layers - 1) ||
-    !['flat', 'environment', 'cross', 'face'].includes(value.projection) ||
-    (info.kind !== 'equirect' && value.projection !== 'flat') ||
+    !(
+      info.kind === 'equirect'
+        ? ['flat', 'environment', 'cross', 'face']
+        : info.dimension === '3d'
+          ? ['flat', 'atlas', 'volume']
+          : ['flat']
+    ).includes(value.projection) ||
     !integer(value.face, 0, 5) ||
     !finite(value.exposure, -16, 16) ||
     !['nearest', 'linear'].includes(value.filter) ||
@@ -177,4 +209,9 @@ export function validateTextureViewOptions(
     );
   }
   return structuredClone(value);
+}
+
+function validateOutputSelection(info: TextureViewInfo, value: TextureViewOptions): void {
+  if (value.output !== undefined && !info.generator?.outputs.includes(value.output))
+    throw new TypeError('Texture output must be declared by the selected generator');
 }

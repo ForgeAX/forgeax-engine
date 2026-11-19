@@ -33,12 +33,12 @@ import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 // criteria (c) and/or (d) may FAIL with structured diagnostics on stderr;
 // that failure is the architectural truth - no parallel inline-shader
 // fallback path is provided here (charter proposition 4 explicit failure).
-
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 
@@ -185,18 +185,26 @@ const { Name, Transform } = await import('@forgeax/engine-scene');
 // at vite build time, charter P5 — the runtime no longer ships an inline
 // fallback shader so the manifest must carry both entries).
 const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const manifestArgument = process.argv.indexOf('--shader-manifest');
+if (manifestArgument >= 0 && !process.argv[manifestArgument + 1]) {
+  throw new Error('--shader-manifest requires a publication file path');
+}
+const MANIFEST_PATH = manifestArgument < 0
+  ? resolve(here, '..', 'dist', 'shaders', 'manifest.json')
+  : resolve(process.argv[manifestArgument + 1]);
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 let assets;
 let renderDiagnostics;
+const rendererStartedAt = performance.now();
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
   assets = constructed.value.assets;
   renderDiagnostics = constructed.value.debugDrawHost;
+  if (manifestArgument >= 0) console.log(`[smoke] shaderPreparation=${JSON.stringify({ elapsedMs: performance.now() - rendererStartedAt, ...assets.shaderRegistry.programTemplateInspection() })}`);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -274,11 +282,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 
   // Snapshot counter on frame 3 (1-indexed). The Renderer interface

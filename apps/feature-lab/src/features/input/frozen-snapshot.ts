@@ -1,4 +1,4 @@
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
@@ -22,26 +22,28 @@ export default defineFeature({
     const log: Frame[] = [];
     let inject = false;
     let aSnap: InputSnapshot | undefined;
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-frozen-a',
       queries: [],
       fn: (world) => {
-        aSnap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        aSnap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         if (inject) {
           inject = false;
           window.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', code: 'KeyQ' }));
         }
       },
     });
-    world.addSystem(Update, {
+    world.addSystem(Update, systemToken1);
+    const systemToken2 = defineSystem({
       name: 'fl-frozen-b',
       queries: [],
-      after: ['fl-frozen-a'],
+      after: [systemToken1],
       fn: (world) => {
-        const bSnap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const bSnap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         if (aSnap !== undefined) log.push({ aSnap, bSnap, bSaw: bSnap.keyboard.down('q') });
       },
     });
+    world.addSystem(Update, systemToken2);
     let memo: Promise<readonly FeatureCheck[]> | undefined;
     return {
       checks() {

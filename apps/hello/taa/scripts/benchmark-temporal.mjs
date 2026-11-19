@@ -12,6 +12,7 @@ import { attachRecorder, buildFrameModel, decodeTape, tapeDigest } from "@forgea
 import * as webgpu from "@forgeax/engine/rhi-webgpu";
 import { drawReadyFrame } from "../../../../scripts/test/ready-render-frame.mjs";
 import { setupGpuShim } from "../../triangle/scripts/smoke-helpers.mjs";
+import { readShaderManifestText } from "../../../../scripts/lib/shader-manifest.mjs";
 
 const output = process.env.FORGEAX_TSR_BENCH_OUTPUT;
 if (!output) throw new Error("set FORGEAX_TSR_BENCH_OUTPUT to a path outside the checkout");
@@ -70,7 +71,7 @@ const shim = await setupGpuShim({
   rerunCmd: "FORGEAX_TSR_BENCH_OUTPUT=<external.json> node scripts/benchmark-temporal.mjs",
 });
 const recorder = attachRecorder(webgpu).unwrap();
-const manifest = await readFile(new URL("../dist/shaders/manifest.json", import.meta.url), "utf8");
+const manifest = readShaderManifestText(new URL("../dist/shaders/manifest.json", import.meta.url));
 const host = value(
   await constructRuntimeRendererHost(
     shim.mockCanvas,
@@ -153,9 +154,7 @@ try {
       world.set(camera, Transform, { pos: [Math.sin(i * 0.02) * 0.05, 0, 6] }).unwrap();
       world.update(1 / 60).unwrap();
       const receipt = await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
+        source: lease,
         sampleTimeSeconds: i / 60,
         profileFrame: { captureId: `temporal-${mode}-${scale}`, frameId: i + 1 },
       });
@@ -183,9 +182,7 @@ try {
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
+      source: lease,
       sampleTimeSeconds: (warmup + samples) / 60,
     });
     (await recorder.frameBoundary()).unwrap();

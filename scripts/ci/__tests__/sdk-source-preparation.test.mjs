@@ -13,7 +13,7 @@ const end = verifier.indexOf('const initializedSdk =', start);
 assert.ok(start >= 0 && end > start);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const prepare = new AsyncFunction(
-  '{ selected, sdkStage, sourceRoot, sourceEnv, sourcePnpm, consume, verifySdkSourceEdit, sdkRoot, resolve, unpackRoot, execFileAsync }',
+  '{ selected, sdkStage, sourceRoot, sourceEnv, sourcePnpm, consume, verifySdkSourceEdit, sdkRoot, resolve, unpackRoot, execFileAsync, profile = "full" }',
   `${verifier.slice(start, end)}\nreturn consume();`,
 );
 

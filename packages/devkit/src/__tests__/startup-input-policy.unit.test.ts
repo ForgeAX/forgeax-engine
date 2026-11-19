@@ -31,23 +31,39 @@ async function generatedStartup(): Promise<string> {
   }
 }
 
+interface StartupErrorProbe {
+  readonly listener: (error: unknown) => void;
+  readonly fail: ReturnType<typeof vi.fn>;
+  readonly warn: ReturnType<typeof vi.fn>;
+  readonly executionReport: { fault: { code: string } | null };
+}
+
+/** Execute the emitted, self-contained startup onError consumer. */
+function startupErrorProbe(generated: string): StartupErrorProbe | undefined {
+  // The renderer-error tracker registers its own onError listener; pick the startup one.
+  const callback = [...generated.matchAll(/app\.onError\(((\(error\) => \{[\s\S]*?\n\s*\}))\);/g)]
+    .map((match) => match[1])
+    .find((source) => source?.includes('app-pointer-lock-failed'));
+  expect(callback).toBeDefined();
+  if (callback === undefined) return undefined;
+  const fail = vi.fn();
+  const warn = vi.fn();
+  const executionReport: StartupErrorProbe['executionReport'] = { fault: null };
+  const sourceHelper = generated.match(/function rendererErrorSource\(error\) \{[\s\S]*?\n\}/)?.[0];
+  expect(sourceHelper).toBeDefined();
+  const listener = runInNewContext(`${sourceHelper}\n(${callback})`, {
+    app: { execution: { report: () => executionReport } },
+    startup: { fail },
+    console: { warn },
+  }) as (error: unknown) => void;
+  return { listener, fail, warn, executionReport };
+}
+
 describe('generated startup input admission', () => {
   it('keeps the game running when the browser refuses a pointer lock', async () => {
-    const generated = await generatedStartup();
-    // The renderer-error tracker registers its own onError listener; pick the startup one.
-    const callback = [...generated.matchAll(/app\.onError\(((\(error\) => \{[\s\S]*?\n\s*\}))\);/g)]
-      .map((match) => match[1])
-      .find((source) => source?.includes('app-pointer-lock-failed'));
-    expect(callback).toBeDefined();
-    if (callback === undefined) return;
-    const fail = vi.fn();
-    const warn = vi.fn();
-    const executionReport = { fault: null as { code: string } | null };
-    const listener = runInNewContext(`(${callback})`, {
-      app: { execution: { report: () => executionReport } },
-      startup: { fail },
-      console: { warn },
-    }) as (error: { code: string }) => void;
+    const probe = startupErrorProbe(await generatedStartup());
+    if (probe === undefined) return;
+    const { listener, fail, warn, executionReport } = probe;
     const refused = { code: 'app-pointer-lock-failed' };
     listener(refused);
     expect(fail).not.toHaveBeenCalled();
@@ -56,6 +72,45 @@ describe('generated startup input admission', () => {
     executionReport.fault = fatal;
     listener(fatal);
     expect(fail).toHaveBeenCalledWith(fatal, executionReport);
+  });
+
+  it('keeps the game running when an optional RenderFeature lacks a device capability', async () => {
+    const probe = startupErrorProbe(await generatedStartup());
+    if (probe === undefined) return;
+    const { listener, fail, warn } = probe;
+    // The Render Worker shape: App wraps the renderer event, which wraps the
+    // host's disabled-slot error; the innermost coded cause decides.
+    const disabled = {
+      code: 'app-system-update-failed',
+      detail: {
+        cause: {
+          code: 'device-operation-failed',
+          detail: {
+            operation: 'renderer-event',
+            cause: {
+              code: 'render-feature-capability-missing',
+              detail: {
+                featureIdentity: 'forgeax.vfx-render.gpu-particles',
+                capability: 'compute',
+              },
+            },
+          },
+        },
+      },
+    };
+    listener(disabled);
+    expect(fail).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(disabled);
+    // A different nested renderer failure still stops startup.
+    const lost = {
+      code: 'app-system-update-failed',
+      detail: {
+        cause: { code: 'device-operation-failed', detail: { cause: { code: 'device-lost' } } },
+      },
+    };
+    listener(lost);
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(fail.mock.calls[0]?.[0]).toBe(lost);
   });
 
   it.each([

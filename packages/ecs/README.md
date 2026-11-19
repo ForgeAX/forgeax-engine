@@ -12,9 +12,8 @@ mutation, schedules, resources, time, and optional shared numeric kernels.
 > it never wraps the World in a second ECS facade.
 
 `World` directly owns its graph, entity records, managed stores, relationship
-indexes, row/block revisions, and execution health. Query, command, and
-lifecycle helpers receive only the typed package-internal capabilities they
-actually consume; there is no `WorldCore`, `WorldData`, or second state bag.
+indexes, row/block revisions, resources, and execution health. Hierarchy mutations
+close at that owner; query, command, and schedule helpers use typed internal capabilities.
 
 ```mermaid
 flowchart LR
@@ -32,6 +31,13 @@ Scalar storage derives byte widths, column views and array element access from t
 native constructor table in `component.ts`. Managed families keep their own
 lifecycle flags while storing unsigned handles; fixed arrays and shared-memory
 columns retain the same numeric conversion and transient-view rules.
+
+Physical columns bind their typed view to the component's existing immutable
+`FieldPlan`. Owner-package consumers use `column.view.buffer` for backing,
+`column.view.length / column.layout.arity` for row capacity during a valid borrow,
+and `column.layout.storage` for the native storage kind. The former `Column.buffer`,
+`Column.capacity`, `Column.arity` and `Column.fieldType` metadata are removed under
+the SDK major-version migration.
 
 Managed storage retains one borrowed byte window for each live logical extent.
 Successful extent changes replace that window; failed growth preserves it and
@@ -109,13 +115,13 @@ borrows retain their transient-view contract.
 | Observation / reclamation | `world.memoryStats()` / `world.trimMemory()` | Cold, on-demand operations |
 
 ```ts
-world.addSystem(Update, {
+world.addSystem(Update, defineSystem({
   name: 'numeric-work', commands: 'none', queries: [],
   fn: (world) => {
     const scratch = world.frameArena.alloc(Float32Array, 256).unwrap();
     scratch.fill(0); // Reused arena bytes have unspecified contents.
   },
-}).unwrap();
+})).unwrap();
 
 const retained = world.buffers.alloc(Uint32Array, 128).unwrap();
 world.buffers.view(retained).unwrap()[0] = 17;
@@ -124,8 +130,9 @@ world.buffers.release(retained).unwrap(); // Retires the owner; reader stays val
 reader.release().unwrap(); // Last reader permits physical reuse.
 ```
 
-World owns one segmented frame arena and one BufferPool shared by managed
-fields and persistent system allocations. Arena growth appends chunks without
+World owns one segmented frame arena. Component arrays and owned system
+buffers use the same physical extent implementation in independent backing
+domains; owned-buffer admission never changes component budgets. Arena growth appends chunks without
 moving earlier ranges. `update` includes every fixed catch-up tick and command
 flush; reset runs after cleanup, including failures. A standalone `run` owns its
 scope; recursive domain runs join the active scope. Use
@@ -136,8 +143,8 @@ scratch there. Ordinary JS views cannot trap every expired access.
 Returning a Promise or iterator from a system or explicit scope is rejected and
 poisons the World before another frame can reuse scratch.
 
-The pool includes a 2KiB class between 1KiB and 4KiB, so a retained 2KiB
-column does not consume 4KiB of live capacity. Reader pins and budget accounting
+Owned buffers include a 2KiB class between 1KiB and 4KiB, so a retained 2KiB
+buffer does not consume 4KiB of live capacity. Reader pins and budget accounting
 use the same class through retirement.
 
 Persistent grants are opaque, frozen, unique per allocation and World-checked.
@@ -157,17 +164,20 @@ tracking; resource values remain non-owning.
 `World({ memory: { arena: { maxBytes, retainBytes, maxScopeBytes },
 buffers: { maxBytes, retainBytes } } })` configures safe-integer byte limits.
 Defaults: Arena 64MiB committed / 64MiB scope / 8MiB idle retention; owned-buffer
-admission 256MiB against the shared pool / 4MiB idle retention. Growth uses
+admission 256MiB in its own backing domain / 4MiB idle retention. Growth uses
 64KiB initial regular chunks, up to 1MiB, and separate oversized demand. These
 are configurable admission/retention policies, not universal optimal sizes.
 Recently used Arena capacity survives close; cold excess retires on subsequent
 scopes or explicit trim. Idle pool maintenance has bounded backing/page visits.
-Dedicated large backing is not cached, but its slot metadata is reused.
+Owned requests above 256KiB use exact dedicated backing, released without caching.
+Opaque grants directly own their extents; there is no second numeric identity table.
 
-Stats count unique allocator backing, payload/capacity, typed slot metadata,
-backing allocations, copy/zero/trim work and active/pending readers. Detailed
-snapshots may enumerate allocated metadata; hot maintenance does not enumerate
-entities or all slots. Table bytes are observed separately and are not hard
+Stats count unique allocator backing, logical bytes and capacity, backing
+allocations, copy/zero/trim work and active/pending readers. Owned `liveBuffers`
+includes zero-length grants and reader-pinned retirements. It replaces the old
+`liveSlots` count; `slotCapacity` and `metadataBytes` were removed with the
+second identity table. This return-shape migration is a breaking SDK API change. Detailed snapshots
+may enumerate live grants; bounded maintenance visits only backing and slab pages. Table bytes are observed separately and are not hard
 budgeted. Owned-buffer budgets do not change component admission; external
 resources, JS heap/VM, native and GPU memory remain separate populations. A
 smaller backing count is not a measured CPU or GC gain.
@@ -176,7 +186,7 @@ Memory failures carry closed `MemoryError.code` and discriminated `detail`
 (request, budget, allocation, scope or handle). Validate count/layout/budget
 before publication. Invalid configuration throws at World construction;
 process-fatal OOM is not promised recoverable. Public use does not expose the
-raw BufferPool or internal slot IDs.
+raw backing locations or internal allocator metadata.
 
 ## Components and schema
 
@@ -195,6 +205,34 @@ open-ended metadata do not belong on a component token.
 | `array<T>` | variable array replaced as one value or written in place by range | `{ type: 'array<f32>' }` |
 | `array<T,N>` | fixed-size inline array | `{ type: 'array<f32, 4>' }` |
 | tag | presence-only marker; `{ storage: 'sparse' }` flips without moving the row | `defineComponent('Residual', {}, { storage: 'sparse' })` |
+
+Byte sequences use the ordinary `array<u8>` and `array<u8, N>` vocabulary.
+Pass a `Uint8Array` byte window explicitly when ingesting raw native bytes.
+Fixed-array spawn and `set` copy the available prefix and zero the remaining
+inline elements; oversized input is truncated. Authored Scene values retain
+Scene's stricter exact-length validation. The former byte-field aliases and their
+fixed-size patch error are retired; migrate declarations and writes together.
+This breaking schema/API change requires the corresponding Engine/SDK version boundary.
+
+Reference fields share u32 storage while retaining distinct lifetime owners:
+
+| Schema | Owner | When the field is replaced or removed |
+|:--|:--|:--|
+| `unique<T>` | World's `UniqueRefStore` | Releases its slot and invokes optional cleanup |
+| `shared<T>` | World's `SharedRefStore` | Releases one reference; the payload's owner handles disposal |
+| `asset<T>` | Attached asset owner | Releases one asset reference through that owner |
+
+Component definitions compile physical layout and reference ownership once.
+Table construction, field reads/writes, and release consume that field plan.
+Fixed arrays clear any unwritten tail, including after row reuse. Numeric arrays
+accept plain arrays or the declared TypedArray; mismatched views and BigInt arrays
+fail before storage changes. Raw bytes require an explicit Uint8Array window.
+
+Structural admission captures component identity and declared field bindings before changing storage;
+validation, row writes, and relationship mirrors consume those same bindings.
+Fieldless components reuse a canonical immutable input.
+Deferred commands capture each batch at flush, including commands staged by
+callbacks. Array contents retain their existing borrowed lifetime.
 
 `world.sharedRefs.acquire(target, payload)` returns one caller-owned reference
 while preserving the interned handle for the same target and payload object.
@@ -288,11 +326,8 @@ class, or user-managed target-array mutation API. A replacement is one bounded
 mutation, so an invalid value leaves the previous column and reference counts
 unchanged.
 
-Object-shaped numeric writes reject `NaN` before touching the column. The
-returned `component-numeric-value-invalid` error carries the component, field,
-entity, received value, and optional array index in `detail`; `Infinity` remains
-valid when the schema accepts it. Branch on `error.code` and use `error.hint` to
-choose the correction instead of parsing a message.
+Numeric writes are not scanned for `NaN`; the column stores what the caller
+writes, and systems that need finite values validate at their own boundary.
 
 ## Relationships: one source, one materialized index
 
@@ -407,8 +442,6 @@ The Query retains one reusable validation lease; iteration and batch objects
 still have overhead proportional to traversal and batch count. This is low allocation, not a zero-allocation
 promise. Dense spans or known-entity numeric probes may remain better for their
 workload; benchmark the best eligible API instead of migrating every loop.
-Run [`bench/query-batches.mjs`](bench/query-batches.mjs) after the ECS build to
-compare actual API CPU, sampled allocation and signed retained-heap deltas.
 
 ### Query storage and observation
 
@@ -452,9 +485,6 @@ Span traversal also keeps independent cursors and detached `next`/`return`
 callbacks. Prototype traversal creates its bound callbacks only when requested;
 ordinary completion needs no early-close callback. Escaped span facades and
 nonterminal result records are never pooled or revived by another traversal.
-Run [`bench/query-span-traversal.mjs`](bench/query-span-traversal.mjs) with a built
-entry and private output to compare empty, dense, changed, partial and cold owners;
-its positive allocation control and empty-traversal budget detect closure churn.
 
 ```ts
 const query = world.query({ read: [Position] }).unwrap();
@@ -499,15 +529,9 @@ remain explicit publications: a fixed-array view may already have been edited
 through an alias before `set` is called.
 
 State consumers use `createStateProjection` from the projection subpath. Construction captures its component vocabulary with its IDs. Full and empty `changedComponents` facts are shared immutable declarations. A projection also retains its last equal frozen partial roster; changed rosters leave held facts intact, while every candidate keeps independent commit authority. Its current candidate exposes `hasStructuralChange(index)` over the existing per-index evidence, so consumers can refresh that identity after component removal without treating a global structural change as a change to every row. Read this predicate before accepting or superseding the candidate; those actions expire it. World
-publishes writes into mutable max-epoch radix indices over stable entity slots.
-A consumer reads only changed index paths and retains its accepted membership
-and cursor. Component indices own the only changed epoch for each live component identity;
-row and sparse storage retain only the distinct added epoch. Migration and
-swap-removal move added evidence but never duplicate or move changed evidence.
-Known-identity queries read the same index directly. Removal releases empty
-paths (a bounded spare list reuses their nodes) and rescans a node only when it
-held the removed maximum. Repeated writes mutate existing paths; unexpected allocation failure
-after a mutation poisons the World through its existing partial-write policy.
+records component writes with per-row epochs and conservative chunk bounds.
+Queries and state projections use the same component change evidence.
+Migration and swap-removal preserve both added and changed epochs.
 Structural facts coalesce by World slot, retaining deletion and generation
 replacement for independent slow consumers without an append history.
 
@@ -565,9 +589,7 @@ World; ordinary callback mutations/thenables are invalid numeric producers.
 
 Projection candidates remain independent commit capabilities. Shared prototype
 logic binds public callbacks only when requested; detached callbacks retain their
-identity and original candidate. The complete projection benchmark is
-[`bench/state-projection.mjs`](bench/state-projection.mjs), covering quiet,
-changing, discarded, held and cold candidates with separate CPU/allocation data.
+identity and original candidate.
 
 The optional third argument selects candidate component membership (any listed
 component); it defaults to the observed components. Sparse candidates conservatively
@@ -627,8 +649,7 @@ plane.
 
 ### Steady-state cost at scale
 
-Steady per-frame work allocates in proportion to changes, not entity count
-([steady-state bench](bench/steady-state.mjs)):
+Steady per-frame work allocates in proportion to changes, not entity count:
 
 | Operation | Steady allocation |
 |:--|:--|
@@ -646,21 +667,21 @@ an ArrayBuffer each; a fixed `array<T,N>` stays cheaper still.
 `Update` and `FixedUpdate` are the simulation schedules driven by
 `world.update(dt)`. A domain declares its own phases with `defineSchedule(name)`
 and executes them explicitly with `world.run(token)`; a domain run never
-advances World time and cannot order against another schedule; running a token the World has
-never registered, or ordering across schedules, returns `schedule-scope-mismatch`. Registration is
+advances World time. Running an empty domain succeeds without work; ordering across
+schedules returns `schedule-scope-mismatch`. Registration is
 token-first; there is no frame-end schedule, system-parameter DSL, terminal
 render hook, or severity/error-handler registry.
 
 ```ts
 world.addSystem(Update, Move).unwrap();
-world.addSystem(FixedUpdate, {
+world.addSystem(FixedUpdate, defineSystem({
   name: 'fixed-step',
   queries: [],
   fn: (fixedWorld) => {
     const fixed = fixedWorld.getResource(FixedTime);
     void fixed.tick;
   },
-}).unwrap();
+})).unwrap();
 ```
 
 `world.update(deltaSeconds)` advances the clock, runs zero or more fixed steps,
@@ -687,6 +708,16 @@ execution of that schedule. For example, a FixedUpdate system with
 runs after its ordinary systems and command flushes. Registration order does
 not weaken these boundaries; contradictory ordering uses the ordinary cycle
 failure. Update boundaries also enclose its intrinsic fixed block.
+
+`deferFixedStep(world, completion)` lets a backend suspend the current fixed
+substep after its system. It is valid only in `world.update`-driven
+`FixedUpdate` with `catchUp: 'substeps'`, never in `World.run` or aggregate
+catch-up. The completion must adopt the backend result before resolving.
+The scheduler retains the remaining systems, pending commands and original
+catch-up budget across continuations. Rejection or a poisoned World aborts
+retained commands and prevents partial work from being retried. Systems still
+return synchronously; no borrowed query row, span or frame-arena view may
+survive the completion boundary.
 
 Resources are non-owning values: Cordis/plugin owners dispose external payloads, not `World`.
 Final shared-reference `release()` returns the payload to its caller.
@@ -771,6 +802,46 @@ per-frame work to the World.
 
 ## Public surface and subpaths
 
+`componentDefinition(component).plan` owns compiled field classification and
+lifetime. Array `element` metadata contains only `storage`, `viewCtor`, and
+`byteSize`; consumers use the field's `kind` and `reference` for semantics.
+The former element classification flags are removed. This is an observable
+metadata API change and follows the SDK's major-version migration policy.
+
+`EcsErrorCode` no longer includes `managed-buffer-shrink-not-supported`.
+Owned buffers support shrinking through `resize`; no storage operation produces
+that failure. Removing its internal factory and public code literal follows the
+same SDK major-version migration policy; consumers drop that obsolete branch.
+
+The SDK major-version migration also removes
+`relationship-mirror-component-not-registered` and
+`relationship-mirror-field-type-mismatch` from `EcsErrorCode`.
+`defineRelationship` declares and registers the target alongside the source,
+so callers no longer handle failures from separately declared mirror schemas.
+
+The SDK major-version migration removes `Query.combinations()`. Collect entity
+handles with a regular query and enumerate combinations in the calling system.
+For a temporal query, completing the snapshot accepts the observation before
+the caller processes combinations.
+
+The SDK major-version migration also includes these changes.
+
+- Use `Query.spans()` for numeric columns formerly read through
+  `RenderReadLease.querySpans()`. Use the lease for version observation.
+- Validate registered schemas with `validateProfileComponents()`. The
+  standalone portability predicates are removed. Pass the caller's mapping
+  function to `projectComponentData()` or `remapEntityFieldValue()` in place
+  of `createEntityRemap()`.
+- `World.getResourceChange()` is removed. Resource producers can store a
+  revision in the resource value when readers need to observe writes.
+- Use `World.set()` to change component fields. Use
+  `markDerivedComponentChanged()` to publish an edit to a producer-owned
+  payload that stays in the same component. These replace `setDerivedComponent()`.
+
+The internal derived writer accepts contiguous ranges via `writeRange` and
+producer-known row pairs via `writeRows`. A producer that identifies work
+independently of earlier output writes can submit those rows in one call.
+
 The root barrel is intentionally small. Advanced capabilities are named by
 their owner instead of being forwarded through the root.
 
@@ -785,17 +856,6 @@ their owner instead of being forwarded through the root.
 `Result`, `ok`, `err`, and `Handle` come from `@forgeax/engine-types`; ECS does
 not forward them. There is no ECS remote bin, simulation record/restore
 protocol, scene-instance resolver, or compatibility alias for removed APIs.
-
-<details>
-<summary>Removed concepts</summary>
-
-The one-cut surface deliberately removes `FrameEnd`, `setErrorHandler`,
-`defineSystemParam`, `ParamValidation`, simulation record/restore/trace APIs,
-scene lifecycle methods, raw storage exports, relationship metadata lookup,
-root `Result`/`Handle` forwarding, and array convenience commands. When a
-consumer needs one of those concerns, move the owner to App, Scene, Render,
-Physics, or the explicitly named ECS subpath.
-</details>
 
 ## Contract invariants
 
@@ -815,15 +875,62 @@ ECS World ownership simplification design.
 
 ### Large managed arrays
 
-The eight BufferPool size classes bound pooling, not field capacity. Larger
-arrays use dedicated allocations; release drops their storage instead of
-retaining a large free bucket. Growth preserves bytes and live slot identity, and
-allocation failure returns the existing structured managed-buffer error. Small
-fields keep their existing allocation and reuse behavior. Game data, including
-instance transforms, remains World-owned regardless of its size.
+Variable component arrays use 16/64/256-byte slab cells and power-of-two
+backing from 1KiB upward. Released backing is reusable until trim; columns
+retain their direct block/offset/count representation. Owned system buffers
+instead retain their fixed capacity classes through 256KiB and use uncached,
+exact dedicated backing above that bound. Both routes preserve content on growth
+and initialize bytes according to their own lifecycle contract.
 
-Managed buffer slots are typed columns (size class, chunk, offset, logical length); the pool retains no view per slot and materializes a transient byte view only on request, so a small per-entity array costs no live object. Entity records (generation, archetype, row) are likewise typed columns rather than one object per entity. Released slots cannot grow or change length; invalid logical lengths fail before mutation. Capacity classes and live-slot ownership remain separate allocator facts.
+Variable component fields store block, offset and count in typed columns, so
+small per-entity arrays need no live allocation object. Entity records likewise
+use typed columns. Owned grants instead keep their own extent and cached typed
+view; released grants cannot resize or regain ownership of reused backing.
 
-Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only buffer sources and numeric-array inputs widen.
+Array element admission shares the scalar/reference vocabulary, including the same tag validation for `shared<Tag>` and `asset<Kind>`. Write types derive from the read value contract; only numeric-array inputs widen to plain number arrays.
 
 Package history is maintained in the Harness changelog.
+
+## Identity in schedules and resources
+
+| Value | Create | Use |
+|:--|:--|:--|
+| System | `defineSystem({ name, queries, fn })` | Register, order, replace and remove by the original object |
+| System group | `defineSystemSet({ name })` | `sets: [group]` or `addSystems(schedule, group, systems)` |
+| Schedule | `defineSchedule(name)` | Register and run using that object |
+| Resource | `defineResource<T>(name)` | Insert a `T`; `getResource(token)` infers `T` |
+
+Names are non-empty diagnostic labels. Same-name objects have independent identities.
+Export the original object from its owning module and import it at every consumer.
+For per-World system factories, export an owner-defined group as the ordering contract.
+Replacement changes the implementation while keeping the registered identity and groups.
+Inspection graph IDs are detached numeric IDs, scoped to the schedule snapshot.
+Shared-kernel Worker bindings use numeric query and component slots. The independently
+loadable module exports its `queries` and `run` together; the producer reuses those
+same declarations. Worker access resolves the module's actual component object,
+so equal component labels neither collide nor grant undeclared access.
+
+```ts
+const Score = defineResource<number>('Score');
+const Input = defineSystem({ name: 'input', queries: [], fn: () => {} });
+const Move = defineSystem({ name: 'move', queries: [], after: [Input], fn: () => {} });
+world.insertResource(Score, 0);
+world.addSystem(Update, Input).unwrap();
+world.addSystem(Update, Move).unwrap();
+const score: number = world.getResource(Score);
+world.removeSystem(Update, Move).unwrap();
+```
+
+### Owned global time scale
+
+`world.acquireTimeScale(scale).unwrap()` returns a `TimeScaleLease`. Update it with
+`lease.set(scale)` and release it on cancellation or owner disposal. Finite,
+non-negative scales are accepted. The smallest active contribution wins; a World
+with no contributions runs at 1. Released leases cannot be reactivated.
+
+The scheduler samples contributions at the next `world.update()` boundary. Both
+`Time.delta` and the fixed-step accumulator advance by scaled simulation time;
+the existing simulation catch-up cap still applies. `Time.unscaledDelta` and
+`Time.unscaledElapsed` expose raw host seconds for recovery effects that must
+finish while simulation is slowed or stopped. `Time.scale` is the frame's sampled
+scale. These clock resources remain read-only to callers.

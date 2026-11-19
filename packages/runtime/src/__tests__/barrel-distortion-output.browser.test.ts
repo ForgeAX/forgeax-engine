@@ -379,15 +379,7 @@ async function drawFrame(world: World, domains?: readonly ObservationDomain[]) {
   releaseLease = () => attached.value.dispose();
   const updated = world.update(1 / 60);
   if (!updated.ok) throw updated.error;
-  return drawReadyFrame(
-    renderer,
-    {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    },
-    domains,
-  );
+  return drawReadyFrame(renderer, { source: attached.value }, domains);
 }
 
 // Reusing a renderer can retain its accepted graph while a new fullscreen
@@ -742,28 +734,29 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     const enabledInspection = renderer?.inspect();
     if (enabledInspection === undefined) throw new Error('observation renderer inspection missing');
     const enabledPasses = enabledInspection.output.graphPassNames;
-    const lutIndex = enabledPasses.indexOf('standard-color-lut');
+    const gradeIndex = enabledPasses.indexOf('standard-grade');
     const barrelIndex = enabledPasses.indexOf('barrel-distortion');
-    const fxaaIndex = enabledPasses.indexOf('fxaa');
+    const fxaaIndex = enabledPasses.indexOf('standard-final');
     const encodingIndices = enabledPasses.flatMap((name, index) =>
-      name === 'standard-output-encoding' ? [index] : [],
+      name === 'standard-encode' ? [index] : [],
     );
     expect(enabledPasses).toEqual(
       expect.arrayContaining([
         'linear-hdr-observation',
         'linear-ldr-observation',
         'final-display-observation',
-        'standard-tone',
-        'standard-color-lut',
+        'standard-grade',
+        'standard-encode',
         'barrel-distortion',
-        'fxaa',
+        'standard-final',
       ]),
     );
-    expect(lutIndex).toBeGreaterThan(enabledPasses.indexOf('standard-tone'));
-    expect(barrelIndex).toBeGreaterThan(lutIndex);
+    expect(gradeIndex).toBeGreaterThan(enabledPasses.indexOf('linear-hdr-observation'));
+    expect(barrelIndex).toBeGreaterThan(gradeIndex);
     expect(fxaaIndex).toBeGreaterThan(barrelIndex);
     expect(encodingIndices).toHaveLength(1);
-    expect(encodingIndices[0]).toBeGreaterThan(fxaaIndex);
+    expect(encodingIndices[0]).toBeGreaterThan(barrelIndex);
+    expect(fxaaIndex).toBeGreaterThan(encodingIndices[0] ?? -1);
     expect(enabledInspection.output.displayEncoded).toBe(true);
     expect(enabledInspection.output.standardLut?.sourceKey).toBeTruthy();
 
@@ -773,9 +766,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     const disabledInspection = renderer.inspect();
     expect(disabledInspection.output.graphPassNames).not.toContain('standard-color-lut');
     expect(
-      disabledInspection.output.graphPassNames.filter(
-        (name) => name === 'standard-output-encoding',
-      ),
+      disabledInspection.output.graphPassNames.filter((name) => name === 'standard-encode'),
     ).toHaveLength(1);
     expect(maxObservationRgbDelta(enabledFinal, disabledFinal)).toBeGreaterThan(0.01);
   });
@@ -828,10 +819,10 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     const fxaaFinal = observationByDomain(fxaa.observation, 'final-display');
     const fxaaInspection = renderer.inspect();
     const passes = fxaaInspection.output.graphPassNames;
-    // Observation adds a tone-only readback; the ordinary FXAA route still
-    // samples the single output transform's display-encoded intermediate.
-    expect(passes.filter((name) => name === 'output-transform')).toHaveLength(1);
-    expect(passes.indexOf('fxaa')).toBeGreaterThan(passes.indexOf('output-transform'));
+    // Grade encodes the intermediate once; Final performs FXAA in that domain.
+    expect(passes.filter((name) => name === 'standard-grade')).toHaveLength(1);
+    expect(passes.filter((name) => name === 'standard-final')).toHaveLength(1);
+    expect(passes.indexOf('standard-final')).toBeGreaterThan(passes.indexOf('standard-grade'));
     expect(passes).not.toContain('standard-output-encoding');
     expect(fxaaInspection.output.displayEncoded).toBe(true);
     expect(fxaaInspection.output.standardOutputColor?.domain).toBe('display-encoded');
@@ -955,11 +946,7 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     const drawVolumeFrame = async () => {
       const updated = world.update(1 / 60);
       if (!updated.ok) throw updated.error;
-      return drawReadyFrame(volumeRenderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      return drawReadyFrame(volumeRenderer, { source: attached.value });
     };
     try {
       const baseline = await drawVolumeFrame();

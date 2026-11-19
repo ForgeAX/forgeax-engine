@@ -153,7 +153,29 @@
       "error": "View connection error: {{message}}"
     },
     "html": {
-      "file": "File", "path": "Path", "size": "Size", "modified": "Modified", "viewport": "Viewport", "device": "Device preset", "phone": "Phone", "tablet": "Tablet", "desktop": "Desktop", "width": "Width", "height": "Height", "rotate": "Swap orientation", "zoom": "Zoom", "fit": "Fit", "refresh": "Refresh preview", "status": "Status", "idle": "No file open", "loading": "Loading HTML…", "ready": "Ready", "error": "Resource issues", "failed": "Preview unavailable", "empty": "Open an HTML file", "issueCount": "{{count}} resource issue(s)"
+      "file": "File",
+      "path": "Path",
+      "size": "Size",
+      "modified": "Modified",
+      "viewport": "Viewport",
+      "device": "Device preset",
+      "phone": "Phone",
+      "tablet": "Tablet",
+      "desktop": "Desktop",
+      "width": "Width",
+      "height": "Height",
+      "rotate": "Swap orientation",
+      "zoom": "Zoom",
+      "fit": "Fit",
+      "refresh": "Refresh preview",
+      "status": "Status",
+      "idle": "No file open",
+      "loading": "Loading HTML…",
+      "ready": "Ready",
+      "error": "Resource issues",
+      "failed": "Preview unavailable",
+      "empty": "Open an HTML file",
+      "issueCount": "{{count}} resource issue(s)"
     },
     "commandError": {
       "title": "Workspace command failed",
@@ -163,6 +185,23 @@
       "copy": "Copy details",
       "copied": "Copied"
     },
-    "themeSystem": "System (default)"
+    "themeSystem": "System (default)",
+    "projectChooser": {
+      "offlineTitle": "Start Engine backend",
+      "offlineDescription": "Start the selected backend. A project directory is optional.",
+      "description": "Choose a known project or browse folders on the backend machine.",
+      "recent": "Recent",
+      "all": "All known projects",
+      "search": "Search projects",
+      "empty": "No known projects. Choose a folder or enter a project path.",
+      "unavailable": "Unavailable",
+      "optionalPath": "Project path (optional)",
+      "browse": "Browse folders",
+      "parent": "Parent folder",
+      "chooseFolder": "Choose this folder",
+      "cancel": "Cancel",
+      "start": "Start backend",
+      "next": "Next"
+    }
   }
 }

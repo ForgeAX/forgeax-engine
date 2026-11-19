@@ -1,7 +1,12 @@
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { stepRetainedBytes } from '@forgeax/engine-assets-runtime/internal';
 import { createAudioIntentBackend } from '@forgeax/engine-audio';
-import { createWorldContext, World } from '@forgeax/engine-ecs';
-import type { KernelDispatchResult, SharedKernelExecutor } from '@forgeax/engine-ecs/shared';
+import {
+  createWorldContext,
+  SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
+  World,
+} from '@forgeax/engine-ecs';
+import type { KernelDispatchResult } from '@forgeax/engine-ecs/shared';
 import {
   createVideoFrameEndpoint,
   installWorkerVideoSourceProvider,
@@ -14,6 +19,13 @@ import {
   type InputBackendSample,
   makeCompositeBackend,
 } from '@forgeax/engine-input';
+import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine-physics';
+import {
+  createTaskPool,
+  type TaskPool,
+  type TaskWorkerFactory,
+  type TaskWorkerListener,
+} from '@forgeax/engine-platform';
 import { type Context, Inject, type Plugin } from '@forgeax/engine-plugin';
 import {
   createProfiler,
@@ -31,7 +43,14 @@ import {
   RenderPublicationError,
   RenderPublicationTargetOwner,
 } from '@forgeax/engine-render';
-import { fullscreenRenderFeatureDeclaration } from '@forgeax/engine-render/internal';
+import {
+  createWaterInfoSourceFeature,
+  createWaterUnderwaterFeature,
+  fullscreenRenderFeatureDeclaration,
+  WATER_INFO_FEATURE_IDENTITY,
+  WATER_UNDERWATER_FEATURE_IDENTITY,
+} from '@forgeax/engine-render/internal';
+import { builtinTaskKinds } from '@forgeax/engine-render/tasks';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
@@ -52,8 +71,14 @@ import {
 } from '@forgeax/engine-types';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from '../assets-runtime-assembly';
 import { syncCameraAspect } from '../canvas-policy';
+import {
+  applyRenderConfiguration,
+  type ConfigurationApplyRequest,
+  configurationApplyResponse,
+  staleConfiguration,
+} from '../configuration-apply';
+import { freezeConfiguration } from '../configuration-data';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
-import { createCanonicalEcsImportModule } from '../internal/ecs-import';
 import {
   createRhiCapture,
   createRhiInstrumentation,
@@ -74,7 +99,7 @@ import {
   prepareBootstrapEntry,
 } from './bootstrap-entry';
 import { installCarriedGpuStub } from './gpu-stub';
-import { createKernelPool, type KernelPool } from './kernel-pool';
+import { createLocalHdrFrameObserver } from './hdr-frame-observation';
 import type {
   EngineToHostMessage,
   ExecutionFrameCompletion,
@@ -89,6 +114,10 @@ import type {
 } from './protocol';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
+import {
+  createSharedKernelSliceExecutor,
+  type SharedKernelSliceExecutor,
+} from './shared-kernel-slices';
 import { SourceRenderWorker } from './source-render-worker';
 import type {
   ExecutionRendererInspectionOptions,
@@ -122,7 +151,9 @@ let currentSample: InputBackendSample = {
 let lastFrameId = 0;
 let renderSampleTimeSeconds = 0;
 let surfaceRequestId = 0;
-let nextKernelWorkerId = 0;
+let nextTaskWorkerId = 0;
+/** Live pool Workers by id, so page-reported failures reach their dispatcher. */
+const taskWorkerListeners = new Map<number, TaskWorkerListener>();
 interface WorkerRealm {
   readonly world: World;
   canvas: OffscreenCanvas | undefined;
@@ -134,27 +165,29 @@ interface WorkerRealm {
   };
   renderWorker?: SourceRenderWorker;
   publicationTargets?: RenderPublicationTargetOwner;
-  readonly init: RetainedExecutionInit;
+  init: RetainedExecutionInit;
   assetAssembly: AssetRuntimeAssembly | undefined;
   readonly pendingAudioIntents: AudioIntentQueue;
   audioBackend: ReturnType<typeof createAudioIntentBackend> | undefined;
   audioState?: import('@forgeax/engine-audio').AudioState;
   feedback: ReturnType<typeof createGamepadFeedback>;
-  kernelPool: KernelPool | undefined;
+  kernelSlices: SharedKernelSliceExecutor | undefined;
+  /** Realm-owned task dispatcher; its Workers spawn on first use. */
+  taskPool: TaskPool | undefined;
   pluginContext: Context | undefined;
   observation: AppObservation | undefined;
   profiler: Profiler | undefined;
   releaseProfilerCatalog: (() => void) | undefined;
   rhiCapture: RhiCapture | undefined;
   rhiAttachment: RecorderAttachment | undefined;
-  profilerCaptureId: string | undefined;
-  profilerFrameId: number;
 }
 
 let realm: WorkerRealm | undefined;
 const rebuildQueue = new SerializedRebuildQueue();
 const inspectionQueue: ExecutionInspectMessage[] = [];
 let realmTransitions = 0;
+/** One-shot linear-HDR request when the Renderer shares this Worker. */
+const localHdr = createLocalHdrFrameObserver();
 let inspectionsClosed = false;
 /** Requests admitted against a stable World that may still run asynchronously. */
 const activeInspectionIds = new Set<number>();
@@ -214,6 +247,7 @@ function admitInspections(): void {
 
 async function withRealmTransition(action: () => Promise<void>): Promise<void> {
   ++realmTransitions;
+  localHdr.close();
   try {
     await action();
   } finally {
@@ -245,14 +279,13 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
       rejectStaleInspection(job, realm?.world.identity ?? '');
       return;
     }
-    const importModule = createCanonicalEcsImportModule(target.world, async (specifier: string) => {
+    const importModule = async (specifier: string) => {
       // A Worker cannot resolve a bare package specifier from the browser
       // document. Vite's dev module endpoint is the same resolver used by the
-      // main-realm bridge; canonicalize component exports back to this
-      // Worker-owned World's catalog before returning them to eval.
+      // main-realm bridge and resolves to the realm's canonical module graph.
       const browserSpecifier = specifier.startsWith('@') ? `/@id/${specifier}` : specifier;
       return import(/* @vite-ignore */ browserSpecifier);
-    });
+    };
     inputLease = inputBackend.createInjectedLease();
     const simulation = {
       pluginContext: target.pluginContext,
@@ -277,6 +310,19 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
           )
             return rendererInspectionFailure('not-ready');
           const result = await target.renderWorker.observeNextGeometry(options);
+          return realm === target && realmTransitions === 0 && !inspectionsClosed
+            ? result
+            : rendererInspectionFailure('stale-session');
+        },
+        observeNextHdrFrame: async (options?: { readonly signal?: AbortSignal }) => {
+          if (realm !== target || realmTransitions > 0 || inspectionsClosed)
+            return rendererInspectionFailure('not-ready');
+          const result =
+            target.renderWorker === undefined
+              ? renderer === undefined
+                ? rendererInspectionFailure('not-ready')
+                : await localHdr.request(options)
+              : await target.renderWorker.observeNextHdrFrame(options);
           return realm === target && realmTransitions === 0 && !inspectionsClosed
             ? result
             : rendererInspectionFailure('stale-session');
@@ -321,6 +367,7 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
         },
       },
       simulation.execution,
+      target.assetAssembly?.registry,
     );
     const observation = target.observation;
     const result = await module.executeScript(job.code, {
@@ -362,50 +409,59 @@ const inputBackendBase: InputBackend = {
 const inputBackend = makeCompositeBackend(inputBackendBase);
 
 function sharedKernelPlugin(target: WorkerRealm): Plugin {
-  const workerFactory = (): Pick<Worker, 'postMessage' | 'terminate'> => {
-    const workerId = nextKernelWorkerId++;
-    const channel = new MessageChannel();
-    scope.postMessage({ kind: 'kernel-worker', workerId, port: channel.port2 }, [channel.port2]);
-    return {
-      postMessage(message): void {
-        channel.port1.postMessage(message);
-      },
-      terminate(): void {
-        channel.port1.close();
-        scope.postMessage({ kind: 'kernel-retire', workerId });
-      },
-    };
-  };
   return {
     name: 'shared-kernel-executor',
     inject: ['world'],
     apply(ctx) {
-      const executor: SharedKernelExecutor = {
-        warmup(kernel) {
-          target.kernelPool ??= createKernelPool({
-            workerFactory,
-            startupTimeoutMs: target.init.startupTimeoutMs,
-          });
-          target.kernelPool.warmup?.(kernel);
-        },
-        execute(kernel, spans) {
-          target.kernelPool ??= createKernelPool({
-            workerFactory,
-            startupTimeoutMs: target.init.startupTimeoutMs,
-          });
-          return target.kernelPool.execute(kernel, spans);
-        },
-      };
+      const executor = createSharedKernelSliceExecutor({
+        pool: () => realmTaskPool(target),
+        startupTimeoutMs: target.init.startupTimeoutMs,
+      });
+      target.kernelSlices = executor;
       ctx.effect(() => {
-        ctx.world.insertResource('SharedKernelExecutor', executor);
+        ctx.world.insertResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY, executor);
         return () => {
-          ctx.world.removeResource('SharedKernelExecutor');
-          target.kernelPool?.dispose();
-          target.kernelPool = undefined;
+          ctx.world.removeResource(SHARED_KERNEL_EXECUTOR_RESOURCE_KEY);
+          executor.dispose();
+          if (target.kernelSlices === executor) target.kernelSlices = undefined;
         };
       }, 'execution/shared-kernel');
     },
   };
+}
+
+// Pool Workers are page-owned; this realm dispatches to them.
+const taskWorkerFactory: TaskWorkerFactory = (listener) => {
+  const workerId = nextTaskWorkerId++;
+  const channel = new MessageChannel();
+  channel.port1.onmessage = (event) => listener.message(event.data);
+  taskWorkerListeners.set(workerId, listener);
+  scope.postMessage({ kind: 'task-worker', workerId, port: channel.port2 }, [channel.port2]);
+  return {
+    postMessage(message, transfer): void {
+      channel.port1.postMessage(message, transfer ?? []);
+    },
+    terminate(): void {
+      if (!taskWorkerListeners.delete(workerId)) return;
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      scope.postMessage({ kind: 'task-retire', workerId });
+    },
+  };
+};
+
+function realmTaskPool(target: WorkerRealm): TaskPool {
+  // A host that never adopts pool Workers leaves the pool running inline.
+  const startup = target.init.startupTimeoutMs;
+  target.taskPool ??= createTaskPool({
+    kinds: builtinTaskKinds,
+    ...(target.init.startup?.settings.execution?.taskWorkers === undefined
+      ? {}
+      : { workers: target.init.startup.settings.execution.taskWorkers }),
+    workerFactory: taskWorkerFactory,
+    ...(startup === null ? {} : { startupTimeoutMs: startup }),
+  });
+  return target.taskPool;
 }
 
 function postFault(
@@ -524,6 +580,9 @@ async function disposeRealm(target: WorkerRealm): Promise<void> {
     target.rhiCapture = undefined;
     target.pendingAudioIntents.clear();
     target.feedback.dispose();
+    // After the Renderers that submit to it, so their tasks settle as cancelled.
+    target.taskPool?.dispose();
+    target.taskPool = undefined;
   }
   if (renderFailure !== undefined) throw renderFailure;
 }
@@ -538,10 +597,13 @@ function postBootstrapFault(error: {
 }
 
 function createRealmWorld(init: ExecutionInitMessage): World {
-  return new World({
+  const world = new World({
     ...(init.time !== undefined ? { time: init.time } : {}),
     storage: init.workers.kernels.enabled ? 'shared' : 'local',
   });
+  const physics = init.startup?.settings.simulation?.physics;
+  if (physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, physics);
+  return world;
 }
 
 function createRealmCandidate(init: RetainedExecutionInit, world: World): WorkerRealm {
@@ -556,15 +618,14 @@ function createRealmCandidate(init: RetainedExecutionInit, world: World): Worker
     pendingAudioIntents: new AudioIntentQueue(),
     audioBackend: undefined,
     feedback: createGamepadFeedback(),
-    kernelPool: undefined,
+    kernelSlices: undefined,
+    taskPool: undefined,
     pluginContext: undefined,
     observation: undefined,
     profiler,
     releaseProfilerCatalog: profilerCatalog?.ok === true ? profilerCatalog.value : undefined,
     rhiCapture: undefined,
     rhiAttachment: undefined,
-    profilerCaptureId: undefined,
-    profilerFrameId: 0,
   };
 }
 
@@ -572,6 +633,7 @@ function createRealmAudioBackend(
   candidate: WorkerRealm,
 ): ReturnType<typeof createAudioIntentBackend> {
   return createAudioIntentBackend({
+    ...candidate.init.startup?.settings.audio?.publication,
     emit: (intent) => {
       candidate.pendingAudioIntents.push(intent);
     },
@@ -616,6 +678,9 @@ function realmRendererOptions(
       : {
           resolveRecoveryCanvas: (signal: AbortSignal) => requestRecoveryCanvas(candidate, signal),
         }),
+    ...(init.startup?.settings.rendering?.view?.maxRenderShortSide === undefined
+      ? {}
+      : { maxRenderShortSide: init.startup.settings.rendering.view.maxRenderShortSide }),
     ...(prepared.features === undefined ? {} : { features: prepared.features }),
     ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
     ...(profiler === undefined ? {} : { profiler }),
@@ -625,11 +690,25 @@ function realmRendererOptions(
       : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
     ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
     ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+    ...(init.backgroundPipelineLibraryConcurrency === undefined
+      ? {}
+      : { backgroundPipelineLibraryConcurrency: init.backgroundPipelineLibraryConcurrency }),
     ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
+    ...(init.renderBackend === undefined ? {} : { renderBackend: init.renderBackend }),
     ...(init.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: init.dynamicGeometryMeshBudgetBytes }),
     ...(init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes }),
+    ...(init.textureMipSkip === undefined ? {} : { textureMipSkip: init.textureMipSkip }),
+    ...(init.startup === undefined
+      ? {}
+      : {
+          standardProfile: init.startup.rendering.profile,
+        }),
+    ...(init.workers.render.enabled ? {} : { tasks: realmTaskPool(candidate) }),
+    ...(init.featureTextureReadbackBudgetBytes === undefined
+      ? {}
+      : { featureTextureReadbackBudgetBytes: init.featureTextureReadbackBudgetBytes }),
   };
 }
 
@@ -866,6 +945,7 @@ function stageSourceRenderWorker(
     (message, transfer) => scope.postMessage(message, transfer ?? []),
     sourceFeatures,
     candidate.publicationTargets,
+    realmTaskPool(candidate),
   );
 }
 
@@ -921,7 +1001,12 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   // Realm-owned facts exclude the library forwarded to the renderer for this start.
   const { pipelineLibrary, backgroundPipelineLibrary, ...init } = startup;
   const endImport = beginLoadTimeline('boot', 'bootstrap-import');
-  const preparedResult = await prepareBootstrapEntry(init.bootstrapUrl, init.bootstrapData);
+  const preparedResult = await prepareBootstrapEntry(
+    init.bootstrapUrl,
+    init.bootstrapData,
+    undefined,
+    init.startup,
+  );
   endImport();
   if (!preparedResult.ok) {
     postBootstrapFault(preparedResult.error);
@@ -929,6 +1014,19 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   }
   const prepared: PreparedExecutionBootstrap = preparedResult.value;
   const sourceFeatures = [...(prepared.features ?? [])];
+  const appendRealmSourceFeatures = () => {
+    if (
+      init.workers.render.enabled &&
+      !sourceFeatures.some((feature) => feature.identity === WATER_INFO_FEATURE_IDENTITY)
+    )
+      sourceFeatures.push(createWaterInfoSourceFeature());
+    if (
+      init.workers.render.enabled &&
+      !sourceFeatures.some((feature) => feature.identity === WATER_UNDERWATER_FEATURE_IDENTITY)
+    )
+      sourceFeatures.push(createWaterUnderwaterFeature());
+  };
+  appendRealmSourceFeatures();
   const nextWorld = createRealmWorld(init);
   const candidate = createRealmCandidate(init, nextWorld);
   const realmInput = { ...inputBackend, feedback: candidate.feedback };
@@ -959,7 +1057,8 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const endRenderer = beginLoadTimeline('boot', 'renderer');
     const host = await constructRealmRendererHost(init, rendererOptions, bundler);
     candidateRenderer = host?.renderer;
-    if (candidateRenderer !== undefined) await prepared.configureRenderer?.(candidateRenderer);
+    if (candidateRenderer !== undefined && init.startup === undefined)
+      await prepared.configureRenderer?.(candidateRenderer);
     rendererWork();
     endRenderer();
     sceneWork = beginLoadWork('scene');
@@ -1010,7 +1109,7 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const activeRenderer = candidateRenderer;
     const previousRealm = realm;
     const endCommit = beginLoadTimeline('boot', 'world-commit');
-    await candidate.kernelPool?.ready();
+    await candidate.kernelSlices?.ready();
     const committed =
       candidateRenderer === undefined
         ? true
@@ -1163,17 +1262,11 @@ function applyDrawingBufferSize(activeRealm: WorkerRealm, message: ExecutionFram
 }
 
 function beginProfileFrame(
-  activeRealm: WorkerRealm,
   profileSession: RecorderSession | undefined,
 ): ProfileFrameToken | undefined {
   if (profileSession === undefined) return undefined;
-  if (activeRealm.profilerCaptureId !== profileSession.captureId) {
-    activeRealm.profilerCaptureId = profileSession.captureId;
-    activeRealm.profilerFrameId = 0;
-  }
-  const frame = profileSession.beginFrame(++activeRealm.profilerFrameId);
-  if (!frame.ok) return undefined;
-  return { captureId: profileSession.captureId, frameId: activeRealm.profilerFrameId };
+  const frame = profileSession.beginFrame();
+  return frame.ok ? frame.value : undefined;
 }
 
 function endProfileFrame(
@@ -1274,12 +1367,11 @@ function drawFrame(
 ): ReturnType<Renderer['draw']> {
   const attached = activeRenderer.attach(activeRealm.world);
   if (!attached.ok) throw attached.error;
+  localHdr.beforeDraw(activeRenderer);
   const geometryLane = activeRealm.init.diagnostics?.geometryLane;
   return profilePhase(profileSession, 'renderer-draw', () =>
     activeRenderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
+      source: attached.value,
       sampleTimeSeconds,
       ...(message.temporalReset ? { temporalReset: true } : {}),
       ...(profileFrame === undefined ? {} : { profileFrame }),
@@ -1302,7 +1394,14 @@ function postFrameSubmitted(world: World, frameId: number, receipt: FrameReceipt
     worldIdentity: world.identity,
     frameId,
     deviceGeneration: receipt.deviceGeneration,
+    presentation: receipt.presentation,
+    ...(receipt.editorAssistance === undefined
+      ? {}
+      : { editorAssistance: { ...receipt.editorAssistance, frameId: frameId } }),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
@@ -1323,10 +1422,14 @@ function postFrameComplete(
     frameId,
     deviceGeneration: receipt.deviceGeneration,
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
       : { barrelDistortion: receipt.barrelDistortion }),
+
     presentation: receipt.presentation,
     ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
       ? {}
@@ -1381,6 +1484,7 @@ async function renderFrame(
     // next implicit timestamp unchanged.
     if (Number.isFinite(sampleTimeSeconds)) renderSampleTimeSeconds = sampleTimeSeconds;
     postFrameSubmitted(activeRealm.world, message.frameId, draw.value);
+    localHdr.submitted(activeRenderer, draw.value);
     const completed = await draw.value.completed;
     if (!completed.ok) {
       const failure = completed.error;
@@ -1408,6 +1512,7 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
     return;
   const { world } = activeRealm;
   if (message.worldIdentity !== world.identity || message.frameId <= lastFrameId) return;
+  stepRetainedBytes();
   // A frame dispatched before native loss still owns Host credit. Keep it
   // pending without advancing the World until explicit recovery is complete.
   if (
@@ -1472,7 +1577,7 @@ async function advanceFrame(
   admitInspections();
   const started = performance.now();
   const profileSession = activeRealm.profiler?.activeSession();
-  const profileFrame = beginProfileFrame(activeRealm, profileSession);
+  const profileFrame = beginProfileFrame(profileSession);
   try {
     const update = profilePhase(profileSession, 'world-update-primary', () =>
       world.update(message.deltaSeconds),
@@ -1482,7 +1587,7 @@ async function advanceFrame(
     const updateFinished = performance.now();
     const simulation = frameSimulationTiming(
       updateFinished - started,
-      activeRealm.kernelPool?.takeLastDispatch() ?? null,
+      activeRealm.kernelSlices?.takeLastDispatch() ?? null,
     );
     activeRealm.observation?.prepareFrame();
     if (message.render === false) {
@@ -1603,8 +1708,46 @@ function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): bo
       });
       return true;
     default:
-      return false;
+      return receiveTaskWorkerFailure(message);
   }
+}
+
+/** A page-owned pool Worker failed; its dispatcher rejects the running task and replaces it. */
+function receiveTaskWorkerFailure(message: HostToEngineMessage | FrameRequest): boolean {
+  if (message.kind !== 'task-worker-error') return false;
+  taskWorkerListeners.get(message.workerId)?.error(new Error(message.message));
+  return true;
+}
+
+async function applyRealmConfiguration(message: ConfigurationApplyRequest): Promise<void> {
+  freezeConfiguration(message.plan);
+  const target = realm;
+  const currentRenderer = renderer;
+  const result =
+    target === undefined ||
+    realmTransitions > 0 ||
+    target.world.identity !== message.worldIdentity ||
+    target.init.startup?.revision !== message.previousRevision ||
+    message.plan.revision <= message.previousRevision
+      ? {
+          ok: false as const,
+          error: staleConfiguration('the Engine realm or configuration revision changed'),
+        }
+      : target.renderWorker !== undefined
+        ? await target.renderWorker.applyConfiguration(message.plan, message.previousRevision)
+        : currentRenderer === undefined
+          ? { ok: false as const, error: staleConfiguration('the Renderer is unavailable') }
+          : applyRenderConfiguration(currentRenderer, message.plan);
+  if (result.ok && realm === target && target !== undefined)
+    target.init = { ...target.init, startup: message.plan };
+  scope.postMessage(
+    configurationApplyResponse(
+      message,
+      realm === target
+        ? result
+        : { ok: false, error: staleConfiguration('the World was replaced during configuration') },
+    ),
+  );
 }
 
 scope.onmessage = (event): void => {
@@ -1639,6 +1782,9 @@ scope.onmessage = (event): void => {
           ),
         );
       return;
+    case 'configuration-apply':
+      void applyRealmConfiguration(message);
+      return;
     case 'frame':
       void runFrame(message);
       return;
@@ -1669,21 +1815,38 @@ scope.onmessage = (event): void => {
     case 'input-lease-open':
       inputBackend.beginInjectedLease();
       return;
+    case 'memory-pressure':
+      receiveMemoryPressure();
+      return;
     case 'profile-finish':
-      try {
-        const current = realm;
-        const active = current?.profiler?.activeSession();
-        if (
-          active !== undefined &&
-          (message.worldIdentity === undefined ||
-            current?.world.identity === message.worldIdentity) &&
-          (message.captureId === undefined || active.captureId === message.captureId)
-        ) {
-          active.finish();
-        }
-      } catch {
-        // Diagnostic cleanup is best effort and never changes the Worker state.
-      }
+      receiveProfileFinish(message);
       return;
   }
 };
+
+function receiveMemoryPressure(): void {
+  realm?.assetAssembly?.registry.trimReadCache();
+  try {
+    realm?.renderWorker?.trimReadCache();
+  } catch {
+    // A terminated Render Worker holds no read caches.
+  }
+}
+
+function receiveProfileFinish(
+  message: Extract<HostToEngineMessage, { kind: 'profile-finish' }>,
+): void {
+  try {
+    const current = realm;
+    const active = current?.profiler?.activeSession();
+    if (
+      active !== undefined &&
+      (message.worldIdentity === undefined || current?.world.identity === message.worldIdentity) &&
+      (message.captureId === undefined || active.captureId === message.captureId)
+    ) {
+      active.finish();
+    }
+  } catch {
+    // Diagnostic cleanup is best effort and never changes the Worker state.
+  }
+}

@@ -1,5 +1,9 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createPrimitiveMesh,
+  meshAttributeWindow,
+} from '@forgeax/engine-geometry';
 import { describe, expect, it } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 
@@ -19,7 +23,7 @@ describe('browser source loading into the runtime asset owner', () => {
       const handle = (await assets.load(GUID, 'mesh')).unwrap();
       const content = assets.read(handle).unwrap();
       expect(content.kind).toBe('mesh');
-      expect(content.attributes.position).toEqual(mesh.attributes.position);
+      expect(copyMeshAttribute(content, 'position')).toEqual(mesh.attributes.position);
       expect(ArrayBuffer.isView(content.indices)).toBe(true);
       expect(Array.from(content.indices ?? [])).toEqual(Array.from(mesh.indices ?? []));
     } finally {
@@ -34,12 +38,13 @@ describe('browser source loading into the runtime asset owner', () => {
       const second = (await assets.load(GUID, 'mesh')).unwrap();
       expect(first).toBe(second);
       const content = assets.read(first).unwrap();
-      const position = content.attributes.position;
-      if (!(position instanceof Float32Array)) throw new Error('expected canonical positions');
-      position[0] = 999;
-      const current = assets.read(second).unwrap().attributes.position;
-      if (!(current instanceof Float32Array)) throw new Error('expected canonical positions');
-      expect(current[0]).not.toBe(999);
+      const position = meshAttributeWindow(content, 'position');
+      if (!position || position.count === 0) throw new Error('expected canonical positions');
+      position.data[position.offset] = 999;
+      expect(position.data[position.offset]).toBe(999);
+      const current = meshAttributeWindow(assets.read(second).unwrap(), 'position');
+      if (!current || current.count === 0) throw new Error('expected canonical positions');
+      expect(current.data[current.offset]).not.toBe(999);
       assets.release(first).unwrap();
       expect(assets.read(second).ok).toBe(true);
     } finally {

@@ -36,15 +36,15 @@
 //
 // Charter P3 explicit failure: on fail, output structured diagnostic with
 // actual diffCount / stabilityDiff vs thresholds so AI users can self-diagnose.
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createReceipt } from './dataflow-receipt.mjs';
 import { smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
 
@@ -177,7 +177,10 @@ const { setMalformedParentEdge } = await import('./malformed-hierarchy-edge.mjs'
 
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 try {
@@ -403,7 +406,7 @@ renderer.subscribe((event) => {
 
 let framesObserved = 0;
 world.update(1 / 60).unwrap(); // runs propagateTransforms so child GlobalTransform.world is composed
-await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
+await drawReadyFrame(renderer, { source: worldAttachment1.value });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsA = await doReadPixels();
@@ -425,7 +428,7 @@ setMalformedParentEdge(world, cycleA, cycleB, ChildOf);
 setMalformedParentEdge(world, cycleB, cycleA, ChildOf);
 const faultHierarchy = projectHierarchy(world);
 const faultPropagation = propagateTransforms(world, faultHierarchy);
-await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
+await drawReadyFrame(renderer, { source: worldAttachment1.value });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsFault = await doReadPixels();
@@ -441,7 +444,7 @@ const repairEdges = [
 ];
 const repairedHierarchy = projectHierarchy(world);
 const repairedPropagation = propagateTransforms(world, repairedHierarchy);
-await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
+await drawReadyFrame(renderer, { source: worldAttachment1.value });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsRepaired = await doReadPixels();
@@ -472,7 +475,7 @@ console.log(
 // --- 9. Stability re-render (parent still at rest) -------------------------
 
 world.update(1 / 60).unwrap();
-await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
+await drawReadyFrame(renderer, { source: worldAttachment1.value });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsAA = await doReadPixels();
@@ -485,18 +488,14 @@ if (!setRes.ok) {
   process.exit(1);
 }
 world.update(1 / 60).unwrap(); // re-runs propagateTransforms; child GlobalTransform.world follows parent
-await drawReadyFrame(renderer, { leases: [worldAttachment1.value], camera: { lease: worldAttachment1.value }, environment: { lease: worldAttachment1.value } });
+await drawReadyFrame(renderer, { source: worldAttachment1.value });
 framesObserved += 1;
 await device.queue.onSubmittedWorkDone();
 const pixelsB = await doReadPixels();
 
 for (let frame = framesObserved; frame < FLEET_FRAME_COUNT; frame += 1) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved += 1;
 }
 console.log(`[smoke] frames observed=${framesObserved}`);

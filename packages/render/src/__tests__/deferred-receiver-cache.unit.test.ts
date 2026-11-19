@@ -41,7 +41,22 @@ async function fixture(options: { readonly clustered?: boolean } = {}) {
   >);
   vi.mocked(buildViewBindGroup).mockImplementation(
     (runtime, state, pipeline, counts, targets) =>
-      buildPerFrameBindGroups(runtime, state, pipeline, true, counts, targets).viewBindGroup,
+      buildPerFrameBindGroups(
+        runtime,
+        state,
+        pipeline,
+        true,
+        counts,
+        targets === undefined
+          ? undefined
+          : {
+              ...(({ viewBindGroupLayout: _layout, sceneDepth: _depth, ...rest }) => rest)(targets),
+              ...(targets.viewBindGroupLayout === undefined
+                ? {}
+                : { viewBindGroupLayout: targets.viewBindGroupLayout }),
+              ...(targets.sceneDepth === undefined ? {} : { sceneDepth: targets.sceneDepth }),
+            },
+      ).viewBindGroup,
   );
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
@@ -99,6 +114,7 @@ async function fixture(options: { readonly clustered?: boolean } = {}) {
       device,
       deviceScope: DeviceScope.create(1, 'deferred-lut-test'),
       standardSceneShaders: {
+        gbuffer: 'standard-gbuffer/2',
         deferred: {
           unclustered: '',
           unclusteredLut: 'lut',

@@ -99,6 +99,8 @@ export interface PipelineBuilderShaderModuleFactory {
     readonly code: string;
     readonly label?: string | undefined;
   }): Result<ShaderModule, RhiError>;
+  /** True only when this live factory owns the exact pending module request. */
+  isPending?(error: RhiError): boolean;
 }
 
 /**
@@ -284,6 +286,23 @@ function pipelineCreationHint(error: RhiError): string {
   return `inspect compiler messages on the shader module; verify pipeline layout matches shader bindings (cause: ${error.code}; underlying hint: ${error.hint}; raw: ${error.message})`;
 }
 
+function pipelineVertexEntry(
+  vertexEntry: string | undefined,
+  passKind: PassKind,
+  buffers: PipelineBuilderContext['vertexBuffers'],
+): string {
+  const requestedVertexEntry = vertexEntry ?? (passKind === 'temporal' ? 'vs_temporal' : 'vs_main');
+  for (const buffer of buffers) {
+    for (const attribute of buffer.attributes) {
+      if (attribute.shaderLocation === 14 && attribute.format === 'uint32')
+        return requestedVertexEntry.endsWith('_packed')
+          ? requestedVertexEntry
+          : `${requestedVertexEntry}_packed`;
+    }
+  }
+  return requestedVertexEntry;
+}
+
 /**
  * Build a render pipeline for a material shader entry. Returns
  * `Result.err(RhiError)` on shader-module compile failure or pipeline
@@ -327,7 +346,7 @@ export function buildPipelineForMaterialShader(
   sampleCount: number = 1,
 ): Result<RenderPipeline, RhiError> {
   const label = ctx.label ?? `pbr-pipeline-${id}`;
-  const vsEntry = vertexEntry ?? (passKind === 'temporal' ? 'vs_temporal' : 'vs_main');
+  const vsEntry = pipelineVertexEntry(vertexEntry, passKind, ctx.vertexBuffers);
   const fsEntry =
     fragmentEntry ??
     (passKind === 'temporal'

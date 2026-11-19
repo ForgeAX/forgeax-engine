@@ -1,6 +1,6 @@
 /** Detached, bounded LOD/occlusion facts for renderer inspection consumers. */
 
-export const LOD_OCCLUSION_INSPECTION_SCHEMA = 'forgeax::lod-occlusion-inspection::v3' as const;
+export const LOD_OCCLUSION_INSPECTION_SCHEMA = 'forgeax::lod-occlusion-inspection::v4' as const;
 export const LOD_OCCLUSION_INSPECTION_MAX_BYTES = 16 * 1024;
 const MAX_INSPECTION_SAMPLES = 64;
 
@@ -35,40 +35,41 @@ export interface LodOcclusionInspectionSubmit {
   readonly deviceGeneration: number;
 }
 
-/**
- * Per-World attribution is only authoritative when the renderer publishes
- * the GPU facts from the same submit that owns the parent inspection.  The
- * normal projection path remains useful diagnostics, but it must not be used
- * as evidence for a World-reorder or per-World LOD claim.
- */
-export type LodOcclusionWorldAttribution =
+/** GPU counters are authoritative only for the same submit as this inspection. */
+export type LodOcclusionAttribution =
   | { readonly status: 'unavailable'; readonly reason: 'projection-only' }
   | { readonly status: 'same-submit'; readonly submit: LodOcclusionInspectionSubmit };
 
-export interface LodOcclusionWorldInspection {
-  readonly attachmentId: string;
-  readonly rows: readonly LodOcclusionInspectionRow[];
-  readonly attribution: LodOcclusionWorldAttribution;
+/** Whole GPU selector, independent of the inspection's optional LOD subset. */
+export interface LodOcclusionGpuSelection {
+  readonly candidateCount: number;
+  /** Submitted instances; a LOD crossfade may submit a candidate twice. */
+  readonly visible: number;
+  readonly frustumCulled: number;
+  readonly texelCulled: number;
+  readonly cameraCulled: number;
+  readonly overflow: boolean;
+  readonly geometryWork: number;
+  readonly rootGeometryWork: number;
+  /** Late pyramid tests, including early draws; not an exclusive partition. */
+  readonly occlusion?: { readonly culled: number; readonly late: number };
 }
 
 export interface LodOcclusionInspection extends LodOcclusionInspectionRow {
   readonly schema: typeof LOD_OCCLUSION_INSPECTION_SCHEMA;
   /** Atomic identity for the submit that produced every row below. */
   readonly submit: LodOcclusionInspectionSubmit;
-  /** Stable attachment identity; array order is never an attribution key. */
-  readonly worlds: readonly LodOcclusionWorldInspection[];
+  readonly attribution: LodOcclusionAttribution;
+  /** Absent for CPU projections and producers without same-submit GPU facts. */
+  readonly gpu?: LodOcclusionGpuSelection;
 }
 
 export type LodOcclusionInspectionInput = Omit<
   LodOcclusionInspection,
-  'schema' | 'submit' | 'worlds'
+  'schema' | 'submit' | 'attribution'
 > & {
   readonly submit?: LodOcclusionInspectionSubmit;
-  readonly worlds?: readonly LodOcclusionWorldInspectionInput[];
-};
-
-export type LodOcclusionWorldInspectionInput = Omit<LodOcclusionWorldInspection, 'attribution'> & {
-  readonly attribution?: LodOcclusionWorldAttribution;
+  readonly attribution?: LodOcclusionAttribution;
 };
 
 function nonNegativeInteger(name: string, value: number): number {
@@ -94,28 +95,25 @@ function copySamples(
   );
 }
 
-function copyWorldAttribution(
-  attribution: LodOcclusionWorldAttribution | undefined,
-): LodOcclusionWorldAttribution {
+function copyAttribution(
+  attribution: LodOcclusionAttribution | undefined,
+): LodOcclusionAttribution {
   if (attribution === undefined) {
     return Object.freeze({ status: 'unavailable', reason: 'projection-only' });
   }
   if (attribution.status === 'same-submit') {
     if (typeof attribution.submit.build !== 'string' || attribution.submit.build.length === 0) {
-      throw new Error('world.attribution.submit.build must be a non-empty string');
+      throw new Error('attribution.submit.build must be a non-empty string');
     }
-    nonNegativeInteger('world.attribution.submit.frameId', attribution.submit.frameId);
-    nonNegativeInteger(
-      'world.attribution.submit.deviceGeneration',
-      attribution.submit.deviceGeneration,
-    );
+    nonNegativeInteger('attribution.submit.frameId', attribution.submit.frameId);
+    nonNegativeInteger('attribution.submit.deviceGeneration', attribution.submit.deviceGeneration);
     return Object.freeze({
       status: 'same-submit',
       submit: Object.freeze({ ...attribution.submit }),
     });
   }
   if (attribution.status !== 'unavailable' || attribution.reason !== 'projection-only') {
-    throw new Error('world.attribution must declare same-submit or projection-only');
+    throw new Error('attribution must declare same-submit or projection-only');
   }
   return Object.freeze({ status: 'unavailable', reason: 'projection-only' });
 }
@@ -154,20 +152,34 @@ function copyRow(row: LodOcclusionInspectionRow): LodOcclusionInspectionRow {
   });
 }
 
-function copyWorlds(
-  worlds: readonly LodOcclusionWorldInspectionInput[] | undefined,
-  fallback: LodOcclusionInspectionRow,
-): readonly LodOcclusionWorldInspection[] {
-  const source = worlds ?? [{ attachmentId: fallback.view.attachmentId, rows: [fallback] }];
-  return Object.freeze(
-    source.map((world) =>
-      Object.freeze({
-        attachmentId: world.attachmentId,
-        rows: Object.freeze(world.rows.map((row) => copyRow(row))),
-        attribution: copyWorldAttribution(world.attribution),
-      }),
-    ),
-  );
+function copyGpuSelection(gpu: LodOcclusionGpuSelection): LodOcclusionGpuSelection {
+  for (const name of [
+    'candidateCount',
+    'visible',
+    'frustumCulled',
+    'texelCulled',
+    'cameraCulled',
+    'geometryWork',
+    'rootGeometryWork',
+  ] as const)
+    nonNegativeInteger(`inspection.gpu.${name}`, gpu[name]);
+  if (typeof gpu.overflow !== 'boolean') throw new Error('inspection.gpu.overflow must be boolean');
+  const occlusion = gpu.occlusion;
+  if (occlusion !== undefined) {
+    nonNegativeInteger('inspection.gpu.occlusion.culled', occlusion.culled);
+    nonNegativeInteger('inspection.gpu.occlusion.late', occlusion.late);
+  }
+  return Object.freeze({
+    candidateCount: gpu.candidateCount,
+    visible: gpu.visible,
+    frustumCulled: gpu.frustumCulled,
+    texelCulled: gpu.texelCulled,
+    cameraCulled: gpu.cameraCulled,
+    overflow: gpu.overflow,
+    geometryWork: gpu.geometryWork,
+    rootGeometryWork: gpu.rootGeometryWork,
+    ...(occlusion === undefined ? {} : { occlusion: Object.freeze({ ...occlusion }) }),
+  });
 }
 
 export function inspectLodOcclusion(input: LodOcclusionInspectionInput): LodOcclusionInspection {
@@ -182,22 +194,22 @@ export function inspectLodOcclusion(input: LodOcclusionInspectionInput): LodOccl
   if (typeof submit.build !== 'string' || submit.build.length === 0) {
     throw new Error('inspection.submit.build must be a non-empty string');
   }
-  const worlds = copyWorlds(input.worlds, row);
-  for (const world of worlds) {
-    if (
-      world.attribution.status === 'same-submit' &&
-      (world.attribution.submit.frameId !== submit.frameId ||
-        world.attribution.submit.build !== submit.build ||
-        world.attribution.submit.deviceGeneration !== submit.deviceGeneration)
-    ) {
-      throw new Error('world attribution must reference the parent inspection submit');
-    }
-  }
+  const attribution = copyAttribution(input.attribution);
+  if (input.gpu !== undefined && attribution.status !== 'same-submit')
+    throw new Error('GPU selection requires same-submit attribution');
+  if (
+    attribution.status === 'same-submit' &&
+    (attribution.submit.frameId !== submit.frameId ||
+      attribution.submit.build !== submit.build ||
+      attribution.submit.deviceGeneration !== submit.deviceGeneration)
+  )
+    throw new Error('attribution must reference the parent inspection submit');
   const inspection: LodOcclusionInspection = Object.freeze({
     schema: LOD_OCCLUSION_INSPECTION_SCHEMA,
     ...row,
     submit: Object.freeze({ ...submit }),
-    worlds,
+    attribution,
+    ...(input.gpu === undefined ? {} : { gpu: copyGpuSelection(input.gpu) }),
   });
   if (JSON.stringify(inspection).length > LOD_OCCLUSION_INSPECTION_MAX_BYTES) {
     throw new Error(`LOD occlusion inspection exceeds ${LOD_OCCLUSION_INSPECTION_MAX_BYTES} bytes`);

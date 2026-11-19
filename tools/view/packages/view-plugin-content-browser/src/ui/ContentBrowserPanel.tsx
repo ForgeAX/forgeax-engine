@@ -43,6 +43,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,7 +54,9 @@ import {
 } from 'react';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { AssetBrowserReveal, ContentBrowserDetailTabs, PageHost } from '@forgeax/view-workspace-core/frontend-contract';
-import { VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_TAB_ID, workspaceUiFingerprint } from '@forgeax/view-workspace-core/contract';
+import { VIEW_FILE_GET_SERVICE, VIEW_HTML_FILES_SERVICE, VIEW_PACK_SOURCES_SERVICE, VIEW_PACK_REVEAL_TOPIC, VIEW_PACK_REVEAL_ACK_SERVICE, VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
+import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { createWorkspaceId } from '@forgeax/view-workspace-core/id';
 import { useTranslation } from '../i18n/useTranslation';
 import { CONTENT_BROWSER_ACTIONS } from '../schema.ts';
 import { CBDetailsList } from './CBDetailsList';
@@ -86,6 +89,28 @@ import type {
 
 const EMPTY_HTML_FILES: readonly string[] = [];
 const EMPTY_DETAIL_TABS = Object.freeze([]);
+const EMPTY_WORKSPACE: WorkspaceState = {};
+const EMPTY_SOURCES: readonly PackSourceRow[] = [];
+
+type CatalogProjection = {
+  client: ViewWorkspaceClient;
+  key: string;
+  sources: readonly PackSourceRow[];
+  htmlFiles: readonly string[];
+  htmlIssue: string;
+  loading: boolean;
+  failed: boolean;
+};
+
+function catalogBinding(state: WorkspaceState | null) {
+  if (!state?.project || state.workspaceTargetLost
+    || (state.projectPhase && state.projectPhase !== 'running')
+    || state.projectDocumentPresentation === 'observer') return null;
+  const target = state.projectTarget;
+  // Catalog reads can publish a new Catalog epoch without replacing their owner.
+  return JSON.stringify([state.project.id, state.project.root, target?.targetId, target?.generation,
+    target?.sessionId, target?.worldId, state.browserGeneration, state.projectStatus?.sessionId, state.projectDocumentPresentation]);
+}
 
 type BrowserMenuItem =
   | { kind: 'title'; label: string; icon?: ReactNode }
@@ -166,80 +191,137 @@ export function ContentBrowserPanel({
   const writeClipboard = useClipboardAction();
   const { t } = useTranslation();
   const detailContributions = useSyncExternalStore(detailTabs?.subscribe ?? (() => () => {}), detailTabs?.getSnapshot ?? (() => EMPTY_DETAIL_TABS), () => EMPTY_DETAIL_TABS);
-  const [snapshot, setSnapshot] = useState<WorkspaceState>({});
+  const readerOwner = useMemo(() => {
+    let lifetime = new AbortController();
+    const reader = createWorkspaceStateReader(client ? {
+      subscribe: listener => client.subscribe(listener),
+      getState: () => {
+        if (lifetime.signal.aborted) lifetime = new AbortController();
+        return client.getState({ signal: lifetime.signal });
+      },
+    } : undefined);
+    return { reader, retire() { lifetime.abort(); reader.dispose(); } };
+  }, [client]);
+  const reader = readerOwner.reader;
+  useLayoutEffect(() => () => readerOwner.retire(), [readerOwner]);
+  const snapshot = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot) ?? EMPTY_WORKSPACE;
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [actionError, setActionError] = useState('');
-  const [runtimeOpen, setRuntimeOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [openingKeys, setOpeningKeys] = useState(new Set<string>());
-  const [visibleAssetGuids, setVisibleAssetGuids] = useState<string[]>([]);
-  const [thumbnailRows, setThumbnailRows] = useState<{ projectId: string; targetKey: string; rows: Map<string, WorkspaceThumbnail> } | null>(null);
-  const lastThumbnailRequest = useRef<string | null>(null);
-  const [packSources, setPackSources] = useState<readonly PackSourceRow[]>([]);
-  const [htmlListing, setHtmlListing] = useState<{ projectId: string; files: readonly string[]; issue: string } | null>(null);
-  const project = snapshot.project;
-  const projectLabel = project?.name ?? project?.root ?? 'No project';
-  const htmlFiles = htmlListing && htmlListing.projectId === project?.id ? htmlListing.files : EMPTY_HTML_FILES;
-  const htmlListingIssue = htmlListing && htmlListing.projectId === project?.id ? htmlListing.issue : '';
-  const catalog = useMemo(() => projectCatalog({ root: project?.root ?? '', assetRoots: project?.assetRoots ?? EMPTY_HTML_FILES, assets: snapshot.assets ?? [], sources: packSources, htmlFiles }), [project?.root, project?.assetRoots, snapshot.assets, packSources, htmlFiles]);
-  const files = catalog.files;
-  const folders = catalog.folders;
   const clientRef = useRef(client);
   clientRef.current = client;
   const connected = useWorkspaceClientConnected(client);
-  const readPreview = useCallback((path: string, options?: { signal?: AbortSignal }) => {
-    const transport = clientRef.current?.transport;
-    if (typeof transport?.request !== 'function') return Promise.resolve(null);
-    return transport.request(VIEW_FILE_GET_SERVICE, { path }, options) as Promise<PreviewFileInfo | null>;
-  }, []);
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!connected || !project || !client) return;
-    setLoading(true);
-    const [assetsResult, sourceResult, htmlResult] = await Promise.allSettled([
-      client.listAssets(project.id, { tabId: VIEW_WORKSPACE_TAB_ID, signal }),
-      client.transport?.request?.(VIEW_PACK_SOURCES_SERVICE, { projectId: project.id }, { signal }) as Promise<{ sources?: PackSourceRow[] }> | undefined,
-      client.transport?.request?.(VIEW_HTML_FILES_SERVICE, {}, { signal }) as Promise<{ files?: string[]; hasMore?: boolean }> | undefined,
-    ]);
-    if (signal?.aborted) return;
-    if (sourceResult.status === 'fulfilled') setPackSources(sourceResult.value?.sources ?? []);
-    setHtmlListing(htmlResult.status === 'fulfilled'
-      ? { projectId: project.id, files: htmlResult.value?.files ?? [], issue: htmlResult.value?.hasMore ? t('contentBrowser.htmlListingTruncated') : '' }
-      : { projectId: project.id, files: [], issue: t('contentBrowser.htmlListingFailed') });
-    setLoadFailed(assetsResult.status === 'rejected' && sourceResult.status === 'rejected');
-    setLoading(false);
-  }, [client, connected, project?.id, t]);
-  useEffect(() => {
-    if (!client || !connected) {
-      if (!client) setLoadFailed(true);
-      return;
-    }
-    const controller = new AbortController();
-    setSnapshot({});
-    const accept = (next: typeof snapshot) => {
-      if (controller.signal.aborted) return;
-      setSnapshot((current) => {
-        if ((next.revision ?? 0) < (current.revision ?? 0)) return current;
-        if (workspaceUiFingerprint(next) === workspaceUiFingerprint(current)) return current;
-        return next;
-      });
-      setLoadFailed(false);
-    };
-    const unsubscribe = client.subscribe(accept);
-    void client.getState({ signal: controller.signal }).then(accept).catch(() => {
-      if (!controller.signal.aborted) setLoadFailed(true);
+  const bindingKey = catalogBinding(snapshot);
+  const [catalogState, setCatalogState] = useState<CatalogProjection | null>(null);
+  const currentCatalog = connected && catalogState && catalogState.client === client && catalogState.key === bindingKey ? catalogState : null;
+  const updateCatalog = useCallback((patch: Partial<Omit<CatalogProjection, 'client' | 'key'>>) => {
+    if (!client || !bindingKey || clientRef.current !== client || catalogBinding(reader.getSnapshot()) !== bindingKey) return;
+    setCatalogState(current => {
+      if (clientRef.current !== client || catalogBinding(reader.getSnapshot()) !== bindingKey) return current;
+      const previous = current?.client === client && current.key === bindingKey ? current : {
+        sources: EMPTY_SOURCES, htmlFiles: EMPTY_HTML_FILES, htmlIssue: '', loading: false, failed: false,
+      };
+      return { ...previous, ...patch, client, key: bindingKey };
     });
-    return () => { controller.abort(); unsubscribe?.(); };
-  }, [client, connected]);
+  }, [client, bindingKey, reader]);
+  const queryOwners = useMemo(() => new Set<ReturnType<typeof createWorkspaceObservation>>(), [reader]);
+  useLayoutEffect(() => () => {
+    for (const observation of queryOwners) observation.dispose();
+    queryOwners.clear();
+  }, [queryOwners]);
+  const observeRead = useCallback((parentSignal?: AbortSignal, matches?: (state: WorkspaceState | null) => boolean) => {
+    const scopeCurrent = () => Boolean(client && bindingKey && clientRef.current === client
+      && catalogBinding(reader.getSnapshot()) === bindingKey && (!matches || matches(reader.getSnapshot())));
+    const observation = createWorkspaceObservation(reader, scopeCurrent);
+    queryOwners.add(observation);
+    const signal = parentSignal ? AbortSignal.any([parentSignal, observation.signal]) : observation.signal;
+    return { signal, scopeCurrent, current: () => !signal.aborted && scopeCurrent(),
+      dispose() { observation.dispose(); queryOwners.delete(observation); } };
+  }, [client, bindingKey, reader, queryOwners]);
+  const selectionInspection = useRef<ReturnType<typeof observeRead> | null>(null);
+  const previewRead = useRef<ReturnType<typeof observeRead> | null>(null);
+  const revealRead = useRef<ReturnType<typeof observeRead> | null>(null);
+  const retireSelectionReads = useCallback(() => {
+    selectionInspection.current?.dispose();
+    selectionInspection.current = null;
+    previewRead.current?.dispose();
+    previewRead.current = null;
+  }, []);
+  const previewOwnerKey = useMemo(() => createWorkspaceId('content-preview'), [reader, bindingKey]);
+  const loadFailed = currentCatalog?.failed ?? !client;
+  const [actionError, setActionError] = useState('');
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const loading = currentCatalog?.loading ?? false;
+  const [openingKeys, setOpeningKeys] = useState(new Set<string>());
+  const [visibleAssetGuids, setVisibleAssetGuids] = useState<string[]>([]);
+  const [thumbnailRows, setThumbnailRows] = useState<{ client: ViewWorkspaceClient; bindingKey: string | null; projectId: string; targetKey: string; rows: Map<string, WorkspaceThumbnail> } | null>(null);
+  const lastThumbnailRequest = useRef<string | null>(null);
+  const packSources = currentCatalog?.sources ?? EMPTY_SOURCES;
+  const project = snapshot.project;
+  const projectLabel = project?.name ?? project?.root ?? 'No project';
+  const htmlFiles = currentCatalog?.htmlFiles ?? EMPTY_HTML_FILES;
+  const htmlListingIssue = currentCatalog?.htmlIssue ?? '';
+  const catalog = useMemo(() => projectCatalog({ root: project?.root ?? '', assetRoots: project?.assetRoots ?? EMPTY_HTML_FILES, assets: snapshot.assets ?? [], sources: packSources, htmlFiles }), [project?.root, project?.assetRoots, snapshot.assets, packSources, htmlFiles]);
+  const files = catalog.files;
+  const folders = catalog.folders;
+  const readPreview = useCallback(async (path: string, options?: { signal?: AbortSignal }) => {
+    if (!client?.transport.request) return null;
+    previewRead.current?.dispose();
+    const lease = observeRead(options?.signal);
+    previewRead.current = lease;
+    try {
+      lease.signal.throwIfAborted();
+      const result = await client.transport.request(VIEW_FILE_GET_SERVICE, { path }, { signal: lease.signal }) as PreviewFileInfo | null;
+      if (!lease.current()) throw new DOMException('File preview binding retired', 'AbortError');
+      return result;
+    } finally {
+      lease.dispose();
+      if (previewRead.current === lease) previewRead.current = null;
+    }
+  }, [client, observeRead]);
+  const inspectSelectedAsset = useCallback(async (guid: string, options: Parameters<ViewWorkspaceClient['inspectAsset']>[1]) => {
+    selectionInspection.current?.dispose();
+    const lease = observeRead();
+    selectionInspection.current = lease;
+    try {
+      if (!client || !lease.current()) return;
+      await client.inspectAsset(guid, { ...options, signal: lease.signal });
+    } finally {
+      lease.dispose();
+      if (selectionInspection.current === lease) selectionInspection.current = null;
+    }
+  }, [client, observeRead]);
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (!connected || !project || !client || !bindingKey) return;
+    const lease = observeRead(signal);
+    const querySignal = lease.signal;
+    try {
+      if (querySignal.aborted) return;
+      updateCatalog({ loading: true, failed: false });
+      const [assetsResult, sourceResult, htmlResult] = await Promise.allSettled([
+        client.listAssets(project.id, { tabId: VIEW_WORKSPACE_TAB_ID, signal: querySignal }),
+        client.transport?.request?.(VIEW_PACK_SOURCES_SERVICE, { projectId: project.id }, { signal: querySignal }) as Promise<{ sources?: PackSourceRow[] }> | undefined,
+        client.transport?.request?.(VIEW_HTML_FILES_SERVICE, {}, { signal: querySignal }) as Promise<{ files?: string[]; hasMore?: boolean }> | undefined,
+      ]);
+      if (querySignal.aborted) return;
+      updateCatalog({
+        ...(sourceResult.status === 'fulfilled' ? { sources: sourceResult.value?.sources ?? EMPTY_SOURCES } : {}),
+        htmlFiles: htmlResult.status === 'fulfilled' ? htmlResult.value?.files ?? EMPTY_HTML_FILES : EMPTY_HTML_FILES,
+        htmlIssue: htmlResult.status === 'fulfilled'
+          ? htmlResult.value?.hasMore ? t('contentBrowser.htmlListingTruncated') : '' : t('contentBrowser.htmlListingFailed'),
+        failed: assetsResult.status === 'rejected' && sourceResult.status === 'rejected', loading: false,
+      });
+    } finally {
+      lease.dispose();
+    }
+  }, [client, connected, project?.id, bindingKey, observeRead, updateCatalog, t]);
   useEffect(() => {
     // The initial project identity can precede its accepted Engine catalog.
     // Read once for the ready realm rather than retaining that partial listing.
-    if (!connected || snapshot.projectPhase === 'starting') return;
+    if (!connected || (snapshot.projectPhase && snapshot.projectPhase !== 'running') || snapshot.projectDocumentPresentation === 'observer') return;
     const controller = new AbortController();
     void refresh(controller.signal);
     return () => controller.abort();
-  }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration]);
+  }, [connected, refresh, snapshot.projectPhase, snapshot.browserGeneration, snapshot.projectDocumentPresentation]);
   const [layout, setLayout] = useState<CBViewMode>('grid');
   const [thumbnailSize, setThumbnailSize] = useState(80);
   const [detailPanelOpen, setDetailPanelOpen] = useState(true);
@@ -248,9 +330,12 @@ export function ContentBrowserPanel({
   const [revealFocus, setRevealFocus] = useState<string | null>(null);
   const revealEpoch = useRef(0);
   const cancelReveal = useCallback(() => {
+    retireSelectionReads();
+    revealRead.current?.dispose();
+    revealRead.current = null;
     revealEpoch.current++;
     setRevealFocus(null);
-  }, []);
+  }, [retireSelectionReads]);
   const [activeFamilies, setActiveFamilies] = useState<Set<CBFilterFamily>>(new Set());
   const [activeKinds, setActiveKinds] = useState<Set<string>>(new Set());
   const [sortState, setSortState] = useState<CBSortState>({ key: 'name', dir: 'asc' });
@@ -281,8 +366,7 @@ export function ContentBrowserPanel({
   const [previewWidth, setPreviewWidth] = useLocalSize('view.cb.previewWidth', 380, 180, 560, 280);
   useEffect(() => {
     openEpoch.current += 1;
-    setPackSources([]);
-    setHtmlListing(null);
+    updateCatalog({ sources: EMPTY_SOURCES, htmlFiles: EMPTY_HTML_FILES, htmlIssue: '' });
     setHistory(['']);
     setHistoryIndex(0);
     setSelectedIds(new Set());
@@ -342,7 +426,7 @@ export function ContentBrowserPanel({
   const detailGuid = detailPanelOpen && detailPanelExpanded && previewItem?.type === 'asset' ? previewItem.guid : null;
   const visibleGuids = [...new Set([...gridGuids, ...(detailGuid ? [detailGuid] : [])])];
   const targetKey = JSON.stringify([snapshot.projectTarget?.targetId, snapshot.projectTarget?.generation, snapshot.browserGeneration, snapshot.catalogEpoch]);
-  const requestKey = JSON.stringify([project?.id, targetKey, visibleGuids.map(guid => [guid, assetFacts.get(guid)])]);
+  const requestKey = JSON.stringify([project?.id, bindingKey, targetKey, visibleGuids.map(guid => [guid, assetFacts.get(guid)])]);
   const thumbnailEpoch = snapshot.thumbnailEpoch ?? -1;
   useEffect(() => {
     if (!client || !connected || !project?.id || visibleGuids.length === 0) {
@@ -350,64 +434,74 @@ export function ContentBrowserPanel({
       lastThumbnailRequest.current = null;
       return;
     }
-    const controller = new AbortController();
+    const lease = observeRead(undefined, state => JSON.stringify([state?.projectTarget?.targetId, state?.projectTarget?.generation,
+      state?.browserGeneration, state?.catalogEpoch]) === targetKey);
+    if (!lease.current()) { lease.dispose(); return; }
     const projectId = project.id;
     const requested = new Set(visibleGuids);
     const previous = lastThumbnailRequest.current;
     const visibleChanged = previous !== requestKey;
-    const existing = thumbnailRows?.projectId === projectId && thumbnailRows.targetKey === targetKey ? thumbnailRows.rows : new Map<string, WorkspaceThumbnail>();
+    const existing = thumbnailRows?.client === client && thumbnailRows.bindingKey === bindingKey && thumbnailRows.projectId === projectId && thumbnailRows.targetKey === targetKey ? thumbnailRows.rows : new Map<string, WorkspaceThumbnail>();
     const queryGuids = visibleChanged ? visibleGuids : visibleGuids.filter(guid => existing.get(guid)?.state !== 'ready');
-    if (!visibleChanged && queryGuids.length === 0) return;
+    if (!visibleChanged && queryGuids.length === 0) { lease.dispose(); return; }
     lastThumbnailRequest.current = requestKey;
-    setThumbnailRows(current => ({ projectId, targetKey, rows: new Map(current?.projectId === projectId && current.targetKey === targetKey
-      ? [...current.rows].filter(([guid]) => requested.has(guid)) : []) }));
+    setThumbnailRows(current => lease.scopeCurrent() ? ({ client, bindingKey, projectId, targetKey,
+      rows: new Map(current?.client === client && current.bindingKey === bindingKey && current.projectId === projectId && current.targetKey === targetKey
+        ? [...current.rows].filter(([guid]) => requested.has(guid)) : []) }) : current);
     const batches: string[][] = [];
     for (let index = 0; index < queryGuids.length; index += 32) batches.push(queryGuids.slice(index, index + 32));
     void (async () => {
       for (const guids of batches) {
         try {
-          const result = await client.thumbnails(projectId, guids, { signal: controller.signal });
-          if (controller.signal.aborted) return;
+          if (!lease.current()) return;
+          const result = await client.thumbnails(projectId, guids, { signal: lease.signal });
+          if (!lease.current()) return;
           const rows = result.thumbnails.filter(row => guids.includes(row.guid) &&
             (assetFacts.get(row.guid)?.publicationId === undefined || row.publicationId === assetFacts.get(row.guid)?.publicationId));
           setThumbnailRows(current => {
-            const next = new Map<string, WorkspaceThumbnail>(current?.projectId === projectId && current.targetKey === targetKey
+            if (!lease.scopeCurrent()) return current;
+            const next = new Map<string, WorkspaceThumbnail>(current?.client === client && current.bindingKey === bindingKey && current.projectId === projectId && current.targetKey === targetKey
               ? [...current.rows].filter(([guid]) => requested.has(guid)) : []);
             for (const row of rows) next.set(row.guid, row);
-            return { projectId, targetKey, rows: next };
+            return { client, bindingKey, projectId, targetKey, rows: next };
           });
         } catch (error) {
-          if (controller.signal.aborted) return;
+          if (!lease.current()) return;
           setThumbnailRows(current => {
-            const next = new Map<string, WorkspaceThumbnail>(current?.projectId === projectId && current.targetKey === targetKey
+            if (!lease.scopeCurrent()) return current;
+            const next = new Map<string, WorkspaceThumbnail>(current?.client === client && current.bindingKey === bindingKey && current.projectId === projectId && current.targetKey === targetKey
               ? [...current.rows].filter(([guid]) => requested.has(guid)) : []);
             for (const guid of guids) next.set(guid, { guid, state: 'failed', publicationId: assetFacts.get(guid)?.publicationId, error: { code: 'thumbnail-query-failed', expected: 'Thumbnail response', hint: error instanceof Error ? error.message : String(error) } });
-            return { projectId, targetKey, rows: next };
+            return { client, bindingKey, projectId, targetKey, rows: next };
           });
         }
       }
-    })();
-    return () => controller.abort();
-  }, [client, connected, requestKey, thumbnailEpoch]);
+    })().finally(() => lease.dispose());
+    return () => lease.dispose();
+  }, [client, connected, requestKey, thumbnailEpoch, observeRead]);
   const thumbnails = useMemo(() => {
-    if (!thumbnailRows || thumbnailRows.projectId !== project?.id || thumbnailRows.targetKey !== targetKey) return new Map<string, WorkspaceThumbnail>();
+    if (!thumbnailRows || thumbnailRows.client !== client || thumbnailRows.bindingKey !== bindingKey || thumbnailRows.projectId !== project?.id || thumbnailRows.targetKey !== targetKey) return new Map<string, WorkspaceThumbnail>();
     return new Map([...thumbnailRows.rows].filter(([guid, row]) =>
       (assetFacts.get(guid)?.publicationId === undefined || row.publicationId === assetFacts.get(guid)?.publicationId)
       && (row.state !== 'ready' || assetFacts.get(guid)?.lifecycle === 'current')));
-  }, [thumbnailRows, project?.id, targetKey, assetFacts]);
+  }, [thumbnailRows, client, bindingKey, project?.id, targetKey, assetFacts]);
   const selectedThumbnail = detailGuid ? thumbnails.get(detailGuid) : undefined;
 
   const revealAsset = useCallback(async ({ projectId, guid, targetId, targetGeneration }: AssetBrowserReveal) => {
-    const matchingTarget = (state: WorkspaceState) => state.project?.id === projectId
-      && state.preview?.target?.targetId === targetId
-      && state.preview?.target?.generation === targetGeneration;
-    if (!client || !revealPanel || !matchingTarget(snapshotRef.current) || !guid) return false;
+    const matchingTarget = (state: WorkspaceState | null) => state?.project?.id === projectId
+      && state?.preview?.target?.targetId === targetId
+      && state?.preview?.target?.generation === targetGeneration;
+    if (!client || !revealPanel || !matchingTarget(reader.getSnapshot()) || !guid) return false;
     const file = files.find(entry => entry.assets.some(asset => asset.guid === guid));
     if (!file) return false;
     const epoch = ++revealEpoch.current;
-    const current = () => epoch === revealEpoch.current && matchingTarget(snapshotRef.current);
+    revealRead.current?.dispose();
+    const lease = observeRead(undefined, matchingTarget);
+    revealRead.current = lease;
+    const current = () => epoch === revealEpoch.current && lease.current();
     try {
-      await client.selectTab(VIEW_WORKSPACE_TAB_ID);
+      if (!current()) return false;
+      await client.selectTab(VIEW_WORKSPACE_TAB_ID, { signal: lease.signal });
       if (!current() || !await revealPanel() || !current()) return false;
       const history = historyRef.current;
       const directory = dirOfPath(file.path);
@@ -419,12 +513,13 @@ export function ContentBrowserPanel({
       setQuery('');
       setActiveFamilies(new Set());
       setActiveKinds(new Set());
+      retireSelectionReads();
       setExpandedPacks(previous => new Set(previous).add(file.path));
       setRevealFocus(file.path);
       setSelectedIds(new Set([guid]));
       setSelectionAnchor(guid);
       setPreviewKey(guid);
-      void client.inspectAsset(guid, { projectId, tabId: VIEW_WORKSPACE_TAB_ID, targetId, targetGeneration }).catch(() => {});
+      void inspectSelectedAsset(guid, { projectId, tabId: VIEW_WORKSPACE_TAB_ID, targetId, targetGeneration }).catch(() => {});
       for (let attempt = 0; attempt < 40 && current(); attempt++) {
         await new Promise(resolve => requestAnimationFrame(resolve));
         const panel = document.querySelector<HTMLElement>('[data-testid="panel-content-browser"]');
@@ -441,8 +536,9 @@ export function ContentBrowserPanel({
           && cardRect.right > panelRect.left && cardRect.left < panelRect.right) return true;
       }
     } catch { /* A missing page or project is a failed reveal, not a selection change. */ }
+    finally { lease.dispose(); if (revealRead.current === lease) revealRead.current = null; }
     return false;
-  }, [client, files, project?.id, revealPanel]);
+  }, [client, files, reader, observeRead, inspectSelectedAsset, retireSelectionReads, revealPanel]);
   useEffect(() => registerAssetReveal?.(revealAsset), [registerAssetReveal, revealAsset]);
 
   useEffect(() => {
@@ -451,34 +547,45 @@ export function ContentBrowserPanel({
     const workspaceClient = client;
     let retired = false;
     let activeRequestId: string | undefined;
+    let activeRead: ReturnType<typeof observeRead> | undefined;
     const unsubscribe = transport.subscribe<{ requestId: string; projectId: string; sourcePath: string; revision: string; cancelled?: boolean }>(VIEW_PACK_REVEAL_TOPIC, async intent => {
       if (intent.cancelled) {
         if (activeRequestId === intent.requestId) {
+          activeRead?.dispose();
+          if (revealRead.current === activeRead) revealRead.current = null;
           activeRequestId = undefined;
           ++revealEpoch.current;
           setRevealFocus(null);
         }
         return;
       }
+      activeRead?.dispose();
+      revealRead.current?.dispose();
       activeRequestId = intent.requestId;
       const epoch = ++revealEpoch.current;
-      const current = () => !retired && epoch === revealEpoch.current;
+      const lease = observeRead();
+      activeRead = lease;
+      revealRead.current = lease;
+      const current = () => !retired && epoch === revealEpoch.current && lease.current();
       const acknowledge = async (shown: boolean, reason?: string) => {
         if (retired) return;
         await transport.request(VIEW_PACK_REVEAL_ACK_SERVICE, { requestId: intent.requestId, projectId: intent.projectId,
           sourcePath: intent.sourcePath, revision: intent.revision, shown, reason }).catch(() => {});
       };
-      if (intent.projectId !== project.id) { await acknowledge(false, 'project-mismatch'); return; }
-      if (!revealPanel) { await acknowledge(false, 'panel-reveal-unavailable'); return; }
       try {
-        const inventory = await transport.request<{ projectId: string }, { sources: PackSourceRow[] }>(VIEW_PACK_SOURCES_SERVICE, { projectId: project.id });
+        if (intent.projectId !== project.id) { await acknowledge(false, 'project-mismatch'); return; }
+        if (!revealPanel) { await acknowledge(false, 'panel-reveal-unavailable'); return; }
+        if (!current()) { await acknowledge(false, 'user-navigation-cancelled'); return; }
+        const inventory = await transport.request<{ projectId: string }, { sources: PackSourceRow[] }>(VIEW_PACK_SOURCES_SERVICE, { projectId: project.id }, { signal: lease.signal });
+        if (!current()) { await acknowledge(false, 'user-navigation-cancelled'); return; }
         const source = inventory.sources.find(row => row.sourcePath === intent.sourcePath);
         if (!source || !assetSourcePath(project.root, project.assetRoots ?? EMPTY_HTML_FILES, source.sourcePath) || source.revision !== intent.revision) { await acknowledge(false, 'source-revision-changed'); return; }
         if (!current()) { await acknowledge(false, 'user-navigation-cancelled'); return; }
-        setPackSources(inventory.sources);
-        await workspaceClient.selectTab(VIEW_WORKSPACE_TAB_ID);
+        updateCatalog({ sources: inventory.sources });
+        await workspaceClient.selectTab(VIEW_WORKSPACE_TAB_ID, { signal: lease.signal });
         if (!current()) { await acknowledge(false, 'user-navigation-cancelled'); return; }
         if (!await revealPanel() || !current()) { await acknowledge(false, 'panel-reveal-unavailable'); return; }
+        retireSelectionReads();
         const path = source.sourcePath;
         const directory = path.slice(0, path.lastIndexOf('/'));
         setRevealFocus(path);
@@ -505,10 +612,16 @@ export function ContentBrowserPanel({
           if (shown) { await acknowledge(true); return; }
         }
         await acknowledge(false, current() ? 'pack-card-not-visible' : 'user-navigation-cancelled');
-      } catch (error) { await acknowledge(false, `reveal-error:${error instanceof Error ? error.message : String(error)}`.slice(0, 160)); }
+      } catch (error) {
+        await acknowledge(false, current() ? `reveal-error:${error instanceof Error ? error.message : String(error)}`.slice(0, 160) : 'user-navigation-cancelled');
+      } finally {
+        lease.dispose();
+        if (activeRead === lease) activeRead = undefined;
+        if (revealRead.current === lease) revealRead.current = null;
+      }
     });
-    return () => { retired = true; unsubscribe(); };
-  }, [client, project?.id, revealPanel]);
+    return () => { retired = true; activeRead?.dispose(); unsubscribe(); };
+  }, [client, project?.id, revealPanel, observeRead, updateCatalog, retireSelectionReads]);
 
   const navigate = (path: string) => {
     cancelReveal();
@@ -546,7 +659,7 @@ export function ContentBrowserPanel({
     setSelectionAnchor(key);
     setPreviewKey(viewItemKey(item));
     if (!toggleOff && item.type === 'asset' && client && project) {
-      void client.inspectAsset(item.guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID }).catch(() => {});
+      void inspectSelectedAsset(item.guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID }).catch(() => {});
     }
   };
 
@@ -569,6 +682,7 @@ export function ContentBrowserPanel({
       return;
     }
     if (item.type === 'file' && item.isAssetPackage) {
+      retireSelectionReads();
       setPreviewKey(viewItemKey(item));
       if (item.assets.length > 0) setExpandedPacks((current) => new Set(current).add(item.path));
       return;
@@ -579,9 +693,10 @@ export function ContentBrowserPanel({
     const key = viewItemKey(item);
     if (openingKeys.has(key)) return;
     setOpeningKeys((current) => new Set(current).add(key));
+    const current = () => Boolean(bindingKey && clientRef.current === client && catalogBinding(reader.getSnapshot()) === bindingKey);
     void (assetReferences?.getState().scope ? assetReferences.open(guid) : client.openAsset(guid, { projectId: project.id, tabId: VIEW_WORKSPACE_TAB_ID }))
-      .then(() => { if (dismissOnOpen) dismissUnpinnedEdge?.(); })
-      .catch((error: unknown) => setActionError(error instanceof Error ? error.message : String(error)))
+      .then(() => { if (current() && dismissOnOpen) dismissUnpinnedEdge?.(); })
+      .catch((error: unknown) => { if (current()) setActionError(error instanceof Error ? error.message : String(error)); })
       .finally(() => {
         setOpeningKeys((current) => {
           if (!current.has(key)) return current;
@@ -926,6 +1041,7 @@ export function ContentBrowserPanel({
                 {detailPanelExpanded ? (
                   <div className="cb-preview-dock-content">
                     <CBPreviewPanel
+                      key={`${previewOwnerKey}:${previewKey ?? ''}`}
                       previewItem={previewItem}
                       detailTabs={client && detailTabs ? detailContributions.filter(contribution => {
                         if (!previewItem || previewItem.type === 'folder') return false;

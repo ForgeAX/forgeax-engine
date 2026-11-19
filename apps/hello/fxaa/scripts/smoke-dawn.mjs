@@ -9,7 +9,7 @@
 //   3. Spawn a static 4-geometry scene (triangle + cube + quad + sphere) +
 //      DirectionalLight + Camera -- same layout as demo main.ts (PI-3).
 //      All geometries are stationary (D-5), no rotation animation.
-//   4. Two Worlds share the same renderer/device/renderTarget (RD-6):
+//   4. Two Worlds render in sequence through the same renderer/device/renderTarget (RD-6):
 //        - World-A: Camera.antialias = ANTIALIAS_NONE (baseline)
 //        - World-B: Camera.antialias = ANTIALIAS_FXAA (FXAA active)
 //      Each World renders, then pixels are read back via copyTextureToBuffer.
@@ -30,7 +30,6 @@
 // Charter P3 explicit failure: on fail, output structured diagnostic with actual
 // diffCount vs threshold so AI users can self-diagnose.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -42,6 +41,8 @@ import {
 } from './dark-gradient-fixture.mjs';
 import { createDarkGradientTexture, darkGradientQuad } from './dark-gradient-scene.mjs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
 
 
@@ -164,7 +165,10 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 let assets;
@@ -312,13 +316,7 @@ renderer.subscribe((event) => {
 
 async function renderAndRead(world, lease) {
   world.update().unwrap();
-  const drawResult = renderer.draw({
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
-  if (!drawResult.ok) throw drawResult.error;
-  (await drawResult.value.completed).unwrap();
+  await drawReadyFrame(renderer, { source: lease });
   await device.queue.onSubmittedWorkDone();
   return doReadPixels();
 }
@@ -342,12 +340,12 @@ for (let frame = 0; frame < VALIDATION_FRAME_COUNT; frame += 1) {
   }
 }
 const noneInspection = renderer.inspect();
+worldAttachment1.value.dispose();
 
 // Pass 2: ANTIALIAS_FXAA -- reuses the same renderer / device / renderTarget.
-// The second draw overwrites the renderTarget in place (same paradigm as
-// fxaa-pixel-diff.dawn.test.ts:192-198). No state contamination between passes
-// because each World is independent; the renderer's internal state (BGLs,
-// pipelines, per-frame resources) is rebuilt from ECS data on each draw call.
+// Release the first World's source lease before attaching the next World; a
+// Renderer owns one active scene source at a time. The second draw overwrites
+// the renderTarget in place (same paradigm as fxaa-pixel-diff.dawn.test.ts:192-198).
 
 const fxaaAssets = new AssetRegistry();
 const worldFxaa = new World({ assets: fxaaAssets });

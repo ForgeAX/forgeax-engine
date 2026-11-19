@@ -1,3 +1,4 @@
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import type { PointsLinesPreparedSnapshot } from './snapshot';
 
@@ -77,7 +78,7 @@ export class PointsLinesExpansionCache {
  * prepared GPU buffers are reused across generations of the same source.
  */
 export function pointsLinesSourceSlot(snapshot: PointsLinesPreparedSnapshot): string {
-  return `world:${snapshot.worldId}:mesh:${snapshot.meshHandle}:component=${snapshot.component ?? 'none'}`;
+  return `world:mesh:${snapshot.meshHandle}:component=${snapshot.component ?? 'none'}`;
 }
 
 function expansionKey(snapshot: PointsLinesPreparedSnapshot): string {
@@ -219,8 +220,14 @@ function expandPoints(
   key: string,
 ): PointsLinesExpandedGeometry {
   const elements = pointElements(mesh);
-  const colors = floatStream(mesh.attributes.color);
-  const sizes = floatStream(mesh.attributes.uv1);
+  const colors = floatStream(
+    mesh.attributeStorage === 'interleaved'
+      ? copyMeshAttribute(mesh, 'color')
+      : mesh.attributes.color,
+  );
+  const sizes = floatStream(
+    mesh.attributeStorage === 'interleaved' ? copyMeshAttribute(mesh, 'uv1') : mesh.attributes.uv1,
+  );
   const count = elements.length;
   const positions = new Float32Array(count * 3);
   const vertices = new Float32Array(count * 48);
@@ -299,7 +306,10 @@ function emitQuad(
 }
 
 function readPositions(mesh: MeshAsset): Float32Array {
-  const attribute = mesh.attributes.position;
+  const attribute =
+    mesh.attributeStorage === 'interleaved'
+      ? copyMeshAttribute(mesh, 'position')
+      : mesh.attributes.position;
   if (attribute instanceof Float32Array && attribute.length >= 3) {
     return attribute;
   }

@@ -1,5 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import {
   graphFacts,
   type LodObservationCapture,
@@ -9,7 +9,6 @@ import type { RenderSystemInternals } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
 import { selectCameraRoles } from '../render-system-extract';
 import {
-  cameraAttachmentId,
   RenderView,
   type RenderViewFrameSource,
   RenderViewInput,
@@ -41,20 +40,31 @@ export interface LodObservationState {
 }
 
 /** World resource key of the Renderer's {@link LodObservationState}. */
-export const LodObservationKey = Object.freeze({ name: 'LodObservation' });
+export const LodObservationKey = defineResource<LodObservationState>('LodObservation');
 
 export function lodObservationOf(world: World): LodObservationState {
-  return world.getResource<LodObservationState>(LodObservationKey);
+  return world.getResource(LodObservationKey);
 }
 
-function captureLeases(
-  leases: readonly RenderReadLease[] | undefined,
-): LodObservationCapture['leases'] {
-  return Object.freeze(
-    (leases ?? []).map((lease) =>
-      Object.freeze({ lease, worldIdentity: lease.worldIdentity, generation: lease.generation }),
-    ),
-  );
+function captureSource(source: RenderViewFrameSource): LodObservationCapture['source'] {
+  if (source.publication !== undefined) {
+    const resources = source.publication.resources;
+    return Object.freeze({
+      kind: 'publication',
+      worldIdentity: resources.identity,
+      resources,
+      revision: resources.revision as number,
+    });
+  }
+  const lease = source.lease;
+  return lease === undefined
+    ? undefined
+    : Object.freeze({
+        kind: 'local',
+        lease,
+        worldIdentity: lease.worldIdentity,
+        generation: lease.generation,
+      });
 }
 
 function viewObservation(
@@ -85,7 +95,6 @@ function primaryObservationViews(
   owner: ViewSettlementOwner,
   cameras: readonly CameraSnapshot[],
   world: World | undefined,
-  worlds: readonly World[],
 ): readonly LodObservationViewCapture[] {
   const primaryInspection = owner.lod.cell;
   const graph = graphFacts(owner);
@@ -94,10 +103,7 @@ function primaryObservationViews(
     cameras[0];
   const entityKey = camera?.entityKey ?? primaryInspection?.view.cameraEntity;
   if (entityKey === undefined) return [];
-  const attachmentId =
-    primaryInspection?.view.attachmentId ??
-    (camera === undefined ? world?.identity : cameraAttachmentId(camera, world, worlds)) ??
-    'none';
+  const attachmentId = primaryInspection?.view.attachmentId ?? world?.identity ?? 'none';
   return [
     Object.freeze({
       viewKey: 'primary',
@@ -154,7 +160,7 @@ function observedViews(
   }
   const owner = host.internals.viewOwner;
   if (owner === undefined) return 'view-state-unavailable';
-  return primaryObservationViews(owner, cameras, source.world, source.worlds);
+  return primaryObservationViews(owner, cameras, source.world);
 }
 
 /**
@@ -172,32 +178,35 @@ export function registerLodObservationSystem(
   const state: LodObservationState = { capture: undefined, failure: undefined };
   world.insertResource<LodObservationState>(LodObservationKey, state);
   world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_LOD_OBSERVATION_SYSTEM,
-      queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
-      fn: (world) => {
-        const { accepted, frame } = renderSubmission(world);
-        if (!accepted || !world.hasResource(RenderViewInput)) return;
-        const source = world.getResource<RenderViewFrameSource>(RenderViewInput);
-        let observed: ReturnType<typeof observedViews>;
-        try {
-          observed = observedViews(world, views, host, source);
-        } catch {
-          observed = 'view-state-unavailable';
-        }
-        if (typeof observed === 'string') {
-          state.failure = { code: observed, frame };
-          return;
-        }
-        state.failure = undefined;
-        state.capture = Object.freeze({
-          frameId: host.internals.observationFrameId ?? 0,
-          deviceGeneration: recordContext(host.internals).deviceScope.generation,
-          views: Object.freeze([...observed]),
-          leases: captureLeases(source.leases),
-        });
-      },
-    })
+    .addSystem(
+      RenderCommit,
+      defineSystem({
+        commands: 'none',
+        name: RENDER_LOD_OBSERVATION_SYSTEM,
+        queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
+        fn: (world) => {
+          const { accepted, frame } = renderSubmission(world);
+          if (!accepted || !world.hasResource(RenderViewInput)) return;
+          const source = world.getResource(RenderViewInput);
+          let observed: ReturnType<typeof observedViews>;
+          try {
+            observed = observedViews(world, views, host, source);
+          } catch {
+            observed = 'view-state-unavailable';
+          }
+          if (typeof observed === 'string') {
+            state.failure = { code: observed, frame };
+            return;
+          }
+          state.failure = undefined;
+          state.capture = Object.freeze({
+            frameId: host.internals.observationFrameId ?? 0,
+            deviceGeneration: recordContext(host.internals).deviceScope.generation,
+            views: Object.freeze([...observed]),
+            source: captureSource(source),
+          });
+        },
+      }),
+    )
     .unwrap();
 }

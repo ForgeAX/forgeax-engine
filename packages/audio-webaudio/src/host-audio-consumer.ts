@@ -112,6 +112,32 @@ export function createHostAudioConsumer(
   let disposed = false;
   let preparation: AudioPreparationReceipt | undefined;
   // A pending play adopts every control intent that arrives before its decode settles.
+  const consumeBusControl = (intent: AudioIntent): boolean => {
+    switch (intent.kind) {
+      case 'set-bus-wet':
+        engine.setBusWet(intent.bus, intent.wet);
+        return true;
+      case 'set-bus-low-pass':
+        engine.setBusLowPass(intent.bus, intent.owner, intent.filter);
+        return true;
+      case 'set-bus-send-gain':
+        engine.setBusSendGain(intent.bus, intent.target, intent.gain);
+        return true;
+      case 'set-bus-volume':
+        engine.setBusVolume(intent.bus, intent.volume);
+        return true;
+      case 'set-bus-mute':
+        engine.setBusMute(intent.bus, intent.muted);
+        return true;
+      default:
+        return false;
+    }
+  };
+  const setGlobalPlaybackRate = (scale: number): void => {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    engine.setGlobalPlaybackRate(scale);
+    music.setGlobalPlaybackRate(scale);
+  };
   const patchPendingOptions = (entityId: number, patch: Partial<AudioPlayOptions>) => {
     const pending = pendingPlays.get(entityId);
     if (pending !== undefined) pending.options = { ...pending.options, ...patch };
@@ -246,6 +272,7 @@ export function createHostAudioConsumer(
         if (intent.kind === 'music') music.command(intent.command);
         return;
       }
+      if (consumeBusControl(intent)) return;
       switch (intent.kind) {
         case 'cancel-clip-preparation':
           if (preparation?.requestId === intent.requestId) preparation = undefined;
@@ -317,12 +344,6 @@ export function createHostAudioConsumer(
           return;
         case 'set-acoustic-environment':
           engine.setAcousticEnvironment(intent.environment);
-          return;
-        case 'set-bus-wet':
-          engine.setBusWet(intent.bus, intent.wet);
-          return;
-        case 'set-bus-send-gain':
-          engine.setBusSendGain(intent.bus, intent.target, intent.gain);
           return;
         case 'play': {
           pendingPlays.delete(intent.entityId);
@@ -435,6 +456,9 @@ export function createHostAudioConsumer(
           patchPendingOptions(intent.entityId, { volume: intent.volume });
           engine.setVolume(intent.entityId, intent.volume);
           return;
+        case 'set-global-playback-rate':
+          setGlobalPlaybackRate(intent.scale);
+          return;
         case 'set-playback-rate':
           if (!Number.isFinite(intent.playbackRate) || intent.playbackRate <= 0) return;
           patchPendingOptions(intent.entityId, { playbackRate: intent.playbackRate });
@@ -459,12 +483,6 @@ export function createHostAudioConsumer(
           patchPendingOptions(intent.entityId, { bus: intent.bus });
           engine.setBus(intent.entityId, intent.bus);
           return;
-        case 'set-bus-volume':
-          engine.setBusVolume(intent.bus, intent.volume);
-          return;
-        case 'set-bus-mute':
-          engine.setBusMute(intent.bus, intent.muted);
-          return;
         case 'set-source-pose':
           patchPendingOptions(intent.entityId, { sourcePose: { ...intent.pose } });
           engine.setSourcePose(intent.entityId, intent.pose);
@@ -476,6 +494,7 @@ export function createHostAudioConsumer(
           consumer.dispose();
           return;
       }
+      return undefined;
     },
     state(): AudioState {
       let state = engine.getState();

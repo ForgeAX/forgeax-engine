@@ -1,12 +1,13 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import {
   buildMeshCollision,
+  copyMeshAttribute,
   createBoxGeometry,
   createWireframeGeometry,
   deriveVertexLayoutProjection,
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
-import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import { Materials, MeshFilter, MeshRenderer, readEditorAssistance } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -354,14 +355,10 @@ describe('preview binding facts and display ownership', () => {
       )
       .unwrap();
     const context = await createWorldContext(world, [assetsPlugin(assets)]);
-    const overlayRows = () => {
-      // Query rows are reused cursors; read each row while iterating.
-      const meshes = [];
-      for (const row of world.query({ with: [MeshFilter] }).unwrap())
-        if (row.entity !== entity)
-          meshes.push(assets.read(world.get(row.entity, MeshFilter).unwrap().assetHandle).unwrap());
-      return meshes;
-    };
+    const overlayRows = () =>
+      (readEditorAssistance(world)?.snapshot()?.primitives ?? []).flatMap((row) =>
+        row.kind === 'mesh' ? [assets.read(row.mesh).unwrap()] : [],
+      );
     try {
       const fiber = context.plugin(workspaceMeshDisplayPlugin, { mesh, entity });
       await fiber.await();
@@ -376,6 +373,7 @@ describe('preview binding facts and display ownership', () => {
       expect(await display.set({ overlays: { sharp: edges, tags } })).toMatchObject({
         overlays: ['sharp', 'tags'],
       });
+      expect([...world.query({ with: [MeshFilter] }).unwrap()]).toHaveLength(1);
       const shown = overlayRows();
       expect(shown.map((m) => m.submeshes[0]?.topology).sort()).toEqual([
         'line-list',
@@ -399,7 +397,11 @@ describe('preview binding facts and display ownership', () => {
       ).toMatchObject({ overlays: ['tags'] });
       const replaced = overlayRows();
       expect(replaced).toHaveLength(1);
-      expect(Array.from(replaced[0]?.attributes.position as Float32Array).slice(3, 4)).toEqual([2]);
+      const overlay = replaced[0];
+      if (overlay === undefined) throw new Error('expected replaced overlay');
+      const positions = copyMeshAttribute(overlay, 'position');
+      if (positions === undefined) throw new Error('expected replaced overlay positions');
+      expect(Array.from(positions).slice(3, 4)).toEqual([2]);
       await fiber.dispose();
       expect(overlayRows()).toHaveLength(0);
     } finally {

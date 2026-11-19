@@ -3,7 +3,7 @@ import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import { jitterCameraProjection } from './camera-projection';
 import { computeProjectionMatrix, computeViewMatrix } from './record/helpers';
 import type { CameraSnapshot } from './render-contract';
-import { GTAO_SAMPLE_COUNTS, getSsaoParameters, SSAO_SAMPLE_COUNTS } from './ssao-config';
+import { getSsaoParameters } from './ssao-config';
 
 // SSAO uniform layout (plan-strategy §D-1 + §D-C, M7 round-2):
 //   bytes [0..63]    view              mat4x4<f32>
@@ -12,7 +12,7 @@ import { GTAO_SAMPLE_COUNTS, getSsaoParameters, SSAO_SAMPLE_COUNTS } from './ssa
 //   bytes [192..207] intensityPad      vec4<f32>  // x = intensity, y = radius, z = bias, w = sample budget
 //   bytes [208..223] algorithmPad      vec4<f32>  // algorithm, thickness, distance exponent, horizon falloff
 //   bytes [224..239] clusterPack       // AO base origin, Cluster width, packed AO row width
-//   bytes [240..255] padding           // align to 256B WebGPU UBO offset
+//   bytes [240..255] viewportPad       // spiral resolution scale; otherwise zero
 //
 // The total is rounded to 256B so the same UBO can host an additional
 // shader-side scalar binding at the tail without re-allocation.
@@ -51,10 +51,22 @@ export function buildSsaoUniformPayload(
     out[48] = parameters.intensity;
     out[49] = parameters.radius;
     out[50] = parameters.bias;
-    out[51] = (parameters.algorithm === 'gtao' ? GTAO_SAMPLE_COUNTS : SSAO_SAMPLE_COUNTS)[
-      parameters.quality
-    ];
-    out[52] = parameters.algorithm === 'gtao' ? 1 : 0;
+    out[51] = parameters.sampleCount;
+    out[52] = parameters.algorithm === 'gtao' ? 1 : parameters.algorithm === 'spiral-ssao' ? 2 : 0;
+    const sceneColor = config?.enabled === true && parameters.application === 'scene-color';
+    out[60] = sceneColor
+      ? parameters.resolutionScale
+      : parameters.algorithm === 'spiral-ssao'
+        ? parameters.resolutionScale
+        : 0;
+    if (sceneColor) {
+      out[61] = parameters.sceneColorStrength;
+      out[62] = camera.exposure;
+      out[63] =
+        camera.postProcessing !== false && camera.output?.exposure.kind === 'auto'
+          ? camera.output.exposure.fallback
+          : 0;
+    }
     out[53] = parameters.thickness;
     out[54] = parameters.distanceExponent;
     out[55] = parameters.distanceFallOff;

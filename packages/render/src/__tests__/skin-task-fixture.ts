@@ -21,7 +21,6 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
   }));
   const material = MaterialResource.from(defaultMaterialSnapshot());
   const row = (entityKey: number): RenderableSnapshot => ({
-    worldId: 0,
     entityKey,
     transform: { world: matrix },
     material,
@@ -33,19 +32,18 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
     scene.apply(
       [17, 23].map((entityKey) => ({
         kind: 'update',
-        worldId: 0,
         entityKey,
         snapshot: row(entityKey),
       })),
     ),
   );
   matrix[12] = 3;
-  for (const joint of joints) skin.joint(0, joint, matrix);
+  for (const joint of joints) skin.joint(joint, matrix);
   const frames = new SkinFrames(skin);
   const frame = frames.prepareFrame(scene.slotsSnapshot());
   if (frame === undefined) throw new Error('Missing fixed Skin task fixture');
-  const first = frame.slots.lookup(0, 17),
-    second = frame.slots.lookup(0, 23);
+  const first = frame.slots.lookup(17),
+    second = frame.slots.lookup(23);
   if (first === undefined || second === undefined)
     throw new Error('Missing actual Skin Scene slots');
   return {

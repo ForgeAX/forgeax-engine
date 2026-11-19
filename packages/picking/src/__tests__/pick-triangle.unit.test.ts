@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { meshAttributeChannels, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import {
   CAMERA_PROJECTION_PERSPECTIVE,
@@ -307,13 +307,14 @@ describe('current skin triangle pose', () => {
     const scene = makeScene();
     const source = unsupportedSkinnedMesh(scene);
     const resolved = scene.assets.read(source).unwrap();
-    (resolved.attributes.position as Float32Array).set([-5, -1, 0, -3, -1, 0, -4, 1, 0]);
-    (resolved.attributes.skinWeight as Float32Array).set([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
-    resolved.aabb?.set([-5, -1, 0, -3, 1, 0]);
+    const attributes = meshAttributeChannels(resolved);
+    (attributes.position as Float32Array).set([-5, -1, 0, -3, -1, 0, -4, 1, 0]);
+    (attributes.skinWeight as Float32Array).set([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
     const mesh = scene.assets
       .create({
         ...resolved,
-        vertices: packInterleavedVertexAttributes(resolved.attributes, 3).unwrap().vertices,
+        vertices: packInterleavedVertexAttributes(attributes, 3).unwrap().vertices,
+        aabb: new Float32Array([-5, -1, 0, -3, 1, 0]),
       })
       .unwrap();
     const joint = scene.world.spawn({ component: Transform, data: { pos: [4, 0, 0] } }).unwrap();

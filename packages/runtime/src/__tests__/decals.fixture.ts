@@ -80,10 +80,28 @@ async function captureFailedDecalFrame(
   if (captured.ok) await save('failure.rhitape', compactTape(captured.value).bytes);
 }
 
-function expectDeferredMsaaRejected(renderer: Renderer, input: Parameters<Renderer['draw']>[0]) {
+function expectDeferredMsaaRejected(
+  renderer: Renderer,
+  input: Parameters<Renderer['draw']>[0],
+  errors: unknown[],
+) {
+  const before = errors.length;
   const multisampled = renderer.draw(input);
   expect(multisampled.ok).toBe(false);
-  if (!multisampled.ok) expect(multisampled.error.code).toBe('projected-decal-invalid');
+  if (!multisampled.ok)
+    expect(multisampled.error).toMatchObject({
+      code: 'device-operation-failed',
+      detail: {
+        cause: {
+          code: 'resource-descriptor-invalid',
+          detail: { field: 'camera.antialias', actual: 'msaa' },
+        },
+      },
+    });
+  // The deliberate rejection must reach both the draw result and error event.
+  // Retain every unrelated event for the journey's final error assertion.
+  expect(errors.slice(before)).toEqual(multisampled.ok ? [] : [multisampled.error]);
+  if (!multisampled.ok) errors.splice(before, 1);
 }
 
 export async function verifyDecals(
@@ -159,11 +177,7 @@ export async function verifyDecals(
   const draw = async (observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      observe ? ['linear-hdr'] : undefined,
-    );
+    return drawReadyFrame(renderer, { source: lease }, observe ? ['linear-hdr'] : undefined);
   };
   const observe = async (name: string) => {
     const receipt = await draw(true);
@@ -390,11 +404,7 @@ export async function verifyDecals(
     );
     value(renderer.setProfile(activeProfile));
     if (renderPath === 'deferred') {
-      expectDeferredMsaaRejected(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      expectDeferredMsaaRejected(renderer, { source: lease }, errors);
     }
     world.set(camera, Camera, { antialias: 0 }).unwrap();
     expect(delta(patch(await observe('gpu-recovered'), 64, 64), patch(on, 64, 64))).toBeLessThan(

@@ -125,3 +125,42 @@ it('keeps pipeline libraries scoped to their own physical devices', async () => 
 it('does not synthesize pipeline preparation for a backend without that capability', async () => {
   expect((await recordedDevice()).pipelineLibrary).toBeUndefined();
 });
+
+it('preserves the exact runtime completion signal through recorded selection', async () => {
+  const owner = library();
+  // Native selection activates the recorder's decorated library rather than its direct pass-through.
+  owner.selectCompute = vi.fn(() => ok(undefined));
+  let finish: ((result: ReturnType<typeof ok<void>>) => void) | undefined;
+  const pending = new Promise<ReturnType<typeof ok<void>>>((resolve) => {
+    finish = resolve;
+  });
+  const signal = vi.fn(function (this: PipelineLibrary) {
+    expect(this).toBe(owner);
+    return pending;
+  });
+  owner.pendingRuntimeCompilation = signal;
+  const device = await recordedDevice(owner);
+  const observed = device.pipelineLibrary?.pendingRuntimeCompilation?.();
+  expect(observed).toBe(pending);
+  expect(signal).toHaveBeenCalledOnce();
+  finish?.(ok(undefined));
+  expect((await observed)?.ok).toBe(true);
+  signal.mockReturnValue(undefined as never);
+  expect(device.pipelineLibrary?.pendingRuntimeCompilation?.()).toBeUndefined();
+});
+
+it('retains a failed runtime compilation Result through recorded selection', async () => {
+  const owner = library();
+  owner.selectCompute = vi.fn(() => ok(undefined));
+  const failure = err(
+    new RhiError({
+      code: 'webgpu-runtime-error',
+      expected: 'device compilation succeeds',
+      hint: 'actual native failure',
+    }),
+  );
+  const pending = Promise.resolve(failure);
+  owner.pendingRuntimeCompilation = vi.fn(() => pending);
+  const device = await recordedDevice(owner);
+  expect(await device.pipelineLibrary?.pendingRuntimeCompilation?.()).toBe(failure);
+});

@@ -24,7 +24,10 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import {
+  type buildEngineShaderManifest,
+  publishShaderManifest,
+} from '@forgeax/engine-vite-plugin-shader';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
@@ -45,40 +48,60 @@ const CENTERS = FURNACE_ROUGHNESS.map((_, i) => [
 ]);
 
 /** Authored and naga-normalized forms of the separated environment response. */
-export const COMPENSATED =
-  /return (EnvironmentScattering\w*)\((single\w*), ([A-Za-z_]\w*), (ems\w*)\);/g;
+const COMPENSATED = /return (EnvironmentScattering\w*)\((single\w*), ([A-Za-z_]\w*), (ems\w*)\);/g;
 /** Preserve directional single scattering; remove only the irradiance term. */
 const singleScatter = (wgsl: string) =>
   wgsl.replace(COMPENSATED, 'return $1($2, vec3<f32>(0.0), $4);');
 
 /** The same engine manifest with every composed program reduced to single scattering. */
-export function singleScatterManifest(
+export function singleScatterPublication(
   manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>,
 ) {
   let patched = 0;
-  const sources = new Map<string, string>();
   const replace = (source: string) => {
-    let stripped = sources.get(source);
-    if (stripped === undefined) {
-      stripped = singleScatter(source);
-      sources.set(source, stripped);
-    }
+    const stripped = singleScatter(source);
+    if (stripped.search(COMPENSATED) >= 0)
+      throw new Error('Furnace control retains irradiance compensation');
     if (stripped !== source) patched++;
     return stripped;
   };
-  const changed = {
-    ...manifest,
-    entries: manifest.entries.map((entry) => ({ ...entry, wgsl: replace(entry.wgsl) })),
-    materialShaders: manifest.materialShaders.map((material) => ({
-      ...material,
-      composedWgsl: replace(material.composedWgsl),
-      variants: material.variants.map((variant) => ({
-        ...variant,
-        composedWgsl: replace(variant.composedWgsl),
-      })),
-    })),
+  // The publisher interns each transformed source immediately. Holding every
+  // reconstructed WGSL body and its patched copy would expand the full fleet.
+  const descriptor = (read: () => string): PropertyDescriptor => ({
+    enumerable: true,
+    get: () => replace(read()),
+  });
+  const withSource = <T extends object>(
+    row: T,
+    source: 'wgsl' | 'composedWgsl',
+    read: () => string,
+  ): T =>
+    Object.defineProperties(
+      {},
+      {
+        ...Object.getOwnPropertyDescriptors(row),
+        [source]: descriptor(read),
+      },
+    ) as T;
+  const materials = manifest.materialShaders.map((material) => {
+    const variants = material.variants.map((variant) =>
+      withSource(variant, 'composedWgsl', () => variant.composedWgsl),
+    );
+    return Object.defineProperties(
+      {},
+      {
+        ...Object.getOwnPropertyDescriptors(material),
+        composedWgsl: descriptor(() => material.composedWgsl),
+        variants: { value: variants, enumerable: true },
+      },
+    ) as typeof material;
+  });
+  const entries = manifest.entries.map((entry) => withSource(entry, 'wgsl', () => entry.wgsl));
+  const publication = publishShaderManifest(entries, materials);
+  return {
+    publication,
+    patched,
   };
-  return { manifest: changed, patched };
 }
 
 /** A panorama of constant linear radiance one: the white furnace. */
@@ -212,7 +235,7 @@ export function furnaceMetrics(image: Float32Array) {
   };
 }
 
-type Lease = import('@forgeax/engine-render').RenderFrameInput['leases'][number];
+type Lease = import('@forgeax/engine-render').RenderReadLease;
 
 async function drawUntilIblActive(
   renderer: Renderer,
@@ -224,9 +247,7 @@ async function drawUntilIblActive(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     if (observeHdr) unwrap(renderer.requestObservation?.(['linear-hdr']));
-    const receipt = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = unwrap(renderer.draw({ source: lease }));
     unwrap(await receipt.completed);
     const binding = renderer.inspect().iblBinding;
     const active =

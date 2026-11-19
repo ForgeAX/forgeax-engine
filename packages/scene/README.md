@@ -1,5 +1,57 @@
 # `@forgeax/engine-scene`
 
+## Saved Water fluid instance
+
+`WaterFluidSimulation` binds a saved `water-simulation-recipe` with
+`system: 'fluid-simulation'` to one live `WaterBodyInstance` entity through the
+normal Scene asset/entity reference remapping. Its entity transform supplies
+the world XZ grid center; the visual grid stays axis-aligned and uses metres.
+`waveFoamCenterM` is a separate explicit world-space center on the same component;
+its capture size and resolution come from the recipe's `waveFoam` configuration.
+Changing that live center does not edit the recipe or reset solver history.
+`enabled` defaults true. Increment `resetRevision` to discard accepted impulses
+and submitted RT history. Only one enabled simulation may own a Body in a World.
+Scene persists these references and controls; CPU simulation state and graph
+handles are not saved fields. See the [Water contract](../water/README.md#local-fluid-simulation).
+
+## Saved Water anchors
+
+`WaterPontoonSet.configurationVersion: 1` persists one exclusive anchor mode.
+Relative mode stores packed XYZ centers in `anchorsM` and no socket references.
+Socket mode stores one descendant `socketEntities` reference and one world
+offset per radius. Scene instantiation remaps `array<entity>` references through
+the normal instance binding; runtime validates the live hierarchy each fixed
+step; the root itself is not a valid socket. Radii are world meters.
+`enabledPontoons` is empty (all enabled) or one 0/1 value per radius.
+Disabled points do not participate in the sprung
+coefficient solve. The [Water README](../water/README.md) owns formula, SI-unit
+and source-quirk details.
+
+## Saved Water displacement source
+
+`WaterContactProbeSet` explicitly owns contact appearance for its native root
+and generation. Render retains its latest pending state per probe; it takes
+precedence over implicit pontoon foam proxies. This does not change pontoon
+forces or the independently evolved wave field.
+
+`WaterShallowCollider` retains its ordinary native collision participation.
+For the opt-in gravity-wave model, `dispersiveMotion` uses the closed
+`WaterDispersiveMotion` enum. `fullDisplacement` is the default: moving and
+entering geometry contributes its complete submerged-volume change.
+`surfaceTransport` uses the current native submerged geometry and horizontal
+velocity to export water from its facing boundary. Compound elements form one
+submerged union. The conservative flux divergence drives depth-resolved waves;
+retreating stern geometry is not a second entry source. Zero horizontal velocity
+injects no wave even during passive heave, pitch or roll. Existing waves continue
+propagating and foam decays after stopping. Primitive and distance-field geometry
+use the current native pose, without freezing an initial immersion envelope.
+Native buoyancy retains its mass, force points and pose authority; it receives
+background and external waves through its receiver-qualified field. Abort and
+partial submission cannot advance wave or source history.
+Use full displacement for falling objects and surface transport for sustained
+floating displacement. This source model remains experimental; it does not
+establish fully coupled fluid-body radiation or UE equivalence.
+
 ## Explicit instance field writes
 
 `worldWriteSceneField(world, root, sceneEntity(sourceKey, address), component,
@@ -32,9 +84,9 @@ await context.fiber.restart();
 `scenePlugin()` is a native Cordis plugin. Its Fiber installs hierarchy
 propagation and removes it when the realm unloads.
 
-`PROPAGATE_TRANSFORMS_FIXED_SYSTEM` is the public FixedUpdate ordering anchor for
+`PropagateTransformsFixed` is the public FixedUpdate ordering anchor for
 local Transform writers, including navigation and distance-based path following. Register a writer with
-`before: [PROPAGATE_TRANSFORMS_FIXED_SYSTEM]` after installing `scenePlugin()`.
+`before: [PropagateTransformsFixed]` after installing `scenePlugin()`.
 
 The direct `propagateTransforms(world)` entry point returns `Result<void, SceneError>`;
 branch on `error.code` and repair a diagnosable stale edge, mirror mismatch, or
@@ -50,24 +102,19 @@ joins that scope. Propagation's persistent hierarchy markers use `world.buffers`
 and are released with their last propagation registration. Their semantic dirty
 state remains Scene-owned; no per-frame mirror or extra ECS entities are added.
 
-## Affine authoring
+## Authored transform
 
-`Transform` stores one authored local transform: `pos`, `quat`, `scale`, and
-`shear` (default `[0, 0, 0]`). The matrix is `T * R * H * S`, where H is the
-upper-triangular shear with XY, XZ, YZ entries. Existing TRS edits retain the
-current shear unless the author explicitly resets it. Propagation and fixed-step
-presentation both use this composition; `GlobalTransform` stays derived.
-
-`mat4.decomposeAffine` converts a finite nonsingular authored matrix into these
-fields without discarding shear. A false result leaves its output arguments
-unchanged; the consumer owns the structured admission error. This does not
-promise that consumers requiring rigid or orthogonal transforms, such as a
-specific collision-shape implementation, can accept arbitrary shear.
+`Transform` stores one authored local transform: `pos`, `quat` and `scale`. The
+matrix is `T * R * S`. A source matrix with shear is not representable here; a
+consumer that needs shear must refuse it explicitly instead of dropping the
+shear terms. `mat4.decomposeAffine` still reports shear for a general affine
+input, and the consumer owns the structured error when that shear cannot be
+represented. `GlobalTransform` stays derived.
 
 ## Simulation and presentation poses
 
 `Transform` and `GlobalTransform.world` remain the exact simulation pose. Scene
-samples marked local translation, rotation, scale and shear between the final two fixed ticks using
+samples marked local translation, rotation and scale between the final two fixed ticks using
 `FixedTime.overstep / FixedTime.delta`; rendering never writes that pose back
 into Physics or animation. Update propagation runs after the fixed block.
 
@@ -99,15 +146,6 @@ views and detached Children snapshots while resolving the entity's current row.
 Continuously moving fixed histories reuse the previous pose settled by
 before-capture. After-capture reads the final source pose without copying the
 same previous pose again; a stopped writer still receives its final settlement.
-
-```sh
-node packages/scene/bench/presentation.mjs
-```
-
-`bench/presentation-allocation.mjs` accepts a built Scene entry and a private
-output path under `node --expose-gc`. It measures the complete capture/propagation
-owner with sparse, dense, idle and catch-up workloads, keeping ordinary thread
-CPU separate from allocation sampling and checking moving/stopped child poses.
 
 > [!NOTE]
 > This opt-in CPU benchmark requires `process.threadCpuUsage` and verifies four
@@ -151,11 +189,11 @@ const level: SceneAsset = {
 
 Authored primitive fields are checked before storage conversion: scalar types, finite floating-point values, integer ranges and fixed-array lengths must match the declared schema. Typed numeric author arrays project their values instead of reinterpreting bytes. Malformed values return `asset-package-invalid` before any scene entity is spawned. Omitted fields still use schema defaults.
 
-`buffer` and `buffer<N>` store raw bytes. Native buffers and views preserve their
-exact byte window, including wider TypedArrays and DataViews; externalization
-projects those bytes to JSON arrays, and binding checks byte values and the fixed
-byte count. All fixed arrays, including entity and shared-handle arrays, enforce
-their schema length. Shape annotations do not change the underlying storage type.
+Byte fields use `array<u8>` or `array<u8, N>`. Producers that need the raw bytes
+of another native view pass an explicit `Uint8Array(buffer, byteOffset, byteLength)`;
+externalization writes an ordinary JSON number array. All authored fixed arrays,
+including byte, entity and shared-handle arrays, enforce their schema length.
+Shape annotations do not change the underlying storage type.
 
 Schema-declared scalar and array entity references bind after all owned entities and mount carriers exist. Forward and cyclic references therefore resolve to the current instance; hierarchy still follows its parent-first ordering. This does not make hierarchy cycles valid.
 

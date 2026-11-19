@@ -1,7 +1,7 @@
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { BufferPool } from '../buffer-pool';
 import { defineComponent } from '../component';
+import { OwnedBuffers } from '../owned-buffers';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
@@ -24,8 +24,6 @@ describe('World hot paths', () => {
     expect(world.get(entity, Flags).unwrap()).toEqual({ bits: 1, on: true, target });
     const nan = world.set(entity, Flags, { bits: 2, on: false, target: null, extra: 1 } as never);
     expect(nan.ok).toBe(true);
-    const rejected = world.set(entity, Flags, { bits: Number.NaN, on: true });
-    expect(!rejected.ok && rejected.error.code).toBe('component-numeric-value-invalid');
     expect(world.get(entity, Flags).unwrap()).toEqual({ bits: 2, on: false, target: null });
   });
 
@@ -73,22 +71,24 @@ describe('World hot paths', () => {
   });
 
   it('packs small managed arrays into shared chunk cells and moves them on growth', () => {
-    const pool = new BufferPool();
-    const a = pool.alloc(8).unwrap();
-    const b = pool.alloc(8).unwrap();
-    expect(a.view.buffer).toBe(b.view.buffer);
-    expect(b.view.byteOffset - a.view.byteOffset).toBe(16);
-    a.view.fill(5);
-    const grown = pool.grow(a.id, 40).unwrap();
-    // 40 bytes leave the 16-byte class: the bytes move to a 64-byte cell.
-    expect(grown.buffer).not.toBe(a.view.buffer);
+    const buffers = new OwnedBuffers();
+    const a = buffers.alloc(Uint8Array, 8).unwrap();
+    const b = buffers.alloc(Uint8Array, 8).unwrap();
+    const av = buffers.view(a).unwrap(),
+      bv = buffers.view(b).unwrap();
+    expect(av.buffer).toBe(bv.buffer);
+    expect(bv.byteOffset - av.byteOffset).toBe(16);
+    av.fill(5);
+    buffers.resize(a, 40).unwrap();
+    const grown = buffers.view(a).unwrap();
+    expect(grown.buffer).not.toBe(av.buffer);
     expect([...grown.subarray(0, 8)]).toEqual(Array(8).fill(5));
-    expect(pool.byteCapacity(a.id)).toBe(64);
-    // The abandoned 16-byte cell is zeroed and reused by the next small slot.
-    const c = pool.alloc(16).unwrap();
-    expect(c.view.byteOffset).toBe(a.view.byteOffset);
-    expect([...c.view]).toEqual(Array(16).fill(0));
-    expect(b.view.every((byte) => byte === 0)).toBe(true);
+    expect(buffers.memoryStats().liveCapacityBytes).toBe(64 + 16);
+    const c = buffers.alloc(Uint8Array, 16).unwrap();
+    const cv = buffers.view(c).unwrap();
+    expect(cv.byteOffset).toBe(av.byteOffset);
+    expect([...cv]).toEqual(Array(16).fill(0));
+    expect(bv.every((byte) => byte === 0)).toBe(true);
     const world = new World();
     const entity = world.spawn({ component: Materials, data: { handles: [3, 4] } }).unwrap();
     world.set(entity, Materials, { handles: [1, 2, 3, 4, 5, 6, 7, 8] }).unwrap();

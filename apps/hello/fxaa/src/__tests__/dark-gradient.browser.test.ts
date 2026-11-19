@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DARK_GRADIENT_FIXTURE,
+  isDarkGradientFxaaGraph,
   DARK_GRADIENT_REPORT_SCHEMA,
   validateDarkGradientFixtureReport,
   type DarkGradientFixtureReport,
@@ -371,4 +372,11 @@ describe('M4 dark-gradient fixture contract', () => {
     ]);
     expect(VALID_REPORT.falsifiers[1]).toMatchObject({ expectedGate: 'brightness', actualFailedGates: ['brightness'] });
   });
+});
+
+it('validates native Grade/Final observations with the same complete pixel report', () => {
+  const report = { ...VALID_REPORT, observation: { ...VALID_REPORT.observation, passNames: ['standard-grade', 'standard-final'] } };
+  expect(validateDarkGradientFixtureReport(report).ok).toBe(true);
+  expect(isDarkGradientFxaaGraph(report.observation)).toBe(true);
+  expect(isDarkGradientFxaaGraph({ ...report.observation, standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' } })).toBe(false);
 });

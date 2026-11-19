@@ -11,8 +11,8 @@ type BetaFrame = {
 
 const alphaFeature = {
   identity: 'synthetic.alpha',
-  extract({ owner }) {
-    return ok<AlphaFrame>({ visibleCount: owner });
+  extract({ world }) {
+    return ok<AlphaFrame>({ visibleCount: world.inspect().entityCount });
   },
   plan(data: AlphaFrame, context: RenderFeaturePlanContext) {
     const count: number = data.visibleCount;

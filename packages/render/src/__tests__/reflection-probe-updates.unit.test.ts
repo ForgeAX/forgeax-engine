@@ -31,7 +31,6 @@ function fixture(intent: 'once' | 'on-change' | 'continuous') {
     deviceScope: scope,
   } as unknown as RenderSystemInternals) as unknown as ProbeOwnerFixture;
   const fact: ReflectionProbeFact = {
-    worldId: 0,
     entityKey: 1,
     center: [0, 0, 0],
     halfExtents: [2, 2, 2],
@@ -53,11 +52,9 @@ function fixture(intent: 'once' | 'on-change' | 'continuous') {
     },
     rawFaceCursor: 6,
     raw: { size: 64, faceViews: new Array(6) },
-    active: {},
-    candidate: {},
-    spare: undefined,
+    pmrem: { kind: 'atlas', active: {}, candidate: {}, spare: undefined, scratch: {} },
   } as unknown as NonNullable<ReturnType<(typeof owner)['resourceFor']>>;
-  owner.resources.set('0:1', resource);
+  owner.resources.set('1', resource);
   return { owner, fact, resource, writes, scope, getCubemapIbl };
 }
 
@@ -67,14 +64,14 @@ describe('ReflectionProbe real resource update ownership', () => {
     'on-change',
   ] as const)('starts another bounded capture for %s', (intent) => {
     const { owner, fact, resource } = fixture(intent);
-    owner.resourceFor('0:1', fact, 0, '2');
+    owner.resourceFor('1', fact, 0, '2');
     expect(resource.rawFaceCursor).toBe(0);
     expect(resource.filter.cursor).toBe(0);
     expect(resource.filter.activeGeneration).toBe(1);
   });
   it('keeps once probes steady across ordinary scene changes', () => {
     const { owner, fact, resource } = fixture('once');
-    owner.resourceFor('0:1', fact, 0, '2');
+    owner.resourceFor('1', fact, 0, '2');
     expect(resource.rawFaceCursor).toBe(6);
     expect(resource.filter.cursor).toBe(30);
   });
@@ -82,7 +79,7 @@ describe('ReflectionProbe real resource update ownership', () => {
     const { owner, fact, resource } = fixture('on-change');
     resource.rawFaceCursor = 3;
     resource.filter = { ...resource.filter, cursor: 0 };
-    owner.resourceFor('0:1', { ...fact, revision: 2 }, 0, '2');
+    owner.resourceFor('1', { ...fact, revision: 2 }, 0, '2');
     expect(resource.rawFaceCursor).toBe(3);
   });
   it('commits capture tickets even when no fallback MRT was requested', async () => {
@@ -167,7 +164,7 @@ describe('ReflectionProbe global diffuse availability', () => {
   function write(input: SkylightSnapshot | undefined, complete = false) {
     const f = fixture('once');
     if (complete) ready(f);
-    f.owner.resourceFor('0:1', f.fact, 0, '1', input);
+    f.owner.resourceFor('1', f.fact, 0, '1', input);
     return { ...f, payload: readPayload(f) };
   }
   it('preserves constant irradiance independently of a local reflection probe', () => {
@@ -206,13 +203,13 @@ describe('ReflectionProbe global diffuse availability', () => {
   });
   it('rewrites the same resource through unavailable-ready-unavailable transitions', () => {
     const f = fixture('once');
-    const first = f.owner.resourceFor('0:1', f.fact, 0, '1', sky);
+    const first = f.owner.resourceFor('1', f.fact, 0, '1', sky);
     expect(readPayload(f).slice(8, 11)).toEqual([0, 0, 0]);
     ready(f);
-    expect(f.owner.resourceFor('0:1', f.fact, 0, '1', sky)).toBe(first);
+    expect(f.owner.resourceFor('1', f.fact, 0, '1', sky)).toBe(first);
     expect(readPayload(f).slice(8, 11)).toEqual([...new Float32Array([0.8, 1.2, 1.6])]);
     f.getCubemapIbl.mockReturnValue(undefined);
-    expect(f.owner.resourceFor('0:1', f.fact, 0, '1', sky)).toBe(first);
+    expect(f.owner.resourceFor('1', f.fact, 0, '1', sky)).toBe(first);
     expect(readPayload(f).slice(8, 11)).toEqual([0, 0, 0]);
     expect(f.writes).toHaveLength(3);
   });

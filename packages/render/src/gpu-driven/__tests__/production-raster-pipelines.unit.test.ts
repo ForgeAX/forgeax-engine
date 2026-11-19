@@ -1,6 +1,6 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { err, ok, type RenderPipeline, RhiError } from '@forgeax/engine-rhi';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import type { MaterialShaderPipelineEntry } from '../../record/render-context';
 import { gpuLanePreparesAsynchronously } from '../batch-execution';
@@ -31,7 +31,7 @@ function fixture() {
   const layoutProjection = deriveVertexLayoutProjection({ position: new Float32Array(9) });
   const shape = {
     raster: { pipeline },
-    artifact: { material: 'test::raster' },
+    artifact: { material: 'test::raster', program: createMaterialShaderProgram('synthetic') },
     prepared: { mesh: { layoutProjection }, batch: { key: { topology: 'triangle-list' } } },
     deformation: 'rigid',
     format: 'rgba16float',

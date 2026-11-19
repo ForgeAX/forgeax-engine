@@ -8,10 +8,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // cube-on-plane scene while preserving a fixed radius. Browser app and smoke import
 // the same src/camera-orbit.ts builder and step.
 //
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -103,7 +104,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { buildCameraOrbitWorld, cameraRadius, OrbitCamera, ORBIT_DISTANCE, stepCameraOrbit } = await import(resolve(here, '..', 'src', 'camera-orbit.ts'));
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

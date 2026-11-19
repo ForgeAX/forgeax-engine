@@ -7,7 +7,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../components';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import * as shadowVisibility from '../scene/shadow-visibility';
 
@@ -52,7 +52,6 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
     .unwrap();
   const lease = createRenderReadLease(world);
   const scene = new PersistentRenderScene();
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
   const lightMatrix = mat4.identity(mat4.create());
   lightMatrix[0] = 0.01;
   lightMatrix[5] = 0.01;
@@ -61,11 +60,10 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
   const draw = () => {
     world.update(1 / 60).unwrap();
     return scene.extractComposition(
-      [world],
-      owner,
+      world,
       assets,
       (request) => {
-        const frame = extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+        const frame = extractSource(world, assets, scene.materialSnapshotCacheStore(), {
           cull: 'none',
           retainHidden: true,
           renderables: request,
@@ -84,7 +82,7 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
           },
         };
       },
-      [lease],
+      lease,
     );
   };
   try {

@@ -24,7 +24,11 @@ import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 it('prepares only consumed direct resources and retires prior GPU shadows after a successful submit', async () => {
   const guid = '019f0000-0000-7000-8000-0000000008c0';
   const source = Materials.standard({ baseColor: [0.8, 0.2, 0.1, 1] });
-  const cooked = await createMaterialPackCooker().cook({ guid, source });
+  // Direct and scene-index use the same storage-capable device here.
+  const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
+    guid,
+    source,
+  });
   const record = validateCookedMaterialRecord(
     (cooked.payload as { cooked: unknown }).cooked,
   ).unwrap();
@@ -87,14 +91,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
       })
       .unwrap();
     world.update(1 / 60).unwrap();
-    expect(
-      renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-        geometryLane: 'direct',
-      }).ok,
-    ).toBe(true);
+    expect(renderer.draw({ source: lease, geometryLane: 'direct' }).ok).toBe(true);
     expect(prepare.mock.results.at(-1)?.value).toMatchObject({ ok: true, value: undefined });
     world
       .spawn(
@@ -108,7 +105,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
       .unwrap();
     world.update(1 / 60).unwrap();
     const draw = (geometryLane: 'automatic' | 'direct') =>
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease }, geometryLane });
+      renderer.draw({ source: lease, geometryLane });
     const preparedFrame = () => {
       const result = prepare.mock.results.at(-1)?.value;
       if (!result?.ok || result.value === undefined)

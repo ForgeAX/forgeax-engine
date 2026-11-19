@@ -6,11 +6,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-tonemapping headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: render one shared HDR sphere field through all seven Camera tone-map
 // modes; the modes must produce materially different readbacks.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -94,7 +94,7 @@ const { TONEMAP_MODES, TONEMAP_NAMES, buildTonemappingWorld } = await import(res
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 
 let renderer;
 try {
@@ -196,7 +196,7 @@ if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserve
 if (errors.length > 0) failures.push(`(c) Renderer.onError fired ${errors.length} times: [${errors.map((err) => err.code).join(', ')}]`);
 if (drawErrors > 0) failures.push(`(c) draw returned ${drawErrors} errors`);
 if (distinctModes < 3) failures.push(`(d) fewer than 3 tone-map modes changed pixels: ${distinctModes}`);
-if (!passNames.includes('output-transform')) failures.push(`(e) missing output-transform pass; actual=${passNames.join(',')}`);
+if (!passNames.includes('standard-grade')) failures.push(`(e) missing standard-grade pass; actual=${passNames.join(',')}`);
 
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);

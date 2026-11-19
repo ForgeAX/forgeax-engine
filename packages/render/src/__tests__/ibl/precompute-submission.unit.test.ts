@@ -63,6 +63,20 @@ afterEach(() => {
 });
 
 describe('IBL precompute completion boundaries', () => {
+  it('filters an existing GPU cube without reprojecting equirect radiance', async () => {
+    const { scope, device, options } = await fixture();
+    const { equirectView: _equirect, ...cube } = options;
+    try {
+      const result = await runIblPrecompute({ ...cube, cubeFaceViews: [] });
+      expect(result.ok).toBe(true);
+      expect(device.framePassNames).not.toContain('ibl-equirect-to-cube');
+      expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(60);
+      expect(device.totalDrawCount).toBe(67);
+    } finally {
+      scope.dispose();
+    }
+  });
+
   it('retires delayed shader preparation before any layout touches the disposed device', async () => {
     const device = unwrap(await new RhiNullAdapter().requestDevice());
     const scope = DeviceScope.create(1, 'ibl-delayed-disposal');

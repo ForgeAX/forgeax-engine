@@ -206,9 +206,9 @@ it.each([
     const initialFrame = required(f.scene.skinRecordingFrame());
     tasks.begin(initialFrame);
     // Each one-joint demand uploads one current and one previous matrix.
-    expect(tasks.demand(required(f.scene.compositionSlot(0, first)))).toBeDefined();
+    expect(tasks.demand(required(f.scene.compositionSlot(first)))).toBeDefined();
     expect(tasks.paletteUploadBytes).toBe(128);
-    expect(tasks.demand(required(f.scene.compositionSlot(0, second)))).toBeDefined();
+    expect(tasks.demand(required(f.scene.compositionSlot(second)))).toBeDefined();
     expect(tasks.paletteUploadBytes).toBe(256);
     await tasks.complete();
     f.world.removeComponent(first, Skin).unwrap();
@@ -222,7 +222,7 @@ it.each([
     expect([...moved.packet.transformEntities]).toEqual([Number(joint)]);
     expect(moved.frame.renderables.find((row) => row.entityKey === second)?.skinBinding).toBe(two);
     const frame = required(f.scene.skinRecordingFrame()),
-      slot = required(f.scene.compositionSlot(0, second));
+      slot = required(f.scene.compositionSlot(second));
     tasks.begin(frame);
     required(tasks.demand(slot));
     expect(tasks.paletteUploadBytes).toBe(128);

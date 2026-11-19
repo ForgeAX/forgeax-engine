@@ -13,7 +13,13 @@ import {
 } from '@forgeax/engine-pack/build';
 import { declaredSourceGuids } from '@forgeax/engine-pack/scanner';
 import type { ScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
-import type { PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
+import {
+  err,
+  ok,
+  type PackIndexEntry,
+  type Result,
+  type RuntimeAssetBinding,
+} from '@forgeax/engine-types';
 import { createPluginPackFailure } from '../errors.js';
 import {
   createProductionSession,
@@ -22,6 +28,7 @@ import {
   type ProductionSession,
 } from '../production/session.js';
 import type { DevSession } from './dev-session.js';
+import type { PreparedMetaImport } from './meta-import.js';
 import type {
   PluginServerCallbacks,
   PluginServerProjectionState,
@@ -32,11 +39,78 @@ import { serialProductionSession } from './serial-production-session.js';
 import { projectSourcePackageFailure } from './transport-routes.js';
 
 type CatalogInventory = Awaited<ReturnType<typeof buildCatalogResult>>;
+const MAX_PENDING_META_PREPARATIONS = 4;
+const MAX_ACTIVE_META_PREPARATIONS = 3;
 
 interface ProductionGenerationState {
   inventory: CatalogInventory | undefined;
   candidate: PluginServerProjectionState | undefined;
   authoredPublished: boolean;
+  metaPreparation: ReturnType<typeof prepareMetaImports> | undefined;
+}
+
+/** Overlap detached product preparation while admitting Catalog rows in declaration order. */
+function prepareMetaImports(
+  declarations: readonly ProductionDeclaration[],
+  inventory: CatalogInventory,
+  createTask: NonNullable<PluginServerCallbacks['metaImportPreparation']>,
+  signal: AbortSignal,
+) {
+  const queue = declarations
+    .flatMap(({ format, sourcePath }) => {
+      const meta = sourcePath === undefined ? undefined : inventory.declarations.get(sourcePath);
+      if (format !== 'meta.json' || sourcePath === undefined || meta === undefined) return [];
+      const prepare = createTask(sourcePath, meta, signal);
+      return prepare === undefined ? [] : [{ sourcePath, prepare }];
+    })
+    .values();
+  const active = new Map<string, Promise<Result<PreparedMetaImport, unknown>>>();
+  let running = 0;
+  let draining = false;
+  const fill = (): void => {
+    // Leave cooker capacity for authored Packs and bound retained products.
+    while (
+      !draining &&
+      !signal.aborted &&
+      running < MAX_ACTIVE_META_PREPARATIONS &&
+      active.size < MAX_PENDING_META_PREPARATIONS
+    ) {
+      const next = queue.next();
+      if (next.done) return;
+      const { sourcePath, prepare } = next.value;
+      running++;
+      active.set(
+        sourcePath,
+        Promise.resolve()
+          .then(
+            async (): Promise<Result<PreparedMetaImport, unknown>> =>
+              signal.aborted ? err(signal.reason) : ok(await prepare()),
+          )
+          .catch((error: unknown) => err(error))
+          .finally(() => {
+            running--;
+            fill();
+          }),
+      );
+    }
+  };
+  fill();
+  return {
+    async take(path: string): Promise<PreparedMetaImport | undefined> {
+      const preparation = active.get(path);
+      if (preparation === undefined) return undefined;
+      const result = await preparation;
+      active.delete(path);
+      fill();
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    async drain(): Promise<void> {
+      draining = true;
+      await Promise.all(active.values());
+      active.clear();
+    },
+  };
 }
 
 function projectAcceptedEntries(
@@ -159,6 +233,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
       createState: ({ acceptedState }) => ({
         inventory: acceptedState?.inventory,
         authoredPublished: false,
+        metaPreparation: undefined,
         candidate:
           acceptedState?.candidate === undefined
             ? undefined
@@ -167,7 +242,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                 acceptedState.candidate,
               ),
       }),
-      inventory: async ({ sourceKeys, state: generationState }) => {
+      inventory: async ({ sourceKeys, signal, state: generationState }) => {
         if (!readiness.ok) throw readiness.error;
         const inventoryStartedAt = performance.now();
         // The preparation snapshot is a one-shot candidate. Its scanner
@@ -215,7 +290,15 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
           { ...inventory, entries: projectAcceptedEntries(inventory.entries, previousCatalog) },
           generationState.candidate,
         );
-        return declarationsForInventory(inventory);
+        const declarations = declarationsForInventory(inventory);
+        if (readiness.value === 'before-consume' && callbacks.metaImportPreparation !== undefined)
+          generationState.metaPreparation = prepareMetaImports(
+            declarations,
+            inventory,
+            callbacks.metaImportPreparation,
+            signal,
+          );
+        return declarations;
       },
       produce: async ({ generation, declaration, intent, signal, state: generationState }) => {
         const inventory = generationState.inventory;
@@ -262,6 +345,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                 signal,
                 candidate,
                 runtimeBinding(),
+                await generationState.metaPreparation?.take(metaPath),
               );
             } finally {
               startupTiming('meta-import', producerStartedAt, {
@@ -340,6 +424,8 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
       },
       publish: async ({ generation, signal, state: generationState }) => {
         if (signal.aborted) return;
+        await generationState.metaPreparation?.drain();
+        generationState.metaPreparation = undefined;
         const publishStartedAt = performance.now();
         const inventory = generationState.inventory;
         const candidate = generationState.candidate;
@@ -360,6 +446,8 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
         Object.assign(state, candidate);
       },
       discard: async ({ state: generationState }) => {
+        await generationState.metaPreparation?.drain();
+        generationState.metaPreparation = undefined;
         const candidate = generationState.candidate;
         if (candidate !== undefined) {
           callbacks.discardPublications(candidate.publicationCandidates);

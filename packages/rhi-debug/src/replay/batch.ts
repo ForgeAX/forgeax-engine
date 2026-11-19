@@ -18,7 +18,7 @@ import {
 import {
   type ReadbackSubresource,
   type ReplayReadbackResult,
-  readReplayResource,
+  readReplayResources,
 } from './readback';
 
 export interface BatchReadRequest {
@@ -173,16 +173,17 @@ async function readSlots(
   results: Result<ReplayReadbackResult, RhiDebugError>[],
   signal: AbortSignal | undefined,
 ): Promise<Result<void, RhiDebugError>> {
-  for (const slot of slots) {
-    if (signal?.aborted) return aborted();
-    const request = requests[slot] as BatchReadRequest;
-    const read = await readReplayResource(
-      host.context.device,
-      host.context.table,
-      request.resourceId,
-      request.subresource,
-      host.context.createShaderModule,
-    );
+  if (signal?.aborted) return aborted();
+  const reads = await readReplayResources(
+    host.context.device,
+    host.context.table,
+    slots.map((slot) => requests[slot] as BatchReadRequest),
+    host.context.createShaderModule,
+  );
+  if (signal?.aborted) return aborted();
+  for (const [index, slot] of slots.entries()) {
+    const read = reads[index];
+    if (read === undefined) throw new Error('Replay readback batch omitted a slot');
     results[slot] =
       !read.ok || work === undefined
         ? read

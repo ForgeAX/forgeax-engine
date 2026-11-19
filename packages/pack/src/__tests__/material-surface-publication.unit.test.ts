@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Materials } from '@forgeax/engine-render';
 import { describe, expect, it } from 'vitest';
-import { validateCookedMaterialRecord } from '../material-cook.js';
+import { checkMaterialProgramSetDigest, validateCookedMaterialRecord } from '../material-cook.js';
 import { NativeCookerRegistry } from '../native-cooker-registry.js';
 
 const compilerModule = pathToFileURL(
@@ -55,6 +55,21 @@ describe('Surface Pack publication', () => {
       expect(
         cooked.resolved.passes?.find((pass) => pass.name === 'shadow-caster')?.program,
       ).toMatchObject({ module: 'forgeax::default-shadow-caster', fragmentEntry: 'fs_shadow' });
+      expect(checkMaterialProgramSetDigest(cooked).ok).toBe(true);
+      const stale = {
+        ...cooked,
+        resolved: {
+          ...cooked.resolved,
+          passes: cooked.resolved.passes.map((pass) => ({
+            ...pass,
+            program: { ...pass.program, fragmentEntry: 'changed' },
+          })),
+        },
+      };
+      expect(checkMaterialProgramSetDigest(stale)).toMatchObject({
+        ok: false,
+        error: { code: 'material-cook-record-invalid' },
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

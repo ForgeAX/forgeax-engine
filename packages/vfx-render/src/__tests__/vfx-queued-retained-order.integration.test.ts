@@ -8,7 +8,6 @@ import {
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   VFX_PARTICLE_CORE_LAYOUT,
   type VfxGpuEffectAsset,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
@@ -51,7 +50,7 @@ const rawEffect = {
   programFingerprint: 'sha256:controlled-layout',
   emitters: [{ id: 'emitter', capacity: 4 }],
   program: {
-    format: 'forgeax-vfx-program-4',
+    format: 'forgeax-vfx-program-5',
     fingerprint: 'sha256:controlled-layout',
     emitters: [
       {
@@ -153,7 +152,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       .unwrap(),
   );
   const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const gpu = createRenderFeatureGpuWorkOwner({
@@ -173,8 +172,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       {
         identity: 'main',
         render: true,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber,
         generation: 0,
         caps: device.caps,
@@ -306,8 +304,7 @@ it('keeps managed module snapshots exact without reserializing shared programs',
       {
         identity: 'main',
         render: true,
-        worlds: [world],
-        owner: 0,
+        world: world,
         frameNumber,
         generation: 0,
         caps: device.caps,

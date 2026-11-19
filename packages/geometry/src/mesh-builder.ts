@@ -22,7 +22,7 @@ import {
 
 type AttributeKey = VertexLayoutProjectionAttribute['key'];
 type AttributeSource = NonNullable<VertexAttributeMap[AttributeKey]>;
-type AttributeView = Float32Array | Uint16Array;
+type AttributeView = Float32Array | Uint16Array | Uint32Array;
 
 const TOPOLOGIES: readonly PrimitiveTopology[] = [
   'point-list',
@@ -65,7 +65,33 @@ function failure(field: string, value: unknown, reason: string): Result<never, A
   );
 }
 
+function copyBuilderAttributes(source: VertexAttributeMap): Result<VertexAttributeMap, AssetError> {
+  const copiedAttributes: VertexAttributeMap = {};
+  for (const key of attributeKeys(source)) {
+    const value = source[key] as AttributeView | undefined;
+    if (value === undefined) continue;
+    const cloned = value.slice();
+    if (key === 'skinIndex') {
+      if (!(cloned instanceof Uint16Array)) {
+        return failure(key, typeof value, 'skinIndex storage must be Uint16Array');
+      }
+      copiedAttributes.skinIndex = cloned;
+    } else if (key === 'tangentFrame') {
+      if (!(cloned instanceof Uint32Array))
+        return failure(key, typeof value, 'tangentFrame storage must be Uint32Array');
+      copiedAttributes.tangentFrame = cloned;
+    } else {
+      if (!(cloned instanceof Float32Array)) {
+        return failure(key, typeof value, `${key} storage must be Float32Array`);
+      }
+      copiedAttributes[key] = cloned;
+    }
+  }
+  return ok(copiedAttributes);
+}
+
 function sourceView(key: AttributeKey, value: AttributeSource): AttributeView | undefined {
+  if (key === 'tangentFrame') return value instanceof Uint32Array ? value : undefined;
   if (key === 'skinIndex') {
     if (value instanceof Uint16Array) return value;
     if (value instanceof ArrayBuffer && value.byteLength % Uint16Array.BYTES_PER_ELEMENT === 0) {
@@ -85,6 +111,12 @@ function attributeKeys(attributes: VertexAttributeMap): AttributeKey[] {
 }
 
 function appendArray(target: AttributeView, source: AttributeView): AttributeView {
+  if (target instanceof Uint32Array && source instanceof Uint32Array) {
+    const output = new Uint32Array(target.length + source.length);
+    output.set(target);
+    output.set(source, target.length);
+    return output;
+  }
   if (target instanceof Uint16Array && source instanceof Uint16Array) {
     const output = new Uint16Array(target.length + source.length);
     output.set(target, 0);
@@ -428,6 +460,7 @@ function completeSurfaceStream(
   submeshes: readonly Submesh[],
   indices: Uint16Array | Uint32Array | undefined,
 ): VertexAttributeMap {
+  if (source.tangentFrame !== undefined) return source;
   if (source.normal !== undefined && source.uv !== undefined && source.tangent !== undefined)
     return source;
   const vertexCount = positions.length / 3;
@@ -558,23 +591,9 @@ export function createMeshBuilder(options: MeshBuilderOptions = {}): MeshBuilder
     const packed = packInterleavedVertexAttributes(source, vertexCount);
     if (!packed.ok) return packed;
     const aabb = box3.fromPositions(box3.create(), positionView);
-    const copiedAttributes: VertexAttributeMap = {};
-    for (const key of attributeKeys(source)) {
-      const value = source[key] as AttributeView | undefined;
-      if (value === undefined) continue;
-      const cloned = value.slice();
-      if (key === 'skinIndex') {
-        if (!(cloned instanceof Uint16Array)) {
-          return failure(key, typeof value, 'skinIndex storage must be Uint16Array');
-        }
-        copiedAttributes.skinIndex = cloned;
-      } else {
-        if (!(cloned instanceof Float32Array)) {
-          return failure(key, typeof value, `${key} storage must be Float32Array`);
-        }
-        copiedAttributes[key] = cloned;
-      }
-    }
+    const copied = copyBuilderAttributes(source);
+    if (!copied.ok) return copied;
+    const copiedAttributes = copied.value;
     const mesh: MeshAsset = {
       kind: 'mesh',
       vertices: packed.value.vertices,

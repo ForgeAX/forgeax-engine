@@ -164,7 +164,7 @@ callers without requiring a GPU.
 
 `rhi summary --passes` returns one row per pass instead of the per-work list:
 `summary.passes[]` (pass index, label, color and depth targets with texture label,
-size and format, draw/dispatch/drawIndirect counts, pipeline labels with counts) and a
+attachment-view mip size and format, draw/dispatch/drawIndirect counts, pipeline labels with counts) and a
 one-line-per-pass `summary.passLines`. `--label <regex>` adds `summary.resources[]`,
 the textures, buffers and views whose own or viewed-texture label matches. The summary
 and `rhi inspect` with the default `pipeline`/`bindings` fields read the tape only;
@@ -397,7 +397,9 @@ Queue and map promise rejection release staging as well as ordinary RHI failures
 
 `session.readAtWorks(requests)` answers many `{ resourceId, workIndex?, subresource? }`
 reads with one result per request, in request order; a failed read never fails
-the batch. Requests at the same work share one replay. Works that can be split
+the batch. Requests at the same work share one replay; compatible color and
+stencil texture copies also share one bounded staging submission. Depth-conversion
+and buffer reads retain their source-owned paths. Works that can be split
 share a single forward replay: at each requested work the open pass ends with its
 attachments stored, queue uploads recorded before that submission are applied,
 the reads run, and a fresh encoder resumes the pass with `loadOp: 'load'` and

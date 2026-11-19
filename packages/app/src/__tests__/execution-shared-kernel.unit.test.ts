@@ -1,51 +1,81 @@
-import { defineComponent, World } from '@forgeax/engine-ecs';
-import { defineSharedKernel, type KernelDispatchSpan } from '@forgeax/engine-ecs/shared';
+import { defineComponent, type QuerySpan, World } from '@forgeax/engine-ecs';
+import {
+  bindSharedSpan,
+  defineSharedKernel,
+  type KernelDispatchSpan,
+} from '@forgeax/engine-ecs/shared';
+import {
+  createTaskPool,
+  serveTaskWorker,
+  type TaskPool,
+  type TaskPoolToWorkerMessage,
+  type TaskWorkerFactory,
+} from '@forgeax/engine-platform';
 import { describe, expect, it, vi } from 'vitest';
-import { createKernelPool } from '../execution/kernel-pool';
+import {
+  createSharedKernelSliceExecutor,
+  createSharedKernelSlices,
+  type KernelLoader,
+  kernelSliceRanges,
+  spanFromBinding,
+} from '../execution/shared-kernel-slices';
 
 const Position = defineComponent('ExecutionKernelPosition', { x: 'f32' });
 
-function runPositionKernel(spans: readonly import('@forgeax/engine-ecs').QuerySpan[]): void {
+function runPositionKernel(spans: readonly QuerySpan[]): void {
   for (const span of spans) {
     const position = span.mut(Position);
     for (let index = 0; index < span.length; index += 1) {
-      position.x[index] = (position.x[index] ?? 0) + 2;
+      position.x[index] = (position.x[index] ?? 0) * 3 + 2;
     }
   }
 }
 
-const kernel = defineSharedKernel('https://example.test/position-kernel.mjs', {
+const MODULE_URL = 'https://example.test/position-kernel.mjs';
+const kernel = defineSharedKernel(MODULE_URL, {
   name: 'execution-position-kernel',
   queries: [{ write: [Position] }],
   minimumRows: 1,
   run: runPositionKernel,
 });
 
-interface TestMessage {
-  readonly kind: 'kernel-init' | 'kernel-preload' | 'kernel-job';
-  readonly ready?: Int32Array;
-  readonly control?: Int32Array;
-  readonly status?: Int32Array;
-  readonly jobIndex?: number;
-}
+const loadPosition: KernelLoader = async () => ({
+  queries: kernel.queries,
+  run: runPositionKernel,
+});
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-interface TestJob {
-  readonly kind: 'kernel-job';
-  readonly binding: {
-    readonly length: number;
-    readonly write: Readonly<Record<string, Readonly<Record<string, Float32Array>>>>;
-  };
-  readonly control: Int32Array;
-  readonly status: Int32Array;
-  readonly jobIndex: number;
-}
+it('binds same-label columns through Worker-local declarations and rejects foreign components', () => {
+  const First = defineComponent('SameSliceComponent', { x: 'f32' });
+  const Second = defineComponent('SameSliceComponent', { x: 'f32' });
+  const LocalFirst = defineComponent('SameSliceComponent', { x: 'f32' });
+  const LocalSecond = defineComponent('SameSliceComponent', { x: 'f32' });
+  const world = new World({ storage: 'shared' });
+  world
+    .spawn({ component: First, data: { x: 3 } }, { component: Second, data: { x: 30 } })
+    .unwrap();
+  const descriptor = { write: [First, Second] };
+  const host = defineSharedKernel(MODULE_URL, {
+    name: 'same-label',
+    queries: [descriptor],
+    run() {},
+  });
+  const source = [...world.query(descriptor).unwrap().spans().unwrap()][0];
+  if (source === undefined) throw new Error('Missing source span');
+  const local = { queries: [{ write: [LocalFirst, LocalSecond] }], run() {} };
+  const span = spanFromBinding(local, bindSharedSpan(host, source, 0));
+  expect(Array.from(span.mut(LocalFirst).x)).toEqual([3]);
+  expect(Array.from(span.mut(LocalSecond).x)).toEqual([30]);
+  expect(() => span.mut(First)).toThrow('not declared');
+  expect(() => span.get(LocalFirst)).toThrow('not declared');
+});
 
-function sharedDispatchSpans(): {
+function sharedDispatchSpans(rows = 8): {
   readonly world: World;
   readonly spans: readonly KernelDispatchSpan[];
 } {
   const world = new World({ storage: 'shared' });
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < rows; index += 1) {
     world.spawn({ component: Position, data: { x: index } }).unwrap();
   }
   const query = world.query({ write: [Position] }).unwrap();
@@ -55,120 +85,112 @@ function sharedDispatchSpans(): {
   };
 }
 
-function workerFactory(run: (job: TestJob) => void, preloadStatus = 1): () => Worker {
-  return () =>
-    ({
-      postMessage(message: TestMessage): void {
-        if (message.kind === 'kernel-init' && message.ready !== undefined) {
-          Atomics.add(message.ready, 0, 1);
-          Atomics.notify(message.ready, 0);
-          return;
-        }
-        if (
-          message.kind === 'kernel-preload' &&
-          message.control !== undefined &&
-          message.status !== undefined &&
-          message.jobIndex !== undefined
-        ) {
-          Atomics.store(message.status, message.jobIndex, preloadStatus);
-          Atomics.add(message.control, 0, 1);
-          Atomics.notify(message.control, 0);
-          return;
-        }
-        run(message as TestJob);
-        Atomics.add(message.control as Int32Array, 0, 1);
-        Atomics.notify(message.control as Int32Array, 0);
+const positions = (world: World): number[] =>
+  Array.from(world.query({ read: [Position] }).unwrap(), (row) => row.get(Position).x);
+
+/**
+ * Pool Workers served by the real Worker runtime in this realm. Messages are
+ * delivered synchronously, so a Worker joins a slice job inside the caller's
+ * post — before the caller claims anything.
+ */
+function servedPool(
+  workers: number,
+  load: KernelLoader = loadPosition,
+): { pool: TaskPool; posted: TaskPoolToWorkerMessage[] } {
+  const posted: TaskPoolToWorkerMessage[] = [];
+  const factory: TaskWorkerFactory = (listener) => {
+    const port = {
+      onmessage: null as ((event: MessageEvent<TaskPoolToWorkerMessage>) => void) | null,
+      postMessage: (data: unknown) => queueMicrotask(() => listener.message(data as never)),
+    };
+    serveTaskWorker(port, {}, { slices: createSharedKernelSlices(load) });
+    return {
+      postMessage: (message) => {
+        posted.push(message);
+        port.onmessage?.({ data: message } as MessageEvent<TaskPoolToWorkerMessage>);
       },
-      terminate(): void {},
-    }) as unknown as Worker;
+      terminate: () => {},
+    };
+  };
+  return { pool: createTaskPool({ kinds: {}, workerFactory: factory, workers }), posted };
 }
 
-describe('shared kernel pool', () => {
-  it('honors the startup budget without extending the running kernel deadline', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const terminate = vi.fn();
-    const options = {
-      lanes: 1,
-      timeoutMs: 5,
-      startupTimeoutMs: 50,
-      workerFactory: () => {
-        const lane = workerFactory(() => {})();
-        return {
-          postMessage(message: TestMessage) {
-            if (message.kind !== 'kernel-job')
-              setTimeout(() => lane.postMessage(message), message.kind === 'kernel-init' ? 10 : 15);
-          },
-          terminate,
-        } as unknown as Worker;
-      },
-    };
-    const pool = createKernelPool(options);
-    const ready = pool.ready().then(
-      () => null,
-      (cause: unknown) => cause,
-    );
-    try {
-      pool.warmup?.(kernel);
-      await vi.advanceTimersByTimeAsync(20);
-      expect(await ready).toBeNull();
-      const { spans } = sharedDispatchSpans();
-      const result = pool.execute(kernel, spans);
-      expect(result).toMatchObject({ dispatched: 1, completed: 0, partialWrite: true });
-      if (!('cause' in result)) throw new Error('stalled dispatch was accepted');
-      expect(String(result.cause)).toContain('deadline exceeded after 5ms');
-      expect(terminate).toHaveBeenCalledTimes(1);
-    } finally {
-      pool.dispose();
-      vi.useRealTimers();
-    }
+async function warmed(workers: number, load?: KernelLoader) {
+  const { pool, posted } = servedPool(workers, load);
+  const executor = createSharedKernelSliceExecutor({ pool: () => pool, load: loadPosition });
+  executor.warmup?.(kernel);
+  await executor.ready();
+  for (let tick = 0; tick < 8; tick += 1) await flush();
+  return { pool, posted, executor };
+}
+
+describe('shared kernel slices', () => {
+  it('sizes batches for six per participant without crossing spans', () => {
+    const ranges = kernelSliceRanges([{ length: 100 } as never, { length: 7 } as never], 3);
+    // ceil(107 / 18) = 6 rows per batch.
+    expect(Array.from(ranges.subarray(0, 6))).toEqual([0, 0, 6, 0, 6, 12]);
+    expect(Array.from(ranges.subarray(ranges.length - 6))).toEqual([1, 0, 6, 1, 6, 7]);
+    let covered = 0;
+    for (let at = 0; at < ranges.length; at += 3)
+      covered += (ranges[at + 2] ?? 0) - (ranges[at + 1] ?? 0);
+    expect(covered).toBe(107);
   });
 
-  it('shares one startup deadline across initialization and module preflight', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const terminate = vi.fn();
-    const options = {
-      lanes: 1,
-      timeoutMs: 5,
-      startupTimeoutMs: 50,
-      workerFactory: () => {
-        const lane = workerFactory(() => {})();
-        return {
-          postMessage(message: TestMessage) {
-            if (message.kind === 'kernel-init') setTimeout(() => lane.postMessage(message), 40);
-          },
-          terminate,
-        } as unknown as Worker;
-      },
-    };
-    const pool = createKernelPool(options);
-    const ready = pool.ready().then(
-      () => null,
-      (cause: unknown) => cause,
-    );
-    try {
-      pool.warmup?.(kernel);
-      await vi.advanceTimersByTimeAsync(50);
-      expect(String(await ready)).toContain('SharedKernel module preflight');
-      expect(String(await ready)).toContain('within 50ms');
-      expect(terminate).toHaveBeenCalledTimes(1);
-    } finally {
-      pool.dispose();
-      vi.useRealTimers();
-    }
+  it('slices rows across the caller and every pool Worker with output identical to one run', async () => {
+    const reference = sharedDispatchSpans(1000);
+    runPositionKernel(reference.spans.map(({ span }) => span));
+    const expected = positions(reference.world);
+
+    const { pool, posted, executor } = await warmed(2);
+    expect(pool.sliceHelpers).toBe(2);
+    const { world, spans } = sharedDispatchSpans(1000);
+    const result = executor.execute(kernel, spans);
+    expect(result).toMatchObject({ mode: 'shared', dispatched: 18, completed: 18 });
+    expect(executor.takeLastDispatch()).toEqual(result);
+    expect(executor.takeLastDispatch()).toBeNull();
+    expect(positions(world)).toEqual(expected);
+    // Each Worker was prepared once, then received this one job.
+    expect(posted.filter((message) => message.t === 'prepare')).toHaveLength(2);
+    expect(posted.filter((message) => message.t === 'slices')).toHaveLength(2);
+    executor.dispose();
+    pool.dispose();
   });
 
-  it('joins a lane that completes between the counter observation and the wait', () => {
-    const { spans } = sharedDispatchSpans();
-    let control: Int32Array | undefined;
-    const pool = createKernelPool({
-      lanes: 1,
-      timeoutMs: 10,
-      workerFactory: workerFactory((job) => {
-        control = job.control;
-        Atomics.store(job.status, job.jobIndex, 1);
-      }),
+  it('runs every slice in this realm when no Worker is ready for the module', async () => {
+    const { pool, executor } = await warmed(1, () => new Promise(() => {}));
+    const { world, spans } = sharedDispatchSpans();
+    expect(executor.execute(kernel, spans)).toMatchObject({
+      mode: 'shared',
+      dispatched: 8,
+      completed: 8,
     });
-    pool.warmup?.(kernel);
+    expect(positions(world)).toEqual([2, 5, 8, 11, 14, 17, 20, 23]);
+    pool.dispose();
+  });
+
+  it('forces inline dispatch before preflight or before any Worker started', async () => {
+    const { pool } = servedPool(1);
+    const executor = createSharedKernelSliceExecutor({ pool: () => pool, load: loadPosition });
+    const { spans } = sharedDispatchSpans();
+    const early = executor.execute(kernel, spans);
+    expect(String((early as { cause: unknown }).cause)).toContain('not preflighted');
+    expect(early).toMatchObject({ partialWrite: false });
+    await executor.ready();
+    const cold = createSharedKernelSliceExecutor({
+      pool: () => createTaskPool({ kinds: {} }),
+      load: loadPosition,
+    });
+    cold.warmup?.(kernel);
+    await cold.ready();
+    expect(String((cold.execute(kernel, spans) as { cause: unknown }).cause)).toContain(
+      'workers were not warmed',
+    );
+    pool.dispose();
+  });
+
+  it('joins a slice that finishes between the counter observation and the wait', async () => {
+    const { pool, posted, executor } = await warmed(1);
+    const { spans } = sharedDispatchSpans();
     const load = Atomics.load;
     let raced = false;
     const observation = vi.spyOn(Atomics, 'load').mockImplementation(((
@@ -176,21 +198,19 @@ describe('shared kernel pool', () => {
       index: number,
     ) => {
       const value = load(array, index);
-      if (array === control && !raced) {
+      const job = posted.findLast((message) => message.t === 'slices') as
+        | { control: Int32Array }
+        | undefined;
+      if (array === job?.control && index === 1 && !raced) {
         raced = true;
-        // Model a read of zero immediately before the final lane publishes one.
-        // Keep the real shared counter and Atomics.wait: waiting on one has no
-        // future notifier, whereas waiting on the observed zero is not-equal.
+        // A read one short of the total immediately before the last finisher
+        // publishes: waiting on the real counter would have no notifier left.
         return value - 1;
       }
       return value;
     }) as typeof Atomics.load);
     try {
-      expect(pool.execute(kernel, spans)).toMatchObject({
-        mode: 'shared',
-        dispatched: 1,
-        completed: 1,
-      });
+      expect(executor.execute(kernel, spans)).toMatchObject({ mode: 'shared', completed: 8 });
       expect(raced).toBe(true);
     } finally {
       observation.mockRestore();
@@ -198,97 +218,91 @@ describe('shared kernel pool', () => {
     }
   });
 
-  it('shards SAB spans without copying and joins all lanes', () => {
-    const { world, spans } = sharedDispatchSpans();
-    const pool = createKernelPool({
-      lanes: 2,
-      workerFactory: workerFactory((job) => {
-        const x = job.binding.write.ExecutionKernelPosition?.x;
-        if (x === undefined) throw new Error('position binding missing');
-        for (let index = 0; index < job.binding.length; index += 1) {
-          x[index] = (x[index] ?? 0) + 2;
-        }
-        Atomics.store(job.status, job.jobIndex, 1);
-      }),
+  it('reports a partial write when one slice fails after others completed', async () => {
+    let calls = 0;
+    const failing: KernelLoader = async () => ({
+      queries: kernel.queries,
+      run: (spans) => {
+        if (++calls === 2) throw new Error('row failure');
+        runPositionKernel(spans);
+      },
     });
-    pool.warmup?.(kernel);
-
-    const result = pool.execute(kernel, spans);
-    expect(result).toMatchObject({ mode: 'shared', dispatched: 2, completed: 2 });
-    expect(pool.takeLastDispatch()).toEqual(result);
-    expect(pool.takeLastDispatch()).toBeNull();
-    expect(
-      Array.from(world.query({ read: [Position] }).unwrap(), (row) => row.get(Position).x),
-    ).toEqual([2, 3, 4, 5, 6, 7, 8, 9]);
-    pool.dispose();
-  });
-
-  it('reports a partial write when one lane fails after another completes', () => {
+    const { pool } = servedPool(1, failing);
+    const executor = createSharedKernelSliceExecutor({ pool: () => pool, load: failing });
+    executor.warmup?.(kernel);
+    await executor.ready();
+    for (let tick = 0; tick < 8; tick += 1) await flush();
     const { spans } = sharedDispatchSpans();
-    const pool = createKernelPool({
-      lanes: 2,
-      workerFactory: workerFactory((job) => {
-        Atomics.store(job.status, job.jobIndex, job.jobIndex === 0 ? 1 : -1);
-      }),
-    });
-    pool.warmup?.(kernel);
-
-    expect(pool.execute(kernel, spans)).toMatchObject({
-      dispatched: 2,
-      completed: 1,
-      partialWrite: true,
-    });
+    const result = executor.execute(kernel, spans);
+    expect(result).toMatchObject({ dispatched: 8, completed: 7, partialWrite: true });
+    expect(executor.takeLastDispatch()).toMatchObject({ mode: 'forced-inline' });
     pool.dispose();
   });
 
-  it('fails a non-responsive lane at the bounded Atomics deadline', () => {
+  it('fails at the deadline and replaces only the Worker still holding a slice', async () => {
+    const terminate = vi.fn();
+    const factory: TaskWorkerFactory = (listener) => {
+      queueMicrotask(() => listener.message({ t: 'ready' }));
+      return {
+        postMessage: (message) => {
+          if (message.t !== 'slices') return;
+          // Claim one slice and never finish it.
+          const index = Atomics.add(message.control, 0, 1);
+          Atomics.store(message.control, 2 + index, message.owner);
+        },
+        terminate,
+      };
+    };
+    const pool = createTaskPool({ kinds: {}, workerFactory: factory, workers: 1 });
+    const executor = createSharedKernelSliceExecutor({
+      pool: () => pool,
+      load: loadPosition,
+      timeoutMs: 5,
+    });
+    executor.warmup?.(kernel);
+    await executor.ready();
+    for (let tick = 0; tick < 8; tick += 1) await flush();
     const { spans } = sharedDispatchSpans();
-    const pool = createKernelPool({
-      lanes: 1,
-      timeoutMs: 1,
-      workerFactory: () =>
-        ({
-          postMessage(message: TestMessage): void {
-            if (message.kind === 'kernel-init' && message.ready !== undefined) {
-              Atomics.add(message.ready, 0, 1);
-              Atomics.notify(message.ready, 0);
-            }
-            if (
-              message.kind === 'kernel-preload' &&
-              message.control !== undefined &&
-              message.status !== undefined &&
-              message.jobIndex !== undefined
-            ) {
-              Atomics.store(message.status, message.jobIndex, 1);
-              Atomics.add(message.control, 0, 1);
-              Atomics.notify(message.control, 0);
-            }
-          },
-          terminate(): void {},
-        }) as unknown as Worker,
-    });
-    pool.warmup?.(kernel);
-
-    expect(pool.execute(kernel, spans)).toMatchObject({
-      dispatched: 1,
-      completed: 0,
-      partialWrite: true,
-    });
+    const result = executor.execute(kernel, spans);
+    expect(result).toMatchObject({ dispatched: 8, completed: 7, partialWrite: true });
+    expect(String((result as { cause: unknown }).cause)).toContain('deadline exceeded after 5ms');
+    expect(terminate).toHaveBeenCalledTimes(1);
     pool.dispose();
   });
 
-  it('rejects an invalid module during readiness before any kernel dispatch', async () => {
-    let dispatched = false;
-    const pool = createKernelPool({
-      lanes: 1,
-      workerFactory: workerFactory(() => {
-        dispatched = true;
-      }, -1),
-    });
-    pool.warmup?.(kernel);
-
-    await expect(pool.ready()).rejects.toThrow('module preflight failed');
-    expect(dispatched).toBe(false);
+  it('rejects an invalid module during readiness before any dispatch', async () => {
+    const { pool } = servedPool(1);
+    const invalid: KernelLoader = async () => {
+      throw new TypeError('SharedKernel module default export has no run function.');
+    };
+    const executor = createSharedKernelSliceExecutor({ pool: () => pool, load: invalid });
+    executor.warmup?.(kernel);
+    await expect(executor.ready()).rejects.toThrow('module preflight failed');
+    const { spans } = sharedDispatchSpans();
+    expect(String((executor.execute(kernel, spans) as { cause: unknown }).cause)).toContain(
+      'incomplete or failed',
+    );
     pool.dispose();
+  });
+
+  it('bounds module preflight by the startup budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const pool = createTaskPool({ kinds: {} });
+      const executor = createSharedKernelSliceExecutor({
+        pool: () => pool,
+        load: () => new Promise(() => {}),
+        startupTimeoutMs: 50,
+      });
+      executor.warmup?.(kernel);
+      const ready = executor.ready().then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      expect(String(await ready)).toContain('did not complete within 50ms');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -7,6 +7,11 @@ import { seededDepthRenderState, transformRenderState } from '../material-render
 import type { MaterialResource } from '../material-resource';
 import { rasterColorFormat, standardSurfaceDiscardMask } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
+import {
+  PREDEPTH_FRAGMENT_ENTRY,
+  predepthCoversMaterial,
+  predepthFragmentEntry,
+} from '../predepth-coverage';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import {
@@ -25,6 +30,7 @@ import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../rend
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { withFrameLighting } from './pbr-program';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
 import { lodCoverageMayFade } from './production-raster-lod';
 import { requestMaterialAbiRasterPipeline } from './production-raster-material';
@@ -289,7 +295,8 @@ function artifactRequestKey(request: Parameters<BatchArtifactResolver>[1]): numb
     REQUEST_PASS_BITS[request.pass] |
     (request.deformation === 'skin' ? 4 : 0) |
     (request.vertexColorAvailable ? 8 : 0) |
-    (request.alphaMask ? 16 : 0)
+    (request.alphaMask ? 16 : 0) |
+    (request.leanInputs ? 32 : 0)
   );
 }
 
@@ -610,15 +617,24 @@ export function* prepareHiddenMaterialExecutions(
 function hiddenRenderState(
   state: MaterialRenderState | undefined,
   selected: MaterialShaderArtifact,
-  pass: { readonly coverageOnly: boolean; readonly seededDepth?: boolean },
+  pass: {
+    readonly coverageOnly: boolean;
+    readonly seededDepth?: boolean;
+    readonly opaqueDepthPrimed?: boolean;
+  },
   world: Float32Array,
 ): MaterialRenderState | undefined {
   const passState =
-    pass.seededDepth === true
+    pass.seededDepth === true && predepthCoversMaterial(selected, state)
       ? seededDepthRenderState(state, artifactAlphaMask(selected.variantSet))
-      : selected.fragmentEntry === 'fs_temporal'
-        ? geometryRenderStateForPass(state, 'temporal', pass.coverageOnly)
-        : state;
+      : geometryRenderStateForPass(
+          state,
+          selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+          pass.coverageOnly,
+          undefined,
+          selected.fragmentEntry,
+          pass.opaqueDepthPrimed ?? false,
+        );
   return transformRenderState(passState, world);
 }
 
@@ -628,7 +644,7 @@ function seededHiddenArtifact(
   state: MaterialRenderState | undefined,
   seeded: boolean,
 ): MaterialShaderArtifact {
-  if (!seeded) return artifact;
+  if (!seeded || !predepthCoversMaterial(artifact, state)) return artifact;
   const variantSet = maskedInEarlyPassVariantSet(
     artifact.variantSet,
     state,
@@ -641,6 +657,20 @@ function seededHiddenArtifact(
 }
 
 /** Only explicitly requested hidden rows; admission and PSO specification are shared with real raster. */
+function hiddenMaterialMatchesFilter(
+  filter: RenderPipelineGpuDrivenFilter | undefined,
+  medium: boolean,
+  deferredPass: boolean | undefined,
+): boolean {
+  return !(
+    (filter === 'single-layer-medium' && !medium) ||
+    ((filter === 'opaque' || filter === 'deferred-opaque' || filter === 'forward-only-opaque') &&
+      medium) ||
+    (filter === 'deferred-opaque' && deferredPass !== true) ||
+    (filter === 'forward-only-opaque' && deferredPass === true)
+  );
+}
+
 export function prepareHiddenGpuDrivenPipelines(input: {
   readonly entries: readonly ValidatedRenderable[];
   readonly materials?: MaterialFrame | undefined;
@@ -655,7 +685,10 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly coverageOnly: boolean;
   /** Forward opaque over the exact prepass depth (see seededDepthRenderState). */
   readonly seededDepth?: boolean;
+  readonly opaqueDepthPrimed?: boolean;
   readonly visibleSurface: boolean;
+  readonly directionalShadowSimple?: boolean;
+  readonly leanLighting?: boolean;
   /** The recording view carries camera clipping planes; absent keeps them off. */
   readonly viewClipping?: boolean;
   /** The same admitted source draw belongs to this pass's indirect lane. */
@@ -673,16 +706,17 @@ export function prepareHiddenGpuDrivenPipelines(input: {
     )) {
       if (execution.route !== 'gpu') continue;
       const { prepared, material, artifact } = execution;
-      const medium = artifact.receipt?.surface?.model === 'single-layer-medium',
-        filter = input.filter;
       if (
-        (filter === 'single-layer-medium' && !medium) ||
-        ((filter === 'opaque' ||
-          filter === 'deferred-opaque' ||
-          filter === 'forward-only-opaque') &&
-          medium) ||
-        (filter === 'deferred-opaque' && material.deferredPass !== true) ||
-        (filter === 'forward-only-opaque' && material.deferredPass === true)
+        !hiddenMaterialMatchesFilter(
+          input.filter,
+          artifact.receipt?.surface?.model === 'single-layer-medium',
+          material.deferredPass,
+        )
+      )
+        continue;
+      if (
+        input.fragmentEntry === PREDEPTH_FRAGMENT_ENTRY &&
+        !predepthCoversMaterial(artifact, material.renderState)
       )
         continue;
       input.onSelected?.(entry, draw.sourceDrawIndex);
@@ -691,7 +725,11 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         prepared.identity.deformation === 'skin' &&
         input.visibleSurface
           ? SKIN_UNCOVERED_GBUFFER_ENTRY
-          : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
+          : input.fragmentEntry === PREDEPTH_FRAGMENT_ENTRY
+            ? input.formats.length === 0
+              ? predepthFragmentEntry(artifact)
+              : 'fs_ao_input'
+            : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
       const passArtifact =
         fragment === undefined
           ? artifact
@@ -711,11 +749,20 @@ export function prepareHiddenGpuDrivenPipelines(input: {
       );
       // Same program as the raster class (production-raster-classes
       // maskedInEarlyPassArtifact): a seeded masked row drops its alpha discard.
-      const selectedArtifact = seededHiddenArtifact(
+      const generalArtifact = seededHiddenArtifact(
         passArtifact,
         material.renderState,
         input.seededDepth === true,
       );
+      const forwardColorPass =
+        fragment === undefined || fragment === STANDARD_OPAQUE_FRAGMENT_ENTRY;
+      const selectedArtifact = forwardColorPass
+        ? withFrameLighting(
+            generalArtifact,
+            input.directionalShadowSimple === true,
+            input.leanLighting === true,
+          )
+        : generalArtifact;
       const request = requestMaterialAbiRasterPipeline(input.factory, {
         artifact: selectedArtifact,
         deformation: prepared.identity.deformation,
@@ -737,13 +784,12 @@ export function prepareHiddenGpuDrivenPipelines(input: {
           lodCoverageMayFade({ prepared, ...(draw.lod === undefined ? {} : { lod: draw.lod }) }),
           input.viewClipping === true,
         ),
-        forwardColorPass: fragment === undefined || fragment === STANDARD_OPAQUE_FRAGMENT_ENTRY,
+        forwardColorPass,
       });
       if (request === null) {
         ready = false;
         input.onPending?.({
           code: 'scene-pipeline-preparation',
-          worldId: entry.source.worldId,
           entity: entry.source.entityKey,
           pass: (fragment ?? input.filter ?? 'forward').slice(0, 256),
           shader: selectedArtifact.material.slice(0, 256),

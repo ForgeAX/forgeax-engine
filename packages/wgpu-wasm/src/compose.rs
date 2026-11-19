@@ -24,9 +24,10 @@
 //   1. happy path — `#import` resolution of a trivial helper + `#ifdef` bool
 //   2. import-not-found — entry references an unregistered module id.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::naga::write_checked_wgsl;
+use crate::naga::write_checked_wgsl_with_transform;
 use naga_oil::compose::{
     comment_strip_iter::CommentReplaceExt,
     preprocess::Preprocessor,
@@ -44,15 +45,140 @@ pub fn compose_shader(
     entry_source: &str,
     imports_json: &str,
     defines_json: &str,
+    normalize: Option<js_sys::Function>,
 ) -> Result<String, JsError> {
     let imports = parse_imports_json(imports_json)?;
     let shader_defs = parse_defines_json(defines_json)?;
 
-    // Composition validates source capability, not the eventual GPU device.
-    // Match the final validator below; runtime device admission stays in RHI.
+    // Only definition-independent imports can retain compiled imported IR.
+    // Entry IR is always rebuilt and validated. Auto bindings have a mutable
+    // allocation counter, so those requests always use a fresh Composer.
+    let automatic_bindings = entry_source.contains("@binding(auto)")
+        || imports
+            .values()
+            .any(|source| source.contains("@binding(auto)"));
+    let previous = if automatic_bindings || imports_json.len() > 2 * 1024 * 1024 {
+        None
+    } else {
+        IMPORT_COMPOSER.with(|slot| slot.borrow_mut().take())
+    };
+    let independent = !automatic_bindings
+        && imports_json.len() <= 2 * 1024 * 1024
+        && IMPORT_PREFLIGHT.with(|preprocessor| {
+            imports.iter().all(|(name, source)| {
+                previous
+                    .as_ref()
+                    .is_some_and(|cached| cached.imports.get(name) == Some(source))
+                    || preprocessor
+                        .get_preprocessor_metadata(source, false)
+                        .is_ok_and(|metadata| {
+                            metadata.name.as_ref() == Some(name)
+                                && metadata.effective_defs.is_empty()
+                                && metadata.defines.is_empty()
+                        })
+            })
+        });
+    let mut composer = if independent {
+        previous
+            .map(|cached| retain_import_prefix(cached, &imports))
+            .unwrap_or_else(fresh_composer)
+    } else {
+        fresh_composer()
+    };
+    let registered = !composer.module_sets.is_empty();
+    if registered {
+        // Registration pins supplied definitions into each module. Independent
+        // imported IR cannot read them, but entry conflict admission still must
+        // see this request's exact map, including removed or changed names.
+        for module in composer.module_sets.values_mut() {
+            module.shader_defs = shader_defs.clone();
+        }
+    }
+    let result = compose_with_imports(
+        &mut composer,
+        entry_source,
+        &imports,
+        &shader_defs,
+        normalize.as_ref(),
+    );
+    if result.is_ok() && independent {
+        // Definition maps are request inputs, not dependencies of retained IR.
+        for module in composer.module_sets.values_mut() {
+            module.shader_defs = HashMap::new();
+        }
+        IMPORT_COMPOSER.with(|slot| {
+            *slot.borrow_mut() = Some(ImportComposer { imports, composer });
+        });
+    }
+    result
+}
+
+struct ImportComposer {
+    imports: HashMap<String, String>,
+    composer: Composer,
+}
+
+fn fresh_composer() -> Composer {
     let mut composer = Composer::default();
     composer.capabilities = naga::valid::Capabilities::all();
+    composer
+}
 
+fn retain_import_prefix(mut cached: ImportComposer, imports: &HashMap<String, String>) -> Composer {
+    // Naga Oil assigns spans by registration index. Retain only the unchanged
+    // prefix: replacing a hole would reuse a surviving module's span index.
+    // Dependencies register first, so removing the suffix cannot invalidate a
+    // retained prefix module. Re-added modules receive the original contiguous
+    // index sequence; native validation and source diagnostics stay unchanged.
+    let first_changed = cached
+        .composer
+        .module_index
+        .iter()
+        .filter(|(_, name)| cached.imports.get(*name) != imports.get(*name))
+        .map(|(index, _)| *index)
+        .min()
+        .unwrap_or(cached.composer.module_sets.len() + 1);
+    let removed: Vec<String> = cached
+        .composer
+        .module_index
+        .iter()
+        .filter(|(index, _)| **index >= first_changed)
+        .map(|(_, name)| name.clone())
+        .collect();
+    for name in removed {
+        cached.composer.remove_composable_module(&name);
+    }
+    cached
+        .composer
+        .module_index
+        .retain(|index, _| *index < first_changed);
+    let retained = cached.composer.module_sets.len();
+    if retained + 1 != first_changed
+        || cached.composer.module_index.len() != retained
+        || cached.composer.module_index.iter().any(|(index, name)| {
+            *index == 0 || *index > retained || !cached.composer.module_sets.contains_key(name)
+        })
+    {
+        return fresh_composer();
+    }
+    cached.composer
+}
+
+thread_local! {
+    // One bounded source closure and its stable registration prefix. Each
+    // independent imported module retains one IR selection; entries stay fresh.
+    static IMPORT_COMPOSER: RefCell<Option<ImportComposer>> = RefCell::default();
+    // Immutable regular expressions; source/definitions remain per request.
+    static IMPORT_PREFLIGHT: Preprocessor = Preprocessor::default();
+}
+
+fn compose_with_imports(
+    composer: &mut Composer,
+    entry_source: &str,
+    imports: &HashMap<String, String>,
+    shader_defs: &HashMap<String, ShaderDefValue>,
+    normalize: Option<&js_sys::Function>,
+) -> Result<String, JsError> {
     // naga_oil 0.22's `add_composable_module` rejects a module whose `#import`
     // targets are not yet registered with the composer. The `imports` map
     // crosses the JSON boundary as a `serde_json::Map<String, Value>` which
@@ -69,6 +195,7 @@ pub fn compose_shader(
     // when an import target truly is absent from the map).
     let mut pending: Vec<(String, String)> = imports
         .iter()
+        .filter(|(name, _)| !composer.module_sets.contains_key(*name))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     while !pending.is_empty() {
@@ -101,7 +228,9 @@ pub fn compose_shader(
         pending = next_pending;
     }
 
-    reject_imported_padding(&composer, entry_source, &shader_defs)?;
+    IMPORT_PREFLIGHT.with(|preprocessor| {
+        reject_imported_padding(preprocessor, composer, entry_source, shader_defs)
+    })?;
 
     let module = composer
         .make_naga_module(NagaModuleDescriptor {
@@ -124,7 +253,7 @@ pub fn compose_shader(
         ))
     })?;
 
-    write_checked_wgsl(&module, &info)
+    write_checked_wgsl_with_transform(&module, &info, normalize)
         .map_err(|error| JsError::new(&format!("shader-compile-failed: {error}")))
 }
 
@@ -137,11 +266,11 @@ pub fn compose_shader(
 /// buffer layout. The checked WGSL writer below remains the sole layout guard
 /// for the final Naga module.
 fn reject_imported_padding(
+    preprocessor: &Preprocessor,
     composer: &Composer,
     entry_source: &str,
     option_defs: &HashMap<String, ShaderDefValue>,
 ) -> Result<(), JsError> {
-    let preprocessor = Preprocessor::default();
     let entry_metadata = preprocessor
         .get_preprocessor_metadata(entry_source, true)
         .map_err(|error| {
@@ -206,11 +335,47 @@ fn reject_imported_padding(
     Ok(())
 }
 
+// Classification is independent of shader definitions. Keep a bounded cache of
+// complete source strings, never preprocessed text or an admitted shader result.
+// Each WASM instance owns its cache; eviction only repeats the same token scan.
+#[derive(Default)]
+struct PaddingCandidates {
+    sources: HashMap<String, bool>,
+    bytes: usize,
+}
+
+impl PaddingCandidates {
+    fn inspect(&mut self, source: &str) -> bool {
+        if !source.contains('@') || (!source.contains("align") && !source.contains("size")) {
+            return false;
+        }
+        if let Some(candidate) = self.sources.get(source) {
+            return *candidate;
+        }
+        let mut lines = source.lines();
+        let active_source = lines.replace_comments().collect::<Vec<_>>().join("\n");
+        let candidate = Tokenizer::new(&active_source, false)
+            .any(|token| matches!(token, Token::Identifier("align" | "size", _)));
+        const LIMIT: usize = 2 * 1024 * 1024;
+        const ENTRIES: usize = 256;
+        if source.len() <= LIMIT {
+            if self.bytes + source.len() > LIMIT || self.sources.len() >= ENTRIES {
+                self.sources.clear();
+                self.bytes = 0;
+            }
+            self.bytes += source.len();
+            self.sources.insert(source.to_owned(), candidate);
+        }
+        candidate
+    }
+}
+
+thread_local! {
+    static PADDING_CANDIDATES: RefCell<PaddingCandidates> = RefCell::default();
+}
+
 fn may_contain_padding_attribute(source: &str) -> bool {
-    let mut lines = source.lines();
-    let active_source = lines.replace_comments().collect::<Vec<_>>().join("\n");
-    Tokenizer::new(&active_source, false)
-        .any(|token| matches!(token, Token::Identifier("align" | "size", _)))
+    PADDING_CANDIDATES.with(|cache| cache.borrow_mut().inspect(source))
 }
 
 fn imported_padding_attribute(source: &str) -> Option<&'static str> {
@@ -314,7 +479,7 @@ fn foo_fn() {}
         let imports_json = serde_json::json!({ "mod_a": helper }).to_string();
         let defines_json = serde_json::json!({ "USE_VEC": true }).to_string();
 
-        let composed = compose_shader(entry, &imports_json, &defines_json)
+        let composed = compose_shader(entry, &imports_json, &defines_json, None)
             .unwrap_or_else(|e| panic!("expected Ok, got Err: {:?}", e));
         assert!(
             composed.contains("foo_fn"),
@@ -340,7 +505,7 @@ fn main() -> @builtin(position) vec4<f32> {
         let imports_json = "{}";
         let defines_json = "{}";
 
-        let err = compose_shader(entry, imports_json, defines_json)
+        let err = compose_shader(entry, imports_json, defines_json, None)
             .err()
             .expect("compose_shader must error when #import target is absent");
         let msg = format!("{:?}", err);

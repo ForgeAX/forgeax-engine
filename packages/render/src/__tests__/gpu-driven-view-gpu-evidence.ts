@@ -56,7 +56,6 @@ function snapshot(entityKey: number, x: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -86,7 +85,6 @@ function snapshot(entityKey: number, x: number): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -105,6 +103,8 @@ export interface GpuDrivenViewGpuEvidence {
   readonly recoveredReadbackFrame: number;
   readonly firstVisible: number;
   readonly recoveredVisible: number;
+  readonly firstFrustumCulled: number;
+  readonly recoveredFrustumCulled: number;
 }
 
 export interface GpuDrivenViewLifecycleEvidence {
@@ -144,18 +144,20 @@ export async function runGpuDrivenViewLifecycleEvidence(
     const operations: Array<
       | {
           readonly kind: 'update';
-          readonly worldId: number;
           readonly entityKey: number;
           readonly snapshot: RenderableSnapshot;
         }
-      | { readonly kind: 'remove'; readonly worldId: number; readonly entityKey: number }
+      | {
+          readonly kind: 'remove';
+          readonly entityKey: number;
+        }
     > = [];
     while (activeCount < targetCount) {
       activeCount += 1;
       operations.push(updateSnapshot(snapshot(activeCount, activeCount * 0.05)));
     }
     while (activeCount > targetCount) {
-      operations.push({ kind: 'remove', worldId: 0, entityKey: activeCount });
+      operations.push({ kind: 'remove', entityKey: activeCount });
       activeCount -= 1;
     }
     const delta = projection.apply(operations);
@@ -506,7 +508,6 @@ export async function runGpuDrivenSharedMemberSubmeshEvidence(
   const indices = new Uint32Array(submeshCount * 3);
   for (let i = 0; i < submeshCount; i++) indices.set([0, 1, 2], i * 3);
   const meshes = new MeshFrame().with(
-    0,
     3,
     {
       ...BUILTIN_CUBE,
@@ -721,9 +722,7 @@ export async function runGpuDrivenSharedMemberGrowthEvidence(
       instances: { transforms, instanceCount, cacheKey: 1, archVersion: 1 },
     });
   });
-  let meshes = new MeshFrame()
-    .with(0, 3, makeMesh(31), [material])
-    .with(0, 4, makeMesh(1), [material]);
+  let meshes = new MeshFrame().with(3, makeMesh(31), [material]).with(4, makeMesh(1), [material]);
   const view = GpuDrivenView.create({
     device,
     shaderModuleFactory: { createShaderModule: () => ok(shader) },
@@ -733,7 +732,7 @@ export async function runGpuDrivenSharedMemberGrowthEvidence(
     for (const phase of ['seed', 'grown'] as const) {
       // Only the Mesh's submesh executions change. The two source member roots stay held.
       if (phase === 'grown')
-        meshes = meshes.with(0, 3, makeMesh(1), [material]).with(0, 4, makeMesh(31), [material]);
+        meshes = meshes.with(3, makeMesh(1), [material]).with(4, makeMesh(31), [material]);
       const delta = projection.apply(phase === 'seed' ? sources : []);
       scene.sync({ ...delta, meshes }).unwrap();
       topology.apply(delta);
@@ -999,10 +998,10 @@ export async function runGpuDrivenLodReadbackGenerationEvidence() {
     compiled.execute({ encoder }).unwrap();
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     const encoded = projection.slotsSnapshot();
-    const removed = encoded.lookup(0, 1);
+    const removed = encoded.lookup(1);
     if (removed === undefined) throw new Error('Missing encoded row');
     // The scene moves on before the readback maps; the view keeps its plan.
-    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: 1 }])).unwrap();
     await device.queue.onSubmittedWorkDone();
     const selection = await view.readLodSelection();
     await compiled.retire();
@@ -1317,6 +1316,8 @@ export async function runGpuDrivenViewGpuEvidence(
     recoveredReadbackFrame: recoveredLodSelection.surfaceReadback.frameId,
     firstVisible: lodSelection.visible,
     recoveredVisible: recoveredLodSelection.visible,
+    firstFrustumCulled: lodSelection.frustumCulled,
+    recoveredFrustumCulled: recoveredLodSelection.frustumCulled,
   };
   view.dispose();
   sceneAvailability.scene.dispose();
@@ -1771,7 +1772,7 @@ export async function runSharedGeometryCullEvidence() {
     materialParamSchema: [{ name: 'displacementTexture', type: 'texture2d' }],
     paramSnapshot: { displacementScale: 0, displacementBias: 0 },
   });
-  const first = new MeshFrame().with(0, 3, {
+  const first = new MeshFrame().with(3, {
     ...BUILTIN_CUBE,
     aabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
   });
@@ -1784,7 +1785,7 @@ export async function runSharedGeometryCullEvidence() {
   topology.apply(delta);
   const source = topology.query(topology.sourcePlan(), undefined);
   const old = scene.captureResources().unwrap();
-  const oldGeometry = old.indexForGeometry(0, 3, first.get(0, 3));
+  const oldGeometry = old.indexForGeometry(3, first.get(3));
   const oldMaterial = old.indexForResource(resource);
   if (oldGeometry === undefined || oldMaterial === undefined)
     throw new Error('shared descriptor unavailable');
@@ -1828,13 +1829,13 @@ export async function runSharedGeometryCullEvidence() {
   scene.inputs.arena.releaseDescriptor(headroom, 16_384);
   try {
     await draw(oldGeometry, oldMaterial);
-    const wide = first.with(0, 3, {
+    const wide = first.with(3, {
       ...BUILTIN_CUBE,
       aabb: new Float32Array([-6, -0.25, -0.25, 0.25, 0.25, 0.25]),
     });
     const inputBytes = scene.inputs.uploadBytes;
     const tableBytes = scene.sync({ ...projection.apply([]), meshes: wide }).unwrap().bytes;
-    const currentGeometry = scene.geometryIndexForResource(0, 3);
+    const currentGeometry = scene.geometryIndexForResource(3);
     if (currentGeometry === undefined) throw new Error('current geometry unavailable');
     await draw(currentGeometry, oldMaterial);
     const geometryUpload = tableBytes + scene.inputs.uploadBytes - inputBytes;
@@ -1923,7 +1924,7 @@ export async function runGpuDrivenSkinVisibleAddressEvidence(
     skin.apply(delta);
     const pose = mat4.identity(mat4.create());
     pose[12] = 7;
-    skin.joint(0, 19, pose);
+    skin.joint(19, pose);
     const frame = skinFrames.prepareFrame(projection.slotsSnapshot());
     if (frame === undefined) throw new Error('Skin visible fixed input unavailable');
     // Numeric GPU allocation order deliberately differs from true Scene slots.
@@ -1980,7 +1981,7 @@ export async function runGpuDrivenSkinVisibleAddressEvidence(
     return {
       visibleInstance,
       candidateIndex: words[2],
-      sourceSlot: frame.slots.lookup(0, source.entityKey)?.slot,
+      sourceSlot: frame.slots.lookup(source.entityKey)?.slot,
       primitiveIndex: scene.primitiveIndexForSlot(1),
     };
   } finally {

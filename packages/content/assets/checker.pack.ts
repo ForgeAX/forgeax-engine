@@ -2,6 +2,10 @@ import { definePack } from '@forgeax/engine-pack/source';
 import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import { CONTENT_PACKAGE_IDS, CONTENT_SOURCE_KEYS } from '../src/ids.ts';
+import {
+  createWaterSurfaceTextures,
+  type WaterSurfaceTextureName,
+} from './water/texture-pixels.ts';
 
 /** Texels per side; a power of two keeps every mip level an exact 2x2 box reduction. */
 export const CHECKER_SIZE = 256;
@@ -67,8 +71,15 @@ export default definePack({
   schemaVersion: '2.0.0',
   packageId: CONTENT_PACKAGE_IDS.textures,
   name: 'Engine Content / Textures',
-  build: () =>
-    ok({
+  build: () => {
+    const waterTextures = Object.fromEntries(
+      Object.entries(createWaterSurfaceTextures()).map(([name, texture]) => [
+        CONTENT_SOURCE_KEYS.waterTexture(name as WaterSurfaceTextureName),
+        texture,
+      ]),
+    );
+    return ok({
+      ...waterTextures,
       [CONTENT_SOURCE_KEYS.checkerTexture]: {
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: CHECKER_SIZE, height: CHECKER_SIZE } },
@@ -86,5 +97,6 @@ export default definePack({
         addressModeV: 'repeat',
         maxAnisotropy: 16,
       } satisfies SamplerAsset,
-    }),
+    });
+  },
 });

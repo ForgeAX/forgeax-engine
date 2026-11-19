@@ -16,6 +16,7 @@ import {
 import { animationPlayback, animationPlaybackSchema } from '../animation-playback.js';
 import { executionWorkers, executionWorkersSchema } from '../execution-workers.js';
 import { createOperationHistoryTools } from '../operation-history.js';
+import { PLAY_CONTEXT_HELP } from '../play-context-reference.js';
 import { readProjectStartupTimeoutMs } from '../project.js';
 import { RHI_INSPECT_INPUT_SCHEMA, RHI_READ_INPUT_SCHEMA } from '../rhi-debug/operations.js';
 import { RHI_TIMING_OPTION_PROPERTIES } from '../rhi-debug/timing.js';
@@ -61,6 +62,7 @@ type LiveOperation =
   | 'camera/set'
   | 'camera/release'
   | 'find'
+  | 'pick'
   | 'focus';
 
 const string = { type: 'string' } satisfies ToolJsonSchema;
@@ -105,13 +107,18 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     packageName: string,
     dryRun: boolean,
   }),
+  'project.list': schema({ ...root, json: boolean }),
+  'project.import': schema({ ...root, path: string, json: boolean }, ['path']),
+  'project.browse': schema({ ...root, path: string, json: boolean }),
   'project.init': schema({ ...root, install: boolean, dryRun: boolean }),
   'project.check': schema({ ...root, json: boolean }),
   'project.test': schema({ ...root, json: boolean }),
   'project.package': schema({
     ...root,
     output: string,
-    format: string,
+    format: { type: 'string', enum: ['web-zip', 'single-html', 'tauri'] },
+    platform: { type: 'string', enum: ['windows', 'macos', 'linux', 'android', 'ios'] },
+    prepareOnly: boolean,
     compress: boolean,
     json: boolean,
   }),
@@ -128,36 +135,77 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     requireUi: boolean,
     deterministic: boolean,
   }),
-  'project.play': schema(
-    {
-      ...root,
-      script: {
-        type: 'string',
-        description: 'Playthrough module whose default export receives the play helper.',
+  'project.play': {
+    ...schema(
+      {
+        ...root,
+        script: {
+          type: 'string',
+          description:
+            'Playthrough module whose default export receives the play helper (`PlayContext` from `@forgeax/engine/devkit`; signatures in the schema description).',
+        },
+        backend: captureBackend,
+        headless: boolean,
+        port,
+        viewports: {
+          type: 'string',
+          description:
+            'WxH[,WxH...] (default 1280x720,1280x600); the script runs in the first, later ones get a screenshot under the final-frame gate.',
+        },
+        requireUi: boolean,
+        timeoutMs: { type: 'integer', minimum: 1 },
+        from: {
+          type: 'string',
+          description:
+            'Start at this top-level step (name or 1-based position); earlier steps are skipped without input and the step runs its setup first. Not final acceptance.',
+        },
+        steps: {
+          type: 'string',
+          description:
+            'a..b, a.. or a: run only these top-level steps (names or 1-based positions). Not final acceptance.',
+        },
+        timeScale: {
+          type: 'number',
+          minimum: 0.0625,
+          maximum: 16,
+          description:
+            'Speed cap in game seconds per wall second (default 1, real time). Other values run the game in lockstep with the script: the App stays paused and steps fixed 1/60 s frames (physics and input included) only while a helper waits, waitFor and predicate holds check every 3 frames, and waits, holds and wait timeouts count game time. Not final acceptance.',
+        },
+        session: {
+          type: 'boolean',
+          description:
+            "Run in the page of the project's running `forgeax dev start` owner: it reloads that page (warm browser and dev server) and the script runs there; the owner keeps running. Fails with play-not-ready (session-unavailable) when no owner runs; never starts one.",
+        },
+        release: {
+          type: 'boolean',
+          description:
+            "Run the same playthrough against the built static release (run `forgeax project build` first) on play's own loopback server; this real-time run is the final acceptance. Requests to non-local hosts are blocked, listed in externalRequests and fail the run (play-runtime-failed, external-request). state, waitFor and hold predicates read the game's registered read projection as in development; advance needs the development host, so guard it with play.release. Refuses --time-scale and --session.",
+        },
+        dist: {
+          type: 'string',
+          description: '--release distribution directory relative to the root (default dist).',
+        },
+        headers: {
+          type: 'string',
+          enum: ['isolated', 'none'],
+          description:
+            "--release response headers. isolated (default) sends COOP/COEP/CORP like `project preview`; none sends none, like a plain static host (crossOriginIsolated false, the App's non-isolated path). The result names the headers used.",
+        },
+        detail: {
+          type: 'boolean',
+          description: 'Return the complete play report instead of the compact summary.',
+        },
+        progress: {
+          type: 'boolean',
+          description:
+            'Progress lines on stderr (one at start, then at most one per 30 s). Default true.',
+        },
+        json: boolean,
       },
-      backend: captureBackend,
-      headless: boolean,
-      port,
-      viewports: {
-        type: 'string',
-        description:
-          'WxH[,WxH...] (default 1280x720,1280x600); the script runs in the first, later ones get a screenshot and the HUD layout check.',
-      },
-      requireUi: boolean,
-      timeoutMs: { type: 'integer', minimum: 1 },
-      detail: {
-        type: 'boolean',
-        description: 'Return the complete play report instead of the compact summary.',
-      },
-      progress: {
-        type: 'boolean',
-        description:
-          'Progress lines on stderr (one at start, then at most one per 30 s). Default true.',
-      },
-      json: boolean,
-    },
-    ['script'],
-  ),
+      ['script'],
+    ),
+    description: PLAY_CONTEXT_HELP,
+  },
   'project.engine.status': schema({ ...root, json: boolean }),
   'project.engine.use-local': schema({ ...root, path: string, json: boolean }),
   'project.engine.unlink': schema({ ...root, json: boolean }),
@@ -284,6 +332,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
         temporaryBytes: { type: 'integer', minimum: 1 },
         entries: { type: 'integer', minimum: 1 },
       }),
+      requestedOnly: boolean,
     },
     ['revision'],
   ),
@@ -300,6 +349,22 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     name: string,
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
+  'dev.pick': schema(
+    {
+      ...root,
+      ...liveIdentity,
+      ...liveReady,
+      x: {
+        type: 'number',
+        description: 'Pixel column of the presented frame (0 = left), as in dev look PNGs.',
+      },
+      y: {
+        type: 'number',
+        description: 'Pixel row of the presented frame (0 = top), as in dev look PNGs.',
+      },
+    },
+    ['x', 'y'],
+  ),
   'dev.camera.release': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.get': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.set': schema({
@@ -355,6 +420,12 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
       type: 'boolean',
       description: 'Hide #game-ui while capturing so the image and metrics show the scene alone.',
     },
+    view: {
+      type: 'string',
+      enum: ['final', 'luminance'],
+      description:
+        'luminance also writes a pre-tonemap HDR luminance heat map banded in stops around the bloom threshold.',
+    },
   }),
 };
 
@@ -390,7 +461,7 @@ export function command<TArgs extends Record<string, unknown>>(
   execute: (args: TArgs, context: ToolExecutionContext) => Promise<CommandValue>,
   realm: ToolRealm = 'build',
   options: {
-    readonly schema?: ToolJsonSchema;
+    readonly schema?: ToolJsonSchema | undefined;
     readonly capabilities?: readonly string[];
     readonly errors?: readonly string[];
     readonly example?: JsonValue;
@@ -478,12 +549,14 @@ export function createUnifiedCommandContributions(
               example:
                 operation === 'focus'
                   ? { name: 'Player' }
-                  : operation === 'eval'
-                    ? {
-                        revision: '<from dev status>',
-                        code: 'return simulation.execution.report()',
-                      }
-                    : {},
+                  : operation === 'pick'
+                    ? { x: 640, y: 360 }
+                    : operation === 'eval'
+                      ? {
+                          revision: '<from dev status>',
+                          code: 'return simulation.execution.report()',
+                        }
+                      : {},
             }),
       },
     );
@@ -600,7 +673,7 @@ export function createUnifiedCommandContributions(
   const assetPreview = command(
     'asset.preview',
     'Preview an asset',
-    'Produces canonical GUID-based resource evidence through the owning preview plugin.',
+    'Produces canonical GUID-based resource evidence through the owning preview plugin; --kind scene renders a SceneAsset through its authored camera without running the game.',
     async (args, context) => {
       const kind = typeof args.kind === 'string' ? args.kind : 'mesh';
       if (kind === 'scene') {
@@ -620,7 +693,7 @@ export function createUnifiedCommandContributions(
           ok: false,
           error: {
             code: 'asset-preview-kind-unavailable',
-            expected: 'kind to select material, mesh, texture, or vfx',
+            expected: 'kind to select scene, material, mesh, texture, or vfx',
             hint: 'Pass { kind, guid } and retry with one of the admitted preview owners.',
             detail: { kind },
           },
@@ -650,6 +723,7 @@ export function createUnifiedCommandContributions(
         : { ok: false, error: terminal.failure, artifacts: terminal.artifacts };
     },
     'host',
+    { example: { kind: 'scene', guid: '<scene guid from asset list --type scene>' } },
   );
   const assetAtlas = command(
     'asset.atlas',
@@ -834,6 +908,23 @@ export function createUnifiedCommandContributions(
     ...createModelingTools({ projectRoot }),
     createModelRenderTool(projectRoot),
     createModelReplayTool(projectRoot),
+    ...(['list', 'import', 'browse'] as const).map((operation) =>
+      command(
+        `project.${operation}`,
+        `Project ${operation}`,
+        'Read or register Node-visible project metadata without preparing a runtime.',
+        async (args) => {
+          const owner = await import('../known-projects.js');
+          if (operation === 'list') return owner.listKnownProjects();
+          if (operation === 'import') return owner.registerKnownProject(String(args.path));
+          return owner.browseProjectDirectories(
+            typeof args.path === 'string' ? args.path : undefined,
+          );
+        },
+        'host',
+        { schema: commandSchemas[`project.${operation}`] },
+      ),
+    ),
     ...(['start', 'status', 'stop'] as const).map((operation) =>
       command(
         `backend.${operation}`,
@@ -905,7 +996,7 @@ export function createUnifiedCommandContributions(
     command(
       'project.play',
       'Play project',
-      'Starts a temporary project, runs a playthrough module with real input, and verifies the final frame.',
+      'Starts a temporary project (or serves its built release with --release), runs a playthrough module with real input, and verifies the final frame.',
       async (args, context) =>
         (await import('../play.js')).playCommand(rootArgs(projectRoot, args), {
           signal: context.signal,
@@ -1023,6 +1114,7 @@ export function createUnifiedCommandContributions(
                   Parameters<typeof exportPipelineLibrary>[1]['limits']
                 >,
               }),
+          ...(args.requestedOnly === true ? { requestedOnly: true } : {}),
         });
       },
       'host',
@@ -1053,6 +1145,12 @@ export function createUnifiedCommandContributions(
       'find',
     ),
     live(
+      'dev.pick',
+      'Pick at a pixel',
+      'Reports the HDR sample and the frontmost surface (entity, mesh, material, world hit; transparent surfaces included) under one canvas pixel without changing the World.',
+      'pick',
+    ),
+    live(
       'dev.camera.release',
       'Release observation camera',
       'Returns control to the game camera.',
@@ -1079,7 +1177,7 @@ export function createUnifiedCommandContributions(
     live(
       'dev.look',
       'Look at live project',
-      'Waits for the edited revision, captures fresh frames and reports luma, saturation, contrast, clipping and subject separation.',
+      'Waits for the edited revision, captures fresh frames and flags a renderer error or a flat frame.',
       'look',
     ),
   ] as readonly ToolContribution[];

@@ -91,6 +91,8 @@ describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
       recoveredReadbackFrame: 11,
       firstVisible: 1,
       recoveredVisible: 0,
+      firstFrustumCulled: 2,
+      recoveredFrustumCulled: 3,
     });
   });
 

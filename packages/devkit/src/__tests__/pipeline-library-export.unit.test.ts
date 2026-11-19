@@ -48,7 +48,40 @@ it('exports the revision-fenced renderer recipe and a matching digest receipt', 
       sha256: createHash('sha256').update(bytes).digest('hex'),
       byteLength: bytes.length,
       frame: 12,
+      selection: 'all-compiled',
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('asks the renderer for requested recipes only and records that selection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-export-'));
+  const manifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+  };
+  try {
+    live.mockResolvedValueOnce({
+      ok: true,
+      value: { revision: 'current', result: { ok: true, value: { manifest, frame: 3 } } },
+    });
+    const result = await exportPipelineLibrary(root, { revision: 'current', requestedOnly: true });
+    expect(live).toHaveBeenLastCalledWith(
+      root,
+      'eval',
+      expect.objectContaining({
+        code: expect.stringContaining(
+          'execution.inspectRenderer({"pipelineLibrary":true,"pipelineLibraryRequestedOnly":true})',
+        ),
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, value: { selection: 'requested-only' } });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

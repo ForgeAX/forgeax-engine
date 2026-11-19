@@ -34,6 +34,14 @@ There is no arbitrary simultaneous-Font cap. Runtime failures use `TextError`; i
 
 ## Bake (build-time)
 
+Font source metadata accepts `importSettings.charset` (a non-empty Unicode
+string) and `importSettings.fieldRange` (a positive finite MSDF distance range).
+The importer deduplicates Unicode scalar values in authored order and passes
+both settings to the native generator. Defaults remain printable ASCII and a
+distance range of 4. Include every required label character in the charset and
+choose a range covering its outline. Invalid settings fail before a generator
+Worker is acquired; no substitute glyphs are baked by this validation.
+
 The bake pipeline reads a TTF and produces a `1024x1024` MSDF atlas PNG + a glyph-metrics sidecar (per-glyph uv / size / bearing / advance + a `distanceRange`).
 
 ```bash

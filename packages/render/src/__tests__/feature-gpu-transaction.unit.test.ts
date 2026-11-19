@@ -1,5 +1,6 @@
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { ok } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createRenderFeatureGpuWorkOwner,
@@ -38,6 +39,30 @@ const release = (session: RenderFeatureGpuPrepareSession) => {
 };
 
 describe('feature GPU frame transactions', () => {
+  it('replaces same-size content allocations transactionally and restores the previous identity on abort', async () => {
+    const { session, owner, destroyed } = await fixture();
+    const accepted = session
+      .prepareBuffer('nodes', { size: 16, usage: ['storage'], allocationKey: 'source-a' })
+      .unwrap();
+    const acceptedBuffer = session.resolveBuffer(accepted)?.buffer;
+    release(session);
+    session.beginFrame();
+    expect(
+      session
+        .prepareBuffer('nodes', { size: 16, usage: ['storage'], allocationKey: 'source-a' })
+        .unwrap(),
+    ).toBe(accepted);
+    const replacement = session
+      .prepareBuffer('nodes', { size: 16, usage: ['storage'], allocationKey: 'source-b' })
+      .unwrap();
+    expect(replacement).not.toBe(accepted);
+    session.abortFrame().unwrap();
+    expect(session.resolveBuffer(accepted)?.buffer).toBe(acceptedBuffer);
+    expect(session.resolveBuffer(replacement)).toBeUndefined();
+    expect(destroyed).toHaveBeenCalledTimes(1);
+    owner.dispose().unwrap();
+  });
+
   it('keeps a repeatedly resolved old binding until its own completion fence after replacement', async () => {
     const { session, owner, destroyed } = await fixture();
     const old = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();
@@ -296,6 +321,55 @@ describe('feature GPU frame transactions', () => {
     device.destroyTexture(texture).unwrap();
   });
 
+  it('holds exact texture-view residency through retirement and releases aborted pair candidates', async () => {
+    const { session, owner, device } = await fixture();
+    const texture = device
+      .createTexture({
+        size: { width: 1, height: 1 },
+        format: 'rgba8unorm',
+        usage: 4,
+        textureBindingViewDimension: undefined,
+      })
+      .unwrap();
+    const oldView = device.createTextureView(texture, {}).unwrap();
+    const newView = device.createTextureView(texture, {}).unwrap();
+    const pairSideView = device.createTextureView(texture, {}).unwrap();
+    const oldRelease = vi.fn((_evict?: boolean) => ok(undefined));
+    const firstSideRelease = vi.fn((_evict?: boolean) => ok(undefined));
+    const secondSideRelease = vi.fn((_evict?: boolean) => ok(undefined));
+
+    session
+      .prepareTextureView('exact-texture', oldView, undefined, () => ({ release: oldRelease }))
+      .unwrap();
+    session.commitFrame();
+    session.beginFrame();
+    session
+      .prepareTextureView('exact-texture', newView, undefined, () => ({
+        release: vi.fn(() => ok(undefined)),
+      }))
+      .unwrap();
+    const retirement = session.commitFrame();
+    expect(oldRelease).not.toHaveBeenCalled();
+    for (const lease of retirement) lease.release().unwrap();
+    expect(oldRelease).toHaveBeenCalledExactlyOnceWith(true);
+
+    session.beginFrame();
+    session
+      .prepareTextureView('water-grid', oldView, undefined, () => ({ release: firstSideRelease }))
+      .unwrap();
+    session
+      .prepareTextureView('water-solver-normal', pairSideView, undefined, () => ({
+        release: secondSideRelease,
+      }))
+      .unwrap();
+    session.abortFrame().unwrap();
+    expect(firstSideRelease).toHaveBeenCalledExactlyOnceWith(false);
+    expect(secondSideRelease).toHaveBeenCalledExactlyOnceWith(false);
+
+    owner.dispose().unwrap();
+    device.destroyTexture(texture).unwrap();
+  });
+
   it('aborts resized buffers and dependent bindings while preserving the accepted compute graph', async () => {
     const { session, owner, destroyed } = await fixture();
     const old = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();
@@ -348,16 +422,48 @@ describe('feature GPU frame transactions', () => {
   });
 
   it('discards new allocations after a preparation error and retries from the accepted state', async () => {
-    const { session, owner, destroyed } = await fixture();
+    const { device, session, owner, destroyed } = await fixture();
     const old = session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap();
+    const accepted = session.resolveBuffer(old)?.buffer;
     release(session);
     session.beginFrame();
+    const allocate = vi.spyOn(device, 'createBuffer');
     expect(
       session.prepareBuffer('storage', { size: 4, usage: ['storage'], data: new Uint32Array(8) })
         .ok,
     ).toBe(false);
+    expect(allocate).not.toHaveBeenCalled();
+    const write = vi.spyOn(device.queue, 'writeBuffer').mockImplementationOnce(() =>
+      err(
+        new RhiError({
+          code: 'queue-write-buffer-out-of-bounds',
+          expected: 'a successful candidate buffer upload',
+          hint: 'injected write failure exercises candidate abort',
+        }),
+      ),
+    );
+    const prepared = session.prepareBuffer('storage', {
+      size: 64,
+      usage: ['storage'],
+      data: new Uint32Array(8),
+    });
+    expect(prepared.ok).toBe(false);
+    if (prepared.ok) throw new Error('failed buffer upload must reject preparation');
+    expect(prepared.error).toMatchObject({
+      detail: { operation: 'write-gpu-buffer' },
+    });
+    expect(allocate).toHaveBeenCalledOnce();
+    const allocation = allocate.mock.results[0];
+    if (allocation?.type !== 'return' || !allocation.value.ok)
+      throw new Error('failed upload must follow a successful candidate allocation');
+    const candidate = allocation.value.value;
+    expect(candidate).not.toBe(accepted);
     session.abortFrame().unwrap();
     expect(destroyed).toHaveBeenCalledTimes(1);
+    expect(destroyed).toHaveBeenCalledExactlyOnceWith(candidate);
+    expect(destroyed).not.toHaveBeenCalledWith(accepted);
+    write.mockRestore();
+    allocate.mockRestore();
     session.beginFrame();
     expect(session.prepareBuffer('storage', { size: 16, usage: ['storage'] }).unwrap()).toBe(old);
     release(session);

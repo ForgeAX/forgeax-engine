@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { analyzeCpuProfile } from '../analyze_cpu_profile.mjs';
+import { analyzeCpuWindow } from '../cpu_windows.mjs';
+
+const analyzeCpuProfile = (p) =>
+  analyzeCpuWindow(p, { startTime: p.startTime, endTime: p.endTime });
+
 import { compareSamples } from '../compare_samples.mjs';
 import { emitJson, pointer, statistics } from '../lib.mjs';
 import { measuredIntervals, summarizeGpuTiming } from '../summarize_gpu_timing.mjs';
@@ -76,14 +80,14 @@ function gpu(frameId = 1) {
 test('CPU attribution deduplicates recursive inclusive symbols and retains GC and unobserved time', () => {
   const report = analyzeCpuProfile(cpu());
   const recursive = report.topSelf.find((row) => row.functionName === 'recursive');
-  assert.equal(recursive.selfMs, 0.6);
-  assert.equal(recursive.inclusiveMs, 1);
+  assert.equal(recursive.selfMs, 0);
+  assert.equal(recursive.inclusiveMs, 0.4);
   assert.equal(
     report.topSelf.find((row) => row.functionName === '(garbage collector)').selfMs,
     0.4,
   );
-  assert.equal(report.unobservedMs, 0.1);
-  assert.equal(report.topInclusive[0].inclusiveMs, 1);
+  assert.equal(report.unsampledMs, 0.7);
+  assert.equal(report.topInclusive[0].inclusiveMs, 0.4);
 });
 
 test('CPU profile failures remain failures', () => {

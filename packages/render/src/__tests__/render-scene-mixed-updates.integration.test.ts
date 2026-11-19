@@ -18,7 +18,7 @@ import {
 } from '../components';
 import { InstanceProjectionStore } from '../instances';
 import type { ExtractedFrame } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -51,11 +51,11 @@ function material(values: Record<string, unknown>): MaterialAsset {
   };
 }
 
-function createWorld(withCamera: boolean) {
-  const assets = new AssetRegistry();
-  const world = new World({ assets });
+function createWorld(withCamera: boolean, source?: { assets: AssetRegistry; world: World }) {
+  const assets = source?.assets ?? new AssetRegistry();
+  const world = source?.world ?? new World({ assets });
   const mesh = assets.create(BUILTIN_CUBE).unwrap();
-  registerPropagateTransforms(world);
+  if (source === undefined) registerPropagateTransforms(world);
   const values: Record<string, unknown> = {
     baseColor: [1, 0, 0, 1],
     metallic: 0,
@@ -137,7 +137,7 @@ function createWorld(withCamera: boolean) {
 function renderableFacts(frame: ExtractedFrame) {
   return frame.renderables
     .map((row) => ({
-      key: `${row.worldId}:${row.entityKey}`,
+      key: `${row.entityKey}`,
       authorVisible: row.authorVisible !== false,
       world: [...row.transform.world],
       instances:
@@ -158,7 +158,6 @@ function renderableFacts(frame: ExtractedFrame) {
 function frameFacts(frame: ExtractedFrame) {
   return {
     cameras: frame.cameras.map((camera) => ({
-      worldId: camera.worldId,
       entityKey: camera.entityKey,
       position: [...camera.position],
       exposure: camera.exposure,
@@ -167,20 +166,19 @@ function frameFacts(frame: ExtractedFrame) {
   };
 }
 
-function rowFor(frame: ExtractedFrame, worldId: number, entityKey: EntityHandle) {
-  return frame.renderables.find((row) => row.worldId === worldId && row.entityKey === entityKey);
+function rowFor(frame: ExtractedFrame, entityKey: EntityHandle) {
+  return frame.renderables.find((row) => row.entityKey === entityKey);
 }
 
-describe('PersistentRenderScene mixed World updates', () => {
+describe('PersistentRenderScene mixed source updates', () => {
   it('publishes instance inspection only with the accepted Scene and retires removed components', () => {
     const { assets, world, mixed } = createWorld(true);
     const instanceCollections = new InstanceProjectionStore();
     const scene = new PersistentRenderScene({ instanceCollections });
     const lease = createRenderReadLease(world);
-    const owner = { cameraOwner: 0, resourceOwner: 0 };
     let rejectCandidate = false;
     const build = (request: PersistentRenderCandidateRequest) => {
-      const frame = extractFrames([world], owner, undefined, undefined, {
+      const frame = extractSource(world, undefined, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -189,7 +187,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       if (rejectCandidate && request !== 'none') throw new Error('reject prepared candidate');
       return frame;
     };
-    const draw = () => scene.extractComposition([world], owner, assets, build, [lease]);
+    const draw = () => scene.extractComposition(world, assets, build, lease);
     try {
       draw();
       const before = instanceCollections._inspections(0);
@@ -199,7 +197,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(draw).toThrow('reject prepared candidate');
       expect(instanceCollections._inspections(0)).toEqual(before);
       rejectCandidate = false;
-      expect(rowFor(draw(), 0, mixed)?.instances?.instanceCount).toBe(3);
+      expect(rowFor(draw(), mixed)?.instances?.instanceCount).toBe(3);
       expect(instanceCollections._inspections(0)[0]?.revision).toBe((before[0]?.revision ?? 0) + 1);
       world.removeComponent(mixed, Instances).unwrap();
       draw();
@@ -224,13 +222,8 @@ describe('PersistentRenderScene mixed World updates', () => {
   it('reconciles mixed fields against a fresh extract while retaining other slot history', () => {
     const instanceCollections = new InstanceProjectionStore();
     const first = createWorld(true);
-    const second = createWorld(false);
-    const worlds = [first.world, second.world] as const;
-    const leases = [
-      createRenderReadLease(first.world),
-      createRenderReadLease(second.world),
-    ] as const;
-    const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
+    const second = createWorld(false, first);
+    const lease = createRenderReadLease(first.world);
     const scene = new PersistentRenderScene({ instanceCollections });
     const requests: PersistentRenderCandidateRequest[] = [];
     const materialCaches = scene.materialSnapshotCacheStore();
@@ -238,7 +231,7 @@ describe('PersistentRenderScene mixed World updates', () => {
 
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
-      const result = extractFrames(worlds, owner, assets, materialCaches, {
+      const result = extractSource(first.world, assets, materialCaches, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -246,9 +239,9 @@ describe('PersistentRenderScene mixed World updates', () => {
       });
       return result;
     };
-    const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
+    const draw = () => scene.extractComposition(first.world, assets, build, lease);
     const oracle = () =>
-      extractFrames(worlds, owner, assets, undefined, {
+      extractSource(first.world, assets, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: 'full',
@@ -272,11 +265,10 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(scene.inspect().fullRebuilds).toBe(1);
       submit(initial);
       const initialRecords = scene.inspect().projectionRecords;
-      const initialUntouched = rowFor(initial, 0, first.untouched);
-      const initialOtherWorld = rowFor(initial, 1, second.untouched);
+      const initialUntouched = rowFor(initial, first.untouched);
+      const initialUnchanged = rowFor(initial, second.untouched);
       expect(initialUntouched).toBeDefined();
-      expect(initialOtherWorld).toBeDefined();
-
+      expect(initialUnchanged).toBeDefined();
       requests.length = 0;
       first.world.set(first.mixed, Instances, { transforms: matrices(3, 2) }).unwrap();
       first.world.set(first.mixed, Transform, { pos: [0.25, 0, 0] }).unwrap();
@@ -287,39 +279,47 @@ describe('PersistentRenderScene mixed World updates', () => {
         .unwrap();
       first.assets.update(first.materialHandle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
       first.world.update(0).unwrap();
-
       const mixed = draw();
       const mixedOracle = oracle();
       expect(frameFacts(mixed)).toEqual(frameFacts(drawableOracle()));
-      expect(rowFor(mixed, 0, first.hiddenTarget)).toBeUndefined();
-      expect(rowFor(mixedOracle, 0, first.hiddenTarget)?.authorVisible).toBe(false);
+      expect(rowFor(mixed, first.hiddenTarget)).toBeUndefined();
+      expect(rowFor(mixedOracle, first.hiddenTarget)?.authorVisible).toBe(false);
       expect(requests).not.toContain('full');
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
-      expect(rowFor(mixed, 0, first.mixed)?.instances?.instanceCount).toBe(3);
-      expect(rowFor(mixed, 0, first.sharedConsumer)?.material.snapshot.baseColor).toEqual(
+      expect(rowFor(mixed, first.mixed)?.instances?.instanceCount).toBe(3);
+      expect(rowFor(mixed, first.sharedConsumer)?.material.snapshot.baseColor).toEqual(
         new Float32Array([0, 1, 0]),
       );
-      expect(rowFor(mixed, 1, second.sharedConsumer)?.material.snapshot.baseColor).toEqual(
+      expect(rowFor(mixed, second.sharedConsumer)?.material.snapshot.baseColor).toEqual(
         new Float32Array([1, 0, 0]),
       );
 
-      const unchanged = rowFor(mixed, 1, second.untouched);
+      const unchanged = rowFor(mixed, second.untouched);
       expect(unchanged?.temporal?.previousSource).toBe('last-submitted');
       expect(unchanged?.temporal?.previousTransform.world).toEqual(
-        initialOtherWorld?.transform.world,
+        initialUnchanged?.transform.world,
       );
-      expect(rowFor(mixed, 0, first.mixed)?.temporal?.previousSource).toBe('last-submitted');
-      expect(rowFor(mixed, 0, first.mixed)?.temporal?.previousTransform.world).toEqual(
-        rowFor(initial, 0, first.mixed)?.transform.world,
+      expect(rowFor(mixed, first.mixed)?.temporal?.previousSource).toBe('current-seed');
+      expect(rowFor(mixed, first.mixed)?.temporal?.reactiveReasons).toContain('material-revision');
+      expect(rowFor(mixed, first.mixed)?.temporal?.previousTransform.world).toEqual(
+        rowFor(mixed, first.mixed)?.transform.world,
       );
       submit(mixed);
-
+      first.world.set(first.mixed, Transform, { pos: [0.5, 0, 0] }).unwrap();
+      first.world.update(0).unwrap();
+      const poseOnly = draw();
+      expect(frameFacts(poseOnly)).toEqual(frameFacts(drawableOracle()));
+      expect(rowFor(poseOnly, first.mixed)?.temporal?.previousSource).toBe('last-submitted');
+      expect(rowFor(poseOnly, first.mixed)?.temporal?.previousTransform.world).toEqual(
+        rowFor(mixed, first.mixed)?.transform.world,
+      );
+      submit(poseOnly);
       requests.length = 0;
       first.world.set(first.mixed, Instances, { transforms: matrices(0, 0) }).unwrap();
       first.world.update(0).unwrap();
       const zero = draw();
       expect(frameFacts(zero)).toEqual(frameFacts(drawableOracle()));
-      expect(rowFor(zero, 0, first.mixed)?.instances?.instanceCount).toBe(0);
+      expect(rowFor(zero, first.mixed)?.instances?.instanceCount).toBe(0);
       expect(requests).not.toContain('full');
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
       submit(zero);
@@ -329,40 +329,36 @@ describe('PersistentRenderScene mixed World updates', () => {
       first.world.update(0).unwrap();
       const one = draw();
       expect(frameFacts(one)).toEqual(frameFacts(drawableOracle()));
-      expect(rowFor(one, 0, first.mixed)?.instances?.instanceCount).toBe(1);
+      expect(rowFor(one, first.mixed)?.instances?.instanceCount).toBe(1);
       expect(requests).not.toContain('full');
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
     } finally {
-      leases[0].dispose();
-      leases[1].dispose();
+      lease.dispose();
       scene.dispose();
       instanceCollections.dispose();
     }
   });
 
-  it('retains slot and temporal history across World reorder and catalog refresh', () => {
+  it('retains slot and temporal history across quiet frames and catalog refresh', () => {
     const instanceCollections = new InstanceProjectionStore();
     const first = createWorld(true);
-    const second = createWorld(false);
-    let worlds: readonly World[] = [first.world, second.world];
-    let leases = [createRenderReadLease(first.world), createRenderReadLease(second.world)];
-    let owner = { cameraOwner: 0, resourceOwner: 0 };
+    const lease = createRenderReadLease(first.world);
     const scene = new PersistentRenderScene({ instanceCollections });
     const requests: PersistentRenderCandidateRequest[] = [];
     const materialCaches = scene.materialSnapshotCacheStore();
     const assets = first.assets;
     const build = (request: PersistentRenderCandidateRequest) => {
       requests.push(request);
-      return extractFrames(worlds, owner, assets, materialCaches, {
+      return extractSource(first.world, assets, materialCaches, {
         cull: 'none',
         retainHidden: true,
         renderables: request,
         instanceCollections,
       });
     };
-    const draw = () => scene.extractComposition(worlds, owner, assets, build, leases);
+    const draw = () => scene.extractComposition(first.world, assets, build, lease);
     const oracle = () =>
-      extractFrames(worlds, owner, assets, undefined, {
+      extractSource(first.world, assets, undefined, {
         cull: 'none',
         retainHidden: true,
         renderables: 'full',
@@ -384,20 +380,13 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(frameFacts(initial)).toEqual(frameFacts(drawableOracle()));
       submit(initial);
       const initialRecords = scene.inspect().projectionRecords;
-      const initialRow = rowFor(initial, 0, first.untouched);
+      const initialRow = rowFor(initial, first.untouched);
       expect(initialRow).toBeDefined();
-
-      worlds = [second.world, first.world];
-      const firstLease = leases[0];
-      const secondLease = leases[1];
-      if (firstLease === undefined || secondLease === undefined) throw new Error('missing lease');
-      leases = [secondLease, firstLease];
-      owner = { cameraOwner: 1, resourceOwner: 1 };
       requests.length = 0;
       const reordered = draw();
       expect(frameFacts(reordered)).toEqual(frameFacts(drawableOracle()));
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
-      const reorderedRow = rowFor(reordered, 1, first.untouched);
+      const reorderedRow = rowFor(reordered, first.untouched);
       expect(
         reorderedRow?.temporal?.previousSource,
         JSON.stringify(reorderedRow?.temporal?.reactiveReasons),
@@ -415,8 +404,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       expect(requests.every((request) => request === 'none')).toBe(true);
       expect(scene.inspect()).toMatchObject({ fullRebuilds: 1, projectionRecords: initialRecords });
     } finally {
-      leases[0]?.dispose();
-      leases[1]?.dispose();
+      lease.dispose();
       scene.dispose();
       instanceCollections.dispose();
     }
@@ -428,15 +416,14 @@ describe('PersistentRenderScene mixed World updates', () => {
     const lease = createRenderReadLease(first.world);
     const scene = new PersistentRenderScene({ instanceCollections });
     const assets = first.assets;
-    const owner = { cameraOwner: 0, resourceOwner: 0 } as const;
     const build = (request: PersistentRenderCandidateRequest) =>
-      extractFrames([first.world], owner, assets, scene.materialSnapshotCacheStore(), {
+      extractSource(first.world, assets, scene.materialSnapshotCacheStore(), {
         cull: 'none',
         retainHidden: true,
         renderables: request,
         instanceCollections,
       });
-    const draw = () => scene.extractComposition([first.world], owner, assets, build, [lease]);
+    const draw = () => scene.extractComposition(first.world, assets, build, lease);
 
     try {
       const initial = draw();
@@ -449,7 +436,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       first.world.set(first.parentA, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
       first.world.update(0).unwrap();
       const parentHidden = draw();
-      expect(rowFor(parentHidden, 0, first.mixed)).toBeUndefined();
+      expect(rowFor(parentHidden, first.mixed)).toBeUndefined();
       expect(
         scene.compositionSlots().find((slot) => slot.entityKey === first.sharedConsumer)?.snapshot,
       ).toBe(unrelatedSnapshot);
@@ -460,7 +447,7 @@ describe('PersistentRenderScene mixed World updates', () => {
       first.world.set(first.mixed, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
       first.world.update(0).unwrap();
       const leafHidden = draw();
-      expect(rowFor(leafHidden, 0, first.mixed)).toBeUndefined();
+      expect(rowFor(leafHidden, first.mixed)).toBeUndefined();
       expect(
         scene.compositionSlots().find((slot) => slot.entityKey === first.sharedConsumer)?.snapshot,
       ).toBe(unrelatedSnapshot);
@@ -476,7 +463,6 @@ describe('PersistentRenderScene mixed World updates', () => {
 it('two Renderers independently adopt asset edits, rebinding and retries', () => {
   const fixture = createWorld(true);
   const { world, materialHandle, sharedConsumer } = fixture;
-  const owner = { cameraOwner: 0, resourceOwner: 0 };
   const assets = fixture.assets;
   const consumers = [0, 1].map(() => {
     const instanceCollections = new InstanceProjectionStore();
@@ -488,7 +474,7 @@ it('two Renderers independently adopt asset edits, rebinding and retries', () =>
         fail = false;
         throw new Error('injected extraction failure');
       }
-      return extractFrames([world], owner, assets, scene.materialSnapshotCacheStore(), {
+      return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
         cull: 'none',
         retainHidden: true,
         renderables: request,
@@ -498,14 +484,14 @@ it('two Renderers independently adopt asset edits, rebinding and retries', () =>
     return {
       scene,
       lease,
-      draw: () => scene.extractComposition([world], owner, assets, build, [lease]),
+      draw: () => scene.extractComposition(world, assets, build, lease),
       fail: () => {
         fail = true;
       },
     };
   });
   const color = (frame: ExtractedFrame) =>
-    Array.from(rowFor(frame, 0, sharedConsumer)?.material.snapshot.baseColor ?? []);
+    Array.from(rowFor(frame, sharedConsumer)?.material.snapshot.baseColor ?? []);
   try {
     for (const consumer of consumers) expect(color(consumer.draw())).toEqual([1, 0, 0]);
     fixture.assets.update(materialHandle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();

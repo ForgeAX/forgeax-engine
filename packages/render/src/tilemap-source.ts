@@ -67,11 +67,19 @@ interface TilesetContent {
 
 /** One shared Tileset content per source scope. Adoption only touches changed handles. */
 export class TilemapSources {
-  private worlds = new WeakMap<RenderResourceScope, Map<number, TilesetContent>>();
+  private source: RenderResourceScope | undefined;
+  private readonly roots = new Map<number, TilesetContent>();
+  private rootsFor(source: RenderResourceScope): Map<number, TilesetContent> {
+    if (this.source !== source) {
+      this.clear();
+      this.source = source;
+    }
+    return this.roots;
+  }
   private partitions = new WeakMap<TilemapRenderSource, readonly TilemapChunk[]>();
 
   content(world: RenderResourceScope, handle: AssetHandle<'tileset'>): TilesetContent {
-    let roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     let content = roots?.get(handle);
     if (content !== undefined) return content;
     const asset = structuredClone(world.resolveAsset<TilesetAsset>(handle).unwrap());
@@ -86,10 +94,6 @@ export class TilemapSources {
       materials: new Map(),
       bytes: 0,
     };
-    if (roots === undefined) {
-      roots = new Map();
-      this.worlds.set(world, roots);
-    }
     roots.set(handle, content);
     return content;
   }
@@ -102,7 +106,7 @@ export class TilemapSources {
     return chunks;
   }
   adopt(world: RenderResourceScope, changes: readonly AssetChange[]): void {
-    const roots = this.worlds.get(world);
+    const roots = this.rootsFor(world);
     if (roots !== undefined) for (const change of changes) roots.delete(change.handle);
   }
   draws(
@@ -192,10 +196,11 @@ export class TilemapSources {
     return material;
   }
   detach(world: RenderResourceScope): void {
-    this.worlds.delete(world);
+    if (this.source === world) this.clear();
   }
   clear(): void {
-    this.worlds = new WeakMap();
+    this.roots.clear();
+    this.source = undefined;
     this.partitions = new WeakMap();
   }
 }
@@ -203,7 +208,6 @@ export class TilemapSources {
 /** Copy only selected changed author rows. No registry lookup, layout or derived World writes. */
 export function extractTilemapSources(
   world: World,
-  worldId: number,
   renderables: RenderableSnapshot[],
   selected?: ReadonlySet<number>,
   visibility?: { effective(entity: number): string },
@@ -223,7 +227,6 @@ export function extractTilemapSources(
     renderables.push({
       tilemap: source,
       transform: { world: new Float32Array(matrix) },
-      worldId,
       entityKey: entity,
       material: rootMaterial,
       materials: [rootMaterial],
@@ -255,7 +258,7 @@ export function extractTilemapSources(
 export function projectTilemapView(
   frame: ExtractedFrame,
   materials: MaterialFrame,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   sources: TilemapSources,
   assets: AssetRegistry | undefined,
   hasSources = frame.renderables.some((source) => source.tilemap !== undefined),
@@ -289,7 +292,7 @@ export function projectTilemapView(
       continue;
     }
     if (snapshot.authorVisible === false) continue;
-    const world = worlds[snapshot.worldId];
+    const world = sourceScope;
     if (world === undefined || assets === undefined)
       throw new Error('Tilemap requires its resource scope and renderer asset service');
     const content = sources.content(world, source.tileset);

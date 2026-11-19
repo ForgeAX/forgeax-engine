@@ -18,7 +18,6 @@
 // preservation contract: this file still hosts the canonical ECS/runtime imports,
 // `BUILTIN_TRIANGLE`, and a lease-bound Renderer draw request that the smoke gate checks.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -33,6 +32,7 @@ import {
 } from './smoke-helpers.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 const BUILTIN_TRIANGLE = createPrimitiveMesh('triangle').unwrap();
 
 
@@ -78,7 +78,8 @@ void rhi;
 // buildEngineShaderManifest helper (same composition path the plugin
 // emits at vite build time, charter P5).
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const { renderer, assets, errors } = await bootRenderer({
   createRenderer,
@@ -97,11 +98,7 @@ if (!attachment.ok) throw attachment.error;
 const { framesObserved, pixelSamples, device } = await runFrameLoopAndReadback({
   draw: () => {
     world.update().unwrap();
-    return renderer.draw({
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    return renderer.draw({ source: attachment.value });
   },
   shim,
   width: WIDTH,

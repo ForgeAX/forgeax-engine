@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import { runUnifiedCli } from '@forgeax/engine/devkit';
 import { connectViewWorkspace } from '../dist/modules/workspace/resident.mjs';
 import { writeProofGameAssets } from './fixtures/plugin-assets.mjs';
+import { projectDocument } from './project-document.mjs';
 
 const checkout=resolve(import.meta.dirname,'../../..');
 const root=resolve(checkout,'artifacts/pack-save-reopen/project');
@@ -32,7 +33,7 @@ const command=async(...args)=>{
 };
 await command('project','engine','use-local',checkout);
 await command('backend','start','--host-pack',join(view,'host.pack.json'));
-const start=await command('view','start');
+const start=await command('view','start','--project',root);
 const bootstrap=await fetch(new URL('/__forgeax/view/bootstrap',start.url)).then(response=>response.json());
 const client=await connectViewWorkspace({endpoint:bootstrap.endpoint,token:bootstrap.token,clientId:'save-reopen-proof'});
 const launch=JSON.parse(await readFile(join(checkout,'scripts/ci/browser-launch.json'),'utf8'));
@@ -45,7 +46,8 @@ page.on('pageerror',error=>errors.push(error.message));
 page.on('console',message=>{if(message.type()==='error')console.error(message.text());});
 try {
   await page.goto(start.url);
-  await page.waitForURL(url=>url.searchParams.has('forgeaxWorkspaceTarget'),{timeout:120000});
+  await projectDocument(page,120000);
+  assert.equal(page.url(),new URL(start.url).href);
   await page.waitForFunction(()=>globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:120000});
   let state=await client.getState();
   const projectId=state.project.id;

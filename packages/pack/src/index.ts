@@ -40,6 +40,7 @@ export {
 export { serializeMetaJson } from './cli-output.js';
 export {
   type CookedMaterialRecord,
+  checkMaterialProgramSetDigest,
   collectMaterialCookRefs,
   createMaterialArtifactDigest,
   createMaterialCookIdentity,

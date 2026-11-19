@@ -37,7 +37,6 @@ function fixture() {
       inverseBindMatrices: matrix(1),
     }));
   const row: RenderableSnapshot = {
-    worldId: 0,
     entityKey: 17,
     transform: { world: matrix(99) },
     material,
@@ -45,9 +44,9 @@ function fixture() {
     materialBindingSources: ['engine-default'],
     skinBinding: { skeleton: 7, joints: [19] },
   };
-  skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 17, snapshot: row }]));
-  skin.joint(0, 19, matrix(3));
-  const slot = required(scene.slotsSnapshot().lookup(0, 17)).slot;
+  skin.apply(scene.apply([{ kind: 'update', entityKey: 17, snapshot: row }]));
+  skin.joint(19, matrix(3));
+  const slot = required(scene.slotsSnapshot().lookup(17)).slot;
   const x = (root: ReturnType<SkinSceneInputs['capture']>) => {
     const out = mat4.create();
     expect(root.matrix(slot, 0, out, mat4.create())).toBe(true);
@@ -63,11 +62,11 @@ it('retains the submitted A root while B changes, aborts, and later C submits', 
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot()));
     expect(a.previous).toBeUndefined();
-    expect(a.slots.lookup(0, 17)?.snapshot.transform.world[12]).toBe(99);
+    expect(a.slots.lookup(17)?.snapshot.transform.world[12]).toBe(99);
     expect(x(a.current)).toBe(4);
     expect(() => frames.prepareFrame(scene.slotsSnapshot())).toThrow();
     const releaseA = frames.submitFrame(a, aDone.promise, true);
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
     const b = required(frames.prepareFrame(scene.slotsSnapshot()));
     expect(x(b.current)).toBe(9);
     expect(x(required(b.previous))).toBe(4);
@@ -76,7 +75,7 @@ it('retains the submitted A root while B changes, aborts, and later C submits', 
     expect(() => x(required(b.previous))).toThrow();
     expect(x(a.current)).toBe(4);
     expect(() => frames.submitFrame(b, Promise.resolve(), true)).toThrow();
-    skin.joint(0, 19, matrix(11));
+    skin.joint(19, matrix(11));
     const c = required(frames.prepareFrame(scene.slotsSnapshot()));
     expect(x(required(c.previous))).toBe(4);
     const releaseC = frames.submitFrame(c, cDone.promise, true);
@@ -126,7 +125,7 @@ it('keeps in-flight roots readable through history reset and owner retirement', 
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot())),
       released = frames.submitFrame(a, done.promise, true);
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
     const b = required(frames.prepareFrame(scene.slotsSnapshot()));
     frames.resetHistory();
     expect(() => x(b.current)).toThrow();
@@ -153,9 +152,8 @@ it('uses the actual fixed Scene slot root when a later frame reuses its address'
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot())),
       released = frames.submitFrame(a, done.promise, true);
-    skin.apply(scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
+    skin.apply(scene.apply([{ kind: 'remove', entityKey: 17 }]));
     const row: RenderableSnapshot = {
-      worldId: 0,
       entityKey: 29,
       transform: { world: matrix(7) },
       material,
@@ -163,12 +161,12 @@ it('uses the actual fixed Scene slot root when a later frame reuses its address'
       materialBindingSources: ['engine-default'],
       skinBinding: { skeleton: 7, joints: [19] },
     };
-    skin.apply(scene.apply([{ kind: 'update', worldId: 0, entityKey: 29, snapshot: row }]));
-    skin.joint(0, 19, matrix(8));
+    skin.apply(scene.apply([{ kind: 'update', entityKey: 29, snapshot: row }]));
+    skin.joint(19, matrix(8));
     const b = required(frames.prepareFrame(scene.slotsSnapshot()));
-    expect(b.slots.lookup(0, 29)?.slot).toBe(slot);
-    expect(a.slots.lookup(0, 17)?.slot).toBe(slot);
-    expect(a.slots.lookup(0, 29)).toBeUndefined();
+    expect(b.slots.lookup(29)?.slot).toBe(slot);
+    expect(a.slots.lookup(17)?.slot).toBe(slot);
+    expect(a.slots.lookup(29)).toBeUndefined();
     expect(b.current.historyCompatible(required(b.previous), slot)).toBe(false);
     expect(x(a.current)).toBe(4);
     frames.discardFrame();
@@ -199,7 +197,7 @@ it('does no root capture without Skin demand and retires old history after a suc
   try {
     const a = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     await f.frames.submitFrame(a, Promise.resolve(), true);
-    f.skin.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]));
+    f.skin.apply(f.scene.apply([{ kind: 'remove', entityKey: 17 }]));
     const empty = required(f.frames.prepareFrame(f.scene.slotsSnapshot()));
     expect(empty.current.jointCapacity).toBe(0);
     expect(f.x(required(empty.previous))).toBe(4);
@@ -219,7 +217,7 @@ it('bounds root retention through repeated submit, discard and reset cycles with
     bind = vi.spyOn(SkinInputs.prototype, 'bind');
   try {
     for (let index = 0; index < 160; index++) {
-      skin.joint(0, 19, matrix(index));
+      skin.joint(19, matrix(index));
       const frame = required(frames.prepareFrame(scene.slotsSnapshot()));
       if (index % 3 === 0) frames.discardFrame();
       else await frames.submitFrame(frame, Promise.resolve(), true);
@@ -297,9 +295,9 @@ it('retires every owned root and the live numeric tree after an actual range rel
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot()));
     await frames.submitFrame(a, Promise.resolve(), true);
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
     frames.prepareFrame(scene.slotsSnapshot());
-    skin.joint(0, 19, matrix(11));
+    skin.joint(19, matrix(11));
     fail = true;
     let failure: unknown;
     try {
@@ -333,7 +331,9 @@ it('keeps both queue rejection and numeric cleanup failure in the completion err
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot()));
     const released = frames.submitFrame(a, done.promise, true);
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
+    // Poses publish at capture; afterwards only the submitted root holds A's pose.
+    skin.capture().release();
     frames.resetHistory();
     release.mockImplementationOnce((address, count) => {
       actual(address, count);
@@ -357,12 +357,12 @@ it('retains physically submitted preparation reads without advancing Scene histo
   try {
     const a = required(frames.prepareFrame(scene.slotsSnapshot()));
     await frames.submitFrame(a, Promise.resolve(), true);
-    skin.joint(0, 19, matrix(8));
+    skin.joint(19, matrix(8));
     const b = required(frames.prepareFrame(scene.slotsSnapshot()));
     const released = frames.submitFrame(b, done.promise, false);
     frames.discardFrame();
     expect(x(b.current)).toBe(9);
-    skin.joint(0, 19, matrix(11));
+    skin.joint(19, matrix(11));
     const c = required(frames.prepareFrame(scene.slotsSnapshot()));
     expect(x(required(c.previous))).toBe(4);
     frames.discardFrame();

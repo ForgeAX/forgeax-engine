@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { PointLight, RectAreaLight, SpotLight } from '../components';
 import { publicationFrameDependencies } from '../publication/dependencies';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -41,7 +41,7 @@ describe('IES on local lights', () => {
         .unwrap();
     }
     propagateTransforms(world).unwrap();
-    const frame = extractFrames([world], 0, testAssets(world));
+    const frame = extractSource(world, testAssets(world));
     const lights = [...frame.lights.point, ...frame.lights.spot, ...frame.lights.rect];
     expect(lights).toHaveLength(3);
     for (const light of lights) {
@@ -101,7 +101,7 @@ describe('IES on local lights', () => {
     }
   });
 
-  it('keeps equal handle slots from different Worlds in distinct GPU layers', () => {
+  it('isolates equal handle slots in independent source publications', () => {
     const worlds = [new World(), new World()];
     for (const [index, world] of worlds.entries()) {
       const asset = profile();
@@ -111,11 +111,13 @@ describe('IES on local lights', () => {
         world.spawn({ component, data: { iesProfile: handle } }).unwrap();
       }
     }
-    const frame = extractFrames(worlds, 0);
-    expect(frame.lights.point.map((light) => light.iesProfileSlice)).toEqual([0, 1]);
-    expect(frame.lights.rect.map((light) => light.iesProfileSlice)).toEqual([0, 1]);
-    expect(frame.lights.point[0]?.iesProfileData).not.toEqual(
-      frame.lights.point[1]?.iesProfileData,
+    const frames = worlds.map((world) => extractSource(world, testAssets(world)));
+    for (const frame of frames) {
+      expect(frame.lights.point.map((light) => light.iesProfileSlice)).toEqual([0]);
+      expect(frame.lights.rect.map((light) => light.iesProfileSlice)).toEqual([0]);
+    }
+    expect(frames[0]?.lights.point[0]?.iesProfileData).not.toEqual(
+      frames[1]?.lights.point[0]?.iesProfileData,
     );
   });
 
@@ -130,7 +132,7 @@ describe('IES on local lights', () => {
     world.spawn({ component: PointLight, data: { iesProfile: handle } }).unwrap();
     let acceptedData: Uint8Array | undefined;
     for (let frameIndex = 0; frameIndex < 2; frameIndex++) {
-      const frame = extractFrames([world], 0, testAssets(world));
+      const frame = extractSource(world, testAssets(world));
       expect(frame.lights.point[0]?.iesProfileData).toEqual(asset.data);
       if (acceptedData !== undefined)
         expect(frame.lights.point[0]?.iesProfileData).toBe(acceptedData);
@@ -145,7 +147,7 @@ describe('IES on local lights', () => {
       const handle = testAssets(world).create(profile()).unwrap();
       world.spawn({ component: PointLight, data: { iesProfile: handle } }).unwrap();
     }
-    const frame = extractFrames([world], 0, testAssets(world));
+    const frame = extractSource(world, testAssets(world));
     expect(frame.lights.point.slice(0, 32).map((light) => light.iesProfileSlice)).toEqual(
       Array.from({ length: 32 }, (_, index) => index),
     );
@@ -161,7 +163,7 @@ describe('IES on local lights', () => {
   ])('keeps %s unprofiled lights at multiplicative identity', (component) => {
     const world = new World();
     world.spawn({ component, data: {} }).unwrap();
-    const frame = extractFrames([world], 0, testAssets(world));
+    const frame = extractSource(world, testAssets(world));
     const light = frame.lights.point[0] ?? frame.lights.rect[0];
     if (light === undefined) throw new Error('missing light');
     expect(light.iesProfileData).toBeUndefined();

@@ -1,17 +1,24 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { createHostAssembly } from '@forgeax/engine-host/protocol';
 import { createServer, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { allocateLoopbackPort } from '../tools/browser-host.js';
 
 it('publishes and restores asset Pack edits while a borrowed frontend remains immutable', async () => {
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-host-asset-publication-'));
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-host-asset-publication-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
   let publications = 0;
   const backend = await createBackendHost({
     startupPlugins: [
@@ -29,6 +36,13 @@ it('publishes and restores asset Pack edits while a borrowed frontend remains im
   });
   let server: ViteDevServer | undefined;
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(
@@ -104,6 +118,6 @@ it('publishes and restores asset Pack edits while a borrowed frontend remains im
   } finally {
     await server?.close();
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }, 120_000);

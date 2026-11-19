@@ -2,6 +2,21 @@
 
 ## Authoring diagnostics and discovery
 
+The Node atlas CLI matches files through `glob`, supports extglobs and follows
+directory symlinks. Directories are excluded from image decoding; no matching
+files returns the structured `atlas-empty-input` failure.
+
+ScriptablePack runtime imports resolve with Node's ESM conditions from the original
+author module, including `@forgeax/engine/geometry` and separate Engine domain packages.
+The relocated Worker imports the resulting canonical file URL. It never borrows
+dependencies from the Pack loader installation; projects and source libraries own
+their imports. Missing-module errors retain the author path and specifier in both
+structured detail and the ordinary error message.
+
+Live generation admits the pure `ReflectionProbe` schema and
+`REFLECTION_PROBE_UPDATE_ON_CHANGE` through both Render import paths. Renderer
+execution factories remain outside the live generation import surface.
+
 Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and params, including `missingProperty`. Repair the reported field rather than assuming every schema failure is a GUID problem. Gateway scan failures retain their original structured code and detail under `detail.cause`.
 
 `PACK_AUTHORING_OPERATION_DESCRIPTORS` is the operation-semantic authority. Source operations may write; values/apply, rebuild and cold-cook require an inspected `expectedRevision`. Create, clone/import and draft operations retain their own identity and document revision contracts. DevKit projects this metadata into operation help and required inputs.
@@ -19,13 +34,18 @@ the original WGSL bytes are unchanged. Source development remains per-artifact.
 
 Published packages with repeated cooked material programs or selection ABIs use
 the `pack-material-programs/2` envelope: one complete Pack plus package-local
-`programs` and `abis` tables. The transport replaces `material-cook/4` program
+`programs` and `abis` tables. The transport replaces `material-cook/5` program
 records with bounded integer references, and each table program's
 `selections[].abi` with a reference into `abis`, since many specializations share
 one reflected ABI. Decode restores readonly sharing before normal
 Pack, publication, artifact and material validation. Material parameters, GUIDs,
 receipts, references and specialization facts remain in their original records.
-Plain packages without repeated programs keep their existing envelope.
+Native typed artifact bytes use the `pack-material-programs/3` envelope. Its
+binary table reuses the Pack snapshot codec to preserve complete byte views
+without JSON numeric-array expansion. Decode restores Uint8Array program bytes
+before the same material and publication checks. Other author metadata retains
+its JSON representation, and `/2` remains readable. Plain JSON packages without
+repeated programs keep their existing envelope.
 Malformed references, non-object table records, unknown envelope fields and
 unused table entries fail closed. There is no process-wide intern pool.
 
@@ -75,7 +95,7 @@ and `createFileSystemPackDrafts`. Declaration reads parse literal descriptors
 without evaluating user modules. Dynamic TS stays supported by ordinary builds
 but is not automatically rewritten. Opted-in Worker builds remove live metadata
 from the execution closure and reject ambient source/reflection bypasses.
-Named Scene, camera/view/resolution, light/sky, physics and Skin schemas used by Game3D are admitted as
+Named Scene, camera/view/resolution, light/sky (including `VolumetricCloudLayer`), physics and Skin schemas used by Game3D are admitted as
 generation vocabulary; runtime service and plugin imports remain unavailable.
 
 A draft owns sparse edits, at most 256 undo steps and one reusable generation.
@@ -297,6 +317,18 @@ and strips it for shadow/depth entries; the cooker and runtime share that
 projection. It selects an additional output ABI from the same authored Surface,
 not a second material definition.
 
+`MaterialCookRasterContext.viewClipping` is an optional `true` receiving-view
+capability. Absence means off; material-local clipping is independent. The pass
+projection preserves this axis for color, depth and shadow. The producer publishes
+both programs for Engine Surface roots so per-view selection never rewrites WGSL.
+
+`MaterialCookRasterContext.lodCoverage` independently selects scene-index cross-fade
+coverage. Absence is off. Scene-index-capable Standard, Unlit and ShadowCaster
+programs publish the four LOD/view-clipping states; direct-only, terrain and
+uniform-fallback contexts do not publish an unused LOD family. The existing paired
+submission ABI remains intact. Material-local planes and authored alpha coverage
+retain their own contracts.
+
 `MaterialCookRasterContext.geometry` distinguishes `sprite-instances` from
 ordinary `mesh`/`sprite` layouts. This is a derived program selection within
 the same material GUID; it does not add a second authoring asset.
@@ -335,10 +367,14 @@ The public happy path is: declare one stable `packageId` and return a complete
 publish Pack v2 plus the Catalog, then call `assets.load(guid, kind)` and bind the
 returned asset handle. Use `assets.read(handle)` when a detached payload snapshot
 is needed.
-The durable consumer matrix is the exported
-`SCRIPTABLE_PACK_ASSET_KINDS` list: mesh, material, scene, texture, equirect,
-sampler, font, render-pipeline, tileset, video, skeleton, skin,
-animation-clip, animation-graph, audio, particle-effect, and ies-profile.
+The durable consumer matrix is the exported `SCRIPTABLE_PACK_ASSET_KINDS`:
+`plugin`, `mesh`, `material`, `scene`, `texture`, `texture-generator`,
+`gpu-texture`, `equirect`, `sampler`, `font`, `render-pipeline`, `tileset`,
+`video`, `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`,
+`particle-effect`, `ies-profile`, `terrain`, `navigation-mesh`, `water-body`,
+`water-zone`, `water-wave-set`, `water-brush-recipe`, and `water-simulation-recipe`.
+Water declarations retain the closed payload contracts in
+[Types](../types/README.md); Pack owns their cooked output references and geometry.
 
 Every successful row keeps its `sourceKey` identity, dependency `refs`, and
 producer-owned `artifacts`. Audio keeps `mediaType` and bytes; particle effects
@@ -423,6 +459,12 @@ instead of requiring a browser URL loader. Unknown or changed code fails through
 retention and publication remain unchanged. Author modules can import a local
 text file with `?raw`; the Node author compiler and source snapshot preserve the
 same bytes consumed by the browser bundler.
+
+Build-time Packs can import binary resources with `?bytes` to receive a
+`Uint8Array`, for example `import pixels from './pixels.raw?bytes'`. The source
+snapshot retains and hashes the original bytes; the isolated Node compiler reads
+its captured binary artifact without UTF-8 decoding. These are build-time source
+inputs; the Pack publishes ordinary cooked assets for runtime and View consumers.
 
 ## VFX Program v3 in Pack v2
 
@@ -789,7 +831,7 @@ When `kind: 'material'`, the `payload` object carries `passes[]` + `values` (fea
 | `values` | `Record<string, unknown>` | Child-owned values, including per-slot texture coordinates. |
 | `parent` | `AssetGuid` | Optional serialized parent edge. |
 
-**Validation** is performed by the material schema and build-time cook. The cook resolves the parent chain, validates values and pass programs, and emits a `material-cook/4` record, artifact, references, and receipt. The receipt keeps material, source, layout, program, pipeline, publication, and cook identities together with compiler/WASM provenance and generation counters. Runtime reports a structured missing-cook error instead of compiling a material; stale generations are recooked by the producer.
+**Validation** is performed by the material schema and build-time cook. The cook resolves the parent chain, validates values and pass programs, and emits a `material-cook/5` record, artifact, references, and receipt. The receipt keeps material, source, layout, program, pipeline, publication, and cook identities together with compiler/WASM provenance and generation counters. Runtime reports a structured missing-cook error instead of compiling a material; stale generations are recooked by the producer.
 
 Raster program contexts distinguish `storage-buffer-minimum`,
 `storage-buffer-projector`, `storage-buffer`, `storage-buffer-atmosphere` and
@@ -895,7 +937,9 @@ work begins.
 
 `finalizePackageProduct(...)` accepts the terminal producer product, validates
 one receipt per GUID, validates asset-local artifact paths and bytes, and emits
-the deterministic package URL and digest. Producers provide policy through the
+the deterministic package URL and digest. Explicit relative bases (`.`, `./`, `../`)
+remain relative, so the Catalog row and publication locator resolve to the same
+package under file delivery and nested HTTP hosts. Producers provide policy through the
 finalizer sink; Pack owns package serialization and publication facts.
 
 Transport finalization reuses each artifact's content hash for the source revision
@@ -1117,3 +1161,17 @@ Author-closure transfer uses the same relative source candidate order as scripta
 The module executor pool derives capacity from its retained Worker set. Its cache preparation resolves path and ownership together, and concurrent pool disposals await the same Worker retirements before removing an owned cache.
 
 `NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication. A cooker without `concurrency: 'parallel'` is admitted one cook at a time in call order per cooker key, across every registry and instance in the process, so hosts may call `runDraft` concurrently; parallel cookers run their calls at once.
+
+## Runtime GPU texture declarations
+
+`texture-generator` stores the cooked GPU program and recipe. Independent
+`GpuTextureAsset` / `gpu-texture` stores its output reference; the existing
+`TextureAsset` remains a byte-texture asset.
+
+`gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`
+emits `generator/<name>` and `gpu-texture/<name>/<output>` using ordinary Pack GUID
+derivation. Author `.pack.json` with the same generator payload and source-only
+texture references, or return the helper map from `.pack.ts`. The build prepares
+GPU programs, never pixels. Runtime Packs reuse an already prepared generator's
+`programs`; raw WGSL cooking is a build responsibility. Generated pixel data and
+GPU objects never enter the Pack or its portable snapshot.

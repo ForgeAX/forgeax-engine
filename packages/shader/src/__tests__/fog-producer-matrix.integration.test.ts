@@ -25,10 +25,10 @@ describe('Built-in fog producer matrix', () => {
     for (const file of TRANSLUCENT_WRITERS) {
       const source = shaderSource(file);
       expect(source, file).toMatch(
-        /#import forgeax_view::fog::\{translucent_fog(?:_transmission)?\}/,
+        /#import forgeax_view::fog::\{(?:translucent|forward)_fog(?:_transmission)?(?:,\s*vertex_height_fog)?\}/,
       );
       expect(
-        source.match(/translucent_fog(?:_transmission)?\(view,/g)?.length ?? 0,
+        source.match(/(?:translucent|forward)_fog(?:_transmission)?\(view,/g)?.length ?? 0,
         file,
       ).toBeGreaterThan(0);
     }
@@ -38,8 +38,10 @@ describe('Built-in fog producer matrix', () => {
     for (const file of OPAQUE_ONLY) {
       expect(shaderSource(file), file).not.toContain('forgeax_view::fog');
     }
-    expect(shaderSource('analytic-fog.wgsl')).toContain('height_fog(fog_view,');
-    expect(shaderSource('analytic-fog.wgsl')).toContain('if depth <= 0.0 { discard; }');
+    const analytic = shaderSource('analytic-fog.wgsl');
+    expect(analytic).toContain('height_fog(fog_view,');
+    // Empty depth contributes no premultiplied fog in either sample path.
+    expect(analytic).toContain('if depth <= 0.0 { return vec4<f32>(0.0); }');
   });
 
   it('keeps one fog evaluation without private per-shader fog entry points', () => {

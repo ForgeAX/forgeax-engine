@@ -19,5 +19,5 @@ export {
   SHARED_KERNEL_ELIGIBILITY_REASONS,
   SHARED_KERNEL_EXECUTOR_RESOURCE_KEY,
   sharedKernelEligibility,
-  splitSharedSpan,
+  sliceSharedSpan,
 } from './execution/shared-kernel';

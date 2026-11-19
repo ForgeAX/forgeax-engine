@@ -379,7 +379,7 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
           return {
             providerPresent:
               world.hasResource(VIDEO_SOURCE_PROVIDER_KEY) &&
-              world.getResource<VideoSourceProvider>(VIDEO_SOURCE_PROVIDER_KEY) === stable.provider,
+              world.getResource(VIDEO_SOURCE_PROVIDER_KEY) === stable.provider,
             sameWorld: world === stable.world,
             sameRenderer: renderer === stable.renderer,
             sameHost: renderer === stable.renderer,
@@ -415,11 +415,7 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
         return;
       }
       world.update().unwrap();
-      const r = renderer.draw({
-        leases: [attachment.value],
-        camera: { lease: attachment.value },
-        environment: { lease: attachment.value },
-      });
+      const r = renderer.draw({ source: attachment.value });
       if (!r.ok) {
         console.error('[video-texture] draw error:', r.error.code, r.error.hint);
       } else {

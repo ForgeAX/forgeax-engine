@@ -44,6 +44,77 @@ test('program compiler rejects changed bytes, foreign import identities and over
   await assert.rejects(bundlePackProgram({ ...input, padding: 'x'.repeat(4 * 1024 * 1024) }), /byte bound/);
 });
 
+test('compiled programs retain the native module metadata of their published ESM driver', async () => {
+  const artifact = preparePackProgram({ entry: 'entry.mjs', export: 'meta', modules: {
+    'entry.mjs': 'export const meta = { url: import.meta.url, resolve: import.meta.resolve };',
+  } }).unwrap();
+  const source = await bundlePackProgram({ program: artifact, imports: {}, bindingId: 'meta-fixture', exports: {} });
+  const url = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const { default: driver } = await import(url);
+  assert.equal(Object.isFrozen(driver), true);
+  const loaded = driver.load('entry.mjs');
+  assert.equal(loaded.meta.url, url);
+  assert.equal(typeof loaded.meta.resolve, 'function');
+});
+
+test('native program host loads its verified blob through the borrowed realm importer', async () => {
+  const previousImport = globalThis.__fxMcpImport;
+  const imported = [];
+  let count = 3;
+  class Constructor {}
+  const nativeDefault = {};
+  globalThis.__fxMcpImport = async url => {
+    imported.push(url);
+    const source = await (await fetch(url)).text();
+    return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  };
+  const hosts = createMcpProgramHosts(globalThis, async input => ({ source: new TextEncoder().encode(await bundlePackProgram(input)) }), async ref => ref.source);
+  try {
+    const host = hosts.create(imports, async () => ({ Constructor, default: nativeDefault, get counter() { return count; } }));
+    const url = await host.publish(program(), imports);
+    const namespace = await host.importModule(url);
+    assert.deepEqual(imported, [url.split('#')[0]]);
+    assert.strictEqual(namespace.Constructor, Constructor);
+    assert.strictEqual(namespace.nativeDefault, nativeDefault);
+    assert.deepEqual(namespace.read(), [3, 7]);
+    count = 8;
+    assert.deepEqual(namespace.read(), [8, 7]);
+    const foreign = hosts.create(imports, async () => ({}));
+    await assert.rejects(foreign.importModule(url), /outside this MCP program host/);
+    assert.equal(imported.length, 1);
+  } finally {
+    hosts.dispose();
+    if (previousImport === undefined) delete globalThis.__fxMcpImport;
+    else globalThis.__fxMcpImport = previousImport;
+  }
+});
+
+test('native program host reports a missing realm importer for an owned published module', async () => {
+  const hosts = createMcpProgramHosts({}, async () => ({ source: new TextEncoder().encode('export default { load() { return {}; } };') }), async ref => ref.source);
+  try {
+    const host = hosts.create({}, async () => ({}));
+    const url = await host.publish(preparePackProgram({ entry: 'entry.mjs', export: 'default', modules: { 'entry.mjs': 'export default 1;' } }).unwrap(), {});
+    await assert.rejects(host.importModule(url), /MCP native module loader is unavailable/);
+  } finally { hosts.dispose(); }
+});
+
+test('retiring a program host prevents a pending native import from executing its entry', async () => {
+  let finishImport;
+  let executions = 0;
+  const realm = { __fxMcpImport: () => new Promise(resolve => { finishImport = resolve; }) };
+  const hosts = createMcpProgramHosts(realm, async () => ({ source: new TextEncoder().encode('export default {};') }), async ref => ref.source);
+  try {
+    const host = hosts.create({}, async () => ({}));
+    const url = await host.publish(preparePackProgram({ entry: 'entry.mjs', export: 'default', modules: { 'entry.mjs': 'export default 1;' } }).unwrap(), {});
+    const importing = host.importModule(url);
+    const rejected = assert.rejects(importing, /retired/);
+    hosts.dispose();
+    finishImport({ default: { load() { executions++; return {}; } } });
+    await rejected;
+    assert.equal(executions, 0);
+  } finally { hosts.dispose(); }
+});
+
 test('native program host borrows only its own Engine imports and retires namespace and URL leases', async () => {
   const realm = {};
   const calls = [];

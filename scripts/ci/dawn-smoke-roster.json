@@ -169,7 +169,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-triangle and hello-room; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-triangle and hello-room; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/hello-culling",
@@ -577,19 +577,6 @@
       ]
     },
     {
-      "package": "@forgeax/hello-multi-world",
-      "path": "apps/hello/multi-world/package.json",
-      "classification": "run",
-      "gates": [
-        {
-          "gateId": "hello-multi-world/smoke",
-          "commandId": "smoke",
-          "executionClass": "independent",
-          "oracle": "frameReceipt"
-        }
-      ]
-    },
-    {
       "package": "@forgeax/hello-multithreaded-execution",
       "path": "apps/hello/multithreaded-execution/package.json",
       "classification": "excluded",
@@ -949,7 +936,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-1-getting-started-2-hello-triangle",
@@ -963,7 +950,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-triangle; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-1-getting-started-3-shaders",
@@ -977,7 +964,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-custom-shader; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-custom-shader; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/hello-volumetric-fog",
@@ -1020,7 +1007,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-transform-hierarchy; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-transform-hierarchy; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-1-getting-started-6-coordinate-systems",
@@ -1034,7 +1021,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-multi-world; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains the single-source Renderer smokes; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-1-getting-started-7-camera",
@@ -1048,7 +1035,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains hello-topology and multi-camera Browser; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains hello-topology and multi-camera Browser; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-2-lighting-1-colors",
@@ -1062,7 +1049,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-2-lighting-2-basic-lighting",
@@ -1076,7 +1063,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains color-lighting direct-light; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains color-lighting direct-light; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-2-lighting-3-materials",
@@ -1090,7 +1077,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains Standard surface and material publication; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains Standard surface and material publication; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-2-lighting-4-lighting-maps",
@@ -1104,7 +1091,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains normal-bump and direct-light Dawn; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains normal-bump and direct-light Dawn; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-2-lighting-5-light-casters",
@@ -1131,7 +1118,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains light-casters and clustered-light tests; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains light-casters and clustered-light tests; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-3-model-loading-1-model-loading",
@@ -1164,7 +1151,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains GBuffer replay and depth RHI tests; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains GBuffer replay and depth RHI tests; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-10-anti-aliasing-msaa",
@@ -1178,7 +1165,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains Browser MSAA gate; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains Browser MSAA gate; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-2-stencil-testing",
@@ -1192,7 +1179,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains RHI stencil contract; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains RHI stencil contract; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-3-blending",
@@ -1206,7 +1193,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains OIT and transmission; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains OIT and transmission; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-4-face-culling",
@@ -1220,7 +1207,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains culling and material raster state; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains culling and material raster state; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-5-framebuffers",
@@ -1255,7 +1242,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains image environment and reflection; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains image environment and reflection; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-7-advanced-glsl-ubo",
@@ -1269,7 +1256,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains RHI uniform layout and custom shaders; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains RHI uniform layout and custom shaders; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-4-advanced-opengl-9-instancing",
@@ -1309,7 +1296,7 @@
           "oracle": "frameReceipt"
         }
       ],
-      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap remains covered."
+      "reason": "Core CI retains color-lighting parity; the tutorial Browser bootstrap runs in full-profile validation."
     },
     {
       "package": "@forgeax/app-learn-render-5-advanced-lighting-3-1-shadow-mapping-3-full",

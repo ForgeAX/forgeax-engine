@@ -42,6 +42,7 @@ const ENGINE_SOURCES = [
   'ibl-shared.wgsl',
   'ibl-sampling.wgsl',
   'tbn.wgsl',
+  'tangent-frame32.wgsl',
   'lighting-directional.wgsl',
   'lighting-punctual.wgsl',
   'lighting-probe.wgsl',

@@ -14,6 +14,7 @@ import type {
 import { ok as makeOk } from '@forgeax/engine-types';
 import { recordReplayCapabilities } from '../capabilities';
 import type { HandleId, RhiCallEvent } from '../types';
+import { RecorderBootstrap } from './bootstrap';
 import {
   type CreateShaderModuleFn,
   type DebugRhiInstance,
@@ -38,7 +39,7 @@ export function wrap(
     handleMap: new WeakMap(),
     textureViewHandleMap: new WeakMap(),
     pendingExternalBindings: new WeakMap(),
-    bootstrapCreates: new Map(),
+    bootstrapCreates: new RecorderBootstrap(),
     snapshotSeededHandles: new Set(),
     omittedSeeds: new Set(),
     snapshotGeneration: 0,
@@ -119,11 +120,14 @@ export function wrap(
       s.blobPool = new Map();
       s.handleMap = new WeakMap();
       s.textureViewHandleMap = new WeakMap();
-      s.bootstrapCreates = new Map();
+      s.pendingExternalBindings = new WeakMap();
+      s.bootstrapCreates = new RecorderBootstrap();
       s.descriptorTable = new Map();
       s.indexBufferShadow = new Map();
       s.tinyTextureShadow = new Map();
       s.snapshotSeededHandles = new Set();
+      s.omittedSeeds = new Set();
+      s.snapshotGeneration += 1;
       s.snapshotProgress = undefined;
       s.frameIdx = 0;
       s.bootstrap = true;

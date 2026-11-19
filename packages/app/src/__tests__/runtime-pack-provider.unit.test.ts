@@ -1,6 +1,6 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { createFixedRuntimePackSnapshot } from '@forgeax/engine-import';
+import { createFixedRuntimePackSnapshot, scriptablePackFingerprint } from '@forgeax/engine-import';
 import {
   createRuntimePackPublication,
   type FixedPackPublication,
@@ -10,12 +10,15 @@ import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { type Context, inspectPluginFiber, type PluginPrograms } from '@forgeax/engine-plugin';
 import { encodeBase64, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { defined } from '../../../assets-runtime/src/__tests__/assert-defined.js';
-import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
+import { defined } from '../../../assets-runtime/src/__tests__/assert-defined';
 import { createAssetRuntimeAssembly } from '../assets-runtime-assembly.js';
 import { activateExecutionRoot } from '../execution/bootstrap-entry.js';
 import { assetRegistryPlugin } from '../internal/assets-world-plugin.js';
 import { assembleRuntimePacks } from '../runtime-packs.js';
+import {
+  provideRuntimePackTestResources,
+  runtimePackTestResources,
+} from './runtime-pack-resources.fixture';
 
 it('captures a shared delivered dependency once across all admission roots', async () => {
   const ids = ['b01', 'b02', 'b03'].map((suffix) => `01900000-0000-7000-8000-000000000${suffix}`);
@@ -196,6 +199,7 @@ it('keeps runtime programs in the asset provider and mounts roots after independ
   };
   const world = new World();
   const context = await createWorldContext(world, []);
+  provideRuntimePackTestResources(context);
   const provider = context.plugin(assetRegistryPlugin(assembly, programs, { scopeId: 'test' }));
   await provider.await();
   let callerContext: Context | undefined;
@@ -211,7 +215,7 @@ it('keeps runtime programs in the asset provider and mounts roots after independ
     const runtime = context.runtimePacks;
     if (!runtime) throw new Error('missing realm producer');
     expect(context.pluginPrograms).toBe(programs);
-    expect(world.hasResource('runtime-plugin-active')).toBe(false);
+    expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(false);
     const packageId = '01900000-0000-7000-8000-000000000321';
     const program = 'project:runtime-behavior.js#default';
     (
@@ -229,9 +233,9 @@ it('keeps runtime programs in the asset provider and mounts roots after independ
               entry: 'behavior.js',
               export: 'default',
               modules: {
-                'behavior.js': `export default { inject: ['world'], apply(ctx) {
-          if (!ctx.world.getResource('game-ready')) throw new Error('root mounted before game readiness');
-          ctx.effect(() => { ctx.world.insertResource('runtime-plugin-active', true); return () => ctx.world.removeResource('runtime-plugin-active'); });
+                'behavior.js': `export default { inject: ['world', 'runtimePackTestResources'], apply(ctx) {
+          if (!ctx.world.getResource(ctx.runtimePackTestResources.GameReady)) throw new Error('root mounted before game readiness');
+          ctx.effect(() => { ctx.world.insertResource(ctx.runtimePackTestResources.RuntimePluginActive, true); return () => ctx.world.removeResource(ctx.runtimePackTestResources.RuntimePluginActive); });
         } };`,
               },
             }).unwrap(),
@@ -239,31 +243,31 @@ it('keeps runtime programs in the asset provider and mounts roots after independ
         },
       })
     ).unwrap();
-    expect(world.hasResource('runtime-plugin-active')).toBe(false);
+    expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(false);
     // Game host readiness remains separate from installing the asset/program provider.
-    world.insertResource('game-ready', true);
+    world.insertResource(runtimePackTestResources.GameReady, true);
     const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'behavior'));
     const root = await activateExecutionRoot(callerContext, { guid });
-    expect(world.getResource('runtime-plugin-active')).toBe(true);
+    expect(world.getResource(runtimePackTestResources.RuntimePluginActive)).toBe(true);
     expect(context.runtimePacks).toBe(runtime);
     expect(context.pluginPrograms?.programs.has(program)).toBe(true);
     await root.fiber.dispose();
-    expect(world.hasResource('runtime-plugin-active')).toBe(false);
+    expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(false);
     expect(runtime.producer.inspect().packs).toHaveLength(1);
     const second = await activateExecutionRoot(callerContext, { guid });
-    expect(world.hasResource('runtime-plugin-active')).toBe(true);
+    expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(true);
     const readsBeforeDisposal = enumerations;
     await provider.dispose();
     expect(enumerations, 'disposing the asset provider must not restart its base Catalog IO').toBe(
       readsBeforeDisposal,
     );
     expect(inspectPluginFiber(second.fiber).state).not.toBe('active');
-    expect(world.hasResource('runtime-plugin-active')).toBe(false);
+    expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(false);
   } finally {
     await context.fiber.dispose();
   }
   expect(assets.hasCatalogSource).toBe(false);
-  expect(world.hasResource('runtime-plugin-active')).toBe(false);
+  expect(world.hasResource(runtimePackTestResources.RuntimePluginActive)).toBe(false);
 });
 
 it('preserves structured root mount failures through Cordis startup', async () => {

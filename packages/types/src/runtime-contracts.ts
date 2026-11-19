@@ -55,10 +55,20 @@ export interface ShaderBindingReads {
   /** Struct fields; omitted means the complete bound resource. */
   readonly fields?: readonly string[];
 }
+/** Native validated entry effects, including reachable helper calls. */
+export interface ShaderEntryPointEffects {
+  readonly mayDiscard: boolean;
+  readonly writesDepth: boolean;
+  readonly writesSampleMask: boolean;
+  /** Bound storage buffers/textures, including atomic writes; excludes private/workgroup state. */
+  readonly writesStorage: boolean;
+}
 export interface ShaderEntryPointReads {
   readonly name: string;
   readonly stage: 'vertex' | 'fragment' | 'compute';
   readonly bindings: readonly ShaderBindingReads[];
+  /** Missing legacy metadata is unknown, never proof of an effect-free entry. */
+  readonly effects?: ShaderEntryPointEffects;
 }
 
 /** Naga-derived byte layout for one member of a bound shader resource. */
@@ -681,6 +691,7 @@ export interface ShaderColorTargetContract {
 /** Source-published facts WGSL reflection cannot express, such as target formats and numeric budgets. */
 export interface ShaderProgramContract {
   readonly schemaVersion: 'shader-program-contract/1';
+  readonly gbuffer?: import('./material-program-abi.js').MaterialGBufferLayout;
   readonly colorTargets?: readonly ShaderColorTargetContract[];
   readonly publicationFormat?: string;
   readonly numerical?: {
@@ -750,6 +761,7 @@ export function isShaderProgramContract(value: unknown): value is ShaderProgramC
     (typeof value.publicationFormat !== 'string' || value.publicationFormat.length === 0)
   )
     return false;
+  if (value.gbuffer !== undefined && value.gbuffer !== 'standard-gbuffer/2') return false;
   if (value.colorTargets !== undefined && !isShaderColorTargets(value.colorTargets)) return false;
   if (value.numerical !== undefined && !isShaderNumericalContract(value.numerical)) return false;
   return true;
@@ -852,6 +864,19 @@ const SHADER_STAGES: ReadonlySet<unknown> = new Set(['vertex', 'fragment', 'comp
  */
 const frozenShaderEntryPointReads = new WeakSet<object>();
 
+function validShaderEntryEffects(effects: Record<string, unknown>, stage: unknown): boolean {
+  if (
+    typeof effects.mayDiscard !== 'boolean' ||
+    typeof effects.writesDepth !== 'boolean' ||
+    typeof effects.writesSampleMask !== 'boolean' ||
+    typeof effects.writesStorage !== 'boolean' ||
+    (stage !== 'fragment' &&
+      (effects.mayDiscard || effects.writesDepth || effects.writesSampleMask))
+  )
+    return false;
+  return true;
+}
+
 export function isShaderEntryPointReads(value: unknown): value is readonly ShaderEntryPointReads[] {
   if (!Array.isArray(value)) return false;
   if (frozenShaderEntryPointReads.has(value)) return true;
@@ -867,6 +892,12 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
       !Array.isArray(row.bindings)
     )
       return false;
+    if (row.effects !== undefined) {
+      if (row.effects === null || typeof row.effects !== 'object') return false;
+      const effects = row.effects as Record<string, unknown>;
+      if (!validShaderEntryEffects(effects, row.stage)) return false;
+      frozen &&= Object.isFrozen(effects);
+    }
     const identity = `${row.stage}:${row.name}`;
     if (identities.has(identity)) return false;
     identities.add(identity);
@@ -898,7 +929,37 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
   return valid;
 }
 
+/** Semantic roles of Engine programs; source delivery never infers them by compiling WGSL. */
+export const SHADER_BUILTIN_ROLES = [
+  'pbr',
+  'pbrSkin',
+  'unlit',
+  'shadowCaster',
+  'tonemap',
+  'motionBlur',
+  'taaResolve',
+  'spriteLit',
+  'sprite',
+  'iblEquirect',
+  'iblIrradiance',
+  'iblPrefilter',
+  'iblBrdfLut',
+  'probeBackground',
+  'fxaa',
+  'skybox',
+  'bloomHorizontal',
+  'bloomVertical',
+  'bloomComposite',
+  'gtaoCompute',
+  'ssao',
+] as const;
+export type ShaderBuiltinRole = (typeof SHADER_BUILTIN_ROLES)[number];
+export function isShaderBuiltinRole(value: unknown): value is ShaderBuiltinRole {
+  return typeof value === 'string' && (SHADER_BUILTIN_ROLES as readonly string[]).includes(value);
+}
+
 export interface ManifestEntry {
+  readonly role?: ShaderBuiltinRole;
   /** Stable publisher-selected identity for named engine utility entries. */
   readonly identifier?: string;
   /** Exact boolean compiler defines selected for this published entry. */

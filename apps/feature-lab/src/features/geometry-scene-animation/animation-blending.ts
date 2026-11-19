@@ -1,4 +1,5 @@
 import {
+  AdvanceAnimationPlayer,
   AnimationPlayer,
   AnimationSet,
   AnimationTargetId,
@@ -11,7 +12,7 @@ import {
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { Transform } from '@forgeax/engine/scene';
-import type { AnimationClip } from '@forgeax/engine/types';
+import { type AnimationClip, toShared } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { spawnAnimatedRig } from './support/animated-rig';
@@ -20,6 +21,7 @@ import { animationEvidence } from './support/animation-evidence';
 const rootId = deriveAnimationTargetId(['Rig', 'Root']);
 const upperId = deriveAnimationTargetId(['Rig', 'Upper']);
 const angles = [-0.9, 0.9, -1.2];
+const noMask = toShared<'AnimationMask'>(0);
 function pose(root: number, upper: number): AnimationClip {
   return {
     kind: 'animation-clip',
@@ -125,7 +127,7 @@ export default defineFeature({
         defineSystem({
           name: 'featureLabAnimationBlending',
           queries: [],
-          before: ['advanceAnimationPlayer'],
+          before: [AdvanceAnimationPlayer],
           fn() {
             const start = performance.now();
             space1D.sample(weights1D, enabled ? 0.75 : 0).unwrap();
@@ -135,7 +137,7 @@ export default defineFeature({
             world
               .set(rigs[2][0], AnimationPlayer, {
                 weights: [0.35, 0.65],
-                masks: enabled ? [0, mask] : [],
+                masks: enabled ? [noMask, mask] : [],
               })
               .unwrap();
             cpuMs = performance.now() - start;

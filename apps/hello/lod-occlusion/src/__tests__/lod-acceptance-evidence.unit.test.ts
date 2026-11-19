@@ -75,7 +75,7 @@ function lodInspection(
   const first = rows[0];
   if (!first) throw new Error('expected a per-view LOD row');
   return {
-    schema: 'forgeax::lod-occlusion-inspection::v3',
+    schema: 'forgeax::lod-occlusion-inspection::v4',
     submit: observationSubmit,
     ...first,
     view: {
@@ -86,13 +86,8 @@ function lodInspection(
     },
     count: inspectionCount,
     lodHistogram: histogramRows(rows),
-    worlds: [
-      {
-        attachmentId: 'attachment-1',
+    samples: rows.flatMap((candidate) => candidate.samples),
         attribution: { status: 'same-submit', submit: observationSubmit },
-        rows,
-      },
-    ],
   };
 }
 
@@ -209,11 +204,11 @@ describe('LOD receipt evidence', () => {
       summarizeLodObservation(observation, receipt, cameraIds, rootMeshHandle + 1),
     ).toThrow('different root MeshAsset');
     const secondView = observation.lodOcclusion.views[1];
-    const secondRow = secondView?.lodOcclusion.worlds[0]?.rows[0];
-    if (!secondRow) throw new Error('second-view fixture row missing');
-    secondRow.root = { ...secondRow.root, guid: 'asset-handle:999' };
+    if (!secondView) throw new Error('second-view fixture missing');
+    secondView.lodOcclusion.root = { ...secondView.lodOcclusion.root, guid: 'asset-handle:999',
+    };
     expect(() => summarizeLodObservation(observation, receipt, cameraIds, rootMeshHandle)).toThrow(
-      'row belongs to a different root MeshAsset',
+      'inspection belongs to a different root MeshAsset',
     );
   });
 
@@ -246,15 +241,12 @@ describe('LOD receipt evidence', () => {
     expect(Object.isFrozen(evidence.cameraViews[0])).toBe(true);
   });
 
-  it('rejects a World row whose CameraView generation differs from its receipt view', () => {
-    expect(() =>
-      summarizeLodObservation(
-        receiptObservation([row(10, 0, 4), row(10, 1, 9), row(20, 2, 9)]),
-        receipt,
-        cameraIds,
-        rootMeshHandle,
-      ),
-    ).toThrow('mixed or invalid source identity');
+  it('rejects inspection identity whose CameraView generation differs from its receipt view', () => {
+    const observation = receiptObservation([row(10, 0, 4), row(20, 2, 9)]);
+    const firstView = observation.lodOcclusion.views[0];
+    if (!firstView) throw new Error('expected first CameraView fixture');
+    firstView.lodOcclusion.view.viewGeneration = 9;
+    expect(() => summarizeLodObservation(observation, receipt, cameraIds, rootMeshHandle)).toThrow('mixed or invalid source identity');
   });
 
   it('closes on a missing or unknown view and on an observation from another receipt', () => {
@@ -283,7 +275,7 @@ describe('LOD receipt evidence', () => {
     ).toThrow('does not match the completed FrameReceipt');
   });
 
-  it('requires the requested receipt snapshot and same-submit World attribution', () => {
+  it('requires the requested receipt snapshot and same-submit inspection attribution', () => {
     const notRequested = receiptObservation([row(10, 0, 4), row(20, 2, 9)]);
     notRequested.include = [];
     expect(() => summarizeLodObservation(notRequested, receipt, cameraIds, rootMeshHandle)).toThrow(
@@ -291,12 +283,12 @@ describe('LOD receipt evidence', () => {
     );
 
     const projectionOnly = receiptObservation([row(10, 0, 4), row(20, 2, 9)]);
-    const world = projectionOnly.lodOcclusion.views[0]?.lodOcclusion.worlds[0];
-    if (!world) throw new Error('expected one World fixture');
-    world.attribution.status = 'unavailable';
+    const firstView = projectionOnly.lodOcclusion.views[0];
+    if (!firstView) throw new Error('expected first CameraView fixture');
+    firstView.lodOcclusion.attribution.status = 'unavailable';
     expect(() =>
       summarizeLodObservation(projectionOnly, receipt, cameraIds, rootMeshHandle),
-    ).toThrow('World attribution is not same-submit');
+    ).toThrow('LOD inspection attribution is not same-submit');
   });
 
   it('keeps the closed unavailable union fail-closed and requires its roster', () => {
@@ -318,13 +310,45 @@ describe('LOD receipt evidence', () => {
     );
   });
 
-  it('rejects zero inspection totals when same-submit views contain visible World rows', () => {
+  it('rejects inconsistent inspection totals and LOD histogram', () => {
     const inconsistent = receiptObservation([row(10, 0, 4), row(20, 2, 9)], undefined, receipt, {
       10: { candidates: 1, visible: 0, occluded: 0 },
       20: { candidates: 1, visible: 0, occluded: 0 },
     });
     expect(() => summarizeLodObservation(inconsistent, receipt, cameraIds, rootMeshHandle)).toThrow(
-      'inspection totals do not match same-submit World rows',
+      'inspection totals do not match its LOD histogram',
+    );
+  });
+
+  it('accepts paired adjacent LOD levels during a GPU crossfade', () => {
+    const observation = receiptObservation([row(10, 0, 4), row(20, 1, 9)]);
+    const secondView = observation.lodOcclusion.views[1];
+    if (!secondView) throw new Error('expected second CameraView fixture');
+    secondView.lodOcclusion.lodHistogram = [
+      { level: 1, count: 1 },
+      { level: 2, count: 1 },
+    ];
+
+    const evidence = summarizeLodObservation(observation, receipt, cameraIds, rootMeshHandle);
+
+    expect(evidence.cameraViews[1]?.count).toEqual( { candidates: 1, visible: 1, occluded: 0 });
+    expect(evidence.cameraViews[1]?.lodHistogram).toEqual([
+      { level: 1, count: 1 },
+      { level: 2, count: 1 },
+    ]);
+    expect(selectedLod(evidence.cameraViews[1])).toBe(2);
+  });
+
+  it('rejects crossfade histograms with more than two admissions per visible candidate', () => {
+    const observation = receiptObservation([row(10, 0, 4), row(20, 1, 9)]);
+    const secondView = observation.lodOcclusion.views[1];
+    if (!secondView) throw new Error('expected second CameraView fixture');
+    secondView.lodOcclusion.lodHistogram = [
+      { level: 1, count: 1 },
+      { level: 2, count: 2 },
+    ];
+    expect(() => summarizeLodObservation(observation, receipt, cameraIds, rootMeshHandle)).toThrow(
+      'inspection totals do not match its LOD histogram',
     );
   });
 

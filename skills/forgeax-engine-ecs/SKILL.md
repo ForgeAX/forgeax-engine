@@ -12,13 +12,13 @@ description: >-
 ## One-screen takeoff
 
 ```ts
-import { FixedUpdate, Time, Update, World, defineComponent } from '@forgeax/engine-ecs';
+import { defineSystem, FixedUpdate, Time, Update, World, defineComponent } from '@forgeax/engine-ecs';
 
 const Position = defineComponent('Position', { x: 'f32' });
 const Velocity = defineComponent('Velocity', { x: 'f32' });
 const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
 
-world.addSystem(Update, {
+world.addSystem(Update, defineSystem({
   name: 'integrate-variable',
   queries: [{ write: [Position], read: [Velocity] }],
   fn: (current, [moving]) => {
@@ -27,13 +27,13 @@ world.addSystem(Update, {
       row.mut(Position).x += row.get(Velocity).x * delta;
     }
   },
-}).unwrap();
+})).unwrap();
 
-world.addSystem(FixedUpdate, {
+world.addSystem(FixedUpdate, defineSystem({
   name: 'simulate-fixed',
   queries: [],
   fn: () => { /* deterministic fixed-rate work */ },
-}).unwrap();
+})).unwrap();
 
 world.update(1 / 60).unwrap();
 ```
@@ -70,7 +70,7 @@ const movementPlugin: Plugin = {
   apply(ctx) {
     ctx.effect(() => {
       ctx.world.addSystem(Update, Movement).unwrap();
-      return () => ctx.world.removeSystem(Update, Movement.name).unwrap();
+      return () => ctx.world.removeSystem(Update, Movement).unwrap();
     });
   },
 };
@@ -90,29 +90,41 @@ Use [`packages/path/README.md`](../../packages/path/README.md) for axes, scale, 
 
 ## Curve-driven joint chains
 
-Use `@forgeax/engine/animation/spline-ik` for an explicit root-to-tip chain driven by an ordinary saved `Path`. Install `splineIKPlugin()` beside Scene and Animation; saved `SplineIK` entity references remain instance-local. Author base-pose systems between `animation/restore-spline-base` and `animation/solve-spline-ik`; Scene and Skin consume the committed Transform pose. Use [the Animation contract](../../packages/animation/README.md#spline-ik) for length, axes, twist, scale and stale-binding failures, and [the frozen qualification](../../scripts/dev-verify/roi-24-spline-ik/README.md) for actual acceptance status. Keep rig composition with its owner; unqualified same-joint spring/physical ordering is not an implicit engine service.
+Use `@forgeax/engine/animation/spline-ik` for an explicit root-to-tip chain driven by an ordinary saved `Path`. Install `splineIKPlugin()` beside Scene and Animation; saved `SplineIK` entity references remain instance-local. Author base-pose systems between `SplineIKRestore` and `SplineIKSolve`; Scene and Skin consume the committed Transform pose. Use [the Animation contract](../../packages/animation/README.md#spline-ik) for length, axes, twist, scale and stale-binding failures, and [the frozen qualification](../../scripts/dev-verify/roi-24-spline-ik/README.md) for actual acceptance status. Keep rig composition with its owner; unqualified same-joint spring/physical ordering is not an implicit engine service.
 
 ## Shared Kernel
 
-```ts
-import { Update, defineSharedKernel, type QuerySpan } from '@forgeax/engine-ecs';
+The independently loadable module owns both its queries and named function:
 
+```ts
+import { defineComponent, type QuerySpan } from '@forgeax/engine/ecs';
+export const Position = defineComponent('Position', { x: 'f32' });
 function integrate(spans: readonly QuerySpan[]): void {
   for (const span of spans) span.mut(Position).x.fill(1);
 }
+export default { queries: [{ write: [Position] }], run: integrate } as const;
+```
 
+The producer imports that module and reuses its declarations:
+
+```ts
+import { Update } from '@forgeax/engine/ecs';
+import { defineSharedKernel } from '@forgeax/engine/ecs/shared';
+import kernelModule from './movement-kernel';
 world.addSystem(Update, defineSharedKernel(kernelModuleUrl, {
+  ...kernelModule,
   name: 'integrate-shared',
-  queries: [{ write: [Position] }],
-  run: integrate,
 })).unwrap();
 ```
+
+Worker bindings carry query and component slots, not component names. A different
+component with the same label has no access to a declared component's columns.
 
 Use `World({ storage: 'shared' })` only inside a selected shared Engine realm. A Kernel must be an independently loadable named module function with explicit read/write descriptors and numeric table fields. Optional, change-detection, sparse, object, DOM, GPU, and structural access is ineligible. Small work and pre-dispatch pool failure run inline; any failure after a possible shard write poisons the World and forbids retry. Recovery belongs to `app.execution.rebuild()`, not ECS mutation of the old identity.
 
 ## Schedule-scoped registration
 
-All five scheduling mutations take the schedule token as their first argument. `Update` and `FixedUpdate` are nominal tokens, not strings.
+Scheduling mutations take the schedule token as their first argument. `Update` and `FixedUpdate` are nominal tokens, not strings.
 
 ```ts
 import {
@@ -128,24 +140,18 @@ const Cleanup = defineSystem({ name: 'cleanup', queries: [], fn: () => {} });
 
 world.addSystem(Update, Movement).unwrap();
 world.addSystems(Update, Gameplay, [Movement, Cleanup]).unwrap();
-world.configureSets(Update, { set: Gameplay }).unwrap();
-world.removeSystem(Update, 'cleanup').unwrap();
-world.replaceSystem(Update, 'movement', {
-  name: 'movement',
+world.removeSystem(Update, Cleanup).unwrap();
+world.replaceSystem(Update, Movement, {
   queries: [],
   fn: () => {},
 }).unwrap();
 ```
 
-A system belongs to the schedule selected at registration. Use `after: [FixedUpdate]` or `before: [FixedUpdate]` only as the intrinsic fixed-anchor edge inside `Update`; do not use it to smuggle a system between schedules.
-
-### Migration from the pre-token form
-
-The old single-schedule forms are deleted. Add the appropriate first argument (`Update` or `FixedUpdate`) to every registration and pass the host-measured `deltaSeconds` to each update call. The final shapes are `world.addSystem(Update, system)`, `world.addSystems(Update, set, systems)`, `world.configureSets(Update, options)`, and `world.update(deltaSeconds)`.
+A system belongs to the schedule selected at registration. Use `after: [FixedUpdate]` or `before: [FixedUpdate]` only as the intrinsic fixed-anchor edge inside `Update`; pick the schedule at registration to place a system.
 
 ### Domain schedules
 
-A non-simulation owner (the renderer's Render World) declares phases with `defineSchedule('Name')`, registers systems by passing that token to `addSystem`, and executes them with `world.run(token)`. Names `Update`, `FixedUpdate` and the empty string are rejected. A run orders only its own schedule, flushes its commands, never advances `Time`, and is never driven by `world.update`. Game code stays on `Update`/`FixedUpdate`.
+A non-simulation owner (the renderer's Render World) declares phases with `defineSchedule('Name')`, registers systems by passing that token to `addSystem`, and executes them with `world.run(token)`. Only the empty diagnostic name is rejected. Same-name tokens remain distinct. A run orders only its own schedule, flushes its commands, never advances `Time`, and is never driven by `world.update`. Game code stays on `Update`/`FixedUpdate`.
 
 ## Time policy and resources
 
@@ -173,6 +179,14 @@ console.log(fixed.droppedSeconds, fixed.droppedUpdates);
 
 Use `Time.delta` for variable-rate integration and `Time.elapsed` for absolute-time behavior. Use `FixedTime.delta` for deterministic fixed simulation. A manually constructed World can run a zero-delta frame with `world.update(0)`.
 
+For a backend completion fence, use `deferFixedStep(world, completion)` only
+inside an update-driven `FixedUpdate` with `catchUp: 'substeps'`. Adopt the
+backend result before resolving. ECS retains the remaining systems, commands
+and original catch-up budget; rejection or poison aborts retained commands
+without retrying partial work. Keep the system synchronous and retain no
+borrowed query or arena view across that boundary. `World.run` and aggregate
+catch-up do not support deferral. See [the ECS scheduling contract](../../packages/ecs/README.md#schedules-time-and-resources).
+
 ## Scope failures and Result handling
 
 Every schedule mutation, `world.update` and `world.run(token)` returns `Result`. Handle errors by their closed `code` union:
@@ -184,16 +198,11 @@ if (!result.ok) {
     case 'schedule-scope-mismatch':
       console.error(result.error.hint);
       break;
-    case 'system-before-unknown':
-    case 'system-after-unknown':
-    case 'system-set-not-registered':
-      console.error(result.error.hint);
-      break;
   }
 }
 ```
 
-`'schedule-scope-mismatch'` means a target system, set, or fixed anchor belongs to the other schedule. `world.run(token)` returns the same code when the domain token (from `defineSchedule`) has no registered system in this World, so register a system on that domain token before running it. Keep dependent systems and sets in the same scope; do not catch and ignore the failure or add a compatibility registration path.
+`'schedule-scope-mismatch'` means a referenced system, set, or fixed anchor belongs to another schedule. Keep dependent systems and sets in the same scope. Running a valid empty domain succeeds without work.
 
 ## Numeric workspace lifetime
 
@@ -247,8 +256,7 @@ per batch; `undefined` means absent, while zero remains a value. Current batches
 reject write and changed/added descriptors explicitly. Keep their existing row,
 span or projection routes. Read/index arrays are borrowed, and structural
 mutation inside the raw loop is prohibited. Retained Query validation removes
-repeated setup allocation; traversal/batch allocation remains. Compare the
-[actual-API benchmark](../../packages/ecs/bench/query-batches.mjs) before migration.
+repeated setup allocation; traversal/batch allocation remains.
 
 Relationship sources remain writable through `World.set` and row mutation so
 the ECS owner can update the source, materialized target list, and backpointer
@@ -269,7 +277,8 @@ for (const span of query.spans().unwrap()) {
 }
 ```
 
-`query.combinations(k)` derives K-way iteration from the same query.
+For pairwise work, collect handles with `Array.from(query, (row) => row.entity)`
+and traverse pairs with indices `i < j` in the owning system.
 
 ## Storage choice
 
@@ -310,8 +319,7 @@ const Transform = defineComponent('Transform', { x: 'f32' }, {
 `World.spawn`, `World.addComponent`, and deferred `Commands` materialization
 expand `requires` transitively at the structural boundary. Explicit data for a
 required component wins; missing identities are appended once. This is generic
-ECS behavior, so scene/import helpers must not duplicate it and systems must
-not perform per-frame repair scans. Removing a requirement does not cascade;
+ECS behavior, so scene/import helpers rely on it and systems skip per-frame repair scans. Removing a requirement does not cascade;
 an owner that does so explicitly gets the owning domain's structured invariant
 error on the next use.
 
@@ -320,10 +328,10 @@ error on the next use.
 Systems receive the owning `World`, a tuple of persistent Query objects, and deferred `Commands`. Use `commands` for structural changes; the schedule flushes them at defined boundaries.
 
 ```ts
-import { Update, defineComponent } from '@forgeax/engine-ecs';
+import { Update, defineComponent, defineSystem } from '@forgeax/engine-ecs';
 
 const Health = defineComponent('Health', { value: 'f32' });
-world.addSystem(Update, {
+world.addSystem(Update, defineSystem({
   name: 'remove-dead',
   queries: [{ read: [Health] }],
   fn: (_world, [health], commands) => {
@@ -331,7 +339,7 @@ world.addSystem(Update, {
       if (row.get(Health).value <= 0) commands.despawn(row.entity);
     }
   },
-}).unwrap();
+})).unwrap();
 ```
 
 `Commands.spawn` takes the same component-data entries as `World.spawn` and
@@ -419,20 +427,9 @@ bounded PMREM work, material selection, and recovery from those facts. Keep
 target/source/readback tokens and `FrameReceipt` observation in the Renderer
 contract rather than adding them to World components.
 
-## Simulation record/restore seam
+## Resource identity
 
-Use the ECS owner when deterministic fixed-tick state must be restored into a
-fresh target and compared semantically. The minimum path is
-`source.simulationRecord()` -> `target.simulationRestore(record)` ->
-`simulationCompare({ facts })`.
-
-`trace` contains ordered fixed-tick input samples. A `participant` is one ready,
-versioned owner for portable external state. Every numeric report fact declares
-a non-negative `tolerance`. Expected failures are closed errors; switch on
-`code` and read `expected`, `hint`, and narrowed `detail`.
-
-The App, Preview, and Remote boundaries expose only the inspection summary and
-the schema at `packages/app/schema/simulation-inspection.schema.json`. They do
-not own record/schema state or provide restore/replay actions. Do not use this
-seam for network rollback, disk persistence, RHI tape replay, game replay, or
-pixel comparison.
+Declare `const Score = defineResource<number>('Score')` once in the owner module.
+Use `world.insertResource(Score, 0)` and `world.getResource(Score)`; the token determines
+its value type. Pass resource and system objects directly. Keep their names for diagnostics.
+Use exported SystemSet objects for ordering against systems produced by per-World factories.

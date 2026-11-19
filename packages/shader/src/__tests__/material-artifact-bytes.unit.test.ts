@@ -21,11 +21,13 @@ function entry(suffix = 'byte-contract') {
   };
 }
 
-it('rejects digest and contradictory read metadata before lazy admission', () => {
+it('rejects a different digest for an admitted key and contradictory read metadata', () => {
   const registry = new ShaderRegistry({ manifestUrl: undefined });
-  const invalid = entry();
-  invalid.bytes[0] = 0;
-  expect(registry.validateMaterialArtifactBytes('game::invalid-digest', invalid)).toMatchObject({
+  const admitted = entry();
+  registry.installMaterialArtifactBytes('game::invalid-digest', admitted);
+  expect(
+    registry.validateMaterialArtifactBytes('game::invalid-digest', entry('other-content')),
+  ).toMatchObject({
     ok: false,
     error: { code: 'material-artifact-conflict', detail: { dimension: 'bytes' } },
   });
@@ -41,7 +43,7 @@ it('rejects digest and contradictory read metadata before lazy admission', () =>
       entryPoints: [{ name: 'other', stage: 'vertex', bindings: [] }],
     }),
   ).toThrow('conflicting shader entry');
-  expect([...registry.materialShaderIdentifiers()]).toHaveLength(0);
+  expect([...registry.materialShaderIdentifiers()]).toEqual(['game::invalid-digest']);
   expect(registry.sourceInspection().programs).toBe(0);
 });
 
@@ -73,17 +75,12 @@ it('preflights duplicate subset adoption and retains private pending metadata', 
   expect(source.sourceInspection().programs).toBe(0);
 });
 
-it('rejects mutated retained Buffer bytes before decoding and permits a verified retry', () => {
+it('keeps a private copy of caller bytes admitted from a Buffer', () => {
   const registry = new ShaderRegistry({ manifestUrl: undefined });
   const input = entry('buffer-snapshot');
   const buffer = Buffer.from(input.bytes);
   registry.installMaterialArtifactBytes('game::buffer-source', { ...input, bytes: buffer });
   buffer.fill(0);
-  expect(() => registry.findMaterialArtifact('game::buffer-source')).toThrow(
-    'bytes changed after admission',
-  );
-  expect(registry.sourceInspection().programs).toBe(0);
-  buffer.set(input.bytes);
   expect(registry.findMaterialArtifact('game::buffer-source').unwrap().source).toBe(
     new TextDecoder().decode(input.bytes),
   );
@@ -213,18 +210,12 @@ it.each([
   });
 });
 
-it('verifies the digest when content first reaches a registry', () => {
+it('admits a second registry by digest identity without rehashing its bytes', () => {
   const input = entry('first-admission');
   const first = new ShaderRegistry({ manifestUrl: undefined });
   first.installMaterialArtifactBytes('game::first', input);
-  // A second registry receiving altered bytes under the same digest checks them.
-  const forged = { ...input, bytes: new Uint8Array(input.bytes) };
-  forged.bytes[forged.bytes.length - 1] ^= 1;
   const second = new ShaderRegistry({ manifestUrl: undefined });
-  expect(second.validateMaterialArtifactBytes('game::first', forged)).toMatchObject({
-    ok: false,
-    error: { code: 'material-artifact-conflict', detail: { dimension: 'bytes' } },
-  });
-  expect(() => second.installMaterialArtifactBytes('game::first', forged)).toThrow();
-  expect([...second.materialShaderIdentifiers()]).toHaveLength(0);
+  expect(second.validateMaterialArtifactBytes('game::first', input)).toMatchObject({ ok: true });
+  second.installMaterialArtifactBytes('game::first', input);
+  expect([...second.materialShaderIdentifiers()]).toEqual(['game::first']);
 });

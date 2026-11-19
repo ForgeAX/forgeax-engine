@@ -1,4 +1,12 @@
-import { type EntityHandle, FixedTime, FixedUpdate, World, worldPlugin } from '@forgeax/engine-ecs';
+import {
+  defineResource,
+  defineSystem,
+  type EntityHandle,
+  FixedTime,
+  FixedUpdate,
+  World,
+  worldPlugin,
+} from '@forgeax/engine-ecs';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
 import {
   createHostAssembly,
@@ -14,7 +22,7 @@ import {
   createAuthorityCoordinator,
   isTerminalNetSessionState,
   type NetEndpoint,
-  type NetSession,
+  NetSessionResource,
   netPlugin,
   type SessionId,
 } from '@forgeax/engine-net';
@@ -42,6 +50,8 @@ import {
   snakeProfile,
 } from './shared/components';
 import { SNAKE_MOVE_INTERVAL_SECONDS, type SnakeGameState, tickSimulation } from './shared/rules';
+
+const resource2 = defineResource<SnakeGameState>('snake-game');
 
 export interface SnakeServer {
   readonly world: World;
@@ -189,7 +199,7 @@ interface SnakeServerState {
 }
 
 async function configureSnakeServer(world: World): Promise<SnakeGameState> {
-  const session = world.getResource<NetSession>('net-session');
+  const session = world.getResource(NetSessionResource);
   session.attachAuthority(createAuthorityCoordinator(world, snakeProfile));
   const game: SnakeGameState = {
     tick: 0,
@@ -205,7 +215,7 @@ async function configureSnakeServer(world: World): Promise<SnakeGameState> {
     movementAccumulatorSeconds: SNAKE_MOVE_INTERVAL_SECONDS,
     movementIntervalSeconds: SNAKE_MOVE_INTERVAL_SECONDS,
   };
-  world.insertResource('snake-game', game);
+  world.insertResource(resource2, game);
   const sessionEntity = world
     .spawn(
       { component: Networked, data: { enabled: true } },
@@ -225,12 +235,12 @@ async function configureSnakeServer(world: World): Promise<SnakeGameState> {
   const readySessions = new Set<number>();
   const foodRef: { entity?: EntityHandle } = {};
   projectGameState(world, game, projected, foodRef);
-  world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'snake-fixed-tick',
     queries: [],
     fn: (world) => {
-      const activeSession = world.getResource<NetSession>('net-session');
-      const activeGame = world.getResource<SnakeGameState>('snake-game');
+      const activeSession = world.getResource(NetSessionResource);
+      const activeGame = world.getResource(resource2);
       const fixedDeltaSeconds = world.getResource(FixedTime).delta;
       const recoverySnapshot = activeSession.getRecoverySnapshot();
       if (isTerminalNetSessionState(recoverySnapshot.state)) return;
@@ -299,6 +309,7 @@ async function configureSnakeServer(world: World): Promise<SnakeGameState> {
       projectGameState(world, activeGame, projected, foodRef);
     },
   });
+  world.addSystem(FixedUpdate, systemToken1);
   return game;
 }
 

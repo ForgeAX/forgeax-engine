@@ -8,6 +8,6 @@ async function main(){
  const {renderer,assets}=initialized.value;
  const world=new World({assets});registerPropagateTransforms(world);const attached=renderer.attach(world);if(!attached.ok)throw attached.error;const lease=attached.value;
  buildObjectTilemapScene(world,assets);
- const draw=()=>{world.update(1/60).unwrap();const result=renderer.draw({leases:[lease],camera:{lease},environment:{lease}});if(!result.ok)throw result.error;requestAnimationFrame(draw);};requestAnimationFrame(draw);
+ const draw=()=>{world.update(1/60).unwrap();const result=renderer.draw({ source: lease });if(!result.ok)throw result.error;requestAnimationFrame(draw);};requestAnimationFrame(draw);
 }
 void main();

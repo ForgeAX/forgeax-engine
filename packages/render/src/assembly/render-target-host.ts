@@ -1,6 +1,7 @@
 import type { Buffer, RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { textureFormatBlock } from '@forgeax/engine-types';
 import { uuidv7 } from 'uuidv7';
+import { CUBE_CAMERA_FACE_ORDER } from '../components/cube-camera';
 import type { RenderError } from '../errors/render';
 import {
   RenderTargetCapabilityMissingError,
@@ -81,6 +82,7 @@ const DEFAULT_LIMITS: RenderTargetAdmissionLimits = {
 export interface RenderTargetLayerWrite {
   readonly target: RenderTarget;
   readonly layer: number;
+  readonly mipLevel?: number;
 }
 
 interface ReadbackRecord {
@@ -121,6 +123,11 @@ export interface RenderTargetHost
   > {
   /** The logical owner for every target lifecycle operation. */
   readonly owner: 'renderer';
+  /** The current raw cube, matched either by six submitted faces or by GPU completion. */
+  environmentTarget(
+    target: RenderTarget,
+    faces?: readonly RenderTargetReadbackReceipt[],
+  ): { physical: RenderTargetPhysical; revision: number } | undefined;
   /** Logical descriptions for the source publication boundary; no physical state escapes. */
   descriptions(): readonly {
     readonly target: RenderTarget;
@@ -188,6 +195,45 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
   let nextSourceId = 1;
   const readbacks = new Map<RenderTargetReadbackTicket, ReadbackRecord>();
   const frameWriters = new Set<RenderTarget>();
+  let frameWrites: readonly RenderTargetLayerWrite[] = [];
+  type CubeLayer = { frameId: number | undefined; completed: boolean };
+  const cubeWrites = new WeakMap<
+    RenderTarget,
+    { physical: RenderTargetPhysical; layers: Map<number, CubeLayer>; revision: number }
+  >();
+  const resetFailedReadbacks = (
+    records: readonly ReadbackRecord[],
+    receipt: RenderTargetReadbackReceipt | undefined,
+  ): void => {
+    for (const record of records) {
+      if (
+        record.state.kind !== 'submitted' ||
+        record.ticket.frameId !== receipt?.frameId ||
+        record.ticket.consumed
+      )
+        continue;
+      record.state = { kind: 'pending' };
+      record.ticket.frameId = undefined;
+    }
+  };
+  const recordCubeWrites = (receipt: RenderTargetReadbackReceipt | undefined): CubeLayer[] => {
+    const submitted: CubeLayer[] = [];
+    for (const { target, layer, mipLevel } of frameWrites) {
+      if ((mipLevel ?? 0) !== 0) continue;
+      const physical = candidatePhysical.get(target) ?? activePhysical.get(target);
+      if (physical?.descriptor.shape !== 'cube') continue;
+      let cube = cubeWrites.get(target);
+      if (cube?.physical !== physical) {
+        cube = { physical, layers: new Map(), revision: 0 };
+        cubeWrites.set(target, cube);
+      }
+      const write = { frameId: receipt?.frameId, completed: false };
+      cube.layers.set(layer, write);
+      cube.revision++;
+      submitted.push(write);
+    }
+    return submitted;
+  };
   const markTargetSubmitted = (target: RenderTarget, physical: RenderTargetPhysical): void => {
     if (candidatePhysical.get(target) === physical) submittedPhysicals.add(physical);
   };
@@ -288,6 +334,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     activePhysical.delete(target);
     candidatePhysical.delete(target);
     staged.delete(target);
+    cubeWrites.delete(target);
     for (const physical of physicals) releasePhysical(physical, failures);
     for (const [ticket, record] of readbacks) {
       if (record.target !== target) continue;
@@ -326,6 +373,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       stagedTarget.value.generation,
       // A sampled 2D target (a planar mirror) lets Features read its scene depth.
       stagedTarget.value.descriptor.sampled && stagedTarget.value.descriptor.shape === '2d',
+      limits.maxBytesPerTarget,
     );
     const previous = candidatePhysical.get(target);
     candidatePhysical.delete(target);
@@ -344,6 +392,36 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
 
   return Object.freeze({
     owner: 'renderer' as const,
+    environmentTarget(target: RenderTarget, faces?: readonly RenderTargetReadbackReceipt[]) {
+      const cube = cubeWrites.get(target);
+      const physical = candidatePhysical.get(target) ?? activePhysical.get(target);
+      const faceCount = CUBE_CAMERA_FACE_ORDER.length;
+      if (
+        !owner.inspect(target).ok ||
+        cube === undefined ||
+        physical !== cube.physical ||
+        physical.generation !== currentGeneration() ||
+        cube.layers.size !== faceCount ||
+        (faces !== undefined && faces.length !== faceCount)
+      )
+        return undefined;
+      for (let layer = 0; layer < faceCount; layer++) {
+        const write = cube.layers.get(layer);
+        if (write === undefined) return undefined;
+        if (faces === undefined) {
+          if (!write.completed) return undefined;
+        } else {
+          const receipt = faces[layer];
+          if (
+            receipt === undefined ||
+            receipt.deviceGeneration !== physical.generation ||
+            receipt.frameId !== write.frameId
+          )
+            return undefined;
+        }
+      }
+      return { physical, revision: cube.revision };
+    },
     descriptions() {
       return [...targets].map((target) => {
         const state = owner.inspect(target);
@@ -438,7 +516,13 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       const binding = resolveRenderTargetMaterialSource(source);
       if (binding === undefined) return undefined;
       if (!owner.inspect(binding.target).ok) return undefined;
-      const physical = activePhysical.get(binding.target as object);
+      const candidate = candidatePhysical.get(binding.target);
+      const physical =
+        candidate !== undefined &&
+        submittedPhysicals.has(candidate) &&
+        options.canPromoteTarget?.(binding.target) !== false
+          ? candidate
+          : activePhysical.get(binding.target);
       if (physical === undefined) return binding;
       const view = physical.mipViews[binding.view.mipLevel] ?? physical.view;
       if (binding.generation !== physical.generation) return binding;
@@ -665,6 +749,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     },
     beginFrame(): void {
       if (disposed) return;
+      frameWrites = [];
       frameWriters.clear();
       snapshots.beginFrame();
       for (const record of readbacks.values())
@@ -700,6 +785,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
           submittedReadbacks.push(record);
         }
       }
+      const writtenCubeLayers = recordCubeWrites(receipt);
       const generation = currentGeneration();
       const submittedTargets = [...staged].flatMap((target) => {
         const physical = candidatePhysical.get(target);
@@ -708,20 +794,10 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         return [{ target, physical }];
       });
       const completeSubmission = (result: RenderResult<void, RenderError>) => {
+        if (!disposed && result.ok) for (const write of writtenCubeLayers) write.completed = true;
         if (disposed || (submittedTargets.length === 0 && submittedReadbacks.length === 0)) return;
         const failures: RenderError[] = result.ok ? [] : [result.error];
-        if (!result.ok) {
-          for (const record of submittedReadbacks) {
-            if (
-              record.state.kind !== 'submitted' ||
-              record.ticket.frameId !== receipt?.frameId ||
-              record.ticket.consumed
-            )
-              continue;
-            record.state = { kind: 'pending' };
-            record.ticket.frameId = undefined;
-          }
-        }
+        if (!result.ok) resetFailedReadbacks(submittedReadbacks, receipt);
         for (const { target, physical: submittedPhysical } of submittedTargets) {
           if (candidatePhysical.get(target) !== submittedPhysical) continue;
           const candidate = owner.inspect(target);
@@ -792,6 +868,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       encoder: RhiCommandEncoder,
       written?: readonly RenderTargetLayerWrite[],
     ): void {
+      if (written !== undefined) frameWrites = [...frameWrites, ...written];
       for (const record of readbacks.values()) encodeReadback(record, encoder, written);
     },
     recover(): void {

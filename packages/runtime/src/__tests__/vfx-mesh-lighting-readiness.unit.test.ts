@@ -2,9 +2,13 @@ import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { VfxMeshLightingRig } from './vfx-mesh-lighting.fixture';
 
-it('exposes preparation before waiting for GPU completion and recycles only settled packets', async () => {
+it.each([
+  false,
+  true,
+])('exposes preparation before waiting for GPU completion and recycles only settled packets (diagnostics=%s)', async (diagnostics) => {
   vi.useFakeTimers();
   const recycled: number[] = [];
+  const captureReceipt = vi.fn();
   let revision = 0;
   const preparationCompleted = new Promise((resolve) =>
     setTimeout(() => resolve(ok(undefined)), 10_000),
@@ -26,8 +30,12 @@ it('exposes preparation before waiting for GPU completion and recycles only sett
   // Only the frame driver runs here; renderer construction and GPU acceptance
   // remain in the complete publication Browser fixture.
   const rig = Object.assign(Object.create(VfxMeshLightingRig.prototype), {
-    options: { signal: new AbortController().signal },
+    options: {
+      signal: new AbortController().signal,
+      ...(diagnostics ? { onIblFailure: vi.fn() } : {}),
+    },
     renderer: { draw },
+    ...(diagnostics ? { phases: { captureReceipt } } : {}),
     publisher: {
       prepare: () => {
         revision++;
@@ -49,10 +57,22 @@ it('exposes preparation before waiting for GPU completion and recycles only sett
     await vi.advanceTimersByTimeAsync(10_000);
     expect(draw).toHaveBeenCalledTimes(1);
     expect(recycled).toEqual([]);
+    expect(captureReceipt).toHaveBeenCalledTimes(diagnostics ? 1 : 0);
+    if (diagnostics)
+      expect(captureReceipt.mock.calls[0]?.[0]).toMatchObject({
+        frameId: 1,
+        presentation: 'pending',
+      });
     await vi.advanceTimersByTimeAsync(10_000);
     await settled;
     expect(recycled).toEqual([1, 2]);
     expect(draw).toHaveBeenCalledTimes(2);
+    expect(captureReceipt).toHaveBeenCalledTimes(diagnostics ? 2 : 0);
+    if (diagnostics)
+      expect(captureReceipt.mock.calls[1]?.[0]).toMatchObject({
+        frameId: 2,
+        presentation: 'ready',
+      });
   } finally {
     vi.useRealTimers();
   }

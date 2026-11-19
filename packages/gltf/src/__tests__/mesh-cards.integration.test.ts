@@ -1,4 +1,5 @@
 import {
+  copyMeshAttribute,
   decodeMeshBinary,
   distanceFieldMeshDigest,
   meshCardSidednessDigest,
@@ -134,15 +135,11 @@ describe('mesh-owned card publication', () => {
       expect(layout.cards.length).toBeGreaterThan(0);
       expect(geometry.cardLayout).toEqual(layout);
       expect(json.cardLayout).toEqual(layout);
+      const positions = required(copyMeshAttribute(loaded, 'position')) as Float32Array;
+      expect(positions.length).toBeGreaterThan(0);
       const indices =
-        loaded.indices ??
-        Uint32Array.from(
-          { length: (loaded.attributes.position as Float32Array).length / 3 },
-          (_, i) => i,
-        );
-      expect(layout.meshDigest).toBe(
-        await distanceFieldMeshDigest(loaded.attributes.position as Float32Array, indices),
-      );
+        loaded.indices ?? Uint32Array.from({ length: positions.length / 3 }, (_, i) => i);
+      expect(layout.meshDigest).toBe(await distanceFieldMeshDigest(positions, indices));
       if (row.guid === GUIDS[0]) {
         expect(layout.sidednessDigest).toBe(await meshCardSidednessDigest(new Uint8Array([0, 1])));
         expect(loaded.submeshes.map((section) => section.materialSlot)).toEqual([0, 1]);

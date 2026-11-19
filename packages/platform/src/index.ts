@@ -6,6 +6,29 @@ export type { PlatformError, PlatformErrorCode } from './errors.js';
 export { platformError } from './errors.js';
 export { createPlatformLifecycle } from './lifecycle.js';
 export { releasePlatformResources } from './release.js';
+export type { SliceModule, SliceRegistry } from './slices.js';
+export type {
+  ServeTaskWorkerOptions,
+  SliceJob,
+  SliceOutcome,
+  TaskClient,
+  TaskClientMessage,
+  TaskPool,
+  TaskPoolOptions,
+  TaskPoolToWorkerMessage,
+  TaskServerMessage,
+  TaskWorkerFactory,
+  TaskWorkerLink,
+  TaskWorkerListener,
+  TaskWorkerToPoolMessage,
+} from './task-pool.js';
+export {
+  createTaskClient,
+  createTaskPool,
+  defaultTaskWorkerCount,
+  serveTaskClient,
+  serveTaskWorker,
+} from './task-pool.js';
 
 import type { PlatformError } from './errors.js';
 

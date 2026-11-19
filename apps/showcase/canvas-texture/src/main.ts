@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine/ecs";
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createApp } from '@forgeax/engine/app/browser';
 
@@ -258,8 +259,7 @@ const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap
     if (mode === 'departures') paintDepartures(ctx, time);
     else if (mode === 'telemetry') paintTelemetry(ctx, time);
   }
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'canvas-showcase-animation',
       queries: [],
       fn: (world) => {
@@ -271,7 +271,9 @@ const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap
         paintExample(time);
         updateTexture();
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
   const unlisten = app.renderer.subscribe((event) => {
     if (event.kind === 'frame-submitted') submittedFrames++;

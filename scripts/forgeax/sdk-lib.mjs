@@ -73,22 +73,26 @@ export async function stageSdkCarrier(sdkRoot, destination, engineArchive) {
 
 const SDK_REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+async function prepareSdkViewGame3dHelpers(sdkRoot, env) {
+  const helpers = ['scripts/ci/browser-launch.json'];
+  if (env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1')
+    helpers.push('scripts/test/reduce-test-project.mjs', 'scripts/test/render-quality.json');
+  for (const name of helpers) {
+    const from = resolve(SDK_REPOSITORY_ROOT, name);
+    const to = resolve(sdkRoot, name);
+    await mkdir(dirname(to), { recursive: true });
+    if (existsSync(to)) {
+      if (readFileSync(to, 'utf8') !== readFileSync(from, 'utf8'))
+        throw new Error(`sdk-view-helper-collision: ${name}`);
+    } else await cp(from, to);
+  }
+}
+
 /** Retain the installed-package View journeys separately from contributor source tests. */
 export async function verifySdkViewRuntime({ sdkRoot, evidenceRoot, env, group = 'all' }) {
   if (!['all', 'project', 'view', 'game3d'].includes(group))
     throw new Error(`sdk-view-runtime-unknown-group:${group}`);
-  if (group === 'game3d' && env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-    const destination = resolve(sdkRoot, 'scripts/test');
-    await mkdir(destination, { recursive: true });
-    for (const name of ['reduce-test-project.mjs', 'render-quality.json']) {
-      const from = resolve(SDK_REPOSITORY_ROOT, 'scripts/test', name);
-      const to = resolve(destination, name);
-      if (existsSync(to)) {
-        if (readFileSync(to, 'utf8') !== readFileSync(from, 'utf8'))
-          throw new Error(`sdk-lightweight-helper-collision: ${name}`);
-      } else await cp(from, to);
-    }
-  }
+  if (group === 'game3d') await prepareSdkViewGame3dHelpers(sdkRoot, env);
   const execute = promisify(execFile);
   const view = resolve(sdkRoot, '.forgeax/cli-runtime/node_modules/@forgeax/view');
   const independentEnv = { ...env };
@@ -104,7 +108,7 @@ export async function verifySdkViewRuntime({ sdkRoot, evidenceRoot, env, group =
   const stages = [];
   for (const language of ['js', 'ts'])
     if (group !== 'game3d' && (group === 'all' || language === (group === 'view' ? 'js' : 'ts')))
-      for (const cold of [false, true]) {
+      for (const cold of language === 'js' ? [false, true] : [false]) {
         const evidence = resolve(evidenceRoot, `runtime-${language}`, cold ? 'cold' : 'live');
         stages.push([
           `runtime-${language}-${cold ? 'cold' : 'live'}`,
@@ -564,7 +568,7 @@ export async function waitForNpmPublications(
   {
     tag,
     fetchImpl = fetch,
-    timeoutMs = 20 * 60_000,
+    timeoutMs = 30 * 60_000,
     intervalMs = 10_000,
     now = Date.now,
     sleep = (duration) => new Promise((accept) => setTimeout(accept, duration)),

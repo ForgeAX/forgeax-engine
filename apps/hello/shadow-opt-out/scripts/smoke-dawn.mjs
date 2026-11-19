@@ -10,14 +10,14 @@
 //   - `[shadow-opt-out] backend=webgpu`
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] shadow factor A=<f> B=<f> C=<f>`
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -115,7 +115,10 @@ const mockCanvas = {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 // ── 4. Drive engine ECS ─────────────────────────────────────────────────
 
@@ -167,16 +170,15 @@ world.spawn(
       direction: [-0.3, -1.0, -0.5],
       color: [1, 0.95, 0.9],
       intensity: 1.0,
-      // feat-20260613-csm M6 / w22: matches src/main.ts (cascadeCount=1
-      // AC-10 baseline). orthoHalfExtent removed (legacy field gone);
-      // shadowDistance tightened 60 -> 20 so the cutout 0.15-unit holes stay
-      // resolvable at mapSize=1024 under CSM AABB-fit.
-      cascadeCount: 1,
+    // feat-20260613-csm M6 / w22: matches src/main.ts (cascadeCount=1
+    // AC-10 baseline). orthoHalfExtent removed (legacy field gone);
+    // shadowDistance tightened 60 -> 20 so the cutout 0.15-unit holes stay
+    // resolvable at mapSize=1024 under CSM AABB-fit.
+    cascadeCount: 1,
       mapSize: FIXTURE_MAP_SIZE,
       shadowDistance: 20,
     },
-  },
-);
+  });
 
 // Camera — quat tilts default -z forward by ~56.3° around X so forward = (0, -0.832, -0.555)
 // looking at the cubes + floor at origin. Mirrors main.ts; the two scripts stay in sync
@@ -250,11 +252,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  await drawReadyFrame(renderer, { source: worldAttachment1.value });
   framesObserved++;
 }
 const device = sharedDevice;

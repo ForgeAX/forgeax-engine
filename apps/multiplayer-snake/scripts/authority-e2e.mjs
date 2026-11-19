@@ -10,7 +10,7 @@ async function createAuthorityBundle(directory) {
   const outfile = join(directory, 'authority.cjs');
   await build({
     absWorkingDir: root,
-    entryPoints: ['src/server.ts'],
+    stdin: { contents: `export { startServer } from './src/server.ts'; export { NetSessionResource } from '@forgeax/engine-net';`, resolveDir: root, sourcefile: 'authority-entry.ts', loader: 'ts' },
     outfile,
     bundle: true,
     format: 'cjs',
@@ -44,12 +44,12 @@ async function startAuthorityAttempt({ port, timeoutMs = 10_000, tickMs = 16, ob
   const entry = join(directory, 'entry.cjs');
   await writeFile(
     entry,
-    `const { startServer } = require(${JSON.stringify(bundle)});\n` +
+    `const { startServer, NetSessionResource } = require(${JSON.stringify(bundle)});\n` +
       `(async () => {\n` +
       `const port = Number(process.env.FORGEAX_AUTHORITY_PORT || 0);\n` +
       `const server = await startServer(port, { withClock: false });\n` +
       `process.stdout.write(JSON.stringify({ port: server.port, hostPort: server.hostPort }) + '\\n');\n` +
-      `const session = server.world.getResource('net-session');\n` +
+      `const session = server.world.getResource(NetSessionResource);\n` +
       `let previousObservation = '';\n` +
       `let previousPeerCount = -1;\n` +
       `let publishBlockedUntil = 0;\n` +

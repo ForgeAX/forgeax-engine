@@ -4,6 +4,8 @@ import {
   type MaterialResourceBindingLayout,
   type ShaderBindingReads,
 } from '@forgeax/engine-types';
+import type { SubmissionPlan } from '../gpu-driven/batch-topology';
+import { rowMaterialResource } from '../gpu-driven/row-materials';
 import type { MaterialResource } from '../material-resource';
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
@@ -11,6 +13,7 @@ import { writePbrMaterialUboPayload } from '../record/main-pass-material';
 import { MATERIAL_UNIFORM_BYTES, type RenderSystemRuntime } from '../record/render-context';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { type MaterialFrame, materialPasses } from './material-dispatch';
+import type { PersistentGpuDrivenState } from './render-scene';
 
 const numeric = new WeakMap<MaterialSnapshot, Uint8Array>();
 function payload(snapshot: MaterialSnapshot): Uint8Array {
@@ -79,7 +82,9 @@ function shadowPasses(snapshot: MaterialSnapshot) {
     .map((pass) => {
       const authored = snapshot.passes[pass.passIndex];
       const entries =
-        authored === undefined ? undefined : snapshot.materialEntryPoints?.[authored.name];
+        authored === undefined
+          ? undefined
+          : snapshot.materialProgramInputs?.[authored.name]?.entryPoints;
       const vertex = entries?.find(
         (entry) => entry.stage === 'vertex' && entry.name === (pass.vertexEntry ?? 'vs_main'),
       );
@@ -187,16 +192,20 @@ const comparisons = new WeakMap<MaterialFrame, WeakMap<MaterialFrame, boolean>>(
 export function sameShadowMaterialFrames(
   a: MaterialFrame | undefined,
   b: MaterialFrame | undefined,
+  observed?: ReadonlySet<MaterialResource>,
 ): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   let cache = comparisons.get(a);
-  const previous = cache?.get(b);
+  const previous = observed === undefined ? cache?.get(b) : undefined;
   if (previous !== undefined) return previous;
   let same = true;
   b.changesSince(a, (before, after) => {
+    const resource = after?.resource ?? before?.resource;
+    if (observed !== undefined && (resource === undefined || !observed.has(resource))) return;
     if (same && !sameShadowMaterial(before?.snapshot, after?.snapshot)) same = false;
   });
+  if (observed !== undefined) return same;
   if (cache === undefined) {
     cache = new WeakMap();
     comparisons.set(a, cache);
@@ -207,21 +216,34 @@ export function sameShadowMaterialFrames(
 
 interface ShadowMaterialState {
   readonly snapshot: MaterialSnapshot;
-  readonly resources: readonly unknown[];
+  /** Native AcceptedMaterial leaves already own their fixed snapshot; no wrapper is needed. */
+  readonly resources?: readonly unknown[];
+}
+
+const NO_SHADOW_RESOURCE_VERSIONS: readonly unknown[] = Object.freeze([]);
+interface ShadowScopeContent {
+  readonly worldId: number | undefined;
+  readonly materials: Map<MaterialResource, ShadowMaterialState | undefined>;
 }
 
 /**
  * Captured while preparing shared shadow work; contains no instance or
  * reverse-consumer index. Row-material batches bind one material per class
- * while each member casts with its own row, so GPU content also witnesses the
- * accepted material frame: any shadow-read edit of a member invalidates it in
- * O(changed materials).
+ * while each member casts with its own row. The native caster dispatch retains
+ * every consumed material root, including the other members of row batches.
  */
 export class ShadowMaterialContent {
-  private readonly entries = new Map<
-    RenderResourceScope,
-    Map<MaterialResource, ShadowMaterialState>
+  private readonly entries = new Map<RenderResourceScope, ShadowScopeContent>();
+  private observed: ReadonlySet<MaterialResource> | undefined;
+  private readonly selections = new WeakMap<
+    SubmissionPlan,
+    {
+      readonly source: Pick<PersistentGpuDrivenState, 'slotAt'>;
+      readonly content: ShadowMaterialContent;
+    }
   >();
+  /** Members whose shadow reads are witnessed by the owned frame instead of an entry. */
+  private readonly framed = new Map<MaterialResource, MaterialSnapshot>();
 
   constructor(private readonly materials?: MaterialFrame) {}
 
@@ -230,9 +252,16 @@ export class ShadowMaterialContent {
     snapshot: MaterialSnapshot,
     scope: RenderResourceScope,
     preparedMaterialTexture?: RenderSystemRuntime['preparedMaterialTexture'],
+    worldId?: number,
   ): void {
-    let materials = this.entries.get(scope);
+    let materials = this.entries.get(scope)?.materials;
     if (materials?.has(resource)) return;
+    // The captured frame already witnessed this exact numeric snapshot. Keep
+    // new scope membership without repeating its frame lookup or ABI reads.
+    if (this.framed.get(resource) === snapshot) {
+      this.addFramed(resource, snapshot, scope, worldId);
+      return;
+    }
     const passes = shadowPasses(snapshot);
     if (passes.length === 0) return;
     const bindings = shadowResourceBindings(snapshot);
@@ -243,7 +272,7 @@ export class ShadowMaterialContent {
       snapshot.immutableValues === true &&
       this.materials?.get(resource)?.snapshot === snapshot
     ) {
-      if (materials === undefined) this.entries.set(scope, new Map());
+      this.addFramed(resource, snapshot, scope, worldId);
       return;
     }
     const resources: unknown[] = [];
@@ -266,9 +295,108 @@ export class ShadowMaterialContent {
     }
     if (materials === undefined) {
       materials = new Map();
-      this.entries.set(scope, materials);
+      this.entries.set(scope, { worldId, materials });
     }
     materials.set(resource, { snapshot, resources });
+  }
+
+  private addFramed(
+    resource: MaterialResource,
+    snapshot: MaterialSnapshot,
+    scope: RenderResourceScope,
+    worldId: number | undefined,
+  ): void {
+    let materials = this.entries.get(scope)?.materials;
+    if (materials === undefined) {
+      materials = new Map();
+      this.entries.set(scope, { worldId, materials });
+    }
+    materials.set(resource, undefined);
+    this.framed.set(resource, snapshot);
+  }
+
+  /** Row-material batches read every member's numeric row, including non-representatives. */
+  addRows(
+    resources: Iterable<MaterialResource>,
+    scope: RenderResourceScope,
+    preparedMaterialTexture: RenderSystemRuntime['preparedMaterialTexture'],
+    worldId: number,
+  ): void {
+    for (const resource of resources) {
+      const accepted = this.materials?.get(resource);
+      if (accepted !== undefined)
+        this.add(resource, accepted.snapshot, scope, preparedMaterialTexture, worldId);
+    }
+  }
+
+  /** Exact privately selected plans retain only the materials their selected rows read. */
+  select(
+    plan: SubmissionPlan,
+    source: Pick<PersistentGpuDrivenState, 'slotAt'>,
+  ): ShadowMaterialContent {
+    const retained = this.selections.get(plan);
+    if (retained?.source === source) return retained.content;
+    const observed = new Set<MaterialResource>();
+    const worlds = new Map<number, Set<MaterialResource>>();
+    const add = (worldId: number, resource: MaterialResource) => {
+      observed.add(resource);
+      let materials = worlds.get(worldId);
+      if (materials === undefined) {
+        materials = new Set();
+        worlds.set(worldId, materials);
+      }
+      materials.add(resource);
+    };
+    for (const batch of plan.batches) {
+      if (batch.candidates.length === 0) continue;
+      const binding = batch.binding;
+      if (binding === undefined) return this;
+      if (batch.key.rowMaterial !== true) {
+        add(0, binding.material);
+        continue;
+      }
+      for (const candidate of batch.candidates) {
+        const row = source.slotAt(candidate.primitiveIndex);
+        if (row?.generation !== candidate.generation) return this;
+        const resource = rowMaterialResource(row.snapshot);
+        if (resource === undefined) return this;
+        add(0, resource);
+      }
+    }
+    const content = new ShadowMaterialContent(this.materials);
+    content.observed = observed;
+    const captured = new Map<number, Set<MaterialResource>>();
+    for (const [scope, entry] of this.entries) {
+      if (entry.worldId === undefined) return this;
+      const selected = worlds.get(entry.worldId);
+      if (selected === undefined) continue;
+      const materials = new Map<MaterialResource, ShadowMaterialState | undefined>();
+      for (const resource of selected) {
+        const state = entry.materials.get(resource);
+        if (entry.materials.has(resource)) {
+          materials.set(resource, state);
+          // Only addFramed creates an undefined state, alongside its exact snapshot.
+          if (state === undefined)
+            content.framed.set(resource, this.framed.get(resource) as MaterialSnapshot);
+          let scopeMaterials = captured.get(entry.worldId);
+          if (scopeMaterials === undefined) {
+            scopeMaterials = new Set();
+            captured.set(entry.worldId, scopeMaterials);
+          }
+          scopeMaterials.add(resource);
+        }
+      }
+      if (materials.size !== 0) content.entries.set(scope, { worldId: entry.worldId, materials });
+    }
+    // Missing capture evidence keeps the conservative complete-frame comparison.
+    for (const [worldId, materials] of worlds)
+      for (const resource of materials) if (!captured.get(worldId)?.has(resource)) return this;
+    this.selections.set(plan, { source, content });
+    return content;
+  }
+
+  sameMaterialFrames(a: MaterialFrame | undefined, b: MaterialFrame | undefined): boolean {
+    return sameShadowMaterialFrames(a, b, this.observed);
   }
 
   same(previous: ShadowMaterialContent | undefined): boolean {
@@ -276,28 +404,60 @@ export class ShadowMaterialContent {
     if (previous === undefined || previous.entries.size !== this.entries.size) return false;
     if (
       (previous.materials === undefined) !== (this.materials === undefined) ||
-      !sameShadowMaterialFrames(previous.materials, this.materials)
+      !this.sameFramed(previous)
     )
       return false;
     // Runs for every shadow cache probe each frame: key iteration plus lookup
     // and indexed resource loops allocate no entry tuples or callbacks.
     for (const scope of this.entries.keys()) {
-      const materials = this.entries.get(scope) as Map<MaterialResource, ShadowMaterialState>;
-      const old = previous.entries.get(scope);
-      if (old === undefined || old.size !== materials.size) return false;
+      const materials = this.entries.get(scope)?.materials as Map<
+        MaterialResource,
+        ShadowMaterialState | undefined
+      >;
+      const old = previous.entries.get(scope)?.materials;
+      if (old === undefined) return false;
       for (const material of materials.keys()) {
-        const state = materials.get(material) as ShadowMaterialState;
+        const state = materials.get(material);
+        if (state === undefined) continue;
         const before = old.get(material);
+        const resources = state.resources ?? NO_SHADOW_RESOURCE_VERSIONS;
+        const oldResources = before?.resources ?? NO_SHADOW_RESOURCE_VERSIONS;
         if (
           before === undefined ||
           !sameShadowMaterial(before.snapshot, state.snapshot) ||
-          before.resources.length !== state.resources.length
+          oldResources.length !== resources.length
         )
           return false;
-        for (let index = 0; index < state.resources.length; index++)
-          if (state.resources[index] !== before.resources[index]) return false;
+        for (let index = 0; index < resources.length; index++)
+          if (resources[index] !== oldResources[index]) return false;
       }
+      for (const [material, state] of old)
+        if (state !== undefined && materials.get(material) === undefined) return false;
     }
     return true;
+  }
+
+  /**
+   * Caster membership is witnessed by candidates, and views that share this
+   * depth work may batch different subsets. Only edits to a material either
+   * side witnessed matter; any other material may change freely.
+   */
+  private sameFramed(previous: ShadowMaterialContent): boolean {
+    const before = previous.materials,
+      after = this.materials;
+    if (before === after || before === undefined || after === undefined) return true;
+    if (this.entries.size === 0) return sameShadowMaterialFrames(before, after, this.observed);
+    if (this.framed.size === 0 && previous.framed.size === 0) return true;
+    let same = true;
+    after.changesSince(before, (a, b) => {
+      const resource = (b ?? a)?.resource;
+      if (
+        same &&
+        resource !== undefined &&
+        (this.framed.has(resource) || previous.framed.has(resource))
+      )
+        same = sameShadowMaterial(a?.snapshot, b?.snapshot);
+    });
+    return same;
   }
 }

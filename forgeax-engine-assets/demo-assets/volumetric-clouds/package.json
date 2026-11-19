@@ -1,0 +1,17 @@
+{
+  "name": "@forgeax-assets/volumetric-clouds",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Seeded volumetric cloud textures, materials and a reusable sky SceneAsset.",
+  "files": ["assets", "README.md"],
+  "exports": {
+    "./package.json": "./package.json",
+    "./build": "./assets/cloud-cook.ts",
+    "./references": "./assets/identity.ts",
+    "./reference": "./assets/ue-reference.ts"
+  },
+  "peerDependencies": { "@forgeax/engine": "*" },
+  "forgeax": { "library": { "assetRoot": "assets" } }
+}

@@ -8,6 +8,7 @@ import {
   srgbChannelToLinear,
   type VertexAttributeMap,
 } from '@forgeax/engine-types';
+import { interleavedMesh, meshAttributeChannels } from './mesh-storage';
 import {
   deriveVertexCount,
   deriveVertexLayoutProjection,
@@ -28,10 +29,16 @@ export function withVertexColor(
     deriveVertexCount(mesh.vertices, deriveVertexLayoutProjection(mesh.attributes)) ?? -1;
   const color = new Float32Array(Math.max(0, vertexCount) * 4);
   for (let vertex = 0; vertex < vertexCount; vertex++) color.set(rgbaLinear, vertex * 4);
-  const attributes: VertexAttributeMap = { ...mesh.attributes, color };
+  const attributes: VertexAttributeMap = { ...meshAttributeChannels(mesh), color };
   const packed = packInterleavedVertexAttributes(attributes, vertexCount);
   if (!packed.ok) return packed;
-  return ok({ ...mesh, vertices: packed.value.vertices, attributes });
+  const result = {
+    ...mesh,
+    attributeStorage: undefined,
+    vertices: packed.value.vertices,
+    attributes,
+  };
+  return ok(mesh.attributeStorage === 'interleaved' ? interleavedMesh(result) : result);
 }
 
 export interface WithVertexColorsOptions {
@@ -68,7 +75,10 @@ export function withVertexColors(
   colors: ArrayLike<number>,
   options: WithVertexColorsOptions = {},
 ): Result<MeshAsset, AssetError> {
-  const position = mesh.attributes.position;
+  const position =
+    mesh.attributeStorage === 'interleaved'
+      ? meshAttributeChannels(mesh).position
+      : mesh.attributes.position;
   const vertexCount = position instanceof Float32Array ? position.length / 3 : 0;
   const width = colors.length === vertexCount * 4 ? 4 : 3;
   if (!Number.isInteger(vertexCount) || colors.length !== vertexCount * width) {
@@ -88,8 +98,14 @@ export function withVertexColors(
     }
     color[vertex * 4 + 3] = width === 4 ? (colors[vertex * 4 + 3] as number) : 1;
   }
-  const attributes: VertexAttributeMap = { ...mesh.attributes, color };
+  const attributes: VertexAttributeMap = { ...meshAttributeChannels(mesh), color };
   const packed = packInterleavedVertexAttributes(attributes, vertexCount);
   if (!packed.ok) return packed;
-  return ok({ ...mesh, vertices: packed.value.vertices, attributes });
+  const result = {
+    ...mesh,
+    attributeStorage: undefined,
+    vertices: packed.value.vertices,
+    attributes,
+  };
+  return ok(mesh.attributeStorage === 'interleaved' ? interleavedMesh(result) : result);
 }

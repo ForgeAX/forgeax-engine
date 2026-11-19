@@ -26,6 +26,7 @@ import {
   deriveTextureLayout,
   isCompressedFormat,
   type MeshAsset,
+  type SampledTextureAsset,
   type Submesh,
   type TextureAsset,
   type TextureShape,
@@ -180,7 +181,9 @@ export function deriveRenderDataMesh(mesh: MeshAsset): Result<MeshRenderData, As
  * fails fast if the POD's `format` and `colorSpace` are internally
  * inconsistent (a `-srgb` format requires an `srgb` colorSpace and vice versa).
  */
-export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRenderData, AssetError> {
+export function deriveRenderDataTexture(
+  tex: SampledTextureAsset,
+): Result<TextureRenderData, AssetError> {
   const width = tex.shape.extent.width;
   const height = tex.shape.extent.height;
   const isSrgbFormat = tex.format.endsWith('-srgb');
@@ -238,7 +241,7 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
       }),
     );
   }
-  if (!compressed && tex.data.byteLength < baseLevel.byteLength) {
+  if (!compressed && tex.kind === 'texture' && tex.data.byteLength < baseLevel.byteLength) {
     return err(
       new AssetError({
         code: 'invalid-source-format',
@@ -254,8 +257,8 @@ export function deriveRenderDataTexture(tex: TextureAsset): Result<TextureRender
   const bytesPerRow = baseLevel.bytesPerRow;
 
   // Compressed formats are not renderable -- RENDER_ATTACHMENT would fail
-  // createTexture validation, and the runtime mipmap blit (which copies each
-  // level in through COPY_DST) never runs on a compressed texture anyway (the
+  // createTexture validation, and runtime mipmap generation never runs on a
+  // compressed texture anyway (the
   // mip gate above rules out runtime mip-gen). Both paths keep COPY_SRC so a real consumer can validate the
   // uploaded texture through the standard GPU readback contract.
   const usage = compressed

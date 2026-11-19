@@ -9,7 +9,7 @@ import type { CubeCaptureGraphState } from '../record/target-capture-graph';
 import type { RenderTarget } from '../targets/contracts';
 import type { FramebufferSnapshotSource } from '../targets/framebuffer-snapshot';
 import { ViewRecorder, type ViewViewport, viewCameraOf } from './render-views';
-import type { ViewRecorderState } from './view-output-systems';
+import { type ViewRecorderState, viewComposition } from './view-output-systems';
 
 /** Scoped recording facts. Shared services remain on the renderer port. */
 export const ViewRecordContext = defineComponent('ViewRecordContext', {
@@ -23,8 +23,6 @@ export class ViewRecordContextState {
   readonly standardPipeline: RenderSystemInternals['standardPipeline'];
   readonly featureHost: RenderSystemInternals['featureHost'];
   featureSceneInputs: RenderSystemInternals['featureSceneInputs'];
-  readonly observationCaptureOwner = undefined;
-  readonly observationCaptureDomains = undefined;
   readonly sharedFeatureGpuWork: RenderSystemInternals['sharedFeatureGpuWork'];
   readonly outputColorSpace: RenderSystemInternals['outputColorSpace'];
   gpuPassTimingViewId: number | undefined;
@@ -68,7 +66,20 @@ export class ViewRecordContextState {
     );
   }
   get viewOutput(): RenderSystemInternals['viewOutput'] {
-    return this.recorder()?.output;
+    return this.directDisplay ? undefined : this.recorder()?.output;
+  }
+  private get directDisplay(): boolean {
+    const world = this.root.renderWorld;
+    return world !== undefined && viewComposition(world).directDisplay === this.entity;
+  }
+  get observationCaptureOwner(): RenderSystemInternals['observationCaptureOwner'] {
+    return this.directDisplay ? this.root.observationCaptureOwner : undefined;
+  }
+  get observationCaptureDomains(): RenderSystemInternals['observationCaptureDomains'] {
+    return this.directDisplay ? this.root.observationCaptureDomains : undefined;
+  }
+  get observationFrameId(): RenderSystemInternals['observationFrameId'] {
+    return this.root.observationFrameId;
   }
   get deviceGeneration(): number {
     return this.deviceScope.generation;

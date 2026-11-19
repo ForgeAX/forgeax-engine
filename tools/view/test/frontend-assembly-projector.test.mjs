@@ -6,7 +6,7 @@ import { Context } from '@forgeax/engine/plugin';
 import { resolveViewFrontendRoot } from '../packages/viewer/src/host/frontend.ts';
 import { createViewFrontendRoot } from '../packages/viewer/src/frontend-root.ts';
 import { VIEW_PRODUCT_FRONTEND_CATALOG } from '../packages/viewer/src/frontend-catalog.ts';
-import { VIEW_FRONTEND_ROOT_PROGRAM, VIEW_PLUGIN_VERSION, viewFrontendRoot } from '../packages/viewer/src/catalog-shared.ts';
+import { VIEW_FRONTEND_ROOT_PROGRAM, VIEW_PLUGIN_VERSION, createViewProductPlan, viewFrontendRoot } from '../packages/viewer/src/catalog-shared.ts';
 import viewportFrontendPlugin from '../packages/view-plugin-viewport/src/frontend.ts';
 import * as viewportIdentity from '../packages/view-plugin-viewport/src/identity.ts';
 import * as materialIdentity from '../packages/view-plugin-material/src/identity.ts';
@@ -39,7 +39,38 @@ test('HostAssembly v2 projects one exact View frontend root', async () => {
   assert.equal(assembly.root.codeRevision, buildRevision);
   assert.deepEqual(assembly.root.config.disabledPages, ['display']);
   assert.equal(typeof (await resolveViewFrontendRoot(assembly.root)).apply, 'function');
+  await assert.rejects(resolveViewFrontendRoot({ ...assembly.root, codeRevision: 'different-build' }), /Incompatible View frontend revision/);
+  await assert.rejects(resolveViewFrontendRoot({ ...assembly.root, codeRevision: undefined }), /Incompatible View frontend revision/);
   await assert.rejects(resolveViewFrontendRoot({ program: 'another-product' }), /Unexpected View frontend root/);
+});
+
+test('project document root is Host-authorized and excludes outer Shell UI', () => {
+  const root = viewFrontendRoot({ embedded: true }, [], 'project-document');
+  assert.equal(root.config.role, 'project-document');
+  const plan = createViewProductPlan({ role: 'project-document' });
+  assert.deepEqual(plan.frontend.map(entry => entry.module), [
+    '@forgeax/view/workspace-frontend',
+    '@forgeax/view/workspace/presentation',
+  ]);
+});
+
+test('project document role reaches its workspace client root without activating page plugins', async () => {
+  const original = new Map(VIEW_PRODUCT_FRONTEND_CATALOG);
+  const context = new Context();
+  const roles = [];
+  try {
+    for (const [module] of original) VIEW_PRODUCT_FRONTEND_CATALOG.set(module, {
+      load: async () => ({ default: { name: `test.${module}`, apply(_ctx, config) { roles.push(config.role); } } }),
+    });
+    const root = context.plugin(createViewFrontendRoot(), { role: 'project-document', frontendConfig: { embedded: true } });
+    await root.await();
+    assert.deepEqual(roles, ['project-document', 'project-document']);
+    await root.dispose();
+  } finally {
+    VIEW_PRODUCT_FRONTEND_CATALOG.clear();
+    for (const [key, value] of original) VIEW_PRODUCT_FRONTEND_CATALOG.set(key, value);
+    await context.fiber.dispose();
+  }
 });
 
 test('frontend root activates before Engine supplies the headed presentation', async () => {

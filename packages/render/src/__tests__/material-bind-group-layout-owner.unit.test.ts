@@ -2,6 +2,8 @@ import { World } from '@forgeax/engine-ecs';
 import type { BindGroup, BindGroupEntry, BindGroupLayout, Buffer } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import type { IblBindingInspection } from '../mesh-material-bindings';
+import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
@@ -62,6 +64,7 @@ function fixture() {
   const draw = (): BindGroup => buildPerSubmeshMaterialBg(deps, material, 1);
   return {
     deps,
+    material,
     draw,
     layouts,
     get layout() {
@@ -189,4 +192,102 @@ it('binds prepared material views and observes appearance, replacement and remov
   expect(f.draw()).toBe(second);
   prepared = undefined;
   expect(f.draw()).toBe(original);
+});
+
+function iblReceipt(deps: PerSubmeshMaterialBgDeps, frameId: number): IblBindingInspection {
+  const r = deps.skylightResources,
+    id = (value: object) => getOpaqueResourceIdentity(value);
+  const resource = (view: object, sampler: object) => ({
+    viewIdentity: id(view),
+    samplerIdentity: id(sampler),
+    deviceGeneration: 1,
+  });
+  return {
+    status: 'binding-chain-consistent',
+    frameId,
+    deviceGeneration: 1,
+    active: 'fallback',
+    cache: { identity: 1, generation: 1, prefilterMipCount: 1, prefilterViewMipCount: 1 },
+    sampler: {
+      expected: {
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipmapFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+        addressModeW: 'clamp-to-edge',
+      },
+      identities: [id(r.irradianceSampler), id(r.prefilterSampler)],
+    },
+    resources: {
+      irradiance: resource(r.irradianceView, r.irradianceSampler),
+      prefilter: resource(r.prefilterView, r.prefilterSampler),
+      brdfLut: resource(r.brdfLutView, r.irradianceSampler),
+      intensityBufferIdentity: id(r.intensityBuffer),
+    },
+    errors: [],
+  };
+}
+
+it('retains actual IBL binding facts across hits and detached frame receipts', () => {
+  const f = fixture();
+  f.deps.frameState.iblBindingInspection = iblReceipt(f.deps, 1);
+  const group = f.draw();
+  const cold = f.deps.frameState.iblBindingInspection,
+    entries = cold.material?.entries;
+  expect(cold.material?.cache).toBe('miss');
+  expect(entries).toHaveLength(6);
+  expect(f.draw()).toBe(group);
+  const first = f.deps.frameState.iblBindingInspection;
+  expect(first.material?.cache).toBe('hit');
+  expect(first.material?.entries).toEqual(entries);
+  expect(first.material?.entries).not.toBe(entries);
+  const resource = first.material?.entries[0]?.resourceIdentity;
+  Object.assign(entries?.[0] ?? {}, { resourceIdentity: -1 });
+  expect(first.material?.entries[0]?.resourceIdentity).toBe(resource);
+  f.deps.frameState.iblBindingInspection = iblReceipt(f.deps, 2);
+  expect(f.draw()).toBe(group);
+  const second = f.deps.frameState.iblBindingInspection;
+  expect(second.material).toBe(first.material);
+  expect(second.frameId).toBe(2);
+  expect(cold.frameId).toBe(1);
+  expect(cold.material?.cache).toBe('miss');
+  expect(Object.isFrozen(second.material)).toBe(true);
+  expect(Object.isFrozen(second.material?.entries)).toBe(true);
+  expect(Object.isFrozen(second.material?.entries[0])).toBe(true);
+  expect(f.draw()).toBe(group);
+  expect(f.deps.frameState.iblBindingInspection).toBe(second);
+});
+
+it('keeps current IBL errors observable and replaces proofs with changed bindings', () => {
+  const f = fixture();
+  const oldGroup = f.draw(); // No inspection was requested at first assembly.
+  f.deps.frameState.iblBindingInspection = iblReceipt(f.deps, 3);
+  expect(f.draw()).toBe(oldGroup);
+  const original = f.deps.frameState.iblBindingInspection;
+  f.deps.frameState.iblBindingInspection = {
+    ...original,
+    status: 'binding-chain-mismatch',
+    errors: ['material-bind-group-identity-mismatch'],
+  };
+  f.draw();
+  expect(f.deps.frameState.iblBindingInspection.errors).toEqual([]);
+  expect(f.deps.frameState.iblBindingInspection.status).toBe('binding-chain-mismatch');
+  const next = {
+    ...f.deps,
+    skylightResources: {
+      ...f.deps.skylightResources,
+      prefilterView: {} as import('@forgeax/engine-rhi').TextureView,
+    },
+  };
+  next.frameState.iblBindingInspection = iblReceipt(next, 4);
+  const newGroup = buildPerSubmeshMaterialBg(next, f.material, 1);
+  expect(newGroup).not.toBe(oldGroup);
+  const changed = next.frameState.iblBindingInspection;
+  expect(changed.material?.entries).not.toEqual(original.material?.entries);
+  expect(original.frameId).toBe(3);
+  buildPerSubmeshMaterialBg(next, f.material, 1);
+  const hit = next.frameState.iblBindingInspection;
+  expect(hit.material?.entries).toEqual(changed.material?.entries);
+  expect(hit.material?.cache).toBe('hit');
 });

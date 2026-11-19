@@ -5,6 +5,8 @@ it('packs both UNORM8 float decode forms into the same exact Cluster words', asy
   const source = readFileSync(new URL('../hdrp-ssao.wgsl', import.meta.url), 'utf8');
   const start = source.indexOf('@fragment\nfn fs_ssao_cluster_pack(');
   if (start < 0) throw new Error('Missing production AO Cluster pack entry');
+  const end = source.indexOf('\n}', start);
+  if (end < 0) throw new Error('Missing production AO Cluster pack body');
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('AO packing regression requires a GPU adapter');
   const device = await adapter.requestDevice();
@@ -48,7 +50,7 @@ struct PackUniform { clusterPack: vec4<u32> }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   return vec4(f32((i << 1u) & 2u)*2.0-1.0, 1.0-f32(i & 2u)*2.0, 0.0, 1.0);
 }
-${source.slice(start)}`,
+${source.slice(start, end + 2)}`,
     });
     const layout = device.createBindGroupLayout({
       entries: [

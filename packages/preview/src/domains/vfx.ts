@@ -134,10 +134,10 @@ export function inspectVfxSubject(input: ResourceSubject): InspectionResult {
   }
   const program = input.asset.program;
   const programFingerprint = requiredString(input.asset.programFingerprint);
-  if (!isRecord(program) || program.format !== 'forgeax-vfx-program-4') {
+  if (!isRecord(program) || program.format !== 'forgeax-vfx-program-5') {
     return subjectFailure(
       'resource-preview-subject-invalid',
-      'a cooked forgeax-vfx-program-4 payload',
+      'a cooked forgeax-vfx-program-5 payload',
       {
         phase: 'subject',
         guid: input.guid,

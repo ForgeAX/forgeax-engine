@@ -100,19 +100,17 @@ describe('VFX managed stage execution seam', () => {
     const feature = gpuParticleRenderFeature({ camera: { read: () => undefined } });
     const planned = feature.plan(
       {
-        worlds: [
-          {
-            world: new World(),
-            runtime,
-            camera: {
-              position: new Float32Array(3),
-              right: new Float32Array([1, 0, 0]),
-              up: new Float32Array([0, 1, 0]),
-              viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
-            },
-            intents: [intent],
+        source: {
+          world: new World(),
+          runtime,
+          camera: {
+            position: new Float32Array(3),
+            right: new Float32Array([1, 0, 0]),
+            up: new Float32Array([0, 1, 0]),
+            viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
           },
-        ],
+          intents: [intent],
+        },
         frameNumber: 1,
       } as never,
       singleViewContext({

@@ -55,9 +55,9 @@ describe('host createApp runtime binding contract', () => {
 // consult import.meta.hot), so a host that pre-gates the binding or transport
 // on DEV drops the scoped catalog transport and fails scene load with
 // asset-package-invalid ('publication generation').
-describe('hello-skin dev-binding ownership', () => {
+describe.each(['skin', 'taa'])('hello-%s dev-binding ownership', (name) => {
   const source = readFileSync(
-    resolve(import.meta.dirname, '../../../hello/skin/src/main.ts'),
+    resolve(import.meta.dirname, `../../../hello/${name}/src/main.ts`),
     'utf8',
   );
   it('does not pre-gate the binding or import transport on import.meta.env.DEV', () => {

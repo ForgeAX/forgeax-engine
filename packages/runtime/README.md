@@ -1,5 +1,98 @@
 # `@forgeax/engine-runtime`
 
+## Water local fluid assembly
+
+The existing Water Scene plugin reconciles `WaterFluidSimulation` components
+into the Scene-local `WaterSystem.fluid` owner. It resolves the specified Body
+generation, saved recipe version and the recipe's ordinary `impulseNoiseGuid`
+dependency; there is no game-side noise loader or parallel RT registry.
+The component's explicit `waveFoamCenterM` joins the same input snapshot as the
+solver transform. Water retains its submitted outer-frame history; Render derives
+the material mapping from that producer rather than a second authored mapping.
+`WaterSceneStatus.waterFluidFailures` reports source-owned, code-discriminated
+admission failures. Render extracts one frame-shared simulation and acknowledges
+queued inputs only after complete graph submission. CPU query and buoyancy
+inputs do not acquire visual RT data. See the [Water entry](../water/README.md#local-fluid-simulation).
+
+## Water River Native collision lifecycle
+
+Runtime keeps a source-owned River's accepted Water snapshot and Native collision
+paired. A saved collision disable or re-enable commits only after the matching
+Native receipt publishes; an empty retirement receipt is required to accept a
+disable, and preparation/admission failures leave the previous River active for
+retry. A material or source-version rebind with unchanged collision geometry
+and full Scene matrix retains the accepted Bake and Native receipt. Replacing
+the River with another Water Body kind requires removing `WaterBodyInstance`,
+waiting for Native source retirement, and then mounting the replacement. See
+the [Water Scene lifecycle contract](../water/README.md#scene-and-material-status).
+
+Durable cold Bake admission requires a loaded `/2` recipe with both its exact
+grid and direct solver-normal textures. Each loaded texture's handle, GUID,
+AssetRegistry revision and value must agree with the recipe pair; the normal
+descriptor also retains its accepted format and basis. The source Body GUID,
+collision-geometry projection and complete Scene matrix must match the current
+River. A historical source Body generation remains valid across a generation
+bump when that geometry and matrix are unchanged; a live capture must match its
+captured Body generation and `sourceFrame`. `/1` remains readable but cannot
+authorize cold publication. Worker completion is supported, while
+feature-texture readback and River Bake publication remain pending because
+those bytes stay receiver-local; capture requests return structured unavailable
+errors. These lineage checks qualify Bake inputs, while visual and selected R8
+acceptance remain separate gates.
+
+`publishWaterRiverBake` captures the exact loaded solver-normal texture version
+with its decoded `/2` grid. `waterSceneRiverBakeNormalTexture` exposes it only
+after that paired Bake becomes the accepted query source; the last accepted
+texture stays readable while a replacement waits for its Native receipt.
+Runtime disposes accepted and candidate texture snapshots when their Bake or
+Water Scene is retired.
+
+## Water fixed-step buoyancy
+
+Gameplay systems use the exported `WaterSceneReconcile`, `WaterContactProbes`,
+`WaterBuoyancy` and `WaterBuoyancyCompletion` ordering tokens for the installed
+Water boundaries. These are the same source-owned sets used by Runtime;
+diagnostic system names do not provide ordering identity. Register application
+systems with `defineSystem`, retain that token for removal, and order fixed
+motion through Physics's `PhysicsSync` and `PhysicsSimulation` tokens.
+
+The existing Water Scene plugin installs `waterBuoyancy` after
+`physicsSyncBackend` and before `physicsStepSimulation`. `WaterPontoonSet`
+binds one ordinary dynamic root body to relative centers or live descendant
+sockets. Physics owns mass, COM, inertia, native point forces and the last
+completed sensor roster; Water owns candidate queries and the synchronous
+source formulas. Presentation matrices never supply a force application point.
+Relative anchors retain signed scale. Socket world centers include the
+descendant hierarchy, while coefficient inputs use the immediate-parent-local
+socket position. The root itself is not a descendant socket.
+An enabled participant without Physics reports `buoyancy-physics-unsupported`.
+Participant cache and disabled wet-state lifetimes are defined in the Water contract.
+
+`WaterBuoyancy.asyncEnabled`, `WaterPontoonSet.useAsyncPath` and an available
+Worker solver select async Water. The same fixed-step owner submits detached
+Water inputs before integration and consumes completed outputs after
+`physicsCollisionSync`. It validates task/root/source generations before
+publishing state or events, retains cancelled native readers until acknowledgement,
+and exposes bounded current/next/alpha selection in `WaterBuoyancyState.async`.
+The backend results clock owns the cutoff; wave query time remains a separate
+input. The synchronous path remains available per participant. Explicit gameplay
+motion commands run after Physics sync and before `waterBuoyancy`, so the force
+snapshot observes the accepted reset/launch pose.
+Changing one root to synchronous cancels only that root's pending tasks. The
+shared solver stays alive while any enabled root opts into async and is released
+when no enabled async roots remain, independently of their query order.
+
+Read `WATER_BUOYANCY_RESOURCE` (`WaterBuoyancyState`) for the complete point
+traces and admitted force events. `splashWakeEvents` publish only after
+`physicsCollisionSync` confirms the exact step and root generation. A VFX
+consumer keeps the event's completed source step and specified Water body
+generation. See the [Water contract](../water/README.md) and
+[R4–R5 app](../../apps/water/r5-gpu-mesh-async-pontoons/README.md).
+
+> [!IMPORTANT]
+> A render tape establishes submitted GPU work and resources. It cannot prove
+> buoyancy forces or sensor candidates; retain the full fixed-step traces too.
+
 This file documents the Runtime ownership unit. Game authors install the
 umbrella `@forgeax/engine` package and use its public facades, such as
 `@forgeax/engine/runtime`, `@forgeax/engine/app`, and
@@ -14,6 +107,15 @@ repository source and package tests.
 > capabilities are admitted when an authored camera consumes the Standard scene.
 > A camera-only empty shader publication also consumes no Standard material
 > bindings. Local lights and AO retain their reflected transport requirements.
+
+## Shader source preparation
+
+The publication host supplies the portable shader program service lazily when a
+source-template manifest is loaded. Camera-only and precompiled publications do
+not initialize that service. ShaderRegistry retains verified modules and
+selected CPU programs; device forks share these inputs while retaining separate
+GPU lifetimes. Runtime imports the compiler's `/program` entry only; file
+discovery and Node material cooking remain tool responsibilities.
 
 ## Adaptive resolution
 
@@ -43,9 +145,7 @@ const renderer = result.value;
 const lease = renderer.attach(world);
 if (!lease.ok) throw lease.error;
 const frame = renderer.draw({
-  leases: [lease.value],
-  camera: { lease: lease.value },
-  environment: { lease: lease.value },
+  source: lease.value,
 });
 if (!frame.ok) throw frame.error;
 const facts = renderer.inspect();
@@ -269,14 +369,35 @@ intact. See the complete
 ## Standard profile recovery
 
 The host exposes one `forgeax::standard` profile. `lightCount` is the local-light
-budget, one of `1 | 32 | 256` (default 256, the cluster maximum; the cluster
-buffers are sized for 256 at every budget, so the default costs no memory), and a
-frame over budget returns `standard-light-budget-exceeded`. Change it with
+budget, an integer from 1 to 1024 (default 1024, the cluster maximum; the cluster
+buffers are sized for 1024 at every budget, so the default costs no memory). Over
+the budget the Cluster shades the first lights by (kind, world, entity), drops the
+rest and warns once; the frame is not rejected. Change it with
 `renderer.setProfile({ ...renderer.inspect().profile, lightCount })`.
 `renderPath` is `forward | deferred`, and local finite lights
 are always prepared for the shared Cluster transport. Invalid profile input
 returns `standard-profile-invalid` with `expected`, `hint`, and `detail`; the
 failed transaction keeps the last-known-good profile and device generation.
+
+### lightCount migration
+
+- `lightCount` was one of `1 | 32 | 256` with default 256. It is now any integer
+  from 1 to 1024, default 1024. Existing values 1, 32 and 256 keep working.
+- Over `lightCount` the Cluster keeps the first lights in (kind, world, entity)
+  order, drops the rest and warns once per renderer. The kept set does not
+  depend on the camera. `renderer.inspect().standardLighting.droppedLocalLights` reports
+  the dropped count.
+- When one cell's lights do not fit the 1,048,576-entry index list, every cell
+  keeps its first K lights, with K the largest value that fits; the renderer
+  warns once and inspection reports `clusterEntryCapK` and
+  `droppedClusterEntries`. At the default 3456-cell grid K stays at or above 303.
+- Additional `DirectionalLight`s (every one after the first) no longer count
+  toward `lightCount` and no longer enter the light grid; the shader loops them
+  separately. They still take light slots, so with D of them at most
+  `min(lightCount, 1024 - D)` point, spot and rect lights are kept.
+- The errors `standard-light-budget-exceeded` and
+  `standard-cluster-index-overflow` are deleted; frames are no longer rejected
+  for either case. Remove handlers that matched these codes.
 
 ## Point-shadow creation recipe
 
@@ -397,9 +518,7 @@ const renderer = created.value;
 const attached = renderer.attach(world);
 if (!attached.ok) return attached.error;
 return renderer.draw({
-  leases: [attached.value],
-  camera: { lease: attached.value },
-  environment: { lease: attached.value },
+  source: attached.value,
 });
 ```
 

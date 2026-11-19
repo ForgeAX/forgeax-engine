@@ -6,6 +6,7 @@ export type ViewFileOpenRequest = { requestId: string; sequence: number; file: {
 export type PageResourceOpenRequest = WorkspaceOpenRequest | ViewFileOpenRequest;
 
 export type Dispose = () => void | Promise<void>;
+export type ViewFrontendRole = 'shell' | 'project-document';
 export type PanelLayout = {
   dock: 'fill' | 'top' | 'bottom' | 'left' | 'right' | 'right-bottom';
   size?: { value: number; unit: 'px' | 'fraction'; additionalPx?: number };

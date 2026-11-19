@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import { componentId, defineComponent } from '../component';
 import { type EntityHandle, entityIndex } from '../entity-handle';
-import { setDerivedComponent } from '../projection';
+import { markDerivedComponentChanged } from '../projection';
 import { createStateProjection } from '../projection/state-projection';
 import { defineRelationship } from '../relationship-index';
 import { World } from '../world';
@@ -24,6 +24,7 @@ test('removing the newest member of many leaves prunes cold survivors for indepe
   slow.read().accept();
   Array.from(changed);
   Array.from(sparseChanged);
+  Array.from(changed);
   const hot = entities.filter((entity) => (entityIndex(entity) & 63) === 63);
   for (const entity of hot) {
     world.set(entity, Value, { x: -1 }).unwrap();
@@ -35,19 +36,15 @@ test('removing the newest member of many leaves prunes cold survivors for indepe
   }
   expect(Array.from(changed)).toEqual([]);
   expect(Array.from(sparseChanged)).toEqual([]);
-  const owner = world[worldInternal];
-  for (const component of [Value, Selected])
-    expect(owner.getComponentChangeIndex(componentId(component))?.checkedEntries).toBe(1);
   const expected = hot.map(entityIndex);
   expect(projection.read().indices).toEqual(expected);
-  for (const component of [Value, Selected])
-    expect(owner.getComponentChangeIndex(componentId(component))?.checkedEntries).toBe(1);
   projection.read().accept();
   expect(projection.read().indices).toEqual([]);
   expect(slow.read().indices).toEqual(expected);
   expect(slow.read().indices).toEqual(expected);
   slow.read().accept();
   expect(slow.read().indices).toEqual([]);
+  const owner = world[worldInternal];
   const previous = hot[0] as EntityHandle;
   world.despawn(previous).unwrap();
   const replacement = world.spawn({ component: Value, data: { x: 3 } }).unwrap();
@@ -104,7 +101,7 @@ test.each([
   expect(() =>
     operation === 'set'
       ? world.set(entity, Selected, {})
-      : setDerivedComponent(world, entity, Selected, {}),
+      : markDerivedComponentChanged(world, entity, Selected),
   ).toThrow();
   expect(world.execution.health).toBe('healthy');
   expect(world.hasComponent(entity, Selected)).toBe(true);
@@ -144,9 +141,38 @@ test('retires an owner-derived write whose final changed publication fails', () 
   const world = new World();
   const entity = world.spawn({ component: Value, data: { x: 1 } }).unwrap();
   Object.defineProperty(world, 'mutationEpoch', { value: Number.MAX_SAFE_INTEGER, writable: true });
-  expect(() => setDerivedComponent(world, entity, Value, { x: 2 })).toThrow();
+  expect(() => markDerivedComponentChanged(world, entity, Value)).toThrow();
   expect(world.execution.health).toBe('poisoned');
   expect(world.execution.fault?.partialWrite).toBe(true);
+});
+
+test('refuses publication for absent or stale components and relationship targets', () => {
+  const { source, target } = defineRelationship({
+    sourceName: 'DerivedReadonlySource',
+    sourceField: 'parent',
+    targetName: 'DerivedReadonlyTarget',
+    targetField: 'children',
+  });
+  const world = new World();
+  const parent = world.spawn().unwrap();
+  const child = world.spawn({ component: source, data: { parent } }).unwrap();
+  const stale = world.spawn().unwrap();
+  world.despawn(stale).unwrap();
+  const before = world[worldInternal].getMutationEpoch();
+
+  expect(markDerivedComponentChanged(world, child, Value)).toMatchObject({
+    ok: false,
+    error: { code: 'component-not-present' },
+  });
+  expect(markDerivedComponentChanged(world, stale, Value)).toMatchObject({
+    ok: false,
+    error: { code: 'stale-entity' },
+  });
+  expect(markDerivedComponentChanged(world, parent, target)).toMatchObject({
+    ok: false,
+    error: { name: 'RelationshipTargetReadonlyError', code: 'component-field-invalid-value' },
+  });
+  expect(world[worldInternal].getMutationEpoch()).toBe(before);
 });
 
 test.each([

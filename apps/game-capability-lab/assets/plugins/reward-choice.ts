@@ -1,3 +1,6 @@
+import { GameRewardChoiceOrder } from '../../src/system-order';
+import { GameCounterattackOrder, GameEnergyCoreExtractionOrder } from "../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedUpdate, defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
@@ -274,11 +277,12 @@ export function createRewardChoice(
       physics = ctx.physics;
       available = ctx.isAvailable;
       onChange = ctx.onChange;
-      world.addSystem(FixedUpdate, {
+      const systemToken1 = defineSystem({
         name: 'game-reward-choice',
+sets: [GameRewardChoiceOrder],
         runIf: inState(GameState, 'Play'),
-        after: ['game-energy-core-extraction'],
-        before: ['game-counterattack'],
+        after: [GameEnergyCoreExtractionOrder],
+        before: [GameCounterattackOrder],
         queries: [],
         fn: () => {
           const state = authority();
@@ -325,7 +329,8 @@ export function createRewardChoice(
             onChange?.(snapshot(), 'refused', positionOf(player));
           }
         },
-      }).unwrap();
+      });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
     },
     consumeShield: () => consume('shield'),
     consumeOvercharge: () => consume('overcharge'),

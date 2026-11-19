@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
@@ -14,7 +16,7 @@ import { Update } from '@forgeax/engine-ecs';
 // 1. engine usage
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { Transform } from '@forgeax/engine-scene';
@@ -328,12 +330,12 @@ function parseGuidOrAbort(label: string, guidLiteral: string): AssetGuid | null 
 
 function addScrollFovSystem(world: App['world']): void {
   const scrollFov = createScrollFovAccumulator();
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'learn-render-lighting-maps-scroll-fov',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [{ write: [Camera] }],
     fn: (world, queryResults) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snapshot === undefined) {
         return;
       }
@@ -341,6 +343,7 @@ function addScrollFovSystem(world: App['world']): void {
       for (const row of queryResults[0]) row.mut(Camera).fov = scrollFov.fovRad;
     },
   });
+world.addSystem(Update, systemToken1);
 }
 
 function reportBootstrapError(error: CanvasAppError): void {

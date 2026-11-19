@@ -77,6 +77,7 @@ export function applyFbxImportSettingsBounds(
 
 export const fbxImporter: Importer = {
   key: 'fbx',
+  capabilities: { parallelPreparation: true },
 
   async import(ctx: ImportContext): Promise<ImportResult<unknown>> {
     // ufbx WASM path: read raw FBX bytes via the import context (browser +

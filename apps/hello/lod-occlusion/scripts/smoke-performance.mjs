@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
+import { openShaderManifestPublication } from '../../../../scripts/lib/shader-manifest.mjs';
 
 export const GPU_FRAME_SAMPLES_SCHEMA = 'forgeax::hello-lod-occlusion::gpu-frame-samples::v5';
 export const WARMUP_SUBMITS = 32;
@@ -60,7 +61,6 @@ export const FALSIFICATION_CASES = Object.freeze([
   'all-visible',
   'occlusion-off-on',
   'gpu-occlusion-off',
-  'world-reorder',
 ]);
 
 const FALSIFICATION_PROTOCOLS = Object.freeze({
@@ -68,7 +68,6 @@ const FALSIFICATION_PROTOCOLS = Object.freeze({
   'all-visible': { intervention: 'occluder-absence', held: ['geometry', 'lod', 'view'] },
   'occlusion-off-on': { intervention: 'occluder-presence', held: ['geometry', 'lod', 'view'] },
   'gpu-occlusion-off': { intervention: 'gpu-occlusion-config', held: ['geometry', 'lod', 'occluder', 'view'] },
-  'world-reorder': { intervention: 'world-array-order', held: ['geometry', 'primitive', 'view'] },
 });
 
 function logProducerPhase(phase, event, fields = {}) {
@@ -158,100 +157,11 @@ export function summarize(values) {
   return { medianUs: nearestRank(values, 0.5), p95Us: nearestRank(values, 0.95), samples: values.length };
 }
 
-function worldFactsSignature(facts) {
-  return JSON.stringify({
-    view: facts.view,
-    candidates: facts.candidates,
-    visible: facts.visible,
-    occluded: facts.occluded,
-    lodHistogram: [...facts.lodHistogram]
-      .map((row) => ({ level: row.level, count: row.count }))
-      .sort((left, right) => left.level - right.level),
-    primitiveSlot: facts.primitiveSlot,
-    slotGeneration: facts.slotGeneration,
-  });
-}
-
-function worldReorderAttributionFailure({
-  expectedBuild,
-  forwardSubmit,
-  reverseSubmit,
-  forwardView,
-  reverseView,
-  forwardSlot,
-  reverseSlot,
-  worldIdentities,
-  worldAttribution,
-}) {
-  const validSubmit = (submit) =>
-    submit !== null &&
-    typeof submit === 'object' &&
-    Number.isSafeInteger(submit.frameId) &&
-    submit.frameId >= 0 &&
-    typeof submit.build === 'string' &&
-    submit.build.length > 0 &&
-    Number.isSafeInteger(submit.deviceGeneration) &&
-    submit.deviceGeneration >= 0;
-  if (
-    typeof expectedBuild !== 'string' ||
-    expectedBuild.length === 0 ||
-    !validSubmit(forwardSubmit) ||
-    !validSubmit(reverseSubmit) ||
-    forwardSubmit.build !== expectedBuild ||
-    reverseSubmit.build !== expectedBuild ||
-    forwardSubmit.deviceGeneration !== reverseSubmit.deviceGeneration ||
-    typeof forwardView !== 'string' ||
-    forwardView.length === 0 ||
-    forwardView !== reverseView ||
-    forwardSlot?.primitiveSlot !== reverseSlot?.primitiveSlot ||
-    forwardSlot?.slotGeneration !== reverseSlot?.slotGeneration ||
-    typeof worldIdentities?.treatment !== 'string' ||
-    typeof worldIdentities?.baseline !== 'string' ||
-    worldAttribution === null ||
-    typeof worldAttribution !== 'object'
-  ) {
-    return 'world-reorder pass requires same-identity attribution evidence';
-  }
-  for (const worldName of ['treatment', 'baseline']) {
-    const expectedView = worldIdentities[worldName];
-    for (const order of ['forward', 'reverse']) {
-      const facts = worldAttribution[worldName]?.[order];
-      if (
-        facts === undefined ||
-        facts.view !== expectedView ||
-        facts.candidates !== BENCHMARK_CANDIDATES ||
-        !Number.isInteger(facts.visible) ||
-        !Number.isInteger(facts.occluded) ||
-        facts.visible + facts.occluded !== facts.candidates ||
-        !Array.isArray(facts.lodHistogram) ||
-        facts.lodHistogram.reduce((sum, row) => sum + row.count, 0) !== facts.candidates ||
-        !Number.isInteger(facts.primitiveSlot) ||
-        !Number.isInteger(facts.slotGeneration)
-      ) {
-        return `world-reorder pass is missing ${worldName}/${order} attribution`;
-      }
-      if (worldName === 'baseline' && facts.lodHistogram.some((row) => row.level !== 0)) {
-        return 'world-reorder baseline attribution must remain LOD0-only';
-      }
-    }
-    if (
-      worldFactsSignature(worldAttribution[worldName].forward) !==
-      worldFactsSignature(worldAttribution[worldName].reverse)
-    ) {
-      return `world-reorder ${worldName} attribution changed across worlds[] reorder`;
-    }
-  }
-  return undefined;
-}
-
-export function worldReorderAttributionIsValid(input) {
-  return worldReorderAttributionFailure(input) === undefined;
-}
-
 function validCpuCounters(user, system) {
-  return Number.isSafeInteger(user) && user >= 0 &&
+  return ( Number.isSafeInteger(user) && user >= 0 &&
     Number.isSafeInteger(system) && system >= 0 &&
-    Number.isSafeInteger(user + system);
+    Number.isSafeInteger(user + system)
+  );
 }
 
 function validateCpuObservations(evidence) {
@@ -303,11 +213,13 @@ function validateCpuObservations(evidence) {
       frames = new Set();
       windows.set(key, frames);
     }
-    if (frames.has(sample.frame) || receipts.has(sample.frameId)) {
+    // Frame IDs belong to each condition's independent Renderer.
+    const receiptKey = `${sample.condition}:${sample.frameId}`;
+    if (frames.has(sample.frame) || receipts.has(receiptKey)) {
       throw new Error('CPU observation repeats a retained frame or receipt');
     }
     frames.add(sample.frame);
-    receipts.set(sample.frameId, sample);
+    receipts.set(receiptKey, sample);
   }
   for (const order of ['baseline-treatment', 'treatment-baseline']) {
     for (const condition of ['baseline', 'occlusionOnly', 'treatment']) {
@@ -318,16 +230,17 @@ function validateCpuObservations(evidence) {
   }
   const gpuReceipts = new Set();
   for (const sample of evidence.samples) {
-    const cpuSample = receipts.get(sample.frameId);
+    const receiptKey = `${sample.condition}:${sample.frameId}`;
+    const cpuSample = receipts.get(receiptKey);
     if (
       cpuSample === undefined ||
-      gpuReceipts.has(sample.frameId) ||
+      gpuReceipts.has(receiptKey) ||
       cpuSample.condition !== sample.condition ||
       cpuSample.order !== sample.order
     ) {
       throw new Error('GPU sample must name its matching retained CPU receipt');
     }
-    gpuReceipts.add(sample.frameId);
+    gpuReceipts.add(receiptKey);
   }
   return Object.fromEntries(
     ['baseline', 'occlusionOnly', 'treatment'].map((condition) => {
@@ -437,77 +350,6 @@ function validateFalsificationProtocols(evidence) {
     }
   }
   return falsification;
-}
-
-function isValidSubmit(submit) {
-  return (
-    submit !== null &&
-    typeof submit === 'object' &&
-    Number.isSafeInteger(submit.frameId) &&
-    submit.frameId >= 0 &&
-    typeof submit.build === 'string' &&
-    submit.build.length > 0 &&
-    Number.isSafeInteger(submit.deviceGeneration) &&
-    submit.deviceGeneration >= 0
-  );
-}
-
-function validateWorldReorderSubmits(attributionEvidence) {
-  if (
-    attributionEvidence?.status !== 'same-submit' ||
-    !isValidSubmit(attributionEvidence.forwardSubmit) ||
-    !isValidSubmit(attributionEvidence.reverseSubmit) ||
-    attributionEvidence.forwardSubmit.deviceGeneration !==
-      attributionEvidence.reverseSubmit.deviceGeneration
-  ) {
-    throw new Error('world-reorder pass requires renderer-owned same-submit attribution');
-  }
-}
-
-function validateWorldReorderIdentity(reorderEvidence, attributionEvidence, build) {
-  const forward = reorderEvidence?.forward;
-  const reverse = reorderEvidence?.reverse;
-  const worldIdentities = reorderEvidence?.worlds;
-  const sameViewIdentity =
-    reorderEvidence?.sameViewIdentity === true &&
-    forward?.view !== undefined &&
-    forward.view === reverse?.view;
-  const samePrimitiveIdentity = reorderEvidence?.samePrimitiveIdentity === true;
-  if (
-    reorderEvidence?.worldAttribution === undefined ||
-    worldIdentities === undefined ||
-    typeof worldIdentities.treatment !== 'string' ||
-    typeof worldIdentities.baseline !== 'string' ||
-    attributionEvidence.forwardSubmit.build !== build ||
-    attributionEvidence.reverseSubmit.build !== build ||
-    !sameViewIdentity ||
-    !samePrimitiveIdentity
-  ) {
-    throw new Error('world-reorder pass requires same-identity attribution evidence');
-  }
-}
-
-function validateWorldReorderFalsification(evidence, falsification) {
-  const worldReorder = falsification.find((entry) => entry.case === 'world-reorder');
-  if (worldReorder?.verdict !== 'pass') return;
-  const reorderEvidence = worldReorder.evidence;
-  const attributionEvidence = reorderEvidence?.attribution;
-  validateWorldReorderSubmits(attributionEvidence);
-  validateWorldReorderIdentity(reorderEvidence, attributionEvidence, evidence.identity.build);
-  const attributionFailure = worldReorderAttributionFailure({
-    expectedBuild: evidence.identity.build,
-    forwardSubmit: attributionEvidence.forwardSubmit,
-    reverseSubmit: attributionEvidence.reverseSubmit,
-    forwardView: reorderEvidence?.forward?.view,
-    reverseView: reorderEvidence?.reverse?.view,
-    forwardSlot: reorderEvidence?.forwardSlot,
-    reverseSlot: reorderEvidence?.reverseSlot,
-    worldIdentities: reorderEvidence?.worlds,
-    worldAttribution: reorderEvidence?.worldAttribution,
-  });
-  if (attributionFailure !== undefined) {
-    throw new Error(attributionFailure);
-  }
 }
 
 /** HZB off keeps every candidate visible; HZB on settles to the locked visible/occluded split. */
@@ -787,7 +629,6 @@ export function validatePerformanceEvidence(evidence) {
   if (!validateRawGpuSamples(evidence)) return { ...evidence, verdict: 'identity-mismatch' };
   const cpuSummaries = validateCpuObservations(evidence);
   const falsification = validateFalsificationProtocols(evidence);
-  validateWorldReorderFalsification(evidence, falsification);
   if (falsification.some((entry) => entry.verdict !== 'pass')) {
     return { ...evidence, verdict: 'not-production-ready' };
   }
@@ -850,7 +691,7 @@ function parseGuid(AssetGuid, text) {
   return parsed.value;
 }
 
-async function createBenchmarkFixture(exactBuild) {
+async function createBenchmarkFixture(exactBuild, shaderManifestUrl) {
   const appRoot = resolve(here, '..');
   const distRoot = resolve(appRoot, 'dist');
   const packIndexPath = resolve(distRoot, 'pack-index.json');
@@ -874,34 +715,67 @@ async function createBenchmarkFixture(exactBuild) {
   const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
   const { createWorldContext, World } = await import('@forgeax/engine-ecs');
   const { AssetGuid } = await import('@forgeax/engine-pack/guid');
-  const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, renderComponentsPlugin } = await import('@forgeax/engine-render');
+  const { Camera, DEFAULT_STANDARD_PROFILE, DirectionalLight, Materials, MeshFilter, MeshRenderer, renderComponentsPlugin } = await import('@forgeax/engine-render');
   const profileApi = LOD_PROFILE_ENABLED
     ? await import('@forgeax/engine-profiler')
     : undefined;
   const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
-  const manifest = readFileSync(resolve(distRoot, 'shaders/manifest.json'), 'utf8');
   const profiler = profileApi?.createProfiler();
   const rendererOptions = {
-    // Keep timestamp-query capability requested at device creation. The
-    // benchmark toggles capture around retained frames to avoid allocating
-    // disposable query resources for calibration, warm-up, and falsifiers.
+    // Each isolated Renderer snapshots its options at construction. Keep every
+    // condition on the same timestamp path; retain only the measured frames.
     captureGpuTimings: true,
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true },
     ...(profiler === undefined ? {} : { profiler }),
   };
-  const constructed = await constructRuntimeRendererHost(
-    shim.mockCanvas,
+  const rendererErrors = [];
+  const owners = new Map();
+  async function createRenderOwner() {
+    // Conditions own independent devices, so their offscreen surfaces must too.
+    let target;
+    const canvas = {
+      width: 200,
+      height: 150,
+      getContext(kind) {
+        if (kind !== 'webgpu') return null;
+        return {
+          configure({ device, format, viewFormats }) {
+            target?.destroy();
+            target = device.createTexture({
+              size: [200, 150], format, viewFormats, usage: 0x10 | 0x01,
+            });
+          },
+          unconfigure() {},
+          getCurrentTexture: () => target,
+        };
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const constructed = await constructRuntimeRendererHost(canvas,
     rendererOptions,
     {
-    shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
+    shaderManifestUrl,
     build: exactBuild,
-    },
-  );
+    });
   if (!constructed.ok) throw new Error(`renderer construction failed: ${constructed.error.code}`);
-  const { assets, renderer, debugDrawHost } = constructed.value;
-  const rendererErrors = [];
-  renderer.subscribe((event) => {
+  const owner = constructed.value;
+    owner.renderer.subscribe((event) => {
     if (event.kind === 'error') rendererErrors.push(event.error);
   });
+    owners.set(owner, () => target?.destroy());
+    return owner;
+  }
+  async function releaseSource(source) {
+    source.debugDrawHost.detachScene(source.world);
+    source.world.assets.dispose();
+    const releaseSurface = owners.get(source.owner);
+    owners.delete(source.owner);
+    const result = await source.renderer.dispose();
+    releaseSurface?.();
+    source.owner.assets.dispose();
+    if (!result.ok) throw new Error(`renderer dispose failed: ${result.error.code}`);
+  }
   const meta = JSON.parse(readFileSync(resolve(appRoot, 'assets/lod-scene.gltf.meta.json'), 'utf8'));
   const sceneGuid = parseGuid(AssetGuid, guidFor(meta, 'scene'));
   const rootGuid = parseGuid(AssetGuid, guidFor(meta, 'mesh', 0));
@@ -956,17 +830,17 @@ async function createBenchmarkFixture(exactBuild) {
         placement === 'calibration' ? index === candidateCount - 1 : index < BENCHMARK_VISIBLE;
       const band = index % (BENCHMARK_VISIBLE / 2);
       const x = visible
-        // Keep the visible columns outside the projected occluder silhouette
-        // while the hidden band remains fully covered in the center.
-        ? (placement === 'calibration'
+        ? // Keep the visible columns outside the projected occluder silhouette
+          // while the hidden band remains fully covered in the center.
+          (placement === 'calibration'
             ? 5
             : index % 2 === 0
               ? -5
               : 5) +
           (placement === 'calibration' ? 0 : ((band % 32) - 16) * 0.006)
-        // Keep the hidden band in the occluder's projected silhouette; its
-        // extent is intentionally narrower than the two visible columns.
-        : ((index % 400) / 400 - 0.5) * 0.4;
+        : // Keep the hidden band in the occluder's projected silhouette; its
+          // extent is intentionally narrower than the two visible columns.
+          ((index % 400) / 400 - 0.5) * 0.4;
       const y =
         placement === 'calibration'
           ? 0
@@ -988,8 +862,9 @@ async function createBenchmarkFixture(exactBuild) {
   }
 
   async function createBenchmarkWorld({ lod0Only = false, ...options } = {}) {
-    // Worlds share shader descriptions and the Renderer, but own their complete
-    // runtime source closures: a mesh's LOD references belong to the same owner.
+    // Each isolated condition owns one Renderer and one complete source closure.
+    const owner = await createRenderOwner();
+    const { renderer, debugDrawHost, assets } = owner;
     const worldAssets = new AssetRegistry({ shaderRegistry: assets.shaderRegistry });
     for (const contribution of defaultAssetDecoderContributions)
       worldAssets.installDecoder(contribution.kind, contribution.decoder);
@@ -1022,7 +897,7 @@ async function createBenchmarkFixture(exactBuild) {
     if (lod0Only) worldAssets.release(meshHandle).unwrap();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
-    return { world, lease: attachment.value };
+    return { world, lease: attachment.value, owner, renderer, debugDrawHost };
   }
 
   const treatment = await createBenchmarkWorld();
@@ -1084,23 +959,27 @@ async function createBenchmarkFixture(exactBuild) {
   const fixture = {
     originalFetch,
     shim,
-    renderer,
-    setGpuTimingCapture(enabled) {
-      rendererOptions.captureGpuTimings = enabled;
+    async disposeRenderers() {
+      for (const [owner, releaseSurface] of owners) {
+        const result = await owner.renderer.dispose();
+        releaseSurface();
+        owner.assets.dispose();
+        if (!result.ok) throw new Error(`renderer dispose failed: ${result.error.code}`);
+      }
+      owners.clear();
     },
-    debugDrawHost,
     rendererErrors,
     profiler,
     profileApi,
     identity,
     configureGpuOcclusion(enabled) {
-      debugDrawHost.configureStandard(enabled ? undefined : { gpuOcclusion: false });
+      fixture.treatment.debugDrawHost.configureStandard({ gpuOcclusion: enabled },
+      );
     },
-    releasePrimaryWorld(name) {
+    async releasePrimaryWorld(name) {
       const world = fixture[name];
       if (world === undefined) return;
-      debugDrawHost.detachScene(world.world);
-      world.world.assets.dispose();
+      await releaseSource(world);
       fixture[name] = undefined;
     },
     treatment,
@@ -1110,12 +989,7 @@ async function createBenchmarkFixture(exactBuild) {
     },
     async releaseCalibration() {
       if (calibration === undefined) return;
-      // `detachScene` is an internal host lifecycle operation. The public
-      // Renderer intentionally exposes only leases, so use the host returned
-      // by constructRuntimeRendererHost instead of reaching for a method that
-      // does not exist on the public wrapper.
-      debugDrawHost.detachScene(calibration.world);
-      calibration.world.assets.dispose();
+      await releaseSource(calibration);
       calibration = undefined;
     },
     async ensureAuxiliaryWorlds() {
@@ -1124,11 +998,10 @@ async function createBenchmarkFixture(exactBuild) {
       fixture.occlusionOnly = worlds.occlusionOnly;
       return worlds;
     },
-    releaseAuxiliaryWorld(name) {
+    async releaseAuxiliaryWorld(name) {
       const world = fixture[name];
       if (world === undefined) return;
-      debugDrawHost.detachScene(world.world);
-      world.world.assets.dispose();
+      await releaseSource(world);
       fixture[name] = undefined;
       auxiliaryWorlds[name] = undefined;
     },
@@ -1149,10 +1022,8 @@ export async function captureCondition(
   logProducerPhase(`condition:${order}:${condition}`, 'start', { totalFrames: total });
   for (let frame = 0; frame < total; frame += 1) {
     const retainTiming = frame >= WARMUP_SUBMITS;
-    // All CPU conditions retain the same timestamp/observation overhead. Only
-    // baseline/treatment publish GPU rows. Disable capture during warm-up to
-    // keep deferred lavapipe query resources bounded.
-    fixture.setGpuTimingCapture(retainTiming);
+    // All CPU conditions retain the same timestamp/observation overhead.
+    // Only baseline/treatment publish GPU rows.
     if (frame === WARMUP_SUBMITS && fixture.profiler !== undefined) {
       const started = fixture.profiler.startCapture({
         frameLimit: LOD_PROFILE_FRAME_LIMIT,
@@ -1170,7 +1041,7 @@ export async function captureCondition(
     const receipt = await completeReadyFrame(() => {
       const processStart = process.cpuUsage();
       const cpuStart = process.threadCpuUsage();
-      const drawn = fixture.renderer.draw({ leases: [selected.lease], camera: { lease: selected.lease }, environment: { lease: selected.lease } });
+      const drawn = selected.renderer.draw({ source: selected.lease });
       cpuElapsed = process.threadCpuUsage(cpuStart);
       processElapsed = process.cpuUsage(processStart);
       if (!drawn.ok) throw new Error(`renderer draw failed: ${drawn.error.code}: ${drawn.error.hint ?? drawn.error.expected ?? ''} ${JSON.stringify(drawn.error.detail ?? {})} events=${JSON.stringify(fixture.rendererErrors.slice(-3))}`);
@@ -1190,12 +1061,12 @@ export async function captureCondition(
     } else {
       facts.cpuFrameUs.push(cpuFrameUs);
     }
-    const observed = await fixture.renderer.observe(receipt, {
+    const observed = await selected.renderer.observe(receipt, {
       include: retainTiming ? ['timings'] : [],
     });
     if (!observed.ok) throw new Error(`renderer observation failed: ${observed.error.code}`);
     assertNoRendererErrors(fixture, `observe:${condition}`);
-    const lodSnapshot = inspectLodOcclusion(fixture);
+    const lodSnapshot = inspectLodOcclusion(selected);
     const inspection = lodSnapshot.lodOcclusion;
     if (inspection === undefined) throw new Error('renderer did not publish LOD inspection after submit');
     const gpu = lodSnapshot.gpuDriven;
@@ -1243,7 +1114,6 @@ export async function captureCondition(
     totalFrames: total,
     elapsedMs: Number((performance.now() - phaseStartedAt).toFixed(1)),
   });
-  fixture.setGpuTimingCapture(false);
   let profileCapture;
   if (profileSession !== undefined) {
     const finished = profileSession.finish();
@@ -1330,10 +1200,10 @@ async function captureGroupInspection(fixture, condition) {
   for (let frame = 0; frame < SETTLE_SUBMITS; frame += 1) {
     // Keep group diagnostics on the same submitting-thread clock as A/B frames.
     const cpuStart = process.threadCpuUsage();
-    const { inspection } = await drawAndObserve(fixture, [condition]);
+    const { inspection } = await drawAndObserve(fixture, condition);
     const cpuElapsed = process.threadCpuUsage(cpuStart);
     facts.cpuFrameUs.push(cpuElapsed.user + cpuElapsed.system);
-    const gpu = inspectLodOcclusion(fixture).gpuDriven;
+    const gpu = inspectLodOcclusion(fixture[condition]).gpuDriven;
     facts.frames += 1;
     facts.candidates += inspection.count.candidates;
     facts.visible += inspection.count.visible;
@@ -1451,21 +1321,15 @@ function inspectionMetrics(facts) {
   };
 }
 
-function frameRequestFor(fixture, worlds, cameraWorldName = worlds[0]) {
-  const leases = worlds.map((entry) => fixture[entry].lease);
-  const owner = cameraWorldName === undefined ? undefined : fixture[cameraWorldName]?.lease;
-  if (owner === undefined) throw new Error('falsification fixture has no owner lease');
-  return { leases, camera: { lease: owner }, environment: { lease: owner } };
-}
-
-async function drawAndObserve(fixture, worlds, { cameraWorld = worlds[0] } = {}) {
-  for (const worldName of worlds) fixture[worldName].world.update().unwrap();
-  const drawn = await drawReadyFrame(fixture.renderer, frameRequestFor(fixture, worlds, cameraWorld));
-  assertNoRendererErrors(fixture, `falsification draw:${worlds.join(',')}`);
-  const observed = await fixture.renderer.observe(drawn, { include: [] });
+async function drawAndObserve(fixture, sourceName) {
+  const source = fixture[sourceName];
+  source.world.update().unwrap();
+  const drawn = await drawReadyFrame(source.renderer, { source: source.lease });
+  assertNoRendererErrors(fixture, `falsification draw:${sourceName}`);
+  const observed = await source.renderer.observe(drawn, { include: [] });
   if (!observed.ok) throw new Error(`falsification observe failed: ${observed.error.code}`);
-  assertNoRendererErrors(fixture, `falsification observe:${worlds.join(',')}`);
-  const inspection = inspectLodOcclusion(fixture).lodOcclusion;
+  assertNoRendererErrors(fixture, `falsification observe:${sourceName}`);
+  const inspection = inspectLodOcclusion(source).lodOcclusion;
   if (inspection === undefined) throw new Error('falsification did not publish LOD inspection');
   return { inspection, frameId: drawn.frameId };
 }
@@ -1482,7 +1346,7 @@ async function calibrateOccluder(fixture) {
   let stableFrames = 0;
   let last;
   for (let frame = 0; frame < maxFrames; frame += 1) {
-    const result = await drawAndObserve(fixture, ['calibration']);
+    const result = await drawAndObserve(fixture, 'calibration');
     const count = result.inspection.count;
     const settled =
       count.candidates === 2 &&
@@ -1493,8 +1357,8 @@ async function calibrateOccluder(fixture) {
       frameId: result.frameId,
       count,
       lodHistogram: result.inspection.lodHistogram,
-      frustumStats: fixture.renderer.inspect().frustumStats,
-      gpuDriven: inspectLodOcclusion(fixture).gpuDriven,
+      frustumStats: fixture.calibration.renderer.inspect().frustumStats,
+      gpuDriven: inspectLodOcclusion(fixture.calibration).gpuDriven,
     };
     const calibrationFrame = frame + 1;
     if (
@@ -1548,11 +1412,11 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
     const settleFrames = SETTLE_SUBMITS;
     let off;
     for (let index = 0; index < settleFrames; index += 1) {
-      off = await drawAndObserve(fixture, ['baseline']);
+      off = await drawAndObserve(fixture, 'baseline');
     }
     let on;
     for (let index = 0; index < settleFrames; index += 1) {
-      on = await drawAndObserve(fixture, ['occlusionOnly']);
+      on = await drawAndObserve(fixture, 'occlusionOnly');
     }
     if (off === undefined || on === undefined) {
       throw new Error('occlusion-off-on did not produce settled observations');
@@ -1574,7 +1438,8 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
         on: { count: on.inspection.count },
         occluderCalibration: fixture.occluderCalibration,
         control: 'same imported relation workload and authored LOD policy; only occluder presence is changed',
-        isolation: 'same renderer; occlusion-only world is untouched before the on leg',
+        isolation:
+          'independent single-source renderers; occlusion-only source is untouched before the on leg',
         settleFrames,
       },
     });
@@ -1583,7 +1448,7 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
   }
 
   try {
-    const forced = await drawAndObserve(fixture, ['occlusionOnly']);
+    const forced = await drawAndObserve(fixture, 'occlusionOnly');
     results.push({
       case: 'forced-lod0',
       verdict:
@@ -1602,11 +1467,12 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
   } catch (error) {
     results.push(unavailableFalsification('forced-lod0', error));
   } finally {
+    await
     fixture.releaseAuxiliaryWorld('occlusionOnly');
   }
 
   try {
-    const allVisible = await drawAndObserve(fixture, ['lodOnly']);
+    const allVisible = await drawAndObserve(fixture, 'lodOnly');
     results.push({
       case: 'all-visible',
       verdict:
@@ -1625,6 +1491,7 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
   } catch (error) {
     results.push(unavailableFalsification('all-visible', error));
   } finally {
+    await
     fixture.releaseAuxiliaryWorld('lodOnly');
   }
 
@@ -1638,13 +1505,13 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
     fixture.configureGpuOcclusion(false);
     try {
       for (let index = 0; index < SETTLE_SUBMITS; index += 1) {
-        off = await drawAndObserve(fixture, ['treatment']);
+        off = await drawAndObserve(fixture, 'treatment');
       }
     } finally {
       fixture.configureGpuOcclusion(true);
     }
     for (let index = 0; index < SETTLE_SUBMITS; index += 1) {
-      on = await drawAndObserve(fixture, ['treatment']);
+      on = await drawAndObserve(fixture, 'treatment');
     }
     if (off === undefined || on === undefined) {
       throw new Error('gpu-occlusion-off did not produce settled observations');
@@ -1671,108 +1538,6 @@ async function runFalsifications(fixture, baselineInspection, treatmentInspectio
     results.push(unavailableFalsification('gpu-occlusion-off', error));
   }
 
-  try {
-    const forward = await drawAndObserve(fixture, ['treatment', 'baseline'], {
-      cameraWorld: 'treatment',
-    });
-    const reverse = await drawAndObserve(fixture, ['baseline', 'treatment'], {
-      cameraWorld: 'treatment',
-    });
-    const requireSameSubmitWorldAttribution = (observed, order) => {
-      const worlds = observed.inspection.worlds;
-      if (
-        worlds.length === 0 ||
-        worlds.some(
-          (world) =>
-            world.attribution?.status !== 'same-submit' ||
-            world.attribution.submit.frameId !== observed.inspection.submit.frameId ||
-            world.attribution.submit.deviceGeneration !== observed.inspection.submit.deviceGeneration,
-        )
-      ) {
-        throw new Error(
-          `world-reorder ${order} lacks renderer-owned same-submit per-World GPU attribution`,
-        );
-      }
-      return observed.inspection.submit;
-    };
-    const forwardSubmit = requireSameSubmitWorldAttribution(forward, 'forward');
-    const reverseSubmit = requireSameSubmitWorldAttribution(reverse, 'reverse');
-    const forwardView = forward.inspection.view.attachmentId;
-    const reverseView = reverse.inspection.view.attachmentId;
-    const forwardHistogramCount = forward.inspection.lodHistogram.reduce((sum, row) => sum + row.count, 0);
-    const reverseHistogramCount = reverse.inspection.lodHistogram.reduce((sum, row) => sum + row.count, 0);
-    const worldAttribution = {};
-    for (const worldName of ['treatment', 'baseline']) {
-      const worldIdentity = fixture[worldName].world.identity;
-      worldAttribution[worldName] = {};
-      for (const [order, observed] of [['forward', forward], ['reverse', reverse]]) {
-        const world = observed.inspection.worlds.find(
-          (entry) => entry.attachmentId === worldIdentity,
-        );
-        const row = world?.rows[0];
-        if (row === undefined) {
-          throw new Error(`world-reorder inspection is missing ${worldName}/${order} row`);
-        }
-        worldAttribution[worldName][order] = {
-          view: row.view.attachmentId,
-          candidates: row.count.candidates,
-          visible: row.count.visible,
-          occluded: row.count.occluded,
-          lodHistogram: row.lodHistogram,
-          primitiveSlot: row.slot.primitiveSlot,
-          slotGeneration: row.slot.slotGeneration,
-        };
-      }
-    }
-    const attributionValid = worldReorderAttributionIsValid({
-      expectedBuild: fixture.identity.build,
-      forwardSubmit,
-      reverseSubmit,
-      forwardView,
-      reverseView,
-      forwardSlot: forward.inspection.slot,
-      reverseSlot: reverse.inspection.slot,
-      worldIdentities: {
-        treatment: fixture.treatment.world.identity,
-        baseline: fixture.baseline.world.identity,
-      },
-      worldAttribution,
-    });
-    results.push({
-      case: 'world-reorder',
-      verdict: attributionValid ? 'pass' : 'fail',
-      evidence: {
-        protocol: FALSIFICATION_PROTOCOLS['world-reorder'],
-        attribution: {
-          status: 'same-submit',
-          forwardSubmit,
-          reverseSubmit,
-        },
-        forward: { frameId: forward.frameId, view: forwardView },
-        reverse: { frameId: reverse.frameId, view: reverseView },
-        sameViewIdentity: forwardView === reverseView,
-        samePrimitiveIdentity: forward.inspection.slot.primitiveSlot === reverse.inspection.slot.primitiveSlot &&
-          forward.inspection.slot.slotGeneration === reverse.inspection.slot.slotGeneration,
-        forwardSlot: forward.inspection.slot,
-        reverseSlot: reverse.inspection.slot,
-        worlds: {
-          treatment: fixture.treatment.world.identity,
-          baseline: fixture.baseline.world.identity,
-        },
-        worldAttribution,
-        candidateCounts: {
-          forward: forward.inspection.count.candidates,
-          reverse: reverse.inspection.count.candidates,
-        },
-        histogramCounts: {
-          forward: forwardHistogramCount,
-          reverse: reverseHistogramCount,
-        },
-      },
-    });
-  } catch (error) {
-    results.push(unavailableFalsification('world-reorder', error));
-  }
   return results;
 }
 
@@ -1829,6 +1594,15 @@ export function writeUnavailableEvidence(
 }
 
 async function producePerformanceEvidence(exactBuild) {
+  const publication = openShaderManifestPublication(resolve(here, '..', 'dist/shaders/manifest.json'));
+  try {
+    return await producePerformanceEvidenceFromManifest(exactBuild, publication.url);
+  } finally {
+    publication.dispose();
+  }
+}
+
+async function producePerformanceEvidenceFromManifest(exactBuild, shaderManifestUrl) {
   const producerStartedAt = performance.now();
   logProducerPhase('producer', 'start', {
     candidates: BENCHMARK_CANDIDATES,
@@ -1837,11 +1611,10 @@ async function producePerformanceEvidence(exactBuild) {
     warmupSubmits: WARMUP_SUBMITS,
     retainedSamplesPerOrder: RETAINED_SAMPLES_PER_ORDER,
   });
-  const fixture = await createBenchmarkFixture(exactBuild);
+  const fixture = await createBenchmarkFixture(exactBuild, shaderManifestUrl);
   // Calibration and structural falsifiers do not consume GPU timestamps. Keep
   // their renderer submissions on the lightweight path; capture is enabled
   // only for retained CPU observations inside captureCondition().
-  fixture.setGpuTimingCapture(false);
   logProducerPhase('fixture', 'ready', {
     elapsedMs: Number((performance.now() - producerStartedAt).toFixed(1)),
     settleSubmits: SETTLE_SUBMITS,
@@ -1899,7 +1672,9 @@ async function producePerformanceEvidence(exactBuild) {
     // their primary worlds. Detaching them releases the renderer-owned GPU
     // scene tables before the two long structural group probes, which is
     // essential on hosted lavapipe runners with a ~1 GiB cgroup limit.
-    fixture.releasePrimaryWorld('baseline');
+    await
+      fixture.releasePrimaryWorld('baseline');
+    await
     fixture.releasePrimaryWorld('treatment');
     await fixture.ensureAuxiliaryWorlds();
     const groupInspections = {
@@ -1908,7 +1683,9 @@ async function producePerformanceEvidence(exactBuild) {
       occlusionOnly: inspectionMetrics(conditionFacts.occlusionOnly),
       treatment: treatmentInspection,
     };
+    await
     fixture.releaseAuxiliaryWorld('lodOnly');
+    await
     fixture.releaseAuxiliaryWorld('occlusionOnly');
     logProducerPhase('falsifications', 'done', {
       elapsedMs: Number((performance.now() - producerStartedAt).toFixed(1)),
@@ -1981,12 +1758,15 @@ async function producePerformanceEvidence(exactBuild) {
   } finally {
     try {
       await fixture.releaseCalibration();
+      await
       fixture.releasePrimaryWorld('baseline');
+      await
       fixture.releasePrimaryWorld('treatment');
+      await
       fixture.releaseAuxiliaryWorld('lodOnly');
+      await
       fixture.releaseAuxiliaryWorld('occlusionOnly');
-      const disposed = await fixture.renderer.dispose();
-      if (!disposed.ok) failure ??= `renderer dispose failed: ${disposed.error.code}`;
+      await fixture.disposeRenderers();
       fixture.shim.renderTarget?.destroy?.();
       fixture.shim.sharedDevice?.destroy?.();
     } catch (error) {

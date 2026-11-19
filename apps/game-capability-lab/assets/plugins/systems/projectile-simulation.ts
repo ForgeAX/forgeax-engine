@@ -1,3 +1,5 @@
+import { GamePlayerMovementOrder, GameProjectileSimulationOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { Collider, ColliderShapeValue, CollidingEntities, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import { FixedTime, FixedUpdate, type CommandBuffer, type ComponentData, type EntityHandle, type World } from '@forgeax/engine-ecs';
@@ -21,7 +23,7 @@ import {
   type ProjectileVisual,
 } from '../components/gameplay';
 import { DamageHazard } from '../counterattack';
-import { GAME_DEFAULT_GAMEPLAY_CONFIG, type GameplayConfig } from '../resources/gameplay';
+import { GAME_DEFAULT_GAMEPLAY_CONFIG } from '../resources/gameplay';
 import type { RewardChoiceHandle } from '../reward-choice';
 import type { AttackPresentationHandle } from './attack-presentation';
 
@@ -119,14 +121,14 @@ export type ProjectileSimulationSystemContext = {
 
 /** Spawns and advances projectiles from ECS-owned Projectile + Transform state. */
 export function installProjectileSimulationSystem(ctx: ProjectileSimulationSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({ sets: [GameProjectileSimulationOrder],
     name: 'game-projectile-simulation',
     runIf: inState(GameState, 'Play'),
-    after: ['game-player-movement'],
+    after: [GamePlayerMovementOrder],
     queries: [],
     fn: (_world, _queryResults, commands) => {
       const dt = ctx.world.getResource(FixedTime).delta;
-      const config = ctx.world.getResource<GameplayConfig>(GAME_DEFAULT_GAMEPLAY_CONFIG);
+      const config = ctx.world.getResource(GAME_DEFAULT_GAMEPLAY_CONFIG);
       const snap = ctx.readInput();
       const playerTransform = ctx.world.get(ctx.root, Transform);
       const playerMotion = ctx.world.get(ctx.root, PlayerMotion);
@@ -240,5 +242,6 @@ export function installProjectileSimulationSystem(ctx: ProjectileSimulationSyste
       }
       ctx.world.set(ctx.root, PlayerMotion, { shootCooldown: shootCd });
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }

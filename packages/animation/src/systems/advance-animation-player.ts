@@ -1,6 +1,8 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, type ScheduleToken, Time, Update } from '@forgeax/engine-ecs';
+import { PropagateTransforms, TransformFixedSet, TransformSet } from '@forgeax/engine-scene';
 import { sampleChannel } from '../sample-channel';
+import { AnimationPlayback } from '../system-order';
 
 // @forgeax/engine-animation — advanceAnimationPlayer system (variable N-way blend).
 //
@@ -52,7 +54,7 @@ import { sampleChannel } from '../sample-channel';
 //     natural reverse)
 //   - charter P4 (single Transform write per joint per tick)
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem, defineSystemSet, ENTITY_NULL_RAW } from '@forgeax/engine-ecs';
 import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
@@ -87,12 +89,7 @@ import {
 import { AnimationRootMotion, prepareRootMotion, rootMotionPose } from '../root-motion';
 import { clearAnimationEvents, collectTimelineEvents, publishTimelineEvents } from '../timeline';
 
-/**
- * System name used when `registerAdvanceAnimationPlayer` installs the system
- * into the ECS schedule. External consumers can reference this constant to
- * declare `after: [ADVANCE_ANIMATION_PLAYER_SYSTEM]` on dependent systems.
- */
-export const ADVANCE_ANIMATION_PLAYER_SYSTEM = 'advanceAnimationPlayer' as const;
+/** The animation owner groups its installed simulation work. */
 export const AnimationSet = defineSystemSet({ name: 'animation' });
 
 /**
@@ -1078,10 +1075,11 @@ function createAccumulator(): JointAccumulator {
  * feature-specific resolver resource. Handles resolve from the World passed
  * to the system, so invalid clips become structured animation failures.
  */
-export const AdvanceAnimationPlayer: SystemHandle<readonly []> = defineSystem({
-  name: ADVANCE_ANIMATION_PLAYER_SYSTEM,
+export const AdvanceAnimationPlayer: System<readonly []> = defineSystem({
+  name: 'advanceAnimationPlayer',
+  sets: [AnimationPlayback],
   queries: [],
-  before: ['propagateTransforms'],
+  before: [PropagateTransforms],
   fn: (world) => {
     advanceAnimationPlayer(world, world.getResource(Time).delta);
   },
@@ -1101,22 +1099,21 @@ export function registerAdvanceAnimationPlayer(
   world: World,
   schedule: ScheduleToken = Update,
 ): () => void {
+  world.addSystems(schedule, AnimationSet, [AdvanceAnimationPlayer]).unwrap();
   world
-    .addSystems(schedule, AnimationSet, [
-      {
-        ...AdvanceAnimationPlayer,
-        before: [schedule === FixedUpdate ? 'propagateTransformsFixed' : 'propagateTransforms'],
-        fn: (current) =>
-          advanceAnimationPlayer(
-            current,
-            schedule === FixedUpdate
-              ? current.getResource(FixedTime).delta
-              : current.getResource(Time).delta,
-          ),
-      },
-    ])
+    .replaceSystem(schedule, AdvanceAnimationPlayer, {
+      ...AdvanceAnimationPlayer,
+      before: [schedule === FixedUpdate ? TransformFixedSet : TransformSet],
+      fn: (world) =>
+        advanceAnimationPlayer(
+          world,
+          schedule === FixedUpdate
+            ? world.getResource(FixedTime).delta
+            : world.getResource(Time).delta,
+        ),
+    })
     .unwrap();
   return () => {
-    world.removeSystem(schedule, ADVANCE_ANIMATION_PLAYER_SYSTEM);
+    world.removeSystem(schedule, AdvanceAnimationPlayer);
   };
 }

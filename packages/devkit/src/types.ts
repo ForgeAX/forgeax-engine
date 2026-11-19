@@ -36,6 +36,8 @@ export interface ProjectFacts {
   readonly frameTimeoutMs?: number | null;
   /** `package.json#forgeax.pointShadows`: build Standard shaders with the point-shadow lane. */
   readonly pointShadows?: true;
+  /** Source templates are the default; compiled explicitly requests precomposed programs. */
+  readonly shaderPublication?: 'compiled' | 'source';
   readonly assetRoots: readonly string[];
   readonly assetLibraries: readonly ProjectAssetLibrary[];
   readonly packageJson: Readonly<Record<string, unknown>>;
@@ -96,11 +98,16 @@ export interface BuildOptions extends ProjectCommandOptions {
 export interface PackageOptions extends ProjectCommandOptions {
   readonly output?: string;
   readonly format?: PackageFormat;
+  /** Tauri destination; defaults to the current desktop OS. */
+  readonly platform?: TauriPlatform;
+  /** Export the Tauri project without installing or invoking native toolchains. */
+  readonly prepareOnly?: boolean;
   /** Store large Web ZIP JSON documents zstd-compressed; `false` keeps plain JSON. Defaults to true. */
   readonly compress?: boolean;
 }
 
-export type PackageFormat = 'web-zip' | 'single-html';
+export type PackageFormat = 'web-zip' | 'single-html' | 'tauri';
+export type TauriPlatform = 'windows' | 'macos' | 'linux' | 'android' | 'ios';
 
 export type CaptureBackend = 'auto' | 'software' | 'hardware';
 /** Adapter lane observed in the browser; `unknown` when no adapter is reported. */

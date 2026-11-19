@@ -220,9 +220,7 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       propagateTransforms(world).unwrap();
       for (let i = 0; i < 4; i++)
         await drawReadyFrame(renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
+          source: lease,
           ...(direct ? { geometryLane: 'direct' as const } : {}),
         });
       return readFrame();

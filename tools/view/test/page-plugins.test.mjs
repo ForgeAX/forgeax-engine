@@ -8,6 +8,21 @@ import { VIEW_PRODUCT_FRONTEND_CATALOG } from '../packages/viewer/src/frontend-c
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '../packages/viewer/src/backend-catalog.ts';
 import { loadPluginEntries } from '../packages/view-plugin-plugins/src/ui/plugin-entries.ts';
 
+it('keeps Play document creation with the Shell when the project document receives Play state', async () => {
+  const context = new Context();
+  let subscriptions = 0;
+  context.provide('viewOperationClient', {
+    subscribe() { subscriptions++; return () => {}; },
+    getState() { return Promise.resolve({ play: { target: { targetId: 'game', url: 'http://localhost/game.html' } } }); },
+  });
+  try {
+    const document = { body: {}, defaultView: { addEventListener() {}, removeEventListener() {} } };
+    const fiber = context.plugin(playPresentation, { document, role: 'project-document' });
+    await fiber.await();
+    assert.equal(subscriptions, 0);
+    assert.equal(typeof context.get('viewPlayPresentation').attach, 'function');
+  } finally { await context.fiber.dispose(); }
+});
 it('waits for browser retirement before creating Play and retains an existing frame until cleanup', async () => {
   const context = new Context();
   const frames = new Set();

@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-
-import { createWorldContext, Update, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, Update, World } from '@forgeax/engine-ecs';
 import type { Context } from '@forgeax/engine-plugin';
 
 import {
@@ -73,15 +72,14 @@ export async function apply(ctx: DshHostContext, config: Config = {}): Promise<v
   if (config.engineEndpoint === undefined) {
     const world = new World();
     embeddedContext = await createWorldContext(world);
-    world
-      .addSystem(Update, {
-        name: 'forgeax-federation-headless-tick',
-        queries: [],
-        fn: () => {
-          tick += 1;
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'forgeax-federation-headless-tick',
+      queries: [],
+      fn: () => {
+        tick += 1;
+      },
+    });
+    world.addSystem(Update, systemToken1).unwrap();
     timer = setInterval(() => {
       const result = world.update(1 / 30);
       if (!result.ok) ctx.logger.warn(result.error);

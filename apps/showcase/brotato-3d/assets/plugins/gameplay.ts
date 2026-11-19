@@ -1,3 +1,6 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { renderFeaturePlugin, type GameHost, type GameProjectionValue } from '@forgeax/engine-app';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
@@ -13,12 +16,7 @@ import {
   type World,
   Update,
 } from '@forgeax/engine-ecs';
-import {
-  INPUT_MAP_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type ActionConfig,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_MAP_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type ActionConfig } from '@forgeax/engine-input';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { Context } from '@forgeax/engine-plugin';
@@ -50,7 +48,7 @@ import {
 } from './components';
 import { createBrotatoHud, type BrotatoHud, type BrotatoHudSnapshot, type BrotatoPhase } from './hud';
 
-export const BROTATO_STATE_KEY = 'Brotato3dGameState';
+export const BROTATO_STATE_KEY = defineResource<unknown>("Brotato3dGameState");
 
 const INPUT_SYSTEM_NAME = 'brotato-3d-input';
 const COMBAT_SYSTEM_NAME = 'brotato-3d-combat';
@@ -323,7 +321,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   const control = controlResult.ok ? controlResult.value : undefined;
   let seed = 0;
   let activeImpacts = 0;
-  world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'brotato-3d-vfx-cleanup',
     queries: [{ write: [BrotatoVfxCarrier, ParticleEffectPlayer] }],
     fn: (world, [carriers], commands) => {
@@ -339,7 +337,8 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
         }
       }
     },
-  }).unwrap();
+  });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
   let disposed = false;
   return {
     impact: (position, commands) => {
@@ -354,7 +353,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     dispose: async () => {
       if (disposed) return;
       disposed = true;
-      world.removeSystem(FixedUpdate, 'brotato-3d-vfx-cleanup');
+      world.removeSystem(FixedUpdate, systemToken1);
       const active = world.query({ with: [BrotatoVfxCarrier, ParticleEffectPlayer] });
       if (active.ok) {
         for (const row of active.value) {
@@ -532,11 +531,10 @@ function installInputSystem(
   state: BrotatoState,
   materials: BrotatoMaterials,
   meshes: BrotatoMeshes,
-): void {
-  world
-    .addSystem(Update, {
+): () => void {
+  const systemToken2 = defineSystem({
       name: INPUT_SYSTEM_NAME,
-      after: ['input-frame-start-scan'],
+      after: [InputFrameStartScan],
       queries: [
         { read: [BrotatoEnemyStats, Transform], with: [BrotatoEnemy] },
         { read: [BrotatoProjectileMotion, Transform], with: [BrotatoProjectileTag] },
@@ -544,7 +542,7 @@ function installInputSystem(
       ],
       fn: (world, [enemies, projectiles, pickups], commands) => {
         if (!world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)) return;
-        const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+        const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         if (state.resetRequested || input.action('restart').justPressed()) {
           resetRun(world, state, player, enemies, projectiles, pickups, commands, materials, meshes);
           return;
@@ -560,8 +558,11 @@ function installInputSystem(
           fire: input.action('fire').isPressed() ? 1 : 0,
         });
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken2)
     .unwrap();
+  return () => { world.removeSystem(Update, systemToken2).unwrap(); };
 }
 
 type CombatPlayers = Query<readonly [typeof BrotatoInput], readonly [typeof Transform, typeof BrotatoStats]>;
@@ -905,10 +906,9 @@ function installCombatSystem(
   impact: BrotatoVfx['impact'],
   survivalMode: boolean,
   disablePickupDrops: boolean,
-): void {
+): () => void {
   const combat = new BrotatoCombat(player, state, materials, meshes, impact, survivalMode, disablePickupDrops);
-  world
-    .addSystem(FixedUpdate, {
+  const systemToken3 = defineSystem({
       name: COMBAT_SYSTEM_NAME,
       queries: [
         { write: [Transform, BrotatoStats], read: [BrotatoInput], with: [BrotatoPlayer] },
@@ -918,24 +918,28 @@ function installCombatSystem(
         { write: [Transform, BrotatoPickupMotion], with: [BrotatoPickupTag] },
       ],
       fn: (world, queries, commands) => combat.step(world, queries, commands),
-    })
+    });
+world
+    .addSystem(FixedUpdate, systemToken3)
     .unwrap();
+  return () => { world.removeSystem(FixedUpdate, systemToken3).unwrap(); };
 }
 
-function installPresentationSystem(world: World, player: EntityHandle, state: BrotatoState, hud: BrotatoHud): void {
-  world
-    .addSystem(Update, {
+function installPresentationSystem(world: World, player: EntityHandle, state: BrotatoState, hud: BrotatoHud): () => void {
+  const systemToken4 = defineSystem({
       name: PRESENTATION_SYSTEM_NAME,
       after: [FixedUpdate],
       queries: [],
       fn: (world) => hud.update(snapshot(world, state, player)),
-    })
+    });
+world
+    .addSystem(Update, systemToken4)
     .unwrap();
+  return () => { world.removeSystem(Update, systemToken4).unwrap(); };
 }
 
-function installCameraFollowSystem(world: World): void {
-  world
-    .addSystem(Update, {
+function installCameraFollowSystem(world: World): () => void {
+  const systemToken5 = defineSystem({
       name: CAMERA_SYSTEM_NAME,
       after: [FixedUpdate],
       queries: [
@@ -969,8 +973,11 @@ function installCameraFollowSystem(world: World): void {
         // look-at target from the camera position here makes the view orbit
         // and reads as rotation instead of the intended bounded follow.
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken5)
     .unwrap();
+  return () => { world.removeSystem(Update, systemToken5).unwrap(); };
 }
 
 export async function createBrotatoGame(
@@ -1047,8 +1054,8 @@ export async function createBrotatoGame(
   const vfx: BrotatoVfx = options.disableParticles
     ? { impact: () => undefined, dispose: async () => undefined }
     : await createBrotatoVfx(context, world, assets, camera);
-  installInputSystem(world, player, state, materials, meshes);
-  installCombatSystem(
+  const releaseInput = installInputSystem(world, player, state, materials, meshes);
+  const releaseCombat = installCombatSystem(
     world,
     player,
     state,
@@ -1058,8 +1065,8 @@ export async function createBrotatoGame(
     options.survivalMode === true,
     options.disablePickupDrops === true,
   );
-  installCameraFollowSystem(world);
-  installPresentationSystem(world, player, state, hud);
+  const releaseCamera = installCameraFollowSystem(world);
+  const releasePresentation = installPresentationSystem(world, player, state, hud);
 
   const projectionDisposers: Array<() => void> = [];
   if (host.gameProjection !== undefined) {
@@ -1090,10 +1097,10 @@ export async function createBrotatoGame(
       if (disposed) return;
       disposed = true;
       for (let index = projectionDisposers.length - 1; index >= 0; index -= 1) projectionDisposers[index]?.();
-      world.removeSystem(Update, PRESENTATION_SYSTEM_NAME);
-      world.removeSystem(Update, CAMERA_SYSTEM_NAME);
-      world.removeSystem(FixedUpdate, COMBAT_SYSTEM_NAME);
-      world.removeSystem(Update, INPUT_SYSTEM_NAME);
+      releasePresentation();
+      releaseCamera();
+      releaseCombat();
+      releaseInput();
       void vfx.dispose();
       countAndDespawn(world, BrotatoEnemy);
       countAndDespawn(world, BrotatoProjectileTag);

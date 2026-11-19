@@ -19,6 +19,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
       'playing',
       'preparePipelines',
       'seed',
+      'renderLayers',
       'timeScale',
       'parameters',
     ]);
@@ -27,6 +28,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
       playing: 'bool',
       preparePipelines: 'bool',
       seed: 'u32',
+      renderLayers: 'f64',
       timeScale: 'f32',
       parameters: 'string',
     });
@@ -34,6 +36,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
       playing: true,
       preparePipelines: false,
       seed: 0,
+      renderLayers: 1,
       timeScale: 1,
       parameters: '',
     });

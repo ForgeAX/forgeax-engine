@@ -11,11 +11,14 @@ import {
   type MaterialValue,
   materialGuidText,
   ok,
+  type RenderTextureSourceToken,
   type Result,
   resolveMaterialAsset,
   selectMaterialStaticContract,
+  validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { copyAssetData } from './internal/asset-data';
+import { prepareGpuTextureAsset } from './loaders/gpu-texture.js';
 import { prepareAssetPayload } from './prepare-payload';
 
 /** Source inheritance is resolved once, before content enters the runtime owner. */
@@ -34,7 +37,12 @@ export function prepareRuntimeAsset(
           hint: 'supply complete finite mesh channels and matching interleaved vertices',
         }),
       );
+    return ok(interleavedMesh(prepared.value));
   }
+  if (prepared.ok && prepared.value.kind === 'texture-generator')
+    return validateTextureGenerator(prepared.value);
+  if (prepared.ok && prepared.value.kind === 'gpu-texture')
+    return prepareGpuTextureAsset(prepared.value, source);
   if (prepared.ok && prepared.value.kind === 'texture')
     return prepareRuntimeTexture(prepared.value);
 
@@ -82,6 +90,32 @@ export function prepareRuntimeAsset(
   );
 }
 
+function validTextureSourceToken(token: RenderTextureSourceToken): boolean {
+  return !(
+    token === null ||
+    typeof token !== 'object' ||
+    token.kind !== 'render-texture-source' ||
+    typeof token.owner !== 'string' ||
+    token.owner.length === 0 ||
+    !Number.isSafeInteger(token.id) ||
+    token.id <= 0 ||
+    !['target', 'canvas', 'external', 'feature'].includes(token.source) ||
+    (token.source === 'feature' &&
+      token.name !== undefined &&
+      (typeof token.name !== 'string' || token.name.length === 0)) ||
+    Object.keys(token).some(
+      (key) =>
+        ![
+          'kind',
+          'owner',
+          'id',
+          'source',
+          ...(token.source === 'feature' ? ['name'] : []),
+        ].includes(key),
+    )
+  );
+}
+
 /** Resolve authored texture references once; runtime material values contain owner identities. */
 export function linkRuntimeMaterial(
   material: MaterialAsset,
@@ -96,7 +130,7 @@ export function linkRuntimeMaterial(
   const fields = new Set(textureFields);
   for (const parameter of material.parameters ?? [])
     if (isMaterialTextureParameterType(parameter.type)) fields.add(parameter.name);
-  const reference = <K extends 'texture' | 'video' | 'sampler'>(
+  const reference = <K extends 'texture' | 'gpu-texture' | 'video' | 'sampler'>(
     input: unknown,
     kinds: readonly K[],
   ): Result<AssetHandle<K>, AssetError> => {
@@ -133,23 +167,12 @@ export function linkRuntimeMaterial(
     if (typeof value === 'object' && !Array.isArray(value) && 'source' in value) {
       fields.add(name);
       const token = value.source;
-      if (
-        'texture' in value ||
-        token === null ||
-        typeof token !== 'object' ||
-        token.kind !== 'render-texture-source' ||
-        typeof token.owner !== 'string' ||
-        token.owner.length === 0 ||
-        !Number.isSafeInteger(token.id) ||
-        token.id <= 0 ||
-        !['target', 'canvas', 'external'].includes(token.source) ||
-        Object.keys(token).some((key) => !['kind', 'owner', 'id', 'source'].includes(key))
-      )
+      if ('texture' in value || !validTextureSourceToken(token))
         return err(
           new AssetError({
             code: 'asset-reference-invalid',
             expected: `a native texture source token for material parameter ${name}`,
-            hint: 'pass { source } using a RenderTarget, CanvasTexture or imported texture source',
+            hint: 'pass { source } using a RenderTarget, CanvasTexture, feature texture or imported texture source',
           }),
         );
       const sampler =
@@ -164,7 +187,7 @@ export function linkRuntimeMaterial(
       };
     } else if (typeof value === 'object' && !Array.isArray(value) && 'texture' in value) {
       fields.add(name);
-      const texture = reference(value.texture, ['texture', 'video']);
+      const texture = reference(value.texture, ['texture', 'gpu-texture', 'video']);
       if (!texture.ok) return texture;
       const sampler =
         value.sampler === undefined ? undefined : reference(value.sampler, ['sampler']);
@@ -184,7 +207,7 @@ export function linkRuntimeMaterial(
             hint: 'supply a runtime texture reference or a texture binding descriptor',
           }),
         );
-      const texture = reference(value, ['texture', 'video']);
+      const texture = reference(value, ['texture', 'gpu-texture', 'video']);
       if (!texture.ok) return texture;
       values[name] = texture.value;
     }
@@ -192,4 +215,4 @@ export function linkRuntimeMaterial(
   return ok({ value: { ...material, values }, dependencies: [...dependencies], textures: fields });
 }
 
-import { prepareMeshData } from '@forgeax/engine-geometry';
+import { interleavedMesh, prepareMeshData } from '@forgeax/engine-geometry';

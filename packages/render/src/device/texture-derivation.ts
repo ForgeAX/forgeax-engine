@@ -1,32 +1,48 @@
 import {
-  type CodecError,
+  type RetainedBytes,
+  type RetentionBudget,
+  realmRetention,
+} from '@forgeax/engine-assets-runtime/internal';
+import type {
+  CodecError,
+  CodecResult,
+  PackedTranscodedTexture,
+  TextureTranscodeRequest,
+} from '@forgeax/engine-codec';
+import {
   ktx2ChannelLanes,
-  ktx2IsNative,
-  ktx2NativeTexture,
   parseKtx2,
   selectTranscodeTarget,
   type TranscodeChannels,
-  transcodeBasis,
-  transcodeKtx2,
 } from '@forgeax/engine-codec';
+import { createTaskPool } from '@forgeax/engine-platform';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import {
   AssetError,
+  deriveTextureLayout,
   err,
   ok,
   type Result,
+  type TaskExecutor,
+  type TaskHandle,
   type TextureAsset,
   textureCompressionFeature,
   validateTextureLayout,
 } from '@forgeax/engine-types';
+import { builtinTaskKinds, TEXTURE_TRANSCODE_TASK } from '../tasks';
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
 
 type Prepared = Result<TextureAsset, AssetError>;
+type Transcoded = CodecResult<PackedTranscodedTexture>;
 interface Target {
   result: Prepared;
   completed: Promise<void>;
   /** A caller has received the settled result; until then it is owed and pinned. */
   taken: boolean;
+  /** The running transcode, until it settles. */
+  task?: TaskHandle<Transcoded> | undefined;
+  /** Budget held for the expected derivative while the transcode runs. */
+  reserved: number;
 }
 interface Source {
   readonly revision: number;
@@ -34,6 +50,12 @@ interface Source {
   readonly channels: TranscodeChannels;
   readonly targets: Map<GPUTextureFormat, Target>;
   bytes: number;
+  /** Budget tick of the last request for this source. */
+  used: number;
+}
+/** Withdraw or discard every transcode still running for an evicted source. */
+function cancelTargets(source: Source): void {
+  for (const target of source.targets.values()) target.task?.cancel();
 }
 /** In flight, or settled but not yet delivered: eviction would discard owed work. */
 function pinned(source: Source): boolean {
@@ -43,6 +65,8 @@ function pinned(source: Source): boolean {
 }
 const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_SOURCES = 256;
+/** Transcodes running at once; later requests wait without capturing. */
+const MAX_TRANSCODES = 8;
 const pending: Prepared = err(
   new AssetError({
     code: 'asset-not-ready',
@@ -74,14 +98,64 @@ function admitNativeFormat(asset: TextureAsset, caps: RhiCaps | undefined): Prep
   );
 }
 
+/** Authored bytes of `source` re-laid in `format`; 0 when that layout is invalid. */
+function expectedBytes(source: TextureAsset, format: GPUTextureFormat): number {
+  const layout = deriveTextureLayout({ shape: source.shape, mips: source.mips, format });
+  if (!layout.ok) return 0;
+  // Generated levels are not part of the derivative, only its base level.
+  return source.mips.kind === 'generate'
+    ? (layout.value.levels[0]?.byteLength ?? 0)
+    : layout.value.byteLength;
+}
+
+/** The device format a source derives to when the caller names none. */
+function defaultTarget(
+  asset: TextureAsset,
+  source: Source,
+  caps: RhiCaps | undefined,
+): GPUTextureFormat {
+  // A BC5 KTX2 has one device-dependent form: its blocks, or their exact
+  // RG8 decode where the device lacks BC.
+  if (asset.format === 'bc5-rg-unorm')
+    return caps?.textureCompressionBc === true ? 'bc5-rg-unorm' : 'rg8unorm';
+  return selectTranscodeTarget(
+    {
+      model: asset.format === 'rgba16float' ? 'uastc-hdr' : 'uastc-ldr',
+      srgb: asset.colorSpace === 'srgb',
+      channels: source.channels,
+    },
+    {
+      bc: caps?.textureCompressionBc ?? false,
+      astc: caps?.textureCompressionAstc ?? false,
+      etc2: caps?.textureCompressionEtc2 ?? false,
+    },
+  );
+}
+
 /** Device derivatives of privately captured source versions. A miss schedules
- * one transcode; steady draws perform one keyed lookup and never touch WASM.
- * The budget evicts only delivered derivatives. When owed work alone fills it,
- * a new source starts nothing and reports not-ready; the caller's next-frame
- * retry is its place in the queue, admitted as delivered entries free room. */
-export class TextureDerivations {
+ * one transcode task; steady draws perform one keyed lookup and never touch
+ * WASM. Captures and derivatives count against the realm's retention budget;
+ * a running transcode holds its expected derivative bytes. The budget
+ * releases only delivered derivatives. At most MAX_TRANSCODES run at once,
+ * and while owed work fills the budget new work starts nothing; either way
+ * the request reports not-ready and the caller's next-frame retry is its
+ * place in the queue. With nothing running, one request of any size starts,
+ * so a source larger than the budget still completes. */
+export class TextureDerivations implements RetainedBytes {
   private readonly sources = new ScopedGpuResources<Source>();
   private bytes = 0;
+  private running = 0;
+  /** Requests refused for now that start on a later retry. */
+  private readonly waiting = new ScopedGpuResources<true>();
+  private tasks: TaskExecutor | undefined;
+
+  /** Without an executor, transcodes run inline in this realm, time-sliced. */
+  constructor(
+    tasks?: TaskExecutor,
+    private readonly budget: RetentionBudget = realmRetention(),
+  ) {
+    this.tasks = tasks;
+  }
 
   prepare(
     key: string | number,
@@ -93,65 +167,135 @@ export class TextureDerivations {
   ): Prepared {
     if (asset.encoding === undefined)
       return target === undefined ? admitNativeFormat(asset, caps) : ok(asset);
+    const source = this.capture(key, revision, asset, namespace);
+    if (!('targets' in source)) return source;
+    source.used = this.budget.tick();
+    const format = target ?? defaultTarget(asset, source, caps);
+    const current = source.targets.get(format);
+    if (current !== undefined) {
+      if (current.result !== pending) current.taken = true;
+      return current.result;
+    }
+    return this.start(key, namespace, source, format, caps);
+  }
+
+  /** The private capture of `revision`, admitted into the budget on first use. */
+  private capture(
+    key: string | number,
+    revision: number,
+    asset: TextureAsset,
+    namespace: GpuResourceNamespace,
+  ): Source | Prepared {
     let source = this.sources.get(key, namespace);
     if (source !== undefined && source.revision !== revision) {
       this.remove(key, Number.POSITIVE_INFINITY, namespace);
       source = undefined;
     }
-    if (source === undefined) {
-      if (asset.data.byteLength > MAX_BYTES) return this.exceeded();
-      if (!this.admit(asset.data.byteLength)) return pending;
-      // Borrowed World objects can mutate. Async work sees only this private
-      // capture; the numeric source revision, not object identity, selects it.
-      const parsed = asset.encoding === 'ktx2' ? parseKtx2(asset.data) : undefined;
-      source = {
-        revision,
-        fixed: structuredClone(asset),
-        // The DFD channel ids are the source's only channel authority: an RG
-        // normal map selects BC5 / EAC RG11 / RG8 instead of an RGBA format.
-        channels: parsed?.ok ? ktx2ChannelLanes(parsed.value).channels : 'rgba',
-        targets: new Map(),
-        bytes: asset.data.byteLength,
-      };
-      this.sources.set(key, source, namespace);
-      this.bytes += source.bytes;
+    if (source !== undefined) return source;
+    if (asset.data.byteLength > MAX_BYTES) return this.exceeded();
+    if (this.running >= MAX_TRANSCODES) return this.wait(key, namespace);
+    this.budget.join(this);
+    if (!this.admit(asset.data.byteLength)) return this.wait(key, namespace);
+    // Borrowed World objects can mutate. Async work sees only this private
+    // capture; the numeric source revision, not object identity, selects it.
+    const parsed = asset.encoding === 'ktx2' ? parseKtx2(asset.data) : undefined;
+    source = {
+      revision,
+      fixed: structuredClone(asset),
+      // The DFD channel ids are the source's only channel authority: an RG
+      // normal map selects BC5 / EAC RG11 / RG8 instead of an RGBA format.
+      channels: parsed?.ok ? ktx2ChannelLanes(parsed.value).channels : 'rgba',
+      targets: new Map(),
+      bytes: asset.data.byteLength,
+      used: this.budget.tick(),
+    };
+    this.sources.set(key, source, namespace);
+    this.add(source.bytes);
+    return source;
+  }
+
+  /** Reserve `target`'s expected bytes and submit its transcode. */
+  private start(
+    key: string | number,
+    namespace: GpuResourceNamespace,
+    captured: Source,
+    target: GPUTextureFormat,
+    caps: RhiCaps | undefined,
+  ): Prepared {
+    const reserved = expectedBytes(captured.fixed, target);
+    if (captured.bytes + reserved > MAX_BYTES) {
+      const result = this.exceeded();
+      captured.targets.set(target, {
+        result,
+        completed: Promise.resolve(),
+        taken: true,
+        reserved: 0,
+      });
+      return result;
     }
-    // A BC5 KTX2 has one device-dependent form: its blocks, or their exact
-    // RG8 decode where the device lacks BC.
-    if (asset.format === 'bc5-rg-unorm')
-      target ??= caps?.textureCompressionBc === true ? 'bc5-rg-unorm' : 'rg8unorm';
-    target ??= selectTranscodeTarget(
-      {
-        model: asset.format === 'rgba16float' ? 'uastc-hdr' : 'uastc-ldr',
-        srgb: asset.colorSpace === 'srgb',
-        channels: source.channels,
-      },
-      {
-        bc: caps?.textureCompressionBc ?? false,
-        astc: caps?.textureCompressionAstc ?? false,
-        etc2: caps?.textureCompressionEtc2 ?? false,
-      },
+    if (this.running >= MAX_TRANSCODES) return this.wait(key, namespace);
+    const state: Target = {
+      result: pending,
+      completed: Promise.resolve(),
+      taken: false,
+      reserved,
+    };
+    // Registered first so the release below cannot evict this source.
+    captured.targets.set(target, state);
+    this.budget.settle(Number.POSITIVE_INFINITY, reserved);
+    if (!this.budget.fits(reserved) && this.running > 0) {
+      captured.targets.delete(target);
+      return this.wait(key, namespace);
+    }
+    captured.bytes += reserved;
+    this.add(reserved);
+    this.running++;
+    this.waiting.delete(key, namespace);
+    const fixed = captured.fixed;
+    // The task owns a copy; other targets of this source still read `fixed`.
+    const data = fixed.data.slice();
+    const task = this.executor().submit<TextureTranscodeRequest, Transcoded>(
+      TEXTURE_TRANSCODE_TASK,
+      { encoding: fixed.encoding as 'basis' | 'ktx2', data, target },
+      { transfer: [data.buffer], debugName: String(key) },
     );
-    const current = source.targets.get(target);
-    if (current !== undefined) {
-      if (current.result !== pending) current.taken = true;
-      return current.result;
-    }
-    const captured = source;
-    const state: Target = { result: pending, completed: Promise.resolve(), taken: false };
-    state.completed = this.transcode(captured.fixed, target, String(key), caps).then((result) => {
-      if (this.sources.get(key, namespace) !== captured) return;
-      if (result.ok && captured.bytes + result.value.data.byteLength > MAX_BYTES)
-        result = this.exceeded();
-      if (result.ok) {
-        captured.bytes += result.value.data.byteLength;
-        this.bytes += result.value.data.byteLength;
-      }
-      state.result = result;
-      this.trim(0, 0);
-    });
-    source.targets.set(target, state);
+    state.task = task;
+    state.completed = this.derive(task.result, fixed, target, String(key), caps).then((result) =>
+      this.deliver(key, namespace, captured, target, state, result),
+    );
     return pending;
+  }
+
+  /** Swap a finished task's reservation for its derivative's actual bytes. */
+  private deliver(
+    key: string | number,
+    namespace: GpuResourceNamespace,
+    captured: Source,
+    target: GPUTextureFormat,
+    state: Target,
+    result: Prepared,
+  ): void {
+    state.task = undefined;
+    this.running--;
+    // Removal refunded the source, reservation included, and owes nothing.
+    if (this.sources.get(key, namespace) !== captured || captured.targets.get(target) !== state)
+      return;
+    captured.bytes -= state.reserved;
+    this.add(-state.reserved);
+    state.reserved = 0;
+    if (result.ok && captured.bytes + result.value.data.byteLength > MAX_BYTES)
+      result = this.exceeded();
+    if (result.ok) {
+      captured.bytes += result.value.data.byteLength;
+      this.add(result.value.data.byteLength);
+    }
+    state.result = result;
+    this.budget.settle();
+  }
+
+  private executor(): TaskExecutor {
+    this.tasks ??= createTaskPool({ kinds: builtinTaskKinds });
+    return this.tasks;
   }
 
   async settled(key: string | number, namespace: GpuResourceNamespace = 0): Promise<void> {
@@ -160,6 +304,7 @@ export class TextureDerivations {
     );
   }
   preparing(key: string | number, namespace: GpuResourceNamespace = 0): boolean {
+    if (this.waiting.has(key, namespace)) return true;
     for (const target of this.sources.get(key, namespace)?.targets.values() ?? [])
       if (target.result === pending) return true;
     return false;
@@ -170,30 +315,63 @@ export class TextureDerivations {
     namespace: GpuResourceNamespace = 0,
   ): void {
     const source = this.sources.get(key, namespace);
+    if (beforeRevision === Number.POSITIVE_INFINITY) this.waiting.delete(key, namespace);
     if (source === undefined || source.revision >= beforeRevision) return;
-    this.bytes -= source.bytes;
+    this.add(-source.bytes);
     this.sources.delete(key, namespace);
+    cancelTargets(source);
+  }
+  /** The device texture now owns these texels; drop the delivered CPU copies. */
+  release(key: string | number, namespace: GpuResourceNamespace = 0): void {
+    const source = this.sources.get(key, namespace);
+    if (source !== undefined && !pinned(source))
+      this.remove(key, Number.POSITIVE_INFINITY, namespace);
+  }
+  /** Drop every source and leave the budget. */
+  removeScope(namespace: GpuResourceNamespace): void {
+    for (const [scope, sources] of this.sources.entries())
+      if (scope === namespace)
+        for (const key of sources.keys()) this.remove(key, Number.POSITIVE_INFINITY, namespace);
   }
   clear(): void {
+    const sources = [...this.sources.values()];
     this.sources.clear();
-    this.bytes = 0;
+    this.waiting.clear();
+    this.add(-this.bytes);
+    this.budget.leave(this);
+    for (const source of sources) cancelTargets(source);
   }
-  /** Room for one more source of `bytes`, evicting delivered derivatives first. */
+  oldest(): number | undefined {
+    return this.releasable()?.source.used;
+  }
+  releaseOldest(): void {
+    const oldest = this.releasable();
+    if (oldest !== undefined) this.remove(oldest.key, Number.POSITIVE_INFINITY, oldest.scope);
+  }
+  /** The least recently requested delivered source. */
+  private releasable():
+    | { key: string | number; scope: GpuResourceNamespace; source: Source }
+    | undefined {
+    let oldest: { key: string | number; scope: GpuResourceNamespace; source: Source } | undefined;
+    for (const [scope, resources] of this.sources.entries())
+      for (const [key, source] of resources)
+        if (!pinned(source) && (oldest === undefined || source.used < oldest.source.used))
+          oldest = { key, scope, source };
+    return oldest;
+  }
+  /** Room for one more source of `bytes`, releasing delivered derivatives first. */
   private admit(bytes: number): boolean {
-    this.trim(1, bytes);
-    return this.within(1, bytes);
+    while (this.sources.size >= MAX_SOURCES && this.oldest() !== undefined) this.releaseOldest();
+    this.budget.settle(Number.POSITIVE_INFINITY, bytes);
+    return this.sources.size < MAX_SOURCES && (this.budget.fits(bytes) || this.running === 0);
   }
-  private within(sources: number, bytes: number): boolean {
-    return this.sources.size + sources <= MAX_SOURCES && this.bytes + bytes <= MAX_BYTES;
+  private wait(key: string | number, namespace: GpuResourceNamespace): Prepared {
+    this.waiting.set(key, true, namespace);
+    return pending;
   }
-  /** Evict delivered sources oldest first until `sources`/`bytes` more fit. */
-  private trim(sources: number, bytes: number): void {
-    for (const [scope, resources] of this.sources.entries()) {
-      for (const [key, source] of resources) {
-        if (this.within(sources, bytes)) return;
-        if (!pinned(source)) this.remove(key, Number.POSITIVE_INFINITY, scope);
-      }
-    }
+  private add(bytes: number): void {
+    this.bytes += bytes;
+    this.budget.add(bytes);
   }
   private exceeded(): Prepared {
     return err(
@@ -205,7 +383,8 @@ export class TextureDerivations {
     );
   }
 
-  private async transcode(
+  private async derive(
+    transcoded: Promise<Transcoded>,
     source: TextureAsset,
     target: GPUTextureFormat,
     sourcePath: string,
@@ -236,33 +415,20 @@ export class TextureDerivations {
     const fail = (expected: string, hint: string) =>
       err(new AssetError({ code: 'asset-parse-failed', expected, hint }));
     try {
-      const parsed = source.encoding === 'ktx2' ? await parseKtx2(source.data) : undefined;
-      if (parsed !== undefined && !parsed.ok) return codecFailure(parsed.error);
-      const result = !parsed?.ok
-        ? await transcodeBasis(source.data, target)
-        : ktx2IsNative(parsed.value)
-          ? await ktx2NativeTexture(parsed.value, target)
-          : await transcodeKtx2(parsed.value, target);
+      const result = await transcoded;
       if (!result.ok) return codecFailure(result.error);
-      const { width, height, mips } = result.value;
+      const { width, height, levels, data } = result.value;
       const count = source.mips.kind === 'packed' ? source.mips.levelCount : 1;
       if (
         width !== source.shape.extent.width ||
         height !== source.shape.extent.height ||
-        count !== mips.length
+        count !== levels.length
       )
         return fail(
           'encoded texture dimensions and complete mip chain match the asset',
           'replace the complete image source and its shape/mip metadata together',
         );
-      const length = mips.reduce((total, level) => total + level.data.byteLength, 0);
-      if (length > MAX_BYTES) return this.exceeded();
-      const data = new Uint8Array(length);
-      let offset = 0;
-      for (const mip of mips) {
-        data.set(mip.data, offset);
-        offset += mip.data.byteLength;
-      }
+      if (data.byteLength > MAX_BYTES) return this.exceeded();
       const { encoding: _encoding, ...native } = source;
       const value = { ...native, format: target, data };
       const valid = validateTextureLayout({ ...value, actualByteLength: data.byteLength });

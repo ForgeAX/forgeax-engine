@@ -64,11 +64,7 @@ it.each([
     for (let frame = 0; frame < 30 && ready < 3; frame++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const drawn = renderer.draw({ source: attached.value });
       assert(drawn.ok);
       expect((await drawn.value.completed).ok).toBe(true);
       if (drawn.value.presentation === 'ready') ready++;

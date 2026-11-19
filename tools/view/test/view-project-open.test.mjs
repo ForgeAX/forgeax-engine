@@ -14,9 +14,19 @@ const target = {
 };
 
 function workspace(snapshot, openProject) {
+  let current = snapshot;
+  const listeners = new Set();
   return {
-    snapshot: () => snapshot,
-    openProject: openProject ?? (async () => { throw new Error('project.open must not run'); }),
+    snapshot: () => current,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async openProject(...args) {
+      const result = await (openProject ?? (async () => { throw new Error('project.open must not run'); }))(...args);
+      if (result?.project) {
+        current = result;
+        for (const listener of listeners) listener();
+      }
+      return result;
+    },
   };
 }
 
@@ -29,6 +39,7 @@ test('project open reuses the same directory and refuses a different one', async
     const current = workspace({
       project: { id: 'game', root: identity },
       projectTarget: target,
+      projectDocument: { ...target, sessionId: 'session-1', browserGeneration: 1 },
     }, async () => { opened += 1; });
     const again = await openViewProject(current, `${root}${root.endsWith('\\') || root.endsWith('/') ? '' : '/'}`);
     assert.equal(again.alreadyOpen, true);
@@ -52,15 +63,27 @@ test('project open calls Engine once when the same project target was lost', asy
   const opened = await openViewProject(workspace({
     project: { id: 'game', root: '/game' },
     projectTarget: target,
+    projectDocument: { ...target, sessionId: 'session-1', browserGeneration: 1 },
     workspaceTargetLost: true,
+    projectStatus: { phase: 'failed', sessionId: 'session-1', generation: 7,
+      failure: { code: 'engine-workspace-page-lost', hint: 'The frontend lease retired.' } },
   }, async (args) => {
     calls.push(args);
-    return { project: { id: 'game', root: '/game' }, projectTarget: target };
+    return { project: { id: 'game', root: '/game' }, projectTarget: target,
+      projectDocument: { ...target, sessionId: 'session-1', browserGeneration: 1 } };
   }), '/game', { viewerUrl: 'http://127.0.0.1:8/' });
-  assert.deepEqual(calls, [{ root: await projectIdentity('/game'), tabId: VIEW_WORKSPACE_TAB_ID }]);
+  assert.deepEqual(calls, [{ root: await projectIdentity('/game'), tabId: VIEW_WORKSPACE_TAB_ID,
+    expectedProject: { kind: 'session', sessionId: 'session-1', generation: 7, recovery: 'lost' } }]);
   assert.equal(opened.alreadyOpen, false);
   assert.equal(opened.viewerUrl, 'http://127.0.0.1:8/');
   assert.equal(opened.projectTarget.targetId, 'target-1');
+});
+
+test('project open preserves a non-lost failure instead of replaying project admission', async () => {
+  const failure = { code: 'engine-workspace-plugin-cleanup-timeout', hint: 'Inspect native cleanup.' };
+  const current = workspace({ project: { id: 'game', root: '/game' },
+    projectStatus: { phase: 'failed', sessionId: 'session-1', generation: 7, failure } });
+  await assert.rejects(openViewProject(current, '/game'), error => error.code === failure.code);
 });
 
 test('project open fails when View has no broker and does not invent one', async () => {
@@ -80,7 +103,7 @@ test('project open maps an aborted open to view stopped', async () => {
 });
 
 test('project open does not succeed without a headed document URL', async () => {
-  const openWithoutUrl = async () => ({ project: { id: 'game', root: '/game' } });
+  const openWithoutUrl = async () => ({ project: { id: 'game', root: '/game' }, projectStatus: { phase: 'starting' } });
   await assert.rejects(
     () => openViewProject(workspace({ project: null }, openWithoutUrl), '/game'),
     (error) => error.code === 'view-project-open-incomplete',

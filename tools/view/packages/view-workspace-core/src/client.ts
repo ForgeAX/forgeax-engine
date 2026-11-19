@@ -6,7 +6,8 @@ import { workspaceDiagnosticRecord } from './command-error.ts';
 export type WorkspaceCallOptions = HostRequestOptions & { requestId?: string; reportError?: boolean };
 export type WorkspaceTargetOptions = WorkspaceCallOptions & { tabId?: string; targetId?: string; targetGeneration?: number };
 export type WorkspaceOptions = WorkspaceTargetOptions & Partial<EngineWorkspaceCameraInput> & {
-  label?: string; entityIds?: readonly string[]; root?: string; projectId?: string; expectedTargetId?: string | null; expectedTargetState?: string;
+  label?: string; entityIds?: readonly string[]; root?: string; projectId?: string;
+  expectedProject?: { kind: 'empty' } | { kind: 'session'; sessionId: string; generation: number; recovery?: 'lost' };
   expectedRevision?: string; width?: number; height?: number; reason?: string; offset?: number; limit?: number; revision?: string;
   sourceId?: string; sourceGeneration?: number; sinceRevision?: number;
 };
@@ -125,6 +126,10 @@ export class ViewWorkspaceClient {
     return this.call<WorkspaceState>('tabs.get', {}, options);
   }
 
+  presentProject(options: WorkspaceCallOptions = {}) {
+    return this.call<WorkspaceState>('project.present', {}, options);
+  }
+
   getSummary(options: WorkspaceCallOptions = {}) {
     return this.call<WorkspaceSummary>('summary.get', {}, options);
   }
@@ -158,18 +163,29 @@ export class ViewWorkspaceClient {
     return this.call<WorkspaceState>('scene.clear', { targetId, targetGeneration, ...(tabId === undefined ? {} : { tabId }) }, options);
   }
 
-  openProject(root: string, { tabId, expectedTargetId, ...options }: WorkspaceOptions = {}) {
-    return this.call<WorkspaceState>('project.open', { root, tabId, ...(expectedTargetId === undefined ? {} : { expectedTargetId }) }, options);
+  listProjects(options: WorkspaceCallOptions = {}) {
+    return this.call<readonly KnownProjectEntry[]>('project.list', {}, options);
   }
 
-  reopenProject({ root, tabId, expectedTargetId, expectedTargetState, ...options }: WorkspaceOptions = {}) {
+  browseProjects(path?: string, options: WorkspaceCallOptions = {}) {
+    return this.call<ProjectDirectoryListing>('project.browse', path === undefined ? {} : { path }, options);
+  }
+
+  registerProject(path: string, options: WorkspaceCallOptions = {}) {
+    return this.call<KnownProject>('project.register', { path }, options);
+  }
+
+  openProject(root: string, { tabId, expectedProject, ...options }: WorkspaceOptions = {}) {
+    return this.call<WorkspaceState>('project.open', { root, tabId, ...(expectedProject === undefined ? {} : { expectedProject }) }, options);
+  }
+
+  reopenProject({ root, tabId, expectedProject, ...options }: WorkspaceOptions = {}) {
     return this.call<WorkspaceState>(
       'project.reopen',
       {
         ...(root === undefined ? {} : { root }),
         ...(tabId === undefined ? {} : { tabId }),
-        ...(expectedTargetId === undefined ? {} : { expectedTargetId }),
-        ...(expectedTargetState === undefined ? {} : { expectedTargetState }),
+        ...(expectedProject === undefined ? {} : { expectedProject }),
       },
       options,
     );
@@ -379,3 +395,4 @@ export class ViewWorkspaceClient {
 export function createViewWorkspaceClient(options: WorkspaceClientOptions) {
   return new ViewWorkspaceClient(options);
 }
+import type { KnownProject, KnownProjectEntry, ProjectDirectoryListing } from '@forgeax/engine/devkit';

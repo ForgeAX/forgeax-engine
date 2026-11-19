@@ -27,7 +27,7 @@
 //
 // Exit codes: 0 clean, 1 errors found, 2 setup/load failure.
 
-import { existsSync } from 'node:fs';
+import { existsSync, globSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -129,6 +129,25 @@ export function lintProjectSource(project) {
   return errors;
 }
 
+/** Syntax-only scan: the project owns one source tree at a time, never its imports. */
+export function lintSourcePaths(paths, tsconfig) {
+  const project = new Project({
+    tsConfigFilePath: tsconfig,
+    skipAddingFilesFromTsConfig: true,
+    skipFileDependencyResolution: true,
+  });
+  const errors = [];
+  for (const path of paths) {
+    const sourceFile = project.addSourceFileAtPath(path);
+    try {
+      errors.push(...lintProjectSource(project));
+    } finally {
+      project.removeSourceFile(sourceFile);
+    }
+  }
+  return errors;
+}
+
 function main() {
   const tsconfig = resolve(REPO_ROOT, 'tsconfig.base.json');
   if (!existsSync(tsconfig)) {
@@ -137,14 +156,11 @@ function main() {
     );
     process.exit(2);
   }
-  const project = new Project({
-    tsConfigFilePath: tsconfig,
-    skipAddingFilesFromTsConfig: true,
-  });
-  for (const glob of SOURCE_GLOBS) {
-    project.addSourceFilesAtPaths(resolve(REPO_ROOT, glob));
-  }
-  const errors = lintProjectSource(project);
+  const paths = [...globSync(SOURCE_GLOBS, { cwd: REPO_ROOT })]
+    .map((path) => resolve(REPO_ROOT, path))
+    .filter((path) => statSync(path).isFile())
+    .sort();
+  const errors = lintSourcePaths(paths, tsconfig);
   for (const e of errors) {
     const rel = e.file.replace(`${REPO_ROOT}/`, '');
     process.stderr.write(
@@ -158,6 +174,6 @@ function main() {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main();
 }

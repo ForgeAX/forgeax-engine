@@ -33,11 +33,11 @@ async function fixture() {
     immediateShaderModuleFactory: { createShaderModule: () => ok(module) },
   } as unknown as RenderSystemInternals;
   const source = () => ({
-    scopes: [scope] as never,
+    sourceScope: scope as never,
     retained: {
       identity,
       revision,
-      worlds: [scope],
+      source: scope,
       slots: [],
       isCurrent: () => true,
       isSourceCurrent: () => true,
@@ -47,7 +47,6 @@ async function fixture() {
   const request = {
     kind: 'scene-sdf' as const,
     name: 'collision',
-    world: 0,
     descriptor: {
       origin: [0, 0, 0] as const,
       dimensions: [3, 3, 3] as const,
@@ -116,8 +115,8 @@ it('reuses an unchanged accepted scene without enumerating its Mesh holders', as
 });
 
 it.each([
-  { world: -1 },
-  { world: 0.5 },
+  { descriptor: { spacing: -1 } },
+  { descriptor: { origin: [Number.NaN, 0, 0] } },
   { descriptor: { spacing: Number.NaN } },
   { descriptor: { dimensions: [1, 3, 3] } },
   { descriptor: { dimensions: [129, 3, 3] } },
@@ -191,14 +190,14 @@ it('retires detached World fields only after their last submission completes', a
     const source = f.source();
     const field = f.owner.prepare('player', f.request, source);
     f.owner.complete(true, fence);
-    f.owner.detach(source.scopes[0]);
+    f.owner.detach(source.sourceScope);
     expect(destroyed).not.toHaveBeenCalledWith(field.buffer);
     finish();
     await fence;
     await Promise.resolve();
     expect(destroyed).toHaveBeenCalledWith(field.buffer);
     expect(destroyed).toHaveBeenCalledTimes(5);
-    f.owner.detach(source.scopes[0]);
+    f.owner.detach(source.sourceScope);
     f.owner.dispose();
     expect(destroyed).toHaveBeenCalledTimes(5);
   } finally {
@@ -235,7 +234,7 @@ it('takes scene source from the active recording call while sharing one field ow
     expect(() => inputs.prepare('inactive-primary', f.request)).toThrow(
       expect.objectContaining({
         code: 'scene-sdf-unavailable',
-        detail: { reason: 'missing-source', world: 0 },
+        detail: { reason: 'missing-source' },
       }),
     );
     const source = f.source();

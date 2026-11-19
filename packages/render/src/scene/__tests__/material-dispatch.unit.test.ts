@@ -2,14 +2,109 @@ import { vec3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
-import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
-import { dispatchPassWork, MaterialDispatch, MaterialFrame } from '../material-dispatch';
+import type {
+  DispatchList,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../../render-system-extract';
+import {
+  dispatchCasterMaterials,
+  dispatchPassWork,
+  MaterialDispatch,
+  MaterialFrame,
+} from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
+import { RenderScene } from '../render-scene';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
 import { setSceneRow } from './scene-row-writes';
 
 const slotFrames = new WeakMap<readonly RenderSceneSlot[], SceneSlotFrame>();
+
+it('keeps shared meshless Water source materials admitted for temporal rows', () => {
+  const source = Object.freeze({
+    root: 91,
+    revision: 91,
+    assets: Object.freeze([
+      Object.freeze({
+        handle: 91,
+        revision: 91,
+        source: Object.freeze({
+          guid: '81368156-72a9-5d04-b028-552912245021',
+          sourceKey: 'material/clear/lake',
+        }),
+      }),
+    ]),
+  });
+  const water = new MaterialResource({
+    ...material(91),
+    surfaceModel: 'single-layer-water',
+    sourceAssets: source,
+    materialProgramKeys: { Forward: 'clear-lake-program' },
+  });
+  const pending = new MaterialResource(material(0));
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  const owner = new MaterialDispatch();
+  for (const [entityKey, resource] of [
+    [49, pending],
+    [44, water],
+    [50, water],
+  ] as const) {
+    const { assetHandle: _assetHandle, ...row } = slot(entityKey, resource).snapshot;
+    const snapshot: RenderableSnapshot = {
+      ...row,
+      materialOverrides: [],
+      waterMeshSource: {
+        guid: `scene-entity:${entityKey}`,
+        generation: 5,
+        worldIdentity: 'shared-water-world',
+        zoneGuid: 'zone',
+        zoneGeneration: 1,
+        targetFormat: 'rgba16float',
+        materialStartIndex: 0,
+        views: [],
+      },
+    };
+    scene.apply([{ kind: 'update', entityKey, snapshot }]);
+    const accepted = scene.slot(entityKey);
+    if (accepted === undefined) throw new Error('Shared Water source row must be retained');
+    owner.bind(accepted.slot, snapshot);
+  }
+  owner.prepare(scene.meshFrame());
+  owner.query(scene.slotsSnapshot(), scene.meshFrame());
+  const materials = owner.materials();
+  const temporal = scene.materializeTemporal({ hits: 0, misses: 0 }, materials);
+  expect(temporal.find((row) => row.entityKey === 44)?.temporal).toBeDefined();
+  expect(materials.get(water)?.snapshot).toBe(water.snapshot);
+  expect(materials.get(water)?.snapshot.sourceAssets).toBe(source);
+  expect(materials.get(water)?.snapshot.materialProgramKeys).toEqual({
+    Forward: 'clear-lake-program',
+  });
+  expect(materials.get(water)?.bindings).toBe(2);
+  expect(materials.get(pending)?.snapshot).toBe(pending.snapshot);
+  water.adopt({
+    ...water.snapshot,
+    sourceAssets: {
+      ...source,
+      revision: 92,
+      assets: source.assets.map((asset) => ({ ...asset, revision: 92 })),
+    },
+  });
+  owner.adopt(water);
+  expect(owner.materials().get(water)?.snapshot.sourceAssets?.revision).toBe(92);
+  expect(materials.get(water)?.snapshot.sourceAssets?.revision).toBe(91);
+  for (const entityKey of [44, 50]) {
+    const accepted = scene.slot(entityKey);
+    if (accepted === undefined)
+      throw new Error('Shared Water row must remain until its retirement');
+    owner.remove(accepted.slot);
+    scene.apply([{ kind: 'remove', entityKey }]);
+    owner.query(scene.slotsSnapshot(), scene.meshFrame());
+    expect(owner.materials().get(water)?.bindings).toBe(entityKey === 44 ? 1 : undefined);
+  }
+  expect(materials.get(water)?.snapshot.sourceAssets).toBe(source);
+});
 
 it('diffs retained shared roots across replacement, insertion, removal and skipped frames', () => {
   const resources = Array.from(
@@ -86,12 +181,11 @@ it('visits only copied tree paths for a local change among 10000 unrelated asset
   expect(reads).toBeLessThan(1000);
 });
 
-it('orders complete and Direct work by source identity after slot recycling and across Worlds', () => {
+it('orders complete and Direct work by source identity after slot recycling with distinct entity handles', () => {
   const shared = new MaterialResource(material(1));
   const rows = [slot(9, shared), slot(2, shared), slot(7, shared)].map((row, index) => {
-    const worldId = index === 2 ? 1 : 0;
-    const entityKey = index === 1 ? 1 : 2;
-    return { ...row, worldId, entityKey, snapshot: { ...row.snapshot, worldId, entityKey } };
+    const entityKey = [2, 3, 1][index] as number;
+    return { ...row, entityKey, snapshot: { ...row.snapshot, entityKey } };
   });
   const owner = new MaterialDispatch();
   for (const row of rows) owner.bind(row.slot, row.snapshot);
@@ -102,7 +196,7 @@ it('orders complete and Direct work by source identity after slot recycling and 
     renderableIndex,
   }));
   expect(frame.project(draws)).toEqual(complete);
-  expect(complete.map((entry) => entry.renderableIndex)).toEqual([0, 2, 1]);
+  expect(complete.map((entry) => entry.renderableIndex)).toEqual([1, 2, 0]);
   owner.remove(9);
   owner.bind(9, slot(9, new MaterialResource(material(2))).snapshot);
   expect(frame.project([...draws].reverse())).toEqual(complete);
@@ -370,7 +464,6 @@ function material(handle: number, queue = 2000, shadow = false): MaterialSnapsho
 }
 function slot(id: number, resource: MaterialResource, caster = true): RenderSceneSlot {
   const snapshot: RenderableSnapshot = {
-    worldId: 0,
     entityKey: id,
     assetHandle: 1,
     material: resource,
@@ -380,7 +473,7 @@ function slot(id: number, resource: MaterialResource, caster = true): RenderScen
     layer: id % 3,
     ...(caster ? {} : { shadowCaster: false as const }),
   };
-  return { slot: id, generation: 1, version: 0, worldId: 0, entityKey: id, snapshot };
+  return { slot: id, generation: 1, version: 0, entityKey: id, snapshot };
 }
 
 it('adopts shared Passes while retaining exact prior frames and participation', () => {
@@ -525,7 +618,7 @@ it('compiles changed Mesh defaults and future override slots without touching me
     surfaceModel: 'single-layer-medium',
   });
   const source = { ...BUILTIN_CUBE, materialSlots: [{ slotName: 'first' }] };
-  let meshes = new MeshFrame().with(0, 1, source, [opaque]);
+  let meshes = new MeshFrame().with(1, source, [opaque]);
   owner.adopt(opaque);
   const rows = Array.from({ length: 2048 }, (_, index) => ({
     ...slot(index, opaque),
@@ -559,7 +652,6 @@ it('compiles changed Mesh defaults and future override slots without touching me
     }
   owner.adopt(transmission);
   meshes = meshes.with(
-    0,
     1,
     { ...source, materialSlots: [{ slotName: 'first' }, { slotName: 'second' }] },
     [transmission, opaque],
@@ -601,7 +693,7 @@ it('adopts values and Passes without visiting Mesh expressions and retains unrel
     snapshot: { ...slot(index, shared).snapshot, assetHandle: index + 1, materialOverrides: [] },
   }));
   for (const row of rows) {
-    meshes = meshes.with(0, row.snapshot.assetHandle, BUILTIN_CUBE, [shared]);
+    meshes = meshes.with(row.snapshot.assetHandle, BUILTIN_CUBE, [shared]);
     owner.bind(row.slot, row.snapshot);
   }
   owner.adopt(shared);
@@ -621,7 +713,7 @@ it('adopts values and Passes without visiting Mesh expressions and retains unrel
   expect(changedPass.length).toBe(rows.length);
   expect(changedPass.at(0)?.queue).toBe(3300);
   owner.adopt(next);
-  meshes = meshes.with(0, 513, BUILTIN_CUBE, [next]);
+  meshes = meshes.with(513, BUILTIN_CUBE, [next]);
   groups.values = () => {
     throw new Error('Mesh adoption visited binding groups');
   };
@@ -647,8 +739,8 @@ it('retains an admitted default across replacing the last old Mesh binding', asy
   const resource = new MaterialResource(material(71));
   const owner = new MaterialDispatch();
   const meshes = new MeshFrame()
-    .with(0, 1, BUILTIN_CUBE, [resource])
-    .with(0, 2, BUILTIN_CUBE, [resource]);
+    .with(1, BUILTIN_CUBE, [resource])
+    .with(2, BUILTIN_CUBE, [resource]);
   const before = {
     ...slot(0, resource),
     snapshot: { ...slot(0, resource).snapshot, materialOverrides: [] },
@@ -722,11 +814,11 @@ it('adopts one Mesh without reading its thousand override groups; only a real qu
     },
   }));
   for (const row of rows) owner.bind(row.slot, row.snapshot);
-  const initial = new MeshFrame().with(0, 1, mesh, [first]);
+  const initial = new MeshFrame().with(1, mesh, [first]);
   const old = query(owner, fixedSlots(rows), initial);
   const oldMaterials = owner.materials();
   const oldEntries = [...old];
-  const changed = initial.with(0, 1, mesh, [second]);
+  const changed = initial.with(1, mesh, [second]);
   const groups = (owner as unknown as { groups: Map<string, unknown> }).groups;
   expect(groups.size).toBe(1000);
   const iterate = groups.values;
@@ -779,7 +871,7 @@ it('rejects reentrant source writes before publishing Pass work or derived bindi
       },
     ],
   };
-  const meshes = new MeshFrame().with(0, 1, mesh, [resource]);
+  const meshes = new MeshFrame().with(1, mesh, [resource]);
   owner.bind(0, row.snapshot);
   const old = query(owner, fixedSlots([row]), meshes);
   const before = [...old];
@@ -884,7 +976,7 @@ it.each([
     resources.map((resource) => [resource.snapshot.materialHandle, resource]),
   );
   const resolver = withResolver
-    ? (_world: number, handle: number) => byHandle.get(handle) ?? (resources[0] as MaterialResource)
+    ? (handle: number) => byHandle.get(handle) ?? (resources[0] as MaterialResource)
     : undefined;
   const incremental = new MaterialDispatch(resolver);
   const complete = new MaterialDispatch(resolver);
@@ -894,8 +986,8 @@ it.each([
   );
   const twoSlots = { ...cube, materialSlots: [{ slotName: 'first' }, { slotName: 'second' }] };
   const meshes = new MeshFrame()
-    .with(0, 1, twoSlots, [resources[1] as MaterialResource, resources[2] as MaterialResource])
-    .with(0, 2, twoSlots, [resources[3] as MaterialResource, resources[4] as MaterialResource]);
+    .with(1, twoSlots, [resources[1] as MaterialResource, resources[2] as MaterialResource])
+    .with(2, twoSlots, [resources[3] as MaterialResource, resources[4] as MaterialResource]);
   const meshDefaults = new Map([
     [1, resources[1]],
     [2, resources[3]],
@@ -1015,6 +1107,25 @@ it('shares the caster set with members until a visible non-caster forks it, and 
   expect(casters([rows[0], rows[2]] as RenderSceneSlot[])).toEqual([0, 2]);
 });
 
+it('names only materials some caster draws with, as a stable set per frame', () => {
+  const cast = new MaterialResource(material(140, 2000, true));
+  const quiet = new MaterialResource(material(141, 2000, true));
+  const owner = new MaterialDispatch();
+  const rows = [slot(0, cast), slot(1, cast, false), slot(2, quiet, false)];
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const frame = query(owner, fixedSlots(rows));
+  const materials = dispatchCasterMaterials(frame);
+  expect(materials && [...materials]).toEqual([cast]);
+  expect(dispatchCasterMaterials(frame)).toBe(materials);
+  expect(dispatchCasterMaterials([...frame] as unknown as DispatchList)).toBeUndefined();
+  const loud = slot(2, quiet);
+  owner.bind(loud.slot, loud.snapshot);
+  const next = dispatchCasterMaterials(
+    query(owner, fixedSlots([rows[0], rows[1], loud] as RenderSceneSlot[])),
+  );
+  expect(next && new Set(next)).toEqual(new Set([cast, quiet]));
+});
+
 it('bulk binding appends member pages instead of copying one roster page per member', () => {
   const resource = new MaterialResource(material(1, 2000, true));
   const rows = 8192;
@@ -1060,7 +1171,7 @@ it('admits the implicit default only when effective Mesh slots actually consume 
     snapshot: { ...original.snapshot, materialOverrides: [owned] },
   };
   owner.bind(0, row.snapshot);
-  const meshes = new MeshFrame().with(0, 1, createPrimitiveMesh('cube').unwrap());
+  const meshes = new MeshFrame().with(1, createPrimitiveMesh('cube').unwrap());
   const complete = query(owner, fixedSlots([row]), meshes);
   const captured = owner.materials();
   expect([...complete]).toHaveLength(1);
@@ -1217,4 +1328,32 @@ it('does not publish a partial dispatch after a rank failure and recovers on the
   expect(cursor.next().done).toBe(true);
   rank.mockRestore();
   expect([...frame]).toHaveLength(16);
+});
+
+it('retains resolved culling materials and Passes across equal slots in a geometry revision', async () => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const { cullingDisplacementRadius } = await import('../render-scene-snapshots');
+  const raw = new MaterialResource(material(91)),
+    resolved = new MaterialResource(material(91));
+  const resolve = vi.fn(() => resolved);
+  const owner = new MaterialDispatch(resolve);
+  const base = slot(0, raw);
+  const row = { ...base, snapshot: { ...base.snapshot, assetHandle: 1, materialOverrides: [raw] } };
+  const rows = [row];
+  const mesh = { ...createPrimitiveMesh('cube').unwrap(), materialSlots: [{ slotName: 'body' }] };
+  const before = new MeshFrame().with(1, mesh);
+  owner.bind(0, row.snapshot);
+  owner.adopt(raw);
+  const passes = query(owner, fixedSlots(rows), before);
+  const calls = resolve.mock.calls.length;
+  const next = before.with(1, {
+    ...mesh,
+    materialSlots: [{ slotName: 'body' }],
+    aabb: new Float32Array([-2, -1, -1, 2, 1, 1]),
+  });
+  owner.prepare(next);
+  expect(cullingDisplacementRadius(row.snapshot, next.get(1), owner.materials())).toBe(0);
+  expect(query(owner, fixedSlots(rows), next)).toBe(passes);
+  expect(resolve).toHaveBeenCalledTimes(calls);
 });

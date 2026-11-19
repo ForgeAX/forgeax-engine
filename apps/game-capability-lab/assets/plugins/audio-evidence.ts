@@ -1,3 +1,4 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
 import type { AudioBackend } from '@forgeax/engine-audio';
 import type { World } from '@forgeax/engine-ecs';
 import type { Context } from '@forgeax/engine-plugin';
@@ -21,8 +22,8 @@ export function installAudioEvidence(args: {
 }): void {
   if (args.gameplayAudio === undefined || typeof location === 'undefined') return;
   if (!new URLSearchParams(location.search).has('audio-evidence')) return;
-  const audio = args.world.hasResource('AudioEngine')
-    ? args.world.getResource<AudioBackend>('AudioEngine')
+  const audio = args.world.hasResource(AUDIO_ENGINE_RESOURCE_KEY)
+    ? args.world.getResource(AUDIO_ENGINE_RESOURCE_KEY)
     : undefined;
   const evidence: GameDefaultAudioEvidence = {
     setMusicSettings: (volume, muted) => args.gameplayAudio?.setMusicSettings(volume, muted),

@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { assetListCommand } from '../assets.js';
+import { buildCommand } from '../commands.js';
 import { type PlayReport, playCommand } from '../play.js';
+import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 const PACKAGE = '019fb7ce-2200-7000-8000-000000000000';
 const namespace = PackageId.parse(PACKAGE);
@@ -22,7 +25,7 @@ export default definePack({
   schemaVersion: '2.0.0', plugins: true, packageId: id,
   build: () => ok({
     'mesh/box': createBoxGeometry(1, 1, 1).unwrap(),
-    'material/box': Materials.standard({ baseColor: '#e0782c', roughness: 0.6 }),
+    'material/box': Materials.unlit('#e0782c'),
     'plugin/game': { kind: 'plugin', module: { specifier: './game.ts', export: 'game' },
       config: { mesh: ref('mesh/box'), material: ref('material/box') } },
     'plugin/hud': { kind: 'plugin', module: { specifier: './hud.ts', export: 'hud' } },
@@ -32,11 +35,11 @@ export default definePack({
 
 const GAME = `import type {} from '@forgeax/engine/app';
 import type {} from '@forgeax/engine/assets-runtime';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { Time, Update, defineSystem } from '@forgeax/engine/ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { quat } from '@forgeax/engine/math';
 import type { Plugin } from '@forgeax/engine/plugin';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight } from '@forgeax/engine/render';
+import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 
 export const game: Plugin.Object<{ readonly mesh: string; readonly material: string }> = {
@@ -50,7 +53,7 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
     const mesh = (await assets.load(assets.parseGuid(config.mesh), 'mesh')).unwrap();
     const material = (await assets.load(assets.parseGuid(config.material), 'material')).unwrap();
     // A three-minute round clock whose timeout is the loss screen.
-    const state = { presses: 0, heldFrames: 0, clicks: 0, click: null as null | { x: number; y: number }, frames: 0, clock: 0, phase: 'playing' };
+    const state = { presses: 0, heldFrames: 0, clicks: 0, click: null as null | { x: number; y: number }, frames: 0, clock: 0, charge: 0, phase: 'playing' };
     ctx.effect(function* () {
       yield () => {
         assets.release(mesh).unwrap();
@@ -59,8 +62,6 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       const entities = [
         world.spawn({ component: Transform, data: { pos: [0, 0, 4] } },
           { component: Camera, data: { fov: Math.PI / 4, aspect: 16 / 9, near: 0.1, far: 100, clearColor: [0.08, 0.1, 0.14, 1] } }).unwrap(),
-        world.spawn({ component: Skylight, data: { intensity: 0.8, color: [1, 1, 1] } }).unwrap(),
-        world.spawn({ component: DirectionalLight, data: { direction: [-0.5, -1, -0.6], color: [1, 1, 1], intensity: 3 } }).unwrap(),
         world.spawn({ component: Transform, data: { pos: [0, 0, 0], quat: quat.fromEuler(quat.create(), 0.5, 0.7, 0, 'XYZ') } },
           { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } }).unwrap(),
@@ -68,20 +69,23 @@ export const game: Plugin.Object<{ readonly mesh: string; readonly material: str
       yield () => { for (const entity of entities) world.despawn(entity).unwrap(); };
       const unregister = host.gameProjection?.registerRead({ id: 'fixture.state', title: 'Play fixture', read: () => ({ ...state }) });
       yield () => unregister?.();
-      world.addSystem(Update, { name: 'play-fixture/input', queries: [], fn() {
-        const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const inputSystem = defineSystem({ name: 'play-fixture/input', queries: [], fn() {
+        const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
         state.frames += 1;
         state.clock += world.getResource(Time).delta;
         if (state.clock >= 180) state.phase = 'lost';
         if (input.keyboard.justPressedCode('KeyD')) state.presses += 1;
         if (input.keyboard.downCode('KeyW')) state.heldFrames += 1;
+        // Charges one unit per second of game time while KeyC is held.
+        if (input.keyboard.downCode('KeyC')) state.charge += world.getResource(Time).delta;
         const size = host.drawingBufferSize();
         if (input.mouse.justPressed(0) && input.mouse.position !== undefined && size.width > 0) {
           state.clicks += 1;
           state.click = { x: input.mouse.position.x / size.width, y: input.mouse.position.y / size.height };
         }
-      } }).unwrap();
-      yield () => world.removeSystem(Update, 'play-fixture/input').unwrap();
+      } });
+      world.addSystem(Update, inputSystem).unwrap();
+      yield () => world.removeSystem(Update, inputSystem).unwrap();
     });
   },
 };
@@ -98,19 +102,9 @@ export const hud: Plugin = {
       const label = root.ownerDocument.createElement('div');
       label.id = 'fixture-hud';
       label.textContent = 'Play fixture';
-      // Placed for 720 px: at the 600 px check viewport the bottom bar rises under the intro text.
-      const bar = root.ownerDocument.createElement('div');
-      bar.id = 'fixture-bar';
-      bar.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:80px;background:#223';
-      const intro = root.ownerDocument.createElement('div');
-      intro.id = 'fixture-intro';
-      intro.textContent = 'Night falls';
-      intro.style.cssText = 'position:absolute;top:540px;left:340px;color:#fff';
-      root.append(label, bar, intro);
+      root.append(label);
       return () => {
         label.remove();
-        bar.remove();
-        intro.remove();
       };
     });
   },
@@ -177,6 +171,54 @@ const FAILING = `export default async function failing(play) {
 }
 `;
 
+const RANGE = `export default async function range(play) {
+  await play.step('press', async () => {
+    await play.keyboard.press('KeyD');
+    await play.waitFor((s) => s.presses === 1);
+  });
+  await play.keyboard.press('KeyD');
+  await play.step(
+    'check',
+    async () => {
+      const state = await play.state();
+      if (state.presses !== 0) throw new Error('skipped input was replayed: ' + state.presses);
+      return state;
+    },
+    { setup: (ctx) => ctx.advance(0.5) },
+  );
+  await play.step('past the range', async () => {
+    throw new Error('ran past the range');
+  });
+}
+`;
+
+// The same journey reaches the same terminal state on the real-time loop and on the
+// lockstep fixed-step clock; the measured game time comes back for the clock check.
+const TIMED = `export default async function timed(play) {
+  await play.step('press', async () => {
+    for (let index = 0; index < 3; index += 1) await play.keyboard.press('KeyD');
+    await play.waitFor((s) => s.presses === 3);
+  });
+  await play.step('charge', async () => {
+    await play.keyboard.hold('KeyC', (s) => s.charge >= 1, { timeoutMs: 5000 });
+  });
+  const before = await play.state();
+  const started = Date.now();
+  await play.step('rest', () => play.wait(2000));
+  const after = await play.state();
+  // An explicit advance keeps working on the clock, which steps on afterwards.
+  await play.advance(0.5);
+  await play.wait(100);
+  const advanced = await play.state();
+  return {
+    terminal: { presses: after.presses, charged: after.charge >= 1, phase: after.phase },
+    restGameSeconds: after.clock - before.clock,
+    restWallMs: Date.now() - started,
+    advancedGameSeconds: advanced.clock - after.clock,
+  };
+}
+`;
+
 // Forces the H13 failure shape in the default Worker topology: from now on,
 // every queue submit in the page and its Workers carries a command buffer that
 // clears a destroyed buffer, so WebGPU rejects the whole submit. The canvas is
@@ -218,6 +260,31 @@ export default async function brokenSubmit(play) {
 }
 `;
 
+// One playthrough serves both runs: development (iterated under --time-scale) and the
+// built release both read the registered projection; only `advance` needs the development
+// host, so the script guards it with `play.release`. With `external`, the page also asks
+// another host for a file, which release play must block.
+const releaseScript = (external: boolean) => `export default async function playthrough(play) {
+  const hud = await play.step('input', async () => {
+    await play.keyboard.press('KeyD');
+    await play.mouse.click([0.25, 0.75]);
+    await play.wait(200);
+    return play.page.evaluate(() => document.querySelector('#fixture-hud')?.textContent);
+  });
+  const phase = (await play.state()).phase;
+  await play.waitFor((state) => state.phase === 'playing', { timeoutMs: 5000 });
+  const reads = [];
+  if (play.release) await play.advance(1).then(() => reads.push('advance'), (error) => reads.push(error.reason));
+  ${
+    external
+      ? "const fetched = await play.page.evaluate(() => fetch('https://example.com/forgeax-release-probe.json').then(() => 'loaded', () => 'blocked'));"
+      : "const fetched = 'none';"
+  }
+  await play.screenshot('checked');
+  return { release: play.release, hud, phase, reads, fetched };
+}
+`;
+
 let root = '';
 // Vite's dependency-cache identity after the first plays; later plays must keep it.
 let depsIdentity: unknown;
@@ -232,8 +299,9 @@ beforeAll(async () => {
   root = await mkdtemp(resolve(tmpdir(), 'forgeax-project-play-'));
   await cp(resolve(import.meta.dirname, '../../../../templates/empty'), root, {
     recursive: true,
-    filter: (source) => !/(^|\/)(node_modules|dist|\.forgeax)(\/|$)/.test(source),
+    filter: (source) => !/(^|[\\/])(node_modules|dist|\.forgeax)([\\/]|$)/.test(source),
   });
+  await installPackAuthorDependencies(root, ['engine']);
   await mkdir(resolve(root, 'assets/play'), { recursive: true });
   const manifest = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8'));
   await Promise.all([
@@ -243,7 +311,11 @@ beforeAll(async () => {
     writeFile(resolve(root, 'scripts/journey.mjs'), JOURNEY),
     writeFile(resolve(root, 'scripts/failing.mjs'), FAILING),
     writeFile(resolve(root, 'scripts/advance.mjs'), ADVANCE),
+    writeFile(resolve(root, 'scripts/range.mjs'), RANGE),
+    writeFile(resolve(root, 'scripts/timed.mjs'), TIMED),
     writeFile(resolve(root, 'scripts/broken-submit.mjs'), BROKEN_SUBMIT),
+    writeFile(resolve(root, 'scripts/playthrough.mjs'), releaseScript(false)),
+    writeFile(resolve(root, 'scripts/playthrough-external.mjs'), releaseScript(true)),
     writeFile(
       resolve(root, 'forge.json'),
       `${JSON.stringify({
@@ -252,6 +324,17 @@ beforeAll(async () => {
       })}\n`,
     ),
   ]);
+});
+
+it('admits the play Pack from its installed author dependency before browser startup', async () => {
+  const result = await assetListCommand({ root });
+  expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+  if (!result.ok) throw new Error('Play Pack author admission failed');
+  expect(result.value).toMatchObject({
+    sources: expect.arrayContaining([
+      { packageId: PACKAGE, sourcePath: 'assets/play/play.pack.ts', format: 'pack.ts' },
+    ]),
+  });
 });
 
 afterAll(async () => {
@@ -296,7 +379,6 @@ it(
         returned: { checks: 3 },
         state: { presses: 0, phase: 'playing' },
         rendered: true,
-        layout: ['1280x600 text-over-panel #fixture-intro "Night falls" vs #fixture-bar'],
         errors: { console: 0, page: 0 },
         report: 'artifacts/play/scripts/journey/play.json',
       },
@@ -347,7 +429,6 @@ it(
       progress.filter((line) => line.includes('plays of one project run one at a time')),
     ).toHaveLength(1);
     expect(progress.filter((line) => line.includes('started'))).toHaveLength(2);
-    expect(failingReport.layout).toEqual([]);
     depsIdentity = await readDepsIdentity();
     // Each play removes its generated root when it ends.
     expect(existsSync(resolve(root, '.forgeax/generated/play'))).toBe(false);
@@ -414,6 +495,161 @@ it(
     // the renderer-error check, not the browser-error count, fails the play.
     expect(report.returned).toEqual({ warnings: ['warning'] });
     expect(report.errors.console).toEqual([]);
+  },
+  PLAY_E2E_TIMEOUT_MS,
+);
+
+it(
+  'runs a step range from its setup without replaying skipped input, and names unmatched starts',
+  async () => {
+    const ranged = await playCommand({ root, script: 'scripts/range.mjs', steps: 'check..2' });
+    expect(ranged, JSON.stringify(ranged)).toMatchObject({
+      ok: true,
+      value: { passed: true, final: false, nonFinal: ['step range check..2'] },
+    });
+    const report = JSON.parse(
+      await readFile(resolve(root, 'artifacts/play/scripts/range/play.json'), 'utf8'),
+    ) as PlayReport;
+    expect(report.range).toEqual({ from: 'check', to: '2' });
+    expect(report.steps.map((step) => [step.name, step.skipped === true])).toEqual([
+      ['press', true],
+      ['check > setup > advance 0.5 s', false],
+      ['check > setup', false],
+      ['check', false],
+    ]);
+    const unmatched = await playCommand({ root, script: 'scripts/range.mjs', from: 'boss' });
+    expect(unmatched, JSON.stringify(unmatched)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'play-step-failed',
+        detail: {
+          reason: 'range-unmatched',
+          message: expect.stringContaining('#1 press, #2 check, #3 past the range'),
+          final: false,
+        },
+      },
+    });
+  },
+  PLAY_E2E_TIMEOUT_MS,
+);
+
+it(
+  'reaches the same terminal state in real time and at a fourfold time scale on fixed steps',
+  async () => {
+    const real = await playCommand({ root, script: 'scripts/timed.mjs', detail: true });
+    expect(real, JSON.stringify(real)).toMatchObject({ ok: true, value: { passed: true } });
+    const realReport = (real as { value: PlayReport }).value;
+    expect(realReport.timeScale).toBe(1);
+    expect(realReport.final).toBeUndefined();
+    const fast = await playCommand({
+      root,
+      script: 'scripts/timed.mjs',
+      detail: true,
+      timeScale: 4,
+    });
+    expect(fast, JSON.stringify(fast)).toMatchObject({
+      ok: true,
+      value: { passed: true, timeScale: 4, final: false, nonFinal: ['time scale 4'] },
+    });
+    const fastReport = (fast as { value: PlayReport }).value;
+    type Timed = {
+      terminal: unknown;
+      restGameSeconds: number;
+      restWallMs: number;
+      advancedGameSeconds: number;
+    };
+    const realReturned = realReport.returned as Timed;
+    const fastReturned = fastReport.returned as Timed;
+    expect(fastReturned.terminal).toEqual(realReturned.terminal);
+    expect(fastReturned.terminal).toEqual({ presses: 3, charged: true, phase: 'playing' });
+    // Lockstep: wait(2000) steps exactly 120 frames, and nothing moves between helpers.
+    expect(fastReturned.restGameSeconds).toBeCloseTo(2, 6);
+    expect(fastReturned.restWallMs).toBeLessThan(realReturned.restWallMs);
+    // advance(0.5) then wait(100): 0.5 s plus 6 frames, with the App still in lockstep.
+    expect(fastReturned.advancedGameSeconds).toBeCloseTo(0.6, 6);
+    expect(realReturned.advancedGameSeconds).toBeGreaterThanOrEqual(0.5 - 1e-6);
+    // Every stepped frame is a whole fixed step: no game time is dropped or stretched.
+    const clock = fastReport.clock;
+    expect(clock).toBeDefined();
+    expect(clock?.stepSeconds).toBeCloseTo(1 / 60, 9);
+    // advance(0.5) counts as game time but not as clock frames.
+    expect(clock?.gameSeconds).toBeCloseTo((clock?.frames ?? 0) / 60 + 0.5, 6);
+    expect(clock?.frames).toBeGreaterThanOrEqual(120);
+  },
+  PLAY_E2E_TIMEOUT_MS,
+);
+
+it(
+  'reuses one playthrough for the dev runtime and the built release, blocking other hosts',
+  async () => {
+    const iteration = await playCommand({ root, script: 'scripts/playthrough.mjs', timeScale: 4 });
+    expect(iteration, JSON.stringify(iteration)).toMatchObject({
+      ok: true,
+      value: {
+        passed: true,
+        returned: { release: false, hud: 'Play fixture', phase: 'playing', reads: [] },
+      },
+    });
+    const missing = await playCommand({ root, script: 'scripts/playthrough.mjs', release: true });
+    expect(missing, JSON.stringify(missing)).toMatchObject({
+      ok: false,
+      error: { code: 'play-not-ready', detail: { reason: 'release-missing' } },
+    });
+    const built = await buildCommand({ root });
+    expect(built.ok, JSON.stringify(built)).toBe(true);
+    const release = await playCommand({
+      root,
+      script: 'scripts/playthrough.mjs',
+      release: true,
+      requireUi: true,
+      detail: true,
+    });
+    expect(release, JSON.stringify(release)).toMatchObject({
+      ok: true,
+      value: {
+        passed: true,
+        mode: 'release',
+        dist: 'dist',
+        externalRequests: [],
+        returned: {
+          release: true,
+          hud: 'Play fixture',
+          phase: 'playing',
+          reads: ['advance-failed'],
+          fetched: 'none',
+        },
+      },
+    });
+    const releaseReport = (release as { value: PlayReport }).value;
+    // Served by play's static server, not a Vite dev server.
+    expect(releaseReport.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
+    expect(releaseReport.execution).toBeUndefined();
+    expect(releaseReport.screenshots.find((shot) => shot.name === 'final')?.rendered).toBe(true);
+    const external = await playCommand({
+      root,
+      script: 'scripts/playthrough-external.mjs',
+      release: true,
+    });
+    expect(external, JSON.stringify(external)).toMatchObject({
+      ok: false,
+      error: {
+        code: 'play-runtime-failed',
+        detail: {
+          reason: 'external-request',
+          externalRequests: ['https://example.com/forgeax-release-probe.json'],
+        },
+      },
+    });
+    const externalReport = JSON.parse(
+      await readFile(
+        resolve(root, 'artifacts/play/scripts/playthrough-external/play.json'),
+        'utf8',
+      ),
+    ) as PlayReport;
+    expect(externalReport.returned).toMatchObject({ fetched: 'blocked' });
+    expect(externalReport.externalRequests).toEqual([
+      'https://example.com/forgeax-release-probe.json',
+    ]);
   },
   PLAY_E2E_TIMEOUT_MS,
 );

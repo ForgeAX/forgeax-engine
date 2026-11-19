@@ -1,4 +1,9 @@
 import { spawn } from 'node:child_process';
+import {
+  coverageMembers,
+  metricArtifactName,
+  metricProducers,
+} from './ci-repair-qualification.mjs';
 
 const repository = process.env.GITHUB_REPOSITORY;
 
@@ -47,6 +52,61 @@ function runGh(args) {
   });
 }
 
+function cleanupSourceAdmitted(source) {
+  if (source.status === 'completed' && source.conclusion === 'success') return true;
+  // This in-run job is gated on every consumer result; the completion backstop
+  // instead reads a completed source run from the API above.
+  return (
+    source.status === 'in_progress' &&
+    source.conclusion === null &&
+    process.env.GITHUB_JOB === 'cleanup-transient-artifacts' &&
+    runId === process.env.GITHUB_RUN_ID
+  );
+}
+
+async function repairPreservation() {
+  const result = await runGh([
+    'api',
+    `repos/${repository}/actions/runs/${runId}`,
+    '--jq',
+    '{path,status,conclusion,run_attempt}',
+  ]);
+  let source;
+  try {
+    if (result.code !== 0) throw new Error('source unavailable');
+    source = JSON.parse(result.stdout);
+    if (!cleanupSourceAdmitted(source)) throw new Error('source has not completed successfully');
+  } catch {
+    console.log(
+      '::warning::source identity unavailable or unsuccessful; retaining producer expiry',
+    );
+    return undefined;
+  }
+  const names = new Set();
+  if (source.path?.split('@')[0] !== '.github/workflows/ci.yml') return names;
+  if (
+    !Number.isSafeInteger(source.run_attempt) ||
+    source.run_attempt <= 0 ||
+    source.run_attempt > 1000
+  ) {
+    console.log('::warning::source attempt unavailable; retaining producer expiry');
+    return undefined;
+  }
+  for (const member of coverageMembers)
+    names.add(member.replace('coverage-pnpm-shard-', 'coverage-shard-'));
+  for (let attempt = 1; attempt <= source.run_attempt; attempt += 1) {
+    // A failed-only retry can copy successful producers from an earlier attempt.
+    names.add(`core-build-a${attempt}`);
+    names.add(`shared-app-inputs-a${attempt}`);
+    for (const producer of metricProducers)
+      names.add(metricArtifactName(producer, { run_attempt: attempt }));
+  }
+  return names;
+}
+
+const repairNames = await repairPreservation();
+if (repairNames === undefined) process.exit(0);
+
 const listed = await runGh([
   'api',
   '--paginate',
@@ -74,7 +134,12 @@ await Promise.all(
       const artifactName = separator === -1 ? '' : row.slice(separator + 1);
       // Failure captures must survive a later successful same-head retry;
       // their producer's bounded retention remains the storage limit.
-      if (options.preserveNames.has(artifactName) || artifactName.startsWith('failure-')) {
+      if (
+        options.preserveNames.has(artifactName) ||
+        repairNames.has(artifactName) ||
+        artifactName.split('-').includes('failure') ||
+        artifactName.startsWith('coverage-diagnostics')
+      ) {
         preserved += 1;
         continue;
       }

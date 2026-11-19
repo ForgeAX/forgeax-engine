@@ -4,9 +4,10 @@ import { shaderManifestUrl as createShaderManifestUrl } from '../shader-manifest
 // World-authored Instances render through storage and uniform bindings on Dawn.
 // The restricted RHI advertises no storage buffers while retaining the real
 // WebGPU device, shader compiler, validation and pixel readback. This proves
-// the uniform lane and its 128-instance chunks, not WebGL2 backend parity.
+// the emissive Standard uniform lane and its 128-instance chunks, alongside
+// stock unlit resident scene rows. WebGL2 backend parity has its own gate.
 
-import type { MaterialAsset } from '@forgeax/engine-types';
+import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { drawPublished } from '../draw-published';
 
@@ -29,6 +30,57 @@ const STORAGE_PATTERN =
   /@group\(3\)\s+@binding\(0\)\s+var<storage,\s*read>\s+instances\s*:\s*array<InstanceData>/;
 const UNIFORM_PATTERN =
   /@group\(3\)\s+@binding\(0\)\s+var<uniform>\s+instances\s*:\s*array<InstanceData,\s*128>/;
+
+function assertInstancePixels({
+  bytes,
+  targetFormat,
+  bytesPerRow,
+  width,
+  height,
+  grid,
+  spacing,
+}: {
+  readonly bytes: Uint8Array;
+  readonly targetFormat: GPUTextureFormat;
+  readonly bytesPerRow: number;
+  readonly width: number;
+  readonly height: number;
+  readonly grid: number;
+  readonly spacing: number;
+}): void {
+  const count = grid * grid;
+  // Count actual red material pixels; comparing against guessed clear bytes
+  // could pass an empty frame because the target applies sRGB conversion.
+  let redPixels = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = y * bytesPerRow + x * 4;
+      const r = bytes[offset + (targetFormat.startsWith('bgra') ? 2 : 0)] ?? 0;
+      const g = bytes[offset + 1] ?? 0;
+      const b = bytes[offset + (targetFormat.startsWith('bgra') ? 0 : 2)] ?? 0;
+      if (r > g + 30 && r > b + 30) redPixels++;
+    }
+  }
+  expect(redPixels).toBeGreaterThan(count * 2);
+  // The last row crosses the 128-instance boundary for the 12x12 case.
+  // Verify its last matrix reaches a distinct screen location, not a
+  // duplicate of the first chunk or merely some non-clear geometry.
+  const edge = ((grid - 1) / 2) * spacing * 0.3;
+  const ndcEdge = edge / (25 * Math.tan(Math.PI / 8));
+  const lastX = Math.round(((1 + ndcEdge) * width) / 2);
+  const lastY = Math.round(((1 - ndcEdge) * height) / 2);
+  let lastInstancePixels = 0;
+  for (let y = lastY - 3; y <= lastY + 3; y++) {
+    for (let x = lastX - 3; x <= lastX + 3; x++) {
+      const offset = y * bytesPerRow + x * 4;
+      const r = bytes[offset + (targetFormat.startsWith('bgra') ? 2 : 0)] ?? 0;
+      const g = bytes[offset + 1] ?? 0;
+      const b = bytes[offset + (targetFormat.startsWith('bgra') ? 0 : 2)] ?? 0;
+      if (r > g + 30 && r > b + 30) lastInstancePixels++;
+    }
+  }
+  expect(lastInstancePixels).toBeGreaterThan(0);
+}
 
 describe('World Instances storage and uniform submission', () => {
   let ENGINE_MANIFEST_URL_W6: string;
@@ -83,10 +135,16 @@ describe('World Instances storage and uniform submission', () => {
   });
 
   it.each([
-    { storage: true, grid: 8 },
-    { storage: false, grid: 8 },
-    { storage: false, grid: 12 },
-  ])('renders $grid x $grid instances with storage=$storage', async ({ storage, grid }) => {
+    { storage: true, grid: 8, sceneDirect: true },
+    { storage: false, grid: 8, sceneDirect: true },
+    { storage: false, grid: 12, sceneDirect: true },
+    { storage: false, grid: 8, sceneDirect: false },
+    { storage: false, grid: 12, sceneDirect: false },
+  ])('renders $grid x $grid instances with storage=$storage and sceneDirect=$sceneDirect', async ({
+    storage,
+    grid,
+    sceneDirect,
+  }) => {
     const dawnAvailable = typeof globalThis.navigator?.gpu?.requestAdapter === 'function';
     if (!dawnAvailable) {
       throw new Error('dawn-node navigator.gpu not injected; vitest.setup-webgpu.ts regressed');
@@ -198,11 +256,21 @@ describe('World Instances storage and uniform submission', () => {
       passes: [
         {
           name: 'Forward',
-          program: { module: 'forgeax::default-unlit' },
+          program: {
+            module: sceneDirect ? 'forgeax::default-unlit' : 'forgeax::default-standard-pbr',
+          },
           renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
         },
       ],
-      values: { baseColor: [0.9, 0.2, 0.2, 1], metallic: 0, roughness: 0.5 },
+      // Standard's emissive surface retains the packed uniform route while
+      // stock unlit uses resident scene rows, including texture-backed tables.
+      ...(sceneDirect ? {} : { parameters: standardSurfaceParameters([]) }),
+      values: {
+        baseColor: [0.9, 0.2, 0.2, 1],
+        emissive: [0.9, 0.02, 0.02],
+        metallic: 0,
+        roughness: 0.5,
+      },
     } as MaterialAsset;
 
     const GRID = grid;
@@ -303,40 +371,20 @@ describe('World Instances storage and uniform submission', () => {
     expect(errors).toEqual([]);
     expect((await device.popErrorScope())?.message).toBeUndefined();
 
-    // Count actual red material pixels; comparing against guessed clear bytes
-    // could pass an empty frame because the target applies sRGB conversion.
-    let redPixels = 0;
-    for (let y = 0; y < W6_HEIGHT; y++) {
-      for (let x = 0; x < W6_WIDTH; x++) {
-        const offset = y * bytesPerRow + x * 4;
-        const r = bytes[offset + (targetFormat.startsWith('bgra') ? 2 : 0)] ?? 0;
-        const g = bytes[offset + 1] ?? 0;
-        const b = bytes[offset + (targetFormat.startsWith('bgra') ? 0 : 2)] ?? 0;
-        if (r > g + 30 && r > b + 30) redPixels++;
-      }
-    }
-    expect(redPixels).toBeGreaterThan(COUNT * 2);
-    // The last row crosses the 128-instance boundary for the 12x12 case.
-    // Verify its last matrix reaches a distinct screen location, not a
-    // duplicate of the first chunk or merely some non-clear geometry.
-    const edge = ((GRID - 1) / 2) * SP * 0.3;
-    const ndcEdge = edge / (25 * Math.tan(Math.PI / 8));
-    const lastX = Math.round(((1 + ndcEdge) * W6_WIDTH) / 2);
-    const lastY = Math.round(((1 - ndcEdge) * W6_HEIGHT) / 2);
-    let lastInstancePixels = 0;
-    for (let y = lastY - 3; y <= lastY + 3; y++) {
-      for (let x = lastX - 3; x <= lastX + 3; x++) {
-        const offset = y * bytesPerRow + x * 4;
-        const r = bytes[offset + (targetFormat.startsWith('bgra') ? 2 : 0)] ?? 0;
-        const g = bytes[offset + 1] ?? 0;
-        const b = bytes[offset + (targetFormat.startsWith('bgra') ? 0 : 2)] ?? 0;
-        if (r > g + 30 && r > b + 30) lastInstancePixels++;
-      }
-    }
-    expect(lastInstancePixels).toBeGreaterThan(0);
+    assertInstancePixels({
+      bytes,
+      targetFormat,
+      bytesPerRow,
+      width: W6_WIDTH,
+      height: W6_HEIGHT,
+      grid: GRID,
+      spacing: SP,
+    });
     if (!storage) {
       const residency = renderer.inspect().instanceCollections[0];
-      expect(residency?.lane).toBe(COUNT > 128 ? 'chunked-uniform' : 'direct-uniform');
+      expect(residency?.lane).toBe(
+        sceneDirect ? 'gpu-scene' : COUNT > 128 ? 'chunked-uniform' : 'direct-uniform',
+      );
       expect(residency?.uploadedBytes).toBe(0);
     }
     await renderer.dispose();

@@ -14,12 +14,9 @@ fn skinPoseAvailable(root: u32, slot: u32) -> bool {
   let skeleton = skinRowAddress(root, 0u, skinInputs[binding + 2u]);
   if (skeleton == 0xffffffffu) { return false; }
   if (skinInputs[skeleton] != count) { return false; }
-  for (var index = 0u; index < count; index++) {
-    let entity = skinInputs[binding + 3u + index];
-    let joint = skinRowAddress(root, skinInputs[binding + 1u], entity);
-    if (joint == 0xffffffffu) { return false; }
-    if (skinInputs[joint] != entity) { return false; }
-  }
+  let pose = skinRowAddress(root, 2u, slot);
+  if (pose == 0xffffffffu) { return false; }
+  if (skinInputs[pose] != count) { return false; }
   return count > 0u;
 }
 fn skinInfluenceAt(root: u32, slot: u32, index: u32) -> mat4x4<f32> {
@@ -30,11 +27,10 @@ fn skinInfluenceAt(root: u32, slot: u32, index: u32) -> mat4x4<f32> {
   let skeleton = skinRowAddress(root, 0u, skinInputs[binding + 2u]);
   if (skeleton == 0xffffffffu) { return zero; }
   if (skinInputs[skeleton] != skinInputs[binding]) { return zero; }
-  let entity = skinInputs[binding + 3u + index];
-  let joint = skinRowAddress(root, skinInputs[binding + 1u], entity);
-  if (joint == 0xffffffffu) { return zero; }
-  if (skinInputs[joint] != entity) { return zero; }
-  return skinInputMatrix(joint + 1u) * skinInputMatrix(skeleton + 1u + index * 16u);
+  let pose = skinRowAddress(root, 2u, slot);
+  if (pose == 0xffffffffu) { return zero; }
+  if (skinInputs[pose] != skinInputs[binding]) { return zero; }
+  return skinInputMatrix(pose + 1u + index * 16u) * skinInputMatrix(skeleton + 1u + index * 16u);
 }
 
 // Both roots are simultaneously retained by the same arena; shared row

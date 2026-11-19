@@ -1,5 +1,9 @@
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
+import {
+  nativeOutputShaderFixture,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
+// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=9):
 //   - packages/runtime/src/__tests__/builder-topology-stripIndexFormat.test.ts
@@ -26,6 +30,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World as WorldType } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import type { RenderError, Renderer as RendererType } from '@forgeax/engine-render';
 import type { PipelineLayout, RenderPipeline, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { rhi as nullRhi } from '@forgeax/engine-rhi-null';
@@ -75,7 +80,7 @@ import { prepareExtractContext } from '../../../render/src/render-system-extract
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
-import { drawWithOwners } from './renderer-test-utils';
+import { drawWorld } from './renderer-test-utils';
 
 function meshAttributes(vertices: Float32Array) {
   const attributes = unpackInterleavedVertexAttributes(
@@ -132,7 +137,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   world.update().unwrap();
-  return drawWithOwners(renderer, world);
+  return drawWorld(renderer, world);
 }
 
 {
@@ -803,6 +808,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     firstInstanceIndirect: false,
     storageBuffer: true,
     storageTexture: false,
+    depthTextureLoad: true,
     rgba16floatRenderable: true,
     rg11b10ufloatRenderable: false,
     float32Filterable: false,
@@ -818,7 +824,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   function makeMockDevice(probe: BufferProbe): any {
     const okShim = ok;
     return {
-      limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
+      limits: {
+        maxTextureDimension2D: 16384,
+        maxTextureArrayLayers: 2048,
+        maxStorageBuffersPerShaderStage: 8,
+      },
       createSampler: () => ok({}),
       // biome-ignore lint/suspicious/noExplicitAny: descriptor shim
       createBuffer: (desc: any) => {
@@ -1676,7 +1686,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           previous = entry;
           expect(runtimeAssets(f.assets).inspect().assets).toBe(initial.assets);
           expect(runtimeAssets(f.assets).inspect().bytes).toBe(initial.bytes);
-          const position = f.assets.read(f.handle).unwrap().attributes.position;
+          const position = copyMeshAttribute(f.assets.read(f.handle).unwrap(), 'position');
           if (!(position instanceof Float32Array)) throw new Error('position channel missing');
           expect(position[0]).toBe(frame + 1);
         }
@@ -1986,7 +1996,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: {},
+      limits: { maxStorageBuffersPerShaderStage: 8 },
       queue: {
         submit: () => undefined,
         onSubmittedWorkDone: () => Promise.resolve(undefined),
@@ -2012,6 +2022,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           setStencilReference: () => undefined,
           setViewport: () => undefined,
           setScissorRect: () => undefined,
+          setBlendConstant: () => undefined,
+          pushDebugGroup: () => undefined,
+          popDebugGroup: () => undefined,
           draw: spies.draw,
           drawIndexed: spies.drawIndexed,
           end: () => undefined,
@@ -2047,6 +2060,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
     const manifest = {
       entries: [
+        ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
         { hash: 'pbr00000', wgsl: '/* pbr stub - calls f_schlick( */', glsl: '', bindings: '' },
         { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
         {
@@ -2057,6 +2072,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         },
       ],
       materialShaders: [
+        ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
         materialShaderStub('forgeax::default-standard-pbr'),
         materialShaderStub('forgeax::default-unlit'),
       ],
@@ -2222,7 +2239,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       { component: C.Transform, data: cameraTransform() },
     );
     world.spawn(
-      { component: C.DirectionalLight, data: {} },
+      { component: C.DirectionalLight, data: { direction: [0, -1, 0] } },
       { component: C.Transform, data: cameraTransform() },
     );
     world.spawn(

@@ -17,6 +17,8 @@ export type DistanceFieldCookInput = {
       readonly policy: 'sampled-visibility';
       readonly voxelSize: number;
       readonly triangleSidedness: ArrayLike<number>;
+      readonly closestPointBudget?: number;
+      readonly signRayBudget?: number;
     }
 );
 export interface DistanceFieldCookPayload {

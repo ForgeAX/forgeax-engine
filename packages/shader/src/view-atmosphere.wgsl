@@ -1,7 +1,7 @@
 #define_import_path forgeax_view::atmosphere
-#import forgeax_view::common::{View}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_light_enabled}
 #import forgeax_cloud::layer::{cloud_direct_solar_factor}
-#import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_position, atmosphere_solar_transmittance, atmosphere_sun_luminance}
+#import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_position, atmosphere_solar_transmittance, atmosphere_sun_luminance, atmosphere_ground_solar_transmittance}
 #import forgeax_cloud::layer::{cloudShadowSampler}
 #ifndef STORAGE_BUFFER_AVAILABLE
 #ifdef CLUSTER_FORWARD_AVAILABLE
@@ -29,13 +29,13 @@ fn view_atmosphere(v: View, position: vec3<f32>) -> AtmosphereTransport {
 }
 fn view_solar_transmittance(v: View, position: vec3<f32>) -> vec3<f32> {
 #ifdef ATMOSPHERE_AVAILABLE
-  if v.atmosphereControl.w>0.5 {
+  if view_atmosphere_aerial_enabled(v) {
     return atmosphere_solar_transmittance(v.atmosphere,atmosphere_position(v.atmosphere,position),normalize(-v.lightDir),atmosphereTransmittance,cloudShadowSampler);
   }
 #endif
 #ifndef STORAGE_BUFFER_AVAILABLE
 #ifdef CLUSTER_FORWARD_AVAILABLE
-  if v.atmosphereControl.w>0.5 {
+  if view_atmosphere_aerial_enabled(v) {
     return atmosphere_solar_transmittance(v.atmosphere,atmosphere_position(v.atmosphere,position),normalize(-v.lightDir),cluster_data_texture,cloudShadowSampler);
   }
 #endif
@@ -53,13 +53,27 @@ fn view_apply_direct_solar(v:View, radiance:vec3<f32>, position:vec3<f32>)->vec3
 #endif
 }
 
+fn view_ground_solar_transmittance(v: View) -> vec3<f32> {
+#ifdef ATMOSPHERE_AVAILABLE
+  if view_atmosphere_light_enabled(v) {
+    return atmosphere_ground_solar_transmittance(v.atmosphere,normalize(-v.lightDir),atmosphereTransmittance,cloudShadowSampler);
+  }
+#endif
+  return vec3<f32>(1.0);
+}
+
+fn view_apply_ground_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
+  return radiance * view_ground_solar_transmittance(v)
+    * cloud_direct_solar_factor(position,v.cloudShadowOrigin.xyz,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
+}
+
 fn view_distant_sky_light(v:View)->vec3<f32>{
 #ifdef ATMOSPHERE_AVAILABLE
-  if v.atmosphereControl.w>0.5 { return textureLoad(atmosphereDistantSkyLight,vec2<i32>(0),0).rgb*atmosphere_sun_luminance(v.lightColor); }
+  if view_atmosphere_aerial_enabled(v) { return textureLoad(atmosphereDistantSkyLight,vec2<i32>(0),0).rgb*atmosphere_sun_luminance(v.lightColor); }
 #endif
 #ifndef STORAGE_BUFFER_AVAILABLE
 #ifdef CLUSTER_FORWARD_AVAILABLE
-  if v.atmosphereControl.w>0.5 {return atmosphere_table_sample(cluster_data_texture,cloudShadowSampler,vec2<f32>(0.5),2u).rgb*atmosphere_sun_luminance(v.lightColor);}
+  if view_atmosphere_aerial_enabled(v) {return atmosphere_table_sample(cluster_data_texture,cloudShadowSampler,vec2<f32>(0.5),2u).rgb*atmosphere_sun_luminance(v.lightColor);}
 #endif
 #endif
   return vec3<f32>(0.0);

@@ -58,7 +58,8 @@ it.each([
 
 it.each([
   { renderPath: 'forward', msaa: false },
-  { renderPath: 'deferred', msaa: true },
+  { renderPath: 'forward', msaa: true },
+  { renderPath: 'deferred', msaa: false },
 ] as const)('weighted blended OIT $renderPath msaa=$msaa: accumulate draws fog at their own depth', {
   timeout: 180_000,
 }, async (options) => {

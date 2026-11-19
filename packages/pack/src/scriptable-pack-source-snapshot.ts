@@ -119,6 +119,7 @@ export function createScriptablePackSourceSnapshot(
 ): ScriptablePackSourceSnapshot {
   const aliases = new Map<string, Promise<string>>();
   const files = new Map<string, Promise<SourceFile>>();
+  const binaryResources = new Set<string>();
   const inputs = new Map<string, string>();
   const probes = new Map<string, Promise<boolean>>();
   const metadata = new Map<string, MetadataResult>();
@@ -244,14 +245,21 @@ export function createScriptablePackSourceSnapshot(
         const file = await read(path, path === root ? sourceText : undefined);
         entries.push(Object.freeze({ path: file.path, digest: file.digest }));
         // JSON contributes captured bytes and revision evidence, never module imports.
-        if (extname(file.path) === '.json') continue;
+        if (
+          extname(file.path) === '.json' ||
+          (binaryResources.has(path) && !/\.(?:[cm]?[jt]sx?)$/.test(path))
+        )
+          continue;
         for (const specifier of capturedSyntax(file).imports) {
           // Retain negative relative candidates even with a compiler resolver.
           // A resolver may cache a positive result until its watcher catches up.
           if (resolver !== resolveRelative && specifier.startsWith('.'))
             await resolveRelative(path, specifier);
           const target = await resolveOnce(path, specifier, resolver);
-          if (target !== undefined) pending.push(target);
+          if (target !== undefined) {
+            if (specifier.endsWith('?bytes')) binaryResources.add(target);
+            pending.push(target);
+          }
         }
       }
       return Object.freeze(entries.sort((a, b) => a.path.localeCompare(b.path)));
@@ -270,7 +278,15 @@ export function createScriptablePackSourceSnapshot(
     async moduleSources(sourcePath) {
       const entries = await snapshot.inventory(sourcePath);
       const sources: Record<string, string> = {};
-      for (const entry of entries) sources[entry.path] = await snapshot.readText(entry.path);
+      for (const entry of entries) {
+        if (binaryResources.has(entry.path)) {
+          sources[`${entry.path}?bytes`] = Buffer.from((await read(entry.path)).bytes).toString(
+            'base64',
+          );
+          if (!/\.(?:[cm]?[jt]sx?)$/.test(entry.path)) continue;
+        }
+        sources[entry.path] = await snapshot.readText(entry.path);
+      }
       // The captured entry and its relative closure share one canonical identity.
       // The alias observation remains in this snapshot's publication verification.
       return { entry: await canonical(sourcePath), sources };

@@ -29,13 +29,13 @@ import { testPlatform } from '../src/__tests__/platform-fixture';
 //       1. createApp(canvas) auto attachBrowserInputBackend(canvas)
 //       2. createApp(canvas) auto insertResource(INPUT_BACKEND_KEY, backend) +
 //          addSystem(InputFrameStartScan)
-//       3. app.start drives one frame; world.getResource('InputSnapshot') is non-null
+//       3. app.start drives one frame; world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY) is non-null
 //       4. app.dispose unloads the input Fiber, removes the scan system/resource,
 //          then detaches the Host-owned DOM backend
 //   - AC-05 opts.input === false opt-out path: zero attach/detach activity;
 //     app.input === undefined.
 //   - research engine-input-public-contract.md: the InputFrameStartScan token
-//     reads INPUT_BACKEND_KEY; FRAME_START_SCAN_SYSTEM_NAME literal ==
+//     reads INPUT_BACKEND_KEY; InputFrameStartScan.name ==
 //     'input-frame-start-scan'.
 //
 // charter awareness:
@@ -43,12 +43,7 @@ import { testPlatform } from '../src/__tests__/platform-fixture';
 //     point on packages/input; tests verify AC-05 at this boundary.
 
 import { World } from '@forgeax/engine-ecs';
-import {
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  inputBackendPlugin,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, inputBackendPlugin } from '@forgeax/engine-input';
 import { createRenderer } from '@forgeax/engine-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -166,7 +161,7 @@ describe.skip('createApp(canvas) auto input attach (AC-05 default path)', () => 
     expect(startResult.ok).toBe(true);
     // wait one rAF tick so the frame-start-scan system runs once
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const snap = app.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snap = app.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     expect(snap).toBeDefined();
     expect(typeof snap.keyboard.down).toBe('function');
     expect(typeof snap.mouse.movementDelta.x).toBe('number');

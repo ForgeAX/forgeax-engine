@@ -26,6 +26,37 @@
 export { acquireCanvasContext } from '@forgeax/engine-rhi-webgpu';
 export { defaultAssetDecoderContributions } from './asset-contributions';
 export { createRenderer } from './createRenderer';
+export { WATER_BUOYANCY_RESOURCE, type WaterBuoyancyState } from './water-buoyancy';
+export { WATER_VISUAL_CONTACTS_RESOURCE } from './water-contact-probes';
+export {
+  acceptWaterSceneZoneGround,
+  invalidateWaterSceneZoneGround,
+  publishWaterRiverBake,
+  registryWaterMaterialReference,
+  WATER_SCENE_STATUS_RESOURCE,
+  WATER_SYSTEM_RESOURCE,
+  type WaterSceneDependencyFailure,
+  type WaterSceneRiverBakeNormalTexture,
+  type WaterSceneStatus,
+  type WaterSceneWaterInfoGeometry,
+  type WaterSceneWaterInfoMesh,
+  waterSceneBuildMeshView,
+  waterSceneBuildMeshViews,
+  waterSceneMeshView,
+  waterScenePlugin,
+  waterSceneRiverBakeNormalTexture,
+  waterSceneSnapshot,
+  waterSceneWaterInfoGeometry,
+  waterSceneWaterSurfaceSource,
+  waterSceneZoneGround,
+  waterSceneZoneSnapshot,
+} from './water-scene-plugin';
+export {
+  WaterBuoyancy,
+  WaterBuoyancyCompletion,
+  WaterContactProbes,
+  WaterSceneReconcile,
+} from './water-system-order';
 
 // feat-20260704-runtime-tier1-decomposition M2 / w10 (D-3 / D-9): the top-level
 // RuntimeError / RuntimeErrorCode cross-cluster aggregates are ELIMINATED. Each
@@ -296,3 +327,5 @@ export {
 // re-export block above -- they are render-cluster members sourced from
 // ./errors/render.
 // cache-bust-marker for feat-20260615-fbx-importer-via-sdk PR-CI run on bf1d383f / 05a331cd (post-rebase tsbuildinfo restore-keys staleness)
+
+export { SpriteAnimationInvalidError } from './errors/sprite-animation';

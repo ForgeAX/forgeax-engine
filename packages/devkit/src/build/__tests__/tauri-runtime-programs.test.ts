@@ -10,6 +10,8 @@ import * as pack from '@forgeax/engine-pack/runtime';
 import * as browserPack from '@forgeax/engine-pack/runtime-browser';
 import ts from 'typescript';
 import { expect, it, vi } from 'vitest';
+// @ts-expect-error The engine-owned runtime vase overlay is native JavaScript.
+import { installRuntimeVase } from '../../../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 import { createViteConfig } from '../../host.js';
 import { readProjectFacts } from '../../project.js';
 import { pluginProgramSource } from '../plugin-programs.js';
@@ -22,6 +24,7 @@ it('loads the ordinary packaged vase program without an HTTP or ServiceWorker ho
       recursive: true,
       filter: (path) => !['node_modules', '.forgeax'].includes(basename(path)),
     });
+    await installRuntimeVase(root);
     await symlink(resolve(repository, 'node_modules'), resolve(root, 'node_modules'), 'dir');
     const facts = await readProjectFacts(root);
     if (!facts.ok) throw facts.error;

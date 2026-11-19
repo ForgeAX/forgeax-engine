@@ -8,6 +8,7 @@ import {
   checkPullRequestRunnerPolicy,
   checkWorkflowDirectory,
   checkWorkflowText,
+  SELF_HOSTED_CAPABILITY_LABELS,
 } from '../check-runner-pool-labels.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
@@ -20,11 +21,39 @@ test('all repository workflow runner selectors satisfy the pool contract', () =>
   assert.ok(
     selfHosted.every(
       (selector) =>
-        ['standard', 'heavy'].includes(selector.pool) || selector.capabilities?.includes('gpu'),
+        ['standard', 'heavy'].includes(selector.pool) ||
+        selector.capabilities?.some((label) => SELF_HOSTED_CAPABILITY_LABELS.includes(label)),
     ),
   );
-  assert.ok(selfHosted.some((selector) => selector.capabilities?.includes('gpu')));
-  assert.ok(result.selectors.some((selector) => selector.kind === 'mixed'));
+});
+
+test('checks both constant conditional runner branches without evaluating the condition', () => {
+  const selector = (left, right) =>
+    `\${{ fromJSON((inputs.qualified && contains(')', ')')) && '${JSON.stringify(left)}' || '${JSON.stringify(right)}') }}`;
+  const heavy = ['self-hosted', 'Linux', 'X64', 'heavy'];
+  const qualified = ['self-hosted', 'Linux', 'X64', 'engine-sdk-fullscene'];
+  const check = (value) =>
+    checkWorkflowText(`jobs:\n  consumer:\n    runs-on: ${value}\n`, 'sdk.yml');
+  assert.deepEqual(check(selector(qualified, heavy)).errors, []);
+  for (const invalid of [
+    ['self-hosted', 'Linux', 'X64'],
+    ['self-hosted', 'Linux', 'X64', 'heavy', 'standard'],
+    ['self-hosted', 'Linux', 'heavy'],
+    ['self-hosted', 'Linux', 'X64', 'unknown-capability'],
+    ['ubuntu-latest'],
+  ]) {
+    assert.ok(check(selector(invalid, heavy)).errors.length, JSON.stringify(invalid));
+    assert.ok(check(selector(heavy, invalid)).errors.length, JSON.stringify(invalid));
+  }
+  assert.ok(
+    check(`\${{ fromJSON((inputs.qualified) && inputs.labels || '${JSON.stringify(heavy)}') }}`)
+      .errors.length,
+  );
+  assert.ok(
+    check(
+      `\${{ fromJSON((inputs.qualified) && inputs.labels || ('ignored') && '${JSON.stringify(qualified)}' || '${JSON.stringify(heavy)}') }}`,
+    ).errors.length,
+  );
 });
 
 test('rejects a self-hosted selector without a pool label', () => {
@@ -41,6 +70,15 @@ test('rejects a self-hosted selector carrying both pool labels', () => {
     'bench.yml',
   );
   assert.match(result.errors[0], /found standard, heavy/);
+});
+
+test('admits an explicit GPU selector without requiring a live workflow to use it', () => {
+  const result = checkWorkflowText(
+    'jobs:\n  gpu:\n    runs-on: [self-hosted, Linux, X64, heavy, gpu]\n',
+    'gpu.yml',
+  );
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.selectors[0].capabilities.includes('gpu'));
 });
 
 test('accepts the nightly GitHub-hosted matrix', () => {

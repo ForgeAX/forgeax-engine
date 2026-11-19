@@ -35,7 +35,7 @@ it('resolves a transferred LUT through the accepted publication GUID and Catalog
       { component: Transform, data: {} },
       {
         component: Camera,
-        data: { colorLut: handle },
+        data: { fov: 1, aspect: 1, near: 0.1, far: 100, colorLut: handle },
       },
     )
     .unwrap();
@@ -138,7 +138,10 @@ it.each([
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: Camera, data: { colorLut: handle, colorLutStrength: 1 } },
+      {
+        component: Camera,
+        data: { fov: 1, aspect: 1, near: 0.1, far: 100, colorLut: handle, colorLutStrength: 1 },
+      },
     )
     .unwrap();
   world.update(0).unwrap();

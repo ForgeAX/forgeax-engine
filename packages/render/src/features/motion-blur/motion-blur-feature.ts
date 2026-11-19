@@ -10,6 +10,7 @@ import type {
   RenderFeaturePlanView,
   RenderFeatureWorkPlan,
 } from '../plan';
+import { captureUnusedSurfaceData } from '../surface-data-usage';
 import type { RenderFeature, RenderFeatureExtractContext } from '../types';
 import {
   effectiveMotionBlurSampleCount,
@@ -20,7 +21,7 @@ import {
   validateMotionBlurParams,
 } from './motion-blur-params';
 
-const MOTION_BLUR_FEATURE_IDENTITY = 'forgeax.motion-blur';
+export const MOTION_BLUR_FEATURE_IDENTITY = 'forgeax.motion-blur';
 
 export function addMotionBlurPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -37,12 +38,11 @@ export function addMotionBlurPass(
   });
 }
 
-interface MotionBlurFeatureFrame {
-  readonly params: MotionBlurParams | undefined;
-  readonly demanded: boolean;
-  /** Raw accepted-submit interval; it is never replaced by ECS clamp time. */
+interface MotionBlurSourceFrame {
+  readonly params: MotionBlurParams;
+}
+interface MotionBlurFrameTiming {
   readonly frameDeltaSeconds: number;
-  /** Temporal reset already admitted by the shared renderer transaction. */
   readonly reset: boolean;
 }
 
@@ -1399,7 +1399,7 @@ function positiveDimension(value: number | undefined): number {
 export function planMotionBlur(
   params: MotionBlurParams,
   context: RenderFeaturePlanView & Pick<RenderFeaturePlanContext, 'caps'>,
-  temporal: Pick<MotionBlurFeatureFrame, 'frameDeltaSeconds' | 'reset'> = {
+  temporal: MotionBlurFrameTiming = {
     frameDeltaSeconds: 1 / 60,
     reset: false,
   },
@@ -1597,42 +1597,52 @@ export function planMotionBlur(
   }
 }
 
+const INACTIVE_MOTION_BLUR_FRAME: Readonly<Record<string, MotionBlurSourceFrame>> = Object.freeze(
+  {},
+);
+
 export function createMotionBlurFeature(): RenderFeature<
-  Readonly<Record<string, MotionBlurFeatureFrame>>
+  Readonly<Record<string, MotionBlurSourceFrame>>
 > {
-  return Object.freeze({
-    identity: MOTION_BLUR_FEATURE_IDENTITY,
-    shaderModuleMode: 'immediate' as const,
-    extract: (context: RenderFeatureExtractContext) => {
-      const frames: Record<string, MotionBlurFeatureFrame> = Object.create(null);
-      for (const view of context.views) {
-        if (!view.render) continue;
-        const input = view.motionBlur;
-        const validated = validateMotionBlurParams(input?.params);
-        if (!validated.ok) return err(validated.error as unknown as RenderError);
-        const params = input?.params === undefined ? undefined : validated.value;
-        frames[view.identity] = {
-          params,
-          demanded: motionBlurTemporalDemand(params),
-          frameDeltaSeconds: input?.frameDeltaSeconds ?? 1 / 60,
-          reset: input?.reset === true,
-        };
-      }
-      return ok(frames);
-    },
-    plan: (
-      frames: Readonly<Record<string, MotionBlurFeatureFrame>>,
-      context: RenderFeaturePlanContext,
-    ): Result<RenderFeaturePlan, RenderError> => {
-      const work: RenderFeaturePlan['work'][number][] = [];
-      for (const view of context.views) {
-        const frame = frames[view.identity];
-        if (!view.render || frame?.params === undefined) continue;
-        const planned = planMotionBlur(frame.params, { ...view, caps: context.caps }, frame);
-        if (!planned.ok) return planned;
-        work.push({ scope: { view: view.identity }, ...planned.value });
-      }
-      return ok({ work });
-    },
-  });
+  return Object.freeze(
+    captureUnusedSurfaceData({
+      identity: MOTION_BLUR_FEATURE_IDENTITY,
+      inactiveSourceData: INACTIVE_MOTION_BLUR_FRAME,
+      shaderModuleMode: 'immediate' as const,
+      extract: (context: RenderFeatureExtractContext) => {
+        const frames: Record<string, MotionBlurSourceFrame> = Object.create(null);
+        for (const view of context.views) {
+          if (!view.render) continue;
+          const input = view.selectedCamera?.motionBlur;
+          if (input === undefined) continue;
+          const validated = validateMotionBlurParams(input);
+          if (!validated.ok) return err(validated.error as unknown as RenderError);
+          frames[view.identity] = { params: validated.value };
+        }
+        return ok(Object.keys(frames).length === 0 ? INACTIVE_MOTION_BLUR_FRAME : frames);
+      },
+      plan: (
+        frames: Readonly<Record<string, MotionBlurSourceFrame>>,
+        context: RenderFeaturePlanContext,
+      ): Result<RenderFeaturePlan, RenderError> => {
+        const work: RenderFeaturePlan['work'][number][] = [];
+        for (const view of context.views) {
+          const frame = frames[view.identity];
+          if (!view.render || frame?.params === undefined || view.motionBlur === undefined)
+            continue;
+          const planned = planMotionBlur(
+            frame.params,
+            { ...view, caps: context.caps },
+            {
+              frameDeltaSeconds: view.motionBlur?.frameDeltaSeconds ?? 1 / 60,
+              reset: view.motionBlur?.reset === true,
+            },
+          );
+          if (!planned.ok) return planned;
+          work.push({ scope: { view: view.identity }, ...planned.value });
+        }
+        return ok({ work });
+      },
+    }),
+  );
 }

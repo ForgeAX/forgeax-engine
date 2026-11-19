@@ -1,17 +1,23 @@
-import { internJson } from '@forgeax/engine-types';
+import { freezeJson } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { SceneDataUnavailableError } from '../errors/render';
-import { MaterialResource } from '../material-resource';
+import type { RenderFeatureWorkPlan } from '../features/plan';
+import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import {
   defaultMaterialSnapshot,
   type MaterialSnapshot,
   type RenderableSnapshot,
 } from '../render-system-extract';
-import { SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA } from '../temporal/scene-data';
+import {
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SCENE_DATA_TEMPORAL_V1_SCHEMA,
+} from '../temporal/scene-data';
 import { createSceneDataCatalog } from '../temporal/scene-data-catalog';
 import {
   createStandardSceneSurfaceAdmission,
+  ProducedStandardSceneDataAdmissionInput,
   type StandardSceneDataContributor,
+  sceneDataSurfaceBindings,
   standardAoSceneDataUnavailable,
   standardSceneDataContributorForDispatch,
   standardSceneSurfaceContributorBaseline,
@@ -68,6 +74,82 @@ it('serializes each complete contributor key once instead of during every sort c
   expect(JSON.parse(admission.identity)[8]).toEqual(captured);
 });
 
+it('indexes current plan resources once while resolving many pass bindings', () => {
+  let nameReads = 0;
+  let bufferName = 'state';
+  const entry = { binding: 0, resource: bufferName };
+  const entries = [entry, { binding: 1, resource: 'scene-data' }];
+  const target = createSceneDataCatalog({
+    featureIdentity: 'simulation',
+    generation: 0,
+    planIdentity: 'simulation:simulation:0',
+    rgba16floatRenderable: true,
+  }).require(SCENE_DATA_TEMPORAL_V1_SCHEMA);
+  const plan: RenderFeatureWorkPlan = {
+    resources: [
+      {
+        kind: 'prepared-gpu-resource',
+        name: 'scene-data',
+        resource: { kind: 'texture-view', value: {} },
+        logicalTarget: target,
+      },
+      {
+        kind: 'buffer',
+        get name() {
+          nameReads += 1;
+          return bufferName;
+        },
+        size: 16,
+        usage: ['storage'],
+      },
+      {
+        kind: 'compute-program',
+        name: 'program',
+        program: {
+          wgsl: '@compute @workgroup_size(1) fn main() {}',
+          entryPoints: ['main'],
+          bindings: [
+            {
+              entries: [
+                { binding: 0, visibility: 4, buffer: { type: 'storage' } },
+                { binding: 1, visibility: 4, texture: { sampleType: 'float' } },
+              ],
+            },
+          ],
+        },
+      },
+      { kind: 'compute-bindings', name: 'bindings', program: 'program', entries },
+    ],
+    passes: Array.from({ length: 96 }, (_, index) => ({
+      kind: 'compute',
+      name: `step-${index}`,
+      program: 'program',
+      bindings: 'bindings',
+      dispatches: [{ kind: 'direct', entryPoint: 'main', workgroups: [1] }],
+    })),
+  };
+  const planned = {
+    scope: 'frame',
+    featureIdentity: 'simulation',
+    generation: 0,
+    signature: '',
+    plan,
+  } as const;
+  // Plans without a declared SceneData target have no bindings to index.
+  expect(
+    sceneDataSurfaceBindings([
+      { ...planned, plan: { ...plan, resources: plan.resources.slice(1) } },
+    ]),
+  ).toEqual([]);
+  expect(nameReads).toBe(0);
+  expect(sceneDataSurfaceBindings([planned])).toEqual([]);
+  expect(nameReads).toBe(1);
+  bufferName = 'next-state';
+  entry.resource = bufferName;
+  expect(sceneDataSurfaceBindings([planned])).toEqual([]);
+  expect(nameReads).toBe(2);
+});
+
 it('uses the authored Standard root while preserving the selected cooked program facts', () => {
   const selectedProgram = 'cooked:standard-forward:artifact-7';
   const snapshot = {
@@ -80,8 +162,8 @@ it('uses the authored Standard root while preserving the selected cooked program
       },
     ],
     materialProgramKeys: { forward: selectedProgram },
-    materialEntryPoints: {
-      forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }],
+    materialProgramInputs: {
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry: 'mesh', vertexColor: false },
     materialPublication: {
@@ -94,7 +176,16 @@ it('uses the authored Standard root while preserving the selected cooked program
       programs: [
         {
           pass: 'forward',
-          context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+          context: {
+            backend: 'webgpu',
+            capability: 'storage-buffer',
+            pipeline: 'forward',
+            pass: 'forward',
+            geometry: 'mesh',
+            profile: 'forgeax-material-wgsl-v1',
+            toolchain: 'naga-oil',
+            instrumentation: 'none',
+          },
           address: 'direct',
           specializationKey: selectedProgram,
           artifactHash: 'shader-artifact-7',
@@ -105,7 +196,7 @@ it('uses the authored Standard root while preserving the selected cooked program
   const material = new MaterialResource(snapshot);
   const row = { material, materials: [material] } as unknown as RenderableSnapshot;
   const contributor = standardSceneDataContributorForDispatch(
-    { ...row, worldId: 0, entityKey: 1 },
+    { ...row, entityKey: 1 },
     {
       materialHandle: snapshot.materialHandle ?? 0,
       materialShaderId: selectedProgram,
@@ -147,7 +238,7 @@ it('uses the authored Standard root while preserving the selected cooked program
   });
 
   const wrongSelectedProgram = standardSceneDataContributorForDispatch(
-    { ...row, worldId: 0, entityKey: 1 },
+    { ...row, entityKey: 1 },
     {
       materialHandle: snapshot.materialHandle ?? 0,
       materialShaderId: 'cooked:unrelated-program',
@@ -170,11 +261,11 @@ it('uses the authored Standard root while preserving the selected cooked program
   expect(wrongAdmission).toMatchObject({
     status: 'unavailable',
     reason: 'coverage-incomplete',
-    missingContributorIds: ['[0,1,31,0]'],
+    missingContributorIds: ['[1,31,0]'],
     missingContributors: [
       {
-        id: '[0,1,31,0]',
-        sourceTuple: [0, 1, 31, 0],
+        id: '[1,31,0]',
+        sourceTuple: [1, 31, 0],
         reason: 'selected-pass-missing',
         rejectedField: 'selected-pass',
         dispatchProgramKey: 'cooked:unrelated-program',
@@ -230,7 +321,7 @@ it('uses the authored Standard root while preserving the selected cooked program
   expect(catalogError).toMatchObject({
     detail: {
       reason: 'coverage-incomplete',
-      missingContributorIds: ['[0,1,31,0]'],
+      missingContributorIds: ['[1,31,0]'],
       missingContributors: [
         {
           reason: 'selected-pass-missing',
@@ -253,8 +344,8 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
       },
     ],
     materialProgramKeys: { forward: 'cooked:standard-forward' },
-    materialEntryPoints: {
-      forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }],
+    materialProgramInputs: {
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
     },
     materialContext: { geometry: 'mesh', vertexColor: false },
     materialPublication: {
@@ -267,7 +358,16 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
       programs: [
         {
           pass: 'forward',
-          context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+          context: {
+            backend: 'webgpu',
+            capability: 'storage-buffer',
+            pipeline: 'forward',
+            pass: 'forward',
+            geometry: 'mesh',
+            profile: 'forgeax-material-wgsl-v1',
+            toolchain: 'naga-oil',
+            instrumentation: 'none',
+          },
           address: 'direct',
           specializationKey: 'cooked:standard-forward',
           artifactHash: 'shader-forward-only-hash',
@@ -279,7 +379,6 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
   const contributor = standardSceneDataContributorForDispatch(
     {
       ...({ material, materials: [material] } as unknown as RenderableSnapshot),
-      worldId: 0,
       entityKey: 9,
     },
     {
@@ -305,7 +404,7 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
   expect(admission).toMatchObject({
     status: 'unavailable',
     reason: 'coverage-incomplete',
-    missingContributorIds: ['[0,9,52,0]'],
+    missingContributorIds: ['[9,52,0]'],
     missingContributors: [
       {
         reason: 'missing-fragment-entry',
@@ -358,7 +457,6 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
         material: forwardWithGBufferEntry,
         materials: [forwardWithGBufferEntry],
       } as unknown as RenderableSnapshot),
-      worldId: 0,
       entityKey: 9,
     },
     {
@@ -421,7 +519,6 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
           material: deferredMaterial,
           materials: [deferredMaterial],
         } as unknown as RenderableSnapshot),
-        worldId: 0,
         entityKey: 10,
       },
       {
@@ -490,7 +587,9 @@ it.each([
       { name: 'forward', program: { module }, renderState: { tags: { LightMode: 'Forward' } } },
     ],
     materialProgramKeys: { forward: 'cooked:unlit-forward' },
-    materialEntryPoints: { forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+    materialProgramInputs: {
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+    },
     materialContext: { geometry, vertexColor: false },
   } as unknown as MaterialSnapshot;
   const material = new MaterialResource(snapshot);
@@ -500,7 +599,6 @@ it.each([
       materials: [material],
       ...(geometry === 'skinned' ? { skinBinding: {} } : {}),
       ...(deformation === 'morph' ? { morph: {} } : {}),
-      worldId: 0,
       entityKey: 251,
     } as unknown as RenderableSnapshot,
     {
@@ -552,14 +650,15 @@ it.each([
       },
     ],
     materialProgramKeys: { [lane]: 'cooked:skin-program' },
-    materialEntryPoints: { [lane]: [{ name: entry, stage: 'fragment', bindings: [] }] },
+    materialProgramInputs: {
+      [lane]: { entryPoints: [{ name: entry, stage: 'fragment', bindings: [] }] },
+    },
     materialContext: { geometry: 'skinned', vertexColor: false },
   } as unknown as MaterialSnapshot;
   const material = new MaterialResource(snapshot);
   const contributor = standardSceneDataContributorForDispatch(
     {
       ...({ material, materials: [material], skinBinding: {} } as unknown as RenderableSnapshot),
-      worldId: 0,
       entityKey: 251,
     },
     {
@@ -596,14 +695,16 @@ it('reuses an available proof only after checking current producer-owned contrib
       },
     ],
     materialProgramKeys: { forward: 'cooked:forward' },
-    materialEntryPoints: { forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+    materialProgramInputs: {
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+    },
     materialContext: { geometry: 'mesh', vertexColor: false },
   } as unknown as MaterialSnapshot;
   const material = new MaterialResource(snapshot);
   const row = { material, materials: [material] } as unknown as RenderableSnapshot;
   const contributor = () => {
     const value = standardSceneDataContributorForDispatch(
-      { ...row, worldId: 0, entityKey: 1 },
+      { ...row, entityKey: 1 },
       {
         materialHandle: 31,
         materialShaderId: 'cooked:forward',
@@ -651,7 +752,7 @@ it('reuses an available proof only after checking current producer-owned contrib
     createStandardSceneSurfaceAdmission({ ...next, contributors: [] }, first).identity,
   ).not.toBe(first.identity);
   // Borrowed material metadata remains live: every dispatch recaptures it.
-  material.adopt({ ...snapshot, materialEntryPoints: {} });
+  material.adopt({ ...snapshot, materialProgramInputs: {} });
   const rejected = createStandardSceneSurfaceAdmission(
     { ...input, contributors: [contributor()] },
     first,
@@ -675,8 +776,8 @@ function programObservationFixture(fixed: boolean) {
       },
     ],
     materialProgramKeys: { forward: 'cooked:forward' },
-    materialEntryPoints: {
-      forward: [{ name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] }],
+    materialProgramInputs: {
+      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] }] },
     },
     materialContext: { geometry: 'mesh' as const, vertexColor: false },
     materialPublication: {
@@ -706,23 +807,12 @@ function programObservationFixture(fixed: boolean) {
       ],
     },
   };
-  const groups = fixed
-    ? internJson(
-        structuredClone({
-          passes: source.passes,
-          materialProgramKeys: source.materialProgramKeys,
-          materialEntryPoints: source.materialEntryPoints,
-          materialContext: source.materialContext,
-          materialPublication: source.materialPublication,
-        }),
-      )
-    : undefined;
-  const snapshot = fixed ? Object.freeze({ ...source, ...groups }) : source;
+  const snapshot = fixed ? (captureMaterialSnapshot(source) as typeof source) : source;
   const material = new MaterialResource(snapshot);
   const row = { material, materials: [material] } as unknown as RenderableSnapshot;
   const produce = (previous?: StandardSceneDataContributor) =>
     standardSceneDataContributorForDispatch(
-      { ...row, worldId: 0, entityKey: 1 },
+      { ...row, entityKey: 1 },
       {
         materialHandle: 31,
         materialShaderId: 'cooked:forward',
@@ -747,7 +837,7 @@ it('serializes fixed program facts once while keeping each contribution current'
       expect(next?.selectedProgram).toBe(first.selectedProgram);
       expect(next?.facts?.selectedProgramFacts).toBe(first.facts?.selectedProgramFacts);
     }
-    expect(stringify.mock.calls).toEqual(Array.from({ length: 32 }, () => [[0, 1, 31, 0]]));
+    expect(stringify.mock.calls).toEqual(Array.from({ length: 32 }, () => [[1, 31, 0]]));
   } finally {
     stringify.mockRestore();
   }
@@ -755,7 +845,7 @@ it('serializes fixed program facts once while keeping each contribution current'
   f.material.adopt(
     Object.freeze({
       ...replacement,
-      materialPublication: internJson(
+      materialPublication: freezeJson(
         structuredClone({
           ...replacement.materialPublication,
           programs: replacement.materialPublication.programs.map((program) => ({
@@ -796,13 +886,14 @@ it('keeps mutable and accessor program metadata live despite shallow ownership f
 
 it('does not reuse sparse frozen program tables as fixed observations', () => {
   const f = programObservationFixture(false);
-  const entries = f.source.materialEntryPoints.forward;
+  const entries = f.source.materialProgramInputs.forward.entryPoints;
   entries.length = 2;
   Object.freeze(entries[0]?.bindings);
   Object.freeze(entries[0]);
   Object.freeze(entries);
-  Object.freeze(f.source.materialEntryPoints);
-  const fixed = internJson(
+  Object.freeze(f.source.materialProgramInputs.forward);
+  Object.freeze(f.source.materialProgramInputs);
+  const fixed = freezeJson(
     structuredClone({
       passes: f.source.passes,
       materialProgramKeys: f.source.materialProgramKeys,
@@ -837,8 +928,8 @@ it('materializes dispatch identity only for contributors and retains missing-row
       { ...dispatch, tags: { LightMode: 'Forward' } },
       'forward',
     );
-    expect(missing?.id).toBe('[-1,-1,71,3]');
-    expect(missing?.facts?.sourceTuple).toEqual([-1, -1, 71, 3]);
+    expect(missing?.id).toBe('[-1,71,3]');
+    expect(missing?.facts?.sourceTuple).toEqual([-1, 71, 3]);
     expect(Object.isFrozen(missing?.facts?.sourceTuple)).toBe(true);
     expect(missing?.facts?.materialSnapshotMissing).toBe(true);
   } finally {
@@ -851,10 +942,6 @@ it('captures dispatch identity and selection once before borrowed material reads
   const observations: string[] = [];
   const row = {
     ...f.row,
-    get worldId() {
-      observations.push('world');
-      return 2;
-    },
     get entityKey() {
       observations.push('entity');
       return 9;
@@ -883,9 +970,9 @@ it('captures dispatch identity and selection once before borrowed material reads
     },
   };
   const contributor = standardSceneDataContributorForDispatch(row, dispatch, 'forward');
-  expect(contributor?.id).toBe('[2,9,31,0]');
-  expect(observations.slice(0, 6)).toEqual(['world', 'entity', 'handle', 'pass', 'shader', 'tags']);
-  for (const field of ['world', 'entity', 'handle', 'pass', 'shader', 'tags'])
+  expect(contributor?.id).toBe('[9,31,0]');
+  expect(observations.slice(0, 5)).toEqual(['entity', 'handle', 'pass', 'shader', 'tags']);
+  for (const field of ['entity', 'handle', 'pass', 'shader', 'tags'])
     expect(observations.filter((entry) => entry === field)).toHaveLength(1);
 });
 
@@ -921,7 +1008,7 @@ it('reuses complete fixed contributor observations and keeps held proofs indepen
     tags: { LightMode: 'Forward' },
     passIndex: 0,
   };
-  const row = { ...f.row, worldId: 0, entityKey: 1 };
+  const row = { ...f.row, entityKey: 1 };
   const moved = standardSceneDataContributorForDispatch(
     { ...row, entityKey: 2 },
     dispatch,
@@ -929,7 +1016,7 @@ it('reuses complete fixed contributor observations and keeps held proofs indepen
     first,
   );
   expect(moved).not.toBe(first);
-  expect(moved?.facts?.sourceTuple).toEqual([0, 2, 31, 0]);
+  expect(moved?.facts?.sourceTuple).toEqual([2, 31, 0]);
   const morphed = standardSceneDataContributorForDispatch(
     { ...row, morph: {} as NonNullable<RenderableSnapshot['morph']> },
     dispatch,
@@ -963,6 +1050,112 @@ it('reuses complete fixed contributor observations and keeps held proofs indepen
   expect(first.geometry).toBe('mesh');
 });
 
+/** Value-only projection retains the captured program owner through its adoption API. */
+function adoptValues(material: MaterialResource, frame: number): void {
+  const projected = material.withParameters({ roughness: frame / 8, metallic: 1 - frame / 8 });
+  material.adopt(projected.snapshot);
+}
+
+it('keeps a fixed contributor observation across value-only snapshot replacements', () => {
+  const f = programObservationFixture(true);
+  const first = f.produce();
+  if (first === undefined) throw new Error('Expected contribution');
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    for (let frame = 1; frame <= 4; frame++) {
+      adoptValues(f.material, frame);
+      expect(f.material.snapshot).not.toBe(f.snapshot);
+      expect(f.produce(first)).toBe(first);
+    }
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+  }
+  // A program subtree replacement is a new observation; the earlier one keeps its facts.
+  const programs = f.snapshot.materialPublication.programs;
+  adoptValues(f.material, 5);
+  f.material.adopt(
+    captureMaterialSnapshot({
+      ...f.material.snapshot,
+      materialPublication: freezeJson(
+        structuredClone({
+          ...f.snapshot.materialPublication,
+          programs: programs.map((program) => ({ ...program, artifactHash: 'program-hash-2' })),
+        }),
+      ),
+    }),
+  );
+  const changed = f.produce(first);
+  expect(changed).not.toBe(first);
+  expect(changed?.selectedProgram).toContain('program-hash-2');
+  adoptValues(f.material, 6);
+  expect(f.produce(changed)).toBe(changed);
+  expect(first.selectedProgram).toContain('program-hash-1');
+});
+
+it('reuses an unavailable proof while material values change every frame', () => {
+  const standard = programObservationFixture(true);
+  const custom = programObservationFixture(true);
+  const customPasses = freezeJson(
+    structuredClone(
+      custom.source.passes.map((pass) => ({ ...pass, program: { module: 'custom::unlit' } })),
+    ),
+  );
+  if (customPasses === undefined) throw new Error('Expected fixed passes');
+  custom.material.adopt(captureMaterialSnapshot({ ...custom.snapshot, passes: customPasses }));
+  const dispatch = {
+    materialHandle: 31,
+    materialShaderId: 'cooked:forward',
+    tags: { LightMode: 'Forward' },
+    passIndex: 0,
+  };
+  const produce = (previous?: readonly StandardSceneDataContributor[]) => {
+    const input = new ProducedStandardSceneDataAdmissionInput();
+    input.capture({
+      viewIdentity: 'animated-values',
+      generation: 1,
+      deviceGeneration: 0,
+      standardPipeline: true,
+      cameraAvailable: true,
+      lane: 'clustered',
+      renderPath: 'forward',
+    });
+    for (const [index, fixture] of [standard, custom].entries()) {
+      const contributor = standardSceneDataContributorForDispatch(
+        { ...fixture.row, entityKey: index + 1 },
+        dispatch,
+        'forward',
+        previous?.[index],
+      );
+      if (contributor === undefined) throw new Error('Expected contribution');
+      input.contributors.push(contributor);
+    }
+    return input;
+  };
+  const first = createStandardSceneSurfaceAdmission(produce());
+  expect(first).toMatchObject({ status: 'unavailable', reason: 'coverage-incomplete' });
+  const baseline = standardSceneSurfaceContributorBaseline(first);
+  expect(baseline).toHaveLength(2);
+  const stringify = vi.spyOn(JSON, 'stringify');
+  try {
+    for (let frame = 1; frame <= 4; frame++) {
+      adoptValues(standard.material, frame);
+      adoptValues(custom.material, frame);
+      expect(createStandardSceneSurfaceAdmission(produce(baseline), first)).toBe(first);
+    }
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+  }
+  // The rejected material becoming Standard is judged again in the frame it happens.
+  custom.material.adopt(
+    captureMaterialSnapshot({ ...custom.material.snapshot, passes: standard.snapshot.passes }),
+  );
+  const recovered = createStandardSceneSurfaceAdmission(produce(baseline), first);
+  expect(recovered.status).toBe('available');
+  expect(first.status).toBe('unavailable');
+});
+
 it('ignores foreign prior getters and recaptures borrowed and rejected observations', () => {
   const fixed = programObservationFixture(true);
   const getter = vi.fn(() => {
@@ -978,7 +1171,7 @@ it('ignores foreign prior getters and recaptures borrowed and rejected observati
   const next = borrowed.produce(first);
   expect(next).not.toBe(first);
   expect(next).toEqual(first);
-  borrowed.source.materialEntryPoints.forward.length = 0;
+  borrowed.source.materialProgramInputs.forward.entryPoints.length = 0;
   expect(borrowed.produce(first)?.entryPoint).toBeUndefined();
   const dispatch = {
     materialHandle: 31,
@@ -990,4 +1183,207 @@ it('ignores foreign prior getters and recaptures borrowed and rejected observati
   expect(standardSceneDataContributorForDispatch(undefined, dispatch, 'forward', missing)).not.toBe(
     missing,
   );
+});
+
+/** A frozen published material whose forward pass authors `module`. */
+function frozenSurfaceMaterial(handle: number, module: string): MaterialResource {
+  const programKey = `cooked:${module}:${handle}`;
+  return new MaterialResource(
+    captureMaterialSnapshot({
+      ...defaultMaterialSnapshot(handle),
+      ...freezeJson({
+        passes: [
+          {
+            name: 'forward',
+            program: { module },
+            renderState: { tags: { LightMode: 'Forward' } },
+          },
+        ],
+        materialProgramKeys: { forward: programKey },
+        materialProgramInputs: {
+          forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+        },
+        materialContext: { geometry: 'mesh', vertexColor: false },
+        materialPublication: {
+          identity: {
+            materialGuid: `material/${handle}`,
+            publicationGeneration: 1,
+            specializationKey: `root-${handle}`,
+            artifactHash: `material-artifact-${handle}`,
+          },
+          programs: [
+            {
+              pass: 'forward',
+              context: {
+                backend: 'webgpu',
+                capability: 'storage-buffer',
+                pipeline: 'forward',
+                pass: 'forward',
+                geometry: 'mesh',
+                profile: 'forgeax-material-wgsl-v1',
+                toolchain: 'naga-oil',
+                instrumentation: 'none',
+              },
+              address: 'direct',
+              specializationKey: programKey,
+              artifactHash: `shader-artifact-${handle}`,
+            },
+          ],
+        },
+      }),
+    }) as unknown as MaterialSnapshot,
+  );
+}
+
+type VisibleRow = {
+  readonly row: RenderableSnapshot | undefined;
+  readonly handle: number;
+  readonly shaderId: string | undefined;
+};
+
+function visibleRow(entityKey: number, material: MaterialResource): VisibleRow {
+  return {
+    row: {
+      worldId: 0,
+      entityKey,
+      material,
+      materials: [material],
+    } as unknown as RenderableSnapshot,
+    handle: material.snapshot.materialHandle ?? 0,
+    shaderId: material.snapshot.materialProgramKeys?.forward,
+  };
+}
+
+const unavailableHeader = {
+  viewIdentity: 'unavailable-proof',
+  generation: 1,
+  deviceGeneration: 0,
+  standardPipeline: true,
+  cameraAvailable: true,
+  lane: 'clustered' as const,
+  renderPath: 'forward' as const,
+};
+
+/** One view frame of the Feature view producer: produce against the baseline, then admit. */
+function admitVisible(
+  rows: readonly VisibleRow[],
+  previous: ReturnType<typeof createStandardSceneSurfaceAdmission> | undefined,
+  header: Omit<
+    Parameters<typeof createStandardSceneSurfaceAdmission>[0],
+    'contributors'
+  > = unavailableHeader,
+) {
+  const baseline = standardSceneSurfaceContributorBaseline(previous);
+  const input = new ProducedStandardSceneDataAdmissionInput();
+  input.capture(header);
+  const contributors = input.contributors;
+  for (const { row, handle, shaderId } of rows) {
+    const contributor = standardSceneDataContributorForDispatch(
+      row,
+      {
+        materialHandle: handle,
+        materialShaderId: shaderId,
+        tags: { LightMode: 'Forward' },
+        passIndex: 0,
+      },
+      header.renderPath === 'deferred' ? 'deferred' : 'forward',
+      baseline?.[contributors.length],
+    );
+    if (contributor !== undefined) contributors.push(contributor);
+  }
+  return {
+    input,
+    admission: createStandardSceneSurfaceAdmission(input, previous),
+    // The complete route without any prior proof, for result equivalence.
+    fresh: () =>
+      createStandardSceneSurfaceAdmission({ ...header, contributors: [...contributors] }),
+  };
+}
+
+it('reuses an unchanged unavailable admission and its diagnostics without recomputing them', () => {
+  const standard = frozenSurfaceMaterial(41, 'forgeax_material::standard');
+  const custom = frozenSurfaceMaterial(42, 'game::custom_surface');
+  const rows = [visibleRow(1, standard), visibleRow(2, custom), visibleRow(3, standard)];
+  const first = admitVisible(rows, undefined);
+  expect(first.admission).toMatchObject({
+    status: 'unavailable',
+    reason: 'coverage-incomplete',
+    missingContributorIds: ['[2,42,0]'],
+  });
+  expect(standardSceneSurfaceContributorBaseline(first.admission)).toEqual(
+    first.input.contributors,
+  );
+
+  const stringify = vi.spyOn(JSON, 'stringify');
+  let second: ReturnType<typeof admitVisible>;
+  try {
+    second = admitVisible(rows, first.admission);
+    expect(second.admission).toBe(first.admission);
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+  }
+  // Producer-owned prior observations are carried forward unchanged.
+  expect(
+    second.input.contributors.every((row, index) => row === first.input.contributors[index]),
+  ).toBe(true);
+  expect(second.fresh()).toEqual(first.admission);
+  expect(second.fresh()).not.toBe(first.admission);
+  expect(admitVisible(rows, second.admission).admission).toBe(first.admission);
+});
+
+it('invalidates an unavailable proof when material, visible set or view header changes', () => {
+  const standard = frozenSurfaceMaterial(41, 'forgeax_material::standard');
+  const custom = frozenSurfaceMaterial(42, 'game::custom_surface');
+  const otherCustom = frozenSurfaceMaterial(42, 'game::other_surface');
+  const rows = [visibleRow(1, standard), visibleRow(2, custom), visibleRow(3, standard)];
+  const previous = admitVisible(rows, undefined).admission;
+  expect(previous.status).toBe('unavailable');
+
+  const changed = (name: string, next: ReturnType<typeof admitVisible>) => {
+    expect(next.admission, `${name} must not reuse the prior proof`).not.toBe(previous);
+    expect(next.admission, `${name} must equal the complete route`).toEqual(next.fresh());
+    return next.admission;
+  };
+  // Material swapped: to a Standard material, then to another non-Standard root.
+  const healed = changed(
+    'Standard swap',
+    admitVisible([rows[0], visibleRow(2, standard), rows[2]] as VisibleRow[], previous),
+  );
+  expect(healed.status).toBe('available');
+  const swapped = changed(
+    'custom swap',
+    admitVisible([rows[0], visibleRow(2, otherCustom), rows[2]] as VisibleRow[], previous),
+  );
+  expect(swapped.status).toBe('unavailable');
+  expect(swapped.identity).not.toBe(previous.identity);
+  if (swapped.status === 'unavailable')
+    expect(swapped.missingContributors[0]?.authoredModule).toBe('game::other_surface');
+
+  // Visible set changed: removed, added, reordered and moved rows.
+  expect(changed('removed row', admitVisible(rows.slice(0, 2), previous)).identity).not.toBe(
+    previous.identity,
+  );
+  expect(
+    changed('added row', admitVisible([...rows, visibleRow(4, custom)], previous)).identity,
+  ).not.toBe(previous.identity);
+  changed('reordered rows', admitVisible([rows[2], rows[1], rows[0]] as VisibleRow[], previous));
+  const moved = changed(
+    'moved rejected row',
+    admitVisible([rows[0], visibleRow(5, custom), rows[2]] as VisibleRow[], previous),
+  );
+  if (moved.status === 'unavailable') expect(moved.missingContributorIds).toEqual(['[5,42,0]']);
+
+  // View header changed: every admission input field.
+  for (const [name, header] of [
+    ['view', { ...unavailableHeader, viewIdentity: 'other-view' }],
+    ['generation', { ...unavailableHeader, generation: 2 }],
+    ['device', { ...unavailableHeader, deviceGeneration: 1 }],
+    ['pipeline', { ...unavailableHeader, standardPipeline: false }],
+    ['camera', { ...unavailableHeader, cameraAvailable: false }],
+    ['lane', { ...unavailableHeader, lane: 'direct' as const }],
+    ['render path', { ...unavailableHeader, renderPath: 'deferred' as const }],
+    ['no render path', { ...unavailableHeader, renderPath: undefined }],
+  ] as const)
+    changed(name, admitVisible(rows, previous, header));
 });

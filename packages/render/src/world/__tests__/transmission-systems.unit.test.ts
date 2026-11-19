@@ -1,3 +1,4 @@
+import { defineSystem } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { TransmissionCapabilityMissingError } from '../../errors/render';
 import type { ExtractedFrame } from '../../render-system-extract';
@@ -17,7 +18,7 @@ import {
 import { RENDER_VIEW_RECORDERS_SYSTEM, stageViewFrame } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 
 function setup({ activeCount = 0, renderable = true, register = true } = {}) {
   const world = createRenderWorld();
@@ -44,13 +45,12 @@ function setup({ activeCount = 0, renderable = true, register = true } = {}) {
   const view = world.spawn().unwrap();
   const state = world.allocUniqueRef('ViewRecorder', withInertTemporal({}, { internals, scene }));
   world.addComponent(view, { component: ViewRecorder, data: { state } }).unwrap();
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => stageViewFrame(world, view, opts),
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => stageViewFrame(world, view, opts),
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
   return { world, view, fired };
 }
 

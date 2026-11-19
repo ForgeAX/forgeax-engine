@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // Realm-neutral controls and observations; native playback belongs to the Host.
 
 import type { AssetHandle, AssetReferenceOwner, AudioError } from '@forgeax/engine-types';
@@ -7,7 +8,7 @@ import type { MusicCommand, MusicState } from './music';
 
 export type BusName = string;
 
-export const AUDIO_ENGINE_RESOURCE_KEY = 'AudioEngine' as const;
+export const AUDIO_ENGINE_RESOURCE_KEY = defineResource<AudioBackend>('AudioEngine');
 
 export interface AudioPlayOptions {
   readonly acousticRoutes?: AcousticRoutes;
@@ -93,6 +94,8 @@ export interface AudioBackend {
   ): void;
   stop(entityId: number): void;
   setVolume(entityId: number, volume: number): void;
+  /** Global sample speed, multiplied by every voice's own playback rate. */
+  setGlobalPlaybackRate(scale: number): void;
   setPlaybackRate(entityId: number, playbackRate: number): void;
   setPaused(entityId: number, paused: boolean): void;
   /** Seek an admitted or decoding source; does not start a stopped source. */
@@ -100,6 +103,12 @@ export interface AudioBackend {
   configureBuses(buses: readonly AudioBus[]): void;
   setBus(entityId: number, bus: BusName): void;
   setBusWet(bus: BusName, wet: number): void;
+  /** Independent serial filter contribution; null removes only this owner's filter. */
+  setBusLowPass(
+    bus: BusName,
+    owner: string,
+    filter: { readonly cutoffHz: number; readonly q: number } | null,
+  ): void;
   setBusSendGain(bus: BusName, target: BusName, gain: number): void;
   setBusVolume(busName: BusName, volume: number): void;
   setBusMute(busName: BusName, muted: boolean): void;

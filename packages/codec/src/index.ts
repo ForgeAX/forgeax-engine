@@ -8,14 +8,21 @@
 export type {
   BasisSourceInspection,
   BasisSourceMeta,
+  PackedTextureLevel,
+  PackedTranscodedTexture,
+  TranscodeCheckpoint,
   TranscodedMip,
   TranscodedTexture,
 } from './basis-transcoder.js';
 export {
+  compileBasisTranscoderWasm,
+  compiledBasisHost,
   initBasisTranscoder,
   inspectBasisSource,
+  packTranscodedTexture,
   transcodeBasis,
   transcodeKtx2,
+  transcodeKtx2Packed,
 } from './basis-transcoder.js';
 export type {
   CodecError,
@@ -43,6 +50,8 @@ export {
   ktx2NativeTexture,
   parseKtx2,
 } from './ktx2.js';
+export type { TextureTranscodeRequest } from './texture-transcode-task.js';
+export { textureTranscodeTask, transcodeTexturePacked } from './texture-transcode-task.js';
 export type {
   TranscodeCaps,
   TranscodeChannels,
@@ -52,4 +61,11 @@ export type {
 } from './transcode.js';
 export { selectTranscodeTarget } from './transcode.js';
 export type { BasisWasmHost } from './wasm/basis-types.js';
-export { decodeDocumentText, decompressZstd } from './zstd.js';
+export type { RetainedZstdBytes } from './zstd.js';
+export {
+  copyRetainedZstdBytes,
+  decodeDocumentText,
+  decompressRetainedZstd,
+  decompressZstd,
+  retainedZstdBytes,
+} from './zstd.js';

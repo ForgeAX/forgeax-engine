@@ -1,4 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { isTemporalAntialias } from '../components/camera';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -8,14 +8,23 @@ import type { ExtractedVolumetricFog } from '../render-system-extract';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import { createSsrHistoryOwner, type SsrHistoryResetReason } from '../ssr/history';
 import { estimateSsrSpatialMemory } from '../ssr/resources';
+import { waterSsrTemporalEnabled } from '../ssr/water-profile';
+import { RenderHistoryAdmissionOrder, RenderSsrAdmissionOrder } from '../system-order';
+import { volumetricFogSamplingLane } from '../volume/component';
 import { resolveVolumeTemporalReset, type VolumeTemporalSignature } from '../volume/temporal';
 import { viewDiffuseGiOf } from './gi-systems';
-import { type PassPlanInput, type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
+import {
+  type PassPlanInput,
+  readViewPassPlan,
+  type ViewPassPlanQueue,
+  ViewPassPlans,
+} from './pass-plan-systems';
 import { type ViewLights, viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
-import { RENDER_SSR_ADMISSION_SYSTEM, viewSsrAdmissionOf } from './ssr-admission-systems';
+import { viewSsrAdmissionOf } from './ssr-admission-systems';
 import { readViewField, requireViewField } from './view-field';
+import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf } from './view-settlement';
 import { viewTopologyOf } from './view-topology-systems';
@@ -140,7 +149,7 @@ function fogRevisionOf(fog: ExtractedVolumetricFog): number {
     ...authored.emission,
     authored.anisotropy,
     authored.maxDistance,
-    authored.sampling === 'density-albedo' ? 2 : authored.sampling === 'density' ? 1 : 0,
+    volumetricFogSamplingLane(authored.sampling),
     ...Array.from(`${fog.guid}:${fog.digest}`, (char) => char.charCodeAt(0)),
   ]);
 }
@@ -167,6 +176,7 @@ function spotRevisionValues(spot: ViewLights['spot'][number] | undefined): numbe
     ...spot.color,
     spot.intensity,
     spot.invRangeSquared,
+    spot.decay ?? 2,
     spot.cosInner,
     spot.cosOuter,
     spot.depthBias ?? 0.005,
@@ -323,13 +333,30 @@ export function commitSsrHistoryBaseline(
   if (ssr?.kind !== 'resolved') return;
   frameState.ssrLastCameraEntity = camera?.entityKey;
   frameState.ssrLastHistoryVersion = camera?.historyVersion;
-  const owner = frameState.ssrHistoryOwner;
-  if (ssr.admission.status === 'admitted' || owner === undefined) return;
-  owner.reset('disable');
-  owner.retireAfterFence(internals.device.queue, (cause) => {
-    reportSsrHistoryFailure(internals, 'submit', cause);
-  });
+  if (ssr.admission.status === 'admitted') {
+    const plan = readViewPassPlan(world, entity);
+    if (
+      plan.ok &&
+      (plan.value.transmission.water !== true ||
+        camera === undefined ||
+        !waterSsrTemporalEnabled(camera.antialias, ssr.admission.config.waterTemporal))
+    ) {
+      frameState.waterSsrHistoryOwner?.reset('disable');
+      frameState.waterSsrHistoryOwner?.retireAfterFence(internals.device.queue, (cause) =>
+        reportSsrHistoryFailure(internals, 'submit', cause),
+      );
+      frameState.waterSsrHistoryOwner = undefined;
+    }
+    return;
+  }
+  for (const owner of [frameState.ssrHistoryOwner, frameState.waterSsrHistoryOwner]) {
+    owner?.reset('disable');
+    owner?.retireAfterFence(internals.device.queue, (cause) =>
+      reportSsrHistoryFailure(internals, 'submit', cause),
+    );
+  }
   frameState.ssrHistoryOwner = undefined;
+  frameState.waterSsrHistoryOwner = undefined;
 }
 
 /** Admit one staged view's histories; never throws. */
@@ -373,54 +400,54 @@ function admitViewHistory(
  * failure is stored, never thrown.
  */
 export function registerHistoryAdmissionSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_HISTORY_ADMISSION_SYSTEM,
-      after: [RENDER_SSR_ADMISSION_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewPassPlans], optional: [ViewHistoryAdmission] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewHistoryAdmissionState }[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderHistoryAdmissionOrder],
+    commands: 'none',
+    name: RENDER_HISTORY_ADMISSION_SYSTEM,
+    after: [RenderSsrAdmissionOrder],
+    queries: [{ read: [ViewRecorder, ViewPassPlans], optional: [ViewHistoryAdmission] }],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewHistoryAdmissionState }[] = [];
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const input = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap().staged;
-          if (input === undefined) return;
-          const stored = readViewField(world, entity, ViewHistoryAdmission, 'state');
-          const previous =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewHistoryAdmissionState>(stored).unwrap();
-          if (previous?.frame === frame) return;
-          const { frameState, internals } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const outcome = admitViewHistory(world, entity, frameState, internals, input);
-          if (previous === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          previous.frame = frame;
-          previous.outcome = outcome;
-        });
-        // A view's first admission attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewHistoryAdmission,
-              data: { state: world.allocUniqueRef('ViewHistoryAdmission', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const input = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap().staged;
+        if (input === undefined) return;
+        const stored = readViewField(world, entity, ViewHistoryAdmission, 'state');
+        const previous =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewHistoryAdmissionState>(stored).unwrap();
+        if (previous?.frame === frame) return;
+        const { frameState, internals } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const outcome = admitViewHistory(world, entity, frameState, internals, input);
+        if (previous === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        previous.frame = frame;
+        previous.outcome = outcome;
+      });
+      // A view's first admission attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewHistoryAdmission,
+            data: { state: world.allocUniqueRef('ViewHistoryAdmission', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
   registerSsrHistoryStageSystem(world);
 }
 
@@ -529,29 +556,32 @@ function stageSsrHistoryOwner(
   cameraReset: SsrHistoryResetReason | undefined,
   width: number,
   height: number,
+  water = false,
 ): ViewSsrHistoryStageOutcome {
   try {
-    let owner = frameState.ssrHistoryOwner;
+    let owner = water ? frameState.waterSsrHistoryOwner : frameState.ssrHistoryOwner;
     if (owner === undefined) {
       const created = createSsrHistoryOwner({
         device: internals.device,
         scope: recordContext(internals).deviceScope,
         width,
         height,
+        profile: water ? 'single-layer-water' : 'opaque',
       });
       if (!created.ok) {
         reportSsrHistoryFailure(internals, 'build', created.error);
         return { kind: 'failed', code: 'owner-create-failed', cause: created.error };
       }
       owner = created.value;
-      frameState.ssrHistoryOwner = owner;
+      if (water) frameState.waterSsrHistoryOwner = owner;
+      else frameState.ssrHistoryOwner = owner;
     } else if (owner.resources.width !== width || owner.resources.height !== height) {
       const resized = owner.resize(width, height);
       if (!resized.ok) {
         reportSsrHistoryFailure(internals, 'build', resized.error);
         return { kind: 'failed', code: 'owner-resize-failed', cause: resized.error };
       }
-      owner.retireAfterFence(internals.device.queue, (cause) => {
+      owner.retireReplacedAfterFence(internals.device.queue, (cause) => {
         reportSsrHistoryFailure(internals, 'submit', cause);
       });
     }
@@ -582,6 +612,7 @@ function stageViewSsrHistory(
     const memory = estimateSsrSpatialMemory(
       { width, height },
       {
+        resolutionScale: internals.standardProfile?.quality?.ssr.resolutionScale,
         execution:
           internals.device.caps.compute && internals.device.caps.storageTexture
             ? 'compute'
@@ -599,7 +630,21 @@ function stageViewSsrHistory(
   } catch (cause) {
     return { kind: 'failed', code: 'owner-threw', cause };
   }
-  return stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height);
+  const staged = stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height);
+  if (staged.kind !== 'staged') return staged;
+  const plan = readViewPassPlan(world, entity);
+  const viewFrame = world
+    .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+    .unwrap();
+  const camera = stagedViewInputs(world, viewFrame).cameras[0];
+  if (
+    plan.ok &&
+    plan.value.transmission.water === true &&
+    camera !== undefined &&
+    waterSsrTemporalEnabled(camera.antialias, ssr.admission.config.waterTemporal)
+  )
+    return stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height, true);
+  return staged;
 }
 
 /**
@@ -612,52 +657,51 @@ function stageViewSsrHistory(
  * aborts it otherwise.
  */
 export function registerSsrHistoryStageSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_SSR_HISTORY_STAGE_SYSTEM,
-      after: [RENDER_HISTORY_ADMISSION_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewPassPlans], optional: [ViewSsrHistoryStage] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewSsrHistoryStageState }[] = [];
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_SSR_HISTORY_STAGE_SYSTEM,
+    after: [RenderHistoryAdmissionOrder],
+    queries: [{ read: [ViewRecorder, ViewPassPlans], optional: [ViewSsrHistoryStage] }],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewSsrHistoryStageState }[] = [];
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const input = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap().staged;
-          if (input === undefined) return;
-          const stored = readViewField(world, entity, ViewSsrHistoryStage, 'state');
-          const previous =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewSsrHistoryStageState>(stored).unwrap();
-          if (previous?.frame === frame) return;
-          const { frameState, internals } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const outcome = stageViewSsrHistory(world, entity, frameState, internals);
-          if (previous === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          previous.frame = frame;
-          previous.outcome = outcome;
-        });
-        // A view's first stage attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewSsrHistoryStage,
-              data: { state: world.allocUniqueRef('ViewSsrHistoryStage', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const input = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap().staged;
+        if (input === undefined) return;
+        const stored = readViewField(world, entity, ViewSsrHistoryStage, 'state');
+        const previous =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewSsrHistoryStageState>(stored).unwrap();
+        if (previous?.frame === frame) return;
+        const { frameState, internals } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const outcome = stageViewSsrHistory(world, entity, frameState, internals);
+        if (previous === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        previous.frame = frame;
+        previous.outcome = outcome;
+      });
+      // A view's first stage attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewSsrHistoryStage,
+            data: { state: world.allocUniqueRef('ViewSsrHistoryStage', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, systemToken2).unwrap();
 }

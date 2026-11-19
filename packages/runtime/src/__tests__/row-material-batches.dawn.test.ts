@@ -185,11 +185,7 @@ async function renderQuadrants(edits: readonly QuadrantEdit[] = [VALUE_EDIT]): P
     const draw = async (frames: number) => {
       for (let frame = 0; frame < frames; frame += 1) {
         world.update(1 / 60).unwrap();
-        await drawReadyFrame(renderer as Renderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        await drawReadyFrame(renderer as Renderer, { source: attached.value });
       }
     };
     await draw(3);

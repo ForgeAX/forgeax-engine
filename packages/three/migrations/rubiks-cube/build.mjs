@@ -16,7 +16,7 @@ assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: '
 execFileSync('git', ['diff', '--exit-code', 'HEAD', '--'], { cwd: root, stdio: 'pipe' });
 const native = mode === 'forgeax';
 const upstream = dirname(dirname(fileURLToPath(import.meta.resolve('three'))));
-assert.equal(JSON.parse(await readFile(`${upstream}/package.json`, 'utf8')).version, '0.184.0');
+assert.equal(JSON.parse(await readFile(`${upstream}/package.json`, 'utf8')).version, '0.187.0');
 const diagnostics = fileURLToPath(new URL('./diagnostics.mjs', import.meta.url));
 // Both renderers start with the same font pixels. Otherwise the smaller reference
 // bundle can paint its CanvasTextures before the application's webfont arrives.
@@ -62,7 +62,7 @@ await writeFile(`${outDir}/provenance.json`, JSON.stringify({
   repository: 'https://github.com/HichemTab-tech/RubiksCube-threejs', revision,
   engineCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: import.meta.dirname, encoding: 'utf8' }).trim(),
   engineSourceDirty: execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: import.meta.dirname, encoding: 'utf8' }).trim().length > 0,
-  mode, threeVersion: '0.184.0', businessSourceChanges: 0,
+  mode, threeVersion: '0.187.0', businessSourceChanges: 0,
   imports: { three: native ? '@forgeax/engine/three' : 'three',
     'three/addons': native ? '@forgeax/engine/three/addons/controls/OrbitControls.js' : 'three/addons/controls/OrbitControls.js' },
   hostChanges: ['Local copies of the existing CDN resources', 'Shared webfont readiness before startup', 'External diagnostics panel'],

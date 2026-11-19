@@ -2,7 +2,7 @@
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #import forgeax_view::common::{View, view}
-#import forgeax_view::fog::{translucent_fog, ndc_world}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog, ndc_world}
 
 struct BeamInput {
   @location(0) start: vec3<f32>,
@@ -15,7 +15,7 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
   @location(2) across: f32,
-  @location(1) clip_position: vec3<f32>,
+  @location(1) clip_position: vec4<f32>,
 }
 
 @vertex
@@ -33,13 +33,13 @@ fn vs_main(input: BeamInput, @builtin(vertex_index) vertexIndex: u32) -> VertexO
   output.position = vec4<f32>(clipPosition, 1.0);
   output.across = corner.y;
   output.color = input.color;
-  output.clip_position = clipPosition;
+  output.clip_position = vec4<f32>(clipPosition, vertex_height_fog(view, ndc_world(view, clipPosition)));
   return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let alpha = input.color.a * (1.0 - smoothstep(0.15, 1.0, abs(input.across)));
-  let fogged = translucent_fog(view, ndc_world(view, input.clip_position), input.color.rgb * alpha, alpha);
+  let fogged = forward_fog(view, ndc_world(view, input.clip_position.xyz), input.clip_position.w, input.color.rgb * alpha, alpha);
   return vec4<f32>(fogged, alpha);
 }

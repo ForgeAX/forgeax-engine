@@ -11,6 +11,8 @@ import {
 export type EntityInspection = WorkspaceEntityInspection;
 export type InspectorField = InspectorFormField & {
   rawValue: unknown;
+  unavailable?: boolean;
+  inherited?: boolean;
   presentation?: 'collection' | 'resource' | 'color' | 'handle';
   resource?: InspectorResourceReference;
   resources?: readonly InspectorResourceReference[];
@@ -48,6 +50,7 @@ export type InspectorSection = {
   titleKey?: string;
   kind: 'fields' | 'mesh' | 'materials';
   fields: InspectorField[];
+  defaultCollapsed?: boolean;
 };
 export type InspectorComponentNode = {
   key: string;
@@ -91,6 +94,19 @@ const CAMERA_RENDER_SECTIONS: Record<string, readonly string[]> = {
   antialiasing: ['antialias', 'transparency', 'historyVersion'],
   bloom: ['bloom', 'bloomThreshold', 'bloomIntensity', 'bloomSoftKnee', 'bloomScatter'],
   cameraOutput: ['target', 'targetLayer', 'clearColor', 'autoAspect'],
+};
+const CLOUD_SECTIONS = {
+  layer: ['bottomMeters', 'thicknessMeters', 'entryLimitMeters', 'traceLimitMeters'],
+  material: ['material', 'materialInstance'],
+  lighting: ['phaseG', 'phaseG2', 'phaseBlend', 'multiScatteringOctaves', 'msContribution', 'msOcclusion', 'msEccentricity', 'atmosphereTransmittanceMode', 'enableDistantSkyLightSampling'],
+  shadows: ['selfShadow', 'shadowMode', 'shadowSamples', 'shadowDistanceMeters', 'castCloudShadows', 'shadowExtentMeters', 'shadowDepthBiasMeters', 'shadowStrength', 'surfaceShadowStrength', 'atmosphereShadowStrength', 'shadowResolution', 'shadowMapSamples'],
+  overrides: ['extinctionOverridePerMeter', 'coverageBias', 'layoutWeight', 'maskWeight', 'profileWeight', 'bodyWeight', 'erosionWeight', 'useDetail'],
+  motion: ['windOffsetMeters', 'initializationRevision'],
+  advanced: ['enabled', 'viewSampleCountScale', 'stopTransmittance', 'skipEmpty', 'diagnosticMode', 'diagnosticPixelX', 'diagnosticPixelY'],
+} as const;
+const CLOUD_INHERITANCE: Readonly<Record<string, number>> = {
+  extinctionOverridePerMeter: -1, layoutWeight: -1, maskWeight: -1, profileWeight: -1,
+  bodyWeight: -1, erosionWeight: -1, coverageBias: -2, useDetail: 2,
 };
 const ENTITY_DATA_COMPONENTS = new Set([
   'Entity', 'Name', 'ChildOf', 'Children', 'GlobalTransform', 'Transform', 'TransformInterpolation', 'Mobility', 'Disabled',
@@ -165,7 +181,9 @@ export function inspectorEntityFromInspection(
   const materials = componentValues(inspection, 'MeshRenderer').materials;
   const materialCollection = inspectorCollection(materials);
   const overrides = Array.isArray(materials) ? materials : materialCollection.truncated ? materialCollection.entries.map(([, value]) => value) : null;
-  const references = bindings?.entityId === inspection.entityId && bindings.targetId === inspection.targetId ? bindings.references : [];
+  const nativeReferences = inspection.assetReferences ?? (bindings?.entityId === inspection.entityId
+    && bindings.targetId === inspection.targetId ? bindings : undefined);
+  const references = nativeReferences?.references ?? [];
   const resource = (key: string, value: unknown, kind: string): InspectorResourceReference => {
     const reference = references.find(reference => reference.key === key);
     const projected = { ...inspectorResourceReference(value, kind, assets),
@@ -191,7 +209,7 @@ export function inspectorEntityFromInspection(
       return { ...reference, inherited: reference.inherited ?? value === 0 };
     }) : null,
     materialOverridesTruncated: materialCollection.truncated,
-    assetReferencesTruncated: bindings?.truncated,
+    assetReferencesTruncated: nativeReferences?.truncated,
     components: inspection.components.map((component) => {
       const values = component.values && typeof component.values === 'object' && !Array.isArray(component.values)
         ? component.values as Record<string, unknown> : {};
@@ -246,6 +264,8 @@ export function inspectorEntityFromInspection(
           return {
             key, label: formatInspectorFieldLabel(key), kind, rawValue,
             value: label ?? normalizeInspectorFieldValue(rawValue, kind),
+            ...(component.name === 'VolumetricCloudLayer' && Object.hasOwn(CLOUD_INHERITANCE, key)
+              && rawValue === CLOUD_INHERITANCE[key] ? { inherited: true } : {}),
             ...(schema.labels ? { options: label ? Object.keys(schema.labels) : [...Object.keys(schema.labels), String(rawValue)] }
               : options ? { options } : {}),
             ...(shared || asset ? { presentation: 'resource' as const, resource: resource(`${component.name}.${key}`, rawValue, shared ? shared[1]!
@@ -318,6 +338,41 @@ export function inspectorGroupsForComponents(source: InspectorEntity, components
   return inspectorGroups(source).filter(group => inspectorSectionsForComponents(source, group, components).length > 0);
 }
 
+function cloudRuntimeSections(source: InspectorEntity): InspectorSection[] {
+  const observation = source.raw.rendererObservation;
+  const valid = observation !== undefined && typeof observation.targetId === 'string' && observation.targetId.length > 0
+    && typeof observation.worldId === 'string' && observation.worldId.length > 0 && observation.targetId === source.raw.targetId
+    && observation.worldId === source.raw.worldId;
+  const rows = valid ? Object.entries(observation.cloudLayer ?? {}).filter(([view, facts]) =>
+    facts.mode0?.viewId === view && facts.mode0.deviceGeneration === observation.frame.deviceGeneration) : [];
+  const field = (key: string, rawValue: unknown): InspectorField => ({key,label:formatInspectorFieldLabel(key),
+    kind:'text',value:rawValue === undefined ? '' : Array.isArray(rawValue) ? JSON.stringify(rawValue) : String(rawValue),
+    rawValue,...(rawValue === undefined ? {unavailable:true} : {})});
+  if (!rows.length) return [{key:'VolumetricCloudLayer.runtime',component:'VolumetricCloudLayer',
+    titleKey:'cloudRuntime',kind:'fields',fields:[field('runtimeObservation',undefined)],defaultCollapsed:true}];
+  return rows.map(([view, facts]) => ({key:`VolumetricCloudLayer.runtime.${view}`,component:'VolumetricCloudLayer',
+    titleKey:'cloudRuntime',kind:'fields',defaultCollapsed:true,fields:[
+      field('runtimeViewId',view),field('runtimeFrame',observation!.frame.frameId),
+      field('runtimeDeviceGeneration',observation!.frame.deviceGeneration),field('runtimeStatus',facts.status),
+      field('runtimeResourceStage',facts.resourceStage),field('runtimeMaterialIdentity',facts.mode0?.materialIdentity),
+      field('runtimeHistoryValid',facts.mode0?.historyValid),field('runtimePreparedPhase',facts.mode0?.preparedPhase),
+      field('runtimeAcceptedFrame',facts.mode0?.acceptedFrame),field('runtimeAcceptedPhase',facts.mode0?.acceptedPhase),
+      field('runtimeResetReasons',facts.mode0?.resetReasons),
+    ]}));
+}
+
+function cloudSections(component: InspectorComponent, source: InspectorEntity): InspectorSection[] {
+  const declared = new Set<string>(Object.values(CLOUD_SECTIONS).flat());
+  const sections = Object.entries(CLOUD_SECTIONS).flatMap(([name, keys]): InspectorSection[] => {
+    const fields = component.fields.filter(field => (keys as readonly string[]).includes(field.key)
+      || (name === 'advanced' && !declared.has(field.key)));
+    return fields.length ? [{ key: `${component.name}.${name}`, component: component.name,
+      titleKey: `cloud${name[0]!.toUpperCase()}${name.slice(1)}`, kind: 'fields', fields,
+      ...(name === 'advanced' ? { defaultCollapsed: true } : {}) }] : [];
+  });
+  return [...(sections.length ? sections : [{ key: component.name, component: component.name, kind: 'fields' as const, fields: [] }]), ...cloudRuntimeSections(source)];
+}
+
 export function inspectorSections(source: InspectorEntity, group: InspectorGroup): InspectorSection[] {
   if (group === 'common') {
     const sections: InspectorSection[] = [];
@@ -328,6 +383,7 @@ export function inspectorSections(source: InspectorEntity, group: InspectorGroup
       if (source.components.some(component => component.name === 'MeshRenderer')) sections.push({ key: 'materials', component: 'MeshRenderer', titleKey: 'materials', kind: 'materials', fields: [] });
     } else {
       for (const component of source.components.filter(component => source.primaryComponents.includes(component.name))) {
+        if (component.name === 'VolumetricCloudLayer') { sections.push(...cloudSections(component, source)); continue; }
         const keys = COMMON_FIELDS[component.name];
         sections.push({ key: component.name, component: component.name, kind: 'fields', fields: keys ? component.fields.filter(field => keys.includes(field.key)) : component.fields });
       }
@@ -338,6 +394,7 @@ export function inspectorSections(source: InspectorEntity, group: InspectorGroup
   const common = inspectorSections(source, 'common');
   return source.components.flatMap((component): InspectorSection[] => {
     if (components && !components.has(component.name)) return [];
+    if (component.name === 'VolumetricCloudLayer') return cloudSections(component, source);
     if (group === 'rendering' && component.name === 'MeshFilter' && !common.some(section => section.kind === 'mesh')) {
       return [{ key: 'mesh', component: 'MeshFilter', titleKey: 'staticMesh', kind: 'mesh' as const, fields: [] }];
     }

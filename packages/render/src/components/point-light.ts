@@ -1,3 +1,4 @@
+import { ResourceInvalidValueError } from '../errors/component-validation';
 // @forgeax/engine-render - PointLight (omnidirectional point-light parameters).
 //
 // Schema: color array<f32,3> + intensity f32 + range f32 (feat-20260709 M2:
@@ -26,14 +27,17 @@
 // SpotLight; `range` semantics aligned with KHR_lights_punctual).
 
 import { defineComponent } from '@forgeax/engine-ecs';
-import { ResourceInvalidValueError } from '../errors/ecs-validation';
+
 import { LIGHTING_CHANNELS_DEFAULT } from './lighting-channels';
 
-/** Point distance exponent; validation precedes the f32 GPU projection. */
-export function validatePointLightDecay(value: number): ResourceInvalidValueError | null {
+/** Validate a punctual distance exponent before projecting it to the GPU. */
+export function validatePointLightDecay(
+  value: number,
+  light: 'PointLight' | 'SpotLight' = 'PointLight',
+): ResourceInvalidValueError | null {
   if (Number.isFinite(value) && value >= 0 && Number.isFinite(Math.fround(value))) return null;
   return new ResourceInvalidValueError(
-    'PointLight.decay is a finite non-negative f32',
+    `${light}.decay is a finite non-negative f32`,
     'use 2 for inverse-square attenuation or 0 for range-only falloff',
     { receivedKey: 'decay', receivedMode: value },
   );

@@ -38,9 +38,12 @@ export function projectJoints(mesh: SkinnedMesh) {
       rotation = quat.create(),
       scale = vec3.create(),
       shear = vec3.create();
-    if (!mat4.decomposeAffine(pos, rotation, scale, shear, matrix.elements))
+    if (
+      !mat4.decomposeAffine(pos, rotation, scale, shear, matrix.elements) ||
+      shear.some((value) => Math.abs(value) > 1e-5)
+    )
       return invalid('SkinnedMesh joint world transform', mesh.uuid).unwrap();
-    return { pos, quat: rotation, scale, shear };
+    return { pos, quat: rotation, scale };
   });
 }
 
@@ -68,27 +71,32 @@ export function projectCpuSkin(mesh: SkinnedMesh, base: MeshAsset): MeshAsset {
   if (!(joints instanceof Uint16Array) || !(weights instanceof Float32Array))
     return invalid('SkinnedMesh skinIndex/skinWeight', mesh.uuid).unwrap();
   const vector = new Vector3(),
+    morphDelta = new Vector3(),
     sum = new Matrix4(),
     linear = new Matrix3();
+  // Pose-local palette: these products are identical for every vertex/influence.
+  const palette = mesh.skeleton.bones.map((bone, index) => {
+    const inverse = mesh.skeleton.boneInverses[index];
+    return inverse === undefined ? undefined : bone.matrixWorld.clone().multiply(inverse);
+  });
+  const channels = [
+    ['position', position],
+    ['normal', normal],
+  ] as const;
   for (let vertex = 0; vertex < position.length / 3; vertex++) {
     sum.elements.fill(0);
     for (let lane = 0; lane < 4; lane++) {
       const index = joints[vertex * 4 + lane] ?? 0,
         weight = weights[vertex * 4 + lane] ?? 0;
-      const bone = mesh.skeleton.bones[index],
-        inverse = mesh.skeleton.boneInverses[index];
-      if (bone === undefined || inverse === undefined || !Number.isFinite(weight))
+      const matrix = palette[index];
+      if (matrix === undefined || !Number.isFinite(weight))
         return invalid('SkinnedMesh joint index/weight', mesh.uuid).unwrap();
-      const matrix = bone.matrixWorld.clone().multiply(inverse);
       for (let i = 0; i < 16; i++)
         sum.elements[i] = (sum.elements[i] ?? 0) + (matrix.elements[i] ?? 0) * weight;
     }
     sum.premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
     linear.setFromMatrix4(sum);
-    for (const [name, data] of [
-      ['position', position],
-      ['normal', normal],
-    ] as const) {
+    for (const [name, data] of channels) {
       vector.fromArray(data, vertex * 3);
       for (let i = 0; i < (base.morphTargets?.length ?? 0); i++) {
         const delta = base.morphTargets?.[i]?.[name],
@@ -96,7 +104,7 @@ export function projectCpuSkin(mesh: SkinnedMesh, base: MeshAsset): MeshAsset {
         if (!Number.isFinite(weight))
           return invalid('Mesh.morphTargetInfluences', mesh.uuid).unwrap();
         if (delta !== undefined)
-          vector.addScaledVector(new Vector3().fromArray(delta, vertex * 3), weight);
+          vector.addScaledVector(morphDelta.fromArray(delta, vertex * 3), weight);
       }
       if (name === 'position')
         mesh.applyBoneTransform(vertex % mesh.geometry.getAttribute('position').count, vector);

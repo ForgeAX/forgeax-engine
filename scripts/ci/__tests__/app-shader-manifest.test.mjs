@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { admitShaderTemplateManifest, publishShaderProgramTemplates } from '@forgeax/engine-shader';
 import {
   readShaderManifestPublication,
   SHADER_MANIFEST_PUBLICATION_VERSION,
@@ -14,6 +15,79 @@ import {
 
 const sharedEntry = { hash: 'engine-hash', wgsl: 'engine', bindings: '{}', glsl: '' };
 const customEntry = { hash: 'custom-hash', wgsl: 'custom', bindings: '{}', glsl: '' };
+
+test('remaps reflection bindings and nested entry reads through app delta projection and replacement', async () => {
+  const reflection = (binding, name) => ({
+    schemaVersion: 'shader-reflection/3',
+    uvSetCount: 0,
+    boundGlobals: [
+      {
+        group: 0,
+        binding,
+        addressSpace: 'handle',
+        resourceKind: 'sampler',
+        visibility: 2,
+        samplerType: 'filtering',
+        resourceAccess: 'read-only',
+        name,
+      },
+    ],
+    entryPoints: [{ name, stage: 'fragment', bindings: [{ group: 0, binding }] }],
+  });
+  const engineEntry = { ...sharedEntry, reflection: reflection(0, 'engine') };
+  const appEntry = { ...customEntry, reflection: reflection(1, 'app') };
+  const engine = publishShaderManifest([engineEntry], []);
+  const app = publishShaderManifest([appEntry, engineEntry], []);
+  const delta = projectAppShaderManifest(app, engine);
+  assert.equal(delta.reflections.length, 1);
+  assert.equal(delta.reflectionBindings.length, 1);
+  const merged = mergeAppShaderManifest(engine, delta);
+  const decoded = await readShaderManifestPublication(merged);
+  assert.deepEqual(
+    decoded.entries.map((entry) => entry.reflection),
+    [engineEntry.reflection, appEntry.reflection],
+  );
+  const broken = structuredClone(delta);
+  broken.reflections[0].bindingIndices[0] = 99;
+  assert.throws(() => mergeAppShaderManifest(engine, broken), /reference is missing/);
+});
+
+test('retains a complete native source publication beside compiled Core inputs', () => {
+  const source = {
+    schemaVersion: '7.0.0',
+    library: publishShaderProgramTemplates(
+      new Map([
+        [
+          'app::compute',
+          {
+            schemaVersion: 'shader-program-template/1',
+            compilerProfile: {
+              id: 'fixture',
+              language: 'wgsl',
+              profileVersion: '1',
+              adapterVersion: '1',
+              compilerVersion: '1',
+              nagaVersion: '1',
+            },
+            source: '@compute @workgroup_size(1) fn main() {}',
+            imports: {},
+            axes: [],
+          },
+        ],
+      ]),
+    ).unwrap(),
+    entries: [
+      { hash: 'compute', identifier: 'app::compute', program: 'app::compute', selection: {} },
+    ],
+    materialShaders: [],
+  };
+  assert.equal(projectAppShaderManifest(source, publishShaderManifest([sharedEntry], [])), source);
+  assert.equal(admitShaderTemplateManifest(source).ok, true);
+  assert.throws(
+    () => projectAppShaderManifest({ ...source, library: {} }, {}),
+    /invalid source shader publication/,
+  );
+});
 const sharedMaterial = {
   identifier: 'forgeax::default-standard-pbr',
   sourcePath: 'engine/default-standard-pbr.wgsl',
@@ -257,6 +331,8 @@ test('compact app delta retains custom shader sources through materialization', 
   };
   const engine = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     fragments: [sharedSource],
     sources: { [sharedDigest]: [0] },
@@ -266,6 +342,8 @@ test('compact app delta retains custom shader sources through materialization', 
   };
   const app = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     fragments: [sharedSource, 'fn custom() {}\n'],
     sources: { [sharedDigest]: [0], [customDigest]: [0, 1] },
@@ -322,6 +400,8 @@ test('compact app overrides discard replaced receipts and remap the surviving ma
   const merged = mergeAppShaderManifest(
     {
       schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      reflections: [],
+      reflectionBindings: [],
       entryPoints: [],
       fragments: [sharedSource],
       sources: { [sharedDigest]: [0] },
@@ -332,6 +412,8 @@ test('compact app overrides discard replaced receipts and remap the surviving ma
     {
       forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
       schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      reflections: [],
+      reflectionBindings: [],
       entryPoints: [],
       fragments: [customSource],
       sources: { [customDigest]: [0] },
@@ -402,6 +484,8 @@ test('schema 5 app deltas close source and receipt tables after projection and m
   const sharedReceipts = [{ owner: 'shared-material' }, { owner: 'shared-variant' }];
   const engine = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     fragments: [engineEntrySource, sharedMaterialSource],
     sources: { [engineEntryDigest]: [0], [sharedMaterialDigest]: [1] },
@@ -411,6 +495,8 @@ test('schema 5 app deltas close source and receipt tables after projection and m
   };
   const app = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     fragments: [
       engineEntrySource,
@@ -491,6 +577,8 @@ test('same row and receipt index with different receipt bytes remains an app ove
   const digest = compactV4Digest([source]);
   const shared = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     receipts: [{ binding: 1 }],
     fragments: [source],
@@ -519,6 +607,8 @@ test('rejects invalid delta receipt indices before concatenating receipt tables'
   const digest = compactV4Digest([source]);
   const shared = {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+    reflections: [],
+    reflectionBindings: [],
     entryPoints: [],
     receipts: [],
     fragments: [],
@@ -530,6 +620,8 @@ test('rejects invalid delta receipt indices before concatenating receipt tables'
     const delta = {
       forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
       schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
+      reflections: [],
+      reflectionBindings: [],
       entryPoints: [],
       receipts: [{}],
       fragments: [source],

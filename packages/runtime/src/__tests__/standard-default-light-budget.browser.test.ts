@@ -7,7 +7,7 @@ import { commands } from 'vitest/browser';
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
 
-// The default Renderer profile admits the documented 256 local lights. Each
+// The default Renderer profile admits up to 1024 local lights. Each
 // light pools on its own tile of a white board and cannot reach a neighbouring
 // tile centre, so one dropped light leaves its tile dark.
 
@@ -89,9 +89,7 @@ async function renderTiles(columns: number, lit: number) {
   const draw = async () => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+    const receipt = value(renderer.draw({ source: lease }));
     value(await receipt.completed);
     if (errors.length > 0) {
       const first = errors[0] as { message?: string; detail?: unknown; cause?: unknown };
@@ -166,7 +164,7 @@ it.each([
       throw new Error(JSON.stringify(describe(error)));
     });
     const { tiles, lighting } = result;
-    expect(lighting).toMatchObject({ requested: lit, admitted: lit, maxLights: 256 });
+    expect(lighting).toMatchObject({ requested: lit, admitted: lit, maxLights: 1024 });
     const litTiles = tiles.slice(0, lit);
     expect(Math.min(...litTiles), JSON.stringify(litTiles)).toBeGreaterThan(40);
     // Tiles past the last light stay dark: no light reaches a neighbouring centre.

@@ -10,6 +10,8 @@ import optics from '../../../shader/src/atmosphere-optics.wgsl?raw';
 import sampling from '../../../shader/src/atmosphere-sampling.wgsl?raw';
 import tableAccess from '../../../shader/src/atmosphere-table-access.wgsl?raw';
 import visibility from '../../../shader/src/atmosphere-visibility.wgsl?raw';
+import cloudGeometry from '../../../shader/src/cloud/geometry.wgsl?raw';
+import cloudShadow from '../../../shader/src/cloud/shadow.wgsl?raw';
 import cloud from '../../../shader/src/cloud.wgsl?raw';
 import common from '../../../shader/src/common.wgsl?raw';
 import fogModule from '../../../shader/src/fog.wgsl?raw';
@@ -22,10 +24,10 @@ import { earthAtmosphere } from './atmosphere-fixture';
 // The shipped atmosphere composition and background programs, composed from
 // their production modules and rendered on the GPU with constant tables:
 // - Fog over Atmosphere fogs background pixels as distant fog at the
-//   atmosphere exit and still tints finite surfaces;
+//   camera far depth and still tints finite surfaces;
 // - Fog.skyOpacity scales only the background: 0 is bit-equal to fog off on
 //   the sky, 1 is the physical distant fog, surfaces are identical for both;
-// - the background below the horizon shows the virtual ground lit by the sun.
+// - ground albedo contributes through multiple scattering, never as a visible surface.
 
 const SIZE = 8;
 const SKY: readonly [number, number, number, number] = [0.3, 0.5, 0.9, 1];
@@ -44,7 +46,6 @@ function camera(pitch: number): CameraSnapshot {
   const world = new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 2, 0, 1]);
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 2, 0),
     world,
@@ -74,6 +75,7 @@ function viewPayload(
   fog: FogFrame | undefined,
   atmosphere: AtmosphereParameters,
   pitch = 0,
+  projection: CameraSnapshot['projection'] = 'perspective',
 ): Float32Array {
   let payload = new Float32Array();
   const queue = {
@@ -93,7 +95,7 @@ function viewPayload(
   writeViewUbo(
     queue,
     {} as Buffer,
-    camera(pitch),
+    { ...camera(pitch), projection },
     light,
     lights,
     [],
@@ -153,6 +155,8 @@ async function compose(entry: string): Promise<string> {
       'forgeax_view::fog': fog,
       // Named by the visibility module's non-utility branch; unused here.
       'forgeax_cloud::layer': cloud,
+      'forgeax_cloud::geometry': cloudGeometry,
+      'forgeax_cloud::shadow': cloudShadow,
       'forgeax_pbr::shadow_pcf': shadowPcf,
       'forgeax_atmosphere::visibility': visibility,
       'forgeax_atmosphere::table_access': tableAccess,
@@ -336,6 +340,7 @@ async function backgroundFrame(
   device: GPUDevice,
   code: string,
   payload: Float32Array,
+  skyRadiance: readonly [number, number, number, number] = [0, 0, 0, 1],
 ): Promise<Float32Array> {
   const view = device.createBuffer({
     size: payload.byteLength,
@@ -370,7 +375,7 @@ async function backgroundFrame(
     device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: constantTexture(device, [0, 0, 0, 1]).createView() }, // sky view: no air light
+        { binding: 0, resource: constantTexture(device, skyRadiance).createView() },
         { binding: 1, resource: device.createSampler() },
         { binding: 2, resource: { buffer: view } },
         { binding: 3, resource: constantTexture(device, [1, 1, 1, 1]).createView() }, // clear air
@@ -485,11 +490,50 @@ it('Fog.skyOpacity scales fog on background pixels only', async () => {
   }
 });
 
-it('lights the virtual ground below the horizon with the atmosphere ground albedo', async () => {
+it('integrates background height fog to view depth rather than clipping it to the planet', async () => {
+  const device = await gpu();
+  try {
+    const code = await compose(composeModule);
+    const fog = { ...FOG, density: 0.001, heightFalloff: 0.014, maxOpacity: 1 };
+    const source = fog.color.map((c, i) => c + ([0.1, 0.12, 0.15][i] ?? 0) + 1 / (4 * Math.PI));
+    for (const projection of ['perspective', 'orthographic'] as const) {
+      const down = await composeFrame(
+        device,
+        code,
+        viewPayload(fog, earthAtmosphere, -Math.PI / 3, projection),
+      );
+      const up = await composeFrame(
+        device,
+        code,
+        viewPayload(fog, earthAtmosphere, Math.PI / 3, projection),
+      );
+      for (let y = 0; y < SIZE / 2; y++)
+        for (let x = 0; x < SIZE; x++) {
+          // These are empty background pixels, even where the optical planet is
+          // only a few metres away. The infinite height medium still fills them.
+          expect(distance(rgb(down, x, y), source), `${projection} down ${x},${y}`).toBeLessThan(
+            0.01,
+          );
+          // Positive height falloff leaves the upper blue sky visible.
+          expect(
+            distance(rgb(up, x, y), SKY.slice(0, 3)),
+            `${projection} up ${x},${y}`,
+          ).toBeLessThan(0.15);
+        }
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('does not add a virtual ground surface below the horizon', async () => {
   const device = await gpu();
   try {
     const code = await compose(backgroundModule);
-    const frame = (albedo: [number, number, number]) =>
+    const frame = (
+      albedo: [number, number, number],
+      air: readonly [number, number, number, number] = [0, 0, 0, 1],
+    ) =>
       backgroundFrame(
         device,
         code,
@@ -499,23 +543,53 @@ it('lights the virtual ground below the horizon with the atmosphere ground albed
           { ...earthAtmosphere, groundAlbedo: albedo, sunAngularRadius: 0 },
           (-10 * Math.PI) / 180,
         ),
+        air,
       );
     const grey = await frame([0.4, 0.4, 0.4]);
     const tinted = await frame([0.1, 0.2, 0.4]);
-    // With clear air and a black sky table, a ground ray carries exactly
-    // albedo * sun * cos(sun zenith) / pi.
-    const cosine = -(SUN_DIRECTION[1] ?? 0);
-    const bottom = SIZE - 1;
-    for (let x = 0; x < SIZE; x++) {
-      const g = rgb(grey, x, bottom);
-      const t = rgb(tinted, x, bottom);
-      for (const [i, albedo] of [0.4, 0.4, 0.4].entries())
-        expect(g[i], `grey ${x} channel ${i}`).toBeCloseTo((albedo * cosine) / Math.PI, 3);
-      for (const [i, albedo] of [0.1, 0.2, 0.4].entries())
-        expect(t[i], `tinted ${x} channel ${i}`).toBeCloseTo((albedo * cosine) / Math.PI, 3);
-      // Rays above the horizon are untouched by the ground term.
-      expect(rgb(grey, x, 0)).toEqual([0, 0, 0]);
-    }
+    const scattering = await frame([0.4, 0.4, 0.4], SKY);
+    // Unreal's display integration uses Ground=false. With no air radiance,
+    // every pixel stays black, including rays that terminate on the planet.
+    // Albedo can change the multiple-scattering producer, not a display overlay.
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++) {
+        expect(rgb(grey, x, y), `grey ${x},${y}`).toEqual([0, 0, 0]);
+        expect(rgb(tinted, x, y), `tinted ${x},${y}`).toEqual([0, 0, 0]);
+        // Keep the air contribution below the horizon: this is not a black mask.
+        for (const [i, expected] of SKY.slice(0, 3).entries())
+          expect(rgb(scattering, x, y)[i], `air ${x},${y} channel ${i}`).toBeCloseTo(expected, 3);
+      }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('keeps the orthographic direct-integration background free of a virtual ground surface', async () => {
+  const device = await gpu();
+  try {
+    const code = await compose(backgroundModule);
+    // Vacuum makes the independent oracle zero radiance along every ray.
+    // Orthographic views bypass the Sky View LUT and integrate the air directly.
+    const pixels = await backgroundFrame(
+      device,
+      code,
+      viewPayload(
+        undefined,
+        {
+          ...earthAtmosphere,
+          rayleighScattering: [0, 0, 0],
+          mieScattering: 0,
+          mieAbsorption: 0,
+          absorption: [0, 0, 0],
+          sunAngularRadius: 0,
+        },
+        (-10 * Math.PI) / 180,
+        'orthographic',
+      ),
+      SKY,
+    );
+    for (let y = 0; y < SIZE; y++)
+      for (let x = 0; x < SIZE; x++) expect(rgb(pixels, x, y), `${x},${y}`).toEqual([0, 0, 0]);
   } finally {
     device.destroy();
   }

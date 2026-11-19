@@ -2,7 +2,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decodeCatalogWire, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import {
+  decodeCatalogWire,
+  decodeMaterialProgramWire,
+  serializeCookedMaterialRecord,
+} from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { MaterialAsset, RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -12,12 +16,14 @@ import { runtimeAssets } from '../../../assets-runtime/src/internal/runtime-asse
 import { materialContribution } from '../../../render/src/assets/asset-decoders.js';
 import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { installPackAuthorDependencies } from './pack-author-dependencies.js';
 
 it.each([
   'legacy',
   'dynamic',
 ] as const)('omits only external shader bytes in the final served %s DEV Pack and restores the complete material', async (format) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-dev-material-transport-'));
+  if (format === 'dynamic') await installPackAuthorDependencies(root);
   const packageId = '019f0000-0000-7000-8000-000000000702';
   const parsedPackage = PackageId.parse(packageId);
   if (!parsedPackage.ok) throw parsedPackage.error;
@@ -122,7 +128,8 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     const publicationBefore = JSON.stringify(entry.publication);
     const served = await fetch(new URL(entry.packageUrl, base));
     expect(served.status).toBe(200);
-    const pack = await served.json();
+    // Shared program ABIs travel interned; the document under test is the decoded Pack.
+    const pack = decodeMaterialProgramWire(await served.json()).unwrap();
     expect(pack).toMatchObject({
       scopeId: accepted.scopeId,
       generation: entry.publication.generation,

@@ -1,6 +1,6 @@
 import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { type MaterialRootAsset, ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
 import { buildScriptablePack } from '../scriptable-pack-build.js';
 import { materialAssetOutputProducer } from '../scriptable-pack-output-producers.js';
@@ -34,8 +34,15 @@ function paint(index: number): MaterialRootAsset {
 function build(options: {
   readonly parallelMaterials: boolean;
   readonly failing?: ReadonlyMap<string, number>;
+  readonly held?: ReadonlyMap<string, Promise<void>>;
 }) {
-  const observed = { serialPeak: 0, materialPeak: 0, serialOrder: [] as string[] };
+  const observed = {
+    serialPeak: 0,
+    materialPeak: 0,
+    serialOrder: [] as string[],
+    materialStarted: [] as string[],
+    materialFailed: [] as string[],
+  };
   let serialActive = 0;
   let materialActive = 0;
   let releaseOverlap: () => void = () => {};
@@ -84,11 +91,13 @@ function build(options: {
         ...(options.parallelMaterials ? { concurrency: 'parallel' as const } : {}),
         async cook(raw: unknown) {
           const input = raw as { guid: string; sourceKey: string; source: MaterialRootAsset };
+          observed.materialStarted.push(input.sourceKey);
           observed.materialPeak = Math.max(observed.materialPeak, ++materialActive);
           if (options.parallelMaterials) {
             if (materialActive >= 2) releaseOverlap();
             await overlapping;
           }
+          await options.held?.get(input.sourceKey);
           // Earlier outputs take longer, so completion order inverts source order.
           const index = keys.indexOf(input.sourceKey);
           await delay(2 * (COUNT - index));
@@ -96,6 +105,7 @@ function build(options: {
           const failAfter = options.failing?.get(input.sourceKey);
           if (failAfter !== undefined) {
             await delay(failAfter);
+            observed.materialFailed.push(input.sourceKey);
             throw new Error(`material cook failed: ${input.sourceKey}`);
           }
           return {
@@ -118,6 +128,57 @@ function build(options: {
 }
 
 describe('ScriptablePack output production concurrency', () => {
+  it('refills a completed lane while earlier material cooks remain pending', async () => {
+    const release = new Map<string, () => void>();
+    const held = new Map(
+      keys.map((key) => [key, new Promise<void>((resolve) => release.set(key, resolve))]),
+    );
+    const { result, observed } = build({ parallelMaterials: true, held });
+    try {
+      await vi.waitFor(() => expect([...observed.materialStarted]).toEqual(keys.slice(0, 4)));
+      release.get(keys[3] ?? '')?.();
+      await vi.waitFor(() => expect([...observed.materialStarted]).toEqual(keys.slice(0, 5)));
+      expect(observed.materialPeak).toBe(4);
+    } finally {
+      for (const finish of release.values()) finish();
+      await result;
+    }
+    const completed = await result;
+    if (!completed.ok) throw completed.error;
+    expect(completed.value.stagedOutputs.map((output) => output.sourceKey)).toEqual(keys);
+  });
+
+  it('stops refilling on failure and drains the already admitted cooks', async () => {
+    const release = new Map<string, () => void>();
+    const held = new Map(
+      keys.map((key) => [key, new Promise<void>((resolve) => release.set(key, resolve))]),
+    );
+    const failedKey = keys[3] ?? '';
+    const { result, observed } = build({
+      parallelMaterials: true,
+      held,
+      failing: new Map([[failedKey, 0]]),
+    });
+    let settled = false;
+    const completed = result.finally(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect([...observed.materialStarted]).toEqual(keys.slice(0, 4)));
+      release.get(failedKey)?.();
+      await vi.waitFor(() => expect([...observed.materialFailed]).toEqual([failedKey]));
+      expect(settled).toBe(false);
+      expect(observed.materialStarted).toEqual(keys.slice(0, 4));
+    } finally {
+      for (const finish of release.values()) finish();
+      expect(await completed).toMatchObject({
+        ok: false,
+        error: { detail: { producer: `material cook failed: ${failedKey}` } },
+      });
+      expect(observed.materialStarted).toEqual(keys.slice(0, 4));
+    }
+  });
+
   it('overlaps parallel material cooks and publishes the same product as serial cooking', async () => {
     const serial = build({ parallelMaterials: false });
     const pooled = build({ parallelMaterials: true });

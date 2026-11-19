@@ -4,18 +4,69 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import {
+  abortStagedTemporalGpuState,
+  commitStagedTemporalGpuState,
   commitTemporalGpuSubmit,
   getTemporalBindGroupResources,
   getTemporalGpuState,
   retireTemporalGpuState,
   retireTemporalGpuStateAfterFence,
   stageTemporalGpuSubmit,
+  stageTemporalGpuWrite,
 } from '../temporal/gpu';
 import { TemporalHistory } from '../temporal/history';
 import { inspectTemporal } from '../temporal/inspection';
 import { createTemporalView } from '../temporal/view';
 
 describe('TAA history lifecycle', () => {
+  it('publishes a color-only scene history without allocating TAA metadata', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const textures = vi.spyOn(device, 'createTexture');
+    const frameState = { retiringTemporalGpuStates: new Set() } as unknown as RenderFrameState;
+    const scope = DeviceScope.create(24, 'scene-color-history');
+    const state = getTemporalGpuState(
+      frameState,
+      device,
+      scope,
+      8,
+      8,
+      false,
+      undefined,
+      'scene-color',
+    );
+    expect(state.mode).toBe('scene-color');
+    expect(state.temporal).toBeUndefined();
+    expect(state.stability).toBeUndefined();
+    expect(textures.mock.calls.map(([desc]) => desc.label)).toEqual([
+      'scene-color-history-color-a',
+      'scene-color-history-color-b',
+    ]);
+    expect(state.valid).toBe(false);
+    stageTemporalGpuWrite(frameState, state);
+    expect(frameState.activeTemporalGpuState).toBeUndefined();
+    commitStagedTemporalGpuState(frameState, device.queue, {
+      onReplaced: () => {},
+      onRetireFailure: (cause) => {
+        throw cause;
+      },
+    });
+    expect(frameState.activeTemporalGpuState).toBe(state);
+    expect(state.valid).toBe(true);
+    const readIndex = state.readIndex;
+    stageTemporalGpuWrite(frameState, state);
+    abortStagedTemporalGpuState(frameState);
+    expect(state.readIndex).toBe(readIndex);
+    expect(frameState.activeTemporalGpuState).toBe(state);
+    expect(
+      getTemporalGpuState(frameState, device, scope, 8, 8, false, undefined, 'scene-color'),
+    ).toBe(state);
+    const taa = getTemporalGpuState(frameState, device, scope, 8, 8);
+    expect(taa).not.toBe(state);
+    expect(taa.mode).toBe('taa');
+    expect(frameState.activeTemporalGpuState).toBe(state);
+    retireTemporalGpuState(taa);
+    retireTemporalGpuState(state);
+  });
   it('keeps stability history separate from downstream temporal-v1 metadata', async () => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();
     const textures = vi.spyOn(device, 'createTexture');
@@ -72,6 +123,36 @@ describe('TAA history lifecycle', () => {
       ]);
     } finally {
       retireTemporalGpuState(state);
+    }
+  });
+  it('stages precise cloud histories without replacing the accepted FP16 allocation', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const textures = vi.spyOn(device, 'createTexture');
+    const scope = DeviceScope.create(24, 'cloud-precision-test');
+    const frame = { cloudHistoryActive: true } as RenderFrameState;
+    const active = getTemporalGpuState(frame, device, scope, 9, 7);
+    frame.activeTemporalGpuState = active;
+    frame.pendingCloudHistoryActive = true;
+    frame.pendingCloudHistoryFormat = 'rgba32float';
+    const candidate = getTemporalGpuState(frame, device, scope, 9, 7);
+    try {
+      expect(active.cloudHistoryFormat).toBe('rgba16float');
+      expect(frame.activeTemporalGpuState).toBe(active);
+      expect(getTemporalGpuState(frame, device, scope, 9, 7)).toBe(candidate);
+      expect(textures.mock.calls.slice(-6).map(([desc]) => desc.format)).toEqual(
+        Array(6).fill('rgba32float'),
+      );
+      const inspection = inspectTemporal(
+        createTemporalView({ antialias: 'taa', width: 9, height: 7 }),
+        undefined,
+        { active, candidate },
+      );
+      expect(inspection.resources.candidateBytes - inspection.resources.activeBytes).toBe(
+        5 * 4 * 32,
+      );
+    } finally {
+      retireTemporalGpuState(active);
+      retireTemporalGpuState(candidate);
     }
   });
   it('filters subpixel color reconstruction without filtering temporal metadata', async () => {

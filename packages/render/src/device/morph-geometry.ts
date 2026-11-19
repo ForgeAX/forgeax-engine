@@ -16,7 +16,6 @@ import {
 } from '../gpu-usage';
 import { type MorphChannel, morphChannels, packMorphDeltas } from '../morph-attributes';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
-import { worldEntityKey } from '../record/frame-snapshot';
 import type { MorphSnapshot } from '../render-system-extract';
 import { recordContext } from '../world/view-record-context';
 import type { DeviceScope } from './device-scope';
@@ -141,6 +140,14 @@ export class MorphGeometry {
 
   get size(): number {
     return this.entries.size;
+  }
+
+  /** Request the finite utility program without allocating or deforming any mesh. */
+  preparePipeline(input: MorphGeometryInput): boolean {
+    if (this.device !== input.device) this.reset(input.device);
+    this.computePipeline(input);
+    // null is the existing permanent CPU fallback; undefined is a pending module.
+    return this.pipeline !== undefined;
   }
 
   /**
@@ -539,6 +546,18 @@ export function resolveMorphGeometry(
   morph: MorphSnapshot,
   mesh: () => MeshAsset | undefined,
 ): MeshGpuHandles | undefined {
+  return internals.gpuStore.morphGeometry.resolve(morphInput(internals), key, base, morph, mesh);
+}
+
+/** Prepare the renderer-owned utility without creating per-entity geometry. */
+export function prepareMorphGeometryPipeline(
+  internals: Omit<MorphGeometryOwner, 'gpuStore'>,
+  geometry: MorphGeometry,
+): boolean {
+  return geometry.preparePipeline(morphInput(internals));
+}
+
+function morphInput(internals: Omit<MorphGeometryOwner, 'gpuStore'>): MorphGeometryInput {
   let input = morphInputs.get(internals);
   if (
     input === undefined ||
@@ -553,7 +572,7 @@ export function resolveMorphGeometry(
     };
     morphInputs.set(internals, input);
   }
-  return internals.gpuStore.morphGeometry.resolve(input, key, base, morph, mesh);
+  return input;
 }
 
 const morphInputs = new WeakMap<object, MorphGeometryInput>();
@@ -564,10 +583,10 @@ const morphInputs = new WeakMap<object, MorphGeometryInput>();
  */
 export function directMorphGeometry(
   internals: MorphGeometryOwner,
-  worlds: readonly import('../publication/resource-scope').RenderResourceScope[],
+  sourceScope: import('../publication/resource-scope').RenderResourceScope,
   source: Pick<
     import('../render-system-extract').RenderableSnapshot,
-    'morph' | 'worldId' | 'entityKey' | 'assetHandle'
+    'morph' | 'entityKey' | 'assetHandle'
   >,
   base: MeshGpuHandles,
 ): MeshGpuHandles {
@@ -575,17 +594,11 @@ export function directMorphGeometry(
   const handle = source.assetHandle;
   if (morph === undefined || handle === undefined) return base;
   return (
-    resolveMorphGeometry(
-      internals,
-      worldEntityKey(source.worldId, source.entityKey),
-      base,
-      morph,
-      () => {
-        const asset = worlds[source.worldId]?.resolveAsset<MeshAsset>(
-          handle as import('@forgeax/engine-types').AssetHandle<'mesh'>,
-        );
-        return asset?.ok === true ? asset.value : undefined;
-      },
-    ) ?? base
+    resolveMorphGeometry(internals, source.entityKey, base, morph, () => {
+      const asset = sourceScope?.resolveAsset<MeshAsset>(
+        handle as import('@forgeax/engine-types').AssetHandle<'mesh'>,
+      );
+      return asset?.ok === true ? asset.value : undefined;
+    }) ?? base
   );
 }

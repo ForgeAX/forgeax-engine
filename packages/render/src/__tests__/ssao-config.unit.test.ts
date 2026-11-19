@@ -10,6 +10,7 @@ import {
 import {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_SPIRAL_SSAO,
   AMBIENT_OCCLUSION_SSAO,
 } from '../index';
 import {
@@ -28,6 +29,9 @@ describe('SSAO parameter authority', () => {
       intensity: SSAO_DEFAULT_INTENSITY,
       quality: 'high',
       algorithm: 'gtao',
+      application: 'lighting',
+      sceneColorStrength: 0.95,
+      sampleCount: 16,
       directLightingStrength: 0,
       thickness: 1,
       distanceExponent: 1,
@@ -43,6 +47,9 @@ describe('SSAO parameter authority', () => {
       intensity: 1.4,
       quality: 'high',
       algorithm: 'gtao',
+      application: 'lighting',
+      sceneColorStrength: 0.95,
+      sampleCount: 16,
       directLightingStrength: 0,
       thickness: 1,
       distanceExponent: 1,
@@ -103,7 +110,9 @@ it('resolves component and profile authoring to the same AO defaults', () => {
   const world = new World();
   const entity = world.spawn({ component: AmbientOcclusion, data: {} }).unwrap();
   const data = world.get(entity, AmbientOcclusion).unwrap();
-  expect(ambientOcclusionParameters(data).unwrap()).toEqual(getSsaoParameters({}));
+  expect(getSsaoParameters(ambientOcclusionParameters(data).unwrap())).toEqual(
+    getSsaoParameters({ sceneColorStrength: Math.fround(0.95) }),
+  );
   expect(getSsaoParameters({ algorithm: 'ssao' }).algorithm).toBe('ssao');
 });
 
@@ -121,7 +130,11 @@ it.each([
 
 describe('AmbientOcclusion public algorithm encodings', () => {
   it('names every closed algorithm from the package entry', () => {
-    const named = { ssao: AMBIENT_OCCLUSION_SSAO, gtao: AMBIENT_OCCLUSION_GTAO };
+    const named = {
+      ssao: AMBIENT_OCCLUSION_SSAO,
+      gtao: AMBIENT_OCCLUSION_GTAO,
+      'spiral-ssao': AMBIENT_OCCLUSION_SPIRAL_SSAO,
+    };
     expect(Object.keys(named).sort()).toEqual([...AMBIENT_OCCLUSION_ALGORITHMS].sort());
     const world = new World();
     for (const [algorithm, encoded] of Object.entries(named)) {

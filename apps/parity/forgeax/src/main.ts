@@ -106,9 +106,9 @@ const world = new World({ assets: sceneAssets });
 
 const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
-// Camera entity: fov=Math.PI/4 (45 deg), aspect=1.0 (square 512x512),
-// z=3, near=0.1, far=100.
-world.spawn(
+  // Camera entity: fov=Math.PI/4 (45 deg), aspect=1.0 (square 512x512),
+  // z=3, near=0.1, far=100.
+  world.spawn(
   {
     component: Transform,
     data: { pos: [0, 0, 3]},
@@ -158,19 +158,13 @@ world.spawn(
   // if the compositor cleared it between calls.
   const drawFrame = async (): Promise<void> => {
     world.update().unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    await drawReadyFrame(renderer, { source: lease });
   };
   await drawFrame();
 
   declare_capture_hook(async () => {
     world.update().unwrap();
-    return captureDisplayFrame(renderer, {
-      leases: [lease], camera: { lease }, environment: { lease },
-    });
+    return captureDisplayFrame(renderer, { source: lease });
   });
 }
 

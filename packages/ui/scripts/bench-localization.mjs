@@ -7,7 +7,7 @@ import { createUiLocalization, refreshUiLocalization } from '../dist/localizatio
 
 const root = resolve(import.meta.dirname, '../../..');
 const require = createRequire(import.meta.url);
-const localization = JSON.parse(await readFile(resolve(root, 'templates/game-3d/assets/guide.ui.i18n.json'), 'utf8'));
+const localization = JSON.parse(await readFile(resolve(root, 'packages/ui/test-fixtures/game-guide/guide.ui.i18n.json'), 'utf8'));
 const asset = { guid: 'benchmark-ui', html: '', css: '', localization };
 const init = [], lookup = [], refresh = [];
 const summarize = (values) => {

@@ -1,3 +1,5 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/2.lighting/3.materials/src/index.ts
 // LearnOpenGL section 2.lighting 3.1 materials (forgeax mapping).
@@ -26,7 +28,7 @@ import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { World } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend } from '@forgeax/engine-input';
 
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -178,7 +180,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
   // ECS system: animate light color (LO sin waves per channel, negatives
   // clamped to 0 to mirror LO's framebuffer clamp behavior).
   let elapsed = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'animated-light-color',
     queries: [],
     fn: () => {
@@ -193,6 +195,7 @@ const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).un
       });
     },
   });
+world.addSystem(Update, systemToken1);
 
   // Spawn camera at LO initial pose (0,0,3) yaw=-90 deg pitch=0; first-person
   // system below drives WASD/mouse/scroll on top of this spawn.
@@ -252,17 +255,18 @@ function installCaptureHook(
 
 function addScrollFovSystem(world: App['world']): void {
   const scrollFov = createScrollFovAccumulator();
-  world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'learn-render-materials-scroll-fov',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [{ write: [Camera] }],
     fn: (world, queryResults) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snapshot === undefined) return;
       scrollFov.apply(snapshot.mouse.wheelDelta);
       for (const row of queryResults[0]) row.mut(Camera).fov = scrollFov.fovRad;
     },
   });
+world.addSystem(Update, systemToken2);
 }
 
 function reportBootstrapError(err: CanvasAppError): void {

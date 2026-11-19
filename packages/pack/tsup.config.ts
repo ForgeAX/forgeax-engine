@@ -29,5 +29,5 @@ export default defineConfig({
     'material-cook': 'src/material-cook.ts',
     'mesh-bin-contract': 'src/mesh-bin-contract.ts',
   },
-  external: ['@forgeax/engine-types', 'fast-glob', 'upng-js'],
+  external: ['@forgeax/engine-types', 'glob', 'upng-js'],
 });

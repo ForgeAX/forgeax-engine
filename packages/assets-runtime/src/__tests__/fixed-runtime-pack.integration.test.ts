@@ -2,7 +2,11 @@ import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { type CatalogEntry, ok } from '@forgeax/engine-types';
+import {
+  type AssetPublicationExternalEvidence,
+  type CatalogEntry,
+  ok,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
   createFixedRuntimePackSnapshot,
@@ -14,6 +18,7 @@ import { materialContribution } from '../../../render/src/assets/asset-decoders'
 import { AssetRegistry } from '../asset-registry.js';
 import { captureAssetPublication } from '../capture-publication.js';
 import { createCatalogSource } from '../catalog-source.js';
+import { retainAssetPublications } from '../retain-publication.js';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
@@ -23,7 +28,12 @@ const root = '01900000-0000-7000-8000-000000000961';
 const middle = '01900000-0000-7000-8000-000000000962';
 const leaf = '01900000-0000-7000-8000-000000000963';
 
-async function material(guid: string, parent?: string | readonly string[], generation?: number) {
+async function material(
+  guid: string,
+  parent?: string | readonly string[],
+  generation?: number,
+  externalEvidence: readonly AssetPublicationExternalEvidence[] = [],
+) {
   const original = materialRecordFixture({ guid });
   const refs = typeof parent === 'string' ? [parent] : (parent ?? []);
   const record = { ...original, refs: { ...original.refs, parent: refs } };
@@ -33,6 +43,7 @@ async function material(guid: string, parent?: string | readonly string[], gener
     sourcePath: guid,
     sourceRevision: 'original',
     packageUrl,
+    externalEvidence,
     ...(generation === undefined ? {} : { generation }),
     pack: {
       assets: [
@@ -62,7 +73,7 @@ async function material(guid: string, parent?: string | readonly string[], gener
     },
   });
   // Ordinary shipped refs need not have historical content-read evidence.
-  expect(publication.publication.externalEvidence).toEqual([]);
+  expect(publication.publication.externalEvidence).toEqual(externalEvidence);
   const row: CatalogEntry = {
     guid,
     kind: 'material',
@@ -103,6 +114,96 @@ function producer(current: readonly CatalogEntry[] = []) {
       }),
   });
 }
+
+it.each([
+  'unavailable',
+  'changed',
+] as const)('retains historical content evidence without substituting live inputs (%s)', async (mode) => {
+  const evidence: AssetPublicationExternalEvidence = {
+    guid: leaf,
+    usage: 'content',
+    digest: `sha256:${'f'.repeat(64)}`,
+    generation: 1,
+  };
+  const original = await material(root, undefined, undefined, [evidence]);
+  const live = await material(leaf, undefined, 2);
+  const entries = [original.row, ...(mode === 'changed' ? [live.row] : [])];
+  const source = createCatalogSource({ entries });
+  const reads: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    reads.push(String(url));
+    return original.fetcher(url, init);
+  };
+  const registry = new AssetRegistry({ scopeId: 'restored' });
+  const restored = producer(mode === 'changed' ? [live.row] : []);
+  registry.setCatalogSource(source, fetcher);
+  try {
+    const output = defined(original.row.publication?.outputs[0]);
+    const retained = await retainAssetPublications(
+      registry,
+      new Map([[root, output.digest]]),
+      entries,
+      source,
+      fetcher,
+    );
+    const pin = defined(retained.get(root));
+    expect(pin.recipe.dependencies.size).toBe(0);
+    expect(pin.recipe.fixed.pack).toEqual(original.fixed.pack);
+    expect(pin.recipe.fixed.blobs).toEqual(original.fixed.blobs);
+    expect(pin.recipe.fixed.rows[0]?.publication?.externalEvidence).toEqual([evidence]);
+    expect(reads.every((url) => !url.includes(leaf))).toBe(true);
+    const saved = await createFixedRuntimePackSnapshot(pin.recipe.fixed);
+    (await restored.restore(JSON.parse(JSON.stringify(saved)))).unwrap();
+    const recovered = defined(restored.rows().find((row) => row.guid === root));
+    expect(recovered.publication?.outputs).toEqual(original.row.publication?.outputs);
+    expect(recovered.publication?.externalEvidence).toEqual([evidence]);
+    expect(restored.rows().some((row) => row.guid === leaf)).toBe(false);
+    expect(await (await restored.fetch(recovered.packageUrl)).json()).toEqual(original.fixed.pack);
+    for (const [path, bytes] of Object.entries(original.fixed.blobs)) {
+      const response = await restored.fetch(new URL(path, recovered.packageUrl).href);
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    }
+  } finally {
+    registry.clearCatalogSource();
+    restored.dispose();
+  }
+});
+
+it.each([
+  'reference',
+  'both',
+] as const)('rejects changed retained %s versions by digest and generation', async (usage) => {
+  const child = await material(leaf, undefined, 2);
+  const childOutput = defined(child.row.publication?.outputs[0]);
+  for (const changed of ['digest', 'generation'] as const) {
+    const evidence: AssetPublicationExternalEvidence = {
+      guid: leaf,
+      usage,
+      digest: changed === 'digest' ? `sha256:${'f'.repeat(64)}` : childOutput.digest,
+      generation: changed === 'generation' ? 1 : 2,
+    };
+    const original = await material(root, leaf, undefined, [evidence]);
+    const entries = [original.row, child.row];
+    const source = createCatalogSource({ entries });
+    const fetcher: typeof fetch = (url, init) =>
+      String(url).includes(leaf) ? child.fetcher(url, init) : original.fetcher(url, init);
+    const registry = new AssetRegistry({ scopeId: 'restored' });
+    registry.setCatalogSource(source, fetcher);
+    try {
+      await expect(
+        retainAssetPublications(
+          registry,
+          new Map([[root, defined(original.row.publication?.outputs[0]).digest]]),
+          entries,
+          source,
+          fetcher,
+        ),
+      ).rejects.toThrow(`dependency version changed ${leaf}`);
+    } finally {
+      registry.clearCatalogSource();
+    }
+  }
+});
 
 it('shares fixed rebuilds and reuses owned dependencies only while their full closure stays current', async () => {
   const right = '01900000-0000-7000-8000-000000000964';

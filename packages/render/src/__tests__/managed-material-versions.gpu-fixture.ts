@@ -55,7 +55,6 @@ export async function verifyMaterialVersions(device: RhiDevice) {
       projection.apply([
         {
           kind: 'update',
-          worldId: source.worldId,
           entityKey: source.entityKey,
           snapshot: { ...source, material, materials: [material] },
         },

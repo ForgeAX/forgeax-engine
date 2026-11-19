@@ -2,9 +2,10 @@
 import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -54,7 +55,7 @@ const { propagateTransforms } = await import('@forgeax/engine-scene');
 const here = dirname(fileURLToPath(import.meta.url));
 const { buildRotateToCursorWorld, makeShipPixels, readShipRotation, stepRotateToCursor, TEXTURE_SIZE } = await import(resolve(here, '..', 'src', 'rotate-to-cursor.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: processShaderManifestUrl(manifestPath) });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;

@@ -14,11 +14,11 @@
 import { describe, expect, it } from 'vitest';
 import { World } from '@forgeax/engine-ecs';
 import { defineState } from '../src/define-state';
-import { type StatePayload, stateResourceKey } from '../src/resources';
+import { stateResource } from '../src/resources';
 import type { StateError } from '../src/errors';
 import { registerStatesPlugin } from '../src/register-plugin';
 import { setNextState, setNextStateForce, getState, getPreviousState } from '../src/set-next-state';
-import type { Result } from '@forgeax/engine-types';
+
 
 const MyState = defineState('MyState', ['idle', 'running', 'paused'] as const);
 const AtomicOtherState = defineState('AtomicOtherState', ['cold', 'warm'] as const);
@@ -37,8 +37,8 @@ describe('setNextState', () => {
     expect(result.ok).toBe(true);
     expect(result.unwrap()).toBeUndefined();
 
-    const nsKey = stateResourceKey(MyState);
-    const ns = world.getResource<StatePayload>(nsKey).next!;
+    const nsKey = stateResource(MyState);
+    const ns = world.getResource(nsKey).next!;
     expect(ns.value).toBe(1); // 'running' = idx 1
     expect(ns.force).toBe(false);
   });
@@ -58,7 +58,7 @@ describe('setNextState', () => {
       valid: ['idle', 'running', 'paused'],
     });
 
-    expect(world.getResource<StatePayload>(stateResourceKey(MyState)).next).toBeUndefined();
+    expect(world.getResource(stateResource(MyState)).next).toBeUndefined();
     expect(getState(world, MyState)).toMatchObject({ ok: true, value: 'idle' });
     expect(getPreviousState(world, MyState)).toMatchObject({ ok: true, value: 'idle' });
     expect(getState(world, AtomicOtherState)).toMatchObject({ ok: true, value: 'cold' });
@@ -73,7 +73,7 @@ describe('setNextState', () => {
 
     expect(result.ok).toBe(false);
     expect((result.error as StateError).code).toBe('invalid-variant');
-    expect(world.getResource<StatePayload>(stateResourceKey(MyState)).next!).toEqual({
+    expect(world.getResource(stateResource(MyState)).next!).toEqual({
       value: 1,
       force: false,
     });
@@ -106,8 +106,8 @@ describe('setNextState', () => {
     setNextState(world, MyState, 'paused');
     // Both calls succeed; last write wins
 
-    const nsKey = stateResourceKey(MyState);
-    const ns = world.getResource<StatePayload>(nsKey).next!;
+    const nsKey = stateResource(MyState);
+    const ns = world.getResource(nsKey).next!;
     expect(ns.value).toBe(2); // 'paused' = idx 2
     expect(ns.force).toBe(false);
   });
@@ -120,8 +120,8 @@ describe('setNextStateForce', () => {
 
     expect(result.ok).toBe(true);
 
-    const nsKey = stateResourceKey(MyState);
-    const ns = world.getResource<StatePayload>(nsKey).next!;
+    const nsKey = stateResource(MyState);
+    const ns = world.getResource(nsKey).next!;
     expect(ns.value).toBe(1); // 'running' = idx 1
     expect(ns.force).toBe(true);
   });
@@ -140,7 +140,7 @@ describe('setNextStateForce', () => {
       got: invalid,
       valid: ['idle', 'running', 'paused'],
     });
-    expect(world.getResource<StatePayload>(stateResourceKey(MyState)).next).toBeUndefined();
+    expect(world.getResource(stateResource(MyState)).next).toBeUndefined();
     expect(getState(world, MyState)).toMatchObject({ ok: true, value: 'idle' });
     expect(getPreviousState(world, MyState)).toMatchObject({ ok: true, value: 'idle' });
   });
@@ -200,8 +200,8 @@ describe('same-variant write', () => {
 
     expect(result.ok).toBe(true);
 
-    const nsKey = stateResourceKey(MyState);
-    const ns = world.getResource<StatePayload>(nsKey).next!;
+    const nsKey = stateResource(MyState);
+    const ns = world.getResource(nsKey).next!;
     expect(ns.value).toBe(0); // 'idle' = idx 0
     expect(ns.force).toBe(false);
   });

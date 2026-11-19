@@ -1,4 +1,4 @@
-import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
+import type { Buffer, RhiDevice, Texture, TextureView } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
@@ -110,6 +110,174 @@ function fixture(gpu: RhiDevice) {
 }
 
 describe('graph-native subgraph ports', () => {
+  it('commits persistent texture content from child writes, not parent write declarations', async () => {
+    const gpu = await device();
+    const makeWriter = (childWrites: boolean, skipped = false) => {
+      const parent = new RenderGraphBuilder<Frame>();
+      const texture = parent
+        .createTexture('persistent-child-target', {
+          format: 'rgba8unorm',
+          size: surfaceSize,
+          lifetime: 'persistent',
+          usage: 0x03,
+        })
+        .unwrap();
+      const view = parent.view(texture).unwrap();
+      const sourceTexture = gpu
+        .createTexture({
+          format: 'rgba8unorm',
+          size: { ...surfaceSize, depthOrArrayLayers: 1 },
+          usage: 0x01,
+        })
+        .unwrap();
+      const source = parent
+        .importTexture(
+          'copy-source',
+          {
+            format: 'rgba8unorm',
+            size: surfaceSize,
+            usage: 0x01,
+          },
+          () => sourceTexture,
+        )
+        .unwrap();
+      const sourceView = parent.view(source).unwrap();
+      let parentTexture: Texture | undefined;
+      let parentView: TextureView | undefined;
+      let parentSource: Texture | undefined;
+      const childBuilder = new RenderGraphBuilder<Frame>();
+      const importedTarget = childWrites
+        ? childBuilder
+            .importTexture('target', { format: 'rgba8unorm', size: surfaceSize, usage: 0x03 }, () =>
+              required(parentTexture),
+            )
+            .unwrap()
+        : undefined;
+      const importedSource = childWrites
+        ? childBuilder
+            .importTexture('source', { format: 'rgba8unorm', size: surfaceSize, usage: 0x01 }, () =>
+              required(parentSource),
+            )
+            .unwrap()
+        : undefined;
+      const childView =
+        importedTarget === undefined || importedSource === undefined
+          ? undefined
+          : childBuilder.importView(importedTarget, {}, () => required(parentView)).unwrap();
+      let parentSourceView: TextureView | undefined;
+      const sourceChildView =
+        importedSource === undefined
+          ? undefined
+          : childBuilder.importView(importedSource, {}, () => required(parentSourceView)).unwrap();
+      if (childView !== undefined) {
+        childBuilder
+          .addCopyPass('child-copy', {
+            accesses: [
+              { resource: required(sourceChildView), usage: 'copy-src' },
+              { resource: childView, usage: 'copy-dst' },
+            ],
+            encode: ({ encoder, resources }) =>
+              encoder.copyTextureToTexture(
+                { texture: resources.texture(required(importedSource)).unwrap() },
+                { texture: resources.texture(required(importedTarget)).unwrap() },
+                [surfaceSize.width, surfaceSize.height, 1],
+              ),
+          })
+          .unwrap();
+      }
+      const child = compile(childBuilder, gpu);
+      parent
+        .addSubgraphPass('slot', {
+          accesses: [
+            { resource: sourceView, usage: 'copy-src' },
+            { resource: view, usage: 'copy-dst' },
+          ],
+          executeIf: () => !skipped,
+          child: (_frame, resources) => {
+            const source = required(resources.textureViewSource)(view).unwrap();
+            const sourceInput = required(resources.textureViewSource)(sourceView).unwrap();
+            parentTexture = source.texture;
+            parentView = source.view;
+            parentSource = sourceInput.texture;
+            parentSourceView = sourceInput.view;
+            return child;
+          },
+        })
+        .unwrap();
+      return { graph: compile(parent, gpu), child, sourceTexture };
+    };
+    const readReused = (previous: CompiledRenderGraph<Frame>) => {
+      const builder = new RenderGraphBuilder<Frame>();
+      const texture = builder
+        .createTexture('persistent-child-target', {
+          format: 'rgba8unorm',
+          size: surfaceSize,
+          lifetime: 'persistent',
+          usage: 0x03,
+        })
+        .unwrap();
+      const view = builder.view(texture).unwrap();
+      builder
+        .addCopyPass('read-child-content', {
+          accesses: [{ resource: view, usage: 'copy-src' }],
+          encode() {},
+        })
+        .unwrap();
+      return builder.compile({ device: gpu, surfaceSize, reuseResourcesFrom: previous });
+    };
+    const written = makeWriter(true);
+    written.graph.execute(frame(gpu)).unwrap();
+    written.graph.commitExecution();
+    const successor = readReused(written.graph);
+    expect(successor.ok).toBe(true);
+    if (successor.ok) await successor.value.retire();
+    await written.graph.retire();
+    await written.child.retire();
+    gpu.destroyTexture(written.sourceTexture).unwrap();
+
+    for (const missing of [makeWriter(false), makeWriter(true, true)]) {
+      missing.graph.execute(frame(gpu)).unwrap();
+      missing.graph.commitExecution();
+      const unreadable = readReused(missing.graph);
+      expect(unreadable.ok).toBe(false);
+      if (!unreadable.ok) expect(unreadable.error.code).toBe('uninitialized-read');
+      await missing.graph.retire();
+      await missing.child.retire();
+      gpu.destroyTexture(missing.sourceTexture).unwrap();
+    }
+  });
+
+  it('does not let a subgraph write declaration initialize a same-graph read', async () => {
+    const gpu = await device();
+    const builder = new RenderGraphBuilder<Frame>();
+    const texture = builder
+      .createTexture('declared-only', {
+        format: 'rgba8unorm',
+        size: surfaceSize,
+        usage: 0x03,
+      })
+      .unwrap();
+    const view = builder.view(texture).unwrap();
+    builder
+      .addSubgraphPass('empty-slot', {
+        accesses: [{ resource: view, usage: 'copy-dst' }],
+        child: () => {
+          const childBuilder = new RenderGraphBuilder<Frame>();
+          return compile(childBuilder, gpu);
+        },
+      })
+      .unwrap();
+    builder
+      .addCopyPass('read-declared-only', {
+        accesses: [{ resource: view, usage: 'copy-src' }],
+        encode() {},
+      })
+      .unwrap();
+    const result = builder.compile({ device: gpu, surfaceSize });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('uninitialized-read');
+  });
+
   it('retains ordinary graph ordinals when an earlier pass is disabled', async () => {
     const gpu = await device(),
       builder = new RenderGraphBuilder<Frame>();

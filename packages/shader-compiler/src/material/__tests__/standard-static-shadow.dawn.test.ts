@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { decodeTangentFrame32, encodeTangentFrame32 } from '@forgeax/engine-geometry';
 import type { ShaderReflectionBoundGlobal } from '@forgeax/engine-naga';
 import { expect, it } from 'vitest';
 import type { CompileResult } from '../../compile';
 import type { MaterialCookedPass } from '../cook';
+import { materialVertexInputs } from '../cook';
 import { cookStaticShadow, OPAQUE_SWITCHES } from './standard-static-shadow.fixture';
 
 const SIZE = 32;
@@ -13,6 +16,7 @@ async function depth(
   cooked: MaterialCookedPass,
   scene: boolean,
   coverage: Coverage,
+  packed = false,
 ): Promise<Float32Array> {
   const compiled = scene ? cooked.sceneCompile : cooked.compile;
   if (compiled === undefined) throw new Error('missing scene-index program');
@@ -113,10 +117,19 @@ async function depth(
         ) as GPUBindGroupLayoutEntry[],
       }),
     );
+    const entryPoint = (scene ? 'vs_scene_index' : 'vs_main') + (packed ? '_packed' : '');
+    const inputs = materialVertexInputs(compiled.wgsl, entryPoint);
     const vertices = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
     let vertexStride = 0;
-    const attributes = cooked.abi.vertexInputs.map((input) => {
-      const lanes = input.format === 'float32x3' ? 3 : input.format === 'float32x4' ? 4 : 2;
+    const attributes = inputs.map((input) => {
+      const lanes =
+        input.format === 'uint32'
+          ? 1
+          : input.format === 'float32x3'
+            ? 3
+            : input.format === 'float32x4'
+              ? 4
+              : 2;
       const attribute = {
         shaderLocation: input.location,
         offset: vertexStride * 4,
@@ -130,9 +143,14 @@ async function depth(
       const x = vertices[vertex * 2] ?? 0;
       const y = vertices[vertex * 2 + 1] ?? 0;
       for (let slot = 0; slot < attributes.length; slot++) {
-        const input = cooked.abi.vertexInputs[slot];
+        const input = inputs[slot];
         const attribute = attributes[slot];
         if (input === undefined || attribute === undefined) throw new Error('missing vertex input');
+        if (input.semantic === 'tangentFrame') {
+          new Uint32Array(data.buffer)[vertex * vertexStride + attribute.offset / 4] =
+            encodeTangentFrame32(0, 0, 1, 1, 0, 0, 1);
+          continue;
+        }
         data.set(
           input.semantic === 'position'
             ? [x, y, 0]
@@ -150,7 +168,7 @@ async function depth(
       layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
       vertex: {
         module,
-        entryPoint: scene ? 'vs_scene_index' : 'vs_main',
+        entryPoint,
         buffers: [{ arrayStride: vertexStride * 4, attributes }],
       },
       fragment: { module, entryPoint: 'fs_shadow', targets: [] },
@@ -249,8 +267,10 @@ it('preserves real Standard shadow depth, two scene material rows, clipping and 
   const device = await adapter.requestDevice();
   device.pushErrorScope('validation');
   try {
-    const candidate = await cookStaticShadow();
+    const context = { lodCoverage: true, viewClipping: true } as const;
+    const candidate = await cookStaticShadow({ context });
     const reference = await cookStaticShadow({
+      context,
       staticSwitches: { ...OPAQUE_SWITCHES, alphaClipping: true },
     });
     for (const scene of [false, true]) {
@@ -258,6 +278,7 @@ it('preserves real Standard shadow depth, two scene material rows, clipping and 
         const expected = await depth(device, reference.shadow, scene, coverage);
         const actual = await depth(device, candidate.shadow, scene, coverage);
         expect(actual, `${scene ? 'scene' : 'direct'} ${coverage}`).toEqual(expected);
+        expect(await depth(device, candidate.shadow, scene, coverage, true)).toEqual(actual);
         const written = actual.filter((value) => value < 1).length;
         expect(written).toBeGreaterThan(0);
         expect(actual).toContain(0.25);
@@ -286,6 +307,91 @@ it('preserves real Standard shadow depth, two scene material rows, clipping and 
     }
     expect(await device.popErrorScope()).toBeNull();
   } finally {
+    device.destroy();
+  }
+}, 60_000);
+
+// The packed Standard vertex input must preserve its complete basis before depth admission.
+it('decodes the same complete tangent basis on the GPU, including unsigned float-NaN words', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('Dawn adapter unavailable');
+  const device = await adapter.requestDevice(),
+    buffers: GPUBuffer[] = [];
+  const create = (size: number, usage: number) => {
+    const value = device.createBuffer({ size, usage });
+    buffers.push(value);
+    return value;
+  };
+  device.pushErrorScope('validation');
+  try {
+    const words = new Uint32Array(1024);
+    words.set([0, 0x7fc00000, 0x7fffffff, 0x80000000, 0xffffffff]);
+    for (let i = 5; i < words.length; i++) {
+      const z = 1 - (2 * i) / words.length,
+        r = Math.sqrt(1 - z * z),
+        phi = i * 2.399963;
+      words[i] = encodeTangentFrame32(
+        r * Math.cos(phi),
+        r * Math.sin(phi),
+        z,
+        -Math.sin(phi),
+        Math.cos(phi),
+        0,
+        i % 2 ? -1 : 1,
+      );
+    }
+    const input = create(words.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    const output = create(words.length * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const read = create(words.length * 32, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
+    device.queue.writeBuffer(input, 0, words);
+    const source = readFileSync(
+      new URL('../../../../shader/src/tangent-frame32.wgsl', import.meta.url),
+      'utf8',
+    ).replace(/^#define_import_path.*$/m, '');
+    const module = device.createShaderModule({
+      code:
+        source +
+        `
+@group(0) @binding(0) var<storage,read> words:array<u32>;
+@group(0) @binding(1) var<storage,read_write> decoded:array<vec4<f32>>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+ if(id.x>=arrayLength(&words)){return;}
+ let frame=decodeTangentFrame32(words[id.x]);
+ decoded[2u*id.x]=vec4<f32>(frame.normal,0.0);
+ decoded[2u*id.x+1u]=frame.tangent;
+}`,
+    });
+    const pipeline = await device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+    const group = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: input } },
+        { binding: 1, resource: { buffer: output } },
+      ],
+    });
+    const encoder = device.createCommandEncoder(),
+      pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(words.length / 64);
+    pass.end();
+    encoder.copyBufferToBuffer(output, 0, read, 0, read.size);
+    device.queue.submit([encoder.finish()]);
+    await read.mapAsync(GPUMapMode.READ);
+    const values = new Float32Array(read.getMappedRange()),
+      expected = new Float32Array(7);
+    for (let i = 0; i < words.length; i++) {
+      decodeTangentFrame32(words[i] as number, expected);
+      for (let lane = 0; lane < 7; lane++)
+        expect(values[i * 8 + lane + (lane >= 3 ? 1 : 0)]).toBeCloseTo(expected[lane] as number, 5);
+    }
+    read.unmap();
+    expect(await device.popErrorScope()).toBeNull();
+  } finally {
+    for (const buffer of buffers) buffer.destroy();
     device.destroy();
   }
 }, 60_000);

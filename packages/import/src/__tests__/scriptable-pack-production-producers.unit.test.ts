@@ -1,6 +1,7 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { ScriptablePackSceneComponent } from '@forgeax/engine-pack/source';
+import { createTextureGeneratorPackCooker } from '@forgeax/engine-shader-compiler';
 import type {
   AnimationClip,
   AnimationGraph,
@@ -9,6 +10,7 @@ import type {
   AudioClipAsset,
   EquirectAsset,
   FontAsset,
+  GpuTextureAsset,
   MaterialAsset,
   MeshAsset,
   ParticleEffectAsset,
@@ -59,7 +61,7 @@ function canonicalAttributes(vertexCount: number): MeshAsset['attributes'] {
 }
 
 const particleProgram = {
-  format: 'forgeax-vfx-program-4',
+  format: 'forgeax-vfx-program-5',
   fingerprint: 'sha256:scriptable-pack-matrix',
   emitters: [
     {
@@ -137,6 +139,14 @@ const matrixAssets = [
     colorSpace: 'srgb',
     mips: { kind: 'none' },
   } satisfies TextureAsset,
+  {
+    kind: 'gpu-texture',
+    shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    mips: { kind: 'none' },
+    source: { kind: 'generated', generator: AssetGuid.format(OUTPUT_GUID), output: 'color' },
+  } satisfies GpuTextureAsset,
   {
     kind: 'equirect',
     width: 1,
@@ -269,11 +279,18 @@ describe('standard ScriptablePack output producers', () => {
       scene: 'scene-pack/4',
       skeleton: 'ordinary-pod/1',
       skin: 'ordinary-pod/1',
-      texture: 'texture-pack/2',
+      texture: 'texture-pack/3',
+      'gpu-texture': 'gpu-texture/1',
+      'texture-generator': 'texture-generator/1',
       terrain: 'ordinary-pod/1',
       'navigation-mesh': 'ordinary-pod/1',
       tileset: 'ordinary-pod/1',
       video: 'ordinary-pod/1',
+      'water-body': 'water-runtime/2',
+      'water-zone': 'water-runtime/2',
+      'water-wave-set': 'water-runtime/2',
+      'water-brush-recipe': 'water-runtime/2',
+      'water-simulation-recipe': 'water-runtime/2',
     });
   });
 
@@ -284,6 +301,8 @@ describe('standard ScriptablePack output producers', () => {
       'material',
       'scene',
       'texture',
+      'gpu-texture',
+      'texture-generator',
       'equirect',
       'sampler',
       'font',
@@ -300,9 +319,65 @@ describe('standard ScriptablePack output producers', () => {
       'plugin',
       'terrain',
       'navigation-mesh',
+      'water-body',
+      'water-zone',
+      'water-wave-set',
+      'water-brush-recipe',
+      'water-simulation-recipe',
     ] as const;
 
     expect(Object.keys(registry.versions()).sort()).toEqual([...expectedKinds].sort());
+    const source = {
+      kind: 'texture-generator',
+      values: {},
+      inputs: {},
+      transient: {},
+      outputs: {
+        color: {
+          shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+        },
+      },
+      passes: [
+        {
+          kind: 'raster',
+          program: { module: 'test::matrix', fragmentEntry: 'color' },
+          reads: {},
+          writes: ['color'],
+        },
+      ],
+    };
+    const cooker = createTextureGeneratorPackCooker([], {
+      sourceSnapshot: {
+        roots: [],
+        engine: [],
+        project: [
+          {
+            moduleId: 'test::matrix',
+            path: '/matrix.wgsl',
+            source:
+              '#define_import_path test::matrix\n@fragment fn color() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }',
+          },
+        ],
+        identity: 'matrix',
+      },
+    });
+    const generated = await cooker.cook({ guid: AssetGuid.format(OUTPUT_GUID), source });
+    const gpuProducer = registry.get('texture-generator');
+    if (gpuProducer === undefined) throw new Error('Generator producer missing');
+    const gpu = await gpuProducer.produce({
+      guid: AssetGuid.format(OUTPUT_GUID),
+      sourceKey: 'matrix/generator',
+      asset: generated.payload as Asset,
+    });
+    expect(gpu.ok).toBe(true);
+    if (gpu.ok)
+      expect(gpu.value.artifacts.programs?.assetCodec).toEqual({
+        name: 'forgeax-texture-generator-programs',
+        version: '1',
+      });
     for (const [index, asset] of matrixAssets.entries()) {
       const producer = registry.get(asset.kind);
       expect(producer, `${asset.kind} producer`).toBeDefined();
@@ -312,9 +387,14 @@ describe('standard ScriptablePack output producers', () => {
         sourceKey: `matrix/${index}/${asset.kind}`,
         asset,
       });
-      expect(result.ok, `${asset.kind} producer result`).toBe(true);
+      expect(result.ok, result.ok ? asset.kind : JSON.stringify(result.error)).toBe(true);
       if (!result.ok) continue;
       expect(result.value.payload.kind ?? asset.kind).toBe(asset.kind);
+      if (asset.kind === 'gpu-texture') {
+        expect(result.value.payload).toEqual({ kind: 'gpu-texture', source: asset.source });
+        expect(result.value.artifacts).toEqual({});
+        expect(result.value.refs).toEqual([{ guid: asset.source.generator }]);
+      }
       const hasPayload = Object.keys(result.value.payload).length > 0;
       const hasDescriptor =
         asset.kind === 'video' &&

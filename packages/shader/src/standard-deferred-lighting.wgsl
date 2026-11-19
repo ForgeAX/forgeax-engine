@@ -9,14 +9,14 @@
 
 #import forgeax_view::common::{viewDirectionToCamera, view, FullscreenOutput, fullscreen_triangle}
 #import forgeax_scene_temporal::{sceneViewZ}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardReceiverNormal, decodeStandardReflectance, STANDARD_GBUFFER_NO_RECEIVE_BIT, STANDARD_GBUFFER_PROBE_ROW_MASK, STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT}
+#import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, standardGBufferValid, decodeStandardReceiverNormal, decodeStandardReflectance, decodeStandardGBufferReflectance, STANDARD_GBUFFER_NO_RECEIVE_BIT, STANDARD_GBUFFER_PROBE_ROW_MASK, STANDARD_GBUFFER_V2_DIRECT_DFG_BIT}
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirectSplit}
 #import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
 
 @group(1) @binding(0) var normalRoughness : texture_2d<u32>;
 @group(1) @binding(1) var albedoMetallic : texture_2d<u32>;
-@group(1) @binding(2) var f0Occlusion : texture_2d<u32>;
+@group(1) @binding(2) var dielectricSpecularSource : texture_2d<u32>;
 @group(1) @binding(3) var lightingContext : texture_2d<u32>;
 @group(1) @binding(4) var sceneDepth : texture_depth_2d;
 @group(1) @binding(5) var screenOcclusion : texture_2d<f32>;
@@ -85,6 +85,8 @@ fn vs_standard_deferred(@builtin(vertex_index) index : u32) -> FullscreenOutput 
 
 fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let pixel = vec2<i32>(in.position.xy);
+  let packedNormal = textureLoad(normalRoughness, pixel, 0).rg;
+  if (!standardGBufferValid(packedNormal)) { discard; }
   let depth = textureLoad(sceneDepth, pixel, 0);
   if (depth <= 0.0) { discard; }
   let context = textureLoad(lightingContext, pixel, 0).r;
@@ -95,13 +97,14 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let ndc = vec3<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth);
   let homogeneous = view.inverseViewProj * vec4<f32>(ndc, 1.0);
   let position = homogeneous.xyz / homogeneous.w;
-  let normalSample = loadStandardNormalRoughness(normalRoughness, pixel);
+  let normalSample = decodeStandardGBufferNormal(packedNormal);
   let normal = normalSample.xyz;
   let roughness = normalSample.w;
   let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
-  let specular = textureLoad(f0Occlusion, pixel, 0).rg;
-  let response = decodeStandardReflectance(specular.r);
-  let dielectricSpecular = decodeStandardReflectance(specular.g);
+  let specular = textureLoad(dielectricSpecularSource, pixel, 0).r;
+  let reflectance = decodeStandardGBufferReflectance(albedo, specular, packedNormal);
+  let response = reflectance.response;
+  let dielectricSpecular = reflectance.dielectricSpecular;
   let direction = viewDirectionToCamera(position);
   var sh : array<vec4<f32>, 9>;
   var localBlend = 0.0;
@@ -148,7 +151,7 @@ fn resolveStandardDeferred(in : FullscreenOutput) -> DeferredOutput {
   let direct = evaluateStandardDirectSplit(position, ndc, viewZ, in.position.xy, normal, direction, albedo.rgb, vec3<f32>(0.0),
     albedo.a, roughness * roughness, response.rgb, shadow, receiveShadows, receiverChannels,
     textureLoad(lightingContext, pixel, 0).g >> 24u > 0u,
-    (receiver.x & STANDARD_GBUFFER_DIRECT_DFG_LUT_BIT) != 0u,
+    (packedNormal.x & STANDARD_GBUFFER_V2_DIRECT_DFG_BIT) != 0u,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, linearSampler,
 #endif

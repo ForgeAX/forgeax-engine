@@ -9,6 +9,7 @@ import {
   publishBrowserFrameSubmitted,
   readBrowserFrameSubmitted,
   resetBrowserFrameProgress,
+  retainBrowserFrameSubmitted,
   subscribeBrowserFrameSubmitted,
 } from '../browser-frame-signal';
 
@@ -62,6 +63,7 @@ describe('publishBrowserFrameSubmitted', () => {
     const submitted = Object.assign({ frameId: 7, deviceGeneration: 2 }, { receipt });
     expect(() => publishBrowserFrameSubmitted(canvas, submitted)).not.toThrow();
     expect(readBrowserFrameSubmitted(canvas)?.frameId).toBe(7);
+    expect(retainBrowserFrameSubmitted(canvas, 7)).toBeUndefined();
     expect(documentElement.dataset).toEqual({});
   });
 

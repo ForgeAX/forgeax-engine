@@ -72,19 +72,9 @@ interface UpngModule {
   encode: (imgs: ArrayBuffer[], w: number, h: number, cnum: number) => ArrayBuffer;
 }
 
-type FastGlobFn = (
-  patterns: string | readonly string[],
-  options?: { absolute?: boolean; cwd?: string },
-) => Promise<string[]>;
-
 async function loadUpng(): Promise<UpngModule> {
   const mod = (await import('upng-js')) as { default?: UpngModule } & UpngModule;
   return (mod.default ?? mod) as UpngModule;
-}
-
-async function loadFastGlob(): Promise<FastGlobFn> {
-  const mod = (await import('fast-glob')) as unknown as { default: FastGlobFn };
-  return mod.default;
 }
 
 interface AtlasArgs {
@@ -320,11 +310,11 @@ export async function runAtlas(rest: string[], ctx: AssetCtx): Promise<number> {
   }
   const args = argsOutcome.value;
 
-  const fastGlob = await loadFastGlob();
+  const { glob } = await import('glob');
   const inputAbs = isAbsolute(args.input) ? args.input : resolve(cwd, args.input);
-  // Normalize to forward slashes for fast-glob (it requires POSIX-style paths).
+  // Glob patterns use forward slashes, including on Windows.
   const inputGlob = sep === '/' ? inputAbs : inputAbs.replaceAll(sep, '/');
-  const matched = await fastGlob(inputGlob, { absolute: true });
+  const matched = await glob(inputGlob, { absolute: true, nodir: true, follow: true });
   if (matched.length === 0) return emitEmptyInput(ctx, 0);
 
   const upng = await loadUpng();

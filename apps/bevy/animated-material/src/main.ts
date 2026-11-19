@@ -1,3 +1,5 @@
+import { Time } from '@forgeax/engine-ecs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -29,16 +31,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (assets === undefined) throw new Error('asset owner unavailable');
   const scene = buildAnimatedMaterialWorld(app.world, assets, target.width / Math.max(target.height, 1));
   let lastHueDelta = 0;
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'animate-materials',
     queries: [],
     fn: (world) => {
-      const elapsed = world.hasResource('Time')
-        ? world.getResource<{ elapsed: number }>('Time').elapsed
+      const elapsed = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       lastHueDelta = stepAnimatedMaterials(assets, scene, elapsed);
     },
   });
+app.world.addSystem(Update, systemToken1);
   app.onError((error) => console.error('[bevy-animated-material] app error:', error.code, error.hint));
   console.warn(`[bevy-animated-material] state=${app.renderer.inspect().state}`);
   const started = app.start();

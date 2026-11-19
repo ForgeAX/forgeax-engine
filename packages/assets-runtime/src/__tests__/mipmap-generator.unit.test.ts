@@ -6,13 +6,15 @@
 
 import { type RhiDevice, ok as rhiOk, type ShaderModule, type Texture } from '@forgeax/engine-rhi';
 import { numMipLevels } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   blitMipmapsSync,
+  encodeMipmaps,
   generateMipmaps,
   getOrCreateMipmapPipeline,
   type MipmapShaderModuleFactory,
   mipmapCacheSize,
+  mipmapTemporaryByteLength,
   prepareMipmaps,
 } from '../mipmap-generator';
 
@@ -27,7 +29,11 @@ type BlitLog = {
   readonly destroyed: unknown[];
 };
 
-function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): RhiDevice {
+function makeBlitDevice(
+  renderPasses?: unknown[],
+  log?: BlitLog,
+  backendKind: RhiDevice['caps']['backendKind'] = 'webgpu',
+): RhiDevice {
   const pass = {
     setPipeline: () => {},
     setBindGroup: () => {},
@@ -45,7 +51,7 @@ function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): RhiDevice {
     finish: () => ok({ tag: `cmdbuf-${nextId++}` }),
   };
   return {
-    caps: { backendKind: 'webgpu' },
+    caps: { backendKind },
     createSampler: () => ok({ tag: `sampler-${nextId++}` }),
     createBindGroupLayout: () => ok({ tag: `bgl-${nextId++}` }),
     createPipelineLayout: () => ok({ tag: `pl-${nextId++}` }),
@@ -54,7 +60,7 @@ function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): RhiDevice {
     createTexture: () => ok({ tag: `tex-${nextId++}` }),
     createBindGroup: () => ok({ tag: `bg-${nextId++}` }),
     createTextureView: (texture: unknown, desc: { baseMipLevel: number }) =>
-      ok({ tag: `view-${nextId++}`, texture, baseMipLevel: desc.baseMipLevel }),
+      ok({ tag: `view-${nextId++}`, texture, ...desc }),
     destroyTexture: (texture: unknown) => {
       log?.destroyed.push(texture);
       return ok(undefined);
@@ -207,75 +213,82 @@ describe('generateMipmaps (async build path)', () => {
 });
 
 describe('blitMipmapsSync (prewarmed path)', () => {
-  it('never renders into the texture it samples and copies every level back', async () => {
-    const renderPasses: unknown[] = [];
-    const log: BlitLog = { copies: [], destroyed: [] };
-    const device = makeBlitDevice(renderPasses, log);
-    await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
-    const texture = {} as Texture;
-    const res = blitMipmapsSync(device, texture, { format: 'rgba8unorm', width: 8, height: 2 });
-    expect(res.ok).toBe(true);
-    expect(renderPasses).toHaveLength(3);
-    for (const pass of renderPasses) {
-      const view = (pass as { colorAttachments: Array<{ view: { texture: unknown } }> })
-        .colorAttachments[0]?.view;
-      expect(view?.texture).not.toBe(texture);
-    }
-    const scratch = log.copies[0]?.source as { texture: unknown } | undefined;
-    expect(log.copies).toEqual([
-      {
-        source: { texture: scratch?.texture, mipLevel: 0 },
-        destination: { texture, mipLevel: 1, origin: { x: 0, y: 0, z: 0 } },
-        size: [4, 1, 1],
-      },
-      {
-        source: { texture: scratch?.texture, mipLevel: 1 },
-        destination: { texture, mipLevel: 2, origin: { x: 0, y: 0, z: 0 } },
-        size: [2, 1, 1],
-      },
-      {
-        source: { texture: scratch?.texture, mipLevel: 2 },
-        destination: { texture, mipLevel: 3, origin: { x: 0, y: 0, z: 0 } },
-        size: [1, 1, 1],
-      },
-    ]);
-    expect(log.destroyed).toEqual([scratch?.texture]);
-  });
+  for (const backendKind of ['webgpu', 'wgpu-native'] as const)
+    it.each([
+      1, 4, 6,
+    ])(`writes disjoint mips of every layer without scratch/copies (${backendKind}, %i layers)`, async (arrayLayerCount) => {
+      const renderPasses: unknown[] = [];
+      const log: BlitLog = { copies: [], destroyed: [] };
+      const device = makeBlitDevice(renderPasses, log, backendKind);
+      await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
+      const allocations = vi.spyOn(device, 'createTexture');
+      const groups = vi.spyOn(device, 'createBindGroup');
+      const texture = {} as Texture;
+      blitMipmapsSync(device, texture, {
+        format: 'rgba8unorm',
+        width: 8,
+        height: 2,
+        arrayLayerCount,
+      }).unwrap();
+      expect(renderPasses).toHaveLength(3 * arrayLayerCount);
+      expect(log.copies).toEqual([]);
+      expect(log.destroyed).toEqual([]);
+      expect(allocations).not.toHaveBeenCalled();
+      for (let layer = 0; layer < arrayLayerCount; layer++)
+        for (let level = 1; level < 4; level++) {
+          const index = layer * 3 + level - 1;
+          expect(renderPasses[index]).toMatchObject({
+            colorAttachments: [
+              {
+                view: {
+                  texture,
+                  baseMipLevel: level,
+                  mipLevelCount: 1,
+                  baseArrayLayer: layer,
+                  arrayLayerCount: 1,
+                  dimension: '2d',
+                },
+              },
+            ],
+          });
+          const input = groups.mock.calls[index]?.[0].entries.find((entry) => entry.binding === 1);
+          expect(input?.resource).toMatchObject({
+            kind: 'textureView',
+            value: {
+              texture,
+              baseMipLevel: level - 1,
+              mipLevelCount: 1,
+              baseArrayLayer: layer,
+              arrayLayerCount: 1,
+              dimension: '2d',
+            },
+          });
+        }
+    });
 
-  it('stages array layers into a physical 2D source and shares both transient chains', async () => {
+  it.each([
+    1, 4, 6,
+  ])('retains physical WebGL2 staging and retires it (%i layers)', async (arrayLayerCount) => {
     const renderPasses: unknown[] = [];
     const log: BlitLog = { copies: [], destroyed: [] };
-    const device = makeBlitDevice(renderPasses, log);
+    const device = makeBlitDevice(renderPasses, log, 'wgpu-webgl2');
     await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
     const texture = {} as Texture;
     blitMipmapsSync(device, texture, {
       format: 'rgba8unorm',
       width: 8,
       height: 2,
-      arrayLayerCount: 4,
+      arrayLayerCount,
     }).unwrap();
-    expect(renderPasses).toHaveLength(12);
-    expect(log.destroyed).toHaveLength(2);
-    const [scratch, source] = log.destroyed;
-    expect(log.copies).toHaveLength(24);
-    for (let layer = 0; layer < 4; layer++)
-      for (let mipLevel = 1; mipLevel < 4; mipLevel++) {
-        const offset = (layer * 3 + mipLevel - 1) * 2;
-        expect(log.copies[offset]).toEqual({
-          source: { texture, mipLevel: mipLevel - 1, origin: { x: 0, y: 0, z: layer } },
-          destination: { texture: source, mipLevel: mipLevel - 1 },
-          size: [Math.max(1, 8 >> (mipLevel - 1)), Math.max(1, 2 >> (mipLevel - 1)), 1],
-        });
-        expect(log.copies[offset + 1]?.source).toEqual({
-          texture: scratch,
-          mipLevel: mipLevel - 1,
-        });
-        expect(log.copies[offset + 1]?.destination).toEqual({
-          texture,
-          mipLevel,
-          origin: { x: 0, y: 0, z: layer },
-        });
-      }
+    expect(renderPasses).toHaveLength(arrayLayerCount === 1 ? 4 : arrayLayerCount * 3);
+    expect(log.copies).toHaveLength(arrayLayerCount === 1 ? 3 : arrayLayerCount * 4);
+    expect(log.destroyed).toHaveLength(4);
+    expect(log.destroyed).not.toContain(texture);
+    for (const pass of renderPasses) {
+      const view = (pass as { colorAttachments: Array<{ view: { texture: unknown } }> })
+        .colorAttachments[0]?.view;
+      expect(view?.texture).not.toBe(texture);
+    }
   });
 
   it.each([
@@ -377,4 +390,71 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     });
     expect(res.ok).toBe(true);
   });
+});
+
+describe('normal-roughness mip ownership', () => {
+  it.each([
+    'webgpu',
+    'wgpu-webgl2',
+  ] as const)('retains transient means until caller cleanup on %s', async (backend) => {
+    const passes: unknown[] = [],
+      log: BlitLog = { copies: [], destroyed: [] };
+    const device = makeBlitDevice(passes, log, backend);
+    const factory = vi.fn(async () => rhiOk({} as ShaderModule));
+    await Promise.all(
+      [0, 1].map(() =>
+        getOrCreateMipmapPipeline(device, 'rgba8unorm', factory, 'normal-roughness'),
+      ),
+    );
+    expect(factory).toHaveBeenCalledTimes(2); // Shared box module plus one lazy normal module.
+    expect(mipmapCacheSize(device)).toBe(2);
+    const texture = {} as Texture;
+    const command = device.createCommandEncoder();
+    if (!command.ok) throw command.error;
+    const encoder = command.value;
+    const encoded = encodeMipmaps(device, encoder, texture, {
+      format: 'rgba8unorm',
+      width: 8,
+      height: 4,
+      levels: 4,
+      arrayLayerCount: 2,
+      filter: 'normal-roughness',
+    });
+    expect(encoded.ok).toBe(true);
+    expect(passes).toHaveLength(6);
+    expect(log.destroyed).toHaveLength(0);
+    encoded.unwrap()();
+    encoded.unwrap()();
+    expect(log.destroyed).toHaveLength(backend === 'webgpu' ? 3 : 5);
+    expect(new Set(log.destroyed).size).toBe(log.destroyed.length);
+    expect(log.copies).toHaveLength(backend === 'webgpu' ? 0 : 4);
+  });
+  it('refuses an unsupported normal storage format without generating mips', async () => {
+    const device = makeBlitDevice();
+    const result = await getOrCreateMipmapPipeline(
+      device,
+      'rgba16float',
+      async () => rhiOk({} as ShaderModule),
+      'normal-roughness',
+    );
+    expect(result.ok).toBe(false);
+  });
+});
+
+it('accounts for every normal mip temporary independently of array layer count', () => {
+  const descriptor = {
+    width: 8,
+    height: 4,
+    levels: 4,
+    format: 'rgba8unorm' as const,
+    filter: 'normal-roughness' as const,
+    arrayLayerCount: 2,
+  };
+  expect(mipmapTemporaryByteLength(descriptor, 'webgpu')).toBe(88);
+  expect(mipmapTemporaryByteLength(descriptor, 'wgpu-webgl2')).toBe(248);
+  expect(mipmapTemporaryByteLength({ ...descriptor, arrayLayerCount: 100 }, 'wgpu-webgl2')).toBe(
+    248,
+  );
+  expect(mipmapTemporaryByteLength({ ...descriptor, filter: 'box' }, 'webgpu')).toBe(0);
+  expect(mipmapTemporaryByteLength({ ...descriptor, filter: 'box' }, 'wgpu-webgl2')).toBe(172);
 });

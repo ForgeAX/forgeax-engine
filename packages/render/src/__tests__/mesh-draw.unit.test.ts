@@ -22,7 +22,6 @@ function fixture() {
   const material = new MaterialResource(defaultMaterialSnapshot());
   const source: RenderableSnapshot = {
     entityKey: 1,
-    worldId: 0,
     assetHandle: 7,
     transform: { world: mat4.identity(mat4.create()) },
     material,
@@ -31,7 +30,7 @@ function fixture() {
     materialOverrides: captureMaterialOverrides([material]),
     gpuDrivenDraws: [],
   };
-  return { mesh, material, source, frame: new MeshFrame().with(0, 7, mesh) };
+  return { mesh, material, source, frame: new MeshFrame().with(7, mesh) };
 }
 
 it('preserves instance fields and projects current shared Mesh facts', () => {
@@ -57,7 +56,7 @@ it('preserves instance fields and projects current shared Mesh facts', () => {
   expect(result.entityKey).toBe(source.entityKey);
   expect(result.layer).toBe(3);
   expect(Reflect.get(result, mark)).toBe('retained');
-  expect(result.localAabb).toBe(f.frame.get(0, 7)?.bounds);
+  expect(result.localAabb).toBe(f.frame.get(7)?.bounds);
   expect(Object.hasOwn(result, 'lods')).toBe(false);
   expect(Object.hasOwn(result, 'lodHysteresis')).toBe(false);
   expect(result.gpuDrivenDraws).toHaveLength(f.mesh.submeshes.length);
@@ -74,7 +73,7 @@ it('preserves instance fields and projects current shared Mesh facts', () => {
 it('omits stale optional metadata when the shared Mesh has none', () => {
   const f = fixture();
   const { aabb: _bounds, ...mesh } = f.mesh;
-  const frame = new MeshFrame().with(0, 7, mesh);
+  const frame = new MeshFrame().with(7, mesh);
   const source = Object.freeze({
     ...f.source,
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
@@ -91,7 +90,7 @@ it('omits stale optional metadata when the shared Mesh has none', () => {
 it('keeps optional fields absent when neither source nor shared Mesh supplies them', () => {
   const f = fixture();
   const { aabb: _bounds, ...mesh } = f.mesh;
-  const result = meshDrawSnapshot(f.source, new MeshFrame().with(0, 7, mesh));
+  const result = meshDrawSnapshot(f.source, new MeshFrame().with(7, mesh));
   for (const key of ['localAabb', 'lods', 'lodHysteresis'])
     expect(Object.hasOwn(result, key)).toBe(false);
 });
@@ -104,15 +103,15 @@ it('uses the selected Mesh version and preserves old projections after replaceme
   const source = Object.freeze({ ...f.source, lods: [], lodHysteresis: 0.2 });
   const before = meshDrawSnapshot(source, f.frame);
   const mesh = { ...f.mesh, lods: [{ mesh: guid, screenCoverage: 0.5 }], lodHysteresis: 0.1 };
-  const frame = f.frame.with(0, 7, mesh);
+  const frame = f.frame.with(7, mesh);
   const after = meshDrawSnapshot(source, frame);
   expect(after).not.toBe(before);
-  expect(after.lods).toBe(frame.get(0, 7)?.lods);
+  expect(after.lods).toBe(frame.get(7)?.lods);
   expect(after.lodHysteresis).toBe(0.1);
   expect(Object.hasOwn(before, 'lods')).toBe(false);
   expect(Object.hasOwn(before, 'lodHysteresis')).toBe(false);
   expect(meshDrawSnapshot(source, f.frame)).toBe(before);
-  expect(meshDrawSnapshot(source, frame.with(0, 8, f.mesh))).toBe(after);
+  expect(meshDrawSnapshot(source, frame.with(8, f.mesh))).toBe(after);
 });
 
 it('keeps instance identity separate while sharing material and geometry projections', () => {
@@ -169,7 +168,6 @@ function resolvedFixture() {
     materialOverrides: captureMaterialOverrides([]),
   };
   const meshes = new MeshFrame().with(
-    0,
     7,
     { ...f.mesh, materialSlots: [{ slotName: 'body', defaultMaterial: handle }] },
     [first],
@@ -181,7 +179,6 @@ function resolvedFixture() {
     setSceneRow(slots, slot, {
       slot,
       generation: 1,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     });
@@ -268,7 +265,7 @@ it('keeps a hidden pipeline preparation draw in the accepted material frame afte
   const f = resolvedFixture();
   const prepared = { ...f.source, entityKey: 2, authorVisible: false, pipelinePreparation: [] };
   const slots = new SceneSlots();
-  setSceneRow(slots, 1, { slot: 1, generation: 1, worldId: 0, entityKey: 2, snapshot: prepared });
+  setSceneRow(slots, 1, { slot: 1, generation: 1, entityKey: 2, snapshot: prepared });
   f.owner.bind(1, prepared);
   f.owner.remove(0);
   f.owner.query(slots.capture(), f.meshes);
@@ -282,7 +279,7 @@ it('admits initially hidden preparation materials without visible or shadow work
   const owner = new MaterialDispatch(() => f.first);
   const source = { ...f.source, authorVisible: false, pipelinePreparation: [] };
   const slots = new SceneSlots();
-  setSceneRow(slots, 0, { slot: 0, generation: 1, worldId: 0, entityKey: 1, snapshot: source });
+  setSceneRow(slots, 0, { slot: 0, generation: 1, entityKey: 1, snapshot: source });
   owner.bind(0, source);
   owner.prepare(f.meshes);
   const dispatch = owner.query(slots.capture(), f.meshes);
@@ -299,7 +296,7 @@ it('updates hidden preparation membership when only preparation intent changes',
   const hidden = { ...f.source, authorVisible: false };
   const slots = new SceneSlots();
   const query = (source: RenderableSnapshot) => {
-    setSceneRow(slots, 0, { slot: 0, generation: 1, worldId: 0, entityKey: 1, snapshot: source });
+    setSceneRow(slots, 0, { slot: 0, generation: 1, entityKey: 1, snapshot: source });
     owner.bind(0, source);
     owner.prepare(f.meshes);
     expect([...owner.query(slots.capture(), f.meshes)]).toEqual([]);
@@ -326,7 +323,6 @@ it('retains shared hidden preparation materials until the last preparation retir
     setSceneRow(slots, slot, {
       slot,
       generation: 1,
-      worldId: 0,
       entityKey: slot + 1,
       snapshot: source,
     });
@@ -360,7 +356,7 @@ it('keeps a hidden Mesh default accepted after its last unrelated authored overr
     materialOverrides: captureMaterialOverrides([f.first]),
   };
   const slots = new SceneSlots();
-  setSceneRow(slots, 0, { slot: 0, generation: 1, worldId: 0, entityKey: 1, snapshot: prepared });
+  setSceneRow(slots, 0, { slot: 0, generation: 1, entityKey: 1, snapshot: prepared });
   owner.bind(0, prepared);
   owner.bind(1, held);
   owner.prepare(f.meshes);
@@ -456,11 +452,10 @@ it('amortizes sparse source replacement without retaining an ever-growing table'
 
 it('updates an already-read Mesh binding address when a bounds-only version adopts its table', () => {
   const f = resolvedFixture();
-  const mesh = f.meshes.get(0, 7);
+  const mesh = f.meshes.get(7);
   assert(mesh);
   const previous = meshDrawSnapshot(f.source, f.meshes);
   const next = f.meshes.with(
-    0,
     7,
     {
       ...f.mesh,
@@ -469,7 +464,7 @@ it('updates an already-read Mesh binding address when a bounds-only version adop
     },
     mesh.materials,
   );
-  const nextMesh = next.get(0, 7);
+  const nextMesh = next.get(7);
   assert(nextMesh);
   const held = meshDrawSnapshot(f.source, next);
   expect(held.material).toBe(f.first);
@@ -484,7 +479,7 @@ it('updates an already-read Mesh binding address when a bounds-only version adop
 
 it('reads live fenced material contexts without caching their values or repeating raw source reads', () => {
   const f = resolvedFixture();
-  const mesh = f.meshes.get(0, 7);
+  const mesh = f.meshes.get(7);
   assert(mesh);
   const read = createMeshMaterialReader(mesh);
   const skin = new MaterialResource(defaultMaterialSnapshot(45));

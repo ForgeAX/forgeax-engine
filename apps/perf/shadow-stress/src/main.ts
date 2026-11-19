@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { createApp } from '@forgeax/engine-app/browser';
 
@@ -551,6 +552,8 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
         cascadeCount: DIRECTIONAL_CASCADE_COUNT,
         mapSize: 2048,
         shadowDistance: 90,
+        // This workload measures the retained static shadow layer, which is opt-in.
+        staticShadowCache: true,
       },
     })
     .unwrap();
@@ -683,8 +686,7 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
     });
   });
 
-  world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'shadow-stress-animate',
       queries: [
         { write: [Transform], read: [SwayJoint] },
@@ -741,11 +743,12 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
           if (evidence.trailingSamples.length > 16) evidence.trailingSamples.shift();
         }
       },
-    })
+    });
+world
+    .addSystem(Update, systemToken1)
     .unwrap();
   if (mover !== undefined) {
-    world
-      .addSystem(Update, {
+    const systemToken2 = defineSystem({
         name: 'shadow-stress-movers',
         queries: [{ write: [Instances] }],
         fn: (world) => {
@@ -760,14 +763,15 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
               .unwrap();
           }
         },
-      })
+      });
+world
+      .addSystem(Update, systemToken2)
       .unwrap();
   }
 
   if (occasional.length > 0) {
     const scale: [number, number, number] = [0.8, 0.8, 0.8];
-    world
-      .addSystem(Update, {
+    const systemToken3 = defineSystem({
         name: 'shadow-stress-occasional',
         queries: [{ write: [Transform] }],
         fn: (world) => {
@@ -787,13 +791,14 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
             world.set(entity, Transform, { pos, quat: [0, 0, 0, 1], scale }).unwrap();
           }
         },
-      })
+      });
+world
+      .addSystem(Update, systemToken3)
       .unwrap();
   }
   if (options.spawnStormCount > 0) {
     let storm: EntityHandle[] = [];
-    world
-      .addSystem(Update, {
+    const systemToken4 = defineSystem({
         name: 'shadow-stress-spawn-storm',
         queries: [],
         fn: (_world, _results, commands) => {
@@ -817,7 +822,9 @@ const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap
           }
           storm = next;
         },
-      })
+      });
+world
+      .addSystem(Update, systemToken4)
       .unwrap();
   }
 

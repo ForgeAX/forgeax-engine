@@ -87,6 +87,8 @@ export function prepareTypedScenePipelineDemand(
       coverageOnly,
       seededDepth: demand.seededDepth === true,
       visibleSurface: context.visibleSurface,
+      directionalShadowSimple: context.directionalShadowSimple === true,
+      leanLighting: context.leanLighting === true,
       // Keep the normal typed pass's explicit preparation contract.
       onSelected: (entry, index) => {
         let draws = gpuDraws.get(entry);

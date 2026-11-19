@@ -4,7 +4,11 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { meshAssetOutputProducer, normaliseForPack } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { PackageRequest } from '@forgeax/engine-types';
@@ -27,9 +31,9 @@ function complete<T>(
 }
 
 async function fixture(maxBytes = 4096) {
-  const root = await fs.mkdtemp(join(tmpdir(), 'forgeax-download-'));
+  const root = (await fs.mkdtemp(join(tmpdir(), 'forgeax-download-'))).replaceAll('\\', '/');
   cleanup.push(() => fs.rm(root, { recursive: true, force: true }));
-  const cacheDirectory = join(root, 'cache');
+  const cacheDirectory = `${root}/cache`;
   const files: WechatCacheFiles = {
     readFile: (options) =>
       complete(
@@ -170,7 +174,8 @@ describe('native remote PackageFetcher', () => {
         });
       else {
         const value = registry.read(loaded.unwrap()).unwrap();
-        expect(value.attributes.position).toEqual(mesh.attributes.position);
+        expect(copyMeshAttribute(value, 'position')?.length).toBeGreaterThan(0);
+        expect(copyMeshAttribute(value, 'position')).toEqual(copyMeshAttribute(mesh, 'position'));
         expect(value.indices).toEqual(mesh.indices);
         expect(value.aabb).toEqual(mesh.aabb);
       }

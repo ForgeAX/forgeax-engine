@@ -1,4 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import { type RhiDevice, RhiError, type Texture } from '@forgeax/engine-rhi';
 import type { CompositeChannels, createViewCompositor } from '../assembly/view-compositor';
 import { CubeCamera } from '../components/cube-camera';
@@ -8,13 +9,17 @@ import type { DeviceScope } from '../lifecycle';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CubeCaptureGraphState } from '../record/target-capture-graph';
-import type { DrawOwnerOptions } from '../render-contract';
+import type { DrawOptions } from '../render-contract';
 import { selectCameraRoles } from '../render-system-extract';
+import {
+  RenderViewCamerasOrder,
+  RenderViewFrameOrder,
+  RenderViewOutputsOrder,
+  RenderViewsOrder,
+} from '../system-order';
 import type { RenderTarget } from '../targets/contracts';
 import { adoptViewRecordHistory } from './record-history';
 import {
-  RENDER_VIEW_CAMERAS_SYSTEM,
-  RENDER_VIEWS_SYSTEM,
   RenderView,
   type RenderViewFrameSource,
   RenderViewInput,
@@ -29,12 +34,7 @@ import { RenderCommit, RenderExtract, RenderPrepare, renderSubmission } from './
 import { retireAfterSubmission } from './submission-systems';
 import { adoptViewDraws } from './view-draw-receipt';
 import { requireViewField } from './view-field';
-import {
-  RENDER_VIEW_FRAME_SYSTEM,
-  RENDER_VIEW_RECORDERS_SYSTEM,
-  stageViewFrame,
-  viewFrameOf,
-} from './view-frame-systems';
+import { RENDER_VIEW_RECORDERS_SYSTEM, stageViewFrame, viewFrameOf } from './view-frame-systems';
 import { adoptViewPointsLines } from './view-points-lines';
 import { recordContext } from './view-record-context';
 import type { ViewSettlementOwner } from './view-settlement';
@@ -83,7 +83,7 @@ export function viewChannels(channels: number): CompositeChannels {
 interface OutputReplacement {
   readonly view: ViewRecorderState;
   readonly old: ViewRecorderState['output'];
-  readonly texture: Texture;
+  readonly texture: Texture | undefined;
 }
 
 /**
@@ -95,6 +95,8 @@ interface OutputReplacement {
 export interface ViewComposition {
   /** Composed display views replace the primary display recording. */
   active: boolean;
+  /** The sole full-rate display borrows the surface instead of a retained picture. */
+  directDisplay?: EntityHandle | undefined;
   /** Does a CubeCamera need the shared capture recording beside composed views? */
   captureDemand: boolean;
   /** The last submitted frame recorded the shared capture view. */
@@ -111,7 +113,7 @@ export interface ViewComposition {
 }
 
 /** World resource key of the frame's {@link ViewComposition}. */
-export const ViewCompositionKey = Object.freeze({ name: 'ViewComposition' });
+export const ViewCompositionKey = defineResource<ViewComposition>('ViewComposition');
 
 export function viewComposition(world: World): ViewComposition {
   if (!world.hasResource(ViewCompositionKey))
@@ -125,7 +127,7 @@ export function viewComposition(world: World): ViewComposition {
       blocked: false,
       failure: undefined,
     });
-  return world.getResource<ViewComposition>(ViewCompositionKey);
+  return world.getResource(ViewCompositionKey);
 }
 
 /** RenderExtract: retire every view whose device generation or source World changed. */
@@ -165,12 +167,14 @@ export interface ViewOutputOwner {
 }
 
 /** World resource key of the Renderer's {@link ViewOutputOwner}. */
-export const ViewOutputOwnerKey = Object.freeze({ name: 'ViewOutputOwner' });
+export const ViewOutputOwnerKey = defineResource<ViewOutputOwner>('ViewOutputOwner');
 
 type OutputHost = Pick<
   RenderSystemInternals,
   | 'device'
   | 'deviceScope'
+  | 'canvas'
+  | 'context'
   | 'getPipelineState'
   | 'getRenderTargetPhysical'
   | 'markRenderTargetSubmitted'
@@ -223,6 +227,53 @@ function ensureViewOutput(
   view.picture.texture = texture;
 }
 
+/** A direct display retains its view owner, but no longer needs a cached picture. */
+function releaseViewOutput(composition: ViewComposition, view: ViewRecorderState): void {
+  if (view.output === undefined) return;
+  composition.replaced.push({ view, old: view.output, texture: undefined });
+  view.output = undefined;
+}
+
+/** A surface can replace one complete picture; cadence, scaling and channels still need composition. */
+function directDisplayView(
+  world: World,
+  host: OutputHost,
+  views: RenderViews,
+): EntityHandle | undefined {
+  if (host.context == null) return undefined;
+  let selected: EntityHandle | undefined;
+  for (const entity of views.ordered) {
+    const facts = world.get(entity, RenderView).unwrap();
+    if (facts.capture || !facts.enabled) continue;
+    const view = recorderOf(world, entity);
+    if (view === undefined) return undefined;
+    if (view.target !== undefined) continue;
+    if (selected !== undefined) return undefined;
+    const resolved = viewCameraOf(world, entity);
+    if (
+      resolved === undefined ||
+      facts.eye !== 0 ||
+      facts.channels !== 0 ||
+      facts.updateInterval !== 1 ||
+      !coversSurface(resolved.viewport, host.canvas)
+    )
+      return undefined;
+    selected = entity;
+  }
+  return selected;
+}
+
+function coversSurface(view: ViewViewport, canvas: OutputHost['canvas']): boolean {
+  return (
+    view.x === 0 &&
+    view.y === 0 &&
+    view.width === canvas.width &&
+    view.height === canvas.height &&
+    view.renderWidth === canvas.width &&
+    view.renderHeight === canvas.height
+  );
+}
+
 /**
  * Settle every staged replacement: a submitted frame retires the previous
  * output, any other outcome restores it and retires the new one. A retired
@@ -267,6 +318,7 @@ function resolveRecordingViews(
     composition.blocked = true;
     return;
   }
+  composition.directDisplay = directDisplayView(world, host, views);
   for (const entity of views.ordered) {
     const facts = world.get(entity, RenderView).unwrap();
     if (!facts.capture && !facts.enabled) continue;
@@ -287,15 +339,18 @@ function resolveRecordingViews(
         }
         assertViewTargetShape(physical);
       }
-      ensureViewOutput(
-        host,
-        composition,
-        view,
-        resolved.extent.width,
-        resolved.extent.height,
-        base,
-      );
-      if (view.target === undefined) composition.pictures.push(view.picture);
+      if (composition.directDisplay === entity) releaseViewOutput(composition, view);
+      else {
+        ensureViewOutput(
+          host,
+          composition,
+          view,
+          resolved.extent.width,
+          resolved.extent.height,
+          base,
+        );
+        if (view.target === undefined) composition.pictures.push(view.picture);
+      }
     }
     composition.recorded.push(view);
   }
@@ -319,71 +374,70 @@ export function registerViewOutputSystems(
     identity: undefined,
   };
   world.insertResource<ViewOutputOwner>(ViewOutputOwnerKey, owner);
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: RENDER_VIEW_OWNER_SYSTEM,
-      before: [RENDER_VIEWS_SYSTEM],
-      queries: [],
-      fn: (_world) => {
-        if (!_world.hasResource(RenderViewInput)) return;
-        const source = _world.getResource<RenderViewFrameSource>(RenderViewInput);
-        // Only a frame that declares composed or capture views adopts their owner.
-        if (source.primary && source.captures.length === 0) return;
-        const identity = source.publication?.resources.identity ?? source.world?.identity;
-        if (owner.generation === host.deviceScope.generation && owner.identity === identity) return;
-        owner.identity = identity;
-        owner.generation = host.deviceScope.generation;
-        try {
-          retireViews(_world, views, host);
-          owner.compositor.dispose();
-          owner.compositor = createCompositor();
-        } catch (cause) {
-          recordViewFailure(_world, cause);
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_VIEW_OUTPUTS_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        // An earlier frame that failed before its Commit left replacements staged.
-        settleViewOutputs(world, host, false);
-        composition.recorded.length = 0;
-        composition.pictures.length = 0;
-        composition.blocked = false;
-        if (!composition.active && views.captureCount === 0) return;
-        try {
-          resolveRecordingViews(world, host, views, composition);
-        } catch (cause) {
-          recordViewFailure(world, cause);
-          composition.blocked = true;
-        }
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_VIEW_OUTPUT_SETTLE_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const submitted = renderSubmission(world).accepted;
-        settleViewOutputs(world, host, submitted);
-        composition.captureRecorded = composition.active && composition.captureDemand && submitted;
-        if (!submitted) return;
-        for (const view of composition.recorded) {
-          if (view.target === undefined || view.output === undefined) continue;
-          const physical = host.getRenderTargetPhysical?.(view.target);
-          if (physical !== undefined) host.markRenderTargetSubmitted?.(view.target, physical);
-        }
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_OWNER_SYSTEM,
+    before: [RenderViewsOrder],
+    queries: [],
+    fn: (_world) => {
+      if (!_world.hasResource(RenderViewInput)) return;
+      const source = _world.getResource(RenderViewInput);
+      // Only a frame that declares composed or capture views adopts their owner.
+      if (source.primary && source.captures.length === 0) return;
+      const identity = source.publication?.resources.identity ?? source.world?.identity;
+      if (owner.generation === host.deviceScope.generation && owner.identity === identity) return;
+      owner.identity = identity;
+      owner.generation = host.deviceScope.generation;
+      try {
+        retireViews(_world, views, host);
+        owner.compositor.dispose();
+        owner.compositor = createCompositor();
+      } catch (cause) {
+        recordViewFailure(_world, cause);
+      }
+    },
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    sets: [RenderViewOutputsOrder],
+    commands: 'none',
+    name: RENDER_VIEW_OUTPUTS_SYSTEM,
+    after: [RenderViewFrameOrder],
+    queries: [],
+    fn: (world) => {
+      // An earlier frame that failed before its Commit left replacements staged.
+      settleViewOutputs(world, host, false);
+      composition.recorded.length = 0;
+      composition.pictures.length = 0;
+      composition.blocked = false;
+      composition.directDisplay = undefined;
+      if (!composition.active && views.captureCount === 0) return;
+      try {
+        resolveRecordingViews(world, host, views, composition);
+      } catch (cause) {
+        recordViewFailure(world, cause);
+        composition.blocked = true;
+      }
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken2).unwrap();
+  const systemToken3 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_OUTPUT_SETTLE_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const submitted = renderSubmission(world).accepted;
+      settleViewOutputs(world, host, submitted);
+      composition.captureRecorded = composition.active && composition.captureDemand && submitted;
+      if (!submitted) return;
+      for (const view of composition.recorded) {
+        if (view.target === undefined || view.output === undefined) continue;
+        const physical = host.getRenderTargetPhysical?.(view.target);
+        if (physical !== undefined) host.markRenderTargetSubmitted?.(view.target, physical);
+      }
+    },
+  });
+  world.addSystem(RenderCommit, systemToken3).unwrap();
   return owner;
 }
 
@@ -480,7 +534,7 @@ function adoptCaptureRecorder(
   create: ViewRecorderFactory,
   entity: EntityHandle,
   facts: ViewFacts,
-  opts: DrawOwnerOptions,
+  opts: DrawOptions,
 ): void {
   const retained = recorderOf(world, entity);
   const target = retained?.target ?? views.target(facts);
@@ -509,7 +563,7 @@ function adoptDisplayRecorder(
   create: ViewRecorderFactory,
   entity: EntityHandle,
   facts: ViewFacts,
-  opts: DrawOwnerOptions,
+  opts: DrawOptions,
   base: NonNullable<ReturnType<RenderSystemInternals['getPipelineState']>>,
 ): void {
   const resolved = viewCameraOf(world, entity) as ViewCameraState;
@@ -528,7 +582,7 @@ function adoptDisplayRecorder(
 
 /** Adopt every recording view's recorder and stage its ViewFrame. */
 function stageRecordingViews(world: World, views: RenderViews, host: ViewRecorderHost): void {
-  const source = world.getResource<RenderViewFrameSource>(RenderViewInput);
+  const source = world.getResource(RenderViewInput);
   const opts = source.opts;
   const composition = viewComposition(world);
   const create = host.createRecorder;
@@ -540,13 +594,14 @@ function stageRecordingViews(world: World, views: RenderViews, host: ViewRecorde
     // Leaving the composed mode releases the compositor and the shared capture memory.
     composition.captureRecorded = false;
     if (world.hasResource(ViewOutputOwnerKey))
-      world.getResource<ViewOutputOwner>(ViewOutputOwnerKey).compositor.dispose();
+      world.getResource(ViewOutputOwnerKey).compositor.dispose();
     if (create !== undefined)
       for (const entity of views.ordered) {
         const facts = world.get(entity, RenderView).unwrap();
         if (facts.capture) adoptCaptureRecorder(world, views, host, create, entity, facts, opts);
       }
-    if (views.primary !== undefined) stageViewFrame(world, views.primary, opts);
+    if (views.primary !== undefined)
+      stageViewFrame(world, views.primary, opts, opts.targetWrite === undefined ? true : 'capture');
     return;
   }
   const base = recordContext(host.internals).getPipelineState();
@@ -579,29 +634,25 @@ export function registerViewRecorderSystem(
   views: RenderViews,
   host: ViewRecorderHost,
 ): void {
-  world
-    .addSystem(RenderExtract, {
-      commands: 'none',
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      after: [RENDER_VIEW_CAMERAS_SYSTEM],
-      // Views are adopted in composition order (`views.ordered`), not query order.
-      queries: [{ read: [RenderView, ViewCamera] }],
-      fn: (world) => {
-        if (!world.hasResource(RenderViewInput)) return;
-        try {
-          stageRecordingViews(world, views, host);
-          if (
-            host.createRecorder !== undefined &&
-            host.internals.standardProfile?.probePlacement !== undefined
-          )
-            assertProbePlacementViews(
-              world.getResource<RenderViewFrameSource>(RenderViewInput),
-              views.enabledCount,
-            );
-        } catch (cause) {
-          recordViewFailure(world, cause);
-        }
-      },
-    })
-    .unwrap();
+  const systemToken4 = defineSystem({
+    commands: 'none',
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    after: [RenderViewCamerasOrder],
+    // Views are adopted in composition order (`views.ordered`), not query order.
+    queries: [{ read: [RenderView, ViewCamera] }],
+    fn: (world) => {
+      if (!world.hasResource(RenderViewInput)) return;
+      try {
+        stageRecordingViews(world, views, host);
+        if (
+          host.createRecorder !== undefined &&
+          host.internals.standardProfile?.probePlacement !== undefined
+        )
+          assertProbePlacementViews(world.getResource(RenderViewInput), views.enabledCount);
+      } catch (cause) {
+        recordViewFailure(world, cause);
+      }
+    },
+  });
+  world.addSystem(RenderExtract, systemToken4).unwrap();
 }

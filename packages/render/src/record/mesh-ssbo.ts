@@ -22,7 +22,7 @@ import {
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
 import { recordContext } from '../world/view-record-context';
-import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
+import type { ValidatedRenderable } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 /**
@@ -68,6 +68,23 @@ function hasStableGenerationColumn(generations: Uint32Array | undefined, count: 
   );
 }
 
+function copyMat4(out: Float32Array, at: number, from: Float32Array, base: number): void {
+  for (let k = 0; k < 16; k++) out[at + k] = from[base + k] as number;
+}
+
+const generationIndexes = new WeakMap<Uint32Array, Map<number, number>>();
+
+/** Generation columns are immutable, so the ordinal index is built once per column. */
+function generationIndex(generations: Uint32Array): Map<number, number> {
+  let index = generationIndexes.get(generations);
+  if (index === undefined) {
+    index = new Map();
+    for (let i = 0; i < generations.length; i++) index.set(generations[i] as number, i);
+    generationIndexes.set(generations, index);
+  }
+  return index;
+}
+
 /**
  * Project the ECS transform snapshot into the storage-backed InstanceData
  * layout. Unique identity generations select the previous matrix only when
@@ -92,35 +109,27 @@ export function packInstanceStorageBuffer(
     hasStableGenerationColumn(generations, count) &&
     hasStableGenerationColumn(previousGenerations, previousCount);
   // An unchanged identity column pairs every ordinal with itself.
-  const sameColumn = identityProof && generations === previousGenerations;
+  if (
+    (identityProof && generations === previousGenerations) ||
+    (!generationInput && previousCount === count)
+  ) {
+    for (let i = 0; i < count; i++) {
+      copyMat4(out, i * INSTANCE_STORAGE_STRIDE_FLOATS, transforms, i * 16);
+      copyMat4(out, i * INSTANCE_STORAGE_STRIDE_FLOATS + 16, previousTransforms, i * 16);
+    }
+    return out;
+  }
   const previousIndexByGeneration =
-    identityProof && !sameColumn
-      ? new Map(
-          Array.from(
-            previousGenerations ?? [],
-            (generation, index) => [generation, index] as const,
-          ),
-        )
+    identityProof && previousGenerations !== undefined
+      ? generationIndex(previousGenerations)
       : undefined;
   for (let i = 0; i < count; i++) {
-    const sourceBase = i * 16;
     const targetBase = i * INSTANCE_STORAGE_STRIDE_FLOATS;
-    const previousIndex = sameColumn
-      ? i
-      : identityProof
-        ? previousIndexByGeneration?.get(generations?.[i] ?? 0)
-        : !generationInput && previousCount === count
-          ? i
-          : undefined;
-    const sameIdentity = previousIndex !== undefined && previousIndex < previousCount;
-    const previousBase = (previousIndex ?? i) * 16;
-    for (let k = 0; k < 16; k++) {
-      const value = transforms[sourceBase + k] ?? 0;
-      out[targetBase + k] = value;
-      out[targetBase + 16 + k] = sameIdentity
-        ? (previousTransforms[previousBase + k] ?? value)
-        : value;
-    }
+    copyMat4(out, targetBase, transforms, i * 16);
+    const previousIndex = previousIndexByGeneration?.get(generations?.[i] ?? 0);
+    if (previousIndex !== undefined && previousIndex < previousCount)
+      copyMat4(out, targetBase + 16, previousTransforms, previousIndex * 16);
+    else copyMat4(out, targetBase + 16, transforms, i * 16);
   }
   return out;
 }
@@ -586,9 +595,7 @@ function stageMeshDraw(
   if (buffer === null) throw new Error('mesh draw storage is not allocated');
   const slot = meshDrawSlot(entry, folded);
   const mirror = meshSsboMirror(buffer, slot + 1);
-  const surfaceBase = visibleSurfaceBases?.get(
-    worldEntityKey(entry.source.worldId, entry.source.entityKey),
-  );
+  const surfaceBase = visibleSurfaceBases?.get(entry.source.entityKey);
   const previous = mirror.sources.get(slot);
   if (
     previous?.source === entry.source &&

@@ -7,11 +7,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-2d-screen-shake headless dawn smoke — proves Bevy 2d_screen_shake
 // behavior: trauma-driven camera shake via 1D Perlin noise, Space to increase
 // trauma, automatic decay. Shared scene from src/screen-shake.ts.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -95,7 +95,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { buildScreenShakeWorld, cameraPosition, cameraTrauma, stepScreenShake } = await import(resolve(here, '..', 'src', 'screen-shake.ts'));
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

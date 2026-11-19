@@ -68,9 +68,8 @@ it('boots and completes 60 native frames without expanding unselected WGSL in va
         for (let frame = 0; frame < 60; frame++) {
           world.update(1 / 60).unwrap();
           const draw = await drawReadyFrame(native, {
-            leases: [lease],
-            camera: { lease, entityKey: camera },
-            environment: { lease },
+            source: lease,
+            camera: { entityKey: camera },
           });
           expect(draw.presentation).toBe('ready');
         }

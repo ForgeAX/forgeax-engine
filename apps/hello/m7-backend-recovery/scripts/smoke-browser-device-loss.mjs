@@ -5,14 +5,16 @@
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 import browserLaunch from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
-import { buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
+import { waitForReadyAppFrame } from '../../../shared/scripts/rhi-debug-verify.mjs';
 import { isRetryableAdapterRecoveryFailure } from './recovery-contract.mjs';
 import { viteLocalUrl } from './vite-local-url.mjs';
+import { waitForCompletedAppFrames } from './wait-for-completed-app-frames.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..', '..', '..');
@@ -30,11 +32,11 @@ const browserArgs = [
   ...(process.env.CI && process.platform === 'linux'
     ? [...browserLaunch.args, '--use-angle=swiftshader']
     : [
-      '--disable-features=MacAppCodeSignClone',
-      '--enable-unsafe-webgpu',
-      '--enable-features=Vulkan,UseSkiaRenderer',
-      '--ignore-gpu-blocklist',
-    ]),
+        '--disable-features=MacAppCodeSignClone',
+        '--enable-unsafe-webgpu',
+        '--enable-features=Vulkan,UseSkiaRenderer',
+        '--ignore-gpu-blocklist',
+      ]),
   // The carrier deliberately crashes the GPU three times. Keep adapters
   // available so Chrome quarantine does not replace the Engine recovery test.
   '--disable-gpu-process-crash-limit',
@@ -44,7 +46,13 @@ mkdirSync(runArtifactDir, { recursive: true });
 
 const vite = spawn(
   process.execPath,
-  [resolve(appRoot, 'node_modules', 'vite', 'bin', 'vite.js'), '--host', '127.0.0.1', '--port', '0'],
+  [
+    resolve(appRoot, 'node_modules', 'vite', 'bin', 'vite.js'),
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0',
+  ],
   {
     cwd: appRoot,
     env: { ...process.env, FORGEAX_ENGINE_RHI_DEBUG: '1' },
@@ -74,7 +82,8 @@ function readPng(path) {
   const png = PNG.sync.read(readFileSync(path));
   let nonBlackPixels = 0;
   for (let index = 0; index < png.data.length; index += 4) {
-    if (png.data[index] > 8 || png.data[index + 1] > 8 || png.data[index + 2] > 8) nonBlackPixels += 1;
+    if (png.data[index] > 8 || png.data[index + 1] > 8 || png.data[index + 2] > 8)
+      nonBlackPixels += 1;
   }
   return { width: png.width, height: png.height, nonBlackPixels };
 }
@@ -159,41 +168,49 @@ try {
     );
   };
   const captureFrame = async (label) => {
-    const capture = await page.evaluate(async ({ captureLabel }) => {
-      const captureFn = globalThis.__forgeax?.captureFrame;
-      if (typeof captureFn !== 'function') return null;
-      const captured = await captureFn({ snapshotTimeoutMs: 5_000 });
-      if (!captured.ok) return captured;
-      const runId = `m7-${captureLabel}-${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
-      const response = await fetch(`/__forgeax-debug/tape?runId=${encodeURIComponent(runId)}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-forgeax-rhitape' },
-        // Blob keeps large binary tapes out of CDP's inline request-body string.
-        body: new Blob([captured.value.bytes], { type: 'application/x-forgeax-rhitape' }),
-      });
-      const payload = await response.json();
-      if (!response.ok) return { ok: false, error: payload };
-      return { ok: true, value: { ...payload, digest: captured.value.digest, runId } };
-    }, { captureLabel: label });
+    const capture = await page.evaluate(
+      async ({ captureLabel }) => {
+        const captureFn = globalThis.__forgeax?.captureFrame;
+        if (typeof captureFn !== 'function') return null;
+        const captured = await captureFn({ snapshotTimeoutMs: 5_000 });
+        if (!captured.ok) return captured;
+        const runId = `m7-${captureLabel}-${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
+        const response = await fetch(`/__forgeax-debug/tape?runId=${encodeURIComponent(runId)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-forgeax-rhitape' },
+          // Blob keeps large binary tapes out of CDP's inline request-body string.
+          body: new Blob([captured.value.bytes], { type: 'application/x-forgeax-rhitape' }),
+        });
+        const payload = await response.json();
+        if (!response.ok) return { ok: false, error: payload };
+        return { ok: true, value: { ...payload, digest: captured.value.digest, runId } };
+      },
+      { captureLabel: label },
+    );
     if (capture === null) throw new Error(`RHI capture hook missing for ${label}`);
     if (!capture.ok) throw new Error(`${label} capture failed: ${JSON.stringify(capture.error)}`);
-    const source = [capture.value.path, resolve(appRoot, capture.value.path), resolve(repoRoot, capture.value.path)].find((path) => existsSync(path));
-    if (source === undefined) throw new Error(`${label} tape artifact missing: ${capture.value.path}`);
+    const source = [
+      capture.value.path,
+      resolve(appRoot, capture.value.path),
+      resolve(repoRoot, capture.value.path),
+    ].find((path) => existsSync(path));
+    if (source === undefined)
+      throw new Error(`${label} tape artifact missing: ${capture.value.path}`);
     const artifactPath = resolve(runArtifactDir, `${label}.rhitape`);
     copyFileSync(source, artifactPath);
     const tape = decodeTape(new Uint8Array(readFileSync(artifactPath)));
     if (!tape.ok) throw new Error(`${label} tape decode failed: ${tape.error.code}`);
     const model = buildFrameModel(tape.value);
-    return { ...capture.value, path: artifactPath, eventCount: tape.value.events.length, workCount: model.works.length };
+    return {
+      ...capture.value,
+      path: artifactPath,
+      eventCount: tape.value.events.length,
+      workCount: model.works.length,
+    };
   };
 
   const runFrames = async (count) => {
-    const result = await page.evaluate(async (frameCount) => {
-      for (let frame = 0; frame < frameCount; frame += 1) {
-        await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
-      }
-      return frameCount;
-    }, count);
+    const result = await page.evaluate(waitForCompletedAppFrames, { count, timeoutMs: 30_000 });
     if (result !== count) throw new Error(`M7 frame oracle completed ${result}/${count} frames`);
     return result;
   };
@@ -214,7 +231,8 @@ try {
           (adapter) => ({ status: adapter === null ? 'unavailable' : 'available' }),
           (error) => ({
             status: 'rejected',
-            error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+            error:
+              error instanceof Error ? { name: error.name, message: error.message } : String(error),
           }),
         );
         const outcome = await Promise.race([
@@ -228,7 +246,12 @@ try {
         };
         attempts.push(attempt);
         if (outcome.status === 'available') {
-          return { status: 'available', timeoutMs, elapsedMs: performance.now() - startedAt, attempts };
+          return {
+            status: 'available',
+            timeoutMs,
+            elapsedMs: performance.now() - startedAt,
+            attempts,
+          };
         }
         if (outcome.status === 'rejected' || outcome.status === 'timeout') {
           return {
@@ -249,8 +272,16 @@ try {
   const cdp = await browser.newBrowserCDPSession();
   for (let cycle = 1; cycle <= 3; cycle += 1) {
     const before = await waitForHealth('alive');
+    const beforeReadyFrame = await page.evaluate(waitForReadyAppFrame, { timeoutMs: 30_000 });
     const cdpCommand = 'Browser.crashGpuProcess';
-    const cycleEvidence = { cycle, cdpCommand, faultRequested: false, before, recoveryAttempts: [] };
+    const cycleEvidence = {
+      cycle,
+      cdpCommand,
+      faultRequested: false,
+      before,
+      beforeReadyFrame,
+      recoveryAttempts: [],
+    };
     recoveryAttemptEvidence.push(cycleEvidence);
     const beforeCapture = await captureFrame(`cycle-${cycle}-before`);
     const beforePng = resolve(runArtifactDir, `cycle-${cycle}-before.png`);
@@ -260,8 +291,13 @@ try {
     await cdp.send(cdpCommand);
     const lost = await waitForHealth('device-lost');
     cycleEvidence.lost = lost;
-    if (lost.worldIdentity !== before.worldIdentity || lost.rendererIdentity !== before.rendererIdentity) {
-      throw new Error(`cycle ${cycle} changed logical owner at loss: ${JSON.stringify({ before, lost })}`);
+    if (
+      lost.worldIdentity !== before.worldIdentity ||
+      lost.rendererIdentity !== before.rendererIdentity
+    ) {
+      throw new Error(
+        `cycle ${cycle} changed logical owner at loss: ${JSON.stringify({ before, lost })}`,
+      );
     }
     if (lost.deviceLossError?.code !== 'device-lost') {
       throw new Error(`cycle ${cycle} missing device-lost error: ${JSON.stringify(lost)}`);
@@ -300,7 +336,9 @@ try {
         );
       }
       const retryRecoveryStartedAt = Date.now();
-      const retryRecovery = await page.evaluate(() => globalThis.__forgeaxM7DeviceRecovery.recover());
+      const retryRecovery = await page.evaluate(() =>
+        globalThis.__forgeaxM7DeviceRecovery.recover(),
+      );
       const retryRecoveryAttempt = {
         attempt: 2,
         operation: 'renderer.recover',
@@ -324,8 +362,13 @@ try {
     cycleEvidence.recovery = recovery;
     cycleEvidence.after = after;
     cycleEvidence.finalHealth = after;
-    if (after.worldIdentity !== before.worldIdentity || after.rendererIdentity !== before.rendererIdentity) {
-      throw new Error(`cycle ${cycle} changed logical owner after recovery: ${JSON.stringify({ before, after })}`);
+    if (
+      after.worldIdentity !== before.worldIdentity ||
+      after.rendererIdentity !== before.rendererIdentity
+    ) {
+      throw new Error(
+        `cycle ${cycle} changed logical owner after recovery: ${JSON.stringify({ before, after })}`,
+      );
     }
     if (after.deviceIdentity === before.deviceIdentity) {
       throw new Error(`cycle ${cycle} reused the stale device identity`);
@@ -335,8 +378,14 @@ try {
     const afterPng = resolve(runArtifactDir, `cycle-${cycle}-after.png`);
     await canvas.screenshot({ path: afterPng });
     const transitions = after.transitions.slice(transitionStart).map((entry) => entry.state);
-    if (!transitions.includes('device-lost') || !transitions.includes('recovering') || !transitions.includes('alive')) {
-      throw new Error(`cycle ${cycle} missing health transition: ${JSON.stringify({ transitions, after })}`);
+    if (
+      !transitions.includes('device-lost') ||
+      !transitions.includes('recovering') ||
+      !transitions.includes('alive')
+    ) {
+      throw new Error(
+        `cycle ${cycle} missing health transition: ${JSON.stringify({ transitions, after })}`,
+      );
     }
     recoveryCycles.push({
       ...cycleEvidence,
@@ -344,7 +393,11 @@ try {
       transitions,
       capture: { before: beforeCapture, after: afterCapture },
       png: { before: beforePng, after: afterPng },
-      connection: { pageClosed: page.isClosed(), pageLifecycle: [...pageLifecycle], browserLifecycle: [...browserLifecycle] },
+      connection: {
+        pageClosed: page.isClosed(),
+        pageLifecycle: [...pageLifecycle],
+        browserLifecycle: [...browserLifecycle],
+      },
     });
   }
 
@@ -363,7 +416,9 @@ try {
     }
   }
   if (page.isClosed() || browserLifecycle.includes('disconnected')) {
-    throw new Error(`connection termination is not loss evidence: ${JSON.stringify({ pageLifecycle, browserLifecycle })}`);
+    throw new Error(
+      `connection termination is not loss evidence: ${JSON.stringify({ pageLifecycle, browserLifecycle })}`,
+    );
   }
   const result = {
     status: 'pass',
@@ -380,8 +435,13 @@ try {
     workerLifecycle,
     browserLifecycle,
   };
-  writeFileSync(resolve(runArtifactDir, 'device-loss-summary.json'), `${JSON.stringify(result, null, 2)}\n`);
-  console.log(`[m7-browser-device-loss] PASS - ${JSON.stringify({ cycles: recoveryCycles.length, visual })}`);
+  writeFileSync(
+    resolve(runArtifactDir, 'device-loss-summary.json'),
+    `${JSON.stringify(result, null, 2)}\n`,
+  );
+  console.log(
+    `[m7-browser-device-loss] PASS - ${JSON.stringify({ cycles: recoveryCycles.length, visual })}`,
+  );
 } catch (error) {
   const evidence = {
     status: 'insufficient-evidence',
@@ -401,7 +461,9 @@ try {
   };
   const failureArtifact = resolve(runArtifactDir, 'device-loss-failure.json');
   writeFileSync(failureArtifact, `${JSON.stringify(evidence, null, 2)}\n`);
-  console.error(`[m7-browser-device-loss] FAIL - ${JSON.stringify({ error: evidence.error, failureArtifact })}`);
+  console.error(
+    `[m7-browser-device-loss] FAIL - ${JSON.stringify({ error: evidence.error, failureArtifact })}`,
+  );
   process.exitCode = 1;
 } finally {
   if (browser !== undefined) await browser.close();

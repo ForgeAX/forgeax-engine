@@ -7,6 +7,23 @@ const until = async predicate => {
   assert.ok(predicate());
 };
 
+test('normal backend preparation remains connecting without logging a failure', async () => {
+  const original = console.error;
+  const errors = [];
+  let owner;
+  try {
+    console.error = (...args) => errors.push(args);
+    owner = createBrowserConnection({
+      delays: [1],
+      async connect() { throw Object.assign(new Error('Preparing backend'), { forgeaxPreparing: true }); },
+      onChange() {},
+    });
+    await owner.ready;
+    await new Promise(done => setTimeout(done, 15));
+    assert.deepEqual(errors, []);
+  } finally { await owner?.dispose(); console.error = original; }
+});
+
 test('connection owner retries with a bound and revokes late sessions on disposal', async () => {
   let calls = 0;
   const states = [];

@@ -56,7 +56,7 @@ export function occlusionCamera(camera: CameraSnapshot): GpuDrivenOcclusionCamer
       near: camera.near,
       far: camera.far,
       orthographic: camera.projection === 'orthographic',
-      historyKey: `${camera.worldId ?? ''}:${camera.entityKey ?? 0}:${camera.historyVersion ?? 0}:${camera.aspect}`,
+      historyKey: `${camera.entityKey ?? 0}:${camera.historyVersion ?? 0}:${camera.aspect}`,
     };
   } finally {
     usingScratch = outer;

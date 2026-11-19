@@ -346,6 +346,8 @@ it('does not reuse a frame alias encoded under a temporarily changed work scope'
   ]);
   expect(rows[0]?.keys.get('shared')).toBe('["view:transient","shared"]');
   expect(rows[1]?.keys.get('shared')).toBe('["frame","shared"]');
+  expect(rows[0]?.resourceScopes.get('shared')).toEqual({ view: 'transient' });
+  expect(rows[1]?.resourceScopes.get('shared')).toBe('frame');
 });
 
 it('keeps the original work scope getter observation boundary', () => {

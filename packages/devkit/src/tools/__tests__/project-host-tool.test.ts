@@ -1,3 +1,4 @@
+import { HostAssemblyError } from '@forgeax/engine-host';
 import { defineTool, toolJsonSchema } from '@forgeax/engine-tool-runtime';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createToolClient } from '../client.js';
@@ -34,7 +35,9 @@ const binding: ProjectToolBinding = {
   },
 };
 
-beforeEach(() => runHost.mockReset());
+beforeEach(() => {
+  runHost.mockReset();
+});
 
 describe('project host tool dispatch', () => {
   it('routes a discovered host command to the resident backend provider', async () => {
@@ -76,6 +79,66 @@ describe('project host tool dispatch', () => {
       expect(await client.run('fixture.host', {})).toMatchObject({
         outcome: 'failed',
         failure: { code: 'tool-capability-unavailable', hint: 'Start the backend.' },
+      });
+    } finally {
+      await client.dispose?.();
+    }
+  });
+
+  it('retains the native Host transport cause without turning it into missing capability', async () => {
+    const cause = new HostAssemblyError(
+      'host-transport-failure',
+      'an open socket for workspace project open',
+      'Inspect the resident Host socket and backend lifecycle.',
+      { service: 'workspace.project.open', reason: 'socket is closed' },
+    );
+    runHost.mockImplementation(() => {
+      throw cause;
+    });
+    const client = await createToolClient({
+      projectRoot: process.cwd(),
+      baseContributions: [],
+      projectDiscovery: async () => [binding],
+    });
+    try {
+      expect(runHost).not.toHaveBeenCalled();
+      const terminal = await client.run('fixture.host', {});
+      expect(terminal).toEqual({
+        outcome: 'failed',
+        artifacts: [],
+        failure: {
+          code: 'tool-domain-failed',
+          expected: cause.expected,
+          hint: cause.hint,
+          detail: { code: cause.code, payload: cause.detail },
+        },
+      });
+    } finally {
+      await client.dispose?.();
+    }
+  });
+
+  it('retains cancellation and an unstructured unavailable backend refusal', async () => {
+    runHost.mockImplementation(() => {
+      throw new Error('backend is unavailable');
+    });
+    const client = await createToolClient({
+      projectRoot: process.cwd(),
+      baseContributions: [],
+      projectDiscovery: async () => [binding],
+    });
+    try {
+      expect(await client.run('fixture.host', {})).toMatchObject({
+        outcome: 'failed',
+        failure: {
+          code: 'tool-capability-unavailable',
+          hint: 'backend is unavailable',
+          detail: { capability: 'tool:fixture.host', realm: 'host' },
+        },
+      });
+      expect(await client.run('fixture.host', {}, { signal: AbortSignal.abort() })).toMatchObject({
+        outcome: 'failed',
+        failure: { code: 'tool-run-cancelled', detail: { reason: 'caller aborted' } },
       });
     } finally {
       await client.dispose?.();

@@ -1,0 +1,8 @@
+{
+  "id": "water-r3-slw-reflection-underwater",
+  "name": "Water R3 Reflection Basin",
+  "schemaVersion": "3.0.0",
+  "roots": {},
+  "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

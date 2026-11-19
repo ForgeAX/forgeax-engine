@@ -1,14 +1,22 @@
+import { stepRetainedBytes, trimRetainedBytes } from '@forgeax/engine-assets-runtime/internal';
+import { createTaskClient, type TaskClient } from '@forgeax/engine-platform';
 import {
+  type FeatureTextureObservation,
+  type FrameDomainObservation,
   type FrameReceipt,
   type GpuPassTimingObservation,
   type PublishedRenderFrameInput,
   querySubmittedTerrainHeight,
+  type RenderError,
   type Renderer,
   type RendererOperationError,
   type RendererOptions,
   type RenderFeature,
+  type RenderFeatureCompletion,
   type RenderPublication,
+  RenderPublicationError,
   type RenderPublicationIdentity,
+  type RenderResult,
   renderPublicationBytes,
   renderPublicationTransfers,
 } from '@forgeax/engine-render';
@@ -17,7 +25,6 @@ import {
   fullscreenRenderFeatureDeclaration,
   ownReceivedPublicationMaterials,
   renderGraphCompileCount,
-  verifyPublicationPrograms,
 } from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
@@ -33,6 +40,14 @@ import {
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import { bindLoadProgressScope } from '@forgeax/engine-types';
 import {
+  applyRenderConfiguration,
+  type ConfigurationApplyRequest,
+  configurationApplyResponse,
+  staleConfiguration,
+} from '../configuration-apply';
+import { freezeConfiguration } from '../configuration-data';
+import type { EngineStartupPlan } from '../configuration-types';
+import {
   createRhiCapture,
   createRhiInstrumentation,
   type RhiCapture,
@@ -42,6 +57,7 @@ import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootstrap-entry';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { installCarriedGpuStub } from './gpu-stub';
+import { armLinearHdr, observeLinearHdr } from './hdr-frame-observation';
 import {
   DEFAULT_RENDER_PIPELINE_CAPACITY,
   renderPipelineCapacityOf,
@@ -55,11 +71,16 @@ import type {
   CompletedMeshConsumption,
   RenderWorkerInput,
   RenderWorkerOutput,
+  SubmittedFeatureReceipt,
 } from './render-worker-protocol';
 import { createRenderWorkerTaskTurns, yieldRenderWorkerTaskTurn } from './render-worker-task-turn';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
-import type { ExecutionDiagnosticsOptions, ExecutionGeometryObservationResult } from './types';
+import type {
+  ExecutionDiagnosticsOptions,
+  ExecutionGeometryObservationResult,
+  ExecutionHdrObservationResult,
+} from './types';
 import { serializableDetail, workerError } from './worker-error';
 
 const scope = globalThis as unknown as {
@@ -72,6 +93,8 @@ let meshResidency: RenderMeshResidency | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
 /** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
 let hostPort: MessagePort | undefined;
+/** Background tasks run on the Engine Worker's pool; absent, the Renderer runs them inline. */
+let taskClient: TaskClient | undefined;
 /** Always-on draw cadence and stall accounting (Render Worker clock). */
 const drawTiming = new RenderDrawTiming({
   now: () => performance.now(),
@@ -86,6 +109,7 @@ let readyAnnounced = false;
 let canvas: OffscreenCanvas | undefined;
 let geometryLane: ExecutionDiagnosticsOptions['geometryLane'];
 let busy = false;
+let currentConfiguration: EngineStartupPlan | undefined;
 // Includes CPU preparation, queued successors, and unretired GPU receipts.
 // Host, Source publisher and this receiver share the same finite capacity.
 let framesInFlight = 0;
@@ -128,6 +152,12 @@ let synchronizeFeatures: (features: RenderPublication['features']) => Promise<vo
 type DrawMessage = Extract<RenderWorkerInput, { kind: 'draw' }>;
 let geometryRequest:
   | (Extract<RenderWorkerInput, { kind: 'geometry-observe-next' }> & {
+      cancelled: boolean;
+      started: boolean;
+    })
+  | undefined;
+let hdrRequest:
+  | (Extract<RenderWorkerInput, { kind: 'hdr-observe-next' }> & {
       cancelled: boolean;
       started: boolean;
     })
@@ -204,6 +234,9 @@ function settleCaptureDraw(
       receipt: {
         frameId: receipt.frameId,
         deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
         ...(receipt.graphGeneration === undefined
           ? {}
           : { graphGeneration: receipt.graphGeneration }),
@@ -384,6 +417,11 @@ async function completeFrame(
   snapshotBoundary?: Promise<unknown>,
   meshConsumption?: CompletedMeshConsumption,
   captureDraw?: CaptureDrawTransaction,
+  featureSourceCompletion?: {
+    readonly completion: RenderFeatureCompletion;
+    readonly observations: Promise<RenderResult<readonly FrameDomainObservation[], RenderError>>;
+    readonly settleReadbackFlight: () => void;
+  },
 ): Promise<void> {
   const submittedAt = performance.now();
   let creditReturned = false;
@@ -422,39 +460,113 @@ async function completeFrame(
     traceCompletion('render-previous-prefix-passed', message, receipt);
     if (failed) return;
     const buffers = renderPublicationTransfers(message.publication);
-    const frame = {
-      kind: 'frame-complete',
-      worldIdentity: message.worldIdentity,
-      frameId: message.frameId,
-      deviceGeneration: receipt.deviceGeneration,
-      ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
-      ...(receipt.graphGeneration === undefined
-        ? {}
-        : { graphGeneration: receipt.graphGeneration }),
-      ...(receipt.barrelDistortion === undefined
-        ? {}
-        : { barrelDistortion: receipt.barrelDistortion }),
-      presentation: receipt.presentation,
-      ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
-        ? {}
-        : { presentationPendingReason: receipt.presentationPendingReason }),
-      engineUpdateMs: 0,
-      kernelWaitMs: 0,
-      renderSubmitToCompleteMs: performance.now() - submittedAt,
-    } as const;
-    scope.postMessage(
-      {
-        kind: 'completed',
-        revision: message.publication.revision,
-        buffers,
-        ...(meshConsumption === undefined ? {} : { meshConsumption }),
-        frame,
-      },
-      meshConsumption?.bindings.buffer instanceof ArrayBuffer
-        ? [...buffers, meshConsumption.bindings.buffer]
-        : buffers,
-    );
-    hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    let featureTextureReadbacks: readonly FeatureTextureObservation[] | undefined;
+    let featureTextureReadbackError: SerializedRenderError | undefined;
+    if (featureSourceCompletion !== undefined) {
+      const identity = featureSourceCompletion.completion;
+      if (
+        identity.frameId !== receipt.frameId ||
+        identity.deviceGeneration !== receipt.deviceGeneration ||
+        identity.graphGeneration !== receipt.graphGeneration
+      )
+        throw new RenderPublicationError({
+          reason: 'identity',
+          subject: 'feature texture observations differ from the returned draw receipt',
+        });
+      try {
+        const observed = await featureSourceCompletion.observations;
+        if (!observed.ok)
+          featureTextureReadbackError = {
+            code: observed.error.code,
+            expected: observed.error.expected,
+            hint: observed.error.hint,
+            detail:
+              'detail' in observed.error ? serializableDetail(observed.error.detail) : undefined,
+          };
+        else {
+          const rows = observed.value.filter(
+            (row): row is FeatureTextureObservation => row.domain === 'feature-texture',
+          );
+          if (rows.length > 0)
+            featureTextureReadbacks = rows.map((row) => ({
+              ...row,
+              bytes: transferable(row.bytes),
+            }));
+        }
+      } catch (cause) {
+        featureTextureReadbackError = {
+          code: 'observation-unavailable',
+          expected: 'the requested feature texture readback completes for its submitted frame',
+          hint: 'inspect the original cause and retry the feature texture readback',
+          detail: serializableDetail(cause),
+        };
+      }
+    }
+    const completedFrame = () => {
+      const frame = {
+        kind: 'frame-complete',
+        worldIdentity: message.worldIdentity,
+        frameId: message.frameId,
+        deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.configurationRevision === undefined
+          ? {}
+          : { configurationRevision: receipt.configurationRevision }),
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+        ...(receipt.barrelDistortion === undefined
+          ? {}
+          : { barrelDistortion: receipt.barrelDistortion }),
+        presentation: receipt.presentation,
+        ...(receipt.presentation !== 'pending' || receipt.presentationPendingReason === undefined
+          ? {}
+          : { presentationPendingReason: receipt.presentationPendingReason }),
+        engineUpdateMs: 0,
+        kernelWaitMs: 0,
+        renderSubmitToCompleteMs: performance.now() - submittedAt,
+      } as const;
+
+      return frame;
+    };
+    const frame = completedFrame();
+    const publishCompletion = () => {
+      scope.postMessage(
+        {
+          kind: 'completed',
+          identity: { source: message.publication.source, epoch: message.publication.epoch },
+          completion: {
+            frameId: receipt.frameId,
+            deviceGeneration: receipt.deviceGeneration,
+            ...(receipt.configurationRevision === undefined
+              ? {}
+              : { configurationRevision: receipt.configurationRevision }),
+            ...(receipt.graphGeneration === undefined
+              ? {}
+              : { graphGeneration: receipt.graphGeneration }),
+          },
+          revision: message.publication.revision,
+          buffers,
+          ...(featureTextureReadbacks === undefined ? {} : { featureTextureReadbacks }),
+          ...(featureTextureReadbackError === undefined ? {} : { featureTextureReadbackError }),
+          ...(meshConsumption === undefined ? {} : { meshConsumption }),
+          frame,
+        },
+        [
+          ...new Set<Transferable>([
+            ...buffers,
+            ...(featureTextureReadbacks?.flatMap((row) =>
+              row.bytes.buffer instanceof ArrayBuffer ? [row.bytes.buffer] : [],
+            ) ?? []),
+            ...(meshConsumption?.bindings.buffer instanceof ArrayBuffer
+              ? [meshConsumption.bindings.buffer]
+              : []),
+          ]),
+        ],
+      );
+      hostPort?.postMessage({ kind: 'render-complete', epoch: message.publication.epoch, frame });
+    };
+    publishCompletion();
     // The Host may admit the next frame now; its draw can arrive during a
     // checkpoint of the current draw, before this receipt is fully retired.
     creditReturned = true;
@@ -467,6 +579,11 @@ async function completeFrame(
   } finally {
     // A frame that returns no credit still passes the prefix to its successor.
     credited();
+    try {
+      featureSourceCompletion?.settleReadbackFlight();
+    } catch (cause) {
+      fail(message, cause);
+    }
     // Observation failure cannot let disposal outrun this frame or its predecessor.
     const retirement = await drainRenderCompletion(receipt.completed, previous);
     // Credit follows the GPU work alone, so a retirement-only failure reports here.
@@ -485,6 +602,7 @@ interface InitFailureContext {
 type InspectMessage = Extract<RenderWorkerInput, { kind: 'inspect' }>;
 type CaptureMessage = Extract<RenderWorkerInput, { kind: 'capture' }>;
 type GeometryRequest = NonNullable<typeof geometryRequest>;
+type HdrRequest = NonNullable<typeof hdrRequest>;
 
 function createInitFailureContext(message: InitMessage): InitFailureContext {
   return { kind: 'init', identity: { ...message.identity } };
@@ -519,25 +637,86 @@ function receiveGeometryObserveNext(
   } else geometryRequest = { ...message, cancelled: false, started: false };
 }
 
+function receiveHdrObserveCancel(requestId: number): void {
+  if (hdrRequest?.requestId === requestId) {
+    hdrRequest.cancelled = true;
+    if (!hdrRequest.started) hdrRequest = undefined;
+  }
+}
+
+function receiveHdrObserveNext(
+  message: Extract<RenderWorkerInput, { kind: 'hdr-observe-next' }>,
+): void {
+  if (
+    hdrRequest !== undefined ||
+    renderer === undefined ||
+    publicationIdentity?.source !== message.identity.source ||
+    publicationIdentity.epoch !== message.identity.epoch ||
+    inspectionWorldIdentity !== message.worldIdentity
+  ) {
+    scope.postMessage({
+      kind: 'hdr-observation-result',
+      requestId: message.requestId,
+      identity: message.identity,
+      worldIdentity: message.worldIdentity,
+      result: rendererInspectionFailure(hdrRequest === undefined ? 'not-ready' : 'request-limit'),
+    });
+  } else hdrRequest = { ...message, cancelled: false, started: false };
+}
+
+/** Teardown milestones from the actual cleanup awaits, with no acceptance projection. */
+function traceDisposal(
+  stage:
+    | 'initialization'
+    | 'draw'
+    | 'retirement'
+    | 'mesh-release'
+    | 'renderer-destroy'
+    | 'recorder-destroy'
+    | 'ack',
+): void {
+  // Bounded teardown evidence survives a forced Worker termination. It does
+  // not publish a receipt or change the cleanup owner, order or deadline.
+  console.warn(
+    JSON.stringify({
+      kind: 'render-worker-disposal',
+      owner: 'render',
+      stage,
+      identity: publicationIdentity,
+      worldIdentity: inspectionWorldIdentity,
+      preparing: activePreparationAbort !== undefined,
+      drawing: drawing !== undefined,
+      queued: queued.length,
+      framesInFlight,
+      unretiredReceipts,
+    }),
+  );
+}
+
 /** Disposes mesh residency, Renderer and recorder in order; returns the first cleanup failure. */
 async function disposeRenderResources(): Promise<unknown> {
   let cleanupFailure: unknown;
   try {
+    traceDisposal('mesh-release');
     await meshResidency?.dispose();
   } catch (cause) {
     cleanupFailure = cause;
   }
   try {
+    traceDisposal('renderer-destroy');
     const disposed = await renderer?.dispose();
     if (disposed?.ok === false) throw disposed.error;
   } catch (cause) {
     cleanupFailure ??= cause;
   }
   try {
+    traceDisposal('recorder-destroy');
     await attachment?.dispose();
   } catch (cause) {
     cleanupFailure ??= cause;
   }
+  taskClient?.dispose();
+  taskClient = undefined;
   return cleanupFailure;
 }
 
@@ -547,13 +726,18 @@ async function receiveDispose(): Promise<void> {
   activePreparationAbort?.abort();
   invalidateCaptureRequests();
   try {
+    traceDisposal('initialization');
     await initializing;
+    traceDisposal('draw');
     await drawing;
+    traceDisposal('retirement');
     await completing;
     const cleanupFailure = await disposeRenderResources();
     if (cleanupFailure !== undefined) throw cleanupFailure;
+    traceDisposal('ack');
     scope.postMessage({ kind: 'disposed' });
   } catch (cause) {
+    console.error('[render-worker-disposal-failed]', serializableDetail(cause));
     scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
   } finally {
     unsubscribeRenderer?.();
@@ -631,6 +815,14 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     receiveGeometryObserveNext(message);
     return;
   }
+  if (message.kind === 'hdr-observe-cancel') {
+    receiveHdrObserveCancel(message.requestId);
+    return;
+  }
+  if (message.kind === 'hdr-observe-next') {
+    receiveHdrObserveNext(message);
+    return;
+  }
   if (message.kind === 'dispose') return receiveDispose();
   if (message.kind === 'mesh-prepare' || message.kind === 'mesh-release') {
     return receiveMeshControl(message);
@@ -652,17 +844,13 @@ async function receive(message: RenderWorkerInput): Promise<void> {
       case 'terrain-height':
         return await receiveTerrainHeight(message);
       case 'bounds':
-        scope.postMessage({
-          kind: 'bounds-result',
-          requestId: message.requestId,
-          bounds:
-            publicationIdentity === undefined
-              ? undefined
-              : renderer?.bounds(publicationIdentity, message.entity),
-        });
+        receiveBounds(message);
         return;
       case 'capture-cancel':
         receiveCaptureCancel(message.requestId);
+        return;
+      case 'memory-pressure':
+        trimRetainedBytes();
         return;
       case 'capture':
         return await receiveCapture(message);
@@ -672,6 +860,35 @@ async function receive(message: RenderWorkerInput): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   }
+}
+
+function receiveConfiguration(message: ConfigurationApplyRequest): void {
+  freezeConfiguration(message.plan);
+  const result =
+    renderer === undefined ||
+    failed ||
+    shuttingDown ||
+    currentConfiguration?.revision !== message.previousRevision ||
+    message.plan.revision <= message.previousRevision ||
+    inspectionWorldIdentity !== message.worldIdentity
+      ? {
+          ok: false as const,
+          error: staleConfiguration('the Render realm or configuration revision changed'),
+        }
+      : applyRenderConfiguration(renderer, message.plan);
+  if (result.ok) currentConfiguration = message.plan;
+  scope.postMessage(configurationApplyResponse(message, result));
+}
+
+function receiveBounds(message: Extract<RenderWorkerInput, { kind: 'bounds' }>): void {
+  scope.postMessage({
+    kind: 'bounds-result',
+    requestId: message.requestId,
+    bounds:
+      publicationIdentity === undefined
+        ? undefined
+        : renderer?.bounds(publicationIdentity, message.entity),
+  });
 }
 
 async function receiveTerrainHeight(
@@ -771,6 +988,8 @@ async function receiveCapture(message: CaptureMessage): Promise<void> {
 function adoptInitPolicies(message: InitMessage): void {
   canvas = message.canvas;
   hostPort = message.hostPort;
+  taskClient?.dispose();
+  taskClient = message.taskPort === undefined ? undefined : createTaskClient(message.taskPort);
   geometryLane = message.geometryLane;
   renderTaskYield = message.renderTaskYield ?? 'none';
   renderPipelineCapacity = renderPipelineCapacityOf(message.renderPipelineCapacity);
@@ -805,21 +1024,36 @@ function initRendererOptions(
   return {
     ...recorderRendererOptions(attachment),
     publicationSource: message.identity,
+    ...(taskClient === undefined ? {} : { tasks: taskClient }),
+    maxRenderShortSide: message.startup?.settings.rendering?.view?.maxRenderShortSide ?? 0,
     ...(message.shadowWorkload === true ? { shadowWorkload: true } : {}),
     ...(message.gpuPassTiming === undefined ? {} : { gpuPassTiming: message.gpuPassTiming }),
     ...(message.pipelineLibrary === undefined ? {} : { pipelineLibrary: message.pipelineLibrary }),
     ...(message.backgroundPipelineLibrary === undefined
       ? {}
       : { backgroundPipelineLibrary: message.backgroundPipelineLibrary }),
+    ...(message.backgroundPipelineLibraryConcurrency === undefined
+      ? {}
+      : { backgroundPipelineLibraryConcurrency: message.backgroundPipelineLibraryConcurrency }),
     ...(message.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: message.outputColorSpace }),
+    ...(message.renderBackend === undefined ? {} : { renderBackend: message.renderBackend }),
     ...(message.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: message.dynamicGeometryMeshBudgetBytes }),
     ...(message.assetBudgetBytes === undefined
       ? {}
       : { assetBudgetBytes: message.assetBudgetBytes }),
+    ...(message.featureTextureReadbackBudgetBytes === undefined
+      ? {}
+      : { featureTextureReadbackBudgetBytes: message.featureTextureReadbackBudgetBytes }),
+    ...(message.textureMipSkip === undefined ? {} : { textureMipSkip: message.textureMipSkip }),
+    ...(message.startup === undefined
+      ? {}
+      : {
+          standardProfile: message.startup.rendering.profile,
+        }),
     ...(prepared.features === undefined ? {} : { features: prepared.features }),
     ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
   };
@@ -978,7 +1212,13 @@ async function receiveInit(message: InitMessage): Promise<void> {
   if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
   installCarriedGpuStub(message);
   adoptInitPolicies(message);
-  const prepared = await prepareBootstrapEntry(message.bootstrapUrl, message.bootstrapData);
+  currentConfiguration = message.startup;
+  const prepared = await prepareBootstrapEntry(
+    message.bootstrapUrl,
+    message.bootstrapData,
+    undefined,
+    message.startup,
+  );
   if (!prepared.ok) throw prepared.error;
   if (message.rhiCapture === true) {
     attachment = await attachWorkerRhiRecorder();
@@ -1000,7 +1240,7 @@ async function receiveInit(message: InitMessage): Promise<void> {
   unsubscribeRenderer = activeRenderer.subscribe(
     createRendererErrorListener(createInitFailureContext(message)),
   );
-  await prepared.value.configureRenderer?.(activeRenderer);
+  if (message.startup === undefined) await prepared.value.configureRenderer?.(activeRenderer);
   applyRendererOrderDiagnostic(
     activeRenderer,
     message.gbufferBatchOrderDiagnostic,
@@ -1024,9 +1264,6 @@ async function receiveInit(message: InitMessage): Promise<void> {
 }
 
 /** Resizes the canvas, synchronizes published features and yields; false when the turn lost admission. */
-/** Releases the digest evidence of the current draw's byte programs once that draw has admitted them. */
-let releaseVerifiedPrograms: (() => void) | undefined;
-
 async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): Promise<boolean> {
   if (message.width > 0 && message.height > 0) {
     if (target.width !== message.width) target.width = message.width;
@@ -1034,13 +1271,6 @@ async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): P
   }
   await synchronizeFeatures(message.publication.side?.features ?? []);
   if (failed || shuttingDown) return false;
-  // A packet that introduces byte programs has their digests computed off this
-  // thread; the held evidence lets the synchronous admission skip its own hash.
-  const verification = verifyPublicationPrograms(message.publication.side?.programs);
-  if (verification !== undefined) {
-    releaseVerifiedPrograms = await verification;
-    if (failed || shuttingDown) return false;
-  }
   // Keep this draw in the same serial drain and retain its publication
   // credit. A real older receipt may complete during this single task turn,
   // letting its existing completion/ACK wake the Engine Worker before the
@@ -1060,10 +1290,59 @@ function claimGeometryRequest(): GeometryRequest | undefined {
   return geometry;
 }
 
+function claimHdrRequest(): HdrRequest | undefined {
+  const hdr = hdrRequest;
+  if (hdr?.cancelled) hdrRequest = undefined;
+  else if (hdr !== undefined) hdr.started = true;
+  return hdr?.cancelled ? undefined : hdr;
+}
+
+/** Arm the claimed linear-HDR copy before draw; a returned failure is delivered after submit. */
+function armHdrObservation(
+  frameRenderer: Renderer,
+  message: DrawMessage,
+  hdr: HdrRequest | undefined,
+): ExecutionHdrObservationResult | undefined {
+  if (hdr === undefined) return undefined;
+  if (!matchesGeometrySource(message, hdr)) return rendererInspectionFailure('stale-session');
+  return armLinearHdr(frameRenderer);
+}
+
+/** Like geometry observation, this one-shot read holds only its own diagnostic draw turn. */
+async function deliverHdrObservation(
+  frameRenderer: Renderer,
+  hdr: HdrRequest | undefined,
+  armFailure: ExecutionHdrObservationResult | undefined,
+  receipt: FrameReceipt,
+): Promise<void> {
+  if (hdr === undefined || hdr.cancelled) return;
+  let result: ExecutionHdrObservationResult;
+  try {
+    result = armFailure ?? (await observeLinearHdr(frameRenderer, receipt));
+    if (result.ok)
+      result = { ok: true, value: { ...result.value, bytes: transferable(result.value.bytes) } };
+  } catch (error) {
+    result = rendererInspectionFailure('inspection', error);
+  }
+  if (!hdr.cancelled)
+    scope.postMessage(
+      {
+        kind: 'hdr-observation-result',
+        requestId: hdr.requestId,
+        identity: hdr.identity,
+        worldIdentity: hdr.worldIdentity,
+        result,
+      },
+      result.ok ? [result.value.bytes.buffer as ArrayBuffer] : [],
+    );
+  if (hdrRequest === hdr) hdrRequest = undefined;
+}
+
 function publishedFrameInput(
   message: DrawMessage,
-  features: { identity: string; feedback: unknown }[],
+  features: SubmittedFeatureReceipt[],
   observeGeometry: boolean,
+  onFeatureSourceCompleted: NonNullable<PublishedRenderFrameInput['onFeatureSourceCompleted']>,
 ): PublishedRenderFrameInput {
   return {
     publication: ownReceivedPublicationMaterials(message.publication),
@@ -1074,7 +1353,9 @@ function publishedFrameInput(
         }
       : {}),
     ...(geometryLane === undefined ? {} : { geometryLane }),
-    onFeatureSourceSubmitted: (identity, feedback) => features.push({ identity, feedback }),
+    onFeatureSourceSubmitted: (identity, feedback, submission) =>
+      features.push({ identity, feedback, ...(submission === undefined ? {} : { submission }) }),
+    onFeatureSourceCompleted,
   };
 }
 
@@ -1099,7 +1380,7 @@ async function drawScheduledPublication(
 
 function matchesGeometrySource(
   message: DrawMessage,
-  geometry: GeometryRequest | undefined,
+  geometry: Pick<GeometryRequest, 'worldIdentity'> | undefined,
 ): boolean {
   return (
     geometry !== undefined &&
@@ -1129,7 +1410,7 @@ function retainTerrainReceipt(frameId: number, receipt: FrameReceipt): void {
 function postSubmitted(
   message: DrawMessage,
   receipt: FrameReceipt,
-  features: { identity: string; feedback: unknown }[],
+  features: SubmittedFeatureReceipt[],
 ): void {
   drawTiming.submit();
   const drawIntervalMs = drawTiming.intervalMs;
@@ -1144,6 +1425,7 @@ function postSubmitted(
     worldIdentity: message.worldIdentity,
     frameId: message.frameId,
     deviceGeneration: receipt.deviceGeneration,
+    presentation: receipt.presentation,
     ...(drawIntervalMs === undefined ? {} : { renderDrawIntervalMs: drawIntervalMs }),
     renderDrawCpuMs: drawTiming.cpuMs,
     renderAwaitMs: drawTiming.awaitMs,
@@ -1157,7 +1439,13 @@ function postSubmitted(
     ...(drawTiming.stallReason === undefined ? {} : { renderStallReason: drawTiming.stallReason }),
     ...(rhiCommands === undefined ? {} : { rhiCommands }),
     publicationBytes: renderPublicationBytes(message.publication),
+    ...(receipt.editorAssistance === undefined
+      ? {}
+      : { editorAssistance: { ...receipt.editorAssistance, frameId: message.frameId } }),
     ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+    ...(receipt.configurationRevision === undefined
+      ? {}
+      : { configurationRevision: receipt.configurationRevision }),
     ...(receipt.graphGeneration === undefined ? {} : { graphGeneration: receipt.graphGeneration }),
     ...(receipt.barrelDistortion === undefined
       ? {}
@@ -1165,6 +1453,10 @@ function postSubmitted(
   } as const;
   scope.postMessage({
     kind: 'submitted',
+    identity: {
+      source: message.publication.source,
+      epoch: message.publication.epoch,
+    },
     revision: message.publication.revision,
     features,
     frame: submittedFrame,
@@ -1210,19 +1502,34 @@ async function deliverGeometryObservation(
 async function receiveDraw(message: DrawMessage): Promise<void> {
   let completionOwnsFrame = false;
   drawTiming.begin(message);
+  stepRetainedBytes();
   try {
     if (renderer === undefined || canvas === undefined || busy)
       throw new Error('Render Worker has no publication credit');
     const frameRenderer = renderer;
     busy = true;
     if (!(await prepareDrawTurn(message, canvas))) return;
-    const features: { identity: string; feedback: unknown }[] = [];
+    const features: SubmittedFeatureReceipt[] = [];
+    let featureSourceCompletion:
+      | {
+          readonly completion: RenderFeatureCompletion;
+          readonly observations: Promise<
+            RenderResult<readonly FrameDomainObservation[], RenderError>
+          >;
+          readonly settleReadbackFlight: () => void;
+        }
+      | undefined;
     const geometry = claimGeometryRequest();
     const geometrySourceMatches = matchesGeometrySource(message, geometry);
+    const hdr = claimHdrRequest();
+    const hdrArmFailure = armHdrObservation(frameRenderer, message, hdr);
     const input = publishedFrameInput(
       message,
       features,
       geometry !== undefined && !geometry.cancelled && geometrySourceMatches,
+      (completion, observations, settleReadbackFlight) => {
+        featureSourceCompletion = { completion, observations, settleReadbackFlight };
+      },
     );
     const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
     let draw: ReturnType<Renderer['draw']>;
@@ -1264,6 +1571,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       snapshotBoundary,
       meshConsumption,
       captureDraw,
+      featureSourceCompletion,
     );
     if (failed) return;
     postSubmitted(message, receipt, features);
@@ -1272,11 +1580,10 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     if (snapshotBoundary !== undefined) await snapshotBoundary;
     if (geometry !== undefined && !geometry.cancelled)
       await deliverGeometryObservation(frameRenderer, geometry, geometrySourceMatches, receipt);
+    await deliverHdrObservation(frameRenderer, hdr, hdrArmFailure, receipt);
   } catch (cause) {
     fail(message, cause);
   } finally {
-    releaseVerifiedPrograms?.();
-    releaseVerifiedPrograms = undefined;
     drawTiming.end();
     busy = false;
     if (!completionOwnsFrame) {
@@ -1290,6 +1597,10 @@ let drawing: Promise<void> | undefined;
 const queued: DrawMessage[] = [];
 scope.onmessage = (event) => {
   const message = event.data;
+  if (message.kind === 'configuration-apply') {
+    void drawControls.after(drawControls.cut, async () => receiveConfiguration(message));
+    return;
+  }
   if (message.kind === 'inspect') {
     void receive(message);
     return;

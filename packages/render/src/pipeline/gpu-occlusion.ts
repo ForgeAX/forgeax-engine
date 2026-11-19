@@ -10,12 +10,14 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
 
+const sceneViews = new WeakMap<RenderGraphBuilder<RenderPipelineFrame>, GraphBuffer>();
+
 /** One View UBO import shared by every compute consumer that linearizes depth. */
 export function sceneViewImport(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
 ): () => Result<GraphBuffer, RenderGraphError> {
-  let sceneView: GraphBuffer | undefined;
   return () => {
+    const sceneView = sceneViews.get(graph);
     if (sceneView !== undefined) return ok(sceneView);
     const imported = graph.importBuffer(
       'scene-view',
@@ -25,7 +27,7 @@ export function sceneViewImport(
       },
       (frame) => frame.pipelineState.viewUniformBuffer,
     );
-    if (imported.ok) sceneView = imported.value;
+    if (imported.ok) sceneViews.set(graph, imported.value);
     return imported;
   };
 }

@@ -24,7 +24,7 @@ it('publishes eight-target visible surfaces alongside ordinary cooked Standard p
   const record = validateCookedMaterialRecord(
     (cooked.payload as { cooked: unknown }).cooked,
   ).unwrap();
-  const visible = record.programs.flatMap((program) =>
+  const allVisible = record.programs.flatMap((program) =>
     program.selections
       .filter(
         (selection) =>
@@ -32,31 +32,45 @@ it('publishes eight-target visible surfaces alongside ordinary cooked Standard p
       )
       .map((selection) => ({ program, selection })),
   );
+  const visible = allVisible.filter(
+    ({ selection }) =>
+      selection.context.pipeline !== 'ray' && selection.context.lodCoverage !== true,
+  );
   for (const capability of [
     'storage-buffer-minimum',
     'storage-buffer-projector',
     'storage-buffer',
     'storage-buffer-atmosphere',
   ]) {
-    for (const color of [false, true]) {
-      expect(
-        visible
-          .filter(
-            ({ selection }) =>
-              selection.context.capability === capability &&
-              selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
-          )
-          .map(({ selection }) => [selection.pass, selection.address])
-          .sort(),
-      ).toEqual([
-        ['deferred', 'direct'],
-        ['deferred', 'scene-index'],
-        ['forward', 'direct'],
-        ['forward', 'scene-index'],
-      ]);
-    }
+    for (const viewClipping of [false, true])
+      for (const color of [false, true]) {
+        expect(
+          visible
+            .filter(
+              ({ selection }) =>
+                selection.context.capability === capability &&
+                selection.context.pipeline !== 'ray' &&
+                selection.context.lodCoverage !== true &&
+                (selection.context.viewClipping === true) === viewClipping &&
+                selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
+            )
+            .map(({ selection }) => [selection.pass, selection.address])
+            .sort(),
+        ).toEqual([
+          ['deferred', 'direct'],
+          ['deferred', 'scene-index'],
+          ['forward', 'direct'],
+          ['forward', 'scene-index'],
+        ]);
+      }
   }
-  for (const { program, selection } of visible) {
+  const validated = new Set<string>();
+  for (const { program, selection } of allVisible) {
+    // Pass labels may share identical bytes and entry contracts. Validate each
+    // distinct native input once, retaining every LOD/clipping/output case.
+    const key = JSON.stringify([program.artifact.digest, selection.entry]);
+    if (validated.has(key)) continue;
+    validated.add(key);
     const source = new TextDecoder().decode(program.artifact.bytes);
     expect(source).toContain('enable primitive_index;');
     const compiled = await compileShader(source, {
@@ -81,7 +95,9 @@ it('publishes eight-target visible surfaces alongside ordinary cooked Standard p
   const ordinary = record.programs.filter((program) =>
     program.selections.some(
       (selection) =>
-        selection.context.pipeline !== 'ray' && selection.context.visibleSurface !== true,
+        selection.context.pipeline !== 'ray' &&
+        selection.context.lodCoverage !== true &&
+        selection.context.visibleSurface !== true,
     ),
   );
   expect(ordinary.length).toBeGreaterThan(0);

@@ -1,3 +1,15 @@
+export * from './configuration';
+export type {
+  EngineConfigurationControl,
+  EngineConfigurationInspection,
+} from './configuration-control';
+export { createEngineConfigurationControl } from './configuration-control';
+export {
+  type EngineConfigurationHost,
+  prepareEngineStartup,
+  projectEngineStartup,
+} from './configuration-host';
+export { createEngineConfigurationStore } from './configuration-store';
 export type {
   PackDraftField,
   PackDraftReply,
@@ -65,10 +77,12 @@ export {
   type BrowserFrameProgress,
   type BrowserFrameSubmitted,
   FORGEAX_FRAME_COMPLETED_EVENT,
+  FORGEAX_FRAME_RETAIN_EVENT,
   FORGEAX_FRAME_SUBMITTED_EVENT,
   publishBrowserFrameCompleted,
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
+  retainBrowserFrameSubmitted,
   subscribeBrowserFrameSubmitted,
 } from './browser-frame-signal';
 export { canvasAspectPlugin } from './canvas-policy';
@@ -109,6 +123,8 @@ export type {
   ExecutionFault,
   ExecutionFrameInspection,
   ExecutionGeometryObservationResult,
+  ExecutionHdrFrameObservation,
+  ExecutionHdrObservationResult,
   ExecutionMeasurement,
   ExecutionOptions,
   ExecutionRenderCapabilities,
@@ -184,9 +200,16 @@ export type {
   EngineWorkspacePreviewDisplayOptions,
   EngineWorkspacePreviewOverlay,
   EngineWorkspaceProject,
+  EngineWorkspaceProjectDocument,
+  EngineWorkspaceProjectExpectation,
+  EngineWorkspaceProjectFailure,
   EngineWorkspaceProjectHandle,
+  EngineWorkspaceProjectLifecycle,
+  EngineWorkspaceProjectReference,
   EngineWorkspaceProjectSession,
   EngineWorkspaceProjectSessionFactory,
+  EngineWorkspaceProjectStatus,
+  EngineWorkspaceProjectTargetIdentity,
   EngineWorkspaceProvider,
   EngineWorkspaceResourcePreviewOwner,
   EngineWorkspaceRuntime,
@@ -226,6 +249,7 @@ export {
 } from './workspace-preview-display';
 export type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 export {
+  type EngineWorkspaceEntityInspection,
   type EngineWorkspaceTargetTools,
   engineWorkspaceTargetToolsPlugin,
 } from './workspace-target-tools';
@@ -301,9 +325,8 @@ export type {
   CanvasAppError,
   CanvasDrawingBufferSize,
   CreateAppOptions,
-  DrawSource,
-  DrawSourceResult,
   ExecutionApp,
+  SceneAdmission,
 } from './types';
 export { APP_PHASE_CATALOG } from './types';
 export {
@@ -311,6 +334,13 @@ export {
   engineWorkspaceBrowserPlugin,
   engineWorkspaceInputPlugin,
 } from './workspace-browser';
+export type { WorkspaceCloudMaterialInspection } from './workspace-cloud-material';
+export type {
+  EngineWorkspaceAssistanceIntent,
+  EngineWorkspaceAssistanceRequest,
+  EngineWorkspaceAssistanceSnapshot,
+  WorkspaceDisplayPick,
+} from './workspace-editor-assistance';
 export type {
   MaterialPreviewControl,
   MaterialPreviewMesh,

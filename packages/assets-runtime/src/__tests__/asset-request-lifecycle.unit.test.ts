@@ -1,6 +1,5 @@
 import { type AssetLoadError, err, ok, type Result } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import { ArtifactCache } from '../internal/artifact-cache.js';
 import { AssetGraph } from '../internal/asset-graph.js';
 import { PackReader } from '../internal/pack-reader.js';
 
@@ -137,203 +136,30 @@ describe('shared Pack reader lifecycle', () => {
       ok: false,
     });
   });
-});
 
-describe('PackReader document retention', () => {
-  const read = (reader: PackReader) => reader.read('/pack', tuple, new AbortController().signal);
-
-  it('holds a verified document for sibling reads, then keeps only a weak reference', async () => {
-    vi.useFakeTimers();
-    try {
-      const fetcher = vi.fn(async () => Response.json(pack));
-      const reader = new PackReader({ fetcher });
-      const first = await read(reader);
-      expect((await read(reader)).unwrap()).toBe(first.unwrap());
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(2_000);
-      // A live consumer reference still resolves through the weak entry.
-      expect((await read(reader)).unwrap()).toBe(first.unwrap());
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      reader.dispose();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('keeps sibling reads strong until the last-read idle window expires', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      'WeakRef',
-      class {
-        deref(): undefined {
-          return undefined;
-        }
-      },
-    );
-    const fetcher = vi.fn(async () => Response.json(pack));
-    const reader = new PackReader({ fetcher });
-    try {
-      const first = (await read(reader)).unwrap();
-      await vi.advanceTimersByTimeAsync(1_500);
-      expect((await read(reader)).unwrap()).toBe(first);
-      await vi.advanceTimersByTimeAsync(1_500);
-      expect(fetcher).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(500);
-      expect((await read(reader)).unwrap()).not.toBe(first);
-      expect(fetcher).toHaveBeenCalledTimes(2);
-    } finally {
-      reader.dispose();
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('shares a re-read, rejects changed publication bytes, and retries after verification fails', async () => {
-    vi.stubGlobal(
-      'WeakRef',
-      class {
-        deref(): undefined {
-          return undefined;
-        }
-      },
-    );
-    const changed = deferred<Response>();
+  it('shares a failed in-flight verification and retries the tuple on the next read', async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(Response.json(pack))
-      .mockImplementationOnce(() => changed.promise)
+      .mockResolvedValueOnce(Response.json({ ...pack, assets: [null] }))
       .mockResolvedValueOnce(Response.json(pack));
     const reader = new PackReader({ fetcher });
     try {
-      expect((await read(reader)).ok).toBe(true);
-      reader.trim();
-      const requests = [read(reader), read(reader)];
-      changed.resolve(Response.json({ ...pack, digest: 'different' }));
-      for (const result of await Promise.all(requests))
-        expect(result).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      expect((await read(reader)).ok).toBe(true);
-      expect(fetcher).toHaveBeenCalledTimes(3);
-    } finally {
-      reader.dispose();
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('keeps the existing strong cache when WeakRef is unavailable', async () => {
-    vi.stubGlobal('WeakRef', undefined);
-    const fetcher = vi.fn(async () => Response.json(pack));
-    const reader = new PackReader({ fetcher });
-    try {
-      const first = (await read(reader)).unwrap();
-      reader.trim();
-      expect((await read(reader)).unwrap()).toBe(first);
+      const requests = [
+        reader.read('/pack', tuple, new AbortController().signal),
+        reader.read('/pack', tuple, new AbortController().signal),
+      ];
+      const failures = await Promise.all(requests);
+      expect(failures).toHaveLength(2);
+      for (const failure of failures)
+        expect(failure).toMatchObject({ ok: false, error: { code: 'asset-package-invalid' } });
       expect(fetcher).toHaveBeenCalledTimes(1);
-    } finally {
-      reader.dispose();
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('re-reads and re-verifies the same tuple after a released document is collected', async () => {
-    vi.stubGlobal(
-      'WeakRef',
-      class {
-        deref(): undefined {
-          return undefined;
-        }
-      },
-    );
-    try {
-      const fetcher = vi.fn(async () => Response.json(pack));
-      const reader = new PackReader({ fetcher });
-      const first = await read(reader);
-      reader.trim();
-      const second = await read(reader);
-      expect(second.ok).toBe(true);
-      expect(second.unwrap()).not.toBe(first.unwrap());
-      expect(second.unwrap()).toEqual(first.unwrap());
+      expect(await reader.read('/pack', tuple, new AbortController().signal)).toMatchObject({
+        ok: true,
+      });
       expect(fetcher).toHaveBeenCalledTimes(2);
-      reader.dispose();
     } finally {
-      vi.unstubAllGlobals();
+      reader.dispose();
     }
-  });
-});
-
-describe('ArtifactCache invalidation', () => {
-  it('isolates concurrent readers and retires least recently read bytes within its limits', async () => {
-    const cache = new ArtifactCache(4, 2);
-    let reads = 0;
-    const read = async () => {
-      reads++;
-      return ok(Uint8Array.of(1, 2));
-    };
-    const [a, b] = await Promise.all([cache.read('a', read), cache.read('a', read)]);
-    a.unwrap()[0] = 9;
-    expect(b.unwrap()).toEqual(Uint8Array.of(1, 2));
-    expect(reads).toBe(1);
-    await cache.read('b', read);
-    await cache.read('a', read);
-    await cache.read('c', read);
-    expect(cache.snapshot()).toMatchObject({ entries: 2, bytes: 4 });
-    await cache.read('a', read);
-    expect(reads).toBe(3);
-    await cache.read('b', read);
-    expect(reads).toBe(4);
-    cache.clear();
-    expect(cache.snapshot()).toMatchObject({ entries: 0, bytes: 0 });
-  });
-  it('trims completed bytes while preserving in-flight deduplication', async () => {
-    const cache = new ArtifactCache();
-    await cache.read('complete', async () => ok(Uint8Array.of(1)));
-    const pending = deferred<Result<Uint8Array, AssetLoadError>>();
-    const first = cache.read('pending', () => pending.promise);
-    cache.trim();
-    expect(cache.snapshot()).toMatchObject({ entries: 0, bytes: 0, pending: 1 });
-    const second = cache.read('pending', () => {
-      throw new Error('trim must preserve the existing request');
-    });
-    pending.resolve(ok(Uint8Array.of(2)));
-    expect((await first).unwrap()).toEqual(Uint8Array.of(2));
-    expect((await second).unwrap()).toEqual(Uint8Array.of(2));
-    expect(cache.snapshot()).toMatchObject({ entries: 1, bytes: 1, pending: 0 });
-  });
-  it.each([
-    undefined,
-    'bytes',
-  ])('clear(%s) prevents late refill and preserves a fresh same-key read', async (key) => {
-    const cache = new ArtifactCache();
-    const old = deferred<Result<Uint8Array, AssetLoadError>>();
-    const oldRead = cache.read('bytes', () => old.promise);
-    await Promise.resolve();
-    cache.clear(key);
-    old.resolve(ok(Uint8Array.of(1)));
-    await oldRead;
-    expect(cache.snapshot()).toMatchObject({ entries: 0, pending: 0 });
-
-    const stale = deferred<Result<Uint8Array, AssetLoadError>>();
-    const fresh = deferred<Result<Uint8Array, AssetLoadError>>();
-    const a = cache.read('bytes', () => stale.promise);
-    await Promise.resolve();
-    cache.clear(key);
-    const b = cache.read('bytes', () => fresh.promise);
-    const duplicate = cache.read('bytes', () => {
-      throw new Error('must share');
-    });
-    expect(b).not.toBe(duplicate); // Callers share I/O, never mutable byte results.
-    fresh.resolve(ok(Uint8Array.of(2)));
-    await b;
-    stale.resolve(ok(Uint8Array.of(1)));
-    await a;
-    expect(
-      (
-        await cache.read('bytes', () => {
-          throw new Error('must cache');
-        })
-      ).unwrap(),
-    ).toEqual(Uint8Array.of(2));
-    expect(cache.snapshot()).toMatchObject({ entries: 1, pending: 0 });
   });
 });
 

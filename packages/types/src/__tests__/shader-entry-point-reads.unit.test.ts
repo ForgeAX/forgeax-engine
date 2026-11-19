@@ -41,6 +41,45 @@ describe('isShaderEntryPointReads', () => {
     expect(isShaderEntryPointReads(shallow)).toBe(false);
   });
 
+  it('rejects incomplete, malformed and stage-incompatible entry effects', () => {
+    const effects = {
+      mayDiscard: false,
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    };
+    expect(isShaderEntryPointReads([{ ...table()[0], effects }])).toBe(true);
+    for (const bad of [
+      null,
+      {},
+      { ...effects, mayDiscard: 0 },
+      { ...effects, writesStorage: undefined },
+    ]) {
+      expect(isShaderEntryPointReads([{ ...table()[0], effects: bad }])).toBe(false);
+    }
+    expect(
+      isShaderEntryPointReads([
+        { ...table()[0], stage: 'vertex', effects: { ...effects, writesDepth: true } },
+      ]),
+    ).toBe(false);
+  });
+
+  it('does not cache a shallow-frozen table with mutable entry effects', () => {
+    const effects: Record<string, unknown> = {
+      mayDiscard: false,
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    };
+    const bindings = Object.freeze([]);
+    const rows = Object.freeze([
+      Object.freeze({ name: 'fs', stage: 'fragment', bindings, effects }),
+    ]);
+    expect(isShaderEntryPointReads(rows)).toBe(true);
+    effects.mayDiscard = 'invalid';
+    expect(isShaderEntryPointReads(rows)).toBe(false);
+  });
+
   it('rejects an invalid frozen table on every check', () => {
     const invalid = deepFreeze([{ name: 'main', stage: 'geometry', bindings: [] }]);
     expect(isShaderEntryPointReads(invalid)).toBe(false);

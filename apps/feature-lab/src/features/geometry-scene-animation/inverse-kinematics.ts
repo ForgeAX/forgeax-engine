@@ -1,6 +1,6 @@
-import { AnimationSet, createIKSolver } from '@forgeax/engine/animation';
+import { AdvanceAnimationPlayer, AnimationSet, createIKSolver } from '@forgeax/engine/animation';
 import { defineSystem, Update } from '@forgeax/engine/ecs';
-import { Transform } from '@forgeax/engine/scene';
+import { PropagateTransforms, Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { effector, goalMarker, spawnAnimatedRig } from './support/animated-rig';
@@ -39,8 +39,8 @@ export default defineFeature({
     const system = defineSystem({
       name: 'featureLabIK',
       queries: [],
-      after: ['advanceAnimationPlayer'],
-      before: ['propagateTransforms'],
+      after: [AdvanceAnimationPlayer],
+      before: [PropagateTransforms],
       fn() {
         for (const joint of joints) world.set(joint, Transform, { quat: [0, 0, 0, 1] }).unwrap();
         const start = performance.now();

@@ -251,11 +251,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       // breaking change compiles + runs end-to-end (dawn-node smoke) rather
       // than passing compile-only. Single world composites at owner 0.
       world.update().unwrap();
-      const r = renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      const r = renderer.draw({ source: worldAttachment1.value });
       if (!r.ok) console.error('[triangle] draw error:', r.error);
     } else {
       // Counter-example (ii): skip the draw call, leaving the canvas at

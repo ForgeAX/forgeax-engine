@@ -16,6 +16,7 @@ import type {
   BuildImporterDescriptor,
   BuildProcessRequest,
 } from './build-process.js';
+import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
 import {
   discoverPluginAssets,
   type PluginSourceInventory,
@@ -55,6 +56,8 @@ export async function loadProjectCookers(
     readonly inventory?: PluginSourceInventory;
     /** Build DDC root backing the native cookers' `context.cache`; absent, cooks have no store. */
     readonly buildCacheRoot?: string;
+    /** Project registrations replace these defaults; protected builtin collisions still fail. */
+    readonly defaultCookers?: readonly NativeCooker[];
   } = {},
 ): Promise<ProjectCookers> {
   for (const timeout of [
@@ -64,11 +67,19 @@ export async function loadProjectCookers(
   ])
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))
       throw new RangeError('build deadlines must be positive finite milliseconds');
+  const startupTimeoutMs = options.startupTimeoutMs ?? 60_000;
+  const withDefaults = (cookers: readonly NativeCooker[]) => {
+    const keys = new Set(cookers.map((cooker) => cooker.key));
+    return [
+      ...cookers,
+      ...(options.defaultCookers ?? []).filter((cooker) => !keys.has(cooker.key)),
+    ];
+  };
   if (!facts.roots.build)
     return {
       appOptions: {},
       delivery: {},
-      cookers: builtins,
+      cookers: withDefaults(builtins),
       importers: [],
       watchFiles: new Set(),
       async dispose() {},
@@ -108,7 +119,8 @@ export async function loadProjectCookers(
       const id = ++sequence;
       if (context) contexts.set(id, context);
       const cancel = () => {
-        if (child?.connected) child.send({ id: ++sequence, operation: 'cancelTool', run: id });
+        if (child?.connected)
+          child.send(encodeBuildMessage({ id: ++sequence, operation: 'cancelTool', run: id }));
       };
       signal?.addEventListener('abort', cancel, { once: true });
       const finish = () => {
@@ -131,7 +143,7 @@ export async function loadProjectCookers(
           reject(error);
         },
       });
-      child.send({ ...value, id }, (error) => {
+      child.send(encodeBuildMessage({ ...value, id }), (error) => {
         if (error) abort(error);
       });
       if (signal?.aborted) cancel();
@@ -167,48 +179,52 @@ export async function loadProjectCookers(
       serialization: 'advanced',
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
-    child.on(
-      'message',
-      (
-        message:
-          | BuildCallbackRequest
-          | { id: number; ok: boolean; value?: unknown; error?: unknown },
-      ) => {
-        if ('callback' in message) {
-          const context = contexts.get(message.request);
-          void (async () => {
-            try {
-              if (!context) throw new Error('import request is no longer active');
-              let value: unknown;
-              switch (message.operation) {
-                case 'readSource':
-                  value = await context.readSource();
-                  break;
-                case 'readSibling':
-                  value = await context.readSibling(
-                    ...(message.args as Parameters<ImportContext['readSibling']>),
-                  );
-                  break;
-                case 'decodeImage':
-                  value = await context.decodeImage(
-                    ...(message.args as Parameters<ImportContext['decodeImage']>),
-                  );
-                  break;
-              }
-              if (child?.connected) child.send({ callback: message.callback, ok: true, value });
-            } catch (error) {
-              if (child?.connected) child.send({ callback: message.callback, ok: false, error });
+    child.on('message', (packet: Uint8Array) => {
+      let message:
+        | BuildCallbackRequest
+        | { id: number; ok: boolean; value?: unknown; error?: unknown };
+      try {
+        message = decodeBuildMessage(packet) as typeof message;
+      } catch (error) {
+        abort(error);
+        return;
+      }
+      if ('callback' in message) {
+        const context = contexts.get(message.request);
+        void (async () => {
+          try {
+            if (!context) throw new Error('import request is no longer active');
+            let value: unknown;
+            switch (message.operation) {
+              case 'readSource':
+                value = await context.readSource();
+                break;
+              case 'readSibling':
+                value = await context.readSibling(
+                  ...(message.args as Parameters<ImportContext['readSibling']>),
+                );
+                break;
+              case 'decodeImage':
+                value = await context.decodeImage(
+                  ...(message.args as Parameters<ImportContext['decodeImage']>),
+                );
+                break;
             }
-          })();
-          return;
-        }
-        const handle = pending.get(message.id);
-        if (!handle) return;
-        pending.delete(message.id);
-        if (message.ok) handle.resolve(message.value);
-        else handle.reject(message.error);
-      },
-    );
+            if (child?.connected)
+              child.send(encodeBuildMessage({ callback: message.callback, ok: true, value }));
+          } catch (error) {
+            if (child?.connected)
+              child.send(encodeBuildMessage({ callback: message.callback, ok: false, error }));
+          }
+        })();
+        return;
+      }
+      const handle = pending.get(message.id);
+      if (!handle) return;
+      pending.delete(message.id);
+      if (message.ok) handle.resolve(message.value);
+      else handle.reject(message.error);
+    });
     child.on('error', abort);
     child.on('exit', (code, signal) => {
       abort(new Error(`build process exited (${code ?? signal})`));
@@ -225,9 +241,12 @@ export async function loadProjectCookers(
         root: facts.roots.build,
         definitions: records.map((record) => record.definition),
         sessionId: randomUUID(),
+        // Cold module loading uses the selected project budget. The process
+        // still enforces the complete startup request's original hard bound.
+        startupTimeoutMs,
         ...(options.buildCacheRoot === undefined ? {} : { buildCacheRoot: options.buildCacheRoot }),
       },
-      options.startupTimeoutMs ?? 60_000,
+      startupTimeoutMs,
     );
     const keys = new Set(builtins.map((cooker) => cooker.key));
     const remote = started.cookers.map(
@@ -332,7 +351,7 @@ export async function loadProjectCookers(
       appOptions:
         precompute === undefined ? started.appOptions : await precompute(started.appOptions),
       delivery: started.delivery,
-      cookers: [...builtins, ...remote],
+      cookers: withDefaults([...builtins, ...remote]),
       importers,
       producerIdentity: compiled.producerIdentity,
       watchFiles,

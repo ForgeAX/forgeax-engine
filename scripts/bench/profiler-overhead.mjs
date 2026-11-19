@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { openShaderManifestPublication } from '../lib/shader-manifest.mjs';
+import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 import { createSmokePlatform } from '../smoke-platform.mjs';
 
 const GROUP_COUNT = 15;
@@ -184,6 +186,29 @@ function makeCanvas() {
 }
 
 async function makeShaderManifest() {
+  // The runner already admitted the BASE+SSAO producer. Use its original
+  // checked bytes directly instead of repackaging and opening the same shader
+  // records again before the timed workload starts.
+  if (
+    process.env.FORGEAX_BUILD_NO_TASK_CACHE !== '1' &&
+    !process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST
+  ) {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const receipt = fileURLToPath(
+      new URL(
+        '../../packages/vite-plugin-shader/dist/engine-inputs/ci/base-ssao/manifest.json',
+        import.meta.url,
+      ),
+    );
+    if (existsSync(receipt)) {
+      const input = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
+      const shader = reusableSharedShader(root, receipt, input);
+      if (shader !== null) {
+        console.info('[profiler-overhead] using verified core base-ssao shader bytes');
+        return openShaderManifestPublication(shader);
+      }
+    }
+  }
   execFileSync(
     process.execPath,
     [
@@ -196,7 +221,10 @@ async function makeShaderManifest() {
   );
   const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   const manifest = await buildEngineShaderManifest();
-  return URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
+  );
+  return { url, dispose: () => URL.revokeObjectURL(url) };
 }
 
 function makeScheduler() {
@@ -248,12 +276,12 @@ async function createWorkload() {
   });
   // Shader admission is initialization, outside every measured frame window.
   // Null RHI skips GPU compilation but still consumes the reflected Cluster ABI.
-  const shaderManifestUrl = await makeShaderManifest();
+  const shader = await makeShaderManifest();
   const rendererResult = await createRenderer(
     makeCanvas(),
     { rhi, profiler },
-    { shaderManifestUrl },
-  ).finally(() => URL.revokeObjectURL(shaderManifestUrl));
+    { shaderManifestUrl: shader.url },
+  ).finally(shader.dispose);
   if (!rendererResult.ok)
     throw new Error(`Renderer workload failed to assemble: ${rendererResult.error.code}`);
   const renderer = rendererResult.value;
@@ -297,6 +325,45 @@ export async function settleFrameCredit(app) {
   }
 }
 
+function startWindowCapture(profiler, frameLimit) {
+  const started = profiler.startCapture({
+    frameLimit,
+    eventLimit: EVENT_LIMIT,
+    detail: PROFILE_DETAIL,
+  });
+  if (!started.ok) throw new Error(`profiler capture failed: ${started.error.code}`);
+  return started.value;
+}
+
+function finishWindowCapture(session) {
+  const capture = session.finish();
+  if (!capture.ok) throw new Error(`profiler capture did not finish: ${capture.error.code}`);
+  if (capture.value.completeness.status !== 'complete') {
+    throw new Error(`profiler capture was ${capture.value.completeness.status}`);
+  }
+  return capture.value;
+}
+
+export async function runProfiledWindow(profiler, scheduler, app, durations) {
+  // Warm recording separately. The owner workload now emits more than the
+  // original twenty events per frame; do not grow its bounded event storage.
+  const warmup = startWindowCapture(profiler, CAPTURE_WARMUP_FRAMES);
+  for (let index = 0; index < CAPTURE_WARMUP_FRAMES; index += 1) {
+    scheduler.pump();
+    await settleFrameCredit(app);
+  }
+  finishWindowCapture(warmup);
+  const measured = startWindowCapture(profiler, FRAMES_PER_GROUP + 1);
+  for (let index = 0; index < FRAMES_PER_GROUP; index += 1) {
+    durations.push(scheduler.pump());
+    await settleFrameCredit(app);
+  }
+  // Keep automatic materialization and sink work outside the measured window.
+  scheduler.pump();
+  await settleFrameCredit(app);
+  return finishWindowCapture(measured);
+}
+
 async function runBenchmark() {
   const scheduler = makeScheduler();
   installScheduler(scheduler);
@@ -326,31 +393,7 @@ async function runBenchmark() {
       }
     };
     const runOn = async () => {
-      const started = profiler.startCapture({
-        frameLimit: CAPTURE_FRAME_LIMIT,
-        eventLimit: EVENT_LIMIT,
-        detail: PROFILE_DETAIL,
-      });
-      if (!started.ok) throw new Error(`profiler capture failed: ${started.error.code}`);
-      for (let index = 0; index < CAPTURE_WARMUP_FRAMES; index += 1) {
-        scheduler.pump();
-        await settleFrameCredit(app);
-      }
-      for (let index = 0; index < FRAMES_PER_GROUP; index += 1) {
-        onGroupDurations.push(scheduler.pump());
-        await settleFrameCredit(app);
-      }
-      // RecorderSession auto-finishes at frameLimit. Keep that finalization
-      // frame outside the measured window so materialization and sink work do
-      // not masquerade as per-frame recording overhead.
-      scheduler.pump();
-      await settleFrameCredit(app);
-      const capture = started.value.finish();
-      if (!capture.ok) throw new Error(`profiler capture did not finish: ${capture.error.code}`);
-      if (capture.value.completeness.status !== 'complete') {
-        throw new Error(`profiler capture was ${capture.value.completeness.status}`);
-      }
-      lastCapture = capture.value;
+      lastCapture = await runProfiledWindow(profiler, scheduler, app, onGroupDurations);
     };
     // Alternate which mode runs first so a warm-cache/JIT or runner-load
     // effect is not permanently assigned to profiler-off or profiler-on.

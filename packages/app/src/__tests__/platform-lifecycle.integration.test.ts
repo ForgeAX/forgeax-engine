@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { Time, Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Time, Update, World } from '@forgeax/engine-ecs';
 import { type InputBackend, inputBackendPlugin } from '@forgeax/engine-input';
 import {
   createPlatformClock,
@@ -52,15 +52,14 @@ function fixture() {
   };
   const world = new World();
   let updates = 0;
-  world
-    .addSystem(Update, {
-      name: 'observe-native-delta',
-      queries: [],
-      fn: () => {
-        updates += 1;
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'observe-native-delta',
+    queries: [],
+    fn: () => {
+      updates += 1;
+    },
+  });
+  world.addSystem(Update, systemToken1).unwrap();
   const renderer = {
     ready: Promise.resolve(ok(undefined)),
     state: () => 'alive',

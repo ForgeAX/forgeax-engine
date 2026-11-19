@@ -1,11 +1,12 @@
 import { type BrowserFrameCompleted, type BrowserFrameSubmitted, FORGEAX_FRAME_COMPLETED_EVENT, subscribeBrowserFrameSubmitted } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { World } from '@forgeax/engine-ecs';
 import { expect, it } from 'vitest';
+import { commands } from 'vitest/browser';
 import { computeDisplayScreenRay } from '../../picking/src/display-picking';
+import { createCleanupEvidenceWriter } from './render-worker-cleanup-evidence';
 
 async function fixture(
-  data: { stallMs?: number; cleanupMs?: number; fail?: boolean; holdFirstCompletion?: boolean },
+  data: { stallMs?: number; cleanupMs?: number; fail?: boolean; holdFirstCompletion?: boolean; cleanupEvidence?: boolean },
   tier: 'render-worker' | 'engine-worker' = 'render-worker',
 ) {
   const canvas = document.createElement('canvas');
@@ -17,7 +18,20 @@ async function fixture(
   const channel = new MessageChannel();
   const witness = new BroadcastChannel(crypto.randomUUID());
   const messages: { kind: string; tick?: number; value?: { tick: number; marker: number } }[] = [];
-  witness.onmessage = (event) => messages.push(event.data);
+  const writeCleanupEvidence = createCleanupEvidenceWriter((evidence) =>
+    commands.writeFile('artifacts/render-worker/sealed-successor-cleanup-stage.json', evidence),
+  );
+  let evidenceWritten = Promise.resolve();
+  witness.onmessage = (event) => {
+    messages.push(event.data);
+    if (data.cleanupEvidence && event.data.kind === 'render-worker-disposal') {
+      const evidence = JSON.stringify({ kind: 'sealed-successor-cleanup-stage', ...event.data });
+      console.warn(evidence);
+      // A cancelled case can still retain the last delivered real milestone.
+      evidenceWritten = writeCleanupEvidence(evidence)
+        .catch(cause => console.error('Worker cleanup stage artifact unavailable', cause));
+    }
+  };
   channel.port1.onmessage = (event) => messages.push(event.data);
   const app = (
     await createApp(
@@ -63,6 +77,7 @@ async function fixture(
       unsubscribe();
       canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
       witness.close();
+      await evidenceWritten;
       channel.port1.close();
       app.canvas?.remove();
       canvas.remove();
@@ -113,7 +128,7 @@ it('submits and executes two frames before the oldest receipt retires without ad
 }, 90_000);
 
 it('overlaps exactly one sealed successor, stays responsive beyond the admission timeout, and drains cleanup', async () => {
-  const f = await fixture({ stallMs: 3000, cleanupMs: 50 });
+  const f = await fixture({ stallMs: 3000, cleanupMs: 50, cleanupEvidence: true });
   try {
     f.app.start().unwrap();
     await expect
@@ -152,6 +167,26 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     (await f.app.dispose()).unwrap();
     expect(await rejected).toBeInstanceOf(Error);
     await expect.poll(() => f.messages.some((row) => row.kind === 'cleanup-completed')).toBe(true);
+  } catch (cause) {
+    // Preserve the original error before finally awaits the same disposal flight.
+    const failure = {
+      kind: 'sealed-successor-cleanup-original-failure',
+      observedAt: Date.now(),
+      cause: cause instanceof Error ? {
+        name: cause.name, message: cause.message, stack: cause.stack,
+        code: Reflect.get(cause, 'code'), detail: Reflect.get(cause, 'detail'),
+      } : cause,
+      report: f.app.execution?.report(),
+      messages: f.messages.slice(-64),
+      submitted: f.submitted.slice(-8),
+    };
+    console.error(JSON.stringify(failure));
+    try {
+      await commands.writeFile('artifacts/render-worker/sealed-successor-cleanup-failed.json', JSON.stringify(failure, null, 2));
+    } catch (transport) {
+      console.error('Worker cleanup failure artifact unavailable', transport);
+    }
+    throw cause;
   } finally {
     (await f.dispose()).unwrap();
   }

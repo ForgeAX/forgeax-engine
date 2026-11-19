@@ -10,16 +10,14 @@ import { SceneSlots } from '../../scene/scene-slots';
 /** Retained scene rows whose reflection-probe selection input is an explicit center. */
 export function primitiveRows(
   primitives: readonly {
-    readonly worldId: number;
     readonly entityKey: number;
     readonly center: ReflectionProbePrimitiveCenter;
   }[],
 ) {
   const slots = new SceneSlots();
   const centers = new Map<number, ReflectionProbePrimitiveCenter>();
-  primitives.forEach(({ worldId, entityKey, center }, slot) => {
+  primitives.forEach(({ entityKey, center }, slot) => {
     slots.write(slot, {
-      worldId,
       entityKey,
       generation: 1,
       content: { materials: [] } as unknown as RowContent,

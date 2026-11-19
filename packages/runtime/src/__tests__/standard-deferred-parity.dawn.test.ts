@@ -96,8 +96,8 @@ it.each([
               fragment: {
                 targets: [
                   { format: 'rgba16float' },
-                  { format: 'r32uint' },
                   { format: 'rg32uint' },
+                  { format: 'r32uint' },
                   { format: 'r32uint' },
                   { format: 'r32uint' },
                   { format: 'rg32uint' },
@@ -143,8 +143,8 @@ it.each([
                     entryPoint: 'fs_gbuffer_uncovered',
                     targets: [
                       { format: 'rgba16float' },
-                      { format: 'r32uint' },
                       { format: 'rg32uint' },
+                      { format: 'r32uint' },
                       { format: 'r32uint' },
                       { format: 'r32uint' },
                       { format: 'rg32uint' },

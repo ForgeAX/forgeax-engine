@@ -7,6 +7,7 @@ import {
   type PipelineLayout,
   type PipelineLibrary,
   type PipelineLibraryCompute,
+  type PipelineLibraryExportOptions,
   type PipelineLibraryInspection,
   type PipelineLibraryLimits,
   type PipelineLibraryManifest,
@@ -30,11 +31,21 @@ import {
   sha256,
   shaderSourceForDescriptor,
 } from '@forgeax/engine-types';
+import { translateErrorEventToRhiError } from './internal/error-translation';
 import { type CompilationRecord, PipelineCompilationRecords } from './pipeline-compilation-records';
 import { compatiblePipelineRenderTargets } from './pipeline-library-render-targets';
 import { PipelineResourceIndex, pipelineResource } from './pipeline-resource-index';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
+interface ShaderRecord {
+  descriptor: GPUShaderModuleDescriptor;
+  source: ShaderSource;
+  handle: GPUShaderModule;
+  sourceDigest?: string;
+  projections?: Map<string, { id: number; record: object }>;
+}
+/** Shader index group: candidates for cross-domain text equality share a length. */
+const shaderTextGroup = (source: ShaderSource): string => `text:${source.length}`;
 type NativePipeline = GPURenderPipeline | GPUComputePipeline;
 interface Program {
   readonly dependencies: readonly object[];
@@ -52,6 +63,8 @@ interface Program {
   /** Library membership on the existing recipe owner, independent of native readiness. */
   preload?: number;
   runtimeRequest?: CompilationRecord<Program>;
+  /** A renderer asked for this recipe; kept after compilation settles, never set by preparation. */
+  requested?: true;
 }
 /**
  * Native async compilation runs on the browser's GPU-process task pool. Four
@@ -74,6 +87,9 @@ export function backgroundPipelineWarmupConcurrency(
   const cores = Number.isSafeInteger(hardwareConcurrency) ? (hardwareConcurrency as number) : 0;
   return Math.max(1, Math.min(4, Math.floor(cores / 8)));
 }
+
+// forgeax-async-whitelist: dom-native - one task for a native device.lost to settle.
+const lossTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
  * Blocking warmup admits shader modules in WGSL byte batches and waits for each
@@ -155,13 +171,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private closed = false;
   private shaderInfo = new WeakMap<GPUShaderModule, Promise<GPUCompilationInfo>>();
   private readonly shaderIds = new WeakMap<object, number>();
-  private readonly shaders = new PipelineResourceIndex<{
-    descriptor: GPUShaderModuleDescriptor;
-    source: ShaderSource;
-    handle: GPUShaderModule;
-    sourceDigest?: string;
-    projections?: Map<string, { id: number; record: object }>;
-  }>();
+  private readonly shaders = new PipelineResourceIndex<ShaderRecord>();
   private readonly groupIds = new WeakMap<object, number>();
   private readonly groups = new PipelineResourceIndex<{
     descriptor: GPUBindGroupLayoutDescriptor;
@@ -206,7 +216,67 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private preparingLibraries = 0;
   private readonly compilationRecords = new PipelineCompilationRecords<Program>();
 
-  constructor(private readonly device: GPUDevice) {}
+  /** Set once when the owning device is lost while this library is still open. */
+  private lost: RhiError | undefined;
+
+  private emptyDepthFragment: GPUFragmentState | undefined;
+
+  constructor(
+    private readonly device: GPUDevice,
+    private readonly vertexOnlyRenderBundles = true,
+  ) {}
+
+  private nativeRenderDescriptor(
+    descriptor: GPURenderPipelineDescriptor,
+  ): GPURenderPipelineDescriptor {
+    if (
+      this.vertexOnlyRenderBundles ||
+      descriptor.fragment !== undefined ||
+      descriptor.depthStencil === undefined
+    )
+      return descriptor;
+
+    // Keep the portable recipe vertex-only. Only the device that rejected
+    // vertex-only bundles needs a fragment with no outputs or side effects.
+    this.emptyDepthFragment ??= {
+      module: this.device.createShaderModule({
+        label: 'forgeax-depth-only-fragment',
+        code: '@fragment fn depth_only() {}',
+      }),
+      entryPoint: 'depth_only',
+      targets: [],
+    };
+    return { ...descriptor, fragment: this.emptyDepthFragment };
+  }
+
+  /**
+   * Native `device.lost` settles the library. Every later library failure is
+   * that loss, so startup callers can select another backend instead of
+   * reading the disposal as an invalid descriptor. A device its owner
+   * destroyed (`destroyed`) is a disposal, not a loss.
+   */
+  deviceLost(info: GPUDeviceLostInfo): void {
+    if (!this.closed && info.reason !== 'destroyed') {
+      const translated = translateErrorEventToRhiError(info);
+      if (!translated.ok) this.lost = translated.error;
+    }
+    this.dispose();
+  }
+  private failure(cause: unknown): RhiError {
+    return this.lost ?? failure(cause);
+  }
+  /** A native rejection may arrive before `device.lost` settles; give the loss one task to land. */
+  // forgeax-async-whitelist: dom-native - waits for the native device.lost settlement.
+  private async settledFailure(cause: unknown): Promise<RhiError> {
+    if (cause instanceof RhiError) return this.failure(cause);
+    return (await this.lossAfterFailure()) ?? failure(cause);
+  }
+  /** Device loss behind a native failure, after one task for `device.lost` to settle. */
+  // forgeax-async-whitelist: dom-native - waits for the native device.lost settlement.
+  async lossAfterFailure(): Promise<RhiError | undefined> {
+    if (this.lost === undefined && !this.closed) await lossTurn();
+    return this.lost;
+  }
 
   private active(): void {
     if (this.closed) throw new Error('Pipeline library device is disposed');
@@ -230,17 +300,38 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   private collectRecord(record: object): void {
     for (const collector of this.collectors) collector.add(record);
   }
+  /**
+   * Published digests and content hashes are separate key domains for the same
+   * text: a portable library carries plain WGSL (content hash) while engine
+   * runtime sources carry their build digest. A miss in one domain compares text
+   * only with same-length modules of the other domain, then aliases the key, so
+   * both reach one native module and therefore one program key.
+   */
+  private shaderRecord(source: ShaderSource): ShaderRecord | undefined {
+    const identity = source.identity;
+    const known = this.shaders.find(identity);
+    if (known !== undefined) return known;
+    for (const record of this.shaders.grouped(shaderTextGroup(source)))
+      if (
+        record.source.hasPublishedIdentity !== source.hasPublishedIdentity &&
+        record.source.sameText(source)
+      ) {
+        this.shaders.alias(identity, this.shaderIds.get(record.handle) as number);
+        return record;
+      }
+    return undefined;
+  }
   findShaderModule(descriptor: object): GPUShaderModule | undefined {
     this.active();
     const source = shaderSourceForDescriptor(descriptor);
-    const handle = source === undefined ? undefined : this.shaders.find(source.identity)?.handle;
+    const handle = source === undefined ? undefined : this.shaderRecord(source)?.handle;
     if (handle !== undefined) this.counts.shaderHits++;
     return handle;
   }
   createShaderModule(descriptor: GPUShaderModuleDescriptor): GPUShaderModule {
     this.active();
     const source = shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]);
-    const known = this.shaders.find(source.identity);
+    const known = this.shaderRecord(source);
     if (known !== undefined) {
       this.counts.shaderHits++;
       return known.handle;
@@ -249,7 +340,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const handle = this.device.createShaderModule(descriptor);
     endShader(source.length);
     const record = { source, descriptor: source.descriptor(descriptor.label), handle };
-    const id = this.shaders.add(source.identity, record);
+    const id = this.shaders.add(source.identity, record, shaderTextGroup(source));
     this.shaderIds.set(handle, id);
     this.shaders.own(handle, record);
     this.collectRecord(record);
@@ -301,6 +392,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const key = JSON.stringify(groups),
       known = this.layouts.find(key);
     if (known !== undefined) return known.handle;
+    this.validatePipelineStorageBudget(groups as number[]);
     const handle = this.device.createPipelineLayout(descriptor);
     const record = {
       groups: groups as number[],
@@ -311,6 +403,29 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     this.layouts.own(handle, record);
     this.collectRecord(record);
     return handle;
+  }
+  private validatePipelineStorageBudget(groups: readonly number[]): void {
+    const limit = this.device.limits.maxStorageBuffersPerShaderStage;
+    const counts = [0, 0, 0];
+    for (const id of groups) {
+      const { descriptor } = pipelineResource(this.groups, id);
+      for (const entry of descriptor.entries) {
+        if (entry.buffer?.type !== 'storage' && entry.buffer?.type !== 'read-only-storage')
+          continue;
+        for (let stage = 0; stage < counts.length; stage++) {
+          if ((entry.visibility & (1 << stage)) !== 0) counts[stage] = (counts[stage] ?? 0) + 1;
+        }
+      }
+    }
+    for (const [stage, name] of ['vertex', 'fragment', 'compute'].entries()) {
+      const required = counts[stage] ?? 0;
+      if (required <= limit) continue;
+      throw new RhiError({
+        code: 'limit-exceeded',
+        expected: `${name} pipeline layout storage bindings <= device.limits.maxStorageBuffersPerShaderStage`,
+        hint: `${name} stage requires ${required} storage buffers across all bind groups; device limit is ${limit}`,
+      });
+    }
   }
   private program(
     kind: 'render' | 'compute',
@@ -445,10 +560,12 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     const program = this.programs.find(this.programKey(state, layoutId, ids));
     if (program === undefined) return undefined;
     if ((!completed || program.ready) && program.handle !== undefined) {
+      program.requested = true;
       this.counts.pipelineHits++;
       return program.handle;
     }
     if (completed && program.pending !== undefined) {
+      program.requested = true;
       if (program.runtimeRequest === undefined)
         program.runtimeRequest = this.recordRuntimeRequest(
           program,
@@ -479,11 +596,11 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return result instanceof Promise
         ? result.then(
             (value) => ok(value as unknown as RenderPipeline),
-            (cause) => err(failure(cause)),
+            async (cause) => err(await this.settledFailure(cause)),
           )
         : ok(result as unknown as RenderPipeline | undefined);
     } catch (cause) {
-      return err(failure(cause));
+      return err(this.failure(cause));
     }
   }
   // forgeax-async-whitelist: dom-native - shares the existing record's native completion.
@@ -500,11 +617,11 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return result instanceof Promise
         ? result.then(
             (value) => ok(value as unknown as ComputePipeline),
-            (cause) => err(failure(cause)),
+            async (cause) => err(await this.settledFailure(cause)),
           )
         : ok(result as unknown as ComputePipeline | undefined);
     } catch (cause) {
-      return err(failure(cause));
+      return err(this.failure(cause));
     }
   }
   createRenderPipeline(descriptor: GPURenderPipelineDescriptor): GPURenderPipeline {
@@ -536,6 +653,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     descriptor: GPURenderPipelineDescriptor | GPUComputePipelineDescriptor,
   ): NativePipeline {
     const program = this.program(kind, descriptor);
+    if (program !== undefined) program.requested = true;
     if (program?.handle !== undefined) {
       this.counts.pipelineHits++;
       return program.handle;
@@ -550,7 +668,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       realmPipelineCreations++;
       const handle =
         kind === 'render'
-          ? this.device.createRenderPipeline(descriptor as GPURenderPipelineDescriptor)
+          ? this.device.createRenderPipeline(
+              this.nativeRenderDescriptor(descriptor as GPURenderPipelineDescriptor),
+            )
           : this.device.createComputePipeline(descriptor as GPUComputePipelineDescriptor);
       endPipeline();
       if (program !== undefined) {
@@ -592,6 +712,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     origin: 'runtime' | 'startup-warmup' | 'background-warmup' = 'runtime',
   ): NativePipeline | Promise<NativePipeline> {
     const program = this.program(kind, descriptor);
+    if (origin === 'runtime' && program !== undefined) program.requested = true;
     if (program?.ready && program.handle !== undefined) {
       this.counts.pipelineHits++;
       return program.handle;
@@ -631,7 +752,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         });
         const handle =
           kind === 'render'
-            ? await this.device.createRenderPipelineAsync(descriptor as GPURenderPipelineDescriptor)
+            ? await this.device.createRenderPipelineAsync(
+                this.nativeRenderDescriptor(descriptor as GPURenderPipelineDescriptor),
+              )
             : await this.device.createComputePipelineAsync(
                 descriptor as GPUComputePipelineDescriptor,
               );
@@ -683,10 +806,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           this.active();
           return ok(undefined);
         } catch (cause) {
-          return err(failure(cause));
+          return err(this.failure(cause));
         }
       },
-      (cause: unknown) => err(failure(cause)),
+      async (cause: unknown) => err(await this.settledFailure(cause)),
     );
   }
   inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection {
@@ -851,7 +974,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       bindGroupLayouts: pod(bindGroupLayouts) as typeof bindGroupLayouts,
     };
   }
-  export(limits?: PipelineLibraryLimits): Result<PipelineLibraryManifest, RhiError> {
+  export(
+    limits?: PipelineLibraryLimits,
+    options?: PipelineLibraryExportOptions,
+  ): Result<PipelineLibraryManifest, RhiError> {
     try {
       this.active();
       if (this.counts.unrecordable)
@@ -863,7 +989,10 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         [...this.programs.values()].some((p) => p.pending !== undefined)
       )
         throw new Error('Pipeline compilation is pending; export after preparation settles');
-      const used = [...this.programs.values()].filter((p) => p.handle !== undefined);
+      const requestedOnly = options?.requestedOnly === true;
+      const used = [...this.programs.values()].filter(
+        (p) => p.handle !== undefined && (!requestedOnly || p.requested === true),
+      );
       const shaderIds = new Map<number, number>(),
         groupIds = new Map<number, number>(),
         layoutIds = new Map<number, number>();
@@ -901,12 +1030,16 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
           const d = p.recipe as PipelineLibraryCompute;
           return { ...d, layout: layout(d.layout), compute: stage(d.compute) };
         });
+      // A requested-only export keeps a projection only when a listed recipe uses its module.
+      const listed = requestedOnly ? new Set(shaderIds.keys()) : undefined;
       const computeEntryModules = [...this.shaders.values()].flatMap((source) =>
-        [...(source.projections ?? [])].map(([entryPoint, specialized]) => ({
-          module: intern(shaderIds, this.shaderIds.get(source.handle) as number),
-          entryPoint,
-          specializedModule: intern(shaderIds, specialized.id),
-        })),
+        [...(source.projections ?? [])]
+          .filter(([, specialized]) => listed === undefined || listed.has(specialized.id))
+          .map(([entryPoint, specialized]) => ({
+            module: intern(shaderIds, this.shaderIds.get(source.handle) as number),
+            entryPoint,
+            specializedModule: intern(shaderIds, specialized.id),
+          })),
       );
       const manifest: PipelineLibraryManifest = {
         version: 1,
@@ -927,7 +1060,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       validateManifest(manifest, limits, false);
       return ok(structuredClone(manifest));
     } catch (cause) {
-      return err(failure(cause));
+      return err(this.failure(cause));
     }
   }
   async prepare(
@@ -1045,7 +1178,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     } catch (cause) {
       if (!indexed) this.indexingLibraries--;
       settle(true);
-      return err(failure(cause));
+      return err(await this.settledFailure(cause));
     }
   }
 

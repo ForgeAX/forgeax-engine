@@ -1,7 +1,8 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { RendererOperationError } from '../errors/render';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
 import { STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
+import { resolveFrameMaterials } from '../record/frame-admission';
 import {
   prepareFrameLighting,
   warnZeroLightStandard,
@@ -9,6 +10,7 @@ import {
 } from '../record/frame-lighting';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { prepareViewSky, warnIgnoredDirectionalShadowCasters } from '../record/helpers';
+import { activeRenderProfileSession } from '../record/profile-session';
 import {
   type PipelineState,
   type RenderSystemInternals,
@@ -18,18 +20,18 @@ import {
 import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
 import { ssaoStructuralIdentity } from '../ssao-config';
-import { VIEW_ENVIRONMENT_ADMIT_SYSTEM } from './environment-systems';
-import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
+import {
+  RenderCascadeFitOrder,
+  RenderEnvironmentAdmitOrder,
+  RenderStandardLightingOrder,
+  RenderViewFrameOrder,
+} from '../system-order';
+
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission, renderWorldFor } from './render-world';
 import { requireViewField } from './view-field';
-import {
-  RENDER_VIEW_FRAME_SYSTEM,
-  stagedViewInputs,
-  ViewFrame,
-  type ViewFrameState,
-} from './view-frame-systems';
+import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
@@ -158,6 +160,7 @@ export function consumeViewStandardLighting(
 function admitCameraConfiguration(
   { frameState, internals }: ViewSettlementOwner,
   camera: CameraSnapshot | undefined,
+  singleLayerWater: boolean,
 ): boolean {
   const install = frameState.standardInstall;
   const lane = {
@@ -170,6 +173,8 @@ function admitCameraConfiguration(
     install.configured,
     camera,
     lane,
+    singleLayerWater,
+    internals.requestedStandardProfile?.renderPath,
   );
   if (!configuration.ok) {
     const failureKey = JSON.stringify([configuration.error.code, configuration.error.detail]);
@@ -177,12 +182,15 @@ function admitCameraConfiguration(
       internals.errorRegistry.fire(configuration.error);
       install.cameraFailure = failureKey;
     }
-    // Invalid AO cannot prevent an independently authored SSR request.
+    if (configuration.error.code === 'resource-descriptor-invalid') return false;
+    // Invalid AO cannot prevent independently required material or SSR work.
     configuration = deriveCameraStandardConfiguration(
       internals.standardProfile,
       install.configured,
-      { screenSpaceReflection: camera?.screenSpaceReflection },
+      { antialias: camera?.antialias, screenSpaceReflection: camera?.screenSpaceReflection },
       lane,
+      singleLayerWater,
+      internals.requestedStandardProfile?.renderPath,
     );
   } else {
     install.cameraFailure = '';
@@ -218,15 +226,23 @@ function prepareViewStandardLighting(
   staged: ViewFrameState,
 ): ViewStandardLightingOutcome {
   try {
-    const { cameras, frame, resourceWorld } = stagedViewInputs(world, staged);
+    const { cameras, frame, source: resourceWorld } = stagedViewInputs(world, staged);
     const lights = viewLightsOf(world, entity);
-    if (lights === undefined || !admitCameraConfiguration(owner, cameras[0]))
+    const projection = owner.scene.shadowCasterProjection();
+    const { materials } = resolveFrameMaterials(
+      projection,
+      projection?.renderables ?? frame.renderables,
+    );
+    const singleLayerWater =
+      materials.hasWater ||
+      owner.frameState.candidatePipelinePreparations?.materials.hasWater === true;
+    if (lights === undefined || !admitCameraConfiguration(owner, cameras[0], singleLayerWater))
       return { kind: 'not-admitted' };
     const { internals, frameState } = owner;
     const pipelineState = recordContext(internals).getPipelineState();
     const camera = cameras[0];
     const lighting = runRecordProfilePhase(
-      recordProfileRunner(internals.profiler?.activeSession()),
+      recordProfileRunner(activeRenderProfileSession(internals)),
       'record/scene-state/lighting-prep',
       () =>
         prepareFrameLighting(
@@ -272,29 +288,29 @@ function prepareViewStandardLighting(
  * recording rethrows it.
  */
 export function registerStandardLightingSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_STANDARD_LIGHTING_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM, VIEW_ENVIRONMENT_ADMIT_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewStandardLighting] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const prepared: [EntityHandle, ViewStandardLightingOutcome][] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderStandardLightingOrder],
+    commands: 'none',
+    name: RENDER_STANDARD_LIGHTING_SYSTEM,
+    after: [RenderViewFrameOrder, RenderCascadeFitOrder, RenderEnvironmentAdmitOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewStandardLighting] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const prepared: [EntityHandle, ViewStandardLightingOutcome][] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          prepared.push([entity, prepareViewStandardLighting(world, owner, entity, staged)]);
-        });
-        // A view's first lighting attaches its component after the iteration.
-        for (const [entity, outcome] of prepared) storeViewStandardLighting(world, entity, outcome);
-      },
-    })
-    .unwrap();
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        prepared.push([entity, prepareViewStandardLighting(world, owner, entity, staged)]);
+      });
+      // A view's first lighting attaches its component after the iteration.
+      for (const [entity, outcome] of prepared) storeViewStandardLighting(world, entity, outcome);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

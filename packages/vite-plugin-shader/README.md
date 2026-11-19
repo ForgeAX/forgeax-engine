@@ -1,5 +1,19 @@
 # @forgeax/engine-vite-plugin-shader
 
+## Native source delivery
+
+`forgeaxShader({ publication: 'source' })` publishes the native `7.0.0`
+source library through the ordinary production and development manifest route.
+Engine modules are shared once; source discovery composes no unused program.
+Actual shader transforms retain their pre-Naga inputs and original lookup handle.
+`engineEntries: false` also applies to this route. An empty roster stays empty.
+
+Source delivery delegates authored material registration to Pack and defaults
+`publishAuthoredMaterialShaders` to false. Its cooked material artifacts remain
+versioned independently; this does not claim those artifacts are source templates.
+Standalone compiled publication remains the default while source startup cost is
+qualified. DevKit reads `package.json#forgeax.shaderPublication` to select this route.
+
 Package-owned material programs declare their resource interface in
 `package.json#forgeax.materialPrograms`, keyed by the WGSL filename under
 `src/shaders`. Values use the ordinary MaterialProgram fields without `module`;
@@ -21,6 +35,28 @@ owns the canonical WGSL entry and import closure; `shared-engine-inputs.ts`
 owns packaged dev/prod manifest projection. Both paths feed the same plugin
 manifest owner and the same `SHADER_MANIFEST_PATH` constant.
 
+The stock import catalog includes the dependencies of its published modules.
+`loadCloudRendererModules()` consumes that same catalog; registering a new
+imported module belongs to the Engine source loader, not a Cloud-specific
+exception or a caller-maintained substitute catalog.
+
+Shared inventory paths belong to their producer workspace. Hosts serving a
+project outside that workspace pass `workspaceRoot` to `forgeaxShader`; Vite's
+project root then cannot replace the producer root during config resolution.
+DevKit supplies its existing Engine workspace authority. Missing inventory and
+invalid publications still fail admission.
+
+Repeated Node loads of the same live publication share verified immutable row
+facts; each consumer receives its own entry and material collections. Inventory
+checks and the actual payload digest run on every load, so changed or missing
+bytes cannot reuse admission. Weak publication ownership retires the expanded
+graph when its consumers release it; the lookup does not retain it globally.
+
+The Node loader deep-freezes its private JSON snapshot directly and reuses native
+ABI facts that are already transitively frozen. Reflection validation remains
+complete. Field projections preserve admitted WGSL getters, so default fields do
+not materialize utility source before a consumer needs it.
+
 The ray query, transport, raster-receiver and diffuse-composite entries use this same loader in
 both standalone and Vite builds. Their traversal module and imports live in
 `packages/shader/src`; test-side string insertion is not a publication path.
@@ -32,6 +68,12 @@ Custom materials use the same source/import/cook path and do not trigger another
 engine-wide compile when that projection is available. Missing/stale profiles and
 explicit source validation retain the complete source producer. Result arrays
 are independent of the base manifest.
+
+Complete cold-source manifest tests share a 900-second case budget, including
+the direct-DFG fit/LUT assertion. The standalone cold source owner checks Cluster ABI, resampling and DFG fit/LUT
+variants from one fresh complete compile. The real Vite publication keeps its
+independent cold build. Every admitted variant and native validation remains. This is a test execution budget,
+not a performance SLA or permission to extend the enclosing CI job.
 
 Source compilation keeps the complete variant roster, but projects each variant's
 source and import catalog only when a compiler slot starts that job. The worker
@@ -46,15 +88,15 @@ or WASM teardown with `terminate()`. Job errors retain precedence over shutdown
 errors, and a worker that exits before returning its job rejects that job.
 This applies to both Vite and the standalone source builder.
 
-Production and development publish the same `5.0.0` manifest: each WGSL source
+Production and development publish the same `6.0.0` manifest: each WGSL source
 is identified by a domain-separated SHA-256 digest of its ordered fragment
 digests, while repeated source blocks are stored once in a shared fragment table.
 Material variants and direct entries refer to those identities. A synchronous
 publication interns each immutable fact object once before canonical value
 deduplication; distinct equal objects still share the same table index. This
 identity reuse ends with that publication, so a later source or fact edit is
-read afresh. Identical ABI receipts and entry-read arrays are stored once; each row retains the exact
-receipt and entry-read references, including the distinction between missing and
+read afresh. Identical ABI receipts, bound-global declarations and entry-read arrays are stored once; each row retains the exact
+receipt, ordered binding and entry-read references, including the distinction between missing and
 empty facts. Every pooled fragment, source sequence, receipt and entry-read
 reference is still validated;
 all producer-declared variants survive publication. Runtime joins and retains
@@ -112,6 +154,25 @@ single-worker build: one compilation completes before the next starts. The
 default pool reserves one available CPU. Both default and explicitly requested
 pools are capped at 16 compiler workers, since each owns a Naga/WASM instance.
 Both the standalone builder and Vite retain the complete ordered variant roster.
+Engine variant descriptors share the original source closure. Conditional source
+and import projection runs only when a serial or Worker lane admits a job; the
+producer does not retain a projected import tree for every waiting variant.
+Every published row and its result order remain unchanged.
+Compiled Engine results enter the existing source-fragment and reflection tables
+in roster order, with at most twice the worker count awaiting ordered publication.
+Only selected root candidates retain a complete body; the complete variant fleet
+is not held as expanded WGSL. Vite and standalone production use the same owner.
+Standalone JSON serialization borrows its prepared publication, while explicit
+in-process inspection admits the pooled facts and reads source lazily. This changes
+build memory ownership, not shader validation, row admission, wire version or GPU
+compilation policy. Consumer failures drain active native work before closing ports.
+
+The repository source producer sizes its V8 heap from runner memory, retaining
+the existing 4 GiB minimum and six GiB reserve, using at most half the available
+memory above that minimum, and capping the heap at 24 GiB. Packaged release-profile
+compilation defaults to two workers and caps explicit requests at four, within
+the same CPU and memory limits. Both complete profiles still require verified
+compiler, source and profile identity before reuse.
 Each batch in the single-worker path owns the same bounded program compiler as
 each Worker. Reuse ends at the batch boundary; changed entry and reflection
 options still pass their own validation.
@@ -171,6 +232,23 @@ sources and admits a profile only on an exact match; a mismatch (for example a
 container left behind by an earlier SDK or Dawn preparation after a WGSL edit),
 an obsolete container version or an absent profile warns or falls back and
 compiles from source instead of publishing stale bindings.
+
+For a source checkout used by an external Vite app, prepare the standard BASE
+profile **in the Engine checkout**, after its package build:
+
+```sh
+node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile base-ssao
+```
+
+The producer reuses only a receipt matching the current compiler, source and
+profile and the actual shader payload digest; otherwise it compiles the complete
+profile. Repeat preparation reports `compile count=0` for an admitted hit.
+Packaging without `--build` also requires that receipt; unverified input fails
+with `shader-profile-input-unverified` before replacing the existing container.
+The external app keeps ordinary `forgeaxShader()` configuration. Its resolved
+plugin package must own this prepared container and resolve the matching shader
+sources. Missing profile rows or stale compiler facts warn with the profile and
+preparation command before selecting the complete source fallback.
 
 The public `VIEW_ABI` export is typed transport metadata for
 `forgeax_view::common`: group 0, binding 0, and the 1296-byte upload shape, including camera clipping planes, fog, atmosphere and sky fog. It contains no live WebGPU object. Consumers should use the manifest

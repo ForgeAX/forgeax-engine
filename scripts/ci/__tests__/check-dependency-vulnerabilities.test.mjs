@@ -78,6 +78,13 @@ describe('listLockfiles', () => {
 });
 
 describe('collectFindings', () => {
+  it('uses the same relative lockfile identity for Windows and portable scanner paths', () => {
+    const root = 'F:\\engine';
+    const report = osvReport(root, [{ name: 'ws', version: '8.20.0', groups: [['GHSA-x']] }]);
+    report.results.push({ ...report.results[0], source: { path: 'F:\\engine\\pnpm-lock.yaml' } });
+    assert.deepEqual([...collectFindings(report, root)[0].lockfiles], ['pnpm-lock.yaml']);
+  });
+
   it('collapses alias groups and merges versions per package', () => {
     const root = '/repo';
     const report = osvReport(root, [
@@ -116,6 +123,16 @@ describe('compareWithBaseline', () => {
 });
 
 describe('check-dependency-vulnerabilities CLI', () => {
+  it('executes the CLI when invoked using a relative native path', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/ci/check-dependency-vulnerabilities.mjs', '--help'],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /^usage: node scripts\/ci\/check-dependency-vulnerabilities\.mjs/);
+  });
+
   it('fails a new advisory, passes once accepted, and keeps the reviewed reason', () => {
     withRepo([[BASELINE_PATH, '{"accepted":{}}\n']], (root) => {
       const report = osvReport(root, [{ name: 'ws', version: '8.20.0', groups: [['GHSA-x']] }]);

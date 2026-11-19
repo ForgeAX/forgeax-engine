@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "ui",
+  "source": "guide.ui.html",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "019fb7ce-3600-7000-8000-000000000001",
+      "sourceIndex": 0,
+      "sourceKey": "ui/guide",
+      "kind": "ui"
+    }
+  ]
+}

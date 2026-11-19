@@ -158,14 +158,15 @@ assets.update(projectorHandle, projectorAsset).unwrap();
 const stoneMaterial = assets.create(Materials.standard({
     baseColor: [1, 1, 1, 1],
     metallic: 0,
-    // Three's MeshStandardMaterial default for the teapot is roughness=1.0.
-    // Keep the oracle's omitted roughness explicit at this owner boundary.
-    roughness: 1,
-    // The pinned Three.js oracle uses DoubleSide for the teapot. Keep both
-    // patch windings visible while the procedural patch normals remain the
-    // lighting authority.
-    renderState: { cullMode: 'none' },
-  })).unwrap();
+      // Three's MeshStandardMaterial default for the teapot is roughness=1.0.
+      // Keep the oracle's omitted roughness explicit at this owner boundary.
+      roughness: 1,
+      // The pinned Three.js oracle uses DoubleSide for the teapot. Keep both
+      // patch windings visible while the procedural patch normals remain the
+      // lighting authority.
+      renderState: { cullMode: 'none' },
+  }),
+  ).unwrap();
 const straightAlphaBlend = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -365,11 +366,7 @@ if (benchmark) {
         const set = app.renderer.setProfile({ ...base, volumetricFog: profile });
         if (!set.ok) throw new Error(`volumetric-fog benchmark profile failed: ${set.error.code}`);
         const drawFrame = async () => {
-          const drawn = app.renderer.draw({
-            leases: [benchLease],
-            camera: { lease: benchLease },
-            environment: { lease: benchLease },
-          });
+          const drawn = app.renderer.draw({ source: benchLease });
           if (!drawn.ok)
             throw new Error(`volumetric-fog benchmark draw failed: ${drawn.error.code}`);
           return app.renderer.observe(drawn.value, { include: ['timings'] });

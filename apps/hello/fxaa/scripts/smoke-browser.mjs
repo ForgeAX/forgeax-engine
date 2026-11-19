@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { chromium, webkit } from 'playwright';
 import { setTimeout as delay } from 'node:timers/promises';
 import UPNG from 'upng-js';
+import { pnpmCommand } from '../../../../scripts/lib/pnpm-command.mjs';
 import {
   DARK_GRADIENT_FIXTURE,
   createDarkGradientFixtureReport,
@@ -17,7 +19,7 @@ import {
   snapshotRuntimeCache,
 } from './smoke-browser-runtime-cache.mjs';
 
-const ROOT = new URL('../../../..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('../../../..', import.meta.url));
 const port = process.env.FORGEAX_BROWSER_PORT ?? '5183';
 const lane = process.env.FORGEAX_DARK_GRADIENT_LANE ?? 'direct';
 const engine = process.env.FORGEAX_BROWSER_ENGINE ?? 'chromium';
@@ -140,8 +142,9 @@ if (!['chromium', 'chromium-webgl2', 'webkit'].includes(engine)) {
   process.exit(2);
 }
 
+const [manager, ...managerArgs] = externalServerUrl === undefined ? pnpmCommand() : [];
 const vite = externalServerUrl === undefined
-  ? spawn('pnpm', ['--filter', '@forgeax/hello-fxaa', 'dev', '--', '--host', '127.0.0.1', '--port', port, '--strictPort'], {
+  ? spawn(manager, [...managerArgs, '--filter', '@forgeax/hello-fxaa', 'dev', '--', '--host', '127.0.0.1', '--port', port, '--strictPort'], {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
@@ -281,7 +284,7 @@ let browser;
 try {
   await runStage('server-readiness', () => serverReady);
   if (engine === 'webkit') {
-    const probe = spawn(process.execPath, [new URL('./webkit-provider-probe.mjs', import.meta.url).pathname], {
+    const probe = spawn(process.execPath, [fileURLToPath(new URL('./webkit-provider-probe.mjs', import.meta.url))], {
       cwd: ROOT,
       env: {
         ...process.env,

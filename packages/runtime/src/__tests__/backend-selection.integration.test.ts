@@ -10,6 +10,22 @@ describe('backend selection', () => {
     if (result.ok) expect(result.value.rhi).toBe(rhi);
   });
 
+  it('keeps native WebGPU for an explicit webgpu preference without navigator.gpu', async () => {
+    const result = await loadBackendPack({ renderBackend: 'webgpu' });
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe('webgpu');
+  });
+
+  it('selects wgpu/WebGL2 directly for a webgl2 preference', async () => {
+    const result = await loadBackendPack({ renderBackend: 'webgl2' });
+    expect(result.kind).toBe('wgpu-webgl2');
+  });
+
+  it('lets an injected backend win over a serializable preference', async () => {
+    const result = await loadBackendPack({ rhi, renderBackend: 'webgl2' });
+    expect(result.kind).toBe('injected');
+  });
+
   it('preserves Runtime instrumentation policy and backend callback identity', async () => {
     let receiver: unknown;
     const createShaderModule = async function (this: unknown, ..._args: unknown[]) {

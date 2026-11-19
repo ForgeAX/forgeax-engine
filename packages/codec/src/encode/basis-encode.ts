@@ -111,7 +111,13 @@ const defaultImporter: EncoderImporter = async () => {
       default: BasisModuleFactory<BasisEncoderModule>;
     }
   ).default;
-  const mod = await factory({ locateFile: () => ENCODER_WASM.href });
+  const mod = await factory({
+    locateFile: () => ENCODER_WASM.href,
+    // Keep build-time progress on stderr without classifying it as an error
+    // or corrupting the caller's structured stdout (for example CLI --json).
+    print: (message: string) => console.warn(message),
+    printErr: (message: string) => console.error(message),
+  });
   mod.initializeBasis();
   return mod;
 };

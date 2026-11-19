@@ -1,5 +1,5 @@
 import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { AssetGuid, MeshAsset } from '@forgeax/engine-types';
 import type { MaterialResource } from '../material-resource';
 import { morphChannels, packMorphDeltas } from '../morph-attributes';
 import { changes, type Node, put, remove } from './frame-tree';
@@ -9,7 +9,6 @@ const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
 
 /** Shared geometry facts. Vertex bytes remain with the asset and GPU residency owners. */
 export interface MeshGeometry {
-  readonly worldId: number;
   readonly handle: number;
   readonly bounds: Float32Array | undefined;
   /** Shared base-position enclosure, derived only on admitted Mesh changes.
@@ -54,21 +53,17 @@ function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
 export class MeshFrame {
   constructor(private readonly root: Node<MeshGeometry> | undefined = undefined) {}
 
-  get(worldId: number, handle: number | undefined): MeshGeometry | undefined {
+  get(handle: number | undefined): MeshGeometry | undefined {
     if (handle === undefined) return undefined;
     let node = this.root;
     while (node !== undefined) {
-      if (node.queue === worldId && node.key === handle) return node.value;
-      node =
-        worldId < node.queue || (worldId === node.queue && handle < node.key)
-          ? node.left
-          : node.right;
+      if (node.key === handle) return node.value;
+      node = handle < node.key ? node.left : node.right;
     }
     return undefined;
   }
 
   with(
-    worldId: number,
     handle: number,
     mesh: MeshAsset,
     materials: readonly MaterialResource[] = EMPTY_MATERIALS,
@@ -86,26 +81,23 @@ export class MeshFrame {
         ? source.slice()
         : undefined;
     const geometry: MeshGeometry = {
-      worldId,
       handle,
       bounds,
       skinEnvelopes: skinGeometryEnvelopes(mesh),
       morph: morphDeltas(mesh),
       layout: deriveVertexLayoutProjection(mesh.attributes),
       indexed: mesh.indices !== undefined,
-      materialSlots: mesh.materialSlots,
+      materialSlots: captureMaterialSlots(mesh.materialSlots, this.get(handle)?.materialSlots),
       materials,
       submeshes: mesh.submeshes,
       lods: mesh.lods,
       lodHysteresis: mesh.lodHysteresis,
     };
-    return new MeshFrame(put(this.root, geometry, worldId, handle, 1));
+    return new MeshFrame(put(this.root, geometry, 0, handle, 1));
   }
 
-  without(worldId: number, handle: number): MeshFrame {
-    return this.get(worldId, handle) === undefined
-      ? this
-      : new MeshFrame(remove(this.root, worldId, handle));
+  without(handle: number): MeshFrame {
+    return this.get(handle) === undefined ? this : new MeshFrame(remove(this.root, 0, handle));
   }
 
   changesSince(
@@ -114,4 +106,53 @@ export class MeshFrame {
   ): void {
     changes(previous.root, this.root, visit);
   }
+}
+
+/** Detach admission facts once; unchanged slots keep the accepted Pass binding table. */
+function captureMaterialSlots(
+  source: MeshAsset['materialSlots'],
+  previous: MeshAsset['materialSlots'] | undefined,
+): MeshAsset['materialSlots'] {
+  let slots: Array<MeshAsset['materialSlots'][number]> | undefined =
+    previous?.length === source.length ? undefined : [];
+  let index = 0;
+  for (const { slotName, sourceKey, defaultMaterial } of source) {
+    const old = previous?.[index];
+    if (
+      old !== undefined &&
+      old.slotName === slotName &&
+      old.sourceKey === sourceKey &&
+      sameMaterialDefault(old.defaultMaterial, defaultMaterial)
+    ) {
+      slots?.push(old);
+    } else {
+      slots ??= previous?.slice(0, index) ?? [];
+      slots.push(
+        Object.freeze({
+          slotName,
+          ...(sourceKey === undefined ? {} : { sourceKey }),
+          ...(defaultMaterial === undefined
+            ? {}
+            : {
+                defaultMaterial:
+                  typeof defaultMaterial === 'number'
+                    ? defaultMaterial
+                    : (defaultMaterial.slice() as AssetGuid),
+              }),
+        }),
+      );
+    }
+    index++;
+  }
+  return slots === undefined && previous !== undefined ? previous : Object.freeze(slots ?? []);
+}
+
+function sameMaterialDefault(
+  a: MeshAsset['materialSlots'][number]['defaultMaterial'],
+  b: MeshAsset['materialSlots'][number]['defaultMaterial'],
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined || typeof a === 'number' || typeof b === 'number')
+    return false;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }

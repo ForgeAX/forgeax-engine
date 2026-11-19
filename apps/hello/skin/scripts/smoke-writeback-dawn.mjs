@@ -24,6 +24,7 @@ import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 // Use a hardcoded UUID for the writeback scene: dawn-node's webgpu module
 // replaces globalThis and corrupts crypto.randomUUID / node:crypto in this
@@ -124,7 +125,8 @@ const { gltfDocToSceneAsset, meshIrToMeshAsset, parseGlb, toMaterialAsset } = aw
 );
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
 try {

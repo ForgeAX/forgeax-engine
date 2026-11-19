@@ -1,4 +1,7 @@
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
+
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import { beginRenderFrame, createRenderWorld, endRenderFrame, RenderCommit } from '../render-world';
 import { RENDER_SHADOW_COMMIT_SYSTEM, RENDER_SHADOW_DISCARD_SYSTEM } from '../view-settlement';
@@ -50,7 +53,7 @@ it('schedules the shadow commit after record-commit and one cleanup discard', ()
   const commit = data.find((schedule) => schedule.name === 'RenderCommit');
   const system = commit?.systems.find((entry) => entry.name === RENDER_SHADOW_COMMIT_SYSTEM);
   expect(system?.queries[0]?.read).toEqual(['ViewRecorder', 'ViewSubmission']);
-  expect(commit?.dependencies).toContainEqual([
+  expect(dependencyNames(commit)).toContainEqual([
     'render-record-commit',
     RENDER_SHADOW_COMMIT_SYSTEM,
   ]);
@@ -86,7 +89,9 @@ it.each([
 
 it('without the commit system an accepted scene submission leaves shadow history unadvanced', () => {
   const { world, owner, frame, previous } = fixture();
-  world.removeSystem(RenderCommit, RENDER_SHADOW_COMMIT_SYSTEM).unwrap();
+  world
+    .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-shadow-commit'))
+    .unwrap();
   frame({ accepted: true, scene: true });
   expect(owner.shadowRaster.commit).not.toHaveBeenCalled();
   expect(owner.directionalShadowCache).toBe(previous);

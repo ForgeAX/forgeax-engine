@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { ANTIALIAS_FXAA, ANTIALIAS_MSAA, ANTIALIAS_NONE, BLOOM_DISABLED, BLOOM_ENABLED, Camera } from '@forgeax/engine-render';
 import { Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { applyClearColor, type ClearColorMode } from '../clear-color';
@@ -14,7 +15,7 @@ export type RenderSettingsSystemContext = {
 /** Projects the World-owned settings resource into render components. */
 export function installRenderSettingsSystems(ctx: RenderSettingsSystemContext): void {
   let appliedDepthOfField = ctx.settings.depthOfField;
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-depth-of-field-settings',
     queries: [],
     fn: () => {
@@ -22,11 +23,12 @@ export function installRenderSettingsSystems(ctx: RenderSettingsSystemContext): 
       appliedDepthOfField = ctx.settings.depthOfField;
       ctx.depthOfField.setEnabled(appliedDepthOfField);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 
   let appliedAntialias: AntialiasMode = ctx.settings.antialias;
   const antialiasValue = (mode: AntialiasMode): number => mode === 'none' ? ANTIALIAS_NONE : mode === 'msaa' ? ANTIALIAS_MSAA : ANTIALIAS_FXAA;
-  ctx.world.addSystem(Update, {
+  const systemToken2 = defineSystem({
     name: 'game-antialias-settings',
     queries: [],
     fn: () => {
@@ -34,10 +36,11 @@ export function installRenderSettingsSystems(ctx: RenderSettingsSystemContext): 
       appliedAntialias = ctx.settings.antialias;
       ctx.world.set(ctx.camera, Camera, { antialias: antialiasValue(appliedAntialias) });
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken2).unwrap();
 
   let appliedBloom = ctx.settings.bloom;
-  ctx.world.addSystem(Update, {
+  const systemToken3 = defineSystem({
     name: 'game-bloom-settings',
     queries: [],
     fn: () => {
@@ -45,10 +48,11 @@ export function installRenderSettingsSystems(ctx: RenderSettingsSystemContext): 
       appliedBloom = ctx.settings.bloom;
       ctx.world.set(ctx.camera, Camera, { bloom: appliedBloom ? BLOOM_ENABLED : BLOOM_DISABLED });
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken3).unwrap();
 
   let appliedClearColor: ClearColorMode = ctx.settings.clearColor;
-  ctx.world.addSystem(Update, {
+  const systemToken4 = defineSystem({
     name: 'game-clear-color-settings',
     queries: [],
     fn: () => {
@@ -56,5 +60,6 @@ export function installRenderSettingsSystems(ctx: RenderSettingsSystemContext): 
       appliedClearColor = ctx.settings.clearColor;
       applyClearColor(ctx.world, ctx.camera, appliedClearColor);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken4).unwrap();
 }

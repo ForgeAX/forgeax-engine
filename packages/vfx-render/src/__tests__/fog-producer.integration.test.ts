@@ -12,8 +12,12 @@ describe('VFX fog composition contract', () => {
   it('fogs every clip-space particle topology at its own depth through the shared View fog', () => {
     for (const name of ['billboard', 'ribbon', 'trail', 'beam'] as const) {
       const source = shaderSource(name);
-      expect(source, name).toContain('#import forgeax_view::fog::{translucent_fog, ndc_world}');
-      expect(source, name).toContain('translucent_fog(view, ndc_world(view, input.clip_position),');
+      expect(source, name).toContain(
+        '#import forgeax_view::fog::{forward_fog, vertex_height_fog, ndc_world}',
+      );
+      expect(source, name).toContain(
+        'forward_fog(view, ndc_world(view, input.clip_position.xyz), input.clip_position.w,',
+      );
       expect(source, name).not.toMatch(/\bFogViewParams\b|\bview_fog\s*\(|texture_3d|raymarch/i);
     }
     // Mesh particles fog through the shared Standard surface at their world position.
@@ -23,7 +27,7 @@ describe('VFX fog composition contract', () => {
     );
     expect(shaderSource('mesh')).toContain('evaluateStandardSurface(');
     expect(surface).toContain(
-      'translucent_fog_transmission(view, in.worldPos, color, alpha, transmittedContribution, transmittedCoefficient)',
+      'forward_fog_transmission(view, in.worldPos, in.worldNormal.w, color, alpha, transmittedContribution, transmittedCoefficient)',
     );
   });
 
@@ -53,7 +57,7 @@ describe('VFX fog composition contract', () => {
     const depthLoad = billboard.indexOf('textureLoad(scene_depth');
     const softParticleCall = billboard.indexOf('softParticle(input.position');
     const finalColor = billboard.indexOf(
-      'translucent_fog(view, ndc_world(view, input.clip_position), rgb * alpha, alpha)',
+      'forward_fog(view, ndc_world(view, input.clip_position.xyz), input.clip_position.w, rgb * alpha, alpha)',
     );
 
     expect(depthLoad).toBeGreaterThanOrEqual(0);

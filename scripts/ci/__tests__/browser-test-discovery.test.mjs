@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
@@ -64,10 +64,10 @@ test('Host optimizer discovers the selected owner and preserves the complete ros
 test('actual Browser optimizers resolve runtime, guide, Parity and native Worker dependencies before imports', () => {
   const program = `
     import assert from 'node:assert/strict';
-    import { mkdtempSync, rmSync } from 'node:fs';
-    import { createRequire } from 'node:module';
+    import { mkdtempSync, realpathSync } from 'node:fs';
+    import { rm } from 'node:fs/promises';
     import { tmpdir } from 'node:os';
-    import { join } from 'node:path';
+    import { dirname, join } from 'node:path';
     import { createServer, createLogger, loadConfigFromFile } from 'vite';
     const root = process.cwd();
     const runtime = [
@@ -77,12 +77,15 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
     const cases = [
       ['packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
         'config/vitest.browser.config.ts', runtime],
+      ['packages/audio-webaudio/src/__tests__/source-pose.browser.test.ts',
+        'config/vitest.browser.config.ts', [...runtime,
+          ['packages/pack/package.json', 'acorn'],
+          ['packages/water/package.json', 'clipper2-ts'],
+          ['packages/geometry/package.json', 'earcut'],
+        ]],
       ['packages/ui-blitz/src/__tests__/dom.browser.test.ts',
         'config/vitest.browser.config.ts', [...runtime,
-          ['packages/pack/package.json', '@noble/hashes/legacy.js'],
-          ['packages/pack/package.json', '@noble/hashes/utils.js'],
-          ['packages/pack/package.json', 'acorn'],
-          ['packages/pack/package.json', 'uuidv7'],
+          // The guide fixture owns its channel protocol; it reaches UI, not Pack.
           ['packages/ui/package.json', 'i18next'],
         ]],
       ['apps/parity/color-lighting/cases/extended-lighting/__tests__/probe.browser.test.ts',
@@ -131,13 +134,11 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
         const optimizerStartedAt = Date.now();
         await optimizer.run();
         const expected = dependencies.map(([owner, id]) => {
-          const source = createRequire(join(root, owner)).resolve(id).replaceAll('\\\\', '/');
           const name = id.startsWith('@') ? id.split('/').slice(0, 2).join('/') : id.split('/')[0];
-          const marker = '/node_modules/' + name + '/';
-          const packageRoot = source.slice(0, source.lastIndexOf(marker) + marker.length);
-          assert.ok(source.includes(marker), 'installed dependency must have an identifiable package owner');
-          // Browser export conditions may select ESM while Node selects CJS.
-          // Require the same import ID and same actual installed package.
+          // ESM-only browser dependencies need not expose a Node require condition.
+          const packageRoot = realpathSync(join(dirname(join(root, owner)), 'node_modules', name))
+            .replaceAll('\\\\', '/') + '/';
+          // Require the requested import ID from the actual installed package.
           return { id, packageRoot };
         });
         const prepared = expected => Object.values(optimizer.metadata.optimized).some(entry =>
@@ -191,7 +192,9 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
         rows.push({ owner, optimizedCount: optimized.length });
       } finally {
         await server?.close();
-        rmSync(cacheDir, { recursive: true, force: true });
+        // Vite retires optimizer directories asynchronously after publishing.
+        // Bound retries to this closed server's disposable cache directory.
+        await rm(cacheDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       }
     }
     process.stdout.write(JSON.stringify(rows));
@@ -201,7 +204,46 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
     timeout: 60_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).length, 4);
+  assert.equal(JSON.parse(result.stdout).length, 5);
+});
+
+test('closed Browser optimizer cache cleanup retires a late asynchronous publication', () => {
+  const source = readFileSync(new URL(import.meta.url), 'utf8');
+  const removal = source.match(/await rm\(cacheDir, (\{[^\n]+\})\);/);
+  assert.ok(removal, 'the actual optimizer child must own its asynchronous cache removal');
+  const program = `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    const fs = createRequire(import.meta.url)('node:fs');
+    const cacheDir = fs.mkdtempSync(join(tmpdir(), 'forgeax-browser-optimizer-retire-'));
+    const nativeRmdir = fs.rmdir;
+    let publications = 0;
+    // A cache publication that lands after readdir but before the final rmdir.
+    // Let the real filesystem produce ENOTEMPTY; do not synthesize an error.
+    fs.rmdir = function(path, ...args) {
+      if (String(path) === cacheDir && publications < 2) {
+        publications++;
+        fs.writeFileSync(join(cacheDir, 'late-publication.json'), '{}');
+      }
+      return nativeRmdir.call(this, path, ...args);
+    };
+    const { rm } = await import('node:fs/promises');
+    try {
+      await rm(cacheDir, ${removal[1]});
+      assert.equal(publications, 2, 'the final directory removal must overlap both publications');
+      assert.equal(fs.existsSync(cacheDir), false, 'the bounded retirement must remove its cache');
+    } finally {
+      fs.rmdir = nativeRmdir;
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('Browser optimizer discovery uses explicit CLI files and conserves broad selection', () => {

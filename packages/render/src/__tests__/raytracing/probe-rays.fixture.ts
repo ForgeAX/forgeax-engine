@@ -119,7 +119,7 @@ export async function verifyProbeRays(
       fragment: {
         module: rasterModule,
         entryPoint: 'fs',
-        targets: [{ format: 'r32uint' }, { format: 'rgba32uint' }],
+        targets: [{ format: 'rg32uint' }, { format: 'rgba32uint' }],
       },
       primitive: { topology: 'triangle-list' },
       depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
@@ -292,7 +292,7 @@ export async function verifyProbeRays(
   try {
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const texture = (format: 'depth32float' | 'r32uint' | 'rgba32uint') => {
+    const texture = (format: 'depth32float' | 'rg32uint' | 'r32uint' | 'rgba32uint') => {
       const value = device
         .createTexture({
           label: `probe-rays.${format}`,
@@ -305,7 +305,7 @@ export async function verifyProbeRays(
       return device.createTextureView(value, {}).unwrap();
     };
     const depth = texture('depth32float'),
-      normal = texture('r32uint'),
+      normal = texture('rg32uint'),
       identity = texture('rgba32uint');
     const encoder = device.createCommandEncoder({ label: 'probe-rays.candidate-query' }).unwrap();
     composition.record(encoder).unwrap();

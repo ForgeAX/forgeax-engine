@@ -1,6 +1,5 @@
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { ProjectedDecalInvalidError } from '../decals/component';
 import { StandardProfileInvalidError } from '../errors/render';
 import type {
   RenderPipeline,
@@ -15,9 +14,11 @@ import {
   deriveStandardTopologyInput,
   type StandardTopologyInputValue,
 } from './standard-lighting/topology';
+import { standardDeferredAntialiasError } from './standard-path-admission';
 import {
   DEFAULT_STANDARD_PROFILE,
-  STANDARD_LIGHT_COUNTS,
+  isStandardLightCount,
+  STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   type StandardProfile,
 } from './standard-profile';
@@ -158,7 +159,7 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
 
   var light_index = 0u;
   loop {
-    if (light_index >= cluster_uniform.grid.w || light_index >= 256u) {
+    if (light_index >= cluster_uniform.grid.w || light_index >= ${STANDARD_MAX_LIGHT_COUNT}u) {
       break;
     }
     let bounds_offset = HEADER_WORDS + light_index * STRIDE_WORDS;
@@ -288,27 +289,25 @@ export function buildStandard(
 ): ReturnType<RenderPipeline['build']> {
   const standardContext = context as StandardPipelineBuildContext;
   const profile = profileFor(topology);
-  if (!STANDARD_LIGHT_COUNTS.some((count) => count === profile.lightCount)) {
+  if (!isStandardLightCount(profile.lightCount)) {
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
-        expected: 'StandardProfile.lightCount is one of 1, 32, or 256',
-        hint: 'set StandardProfile.lightCount to 1, 32, or 256',
+        expected: `StandardProfile.lightCount is an integer from 1 to ${STANDARD_MAX_LIGHT_COUNT}`,
+        hint: `set StandardProfile.lightCount to an integer from 1 to ${STANDARD_MAX_LIGHT_COUNT}`,
         detail: {
           resourceLabel: 'forgeax::standard',
           field: 'lightCount',
-          expected: '1 | 32 | 256',
+          expected: `1..${STANDARD_MAX_LIGHT_COUNT}`,
           actual: profile.lightCount,
         },
       }),
     );
   }
-  if (
-    profile.renderPath === 'deferred' &&
-    (topology.projectedDecals?.length ?? 0) > 0 &&
-    topology.camera.antialias === 'msaa'
-  )
-    throw new ProjectedDecalInvalidError('renderPath', 'single-sample Standard scene depth');
+  if (profile.renderPath === 'deferred') {
+    const failure = standardDeferredAntialiasError(topology.camera.antialias);
+    if (failure !== undefined) return err(failure);
+  }
   const effective = standardTopology(topology, profile);
   const lighting = resolveStandardTopologyInput(context);
   if (!lighting.ok) return lighting;

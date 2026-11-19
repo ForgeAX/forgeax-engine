@@ -4,9 +4,10 @@ import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/r
 let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -64,10 +65,10 @@ const { World } = await import('@forgeax/engine-ecs');
 const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildAnimatedMaterialWorld, hslToRgb, stepAnimatedMaterials } = await import(resolve(root, 'src', 'animated-material.ts'));
-const manifest = readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8');
+
 let renderer;
 try {
-  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json')) });
 if (!hostResult.ok) throw hostResult.error;
 ({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {

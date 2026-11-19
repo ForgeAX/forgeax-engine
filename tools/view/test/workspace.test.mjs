@@ -99,9 +99,11 @@ function engineFixture() {
   let cameraVersion = 0;
   const previews = new Set();
   const engine = {
-    async openProject({ root }) {
+    async openProject({ root, generation }) {
       calls.push(['project.open', root]);
-      return { project: { id: `project:${root}`, root, name: 'Fixture' }, handle: { root } };
+      return { project: { id: `project:${root}`, root, name: 'Fixture' }, handle: { root },
+        status: { phase: 'preparing', sessionId: `project-session:${root}`, generation },
+        subscribeStatus() { return () => {}; } };
     },
     async closeProject({ project }) {
       calls.push(['project.close', project.id]);
@@ -299,7 +301,10 @@ describe('View workspace API', () => {
     const transport = createHostTransport();
     const project = { id: 'project:headed', root: '/headed', name: 'Headed' };
     const target = { sessionId: 'session-headed', targetId: 'target-headed', generation: 1, worldId: 'world-headed', headed: true, width: 800, height: 600 };
-    const broker = new RawViewWorkspaceBroker({ engine: { project: { project, target, phase: 'running', browserGeneration: 1 } }, accessToken: 'workspace-test-token' });
+    const status = { phase: 'running', sessionId: target.sessionId, generation: 1, target, browserGeneration: 1,
+      document: { sessionId: target.sessionId, targetId: target.targetId, url: 'http://headed.test/', browserGeneration: 1 } };
+    const broker = new RawViewWorkspaceBroker({ engine: { project: { project, status }, projectStatus: status,
+      subscribeProjectStatus() { return () => {}; } }, accessToken: 'workspace-test-token' });
     const unregister = broker.registerTransport(transport);
     cleanup.push(async () => { unregister(); transport.close(); await broker.dispose(); });
     const wrong = transport.connect({ kind: 'frontend', sourceId: 'forgeax-workspace:session-headed:other-target' });
@@ -328,7 +333,8 @@ describe('View workspace API', () => {
     await writeFile(join(root, 'assets/zero.pack.json'), JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [] }));
     const project = { id: 'project:reveal', root, name: 'Reveal', assetRoots: ['assets'] };
     const transport = createHostTransport();
-    const broker = new RawViewWorkspaceBroker({ engine: { project: { project } }, packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots) });
+    const broker = new RawViewWorkspaceBroker({ engine: { project: { project },
+      subscribeProjectStatus() { return () => {}; } }, packSources: (root, assetRoots) => listPackSources(root, 200, assetRoots) });
     const unregister = broker.registerTransport(transport);
     cleanup.push(async () => { unregister(); transport.close(); await broker.dispose(); });
     const a = transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
@@ -413,6 +419,41 @@ describe('View workspace API', () => {
     assert.equal((await b.getState()).selectedTabId, VIEW_DISPLAY_TAB_ID);
   });
 
+  it('admits one top-level Shell as the project document presenter and promotes one observer on disconnect', async () => {
+    const document = { sessionId: 'session-1', targetId: 'target-1', url: 'http://game.test/scene', browserGeneration: 0 };
+    const status = { phase: 'starting', sessionId: 'session-1', generation: 1, document, browserGeneration: 0 };
+    const engine = {
+      project: { project: { id: 'project-1', root: '/project' }, status },
+      get projectStatus() { return status; },
+      get previews() { return []; },
+      subscribeProjectStatus() { return () => {}; },
+    };
+    const transport = createHostTransport();
+    const broker = new RawViewWorkspaceBroker({ engine, accessToken: 'workspace-test-token' });
+    const unregister = broker.registerTransport(transport);
+    cleanup.push(async () => { unregister(); transport.close(); await broker.dispose(); });
+    const first = transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
+    const second = transport.connect({ kind: 'frontend', sourceId: 'view-frontend' });
+    broker.attachPageSession(first.caller, transport);
+    broker.attachPageSession(second.caller, transport);
+    const firstState = broker.pageSessions.get(first.caller.connectionId).broker.snapshot();
+    const secondState = broker.pageSessions.get(second.caller.connectionId).broker.snapshot();
+    assert.deepEqual(firstState.projectDocument, document);
+    assert.equal(firstState.projectDocumentPresentation, 'presenter');
+    assert.deepEqual(secondState.projectDocument, document, 'the observer still sees Engine’s source-owned status facts');
+    assert.equal(secondState.projectDocumentPresentation, 'observer', 'a second Shell observes the backend session without creating another execution frame');
+    assert.equal(secondState.project.root, '/project');
+    assert.equal(secondState.projectStatus.phase, 'starting');
+    assert.deepEqual(secondState.projectStatus.document, document, 'the closed Engine status union is never truncated');
+
+    await broker.revokeConnection(first.caller.connectionId);
+    const promoted = broker.pageSessions.get(second.caller.connectionId).broker.snapshot();
+    assert.deepEqual(promoted.projectDocument, document, 'the surviving Shell can attach after the first owner leaves');
+    assert.equal(promoted.projectDocumentPresentation, 'presenter');
+    first.close();
+    second.close();
+  });
+
   it('does not send one page asset open request to another page', async () => {
     const fixture = engineFixture();
     const transport = createHostTransport();
@@ -488,6 +529,12 @@ describe('View workspace API', () => {
     assert.equal((await cli.getState()).project.id, 'project:/fixture');
     assert.equal(fixture.calls.filter(([name]) => name === 'project.open').length, 1);
     assert.equal(fixture.calls.filter(([name]) => name === 'assets.list').length, 1);
+
+    // Catalog refresh is admitted only by a running project owner.
+    const status = broker.engine.project.status;
+    const target = { sessionId: status.sessionId, targetId: 'catalogue-target', worldId: 'catalogue-world', generation: status.generation, headed: true, width: 800, height: 600 };
+    Object.assign(status, { phase: 'running', target, browserGeneration: 1,
+      document: { sessionId: status.sessionId, targetId: target.targetId, url: 'http://catalogue.test/', browserGeneration: 1 } });
 
     const listed = () => fixture.calls.filter(([name]) => name === 'assets.list').length;
     const waitListed = async (count) => {
@@ -621,14 +668,18 @@ describe('View workspace API', () => {
       targetId: 'project-target',
       sessionId: 'project-session',
       worldId: 'project-world',
+      generation: 1,
       headed: true,
       width: 1280,
       height: 720,
       url: 'http://127.0.0.1:43123/?forgeaxWorkspace=1',
     };
     const engine = {
-      async openProject({ root }) {
-        return { project: { id: 'project:headed', root, name: 'Headed' }, target, handle: { root } };
+      async openProject({ root, generation }) {
+        return { project: { id: 'project:headed', root, name: 'Headed' }, handle: { root },
+          status: { phase: 'running', sessionId: target.sessionId, generation, target, browserGeneration: 1,
+            document: { sessionId: target.sessionId, targetId: target.targetId, url: target.url, browserGeneration: 1 } },
+          subscribeStatus() { return () => {}; } };
       },
       async closeProject() {},
       async listAssets() { return []; },
@@ -916,7 +967,7 @@ describe('View workspace frontend boundary', () => {
     assert.equal(view.workspaceCore, view.backendHost.context.get('viewWorkspaceCore'));
   });
 
-  it('keeps an independent frontend session separate from the resident CLI project', async () => {
+  it('shares the current project with frontend and CLI while rejecting retired project identities', async () => {
     const fixture = engineFixture();
     const page = {
       goto: async () => undefined,
@@ -949,18 +1000,17 @@ describe('View workspace frontend boundary', () => {
     cleanup.push(() => cli.close('test-cleanup'));
     await cli.openProject('/external-cli', { tabId: VIEW_WORKSPACE_TAB_ID });
     const frontend = view.frontendHost.context.get('viewOperationClient');
-    const intent = await frontend.getState();
-    assert.equal(intent.project, null);
-    assert.deepEqual(intent.projectIntent, { root: '/external-cli' });
+    const attached = await frontend.getState();
+    assert.equal(attached.project.root, '/external-cli');
+    assert.equal(attached.projectIntent, undefined);
     await frontend.openProject('/frontend', { tabId: VIEW_WORKSPACE_TAB_ID });
     assert.equal((await frontend.getState()).project.root, '/frontend');
-    assert.equal(
-      (await cli.listAssets('project:/external-cli', { tabId: VIEW_WORKSPACE_TAB_ID })).assets[0].kind,
-      'scene',
-    );
+    await assert.rejects(cli.listAssets('project:/external-cli', { tabId: VIEW_WORKSPACE_TAB_ID }),
+      error => error.code === 'view-workspace-project-mismatch');
+    assert.equal((await cli.listAssets('project:/frontend', { tabId: VIEW_WORKSPACE_TAB_ID })).assets[0].kind, 'scene');
     await assert.rejects(
       cli.openAsset('missing-guid', {
-        projectId: 'project:/external-cli',
+        projectId: 'project:/frontend',
         tabId: VIEW_WORKSPACE_TAB_ID,
       }),
       (error) => error instanceof ViewWorkspaceError && error.code === 'view-workspace-asset-not-found',
@@ -1372,6 +1422,63 @@ describe('View workspace frontend boundary', () => {
     assert.deepEqual(attached.map(([targetId]) => targetId).sort(), ['cli-target', 'workspace-target']);
     await shell.dispose();
     assert.deepEqual(removed.sort(), ['cli-target', 'workspace-target']);
+  });
+
+  it('attaches the preparing project document as the Scene layout owner without an Engine target', async () => {
+    const document = fakeDocument();
+    const attached = [];
+    const removed = [];
+    const shell = new ViewWorkspaceShell({ document, presentation: { workspace: {
+      attachProjectDocument(input) {
+        attached.push(input);
+        return () => removed.push(input.document.sessionId);
+      },
+    } } });
+    const projectDocument = {
+      sessionId: 'project-session',
+      targetId: 'project-target',
+      url: 'http://game.test/?forgeaxWorkspaceTarget=project-target',
+      browserGeneration: 0,
+    };
+    shell.update({
+      project: { id: 'project', root: '/project' },
+      projectPhase: 'starting',
+      projectStatus: { phase: 'starting', sessionId: 'project-session', generation: 1, document: projectDocument },
+      projectDocument,
+      projectDocumentPresentation: 'observer',
+      projectTarget: null,
+      preview: null,
+      scenePreview: null,
+    });
+    assert.equal(attached.length, 0, 'an observer cannot anchor the hidden project document');
+    shell.update({
+      project: { id: 'project', root: '/project' },
+      projectPhase: 'starting',
+      projectStatus: { phase: 'starting', sessionId: 'project-session', generation: 1, document: projectDocument },
+      projectDocument,
+      projectDocumentPresentation: 'presenter',
+      projectTarget: null,
+      preview: null,
+      scenePreview: null,
+    });
+    assert.equal(attached.length, 1);
+    assert.deepEqual(attached[0].document, projectDocument);
+    assert.equal(attached[0].container, shell.targetContainer);
+    assert.equal(shell.targetForTab(VIEW_WORKSPACE_TAB_ID), null, 'document identity never becomes a fake Engine target');
+    shell.update({
+      project: { id: 'project', root: '/project' },
+      projectPhase: 'running',
+      projectStatus: { phase: 'running', sessionId: 'project-session', generation: 1, document: projectDocument,
+        target: { targetId: 'project-target', sessionId: 'project-session', worldId: 'world', generation: 1 } },
+      projectDocument,
+      projectDocumentPresentation: 'presenter',
+      projectTarget: { targetId: 'project-target', sessionId: 'project-session', worldId: 'world', generation: 1 },
+      preview: null,
+      scenePreview: null,
+    });
+    assert.equal(attached.length, 1, 'running target publication retains the same document layout owner');
+    await shell.dispose();
+    assert.deepEqual(removed, ['project-session']);
   });
 
   it('keeps inert target surfaces stable without loading target URLs', async () => {

@@ -264,10 +264,10 @@ export async function startViewHostServer({
     frontendTicket,
     server: http,
     socketServer,
+    bootstrapUrl: `${httpUrl}${BOOTSTRAP_PATH}`,
     ...(staticRootPath
       ? {
           viewerUrl: httpUrl,
-          bootstrapUrl: `${httpUrl}${BOOTSTRAP_PATH}`,
         }
       : {}),
     close,

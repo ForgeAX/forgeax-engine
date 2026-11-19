@@ -23,6 +23,7 @@ export interface LiveOwnerOptions {
   readonly headless: boolean;
   readonly backend: string;
   readonly rhiCapture: boolean;
+  readonly gpuPassTiming: boolean;
   readonly workers: unknown;
   readonly animation: unknown;
 }
@@ -77,12 +78,15 @@ export function changedLiveOptions(
 ): readonly string[] {
   return Object.entries(requested)
     .filter(([, value]) => value !== undefined)
-    .filter(
-      ([key, value]) =>
+    .filter(([key, value]) => {
+      const recorded = current?.[key as keyof LiveOwnerOptions];
+      // Owner records written before GPU timing was persisted were untimed.
+      if (key === 'gpuPassTiming') return value !== (recorded === undefined ? false : recorded);
+      return (
         current === undefined ||
-        JSON.stringify(canonical(value)) !==
-          JSON.stringify(canonical(current[key as keyof LiveOwnerOptions])),
-    )
+        JSON.stringify(canonical(value)) !== JSON.stringify(canonical(recorded))
+      );
+    })
     .map(([key]) => key);
 }
 
@@ -96,6 +100,27 @@ export async function writeFileAtomic(path: string, contents: string): Promise<v
   } catch (error) {
     await unlink(temporary).catch(() => {});
     throw error;
+  }
+}
+
+/** The project's `dev start` owner record. */
+export function liveSessionRecordPath(root: string): string {
+  return resolve(root, '.forgeax', 'dev-session.json');
+}
+
+/**
+ * Cheap check for advice only: the project has an owner record whose pid is alive.
+ * It never contacts the owner, so a hung owner still counts as running.
+ */
+export async function liveOwnerRecorded(root: string): Promise<boolean> {
+  try {
+    const record = JSON.parse(await readFile(liveSessionRecordPath(root), 'utf8')) as {
+      readonly pid?: unknown;
+      readonly endpoint?: unknown;
+    } | null;
+    return typeof record?.endpoint === 'string' && processAlive(record.pid);
+  } catch {
+    return false;
   }
 }
 

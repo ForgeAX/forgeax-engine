@@ -299,7 +299,11 @@ const measuredSmokeGateSeconds = new Map([
   ['hello-volumetric-fog/smoke', 18],
 ]);
 const defaultSmokeGateSeconds = 11;
-export const ciSmokeShardTailSeconds = Object.freeze([235, 240, 140, 250]);
+// Run 43943068121: complete fixed steps, including each folded Bevy owner.
+// Move complete Bloom (371s) from 1 to 2 and SSR (144s) from 1 to 0.
+// Round the resulting observed fixed totals upward.
+// These placement forecasts retain the original samples; they are not deadlines.
+export const ciSmokeShardTailSeconds = Object.freeze([705, 905, 925, 675]);
 
 export function smokeGateSeconds(entry) {
   return measuredSmokeGateSeconds.get(entry.gateId) ?? defaultSmokeGateSeconds;

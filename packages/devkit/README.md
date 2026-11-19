@@ -1,9 +1,74 @@
 # @forgeax/engine-devkit
 
+Ordinary project build, development and packaging publish native shader source
+templates by default. Pack remains the material program authority; selected
+programs prepare on demand through the native portable compiler. Explicit
+`package.json#forgeax.shaderPublication: "compiled"` retains the precompiled
+route; `"source"` explicitly selects the default. Unknown values fail project
+validation. Single-HTML browser and Worker process compatibility objects do not
+advertise a Node version, so portable WASM loaders use embedded browser resources
+rather than Node filesystem imports.
+
+Resource and workspace previews publish their tool-owned texture-view materials
+through the complete compiled manifest route. These programs are supplied as
+material packages, outside the Engine source-family library. Ordinary Play and
+game builds retain the project's selected publication.
+
 Custom build hosts use `readProjectFacts` from the package root and
 `loadProjectCookers` from `@forgeax/engine-devkit/plugin-build` to execute the
 selected project's declared build root. The returned session exposes cookers and
 watched source files; its owner disposes it on shutdown or failed startup.
+
+Detached backends reserve at most one quarter of admitted machine/container
+memory for their V8 heap, capped at 8 GiB. Their build child inherits the same
+budget, leaving room for browsers and native allocations. An explicit caller
+heap limit remains authoritative.
+
+Modeling render tools request only the Renderer capability inspection needed for
+their backend facts. A complete inspection remains available to callers that need
+all domains; backend selection does not scan unrelated shader diagnostics.
+The shader reader serializes the publication when the Renderer requests it,
+so the asynchronous render session retains only the admitted runtime facts.
+The offscreen target drops its texture and device error listener when the
+Renderer releases the surface. Target retirement also covers failed startup.
+
+Workspace page retirement revokes that browser connection's result admission
+at `pagehide`, before its socket disconnects. A refreshed document authenticates
+independently and advances the browser generation on the same project session.
+Late results from the retired realm cannot fail or re-admit its replacement.
+An in-flight preview close interrupted by that retirement releases only its old
+browser generation. Native cleanup failures and timeouts remain failures; a
+transport retirement does not certify native cleanup.
+Target dispatch retains a failed session's published document/target identity
+so its original diagnostic remains readable. This does not publish a live target
+or admit an unknown identity.
+
+Build roots can select `devkitAppOptions.renderFeatures` as data-only records
+`{ id, module: './assets/feature.ts', export: 'createContribution', config }`.
+The named factory returns `{ features, plugin?, vfxProviders?, vfxProvidersForWorld? }`.
+Host constructs a separate
+contribution before Renderer in each local, execution Worker and Render realm;
+the optional source plugin starts before the game root. Project-relative module
+closures, WGSL and imported data participate in the source admission identity.
+Factories must not return GPU objects shared across Renderers or hide resource
+creation in a World. A source plugin may provide its exact typed installer through
+Context, preserving resource-token identity across compiled Pack boundaries.
+`vfxDependencies` declares selected feature identities whose managed outputs the
+stock particle feature samples; omitted dependencies remain empty. Resource and
+workspace previews do not implicitly install the project's scene features.
+World-specific particle providers receive the attached World at the factory
+boundary; their native data-interface registries remain separate across Worlds,
+exit/reentry and execution realms. No World or GPU object enters frame snapshots.
+
+Project shader hosts pass the containing Engine workspace to the shader plugin
+for repository-relative shared inventory. Temporary project and generated Vite
+roots retain their own source ownership without replacing that producer root.
+
+Browser projects can publish `devkitAppOptions.canvasPixelRatio` from their build
+root: a positive finite scale, `'device'` for the browser DPR, or
+`{ mode: 'device', max: 2 }` to cap the device ratio explicitly. Omission preserves
+App's 1x default. Both local and Worker execution use this value; canvas width and
+height budgets continue to cap the result while preserving the display aspect.
 
 Frame submission observes texture residency only when a prepared resource has a
 texture binding to verify. That read requests the same frame and complete material
@@ -25,6 +90,14 @@ its owner token while retaining ordinary dependency version queries. This applie
 to both notable requests and opt-in successful request timing; it does not change
 the actual request URL or browser module identity.
 
+Generated startup keeps an optional RenderFeature disabled when its device capability
+is unavailable, logs the structured warning, and allows other features to present.
+Other renderer failures remain fatal. Worker-wrapped errors use the same bounded
+cause traversal as renderer diagnostics.
+
+Workspace Pack authoring uses Pack's existing host build-timeout policy, including
+its validated `FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS` override and finite ceiling.
+
 ## Source-scoped diagnostics and platform HTML
 
 `forgeax asset import` derives single-output image and audio formats from each importer. HDR declares an Equirect identity; LUT/container images and buffered audio use their producer-owned topology and defaults. Repeating the command preserves authored GUIDs and settings. Successful registration is not a cook or native decode receipt.
@@ -33,9 +106,18 @@ Source authoring gateways scan `forge.json#assetRoots`. Unrelated staging is out
 
 `forgeax asset shader check --path assets/example.wgsl --json` compiles that source and its imported module closure, reports its digest and dependency paths, and does not build game code. Omit `--path` for the whole project build check. A raw Surface requiring generated material parameters still needs its material cook; a named-source success is not material or GPU acceptance.
 
-For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Do not inject scripts into a sealed `dist/index.html`. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
+For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Add scripts through the head fragment before Vite emits; a sealed `dist/index.html` stays as built. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
 
-`forgeax project check` also dry-cooks every authored `*.pack.json` material and particle-effect entry with the real producers, offline and in seconds, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
+Browser builds keep the `index.html` entry chunk named `assets/index-*.js`, including asynchronous startup. Internal host and Engine groups retain `engine-*` names and their existing module membership. Platform integrations identify the page entry from HTML; no post-build rename or forwarding module is needed.
+
+`forgeax project check` also dry-cooks authored `*.pack.json` material, texture-generator, particle-effect, cloud-material and cloud-material-instance entries with the real producers, offline, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
+
+Dev and build provide cloud cookers by default. A cloud Pack supplies its authored
+source and a sibling WGSL file for a program model; DevKit supplies compiler
+identity, compilation and canonical renderer modules. Build reads captured source
+bytes, and cook products retain WGSL dependencies for ordinary regeneration.
+Explicit project cloud cookers replace these defaults, so specialized existing
+build roots retain their producer. Protected built-in cooker collisions still fail.
 
 Doctor validates the installed dependency closure, package-manager evidence and Engine binding without traversing mutable project output. Starting a run still captures and rechecks the complete project input tree.
 
@@ -65,6 +147,13 @@ reverse dependency edges; only the explicitly bound author session suppresses
 its generic restart. Ordinary builds, CLI and unrelated sessions retain their
 existing hot-reload behavior. Closing the project cancels Workers and releases
 documents and preview preparations.
+
+Drafts containing build-only outputs use the serving project's existing NativeCooker
+session and standard Pack producers before preview adoption. Cooked payloads, sibling
+GUIDs, references and artifact bytes are retained together; cancellation prevents an
+obsolete candidate from reaching commit. The runtime still rejects uncooked sources.
+Mixed cooked drafts containing PluginAsset outputs fail explicitly until their
+executable program closure can be prepared; they never silently omit plugin siblings.
 
 Save waits for the serving producer's publication before replying. Saved source
 events still rebuild the serving Catalog in place, including when
@@ -184,6 +273,8 @@ status exposes no transport credentials. Stop detaches its authenticated connect
 and releases their native sockets without waiting for a browser close handshake;
 independent runs keep their own `engine run stop` lifecycle.
 
+The optional native Codex adapter acquires `retainBackendLifetime(H)` before startup and calls `ensureDevKitView(H, { hostPack, lifetime: 'clients' })`. Its process usage is keyed by OS process identity, shared across App/business MCP users, and released on exit. Only this explicit mode stops after the last user disappears and three seconds of grace. The daemon owns the watcher and graceful disposal, including startup cancellation; no extra keeper process is created. Manual startup remains caller-managed. The workspace persists its selected project directory or chooser under H for fresh-session restoration after process shutdown. Runtime handles and credentials do not persist.
+
 The CLI waits up to 120 seconds for the backend to become ready by default.
 `package.json#forgeax.frameTimeoutMs` configures subsequent Worker frame admissions
 independently: omit for the Engine default of 2 seconds, use a positive timer-safe
@@ -242,12 +333,25 @@ authoritative, and its lifecycle disposes the prepared platform with the target.
 `callDevKitBackend(root, operation, args)` calls one active ToolApi provider over
 the authenticated local transport; absent or ambiguous capabilities fail.
 
+Normal View startup is `node /path/to/view/start.mjs [--project G]`. View owns
+installation discovery, its packaged Host Pack and temporary workspace defaults;
+it calls the public `ensureDevKitView` API directly. DevKit retains backend process
+ownership without adding built-in View startup commands. Default H is shared per
+Engine/View installation independently of cwd and G; `--new-instance` allocates
+a unique temporary H unless explicit `--root H` takes precedence. Use the returned
+H explicitly for `view status`, `view stop` and `backend stop`. Omitting G preserves
+a bound project or leaves a fresh owner ready for project selection.
+
 For example, an installed View host Pack contributes separate `view start`,
 `view status` and `view stop` commands. `view start` requires this backend and
-returns a UI URL; the user opens a browser and explicitly chooses a project or
-observation target. Its optional Shell mounts before rendering, so a renderer
-failure does not remove the interface. The embedding `devKitWorkspacePlugin`
-contract remains available for applications that already own a Host.
+returns a plain UI URL; `--project` is admitted directly by Engine's resident
+workspace owner before the result returns. The returned status can report a
+preparing project session while its headed document continues startup. Opening
+the URL attaches a Shell to that owner; the Shell never derives project
+authority from query or stored intent. Its optional presentation mounts before
+rendering, so a renderer failure does not remove the interface. The embedding
+`devKitWorkspacePlugin` contract remains available for applications that
+already own a Host.
 
 A healthy browser refresh retains the project, session, target, Vite server and
 accepted Catalog. The workspace reports `starting` while the old browser's
@@ -284,6 +388,25 @@ presentation clients decide how query results affect their selection.
 - [Migration and carrier](#migration-and-carrier)
 
 ## CLI and catalog
+
+DevKit owns the durable known-project catalogue, selected by `FORGEAX_DATA_HOME`
+or the platform data directory independently of backend/project roots. Public
+`project list`, `project import --path G` and `project browse [--path D]` return
+structured results without preparing a runtime. Recent order derives from stored
+`lastOpenedAt`; canonical aliases deduplicate during locked registration. Missing
+projects and changed identities remain visible with diagnostics. Explicit import
+accepts a changed identity. Folder browsing is shallow and includes resolvable
+directory symlinks.
+
+Corrupt catalogue bytes are preserved. Concurrent writers serialize through an
+exclusive lock and atomic publication; they never reclaim an observed lock.
+Timeout diagnostics retain lock path and readable owner PID/liveness/nonce.
+Recovery requires confirming that owner has stopped before explicitly removing
+only its abandoned lock. A replaced acquired lock remains untouched and its
+release reports failure, even if publication already completed. When catalogue
+work and release both fail, `known-project-store-cleanup-failed` retains structured
+`detail.primary` and `detail.cleanup` plus the store path. The initiating error
+also remains the aggregate's internal cause; cleanup cannot overwrite it.
 
 `ToolCatalogEntry` derives its identity and evidence fields from `ToolDescriptor`.
 The catalog requires a normalized command path and keeps schemas as serialized
@@ -465,7 +588,8 @@ the game. These operations do not save scene edits.
 `capture` (it waits for an edited revision), waits for the startup overlay and two
 fresh submissions, and captures each `--viewports` x `--cameras` view, restoring the
 viewport and releasing the observation camera afterwards. `look-report.ts` computes
-the per-view `metrics` and heuristic `findings` from the composed PNG; the owner keeps
+the per-view `metrics` (size and whether the frame is one flat colour) and `findings`
+(renderer error, flat frame) from the composed PNG; the owner keeps
 one retained browser across reloads (each runtime page gets a fresh context, because
 development modules are bound to their program session) and serves its project
 children from a stable `.forgeax/generated/dev` root with a `.forgeax/dev/vite`
@@ -712,16 +836,90 @@ replaced native document returns `inspection-failed`. No new tool transport or
 UI registry is created. These observations complement real screenshots and do
 not stand in for Renderer submission or completed frames.
 
+Generated browser/desktop Hosts expose an asynchronous, no-argument
+`__forgeaxGameInspection.inspectRenderer()` for public Play pages and other
+diagnostic consumers. It returns a detached Renderer inspection Result with
+exactly `state`, `frame`, `capabilities` and `deviceInfo`; it exposes no App,
+World, native handle or arbitrary eval input. A local Renderer is read directly;
+an independent Render Worker uses App's existing fixed inspection request.
+
+```js
+const result = await page.evaluate(() =>
+  globalThis.__forgeaxGameInspection.inspectRenderer(),
+);
+```
+
+The current inspection instance, App and page lifetime are checked before and
+after the read. Retired or replaced owners, unavailable renderers and failed
+reads or cloning return `app-renderer-inspection-unavailable` with its canonical
+reason. Unknown device facts remain unknown. The existing synchronous
+`renderer()` execution summary keeps its behavior; the asynchronous read creates
+no adapter, device, frame or capture and does not change worker selection.
+
 The native program
 table admits packaged `.program.mjs` source with runtime parameters against the
 normal RuntimePack identities. It does not compile new JavaScript in the player.
 
 `forgeax project build --target tauri` embeds the ordinary browser distribution
-under `web/` and generates the desktop project under `src-tauri/`. It keeps the
+under `web/` and generates the desktop/mobile project under `src-tauri/`. It keeps the
 browser platform and WebView GPU backend. The native window waits for the existing
 frontend Host to dispose before closing; its smoke reads App's actual completed
 frame count. The distribution manifest verifies the WebView entry, native
 configuration and the complete resource closure.
+
+Use `forgeax project package --format tauri --platform windows|macos|linux|android|ios`
+to build native installers into a new `release/<id>-tauri-<platform>/artifacts/` directory.
+`--output` selects a new directory; existing output is preserved. `--prepare-only` exports
+the sealed WebView project for another host without invoking npm, Rust or native tools.
+Native packaging installs the pinned Tauri CLI in temporary project storage, preserves
+Cargo.lock and removes compiler caches. The command reports `prepared` or `built`, with
+runtime acceptance explicitly `not-run`. Tauri-only flags reject other formats.
+
+| Platform | Generated script | Packages | Required build environment |
+|:--|:--|:--|:--|
+| Windows | `pnpm build:windows` | NSIS EXE, MSI | Windows/MSVC/WebView2 |
+| macOS | `pnpm build:macos` | APP, DMG | macOS/Xcode |
+| Linux | `pnpm build:linux` | AppImage, DEB, RPM | Linux/WebKitGTK 4.1 |
+| Android | `pnpm build:android` | APK, AAB | JDK 17+, Android SDK/NDK |
+| iOS | `pnpm build:ios` | IPA | macOS/Xcode/XcodeGen, signing/provisioning |
+
+Packaging automates the web closure, native project generation, native-builder
+invocation and artifact collection. System toolchains, account login, signing
+identities and physical-device confirmations remain platform preparation. Agent
+assistance with that setup, app installation or desktop shortcuts is separate
+from the exporter. The generated README includes the platform responsibility
+matrix and distinguishes local developer testing from ordinary app installation.
+
+Android USB/ADB testing needs USB debugging and device authorization; ordinary
+APK installation follows the device's installer and verification policy instead.
+iOS development testing needs an Apple team/provisioning and phone Developer Mode;
+App Store/TestFlight users do not need those developer settings. A free Personal
+Team supports personal-device tests, with seven-day provisioning, rather than
+store distribution. Read the platform setup and delivery guide
+for the engine/toolchain/human boundary and acceptance steps.
+
+Windows and Android reserve an OS-assigned IPv4 loopback port for Tauri's embedded
+assets so nested Workers reach a real HTTP listener. Windows uses that listener
+for the page too. Android uses `forgeax.localhost:<port>` with a registered native
+protocol for the document;
+this preserves one Tauri initialization while nested Workers reach the real
+loopback listener. The native protocol validates the bound port and reads the
+URI path independently of that port. The native Host
+keeps the listener for its process lifetime and scopes IPC to the `main` WebView
+and that exact origin. Android permits cleartext only for the loopback address/domain;
+its native library is linked for 16 KB memory pages. Windows MSI localization
+keeps Unicode application names. Generated application versions start at `0.0.1`.
+
+Mobile projects share `src/lib.rs` with the desktop executable and expose Tauri's
+mobile entry point. Mobile scripts initialize their target once; extra arguments
+are forwarded to the pinned Tauri CLI. Run mobile builds through the generated
+package-manager scripts so IDE callbacks retain their CLI entry. Set
+`JAVA_HOME`, `ANDROID_HOME`, `NDK_HOME`
+for Android; configure a Gradle release keystore for signed Android distribution.
+iOS uses `APPLE_DEVELOPMENT_TEAM` and Xcode provisioning. Signing material stays
+outside generated source. Desktop cross-host builds fail with the prepare-only
+recovery. See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) and
+[distribution](https://v2.tauri.app/distribute/) for target toolchains and signing.
 
 Run `pnpm install && pnpm build` in that generated output on the target desktop.
 `pnpm smoke` launches the packaged macOS `.app`; other operating systems require
@@ -729,7 +927,7 @@ the actual installed executable in `FORGEAX_TAURI_EXECUTABLE` and separate
 qualification. The smoke waits for the startup overlay to leave, then observes
 60 additional completed frames, records command-permission rejection, and waits
 for Host disposal before exit. A locked or hidden desktop is not a visual pass.
-The native bridge is scoped to the local `main` WebView and has only three
+The native bridge is scoped to the packaged `main` WebView and has only three
 application commands for close and opt-in evidence. No filesystem or shell
 plugin is enabled. Runtime UiAsset styles use the declared inline-style policy;
 only Tauri's automatic `style-src` nonce injection is disabled, so a nonce on the
@@ -821,24 +1019,33 @@ while authoring-source validation remains a separate TypeScript operation.
 
 A build root is a native Plugin installed in an isolated Node process. It registers `ctx.nativeCookers` and `ctx.importers` through effects. Original producer functions remain in that process; typed IPC carries requests and bytes. Import `@forgeax/engine/devkit/plugin-build` for the build Context type augmentation. Duplicate keys, blocked bootstrap content reads, startup failures and cleanup residuals reject preparation. Each IPC operation has a deadline that terminates the build process when exceeded (default 60 s); a cooker that declares `timeoutMs` gets that bound for its own cooks instead, so a long native build (a modeling rig job) can run longer without raising every other operation's deadline. A cooker that declares `concurrency: 'parallel'` keeps that declaration across the process boundary: its cooks overlap in the build process (other operations stay in arrival order), and the Pack build may then admit several Packs at once.
 
-Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
-object projected into generated dev/build hosts before `createApp`. It accepts
-the public `dynamicGeometryMeshBudgetBytes`, `assetBudgetBytes`, `standardProfile`,
-`pipelineLibrary`, `backgroundPipelineLibrary`, and `time` options. DevKit rejects unknown fields, accessors and non-data values;
-Render's shared validators reject invalid byte counts and profiles before host
-preparation, while Engine World owns time-policy validation. Missing configuration
-keeps App's 64 MiB mesh-budget and 4 GiB asset-content-budget defaults. An explicit
-`forgeax-dynamic-mesh-budget-bytes` URL value still takes precedence. The same
-accepted time policy reaches browser main-thread and Worker Worlds; the WeChat
-host supplies it when constructing its World. Accepted options participate in the
-existing generated build identity.
-Configuration stays in the build plugin's Pack payload, with `roots.build`
-selecting that plugin; `forge.json` gains no configuration namespace.
-`standardProfile` initializes the actual Renderer through the generated
-`PreparedExecutionBootstrap.configureRenderer` hook when execution uses Workers,
-including Render Worker recovery. Local and WeChat hosts pass the same profile
-through their existing Renderer options. Source plugins do not need a local
-`ctx.renderer` service to configure rendering.
+The private build protocol sends explicit V8 Serializer bytes through Node IPC.
+Requests, importer callbacks and results preserve ArrayBuffer identity, shared
+views, offsets and extents in both directions. Advanced IPC by itself rehomes
+views into message storage; those incidental layouts must not enter cooked
+product or SDK byte identity. Process isolation and operation deadlines remain
+owned by the existing build session.
+
+Build roots provide `ctx.devkitAppOptions.configuration` as data through a
+configuration plugin. The build root must finish before DevKit validates and
+serializes that definition into the generated Host. Runtime does not load a
+configuration plugin before it knows how to construct the engine; the existing
+`roots.build`, plugin Pack and Context provider remain the project entry.
+
+Use [App engine configuration](../app/README.md#engine-configuration) for domain
+settings, device inheritance and quality groups. Worker and local Hosts pass the
+resolved profile into the Renderer constructor. Generated bootstrap modules no
+longer configure its profile after construction; replacement Render Workers use
+the most recently accepted startup plan. Native WeChat resolves the same model
+before World and graphics construction.
+
+Legacy `dynamicGeometryMeshBudgetBytes`, `textureMipSkip`, `assetBudgetBytes`,
+`standardProfile`, `time`, canvas and pipeline-capacity declarations are converted
+once into configuration inputs by the generated Host. They cannot accompany an
+explicit `configuration`. Pipeline libraries, feature factories, UI and loading
+labels remain separate build/binding inputs. Explicit supported URL diagnostics
+are composed into their configuration domains before startup. Accepted input
+bytes still participate in the existing generated build identity.
 
 ```ts
 import type { DevKitAppOptions } from '@forgeax/engine/devkit/plugin-build';
@@ -1000,9 +1207,13 @@ command; failed World readiness does not suppress native disposal.
 
 ### Production Worker selection
 
-DevKit forwards `FORGEAX_EXECUTION_WORKERS` to App's composable worker policy.
-An empty object enables all supported workers; individual fields override it.
-Omitting the variable selects `auto` for Engine, Render and Kernel Workers, including ordinary projects created from either template. Use `{"engine":false}` for local execution through the same bootstrap.
+Projects declare placement through native build-root
+`devkitAppOptions.execution.workers`, using App's existing Engine/Render/Kernel
+policies. Omission preserves automatic capability selection. Explicit
+`FORGEAX_EXECUTION_WORKERS` keys override the authored defaults; an empty object
+leaves them unchanged. Packaging derives disabled-Worker pruning and local
+bootstrap publication from this same effective policy. No environment variable
+is required to package a project with its authored placement.
 
 The generated page resolves the bundler's shader manifest URL against
 `document.baseURI` before Worker transfer. Root, relative, deployment-prefix and
@@ -1011,7 +1222,7 @@ Pack indexes already use that page base; bootstrap modules use the generated
 module's `import.meta.url`. Host-only import transports stay on the page.
 
 ```bash
-FORGEAX_EXECUTION_WORKERS='{}' \
+FORGEAX_EXECUTION_WORKERS='{"engine":"auto","render":"auto","kernels":"auto"}' \
   forgeax project build --root ./games/my-game --json
 
 FORGEAX_EXECUTION_WORKERS='{"kernels":false}' \
@@ -1073,7 +1284,9 @@ The DevKit development and dist-preview servers provide COOP/COEP isolation and
 can embed their output across ports. An embedding owner that needs isolation
 inside its iframe also grants `allow="cross-origin-isolated"`. Production hosting
 must supply the corresponding headers; without isolation, auto preserves Render
-Worker and executes numeric kernels inline.
+Worker and executes numeric kernels inline. `project play --release --headers none`
+serves the built release without these headers, to check that non-isolated path
+as a plain static host would serve it.
 
 The generated host writes the internal
 `.forgeax/generated/execution-bootstrap.ts`; authors do not edit or maintain
@@ -1201,14 +1414,15 @@ interfaces, remove variants or require knowledge of the player's device.
 
 #### Compressed delivery documents
 
-Browser build `dist/` and the Web ZIP store the Catalog, shader manifest, pipeline library and every Pack document
+Browser build `dist/`, Web ZIP and single HTML store the Catalog, shader manifest, pipeline library and every Pack document
 as one zstd frame under its unchanged file name and URL, so any static host serves them
 small without content negotiation. The runtime recognizes the zstd magic bytes where it
 reads these documents from a platform `Response` (Catalog and Pack reads, the
 `ShaderRegistry` manifest fetch, the generated host's pipeline library) and decodes
 them before parsing; plain JSON reads unchanged, and a custom `PackageFetcher` keeps
 owning its transport encoding. `forgeax-dist.json` records the stored bytes and hashes.
-`--compress=false` restores plain JSON in the Player; `single-html` always uses plain JSON.
+`--compress=false` restores plain JSON in either Player format. Single HTML retains the
+native zstd document bytes inside its lazy resource carrier.
 The shared Codec document reader also serves offline asset inspection, so `asset list`,
 `lookup` and `verify` retain diagnostic evidence on compressed builds. A build failure
 leaves derived output unverified and must be repaired through the producer and rebuilt.
@@ -1223,13 +1437,14 @@ leaves derived output unverified and must be repaired through the producer and r
 to the Web ZIP only.
 
 `forgeax project package --format single-html --output release/game-offline.html` emits a self-contained
-single-HTML candidate and adjacent SHA-256. DevKit derives it from the same verified dist manifest,
+single-HTML candidate and adjacent SHA-256. Its immutable programs use the existing native module delivery, preserving one Engine module graph instead of duplicating browser recovery archives. Textures and other procedural content still generate at runtime. DevKit derives the carrier from its verified dist manifest,
 embeds the generated module/worker/WASM/resource closure, and reports the candidate path, digest,
 dist-manifest digest, and embedded asset count. The candidate is the acceptance object: open that
 exact file through `file://` in the release browser profile and require zero remote requests, failed
 requests, console/page errors, and resource misses before promotion. This format does not make
 arbitrary dist `index.html` files or network-dependent services offline.
-The second bundle resolves emitted local chunks. Preload dependency rewrites follow
+Equal resource bytes share one stored payload while retaining each path and media type. The main entry uses the same gzip storage and becomes a native inline ES module after decoding, preserving document-relative `import.meta.url`.
+The second bundle resolves emitted local chunks and ordered local module entries, evaluating shared dependencies once. Prebuilt Worker entries retain their resource identity; each Worker module graph is closed once, so references between Worker factories do not trigger recursive Worker builds. Preload dependency rewrites follow
 the imported binding; same-named nested functions, parameters, and block bindings
 retain their arguments. Residual optional bare imports
 and computed imports use the packaged-resource lookup: an unavailable request
@@ -1277,7 +1492,13 @@ native compiler is needed for this Browser capture route.
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
 for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
 and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
-Explicit `--headless true` bypasses Xvfb/X11 entirely. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
+Explicit `--headless true` bypasses Xvfb/X11 entirely. Local capture, play, and
+live sessions launched by Linux root use an unprivileged Chromium child. The
+launcher uses the invoking account from `sudo`, the Playwright image's
+`pwuser`, or the system `nobody` account, in that order, with `setpriv` and a
+temporary browser profile. With no display, an unspecified private browser
+mode defaults to headless. An existing borrowed page needs no local
+display or browser launch. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.
@@ -1313,7 +1534,9 @@ It samples the visible canvas rectangle from the owner-page compositor, includin
 without scrolling the element, resizing the viewport, or waiting for layout to stop moving.
 Offscreen canvas pixels cannot make a flat visible frame pass.
 `--require-ui` requires at least one mounted child under the generated host's `#game-ui` root; unrelated
-Engine or browser ShadowRoots are only diagnostics and cannot satisfy the gate. A uniform black frame
+Engine or browser ShadowRoots are only diagnostics and cannot satisfy the gate. When no UI mounts
+within 10 seconds of the first canvas, the capture fails with `browser-capture-ui-missing`; omit
+`--require-ui` for a canvas-only game. A uniform black frame
 also fails even when canvas and adapter structure exist. Browser discovery includes the installed
 Playwright Chromium; `--browser` explicitly selects another executable. Resource
 preview and replay reuse this discovery across Linux, macOS, and Windows, including `FORGEAX_BROWSER_EXECUTABLE`;
@@ -1386,14 +1609,23 @@ export default async function playthrough(play) {
 | `step(name, run)` | Labels work; a failure reports the innermost step and the last helper action. |
 | `state(read?)` / `waitFor(predicate, { read, timeoutMs })` | Read `gameHost.gameProjection.registerRead({ id, read })`; the id defaults to the only registered read. `waitFor` polls every 50 ms (default 10 s). |
 | `keyboard.press(key)` / `keyboard.hold(keys, ms \| predicate)` | Real key events; `press` (and `mouse.click`) holds until the execution report completes three more frames (at least 50 ms, at most 2 s), so the frame-start input scan observes it; a game that tells a tap from a hold by frame count sees a three-frame press, so use `hold(key, ms)` for an exact duration. Chords use `Shift+KeyA`. |
-| `mouse.click/move(point)`, `mouse.drag(from, to, { button })` | Canvas-normalized `[x, y]` or `{ x, y }`; `[0, 0]` is the canvas top-left. |
-| `screenshot(name)` | Composed page PNG (canvas and DOM UI) with a `rendered` flag; never fails on pixels. |
+| `mouse.click/move(point)`, `mouse.drag(from, to, { button })` | Canvas-normalized `[x, y]` or `{ x, y }`; `[0, 0]` is the canvas top-left. Under pointer lock the game reads only the movement delta, and the result lists a `warnings` entry; a cursor-aimed game calls `gameHost.setPointerLockAllowed(false)` so `move` aims at the point. A `click` whose point is covered by page content that is neither the canvas nor a control (for example a HUD panel with `pointer-events: auto`) still clicks, and adds a `warnings` entry naming that element. |
+| `mouse.look(dx, dy)` | Turns a mouse-look camera by `dx`, `dy` pixels of `movementDelta` and waits until a frame scan has read it. Under pointer lock the delta goes straight to the locked element; otherwise the cursor moves by that offset from its last point. A game that looks only while a button is held uses `drag(from, to, { button: 'right' })`, which waits two Engine frames after the press and after the motion (three pointer moves) before the release. |
+| `screenshot(name)` | Composed page PNG (canvas and DOM UI) with a `rendered` flag; never fails on pixels. Nothing judges how the frame looks; open the PNG. |
 | `advance(seconds, { stepSeconds, render, read })` | Pauses the App, steps whole frames of explicit game time (`stepSeconds` default 1/60, in (0, 0.1] so ECS Time never clamps; `seconds` in (0, 600], at most 36000 frames) inside one page evaluation through `App.stepFrame`, resumes and returns `state(read)`. Frames before the last are `stepFrame(dt, { render: false })` (World update only, no draw or receipt credit) and the last one renders, so `advance(180)` takes about a second instead of a minute; `render: true` draws every frame, for logic that reads the submitted picture (GPU picking, submitted terrain height). It sends no input; keys held through the browser stay held for every stepped frame. Out-of-range arguments fail as `play-step-failed` reason `advance-invalid`, an App step refusal as `advance-failed`. For timers, day/night cycles or long waits, call `play.advance(seconds)` instead of `play.wait`/long `waitFor` timeouts; never poll a running play from the shell — run `project play` in the foreground with a timeout longer than the script. |
 | `reload()`, `wait(ms)`, `page`, `signal` | Reload and wait for input again; plain delay; the Playwright Page for anything else; the abort signal of the run. |
 
 The default `--json` value or error stays within 900 bytes (`PLAY_COMPACT_BYTES`):
 `passed`, step count, a bounded `state` and `returned` summary, screenshot paths,
-`rendered`, `layout` warnings (when any), error counts and the report path. Output lives in
+`rendered`, error counts and the report path. `warnings`
+has its own budget (`PLAY_WARNING_BYTES`, 2400 bytes). Warnings share one shape in the
+success value, the failure `detail` and `play.json`: one `PlayWarning`
+`{ kind, count, screenshots, message, others? }` per kind (`mouse.move under pointer lock`,
+`mouse.click off canvas`), with the occurrence count, the screenshots it
+hit, the first occurrence in full as `message` and, in the report, the other distinct
+occurrences as `others`. Kinds keep the order first seen; the compact forms list at most four kinds, six screenshot names each and no
+`others`, each message whole, and `moreWarningKinds` counts the kinds left in the report.
+Output lives in
 `artifacts/play/<script path without extension>/` (`scripts/playthrough.mjs` ->
 `artifacts/play/scripts/playthrough/`; a script outside the project uses
 `artifacts/play/external/<name>-<digest>/`). A rerun deletes only the files the
@@ -1463,35 +1695,15 @@ otherwise run it in the background and poll at least 30 s apart. The
 one unbounded case is a script that blocks the event loop (a synchronous infinite
 loop), which no deadline can interrupt.
 
-**Viewports and HUD layout.** `--viewports WxH[,WxH...]` (default
+**Viewports.** `--viewports WxH[,WxH...]` (default
 `1280x720,1280x600`, at most four) runs the script in the first viewport. After the
 final frame passes the gate and the execution report reads healthy, each further
 viewport resizes the same page (not replayed) and applies the same strict gate to a
 `viewport-WxH` screenshot: a fatal, a browser error, a uniform canvas, a missing
-`#game-ui` child under `--require-ui`, or no frame in
-time fails the play as `play-runtime-failed` with `At viewport WxH` in the message. A
-single viewport skips the resize. In every viewport, after two animation frames, an
-automatic check reads the `#game-ui` tree (light and open shadow DOM) and reports, as
-`layout` warnings that never fail the play: `text-overlap` (text drawn over other
-text), `text-over-panel` (text over an effectively opaque background, image, SVG or
-canvas outside its own component; background alpha times opacity at least 0.5) and
-`text-clipped` (text cut by the viewport edge). Only visible text counts: an ancestor
-with `overflow` other than `visible` clips it first. It skips full-viewport backdrops,
-a panel and text inside one component smaller than a quarter of the viewport (a
-health bar fill and its label), a panel that precedes the text inside a component
-smaller than 90% of the viewport (painted behind it, such as a dialog portrait),
-tightly stacked lines, text parked fully off-screen, and any subtree marked
-`data-forgeax-layout="ignore"` (world-anchored name tags, damage numbers). Games
-legitimately overlap HUD text, so the check warns rather than gates. Its exemptions
-are heuristics with known limits: document order stands in for paint order, so a
-`z-index` or a later stacking context can put an earlier panel in front of the text
-(missed) or a later one behind it (false warning); and an absolutely or fixed
-positioned descendant escapes an `overflow` ancestor's clip in the browser but is
-still clipped by the check, so its overlaps can be missed. A failed resize
-or DOM read, or a walk that stops at its 600-element limit, adds an `incomplete`
-warning for that viewport instead of passing silently. The compact result lists up to
-three `<viewport> <kind> <selector "text"> vs <other>` lines (one plus `+N more` when
-the 900-byte budget is tight); `play.json` keeps up to 20.
+`#game-ui` child under `--require-ui`, a failed resize, or no frame in time fails the
+play as `play-runtime-failed` with `At viewport WxH` in the message. A single viewport
+skips the resize. Play does not judge the HUD layout or the picture; open the viewport
+screenshots and look at them.
 
 `play` never attaches to a `dev start` owner: that owner's page holds the single
 live App bridge, and a second page served by its Vite child would replace that
@@ -1595,7 +1807,9 @@ bytes; a conflicting game Engine still fails before frontend startup.
 `forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
 registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
 installed package identities against the active pnpm workspace state, importer, lock locators, and
-actual package links. Copied `file:` directory payloads must match the declared source; archive
+actual package links. Copied `file:` directory payloads must match the declared source and exact
+peer-qualified snapshot placement. Their transitive links come from that snapshot relative to
+the installing root; the installed copy is not a workspace importer. Archive
 inputs and unproven copies remain unsupported. Local `@forgeax/engine` and `@forgeax/engine-*`
 packages still require an explicit healthy Engine binding. Registry Engine packages retain their
 locked version and public-export checks when inspecting a local dependency closure.
@@ -1818,9 +2032,13 @@ startup-module refresh also prevent reuse of stale HTTP entry bytes. The Engine
 never deletes arbitrary CacheStorage or unregisters Service Workers.
 
 Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
-`loading`, `elapsed`, `slow`, `reload`) over the English defaults; the build
-validates it as strings and emits it into the HTML, the native WeChat cover and
-the generated module.
+`loading`, `elapsed`, `slow`, `reload`) over the English defaults. Its optional
+`host` group also supplies the version labels, completed-frame accessibility
+label, failure and diagnostic controls, no-script notice and cache-recovery text.
+Both groups accept partial overrides; omitted Host fields retain their English
+defaults. The build rejects unknown Host keys and non-string labels and emits
+the same resolved text into the HTML, the native WeChat cover and the generated
+module. Original error codes, causes and stacks remain unchanged.
 
 ### Project-owned loading and failure screens
 
@@ -2060,8 +2278,8 @@ sequenceDiagram
 | Operation | Input | Output | Owner |
 |:--|:--|:--|:--|
 | `rhi.capture` | Optional abort signal | One `ArtifactRef` plus capture bytes | Host and recorder attachment |
-| `rhi.summary` | One `ArtifactRef` | Strict v7 decode and compact work/initial-content summary | Protocol decoder and frame model |
-| `rhi.inspect` | One `ArtifactRef`, one `workIndex`, optional fields | Fresh-backend `WorkInspection` | Replay session and readback matrix |
+| `rhi.summary` | One `ArtifactRef`, optional `passes`, `label` | Strict v7 decode and compact work/initial-content summary, or per-pass rows (`passes`) plus label-matched resources (`label`); no replay device | Protocol decoder and frame model |
+| `rhi.inspect` | One `ArtifactRef`, one `workIndex`, optional fields | `WorkInspection`; `pipeline`/`bindings` (default) come from the tape without a device, `pixels`/`outputs`/`buffer` replay on a fresh backend | Replay session and readback matrix |
 | `rhi.read` | One `ArtifactRef`, 1-64 reads by resource or work binding | Per-read bytes digest, records, image stats and optional PNG | Replay session batch readback and image decode |
 | `rhi.timing` | One `ArtifactRef` | Replay GPU nanoseconds per render/compute pass and frame total | Replay session timestamp-query replay |
 
@@ -2585,6 +2803,12 @@ sequenceDiagram
   H-->>N: result service
 ```
 
+Progressive project admission returns the backend-owned preparing session before
+source and Catalog work completes. The request signal governs admission; after
+that return, session close or provider disposal cancels preparation. Successful
+ToolRun settlement ends its request signal without retiring the admitted project.
+Individual capability waits retain their own operation signals.
+
 The provider never launches Chromium, Electron, CDP, Puppeteer, or a second
 renderer. App/World objects and scene instances stay in the browser realm;
 only project metadata, target identity, operation results, and the canvas PNG
@@ -2609,18 +2833,27 @@ lighting. Authored material slots retain the environment backdrop. Explicit
 transparent output takes precedence. This presentation belongs to the resource
 preview owner and does not change Scene or game rendering.
 
-Editor Play starts a distinct game session from the current project root on the
-same BackendHost. Its authenticated connection receives a game projection
+Editor Play allocates a distinct game page on the existing project resource
+server and BackendHost. One project server owns the Pack publication, source
+revision, cookers, program preparation and HTTP resources for both pages. Its
+authenticated connection receives a game projection
 without the parent workspace frontend root. The original editing World remains
-intact. Stop releases the game session; a new Play reads the current project
-files. Independent CLI runs retain their separate fixed-input snapshots.
+intact. Stop releases only the game page admission, socket, projection and runtime
+resources. It does not close or recook the project server. Each Play validates
+current project/Engine inputs and performs strict source admission; changed code
+requires reopening the project. Game programs prepare on first Play and are
+reused for the accepted revision. Independent CLI runs retain their separate
+fixed-input snapshots.
+
 The workspace retains the presented Play owner until its cleanup acknowledgment
 succeeds. A failed close retains the same identity, and public stop shares the
 existing mutation queue with start and project replacement. A real disconnect
 rejects pending close waits even after an earlier target failure; the retired
 session reports unconfirmed cleanup instead of completed native cleanup.
 The initiating request's AbortSignal cancels preparation before a Play target exists.
-Once published, a starting Play retains its server and presentation through the
+Before browser readiness, Play publishes its page surface without a World ID.
+The authenticated handshake supplies the real World; operations wait for it.
+Once published, a starting Play retains its page admission and presentation through the
 initial readiness wait before Stop requests native cleanup. Missing readiness is
 not proof that the browser has no resources: it may still be importing modules.
 The generated document imports its entry independently of animation callbacks,
@@ -2630,7 +2863,7 @@ Play forwards the session's browser generation; a previously connected game can
 retire after document loss without waiting for a replacement handshake.
 Parent refresh retires its still-starting Play without waiting for the discarded
 child document's first handshake.
-Workspace and Play servers materialize an OS-assigned loopback port when no
+The shared project server materializes an OS-assigned loopback port when no
 port is specified (or `0` is requested), then bind it strictly. Vite's default
 port fallback must not silently reuse another target's address.
 Default readiness waits up
@@ -2736,9 +2969,17 @@ backend factories; Engine supplies the actual rendering and replay behavior.
 
 For an explicit capacity experiment, `?forgeax-dynamic-mesh-budget-bytes=536870912` forwards 512 MiB to App in either execution placement. Omission retains the Renderer default of 64 MiB; Render rejects invalid values rather than clamping. This changes capacity, not rendering quality or admission/retirement behavior.
 
+`?forgeax-texture-mip-skip=2` forwards `textureMipSkip: 2` to App and takes precedence
+over the build-root value. Omission keeps that value or the default of 0. App
+rejects values outside the integer range 0..32. The WeChat host forwards the build
+value without a URL override. Frontend plugins activate after App creation, so
+projects select this policy through the build root or host URL.
+
 Use `?forgeax-gpu-pass-timing=1` to pass `gpuPassTiming: {}` into `createApp`.
-Absent or other values leave timing disabled. App retains worker-capability
-admission; this does not add worker timing support. A runtime plugin can
+For the browser opened by `forgeax dev start`, set
+`FORGEAX_GPU_PASS_TIMING=1` on the command. The live owner uses the same query
+on its first page and after reload. Omit the opt-in to leave timing disabled.
+App retains worker-capability admission. A runtime plugin can
 subscribe to Renderer `frame-submitted` events and observe their original
 receipts. Preserve partial, unavailable, and failed statuses when reporting
 measurements; pass durations are not end-to-end frame latency.
@@ -2867,6 +3108,10 @@ Backend stop retains its 15-second process-retirement bound. A timed-out stop
 names the existing backend log; daemon diagnostics trace native disposal, and
 the SDK View consumer preserves that log and observed status. A surviving
 claim is a failed stop even if an independent game remains healthy.
+Project Host tool requests preserve a structured Host failure through the
+existing `tool-domain-failed` terminal, including its native service and reason.
+Cancellation remains a cancellation; an unavailable provider without a
+structured Host failure retains the capability refusal.
 On Windows, package operations reuse the owning pnpm entry and native executables run directly, preserving argument bytes without requiring another PATH shim. Portable program chunk names exclude filesystem path text, and their imports stay relative within the archive. Native concurrent publication accepts an existing identical program only after validating its complete module contents.
 
 Development Engine capability resolution ignores Vite's `v` cache parameter when
@@ -2911,6 +3156,14 @@ policy. Failure publishes no partial graph and may be retried. Export describes 
 retained live graph; whole-route collection must hold its dependencies throughout
 the route. A final device cache snapshot is not historical coverage.
 
+A session that starts with an installed library compiles every recipe in it, so a
+plain export on top of that library lists them again whether or not the running
+build still asks for them. `dev pipelines export --requested-only` lists only the
+recipes a renderer asked this device for, through pipeline creation or library
+selection; recipes compiled solely by preparation are left out together with
+the shader sources and layouts only they reference. The receipt records the choice
+as `selection`. The default export is unchanged.
+
 Read that JSON in the project's build-root plugin and provide it as
 `devkitAppOptions.pipelineLibrary`. The generated host emits a separate URL asset, loads
 it before `createApp`, and carries it through either execution placement. Renderer
@@ -2919,7 +3172,10 @@ and gameplay to compare prepared work with newly encountered pipelines.
 `devkitAppOptions.backgroundPipelineLibrary` is emitted as a separate
 `background-pipeline-library.json` URL asset. Its fetch starts before the blocking library
 fetch, a load failure only logs a warning, and the renderer compiles it after readiness
-without blocking startup; observe `pipelineLibrary.backgroundWarmup`. See the
+without blocking startup; observe `pipelineLibrary.backgroundWarmup`. The optional
+`backgroundPipelineLibraryConcurrency` integer (1..4) sets how many native requests of that
+background lane stay outstanding; omission keeps the hardware-based default, and a value
+outside that range fails the build configuration instead of being clamped. See the
 [WebGPU library contract](../rhi-webgpu/README.md#device-pipeline-library) for invalidation,
 device compatibility, memory limits and driver-cache constraints.
 
@@ -2982,3 +3238,41 @@ and covered requests in the detached owner's existing timing log.
 Compiler filesystem analysis reuses the source snapshot's raw import syntax,
 including type-only imports. The existing filesystem-call pattern and conservative
 source fence remain unchanged; only duplicate TypeScript preprocessing is removed.
+
+## GPU texture resource presentation
+
+Authored Pack builds install the native `texture-generator` program cooker.
+The same native texture resource surface opens a generator or its ordinary
+texture output; it never creates a separate View renderer. The generator exposes
+output selection, existing mip/layer/channel controls and preparation status.
+Only explicit capture/thumbnail operations may request bounded readback.
+
+## Compact offline delivery
+
+Production builds keep automatic/enabled execution Worker entries. An explicit
+`workers.<kind>: false` removes only that App-owned Worker URL and its publication;
+a later override fails explicitly. Consumer-owned Worker URLs are unchanged.
+Native local Engine bootstrap uses its already imported module without publishing
+an unused remote bootstrap copy. Ordinary automatic placement is unchanged.
+
+Single-HTML bundling emits the main entry and all discovered nested Worker entries
+in one module graph, preserving compiler-owned shared chunks. Cross-namespace
+static closure preparation also uses a shared multi-entry build. Static import
+and re-export specifiers carry build-owned text relocations; each realm creates
+and caches its native Blob module URLs. Bootstrap JavaScript URLs are also module
+entries, so dynamic startup uses the same canonical dependencies as static imports;
+plain fetch still returns the exact original resource bytes. Native ESM owns evaluation, live bindings
+and realm-local state. Static source cycles are composed by the existing bundler,
+not rewritten to application-level promises. Logical `import.meta.url` remains a
+resource URL for relative assets. No custom module execution IR is introduced.
+
+Single-HTML delivery automatically shares compression history across JavaScript
+resources when it saves enough bytes. A bounded 1-64 MiB decoded closure uses
+Zstd 19 with the small, licensed fzstd decoder embedded in the HTML; smaller or
+non-beneficial closures retain independent gzip/identity storage. A shared frame
+is decoded once, and every fetch/Worker transfer gets independent bytes. This
+retains up to 64 MiB of decoded code transport until page disposal; it changes
+neither module identity nor generated asset content. Large WASM payloads use the
+same decoder only when Zstd beats their existing storage. Compressed delivery
+documents, asset entries and bounded shader groups also use level 19; shader
+groups retain their existing 1 MiB limit. No extra CLI option is required.

@@ -1,10 +1,14 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import type { RenderFeature, RenderFeatureWork, RenderFrameInput } from '@forgeax/engine-render';
+import type {
+  RenderFeature,
+  RenderFeatureWork,
+  RenderFrameInput,
+  RenderWorldLease,
+} from '@forgeax/engine-render';
 import { Camera } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
-import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 
 export type PreparedFeatureMode =
   | 'accepted'
@@ -12,25 +16,6 @@ export type PreparedFeatureMode =
   | 'mismatch'
   | 'recovery'
   | 'missing-material';
-
-export const preparedManifest = `data:application/json,${encodeURIComponent(
-  JSON.stringify({
-    entries: [
-      { hash: 'pbr00000', wgsl: '/* pbr stub */', glsl: '', bindings: '' },
-      { hash: 'unlit000', wgsl: '/* unlit stub */', glsl: '', bindings: '' },
-      { hash: 'tonemap0', wgsl: '/* tonemap stub */', glsl: '', bindings: '' },
-    ],
-    materialShaders: [
-      {
-        identifier: 'forgeax::default-standard-pbr',
-        sourcePath: 'forgeax::default-standard-pbr.wgsl',
-        composedWgsl: '/* stub */',
-        paramSchema: '[]',
-        variants: standardMaterialShaderVariants(),
-      },
-    ],
-  }),
-)}`;
 
 export function preparedFeature(
   identity: string,
@@ -116,6 +101,6 @@ export function preparedWorld(assets?: AssetRegistry): World {
   return world;
 }
 
-export function frameRequest(lease: RenderFrameInput['leases'][number]): RenderFrameInput {
-  return { leases: [lease], camera: { lease }, environment: { lease } };
+export function frameRequest(lease: RenderWorldLease): RenderFrameInput {
+  return { source: lease };
 }

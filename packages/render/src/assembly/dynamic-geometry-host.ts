@@ -9,6 +9,7 @@ import { FixedTime } from '@forgeax/engine-ecs';
 import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle } from '@forgeax/engine-types';
@@ -83,7 +84,7 @@ export interface DynamicGeometryHostImplementation
       readonly deviceGeneration: number;
       readonly completed?: Promise<unknown>;
     },
-    worlds?: readonly object[],
+    sourceWorld?: World,
     fixedStep?: number,
   ): readonly DynamicGeometryReceipt[];
 }
@@ -286,10 +287,7 @@ function physicsPublicationOf(
   admitting = false,
 ): PhysicsPublicationLike | undefined {
   try {
-    const physics = world.getResource<{
-      readonly getDerivedPublication?: (body: number) => PhysicsPublicationLike | undefined;
-      readonly getDerivedAdmission?: (body: number) => PhysicsPublicationLike | undefined;
-    }>('PhysicsWorld');
+    const physics = world.getResource(PhysicsWorldResource);
     return admitting
       ? physics.getDerivedAdmission?.(entity)
       : physics.getDerivedPublication?.(entity);
@@ -1864,17 +1862,17 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     },
     retireDynamicGeometry: (candidate) => retire(candidate),
     retireSupersededDynamicGeometry: (candidate, successor) => retire(candidate, successor),
-    publishDynamicGeometry(frame, worlds, fixedStep) {
+    publishDynamicGeometry(frame, sourceWorld, fixedStep) {
       synchronizeGeneration();
-      const targetWorlds = new Set<World>();
-      for (const candidateWorld of worlds ?? attachedWorlds) {
-        const world = candidateWorld as World;
-        if (attachedWorlds.has(world) && !faultedWorlds.has(world)) targetWorlds.add(world);
-      }
       const receipts: DynamicGeometryReceipt[] = [];
-      for (const world of targetWorlds) {
+      if (
+        sourceWorld !== undefined &&
+        attachedWorlds.has(sourceWorld) &&
+        !faultedWorlds.has(sourceWorld)
+      ) {
+        const world = sourceWorld;
         const worldFixedStep = fixedStepOf(world);
-        if (worldFixedStep === undefined) continue;
+        if (worldFixedStep === undefined) return [];
         // Local draws derive the tick from their attached World. A remote draw
         // must carry the consumed source tick; missing evidence cannot borrow
         // the current simulation time.
@@ -1883,11 +1881,11 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
           (options.publishedFixedStep === undefined
             ? worldFixedStep
             : options.publishedFixedStep(world));
-        if (publicationFixedStep === undefined) continue;
+        if (publicationFixedStep === undefined) return [];
         receipts.push(
           ...lifecycle.publishFrame(
             frame,
-            [world],
+            world,
             publicationFixedStep,
             (candidate) => {
               const candidateWorld = candidate.world as World;

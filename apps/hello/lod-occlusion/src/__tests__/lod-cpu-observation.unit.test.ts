@@ -10,7 +10,7 @@ const SCRIPT = '../../scripts/smoke-performance.mjs';
 afterEach(() => vi.restoreAllMocks());
 
 function fixture(profile: boolean) {
-  let capture = false;
+  const capture = true;
   let frameId = 0;
   const draws: { capture: boolean; include?: readonly string[] }[] = [];
   const beginProfile = vi.fn(() => ({
@@ -18,7 +18,7 @@ function fixture(profile: boolean) {
     value: { finish: () => ({ ok: true, value: { captureId: 'test-profile' } }) },
   }));
   const world = { world: { update: vi.fn(() => ({ unwrap: () => undefined })) }, lease: {} };
-  return {
+  const result = {
     baseline: world,
     treatment: world,
     occlusionOnly: world,
@@ -39,9 +39,6 @@ function fixture(profile: boolean) {
     profiler: profile ? { startCapture: beginProfile } : undefined,
     beginProfile,
     draws,
-    setGpuTimingCapture: (enabled: boolean) => {
-      capture = enabled;
-    },
     renderer: {
       draw: () => {
         draws.push({ capture });
@@ -64,6 +61,8 @@ function fixture(profile: boolean) {
       }),
     },
   };
+  Object.assign(world, { renderer: result.renderer, debugDrawHost: result.debugDrawHost });
+  return result;
 }
 
 it('charges only the submitting thread while retaining native worker CPU diagnostics', async () => {
@@ -95,7 +94,7 @@ it.each([
       const f = fixture(profile);
       const captured = await captureCondition(f, condition, order);
       expect(f.draws.slice(0, WARMUP_SUBMITS)).toEqual(
-        Array.from({ length: WARMUP_SUBMITS }, () => ({ capture: false, include: [] })),
+        Array.from({ length: WARMUP_SUBMITS }, () => ({ capture: true, include: [] })),
       );
       expect(f.draws.slice(WARMUP_SUBMITS)).toEqual(
         Array.from({ length: retained }, () => ({ capture: true, include: ['timings'] })),

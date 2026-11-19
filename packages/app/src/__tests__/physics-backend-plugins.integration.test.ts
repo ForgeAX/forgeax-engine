@@ -2,6 +2,8 @@ import { createWorldContext, World } from '@forgeax/engine-ecs';
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorld2DResource,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -13,7 +15,7 @@ import { expect, it } from 'vitest';
 it.each([
   ['2d', physics2d],
   ['3d', physics3d],
-] as const)('activates, simulates and retires the selected %s backend', async (_dimension, plugin) => {
+] as const)('activates, simulates and retires the selected %s backend', async (dimension, plugin) => {
   const world = new World();
   const context = await createWorldContext(world);
   try {
@@ -22,8 +24,13 @@ it.each([
     if (!started.ok) throw started.error;
     expect(world.components.resolve(RigidBody.name)).toBe(RigidBody);
     expect(world.components.resolve(Collider.name)).toBe(Collider);
-    expect(world.hasResource('PhysicsWorld')).toBe(true);
-    expect(context.get('physics')).toBe(world.getResource('PhysicsWorld'));
+    if (dimension === '2d') {
+      expect(world.hasResource(PhysicsWorld2DResource)).toBe(true);
+      expect(context.get('physics')).toBe(world.getResource(PhysicsWorld2DResource));
+    } else {
+      expect(world.hasResource(PhysicsWorldResource)).toBe(true);
+      expect(context.get('physics')).toBe(world.getResource(PhysicsWorldResource));
+    }
     const { Transform } = await import('@forgeax/engine-scene');
     const body = world
       .spawn(
@@ -38,7 +45,8 @@ it.each([
   } finally {
     await context.fiber.dispose();
   }
-  expect(world.hasResource('PhysicsWorld')).toBe(false);
+  expect(world.hasResource(PhysicsWorldResource)).toBe(false);
+  expect(world.hasResource(PhysicsWorld2DResource)).toBe(false);
   expect(world.components.resolve(RigidBody.name)).toBeUndefined();
   expect(world.inspect().systems.some((system) => system.name.startsWith('physics'))).toBe(false);
 });

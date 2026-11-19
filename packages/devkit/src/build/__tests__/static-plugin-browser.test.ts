@@ -54,10 +54,15 @@ it.each([
         resolve(root, 'node_modules/@forgeax/engine'),
         'dir',
       );
+      await symlink(
+        resolve(repository, 'packages/ecs'),
+        resolve(root, 'node_modules/@forgeax/engine-ecs'),
+        'dir',
+      );
       await mkdir(resolve(root, 'assets'));
       await writeFile(
         resolve(root, 'package.json'),
-        '{"name":"static-browser","type":"module","dependencies":{"@forgeax/engine":"workspace:*"}}',
+        '{"name":"static-browser","type":"module","dependencies":{"@forgeax/engine":"workspace:*","@forgeax/engine-ecs":"workspace:*"}}',
       );
       const packageId = '01900000-0000-7000-8000-000000000994';
       const guid = (key: string) =>
@@ -72,11 +77,18 @@ it.each([
       );
       const pluginSource = `
         import { registerAssetTools } from '@forgeax/engine/plugin';
+        import { defineSystem, Update, FixedUpdate } from '@forgeax/engine-ecs';
         import { Transform } from '@forgeax/engine/scene';
         import { Tag, state } from './shared.js';
         const increment: number = 1;
         globalThis.staticPluginEvaluations = (globalThis.staticPluginEvaluations ?? 0) + 1;
         export const main = { inject: ['world', 'toolApi', 'probe'], apply(ctx) {
+          const system = defineSystem({ name: 'static-anchor', queries: [], after: [FixedUpdate], fn() {} });
+          ctx.effect(() => {
+            ctx.world.addSystem(Update, system).unwrap();
+            return () => ctx.world.removeSystem(Update, system).unwrap();
+          });
+          ctx.world.update(0).unwrap();
           ctx.probe.sameEngineToken = Transform === ctx.probe.transform;
           ctx.probe.sameProjectToken = Tag === ctx.probe.tag;
           ctx.probe.entities = [...ctx.world.query({ read: [Tag, Transform] }).unwrap()].length;
@@ -337,6 +349,7 @@ it.each([
           expect(code).toContain('StaticTag');
           expect(code).toContain('staticExecutorEvaluations');
           expect(Object.keys(program.imports ?? {}).sort()).toEqual([
+            '@forgeax/engine-ecs',
             '@forgeax/engine/ecs',
             '@forgeax/engine/plugin',
             '@forgeax/engine/scene',

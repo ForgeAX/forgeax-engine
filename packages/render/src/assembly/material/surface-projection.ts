@@ -2,6 +2,7 @@ import { DEFAULT_STANDARD_SURFACE_MODULE } from '@forgeax/engine-shader';
 import type {
   MaterialPass,
   MaterialRenderState,
+  MaterialSceneDepth,
   MaterialValue,
   StandardLayerPlan,
 } from '@forgeax/engine-types';
@@ -17,13 +18,14 @@ type StandardSurfaceLightingLane = 'direct' | 'clustered';
 type StandardSurfaceKind = 'standard' | 'full-custom';
 
 export interface StandardSurfaceProjectionOptions {
+  /** Scene-depth Surfaces have a forward color pass, never a shadow/deferred depth dependency. */
+  readonly sceneDepth?: MaterialSceneDepth;
   readonly surfaceModule: string;
   readonly values: Readonly<Record<string, MaterialValue | null>>;
   readonly renderState?: MaterialRenderState;
   readonly queue?: number;
   readonly geometryVariant?: StandardSurfaceGeometryVariant;
   readonly lightingLane?: StandardSurfaceLightingLane;
-  readonly alphaClip?: boolean;
   readonly surfaceKind?: StandardSurfaceKind;
   readonly declaredPasses?: readonly StandardSurfacePassName[];
   readonly layerPlan?: StandardLayerPlan;
@@ -45,6 +47,9 @@ function pass(
       module:
         name === 'shadow-caster' ? 'forgeax::default-shadow-caster' : STANDARD_MATERIAL_MODULE,
       fragmentEntry,
+      ...(options.sceneDepth === undefined
+        ? {}
+        : { bindings: 'render-material-and-scene-depth' as const, sceneDepth: options.sceneDepth }),
       moduleSlots: { surface: options.surfaceModule },
     },
     renderState: {
@@ -59,7 +64,6 @@ function pass(
               SurfaceKind: options.surfaceKind ?? 'standard',
               GeometryVariant: options.geometryVariant ?? 'rigid',
               LightingLane: options.lightingLane ?? 'direct',
-              AlphaClip: options.alphaClip === true ? 'enabled' : 'disabled',
             },
       ...(options.queue === undefined ? {} : { queue: options.queue }),
     },
@@ -70,6 +74,13 @@ function pass(
 export function projectStandardSurfacePasses(
   options: StandardSurfaceProjectionOptions,
 ): [MaterialPass, ...MaterialPass[]] {
+  if (options.sceneDepth !== undefined) {
+    if (options.sceneDepth !== 'before-pass' && options.sceneDepth !== 'read-only')
+      throw Error('Invalid Standard Surface scene depth version');
+    if (options.declaredPasses?.some((name) => name !== 'forward'))
+      throw Error('Scene-depth Standard Surface only supports the forward color pass');
+    return [pass('forward', options, 'fs_main')];
+  }
   const authoredPasses = options.declaredPasses;
   const passNames: StandardSurfacePassName[] =
     options.surfaceKind === 'full-custom' && authoredPasses !== undefined

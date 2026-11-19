@@ -1,7 +1,7 @@
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { createApp } from '@forgeax/engine-app/browser';
 import physics3d from '@forgeax/engine-physics-rapier3d';
@@ -9,6 +9,8 @@ import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { vec3 } from '@forgeax/engine-math';
 import { buildTerrainWorld } from '../src/scene.ts';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { createDistAssetFetch } from '../../../../scripts/lib/dist-asset-fetch.mjs';
 
 export async function terrainHarness({
   width = 320,
@@ -22,8 +24,7 @@ export async function terrainHarness({
     existsSync(resolve(dist, 'pack-index.json')),
     'build hello-terrain before running its Dawn smoke',
   );
-  const shaderManifestBytes = readFileSync(resolve(dist, 'shaders/manifest.json'));
-  const shaderManifest = JSON.parse(shaderManifestBytes.toString());
+  const shaderManifest = JSON.parse(readShaderManifestText(resolve(dist, 'shaders/manifest.json')));
   assert(
     shaderManifest.materialShaders.some(
       (entry) => entry.identifier === 'forgeax::default-shadow-caster',
@@ -31,16 +32,7 @@ export async function terrainHarness({
     'complete the app shader producer before GPU acceptance; use a full app build or materialize its CI transport',
   );
   const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(
-      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
-      'http://terrain.test',
-    );
-    if (url.origin !== 'http://terrain.test') return previousFetch(input, init);
-    const path = resolve(dist, `.${url.pathname}`);
-    assert(path.startsWith(dist + sep), 'asset URL must stay inside the emitted build');
-    return existsSync(path) ? new Response(readFileSync(path)) : new Response('', { status: 404 });
-  };
+  globalThis.fetch = createDistAssetFetch(dist, { origin: 'http://terrain.test', nativeFetch: previousFetch });
   const shim = await setupGpuShim({
     width,
     height,
@@ -88,7 +80,7 @@ export async function terrainHarness({
       const start = performance.now();
       const updateMs = start - frameStart;
       const receipt = app.renderer
-        .draw({ leases: [lease], camera: { lease }, environment: { lease } })
+        .draw({ source: lease })
         .unwrap();
       const cpuMs = performance.now() - start;
       const thread = diagnostic ? process.threadCpuUsage(threadBefore) : undefined;
@@ -180,7 +172,6 @@ export async function terrainHarness({
     );
     const submittedHeight = (
       await querySubmittedTerrainHeight(receipt, {
-        worldId: 0,
         entity: subjects.terrain,
         x: 62,
         z: 62,
@@ -210,7 +201,7 @@ export async function terrainHarness({
     shim,
     errors,
     frame,
-    draw: () => app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    draw: () => app.renderer.draw({ source: lease }),
     pixels,
     verify,
     get completed() {

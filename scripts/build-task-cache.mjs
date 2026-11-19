@@ -262,7 +262,11 @@ export function packageOutputDirectory(pkg) {
 /** Runtime imports and browser exports can reference generated payloads outside dist. */
 export function packageOutputFingerprint(root, directory, output) {
   return hashFiles(root, [
-    ...output.files.map((file) => resolve(directory, 'dist', file.path)),
+    // Type-check progress is private producer state, not a dependency's
+    // runtime/ABI output. Retain full inventories and declaration validation.
+    ...output.files
+      .filter((file) => !file.path.endsWith('.tsbuildinfo'))
+      .map((file) => resolve(directory, 'dist', file.path)),
     ...walkFiles(resolve(directory, 'pkg')),
     ...walkFiles(resolve(directory, 'lib')),
     // Material producers consume published WGSL directly; its changes can

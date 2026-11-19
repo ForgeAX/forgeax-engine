@@ -142,7 +142,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // w7 - 5 component schema runtime registration + multi-component spawn (TDD red).
   //
   // Locks plan-strategy 7.2 naming + requirements IN-1 schema field set:
-  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3] + shear:[f32x3]
+  //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3]
   //   MeshFilter:         assetHandle:'asset<mesh>' (u32)
   //   MeshRenderer:       materials:'array<asset<material>>' (u32)
   //   Camera:             fov:f32 + aspect:f32 + near:f32 + far:f32   = 4 f32
@@ -159,16 +159,15 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // abstraction: components are flat-scalar SoA columns, not nested objects).
 
   describe('w7 - 5 component schemas register through defineComponent', () => {
-    it('Transform has the four authored local affine array fields', () => {
+    it('Transform has the three authored local array fields', () => {
       expect(Transform.name).toBe('Transform');
-      expect(Object.keys(componentSchema(Transform)).length).toBe(4);
+      expect(Object.keys(componentSchema(Transform)).length).toBe(3);
       // pos: inline [x, y, z]
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       // quat: inline [x, y, z, w] quaternion
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       // scale: inline [x, y, z]
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
-      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
       expect(GlobalTransform.name).toBe('GlobalTransform');
       expect(componentSchema(GlobalTransform).world).toBe('array<f32, 16>');
     });
@@ -183,14 +182,15 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(MeshRenderer.name).toBe('MeshRenderer');
       expect(componentSchema(MeshRenderer)).toEqual({
         materials: 'array<asset<material>>',
+        renderLayers: 'f64',
         lightingChannels: 'f64',
         preparePipelines: 'bool',
       });
     });
 
-    it('Camera has 34 fields including target, targetLayer, exposure, and color grading columns', () => {
+    it('Camera has 36 fields including target, targetLayer, exposure, and color grading columns', () => {
       expect(Camera.name).toBe('Camera');
-      expect(Object.keys(componentSchema(Camera)).length).toBe(34);
+      expect(Object.keys(componentSchema(Camera)).length).toBe(36);
       expect(componentSchema(Camera).targetLayer).toBe('u32');
       expect(componentSchema(Camera).fov).toBe('f32');
       expect(componentSchema(Camera).aspect).toBe('f32');
@@ -223,6 +223,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // feat-20260617-host-engine-contract-and-video-cutscene / M3: aspect-sync
       // opt-out flag (bool column tier, not f32).
       expect(componentSchema(Camera).autoAspect).toBe('bool');
+      expect(componentSchema(Camera).postProcessing).toBe('bool');
       expect(componentSchema(Camera).exposureMode).toBe('f32');
       expect(componentSchema(Camera).compensationEv).toBe('f32');
       expect(componentSchema(Camera).rangeEv).toBe('array<f32, 2>');
@@ -243,7 +244,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(DirectionalLight).lightingChannels).toBe('f64');
       expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
       expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
-      expect(componentDefinition(DirectionalLight).defaults?.staticShadowCache).toBe(true);
+      expect(componentDefinition(DirectionalLight).defaults?.staticShadowCache).toBe(false);
       expect(componentSchema(DirectionalLight).contactShadowLength).toBe('f32');
       // 3 light fields
       expect(componentSchema(DirectionalLight).direction).toBe('array<f32, 3>');
@@ -483,7 +484,6 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Transform).pos).toBe('array<f32, 3>');
       expect(componentSchema(Transform).quat).toBe('array<f32, 4>');
       expect(componentSchema(Transform).scale).toBe('array<f32, 3>');
-      expect(componentSchema(Transform).shear).toBe('array<f32, 3>');
     });
 
     it('ChildOf / Children frozen tokens (schema immutable)', () => {
@@ -768,16 +768,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     });
   });
 
-  // feat-20260602 M2 / w7: relationship-mirror validation moved into
-  // `defineComponent` (define-time fail-fast). The runtime ChildOf holder
-  // declares `mirror: 'Children'`, so the component barrel must export Children
-  // (the mirror) before ChildOf (the holder) -- otherwise `defineComponent`
-  // throws RelationshipMirrorComponentNotRegisteredError while the package is
-  // being evaluated. This block is the load-bearing guard for that barrel
-  // ordering: a clean dynamic import proves the module-evaluation order
-  // satisfies the mirror-before-holder define-time contract.
-  describe('relationship-migration-regression (feat-20260602 M2 / w7 barrel order)', () => {
-    it('imports @forgeax/engine-runtime without throwing on module evaluation', async () => {
+  // The scene barrel exposes the source and the generated target together.
+  describe('scene relationship exports', () => {
+    it('imports @forgeax/engine-scene without throwing on module evaluation', async () => {
       const mod = await import('@forgeax/engine-scene');
       expect(mod.Children).toBeDefined();
       expect(mod.ChildOf).toBeDefined();
@@ -1311,7 +1304,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //        refactoring — every field value must stay byte-identical)
   // ────────────────────────────────────────────────────────────────────────────
 
-  describe('camera factory 34-field schema snapshot (w14 AC-07 invariant)', () => {
+  describe('camera factory 36-field schema snapshot (w14 AC-07 invariant)', () => {
     it('perspective({ fov: Math.PI/3, aspect: 16/9 }) — all 20 fields match reference', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 16 / 9 });
       // Caller-supplied projection with shared clip defaults
@@ -1414,16 +1407,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.tonemap).toBe(TONEMAP_NONE);
     });
 
-    it('perspective + orthographic 33-field payload counts (33 factory Camera values)', () => {
+    it('perspective + orthographic 35-field payload counts (35 factory Camera values)', () => {
       const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
-      // Both return exactly 33 values (including targetLayer 0): Camera.fields also
+      // Both return exactly 35 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
       // The returned values include exposure and color grading columns +
       // autoAspect bool column; feat-20260709 M3 collapsed the 4-scalar
       // clear-color quartet into one inline array<f32,4>).
-      expect(Object.keys(p).length).toBe(33);
-      expect(Object.keys(o).length).toBe(33);
+      expect(Object.keys(p).length).toBe(35);
+      expect(Object.keys(o).length).toBe(35);
     });
   });
 
@@ -1432,7 +1425,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // ────────────────────────────────────────────────────────────────────────────
 
   describe('Camera.fields reflection (w14 AC-07 SSOT)', () => {
-    it('Camera.fields has exactly 34 keys matching the Camera column set', () => {
+    it('Camera.fields has exactly 36 keys matching the Camera column set', () => {
       const keys = Object.keys(Camera.fields).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1448,6 +1441,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'colorLut',
         'colorLutStrength',
         'compensationEv',
+        'cullMask',
         'exposure',
         'exposureMode',
         'far',
@@ -1455,6 +1449,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'historyVersion',
         'left',
         'near',
+        'postProcessing',
         'projection',
         'projectionOffset',
         'rangeEv',
@@ -1475,7 +1470,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     it('every Camera.fields entry has the declared numeric, bool, or array storage kind', () => {
       for (const key of Object.keys(Camera.fields) as Array<keyof typeof Camera.fields>) {
         const expected =
-          key === 'autoAspect'
+          key === 'autoAspect' || key === 'postProcessing'
             ? 'bool'
             : key === 'clearColor'
               ? 'array<f32, 4>'
@@ -1487,7 +1482,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
                     ? 'u32'
                     : key === 'target'
                       ? 'shared<RenderTarget>'
-                      : 'f32';
+                      : key === 'cullMask'
+                        ? 'f64'
+                        : 'f32';
         expect(Camera.fields[key].type).toBe(expected);
       }
     });
@@ -1525,6 +1522,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(Array.from(d.clearColor.default as Float32Array)).toEqual([0, 0, 0, 0]);
       // aspect-sync opt-out default (feat-20260617 / M3).
       expect(d.autoAspect.default).toBe(true);
+      expect(d.postProcessing.default).toBe(true);
       expect(d.exposureMode.default).toBe(0);
       expect(d.compensationEv.default).toBe(0);
       expect(Array.from(d.rangeEv.default as Float32Array)).toEqual([-8, 8]);
@@ -1559,6 +1557,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         antialias: 0,
         historyVersion: 0,
         targetLayer: 0,
+        cullMask: 0xffffffff,
         bloom: 0,
         bloomThreshold: -1,
         bloomIntensity: 0.5,
@@ -1566,6 +1565,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         bloomRadius: 0,
         clearColor: new Float32Array([0, 0, 0, 0]),
         autoAspect: true,
+        postProcessing: true,
         exposureMode: 0,
         compensationEv: 0,
         rangeEv: new Float32Array([-8, 8]),
@@ -1785,7 +1785,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.exposure).toBeCloseTo(1.0, 6);
     });
 
-    it('perspective return value has all 33 factory Camera fields', () => {
+    it('perspective return value has all 35 factory Camera fields', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
@@ -1802,6 +1802,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'colorLut',
         'colorLutStrength',
         'compensationEv',
+        'cullMask',
         'exposure',
         'exposureMode',
         'far',
@@ -1809,6 +1810,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'historyVersion',
         'left',
         'near',
+        'postProcessing',
         'projection',
         'projectionOffset',
         'rangeEv',
@@ -1940,6 +1942,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentDefinition(MeshRenderer).defaults).toEqual({
         materials: [],
         lightingChannels: 0xffffffff,
+        renderLayers: 1,
         preparePipelines: false,
       });
     });

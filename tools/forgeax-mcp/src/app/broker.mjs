@@ -2,10 +2,12 @@ import { randomUUID, createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import WebSocket from 'ws';
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
-import { HTTP_BATCH_SIZE } from '../contract.ts';
+import { HTTP_BATCH_SIZE, SOURCE_OPEN_TOPIC, SOURCE_REPLY_SERVICE } from '../contract.ts';
+import { createWorkspaceRequest, VIEW_WORKSPACE_SERVICES } from '@forgeax/view/workspace/contract';
 import { bundlePackProgram } from './program-bundler.mjs';
 const RESOURCE_BYTE_BUDGET = 256 * 1024 * 1024;
-export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
+const HOST_HANDSHAKE_TIMEOUT_MS = 10_000;
+export function createNetworkBroker(config, { bundle, trace = () => {}, hostIdleMs = 10000 } = {}) {
   const originKey = (url) => {
     const protocol =
       url.protocol === 'ws:' ? 'http:' : url.protocol === 'wss:' ? 'https:' : url.protocol;
@@ -16,6 +18,48 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
   const lifetime = new AbortController();
   const hosts = new Map();
   const resources = new Map();
+  const sourceRequests = new Map();
+  let openingSource;
+  const sourceError = (code, hint) => Object.assign(new Error(hint), { code, hint });
+  const endOpening = error => {
+    if (!openingSource) return;
+    const pending = openingSource;
+    openingSource = undefined;
+    clearTimeout(pending.timer);
+    if (error) pending.reject(error); else pending.resolve();
+  };
+  const retireHost = (id, reason) => {
+    const state = hosts.get(id);
+    if (!state) return;
+    hosts.delete(id);
+    state.closed = true;
+    for (const request of [...sourceRequests.values()])
+      if (request.connectionId === id) request.finish(sourceError('view-source-disconnected', reason));
+    for (const request of state.requests.values()) request.abort();
+    for (const unsubscribe of state.subscriptions.values()) unsubscribe();
+    if (state.client) state.client.close(reason);
+    else state.socket.close(1000, reason);
+  };
+  // The socket lives in Node, while its reader lives in an App document.
+  // Abrupt document destruction cannot complete asynchronous Host teardown.
+  let lastExpiry = performance.now();
+  const expiryInterval = Math.min(hostIdleMs, 1000);
+  const expiry = setInterval(() => {
+    const now = performance.now();
+    const stalled = now - lastExpiry > expiryInterval + hostIdleMs;
+    lastExpiry = now;
+    // Native bundlers can occupy Node's event loop. A stalled broker cannot
+    // judge reader liveness until it has served queued poll requests again.
+    if (stalled) {
+      for (const state of hosts.values())
+        if (state.lastRead !== undefined) state.lastRead = now;
+      return;
+    }
+    for (const [id, state] of hosts)
+      if (state.lastRead !== undefined && now - state.lastRead >= hostIdleMs)
+        retireHost(id, 'MCP document reader expired');
+  }, expiryInterval);
+  expiry.unref();
   const admit = (value) => {
     if (!value || typeof value !== 'object') return;
     for (const [key, item] of Object.entries(value)) {
@@ -28,6 +72,12 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
             u.searchParams.has('forgeaxWorkspaceTarget')
           )
             origins.add(originKey(u));
+        } catch {}
+      } else if (['endpoint', 'frontendEndpoint'].includes(key) && typeof item === 'string') {
+        try {
+          const u = new URL(item);
+          if (['127.0.0.1', 'localhost'].includes(u.hostname) && u.protocol === 'ws:' &&
+              u.pathname === '/__forgeax/view-workspace') origins.add(originKey(u));
         } catch {}
       } else if (item && typeof item === 'object') admit(item);
     }
@@ -98,6 +148,9 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     if (action === 'http' || action === 'bundle')
       trace({ event: 'request', action, path: new URL(input.url).pathname });
     if (action === 'http') {
+      return requestHttp(input, signal);
+    }
+    async function requestHttp(input, signal) {
       const url = allow(input.url);
       const response = await fetch(url, {
         method: input.method ?? 'GET',
@@ -146,7 +199,7 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
       const url = allow(input.url);
       if (hosts.size >= 12) throw new Error('Host connection bound exceeded');
       trace({ event: 'host-open', path: url.pathname });
-      const socket = new WebSocket(url);
+      const socket = new WebSocket(url, { handshakeTimeout: HOST_HANDSHAKE_TIMEOUT_MS });
       const id = randomUUID();
       const state = {
         socket,
@@ -155,6 +208,10 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
         subscriptions: new Map(),
         requests: new Map(),
         closed: false,
+        lastRead: undefined,
+        appDocumentId: input.appDocumentId,
+        displayMode: input.displayMode,
+        token: url.searchParams.get('token'),
       };
       hosts.set(id, state);
       const admitted = createHostWebSocketClient(socket);
@@ -165,9 +222,12 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
         const client = await admitted;
         state.client = client;
         if (state.closed || lifetime.signal.aborted) throw new Error('MCP service retired');
+        // The App can start reading once the socket is admitted.
+        state.lastRead = performance.now();
         client.onDisconnect((error) => {
           state.closed = true;
           state.error = error;
+          retireHost(id, 'Host disconnected');
         });
         return { connectionId: id, caller: client.caller, generation: client.generation };
       } catch (error) {
@@ -178,7 +238,13 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
         signal?.removeEventListener('abort', abort);
       }
     }
+    if (action === 'app-context') {
+      for (const state of hosts.values())
+        if (state.appDocumentId === input.appDocumentId) state.displayMode = input.displayMode;
+      return {};
+    }
     const state = hosts.get(input.connectionId);
+    if (state && state.appDocumentId !== input.appDocumentId) throw new Error('Host connection belongs to another App document');
     if (action === 'host-request') {
       if (!state || state.closed) throw new Error('Host connection retired');
       const requestId = input.requestId;
@@ -191,11 +257,26 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
       void (async () => {
         let packet;
         try {
-          const value = await state.client.request(input.service, input.payload, {
+          let value;
+          if (input.service === SOURCE_REPLY_SERVICE) {
+            const request = sourceRequests.get(input.payload?.requestId);
+            const accepted = !!request && request.connectionId === input.connectionId;
+            if (accepted) {
+              if (input.payload.ok === true) request.finish();
+              else request.finish(sourceError('view-source-open-failed', input.payload.error ?? 'View could not open this asset source.'));
+            }
+            value = { accepted };
+          } else value = await state.client.request(input.service, input.payload, {
             signal: controller.signal,
             ...(input.generation === undefined ? {} : { generation: input.generation }),
           });
           admit(value);
+          if (input.service === VIEW_WORKSPACE_SERVICES.call && input.payload?.operation === 'project.present'
+            && value?.projectDocumentPresentation === 'presenter') {
+            state.presented = true;
+            if (state.displayMode === 'fullscreen' && state.subscriptions.has(SOURCE_OPEN_TOPIC)
+              && openingSource?.appDocumentId === state.appDocumentId) endOpening();
+          }
           packet = { ok: true, value, generation: state.client.generation };
         } catch (error) {
           packet = {
@@ -232,6 +313,11 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     }
     if (action === 'host-subscribe') {
       if (!state || state.closed) throw new Error('Host connection retired');
+      if (input.topic === SOURCE_OPEN_TOPIC) {
+        state.subscriptions.set(input.topic, () => {});
+        if (state.presented && state.displayMode === 'fullscreen' && openingSource?.appDocumentId === state.appDocumentId) endOpening();
+        return {};
+      }
       if (!state.subscriptions.has(input.topic))
         state.subscriptions.set(
           input.topic,
@@ -247,6 +333,10 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
       return {};
     }
     if (action === 'host-unsubscribe') {
+      if (input.topic === SOURCE_OPEN_TOPIC) {
+        for (const request of [...sourceRequests.values()])
+          if (request.connectionId === input.connectionId) request.finish(sourceError('view-source-disconnected', 'View source receiver retired.'));
+      }
       state?.subscriptions.get(input.topic)?.();
       state?.subscriptions.delete(input.topic);
       return {};
@@ -254,6 +344,7 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     if (action === 'host-read') {
       const read = (connectionId) => {
         const state = hosts.get(connectionId);
+        if (state && state.appDocumentId !== input.appDocumentId) throw new Error('Host connection belongs to another App document');
         if (!state)
           return store(
             JSON.stringify({
@@ -263,6 +354,7 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
             }),
             'application/json',
           );
+        state.lastRead = performance.now();
         const json = JSON.stringify({
           events: state.queue.splice(0, 100),
           closed: state.closed,
@@ -288,12 +380,7 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
       return read(input.connectionId);
     }
     if (action === 'host-close') {
-      if (state) {
-        state.closed = true;
-        for (const request of state.requests.values()) request.abort();
-      }
-      state?.client.close('MCP document retired');
-      hosts.delete(input.connectionId);
+      retireHost(input.connectionId, 'MCP document retired');
       return {};
     }
     if (action === 'bundle') {
@@ -305,21 +392,88 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     }
     throw new Error('Unknown transport action');
   }
+  async function selectSource(file, input, { signal } = {}) {
+    const requestSignal = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : []), AbortSignal.timeout(120000)]);
+    requestSignal.throwIfAborted();
+    if (input.reuse !== false && openingSource && openingSource.appDocumentId !== input.appDocumentId) {
+      await new Promise((resolve, reject) => {
+        const abort = () => { cleanup(); reject(requestSignal.reason); };
+        const cleanup = () => requestSignal.removeEventListener('abort', abort);
+        requestSignal.addEventListener('abort', abort, { once: true });
+        openingSource.ready.then(() => { cleanup(); resolve(); }, error => { cleanup(); reject(error); });
+        if (requestSignal.aborted) abort();
+      });
+    }
+    const candidates = [...hosts.entries()].filter(([, state]) =>
+      !state.closed && state.client?.connected && state.presented === true
+      && state.displayMode === 'fullscreen' && state.subscriptions.has(SOURCE_OPEN_TOPIC)
+      && (input.reuse !== false || state.appDocumentId === input.appDocumentId));
+    const presenters = [];
+    for (const [connectionId, state] of candidates) {
+      // Read the project's single presenter from View authority, not tab order.
+      const snapshot = await state.client.request(VIEW_WORKSPACE_SERVICES.call,
+        createWorkspaceRequest('tabs.get', {}, { clientId: 'forgeax-mcp-source', token: state.token }), { signal: requestSignal });
+      if (snapshot.projectDocumentPresentation === 'presenter') presenters.push([connectionId, state]);
+    }
+    if (presenters.length > 1) throw sourceError('view-source-page-ambiguous', 'More than one View document claims project presentation. Reconnect View before retrying.');
+    if (!presenters.length) {
+      // The direct fullscreen diagnostic intentionally owns its current App.
+      if (input.reuse === false) return { disposition: 'open' };
+      // A different request can reserve initial admission while the authority
+      // queries above are in flight. Re-enter the wait path before opening.
+      if (openingSource && openingSource.appDocumentId !== input.appDocumentId)
+        return selectSource(file, input, { signal: requestSignal });
+      if (openingSource?.appDocumentId === input.appDocumentId) return { disposition: 'open' };
+      const ready = Promise.withResolvers();
+      ready.promise.catch(() => {});
+      openingSource = { appDocumentId: input.appDocumentId, ready: ready.promise, resolve: ready.resolve, reject: ready.reject,
+        timer: setTimeout(() => endOpening(sourceError('view-source-open-timeout', 'The initial View page did not connect. Retry after closing it.')), 120000) };
+      openingSource.timer.unref();
+      return { disposition: 'open' };
+    }
+    const [connectionId, state] = presenters[0];
+    requestSignal.throwIfAborted();
+    if (hosts.get(connectionId) !== state || state.closed) throw sourceError('view-source-disconnected', 'The selected View page disconnected before delivery.');
+    if (sourceRequests.size >= 32) throw sourceError('view-source-busy', 'Wait for pending View resource actions to finish.');
+    const requestId = randomUUID();
+    await new Promise((resolve, reject) => {
+      const abort = () => finish(sourceError('view-source-cancelled', 'View resource action was cancelled or timed out. It may already have applied; do not open a second page.'));
+      const finish = error => {
+        if (!sourceRequests.delete(requestId)) return;
+        requestSignal.removeEventListener('abort', abort);
+        if (error) {
+          if (!state.closed) state.queue.push({ topic: SOURCE_OPEN_TOPIC, value: { requestId, cancelled: true } });
+          reject(error);
+        } else resolve();
+      };
+      sourceRequests.set(requestId, { connectionId, finish });
+      requestSignal.addEventListener('abort', abort, { once: true });
+      if (requestSignal.aborted) { abort(); return; }
+      state.queue.push({ topic: SOURCE_OPEN_TOPIC, value: { requestId, file } });
+    });
+    return { disposition: 'reused' };
+  }
   const broker = {
     invoke,
+    selectSource,
+    cancelSourceOpening(appDocumentId) {
+      if (openingSource?.appDocumentId === appDocumentId)
+        endOpening(sourceError('view-source-open-cancelled', 'Initial View page could not open. Retry the resource button.'));
+    },
     store,
     admit,
     allow,
     bundle,
+    closeDocument(appDocumentId) {
+      if (openingSource?.appDocumentId === appDocumentId) endOpening(sourceError('view-source-disconnected', 'Initial View document retired.'));
+      for (const [id, state] of hosts)
+        if (state.appDocumentId === appDocumentId) retireHost(id, 'MCP App document retired');
+    },
     close() {
+      endOpening(sourceError('view-source-disconnected', 'MCP service retired'));
       lifetime.abort(new Error('MCP service retired'));
-      for (const state of hosts.values()) {
-        state.closed = true;
-        for (const request of state.requests.values()) request.abort();
-        if (state.client) state.client.close('MCP service retired');
-        else state.socket.close(1000, 'MCP service retired');
-      }
-      hosts.clear();
+      clearInterval(expiry);
+      for (const id of hosts.keys()) retireHost(id, 'MCP service retired');
       resources.clear();
     },
   };

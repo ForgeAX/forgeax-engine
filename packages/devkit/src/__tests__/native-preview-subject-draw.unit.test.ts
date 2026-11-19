@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { compressZstd } from '@forgeax/engine-codec/encode';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const runBrowserResourcePreviewHost = vi.hoisted(() => vi.fn());
@@ -16,7 +17,11 @@ import { nativePreviewTools } from '../tools/preview-catalog.js';
 
 const temporaryRoots: string[] = [];
 
-async function previewProject(row: Record<string, unknown>, scoped = false): Promise<string> {
+async function previewProject(
+  row: Record<string, unknown>,
+  scoped = false,
+  compressed = false,
+): Promise<string> {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-preview-catalog-'));
   temporaryRoots.push(root);
   await mkdir(resolve(root, 'dist'));
@@ -38,7 +43,10 @@ async function previewProject(row: Record<string, unknown>, scoped = false): Pro
         diagnostics: [],
       }
     : [row];
-  await writeFile(resolve(root, 'dist', 'pack-index.json'), `${JSON.stringify(catalog)}\n`);
+  const text = `${JSON.stringify(catalog)}\n`;
+  const frame = compressed ? await compressZstd(new TextEncoder().encode(text)) : undefined;
+  if (frame !== undefined && !frame.ok) throw new Error(frame.error.code);
+  await writeFile(resolve(root, 'dist', 'pack-index.json'), frame?.value ?? text);
   return root;
 }
 
@@ -271,6 +279,34 @@ describe('native preview subject evidence', () => {
     expect(meshPreview).toBeDefined();
     if (meshPreview === undefined) return;
 
+    await expect(
+      runNativePreviewTool(meshPreview, { guid, size: 64 }, {}, root),
+    ).resolves.toMatchObject({
+      outcome: 'failed',
+      failure: { detail: { code: 'asset-preview-disabled' } },
+    });
+    expect(runBrowserResourcePreviewHost).not.toHaveBeenCalled();
+  });
+
+  it('reads a zstd-compressed Pack index written by the build', async () => {
+    const guid = '019fb7ce-3200-7000-8000-00000000000e';
+    const root = await previewProject(
+      {
+        guid,
+        kind: 'mesh',
+        lifecycle: 'current',
+        projection: { operations: { preview: { enabled: false, reason: 'direct asset' } } },
+        publication: { current: { packageUrl: '/assets/direct.pack.json' } },
+      },
+      true,
+      true,
+    );
+    const meshPreview = nativePreviewTools.find(
+      (candidate) => candidate.descriptor.id === 'asset.mesh.preview',
+    );
+    if (meshPreview === undefined) throw new Error('missing mesh preview tool');
+    // The row is found (its disabled projection is reported) instead of the
+    // index being rejected as invalid JSON.
     await expect(
       runNativePreviewTool(meshPreview, { guid, size: 64 }, {}, root),
     ).resolves.toMatchObject({

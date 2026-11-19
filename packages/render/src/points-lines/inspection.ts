@@ -25,7 +25,6 @@ export type PointsLinesInspectionRefusal = Pick<
 
 export interface PointsLinesInspection {
   readonly entityKey: number;
-  readonly worldId: number;
   readonly component: 'Points' | 'Lines';
   readonly meshHandle: number;
   readonly meshGeneration: number;
@@ -49,7 +48,6 @@ export interface PointsLinesInspectionInput
   extends Omit<
     PointsLinesInspection,
     | 'entityKey'
-    | 'worldId'
     | 'component'
     | 'meshHandle'
     | 'meshGeneration'
@@ -67,7 +65,6 @@ export function inspectPointsLines(input: PointsLinesInspectionInput): PointsLin
   }
   return {
     entityKey: snapshot.entityKey,
-    worldId: snapshot.worldId,
     component: snapshot.component,
     meshHandle: snapshot.meshHandle,
     meshGeneration: snapshot.meshGeneration,

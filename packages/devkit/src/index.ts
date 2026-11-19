@@ -1,7 +1,10 @@
+export { assetLibrarySourceIdentity } from './asset-libraries.js';
 export { createDevKitBackend, type DevKitBackend } from './backend.js';
+export { retainBackendLifetime } from './backend-lifetime.js';
 export {
   callDevKitBackend,
   devKitBackendStatus,
+  ensureDevKitView,
   startDevKitBackend,
   stopDevKitBackend,
 } from './backend-process.js';
@@ -75,6 +78,21 @@ export {
   hostBindingError,
   validateHostBinding,
 } from './host-binding.js';
+export {
+  browseProjectDirectories,
+  type KnownProject,
+  type KnownProjectEntry,
+  type KnownProjectError,
+  type KnownProjectErrorCode,
+  type KnownProjectResult,
+  KnownProjectStoreError,
+  knownProjectStorePath,
+  listKnownProjects,
+  type ProjectDirectoryEntry,
+  type ProjectDirectoryListing,
+  registerKnownProject,
+  rememberKnownProject,
+} from './known-projects.js';
 export type {
   LiveDevBackend,
   LiveDevDaemonOptions,
@@ -96,6 +114,8 @@ export {
   type OperationHistorySummary,
 } from './operation-history.js';
 export type {
+  PlayAdvanceOptions,
+  PlayClockReport,
   PlayContext,
   PlayErrorCode,
   PlayFailure,
@@ -108,10 +128,12 @@ export type {
   PlayScript,
   PlayScriptInvalidReason,
   PlayStepFailureReason,
+  PlayStepOptions,
+  PlayStepRange,
   PlayWaitOptions,
+  PlayWarning,
 } from './play.js';
 export { playCommand } from './play.js';
-export type { PlayLayoutIssue, PlayLayoutIssueKind } from './play-layout.js';
 export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migration.js';
 export {
   type BootstrapRoot,
@@ -185,6 +207,7 @@ export type {
   ProjectCommandOptions,
   ProjectFacts,
   ShaderCheckOptions,
+  TauriPlatform,
 } from './types.js';
 export { resolveProjectPort } from './types.js';
 export { runUnifiedCli, type UnifiedCliResult } from './unified-cli.js';

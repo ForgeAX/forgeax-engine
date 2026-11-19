@@ -7,6 +7,7 @@ import { defaultConnect } from '@forgeax/engine-types/inspector-client';
 import { expect, it } from 'vitest';
 import { createApp } from '../create-app';
 import { testPlatform } from './platform-fixture';
+import { provideRuntimePackTestResources } from './runtime-pack-resources.fixture';
 
 it('uses the actual App Context to admit and execute a new plugin over the existing inspector', async () => {
   const world = new World();
@@ -45,6 +46,7 @@ it('uses the actual App Context to admit and execute a new plugin over the exist
       },
     })
   ).unwrap();
+  provideRuntimePackTestResources(app.pluginContext);
   try {
     if (!app.remote) throw new Error('Missing opted-in inspector');
     const connected = await defaultConnect(`ws://127.0.0.1:${app.remote.port}/inspector`);
@@ -67,8 +69,8 @@ it('uses the actual App Context to admit and execute a new plugin over the exist
               entry: 'behavior.js',
               export: 'default',
               modules: {
-                'behavior.js': `export default { inject: ['world'], apply(ctx) {
-              ctx.effect(() => { ctx.world.insertResource('remote-behavior', 42); return () => ctx.world.removeResource('remote-behavior'); });
+                'behavior.js': `export default { inject: ['world', 'runtimePackTestResources'], apply(ctx) {
+              ctx.effect(() => { ctx.world.insertResource(ctx.runtimePackTestResources.RemoteBehavior, 42); return () => ctx.world.removeResource(ctx.runtimePackTestResources.RemoteBehavior); });
             } };`,
               },
             }).unwrap(),
@@ -80,12 +82,13 @@ it('uses the actual App Context to admit and execute a new plugin over the exist
         const runtime = context.get('runtimePacks');
         const before = runtime.producer.inspect().packs.length;
         (await runtime.producer.admit(${JSON.stringify(content)})).unwrap();
-        const beforeInstall = world.hasResource('remote-behavior');
+        const resource = context.runtimePackTestResources.RemoteBehavior;
+        const beforeInstall = world.hasResource(resource);
         const { startPluginAsset } = await _import('@forgeax/engine/plugin');
         const started = (await startPluginAsset(context, ${JSON.stringify(guid)})).unwrap();
-        const installed = world.getResource('remote-behavior');
+        const installed = world.getResource(resource);
         await started.dispose();
-        return { before, beforeInstall, installed, removed: !world.hasResource('remote-behavior'), retained: runtime.producer.inspect().packs.length, worldId: world.identity };
+        return { before, beforeInstall, installed, removed: !world.hasResource(resource), retained: runtime.producer.inspect().packs.length, worldId: world.identity };
       `);
       expect(result).toMatchObject({
         before: 0,

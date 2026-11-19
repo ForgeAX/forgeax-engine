@@ -1,9 +1,9 @@
 ---
 name: forgeax-engine-performance
 description: >-
-  Evidence-driven ForgeAX CPU and GPU optimization. Use when diagnosing slow
-  frames, GC or physics costs, reducing submission or shader work, replaying a
-  captured frame as a GPU benchmark, comparing benchmarks, or adding techniques.
+  ForgeaX CPU, GPU and memory performance analysis. Use when diagnosing slow
+  frames, GC or physics costs, heap/allocation ownership, GPU resources or timing,
+  submission or shader costs, captured-frame benchmarks or regressions.
 ---
 
 # forgeax-engine-performance
@@ -12,12 +12,190 @@ Identify the expensive owner, remove redundant work at its actual change
 frequency, and verify the requested workload. Follow the checkout's
 [delivery and rendering gates](../../AGENTS.md).
 
+Separate compressed publication size from decoded and per-owner transport copies.
+The native LOD carrier shares one owned URL for original plain/zstd bytes across
+independent Renderers, then revokes it after disposal. Preserve the exact shader
+roster and real decoding at every consumer. Keep failed GPU-completion samples;
+lower allocation alone does not prove their recovery.
+
+For CI CPU ratio reproduction, use `pnpm ci:focus --kind performance --select
+ecs-ratios` or `render-ratios`. These retain complete single-worker, uninstrumented
+projects and CI's CPU-admission diagnostics. Distinguish a passing ratio from a
+sampling timeout. Defer only unasserted diagnostic streams in the daily profile;
+preserve every sample in the gated pair, workload size, threshold and case bound.
+The visibility gate keeps 101 paired 10k-entity samples; its flat diagnostic stays
+in full-profile execution. Compare equivalent profiles and retain failed runs.
+
 This Engine entrypoint owns the reusable action rules below. Detailed methods,
 counterexamples and dated measurements stay in the linked Harness references;
 raw captures stay outside source. Integrate later experience into the applicable
 rule here as well as its evidence reference.
 
+## Deliver performance evidence
+
+Every performance measurement must deliver a programmatically generated visual
+and a reusable visual report to the user. Default to SVG or PNG plus reusable
+HTML (self-contained offline where the selected viewer supports it), with direct links in the final reply; saving files without sharing
+them or returning only numeric tables is incomplete. Keep the raw inputs,
+digests, source/build/workload identities, units, coverage and generation command
+with the report. Open the HTML and inspect the generated image before delivery.
+Interactive HTML must support a concrete inspection action on its graphics, not
+only display an SVG. Verify hover details, click-to-inspect/drilldown, filtering
+or ordering, zoom/pan/reset, reload and export on real report data. Keep source
+row/node identities stable across sorting; preserve missing values and line
+sequence gaps. Static PNG/SVG remains an export of the evidence.
+
+| Measured question | Default visual route |
+| --- | --- |
+| CPU samples across targets and completion intervals | `cpu.mjs report`; deliver `timeline.svg` and `timeline.html`, retain AI-readable JSON and optional Perfetto trace |
+| Samples, CPU/GC costs, allocation rows, GPU pass costs or before/after summaries | `render_metric_report.mjs`; explicitly select source rows and same-unit value pointers, then deliver `report.svg` and `report.html` |
+
+For the ECharts trial, pass `--html-viewer echarts --echarts-js LOCAL_RUNTIME`
+to `memory.mjs report` or `render_metric_report.mjs`. Prepare outside the checkout
+with `npm install --prefix /absolute/viewer-runtime --ignore-scripts --no-audit
+--no-fund echarts@6.1.0`; select its `node_modules/echarts/dist/echarts.min.js`.
+The generator embeds the runtime and package LICENSE/NOTICE into one offline HTML
+and records its digest. ECharts memory HTML compresses the embedded JSON with gzip;
+opening it requires browser `DecompressionStream` support. Keep the runtime package and notices with reusable tools.
+The default remains the SVG viewer during comparison.
+
+| ECharts surface | Inspection action |
+| --- | --- |
+| Memory blocks | Wheel zoom, drag pan, click drilldown, Fit; shared Back/breadcrumbs, bytes/count, full-capture search, file reload, SVG/PNG export |
+| Metric bars/lines | Native tooltip, wheel/slider zoom, restore, click source detail; shared sort/filter, file reload and SVG export |
+
+Memory charts project at most 2,000 visible tree entries, including Self and
+aggregated Other slices; clicking Other opens the complete child list. Raw AI
+queries retain the full graph. Preserve the current chart viewport on table/search
+redraws; a changed memory focus, metric or depth resets it. Metric re-sorting keeps
+zoom; filtering changes the population and resets it. Large snapshot JSON parsing,
+indexing and reference queries still run on the main thread; do not describe the
+projection bound as a streaming loader or full-query speedup.
+
+Choose time-order call stacks for CPU chronology, row-order lines for sample
+sequences and grouped bars for comparable summaries. Preserve unknown values as
+gaps; do not infer distributions from percentiles, compare unrelated cohorts or
+turn GPU pass sums into frame latency. Carry failed/partial producer status into
+the visible report. If capture or visualization fails, share the available
+diagnostic artifacts and name the missing deliverable; never invent data to fill it.
+
+CPU `timeline.html` uses the pinned Perfetto v59.1 UI for timeline rendering,
+zoom/pan, track groups, search, range selection and slice argument inspection.
+Open it with `node scripts/cpu.mjs serve REPORT_DIRECTORY` from this skill; use
+the loopback URL it prints. `report` accepts raw profiles/capture directories or
+an existing normalized `timeline.json`. `--perfetto-ui HTTP_UI_BASE` selects a
+self-hosted build. The official embedding protocol requires HTTP, not `file://`;
+the default hosted UI needs network to load. Trace buffers are passed to its
+browser frame with sharing disabled. Self-host the UI for a network-independent
+deployment; do not describe the default report as wholly offline.
+
+| CPU deliverable | Consumer |
+| --- | --- |
+| `timeline.html` + `timeline.trace.json` | Perfetto timeline; completion selector and millisecond range controls; reopen Chrome JSON, normalized CPU JSON or binary traces |
+| `timeline-inspector.html` | Offline Top-down/Bottom-up trees, function/completion details and call-tree SVG export |
+| `timeline.json`, `analysis.json`, `call-trees.json`, `cpu.mjs query` | Complete machine-readable capture and bounded range/target analysis |
+| `timeline.svg`, generated PNG/screenshot | Programmatic image delivered alongside the live viewer link |
+
+For this route, verify the actual Perfetto canvas has painted slices, select a
+slice and inspect its original-name/source arguments, zoom/pan, change a completion
+range, reopen a file and retry the viewer. A completed PING/PONG handshake only
+means the UI accepted messages; it does not prove trace parsing or rendering.
+Keep sampled JS targets distinct from OS threads and completion gaps distinct
+from frame execution scopes. Retain the original capture identity on re-render.
+
+For CPU timelines, use [cpu.mjs](scripts/cpu.mjs): its public `project play`
+adapter captures and reports; `report` reopens saved captures; `calibrate` measures
+the selected browser's actual sampler cadence. Read the CPU workflow and tool
+coverage
+when selecting capture detail, recovering source names or importing existing data.
+
+- Qualify detail on the real program. Preserve full call trees, native/unknown
+  frames, source coverage and actual interval median/p95/rate. Count short-call
+  samples before attribution; zoom cannot recover missing samples.
+- Calibrate the exact browser for a requested resolution. A positive-integer
+  request, timestamp granularity and observed cadence do not establish per-call
+  duration accuracy. Report an unmet criterion explicitly.
+- Keep profiler-off controls separate. Signal sampling needs no business-function
+  instrumentation but interrupts execution; high-rate captures are diagnostics.
+- Keep target coverage visible. Focused sampling can improve detail; separately
+  captured targets cannot be stitched into simultaneous per-frame evidence.
+- Show function/system names first; put source coordinates and captured VM names
+  in hover/details. Recover names only from authenticated map content.
+- Keep completion gaps separate from execution scopes, CPU estimates separate
+  from GPU/scheduler facts, and same-window diagnosis separate from earlier stalls.
+
+## Memory hierarchy
+
+Run `node --expose-gc --test skills/forgeax-engine-performance/scripts/__tests__/*.test.mjs`
+for the tool contracts; `ci-core` owns the same complete suite. The GC flag is for
+the explicit allocation-event control, not ordinary capture or performance acceptance.
+
+Use [memory.mjs](scripts/memory.mjs) for generic sampled allocation profiles and
+V8 object snapshots: `report` writes normalized AI data, offline folder/treemap
+HTML and both SVGs; `inspect` returns bounded path/children/records/reference pages;
+`rank` returns paged global hotspots (`--by self|total`, `--query NAME`);
+`capture` samples an explicitly owned Node workload module. Read the memory
+workflow
+when capturing or interpreting its hierarchy.
+
+| Population | Hierarchy and metric | Boundary |
+| --- | --- | --- |
+| Sampled allocations | Allocation call stack; V8 node self bytes, recorded samples and ordinals | Sampling does not enumerate every real allocation/object; orphan owners and sample-size totals remain separate |
+| Snapshot objects | Type / name / object ID; conserved shallow bytes and captured-node counts, raw references | Grouping is not dominator ownership; weak references do not retain; VM/native nodes are not logical application-object counts |
+
+Default Node sampling requests 32768 bytes and includes collected-object samples;
+snapshot capture requires explicit `--mode objects` or `--mode both`. Neither inserts business
+allocation hooks or forces GC. Sampling adds overhead; snapshots can block and
+trigger GC. Reading existing files is offline. Keep the metadata and requested
+population visible, hide raw string contents in normalized snapshot views, and
+retain raw inputs privately. Keep retained-size analysis, native GC events,
+allocation-event counts, matched comparisons and GPU/process memory separate.
+
+Snapshot reports use lossless indexed graph storage to avoid repeating millions of reference IDs and names. `memory.mjs inspect/report` and the HTML loader decode it automatically; use those entrypoints instead of assuming `memory.json.nodes` contains object rows. Keep every object and reference; compact storage is not display truncation.
+
+Choose `--metric count` on `report`, `capture`, `inspect` or `rank` for allocation
+sample or snapshot-node counts. Byte size remains the default. HTML switches
+size/count without recapture; charts, sibling order, search and exports use the
+selected metric. `Self` counts local records; `Total` includes descendants.
+For AI hotspots use `rank memory.json --metric count --by self --limit 20`, then
+`inspect memory.json --node ID --metric count` for a full path. Use `--by total`
+for snapshot type/name groups; inclusive ranked rows overlap and cannot be summed.
+Byte-based allocation sampling favors larger allocations: recorded sample count
+is not an unbiased real allocation-event count or an allocation rate.
+Treemap block area and folder totals use the same selected metric, including
+count-only zero-byte branches. Show exact values and full paths in details;
+rendering aggregation never truncates the AI model.
+
+## Explicit texture preparation
+
+For a known CPU texture, use `renderer.prepareTextureResidency(world, handle)`
+after attaching its World, or `threeRenderer.initTexture(texture)` after Three
+initialization. This uses the same device cache and source revision as drawing;
+keep the asset alive and retain normal update/disposal boundaries. It prepares
+texture storage, not a whole scene's pipelines. Do not issue a hidden render to
+warm a texture. Measure first-use work separately; unchanged versions should
+cause no extra texture upload. Explicit generated-mip preparation submits only
+the selected texture, retains its allocation through queue completion, and keeps
+sibling work on its existing consumer; rejected submits remain retryable.
+
 ## Numeric allocation ownership
+
+When changing vertex storage, qualify every contributing pass, including temporal
+and shadow. Preserve omitted shader entries until the pipeline owner resolves its
+pass-specific default; packed-layout selection must not invent a forward entry.
+
+Runtime Mesh assets retain interleaved vertex rows, not both rows and complete
+attribute channels. Empty declarations must not retain nonempty backing storage
+or share transferable backing across independent meshes. Resolve geometry's `meshAttributeWindow` once per CPU loop;
+offsets and strides address the existing typed backing without Proxy access or
+per-vertex objects. Keep contiguous channel conversions explicit and temporary.
+Raster upload, Worker publication and range edits consume canonical rows directly.
+Publication-owned GPU comparison sources may borrow those rows only with the
+publication buffer's generation witness. Advance it before writes, reject stale
+candidates before exact byte equality, and retire borrowed comparisons when an
+edited GPU generation forks. Uncontrolled caller buffers still need a detached
+snapshot. Test real hash collisions, nonzero windows, shared/leased generations,
+rejected transactions and retirement; a short hash is never the equality contract.
 
 Choose storage by the last reader. Inspect existing arena/pool use at the hot
 owner before introducing another allocator; preserve persistent semantic facts.
@@ -103,6 +281,13 @@ positive allocation control and a maintained complete-owner gate. A warm scalar
 loop alone does not qualify the lifecycle or persistent floor.
 
 ## Drive the optimization
+
+For App, Worker and direct Renderer profiling, use the capture-owned
+`session.beginFrame()` identity instead of independent frame counters. Check that
+the expected App and Render phases are actually present before attributing CPU
+cost: a capture started during Update must recover App phases on the next frame;
+missing phases do not mean zero work. Explicit imported frame identities retain
+their strict increasing-order contract.
 
 For slow dev startup, separate product-DDC warmth from a new browser and runtime.
 Use the DevKit workspace-timing request records and actual watcher snapshot spans
@@ -214,6 +399,29 @@ controls as well as the ordinary route and preserve any slower-path tradeoff.
 A GPU-bound frame is attributed from a capture first; see
 [Optimize GPU frames from a capture](#optimize-gpu-frames-from-a-capture).
 
+## Qualify mobile frame measurements
+
+- Pin the physical device, OS, browser or embedded WebView, Engine build,
+  backend, execution realms, orientation, and drawing-buffer extent. Capture
+  actual scene geometry during the measurement window. A HUD, an increasing
+  frame counter, or a completed sky-only frame cannot qualify a scene sample.
+- Start with ordinary foreground gameplay and sample real frame completions.
+  Record the GPU queue completion interval and the physical canvas size
+  separately from JavaScript frame cadence and reported FPS. Queue completion
+  also includes queued work and scheduling latency. Compare both stationary
+  and moving windows when the reported slowdown occurs in play.
+- For pass attribution, use the existing
+  [GPU pass timing route](../../packages/devkit/README.md#opt-in-gpu-timing-in-a-generated-host) in
+  the actual Render Worker or local Renderer. Preserve skipped timings.
+  If inspection changes startup, loses the context, or selects another
+  backend, retain that run as failed evidence and repeat the ordinary workload
+  with the probe disabled before drawing a performance conclusion.
+- Change one condition per phone comparison and keep the original quality
+  window. Recheck pixels and the active backend after each change. Label
+  lower resolution and disabled work as diagnostic ablations. When removing a
+  pass isolates the cost, test alternate native recording of the same draws
+  with the feature enabled before changing the quality settings.
+
 ## Optimize GPU frames from a capture
 
 When the frame is GPU-bound (presented-frame rate below target while CPU frame
@@ -283,6 +491,7 @@ live toggles stay within live noise). Details:
 | An incremental residual roster is expanded into dense frame arrays | Consume fixed slot membership directly and apply publication/availability changes to its readable subset | Ranked access, removed/reused slots, missing publication, held frames and full fallback after lost journal history |
 | Every shadow pass rebuilds fixed physical ABI dependencies before a GPU-cache hit | Publish the fixed binding route from the physical PipelineState producer; observe only its actual growing/replaced slots and reuse the existing cache leaf | Prove fixed-field ownership at construction; include layout, conditional ABI resources and recovery root; borrowed states and copied owners retain ordinary live reads |
 | Several consumers reconstruct the same admitted fact | Publish it once from the existing producer or commit | Prove that owner survives the relevant frames and owns every dependency |
+| A shared producer's frame token or internal pass count rebuilds consumer graphs | Key consumers by their actual exported resource shapes and view-owned work; read payloads and physical imports from the exact recording publication | Preserve complete allocation/view compatibility, reordered descriptor rows, rejected and held submissions, multiple views and detached old observations |
 | A stable entity/resource relationship is projected again each frame | Keep compact numeric membership and shared immutable values with the existing phase; apply its changed membership | Slot/generation reuse, removal, held old frames, current accepted versions/scopes and live borrowed/custom inputs |
 | Temporary numerical storage | Use bounded scratch or explicit acquire/use/finally-release | Reentry needs independent storage; clear references on release and detach escaped results |
 | A few closed immutable definitions | Share finite definitions or producer-owned derived values | Keep borrowed mutable/custom inputs live; shallow freeze and readonly types do not prove deep ownership |
@@ -576,8 +785,8 @@ or an independent boolean/status, is supported; factories remain explicit
 allocation sites. Preserve precision, aliasing and result lifetime; measure
 internal temporaries too. `?? 0` does not allocate;
 use direct indexed values after proving bounds, and retain meaningful absence
-handling. Do not trade clarity for many callbacks to eliminate a small fixed
-traversal cost without a complete-owner CPU/allocation win.
+handling. Keep clear traversal code unless many callbacks bring a complete-owner CPU/allocation win over a small fixed
+traversal cost.
 
 Engine implementation uses the fast paths enforced by
 `pnpm check:ecs-iteration`, `pnpm check:required-output` and
@@ -839,8 +1048,8 @@ result cannot initialize a replacement physical GPU resource.
 | Destruction slows after input stops | Keep one World through warmup, real sustained impacts and the stopped-input tail; trace support, fracture, admission and publication queues | Track oldest age and produced/completed work at every queue; a bounded queue or completed counter alone does not prove convergence |
 
 Keep broad terrain/fragment wake bounds and visual-only changes distinct at their
-actual producer. Avoid whole-queue copying before a budgeted traversal's first
-yield. Disabling collision, damage, effects, shadows or publication is a
+actual producer. Traverse in place up to a budgeted traversal's first
+yield instead of copying the whole queue. Disabling collision, damage, effects, shadows or publication is a
 sensitivity control, not an equivalent-work optimization.
 
 ## Qualify allocation and performance evidence
@@ -923,6 +1132,46 @@ readback. When moving uploads to creation, validate capture bootstrap and fresh
 replay as well as live pixels. Removing allocation from one owner does not prove
 lower whole-Worker allocation, a smaller retained heap, or a solved runtime target.
 
+## GPU capture workbench
+
+Use [gpu.mjs](scripts/gpu.mjs) for the resource-byte/count hierarchy, captured
+pass/resource usage graph, selected-work shader/binding graph and API resource
+spans. Keep the canonical tape digest, resource IDs and `workIndex`; do not
+create another recorder or replay owner. Existing GPU summary/overlap analyzers
+remain the numerical authority; this entry adds their visual delivery.
+
+```sh
+node <skill>/scripts/gpu.mjs setup
+node <skill>/scripts/gpu.mjs report frame.rhitape --out-dir /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs query /outside/source/gpu-view/gpu.json --search shadow
+node <skill>/scripts/gpu.mjs serve /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs images /outside/source/gpu-view
+node <skill>/scripts/gpu.mjs timing capture.json --pointer /gpu/samples/0/observation/frame --out-dir /outside/source/gpu-time
+```
+
+`report` uses the built RHI Debug module at `packages/rhi-debug/dist/index.mjs`
+under the current directory; supply `--rhi-module` for another installation.
+Alternatively pass `{identity:{tapeDigest},frameModel}` JSON from the canonical
+producer. `setup` downloads pinned, integrity-checked ECharts/Cytoscape/ELK
+runtimes once; `--runtime-dir` overrides the default user cache. Resource HTML
+embeds those runtimes and licenses and works offline. Perfetto uses its pinned
+hosted UI; `--perfetto-ui` selects a separately hosted build and requires HTTP.
+`images` needs Playwright and sandboxed Chrome; `--playwright-module` selects an
+installed module. Every report emits SVG + HTML + AI JSON; share those links and
+the generated PNGs after inspecting the images and real interactions.
+
+> [!IMPORTANT]
+> Bytes cover the captured resource closure and descriptor payload, not native
+> allocation or residency. Views share backing texture IDs. Unknown sizes remain
+> unknown, including unsupported 3D texture estimates. Count means unique observed
+> API objects; only buffer/texture destruction is observed. Graph edges project
+> draw/dispatch bindings and attachments, not transfer-only events, barriers or a
+> compiled scheduling DAG. API spans use event indices, not GPU time/retirement.
+> The timeline accepts raw live begin/end ticks for one Renderer frame. Separate
+> display lanes preserve overlap; sum, union and envelope are not hardware
+> occupancy or whole-frame latency. Do not invent intervals from replay duration
+> aggregates, align GPU ticks with CPU clocks, or join unrelated captures by labels.
+
 ## Select detailed methods and evidence
 
 | Need | Reference |
@@ -941,13 +1190,17 @@ lower whole-Worker allocation, a smaller retained heap, or a solved runtime targ
 | Cache regressions, cold ownership and Native completion attribution | Regression repair case |
 | Capture adapters and analytical tools | Toolbox |
 
-The tools below read local artifacts and use Node built-ins. They do not launch a
-browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
+Analysis and rendering entrypoints read local artifacts using Node built-ins;
+original function-name recovery accepts the caller's pinned TypeScript parser.
+Capture adapters run inside public `project play` and require its browser/GPU
+admission. Tool output alone does not qualify a delivery gate.
 
 | Tool | Input and useful result |
 | --- | --- |
-| [analyze_cpu_profile.mjs](scripts/analyze_cpu_profile.mjs) | CDP/V8 profile; sampled self/inclusive time, recursion-safe symbol totals and unobserved interval |
-| [analyze_cpu_windows.mjs](scripts/analyze_cpu_windows.mjs) | Existing ordinary CPU capture, clock anchors and frame receipts; separate same-capture LIVE/gap windows with coverage, identity and reordered-sample audit |
+| [memory.mjs](scripts/memory.mjs) | Generic allocation-stack and snapshot-object explorer; report/inspect/owned-Node capture, folders and squarified treemap, AI JSON, SVG/PNG and offline HTML |
+| [gpu.mjs](scripts/gpu.mjs) | Canonical RHI capture to AI resource/work queries, offline ECharts hierarchy and Cytoscape/ELK usage/pipeline graphs, SVG/PNG; raw live GPU timestamps to Perfetto with overlapping lanes |
+| [cpu.mjs](scripts/cpu.mjs) | One CPU entry: live game-3d capture plus automatic report, exact-browser calibration, and saved profile/directory analysis; HTML, SVG, AI JSON, integrated totals/gap analysis and Perfetto trace |
+| [render_metric_report.mjs](scripts/render_metric_report.mjs) | Explicit JSON Pointer selections from measured data; same-unit bar/line SVG, offline HTML with row filtering/reload/table, source digest and reusable report JSON; null stays unavailable |
 | [summarize_gpu_timing.mjs](scripts/summarize_gpu_timing.mjs) | Engine GPU observations; semantic pass costs, completeness, interval union and timestamp envelope |
 | [analyze_gpu_timeline.mjs](scripts/analyze_gpu_timeline.mjs) | Existing GPU observations and same-report completion receipts; semantic interval overlap, measured envelopes and missing source population |
 | [analyze_heap_profile.mjs](scripts/analyze_heap_profile.mjs) | SamplingHeapProfile; conserved direct/ancestor/unresolved byte partitions and source owner distribution |
@@ -964,6 +1217,8 @@ browser, acquire a GPU lease, build Engine, or qualify a delivery gate.
 | [allocation_probe.mjs](scripts/allocation_probe.mjs) | Node unit-test helper; sampled bytes per call of a warmed function, to keep a removed allocation removed |
 | [summarize_native_gc.mjs](scripts/summarize_native_gc.mjs) | Owned-thread native trace; Minor/Major/finalization durations and bounded allocation/promotion counters |
 | [compare_samples.mjs](scripts/compare_samples.mjs) | Raw sample arrays plus selected workload identity; matched descriptive statistics or explicit mismatch |
+
+The game memory adapters require an explicit matching workload. Their default `runtime-vase` admission retains its producer/publication checks. For the stock robot corridor, set `FORGEAX_MEMORY_WORKLOAD=stock-corridor`; admission then validates the actual player, hardware backend, both Workers, world identity and Render epoch, with bounded real motion throughout. A missing vase projection is a workload mismatch, never permission to bypass its checks. Pause/drain must include physical Render completion before debugger archives or snapshots.
 
 For moving `game-3d` allocation captures, set `FORGEAX_ALLOCATION_OUTPUT` to a
 new absolute directory outside source, then run `forgeax project play
@@ -1012,15 +1267,71 @@ Run an entrypoint with `--help`; Toolbox owns arguments,
 exit meanings and capture adapters. Use private output paths and retain raw
 inputs. These summaries establish their stated analytical boundary only.
 
+For CPU work, run `node <skill>/scripts/cpu.mjs --help`.
+`node <skill>/scripts/cpu.mjs report CAPTURE_DIRECTORY` loads that capture's raw
+profiles, report, frame receipts and optional source map table, then creates its
+new `view` directory. A single `.cpuprofile` also works. Supply `--dist` and
+`--engine-root` together to recover authenticated original function/system names.
+Existing output is rejected rather than overwritten.
+
+| Live diagnostic setting | Default / override |
+| --- | --- |
+| Requested sample interval | 1 microsecond; `FORGEAX_CPU_INTERVAL_US` |
+| Profiled motion window | 3000 ms; `FORGEAX_CPU_WINDOW_MS` permits 1000..30000 |
+| Sampled targets | All JS targets; `FORGEAX_CPU_TARGET` selects `Host`, `forgeax-engine` or `forgeax-render` for focused detail |
+| Ordinary controls | Three 5000 ms motion windows with V8 Profiler/Debugger off |
+| Output | Required new absolute `FORGEAX_CPU_OUTPUT`; report written to `view/` |
+| Original names in release builds | `FORGEAX_CPU_DIST` selects the frozen distribution; `FORGEAX_CPU_ENGINE_ROOT` selects its Engine source/build checkout (default current directory) |
+
+The offline inspector contains Top-down/Bottom-up trees and completion/function
+details; Perfetto owns interactive timelines. Query the derived
+model with `cpu.mjs query timeline.json`; `--view` selects `functions` (default),
+`intervals`, `tree` or `completions`. All use the viewer's normalized samples and
+existing aggregation functions. Keep GPU/memory domain queries at their existing
+entrypoints; do not add another recorder, query language or scenario analyzer.
+
+| Selection / projection | Controls and meaning |
+| --- | --- |
+| Target and range | `--target NAME_OR_ID`; `--from-ms N --to-ms N`, or `--completion-index N` from completion rows; optional subrange must stay inside that completion |
+| Function contexts / intervals | `--search TEXT` matches names/source; `--node-id N` selects a target-local context and requires one target |
+| Order and page | Functions: `--sort selfMs` (default) or `inclusiveMs`; intervals: `startMs` (default) or `durationMs`; completions: `completionGapMs` (default) or `startMs`; `--limit 100 --offset 0` bounds rows after aggregation |
+| Call trees | `--view tree --direction top-down` or `bottom-up`; keeps complete paths without row filters/paging. Scattered visits aggregate; recursion remains distinct |
+
+Compose completion rows -> one completion selection -> function contexts -> that
+node's intervals. Interval rows retain canonical `sliceIndex`, original/clipped
+bounds and normalized `sampleRange`; sample indices are not original CDP indices
+or invocation counts. Results retain input SHA-256, capture identity, clock,
+coverage and reconstruction audit. An unobserved interval stays unknown.
+For in-process composition import `selectCpuTimeline` and `queryCpuTimeline` from
+[scripts/cpu_query.mjs](scripts/cpu_query.mjs); reuse a borrowed selection across
+projections. `--output NEW_JSON` saves CLI output without overwriting existing data.
+
+Use `cpu.mjs` as the public `project play` adapter. Freeze runtime/build bytes,
+retain real WASD and completion admission, drain both Engine publication and
+physical Render completion before source archiving, and verify resumed progress.
+Release runs use the supported `forgeax-cpu-profile` inspection opt-in with an idle
+Engine recorder. The game-3d CPU case
+records observed limits and counterexamples; do not turn one browser's numbers
+into guaranteed defaults. GPU, GC, heap and scheduler methods below remain separate.
+
+For numeric samples, run `node <skill>/scripts/render_metric_report.mjs INPUT.json
+--rows-pointer /samples --unit ms --chart line --out-dir NEW_PRIVATE_DIRECTORY`.
+For CPU self costs use `--rows-pointer /topSelf --label-pointer /functionName
+--value-pointer /selfMs --unit ms`; for GPU pass summaries select `/passes` and
+repeat `--value-pointer /durationMs/mean --value-pointer /durationMs/p95`.
+For a comparison summary select its root and explicit same-unit pointers such as
+`/baseline/p95` and `/candidate/p95`; inspect producer comparability first.
+These are display projections, not new acceptance or clock authorities.
+
 Keep reusable decisions in this Engine entrypoint; add detailed method and
 counterexample evidence to the existing topic, and dated results to one scoped
 case using Contributing. Remove superseded guidance. Preserve raw failures privately and retain useful
-counterexamples; do not promote one run's numbers, host paths, quality settings
-or an unimplemented prototype into a universal rule.
+counterexamples; keep one run's numbers, host paths, quality settings
+and any unimplemented prototype in the scoped case, and write only the reusable decision as a rule.
 
-When animation times are externally sampled, zero playback speed does not permit
-skipping pose evaluation. Retain events, normalization and target updates while
-avoiding unchanged clock writes; verify paused, wrapping and externally edited
+When animation times are externally sampled, zero playback speed still requires
+pose evaluation. Retain events, normalization and target updates while
+skipping unchanged clock writes; verify paused, wrapping and externally edited
 targets through the same animation owner.
 
 For fixed-input material builds, capture WGSL records and their complete path

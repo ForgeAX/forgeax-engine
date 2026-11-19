@@ -5,11 +5,11 @@ let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-anti-aliasing headless dawn smoke (pixel falsifier + structural gate).
 // Strategy: render one shared sharp-shape scene through No AA, MSAA, and FXAA.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
@@ -93,7 +93,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { ANTIALIAS_MODES, ANTIALIAS_NAMES, buildAntiAliasingWorld } = await import(resolve(here, '..', 'src', 'anti-aliasing.ts'));
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 let renderer;
 try {
   const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
@@ -191,7 +191,9 @@ if (framesObserved < SMOKE_MIN_FRAMES) failures.push(`(b) frames=${framesObserve
 if (errors.length > 0) failures.push(`(c) Renderer.onError fired ${errors.length} times: [${errors.map((err) => err.code).join(', ')}]`);
 if (drawErrors > 0) failures.push(`(c) draw returned ${drawErrors} errors`);
 if (distinctModes < 2) failures.push(`(d) fewer than 2 antialias modes changed pixels: ${distinctModes}`);
-if (!passNames.includes('fxaa')) failures.push(`(e) missing fxaa pass; actual=${passNames.join(',')}`);
+const finalPass = passNames.indexOf('standard-final');
+const gradePass = passNames.indexOf('standard-grade');
+if (gradePass < 0 || finalPass <= gradePass) failures.push(`(e) missing FXAA Final after Grade; actual=${passNames.join(',')}`);
 
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);

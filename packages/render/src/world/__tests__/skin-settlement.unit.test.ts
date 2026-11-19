@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { FramePresentation } from '../../render-contract';
+
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import {
@@ -92,8 +94,12 @@ it('completion failures are reported, not thrown into the World', () => {
 
 it('without the systems the skin lifecycle is never settled', () => {
   const { world, skin, frame } = fixture();
-  world.removeSystem(RenderCommit, RENDER_SKIN_TRACK_SYSTEM).unwrap();
-  world.removeSystem(RenderCleanup, RENDER_SKIN_COMPLETE_SYSTEM).unwrap();
+  world
+    .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-skin-track'))
+    .unwrap();
+  world
+    .removeSystem(RenderCleanup, registeredSystem(world, RenderCleanup, 'render-skin-complete'))
+    .unwrap();
   frame({ accepted: true, scene: true });
   expect(skin.trackSubmittedWork).not.toHaveBeenCalled();
   expect(skin.complete).not.toHaveBeenCalled();

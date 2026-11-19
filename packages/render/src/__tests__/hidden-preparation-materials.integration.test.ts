@@ -12,7 +12,7 @@ import { encodeRenderPublication, renderPublicationTransfers } from '../publicat
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { validateRenderables } from '../record/fold-buckets';
 import type { RenderSystemInternals } from '../record/render-context';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
 
@@ -72,12 +72,10 @@ it.each([
       return;
     }
     scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
-      (request) =>
-        extractFrames([world], 0, assets, caches, { cull: 'none', renderables: request }),
-      [lease],
+      (request) => extractSource(world, assets, caches, { cull: 'none', renderables: request }),
+      lease,
     );
   };
   // record/frame.ts validates every pipelinePreparation row against the fixed
@@ -107,12 +105,11 @@ it.each([
       validateRenderables(
         internals,
         scope,
-        [scope],
+        scope,
         undefined as never,
         {} as never,
         sources,
         [],
-        undefined,
         undefined,
         undefined,
         undefined,

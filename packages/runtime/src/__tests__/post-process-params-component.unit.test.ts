@@ -2,7 +2,7 @@
 // upcoming PostProcessParams component (M-A1 / w1).
 //
 // AC-A4 three-consumer point 1: the component's `data` field type is
-// `AllowSharedBufferSource` (via the ECS 'buffer' vocab keyword, whose
+// `AllowSharedBufferSource` (via the ECS 'array<u8>' field, whose
 // FieldValueType is Uint8Array — a member of AllowSharedBufferSource).
 // AC-A2: no imperative renderer.setParams mutator — this test only checks
 // component field shape and type assignability.
@@ -23,8 +23,8 @@ describe('PostProcessParams component definition', () => {
     expect(componentSchema(PostProcessParams).shader).toBe('string');
   });
 
-  it('should have data field of type buffer (variable-byte ECS managed slot)', () => {
-    expect(componentSchema(PostProcessParams).data).toBe('buffer');
+  it('should have data field of type array<u8>', () => {
+    expect(componentSchema(PostProcessParams).data).toBe('array<u8>');
   });
 
   it('should accept Uint8Array for the data field (FieldInputType match)', () => {
@@ -51,7 +51,7 @@ describe('PostProcessParams component definition', () => {
 
   it('should enforce shader as string (compile-time guard)', () => {
     expect(componentSchema(PostProcessParams).shader).toBe('string');
-    expect(componentSchema(PostProcessParams).data).toBe('buffer');
+    expect(componentSchema(PostProcessParams).data).toBe('array<u8>');
   });
 
   it('should be spawnable with an empty buffer', () => {
@@ -134,7 +134,7 @@ describe('PostProcessParams multi-entity parallelism', () => {
 describe('PostProcessParams type-level AllowSharedBufferSource compatibility', () => {
   it('should have data typed as Uint8Array which satisfies AllowSharedBufferSource', () => {
     // AC-A4 three-consumer point 1: the component field type is an
-    // AllowSharedBufferSource subtype. FieldValueType<'buffer'> === Uint8Array.
+    // AllowSharedBufferSource subtype. FieldValueType<'array<u8>'> === Uint8Array.
     const world = new World();
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const spawned = world.spawn({

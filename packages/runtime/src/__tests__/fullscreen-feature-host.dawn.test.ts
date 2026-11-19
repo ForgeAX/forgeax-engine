@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { prepareFeatureFrame } from '../../../render/src/__tests__/feature-frame-driver';
@@ -33,8 +34,7 @@ describe('fullscreen feature host contract', () => {
       {
         identity: 'main',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: {} as unknown as RhiCaps,
         targets: [],
@@ -67,8 +67,7 @@ describe('fullscreen feature host contract', () => {
       {
         identity: 'main',
         render: true,
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: {} as unknown as RhiCaps,
         targets: [

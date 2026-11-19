@@ -1,0 +1,56 @@
+{
+  "name": "@forgeax/app-vc-ue5",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "description": "Volumetric cloud authoring project with procedural and UE texture inputs.",
+  "scripts": {
+    "check": "forgeax project check",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test assets/__tests__/*.test.ts",
+    "build": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project build",
+    "build:bombagent": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project build --base /volumecloud/demos/vc-ue/ --html-head scripts/bombagent-head.html",
+    "dev": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' FORGEAX_GPU_PASS_TIMING=1 forgeax dev start",
+    "play": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project play scripts/playthrough-shared-assets.mjs --require-ui",
+    "play:release": "forgeax project play scripts/playthrough-shared-assets.mjs --release --backend hardware --require-ui",
+    "play:c": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project play scripts/playthrough-c.mjs --require-ui",
+    "play:d": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project play scripts/playthrough-d.mjs --require-ui",
+    "package": "FORGEAX_EXECUTION_WORKERS='{\"engine\":false,\"render\":false,\"kernels\":false}' forgeax project package --format web-zip"
+  },
+  "forgeax": {
+    "assetRoots": ["../../forgeax-engine-assets/demo-assets/volumetric-clouds"],
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "The release packages cooked assets and multiple generated chunks without one bundle-size entry."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The completed-frame hardware playthrough checks cloud material adoption without a fixed frame-rate baseline."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Cloud rendering performance benchmarks belong to the Engine renderer."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-vc-ue5 test"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This workspace ships an authoring demo with executable tests."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax-assets/volumetric-clouds": "file:../../forgeax-engine-assets/demo-assets/volumetric-clouds",
+    "@forgeax-assets/ue-volumetric-clouds": "file:../../forgeax-engine-assets/demo-assets/volumetric-clouds/sample-ue"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.40",
+    "typescript": "6.0.3",
+    "tsx": "4.20.6"
+  }
+}

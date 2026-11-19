@@ -19,11 +19,10 @@
 // logic; the system fn wires them to the live CollidingEntities + GameProgress +
 // PickupSignal.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
-
 import { Core } from '../components';
 import {
   GAME_PROGRESS_KEY,
@@ -31,6 +30,7 @@ import {
   PICKUP_SIGNAL_KEY,
   type PickupSignal,
 } from '../resources';
+import { CoreCollectOrder, PlayerMoveOrder } from '../system-order';
 
 /**
  * From a set of colliding entity handles, keep only the ones the `isCore`
@@ -69,10 +69,11 @@ export function applyCollect(progress: GameProgress, n: number): GameProgress {
  * (before OnEnter inserts it) and a missing CollidingEntities component (before
  * the first physics tick writes it) both no-op rather than throw.
  */
-export function createCollectSystem(player: EntityHandle): SystemHandle<readonly []> {
+export function createCollectSystem(player: EntityHandle): System<readonly []> {
   return defineSystem({
+    sets: [CoreCollectOrder],
     name: 'core-collect',
-    after: ['player-move'],
+    after: [PlayerMoveOrder],
     queries: [],
     fn: (world: World, _results, commands) => {
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
@@ -99,7 +100,7 @@ export function createCollectSystem(player: EntityHandle): SystemHandle<readonly
       }
 
       for (const core of hits) commands.despawn(core as EntityHandle);
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
       applyCollect(progress, hits.length);
 
       world.insertResource(PICKUP_SIGNAL_KEY, signals);

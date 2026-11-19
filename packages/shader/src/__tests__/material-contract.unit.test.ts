@@ -480,7 +480,10 @@ describe('standard PBR transmission material contract', () => {
     expect(standard.composedWgsl).toMatch(/@vertex\s+fn\s+vs_scene_index\s*\(/);
     expect(standard.composedWgsl).toMatch(/@fragment\s+fn\s+fs_main\s*\(/);
     expect(standard.receipt?.sceneIndexEntry).toBe('vs_scene_index');
-    expect(standard.receipt?.reflection.layoutIdentity).toBe(standard.receipt?.receiptIdentity);
+    expect(standard.receipt?.gbuffer).toBe('standard-gbuffer/2');
+    expect(standard.receipt?.receiptIdentity).toBe(
+      `${standard.receipt?.reflection.layoutIdentity}/standard-gbuffer/2`,
+    );
   });
 
   it('keeps skin scene-index material rows and non-cluster punctual lighting in the GPU variant', {

@@ -82,8 +82,7 @@ describe('bounded barrel distortion mapping', () => {
         {
           identity: 'main',
           render: true,
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber,
           generation: frameNumber,
           ...(selected === undefined ? {} : { selectedCamera: selected }),
@@ -121,8 +120,7 @@ describe('bounded barrel distortion mapping', () => {
       {
         identity: 'main',
         render: true,
-        worlds: [new World()],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: { rgba16floatRenderable: true } as never,
       },

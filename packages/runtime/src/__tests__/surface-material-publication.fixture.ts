@@ -292,9 +292,7 @@ export async function verifySurfaceMaterialPublication(options: {
       world.update(0).unwrap();
       if (armObservation) renderer.requestObservation(['linear-hdr']).unwrap();
       const drawn = renderer.draw({
-        leases: [lease as RenderWorldLease],
-        camera: { lease: lease as RenderWorldLease },
-        environment: { lease: lease as RenderWorldLease },
+        source: lease as RenderWorldLease,
         ...(lane === 'direct' ? { geometryLane: 'direct' as const } : {}),
       });
       if (!drawn.ok) throw drawn.error;

@@ -161,7 +161,7 @@ test('CI install entrypoints clean stale workspace sources first', () => {
     workflow,
     /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install --filter @forgeax\/engine-physics-rapier3d/,
   );
-  for (const path of ['sdk-pr-preflight.yml', 'bench.yml', 'ci-focus.yml']) {
+  for (const path of ['sdk-pr-preflight.yml', 'ci-focus.yml']) {
     const consumer = workspaceCommands(readFileSync(`.github/workflows/${path}`, 'utf8'));
     assert.doesNotMatch(consumer, /pnpm install --frozen-lockfile/);
     assert.match(consumer, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);

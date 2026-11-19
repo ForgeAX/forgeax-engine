@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { componentId, defineComponent } from '../component';
+import { defineResource } from '../resource';
 import { World } from '../world';
 
 import { worldInternal } from '../world-internal';
@@ -78,7 +79,7 @@ describe('mutation epoch evidence', () => {
   });
 
   it('captures borrowed buffer bytes, including cross-field DataView writes', () => {
-    const Data = defineComponent('BorrowedBufferWrite', { a: 'buffer', b: 'buffer' });
+    const Data = defineComponent('BorrowedBufferWrite', { a: 'array<u8>', b: 'array<u8>' });
     const world = new World();
     const entity = world
       .spawn({
@@ -90,7 +91,7 @@ describe('mutation epoch evidence', () => {
     world
       .set(entity, Data, {
         a: borrowed.b,
-        b: new DataView(borrowed.a.buffer, borrowed.a.byteOffset + 1, 2),
+        b: new Uint8Array(borrowed.a.buffer, borrowed.a.byteOffset + 1, 2),
       })
       .unwrap();
     const after = world.get(entity, Data).unwrap();
@@ -101,6 +102,8 @@ describe('mutation epoch evidence', () => {
   });
 
   it('advances once per successful mutation and not for failures or no-ops', () => {
+    const resource1 = defineResource<unknown>('missing');
+
     const Other = defineComponent('MutationEpochOther', { value: 'f32' });
     const world = new World();
     const entity = world.spawn({ component: Marker, data: { value: 1 } }).unwrap();
@@ -111,7 +114,7 @@ describe('mutation epoch evidence', () => {
     });
 
     expect(world.set(entity, Other, { value: 2 }).ok).toBe(false);
-    world.removeResource('missing');
+    world.removeResource(resource1);
     expect(world[worldInternal].getMutationEpoch()).toBe(1);
 
     world.set(entity, Marker, { value: 2 }).unwrap();
@@ -122,13 +125,21 @@ describe('mutation epoch evidence', () => {
     });
   });
 
-  it('keeps resource evidence on its ResourceStore entry', () => {
+  it('distinguishes an undefined resource from absence and publishes resource writes', () => {
+    const resource = defineResource<undefined>('UndefinedResource');
     const world = new World();
-    world.insertResource('ChangeDetectionResource', { value: 1 });
-    expect(world.getResourceChange('ChangeDetectionResource')).toEqual({ added: 1, changed: 1 });
-    world.update(1 / 60).unwrap();
-    world.insertResource('ChangeDetectionResource', { value: 2 });
-    expect(world.getResourceChange('ChangeDetectionResource')).toEqual({ added: 1, changed: 2 });
+    expect(() => world.getResource(resource)).toThrow();
+    const owner = world[worldInternal];
+    const before = owner.getMutationEpoch();
+    world.insertResource(resource, undefined);
+    expect(world.hasResource(resource)).toBe(true);
+    expect(world.getResource(resource)).toBeUndefined();
+    expect(owner.getMutationEpoch()).toBe(before + 1);
+    world.insertResource(resource, undefined);
+    expect(owner.getMutationEpoch()).toBe(before + 2);
+    world.removeResource(resource);
+    expect(world.hasResource(resource)).toBe(false);
+    expect(owner.getMutationEpoch()).toBe(before + 3);
   });
 
   it('keeps independent query cursors and retries after consumer throws', () => {

@@ -212,7 +212,7 @@ describe('ScriptablePack external Meta staging', () => {
             programFingerprint: 'sha256:cooked',
             emitters: [],
             program: {
-              format: 'forgeax-vfx-program-4',
+              format: 'forgeax-vfx-program-5',
               fingerprint: 'sha256:cooked',
               emitters: [],
             },
@@ -249,7 +249,7 @@ describe('ScriptablePack external Meta staging', () => {
       asset: {
         kind: 'particle-effect',
         programFingerprint: 'sha256:cooked',
-        program: { format: 'forgeax-vfx-program-4' },
+        program: { format: 'forgeax-vfx-program-5' },
       },
     });
     cookCalls = 0;

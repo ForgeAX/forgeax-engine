@@ -4,9 +4,9 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless structural smoke for play_sound_effect.
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -62,7 +62,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildPlaySoundEffectWorld } = await import('../src/play-sound-effect.ts');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const shaderManifestUrl = processShaderManifestUrl(manifestPath);
 const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl });
 if (!hostResult.ok) throw hostResult.error;
 const { renderer, assets: smokeAssets } = hostResult.value;

@@ -3,6 +3,7 @@ import { vec3 } from '@forgeax/engine-math';
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -23,7 +24,7 @@ it.each([
   if ('code' in module) throw module;
   const physics = createRapier3DPhysicsWorld(module);
   physics.setGravity(vec3.create(0, 0, 0));
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const release = registerPhysicsSystems(world);
   const source = world
     .spawn(

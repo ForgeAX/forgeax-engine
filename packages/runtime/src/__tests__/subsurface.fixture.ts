@@ -233,7 +233,7 @@ export async function verifySubsurface(
       const draw = async () => {
         receipt = await drawReadyFrame(
           renderer,
-          { leases: [lease], camera: { lease }, environment: { lease } },
+          { source: lease },
           frame === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
         );
       };
@@ -421,7 +421,7 @@ export async function verifySubsurface(
     for (let attempt = 0; attempt < 60; attempt++) {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      refused = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      refused = renderer.draw({ source: lease });
       if (!refused.ok) break;
       renderValue(await refused.value.completed);
     }
@@ -471,9 +471,7 @@ export async function verifySubsurface(
       );
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      expect(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      ).toMatchObject({
+      expect(renderer.draw({ source: lease })).toMatchObject({
         ok: false,
         error: {
           code: 'device-operation-failed',

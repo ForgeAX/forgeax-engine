@@ -366,11 +366,7 @@ const cameraEntity = world.spawn(
   { component: PostProcessParams, data: { shader: 'learn-render-5-2::gamma', data: new Uint8Array(16) } },
 ).unwrap();
 
-const frameRequest = {
-  leases: [worldAttachment1.value],
-  camera: { lease: worldAttachment1.value },
-  environment: { lease: worldAttachment1.value },
-};
+const frameRequest = { source: worldAttachment1.value };
 
 const frameStart = Date.now();
 let framesObserved = 0;

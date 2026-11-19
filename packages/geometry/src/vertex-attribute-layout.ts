@@ -26,6 +26,8 @@ import { fnv1aUtf16 } from '@forgeax/engine-types';
 //  10: uv5        -> @location(10) float32x2 (set 5)
 //  11: uv6        -> @location(11) float32x2 (set 6)
 //  12: uv7        -> @location(12) float32x2 (set 7)
+//  13: color      -> @location(13) float32x4
+//  14: tangentFrame -> @location(14) uint32 (replaces normal/tangent)
 //
 // feat-20260523-skin-skeleton-animation M2 / T-22.
 // feat-20260629-multi-uv-set-support m3-w4: uv1..uv7 + clamp-to-last alias (D-1).
@@ -56,6 +58,7 @@ const ATTRIBUTE_FORMAT_MAP = {
   uv6: 'float32x2' as const,
   uv7: 'float32x2' as const,
   color: 'float32x4' as const,
+  tangentFrame: 'uint32' as const,
 } as const;
 
 type AttributeKey = keyof typeof ATTRIBUTE_FORMAT_MAP;
@@ -264,6 +267,7 @@ export function deriveVertexCount(
 }
 
 function bytesForFormat(format: string): number {
+  if (format === 'uint32') return 4;
   if (format === 'uint16x4' || format === 'float32x2') return 8;
   if (format === 'float32x3') return 12;
   return 16;
@@ -273,16 +277,22 @@ function storageOf(value: unknown): VertexAttributeStorage {
   if (value instanceof ArrayBuffer) return 'array-buffer';
   if (value instanceof Float32Array) return 'float32';
   if (value instanceof Uint16Array) return 'uint16';
+  if (value instanceof Uint32Array) return 'uint32';
   return 'other';
 }
 
 export function elementView(
   value: VertexAttributeMap[AttributeKey],
   format: string,
-): Float32Array | Uint16Array | undefined {
-  if (value instanceof Float32Array || value instanceof Uint16Array) return value;
+): Float32Array | Uint16Array | Uint32Array | undefined {
+  if (value instanceof Float32Array || value instanceof Uint16Array || value instanceof Uint32Array)
+    return value;
   if (value instanceof ArrayBuffer) {
-    return format === 'uint16x4' ? new Uint16Array(value) : new Float32Array(value);
+    return format === 'uint16x4'
+      ? new Uint16Array(value)
+      : format === 'uint32'
+        ? new Uint32Array(value)
+        : new Float32Array(value);
   }
   return undefined;
 }
@@ -297,7 +307,9 @@ function fnv1a(input: string): string {
 const layoutsByMask = new Map<number, VertexLayoutProjection>();
 
 /** Derive the one canonical immutable layout projection for a vertex map. */
-export function deriveVertexLayoutProjection(map: VertexAttributeMap): VertexLayoutProjection {
+export function deriveVertexLayoutProjection(
+  map: Readonly<Partial<Record<keyof VertexAttributeMap, unknown>>>,
+): VertexLayoutProjection {
   let mask = 0;
   for (let index = 0; index < CANONICAL_KEYS.length; index += 1) {
     const key = CANONICAL_KEYS[index];
@@ -394,6 +406,37 @@ export function deriveVertexLayoutProjectionFromMask(
   return ok(layoutFromMask(unsignedMask));
 }
 
+function nonFiniteColor(
+  source: Float32Array | Uint16Array | Uint32Array,
+): VertexAttributePackDetail | undefined {
+  for (let elementIndex = 0; elementIndex < source.length; elementIndex += 1) {
+    const component = source[elementIndex] as number;
+    if (!Number.isFinite(component))
+      return {
+        field: 'color',
+        reason: 'attribute-non-finite',
+        elementIndex,
+        actual: Number.isNaN(component)
+          ? 'nan'
+          : component === Number.POSITIVE_INFINITY
+            ? 'positive-infinity'
+            : 'negative-infinity',
+      };
+  }
+  return undefined;
+}
+
+function matchesAttributeStorage(
+  value: VertexAttributeMap[AttributeKey],
+  source: Float32Array | Uint16Array | Uint32Array,
+  format: string,
+): boolean {
+  if (format === 'uint32') return source instanceof Uint32Array;
+  const storage = storageOf(value);
+  if (format === 'uint16x4') return storage === 'uint16' || storage === 'array-buffer';
+  return storage === 'float32' || storage === 'array-buffer';
+}
+
 /** Pack tightly-owned attributes into the projection's canonical interleaved bytes. */
 export function packInterleavedVertexAttributes(
   map: VertexAttributeMap,
@@ -401,6 +444,12 @@ export function packInterleavedVertexAttributes(
 ): Result<PackedVertexAttributes, VertexAttributePackError> {
   const invalid = (detail: VertexAttributePackDetail): Result<never, VertexAttributePackError> =>
     err(new VertexAttributePackError(detail));
+  if (map.tangentFrame !== undefined && (map.normal !== undefined || map.tangent !== undefined))
+    return invalid({
+      field: 'tangentFrame',
+      reason: 'attribute-conflict',
+      actualKeys: Object.keys(map),
+    });
   if (!Number.isInteger(vertexCount) || vertexCount < 0) {
     return invalid({ field: 'vertexCount', reason: 'vertex-count-invalid', actual: vertexCount });
   }
@@ -411,10 +460,12 @@ export function packInterleavedVertexAttributes(
   const output = new ArrayBuffer(projection.arrayStride * vertexCount);
   const outputFloats = new Float32Array(output);
   const outputU16 = new Uint16Array(output);
+  const outputU32 = new Uint32Array(output);
   for (const entry of projection.attributes) {
     const sourceValue = map[entry.key];
     if (sourceValue === undefined) continue;
     const uint16 = entry.format === 'uint16x4';
+    const uint32 = entry.format === 'uint32';
     const components = entry.byteLength / (uint16 ? 2 : 4);
     const bytesPerComponent = uint16 ? 2 : 4;
     if (sourceValue instanceof ArrayBuffer && sourceValue.byteLength % bytesPerComponent !== 0) {
@@ -428,16 +479,11 @@ export function packInterleavedVertexAttributes(
       });
     }
     const source = elementView(sourceValue, entry.format);
-    if (
-      source === undefined ||
-      (uint16
-        ? storageOf(sourceValue) !== 'uint16' && storageOf(sourceValue) !== 'array-buffer'
-        : storageOf(sourceValue) !== 'float32' && storageOf(sourceValue) !== 'array-buffer')
-    ) {
+    if (source === undefined || !matchesAttributeStorage(sourceValue, source, entry.format)) {
       return invalid({
         field: entry.key,
         reason: 'attribute-storage-invalid',
-        expectedStorage: uint16 ? 'uint16' : 'float32',
+        expectedStorage: uint32 ? 'uint32' : uint16 ? 'uint16' : 'float32',
         actualStorage: storageOf(sourceValue),
       });
     }
@@ -453,23 +499,10 @@ export function packInterleavedVertexAttributes(
       });
     }
     if (entry.key === 'color') {
-      for (let elementIndex = 0; elementIndex < source.length; elementIndex += 1) {
-        const component = source[elementIndex] as number;
-        if (!Number.isFinite(component)) {
-          return invalid({
-            field: 'color',
-            reason: 'attribute-non-finite',
-            elementIndex,
-            actual: Number.isNaN(component)
-              ? 'nan'
-              : component === Number.POSITIVE_INFINITY
-                ? 'positive-infinity'
-                : 'negative-infinity',
-          });
-        }
-      }
+      const colorFailure = nonFiniteColor(source);
+      if (colorFailure !== undefined) return invalid(colorFailure);
     }
-    const target = uint16 ? outputU16 : outputFloats;
+    const target = uint32 ? outputU32 : uint16 ? outputU16 : outputFloats;
     const targetStride = projection.arrayStride / bytesPerComponent;
     let sourceIndex = 0;
     for (
@@ -494,23 +527,28 @@ export function unpackInterleavedVertexAttributes(
   const vertexCount = deriveVertexCount(vertices, projection);
   if (vertexCount === undefined) return undefined;
   const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
-  const attributes: Record<string, Float32Array | Uint16Array> = {};
+  const attributes: Record<string, Float32Array | Uint16Array | Uint32Array> = {};
   let storageBytes = 0;
   for (const entry of projection.attributes) storageBytes += vertexCount * entry.byteLength;
   const storage = new ArrayBuffer(storageBytes);
   let storageOffset = 0;
   for (const entry of projection.attributes) {
     const short = entry.format === 'uint16x4';
+    const integer = entry.format === 'uint32';
     const width = short ? 2 : 4;
     const components = entry.byteLength / width;
-    const target = short
-      ? new Uint16Array(storage, storageOffset, vertexCount * components)
-      : new Float32Array(storage, storageOffset, vertexCount * components);
+    const target = integer
+      ? new Uint32Array(storage, storageOffset, vertexCount * components)
+      : short
+        ? new Uint16Array(storage, storageOffset, vertexCount * components)
+        : new Float32Array(storage, storageOffset, vertexCount * components);
     storageOffset += target.byteLength;
     if (nativeLittleEndian) {
-      const values = short
-        ? new Uint16Array(vertices.buffer, vertices.byteOffset, vertices.byteLength / 2)
-        : vertices;
+      const values = integer
+        ? new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length)
+        : short
+          ? new Uint16Array(vertices.buffer, vertices.byteOffset, vertices.byteLength / 2)
+          : vertices;
       const stride = projection.arrayStride / width;
       let targetIndex = 0;
       for (let base = entry.offset / width; targetIndex < target.length; base += stride) {
@@ -521,9 +559,11 @@ export function unpackInterleavedVertexAttributes(
       for (let vertex = 0; vertex < vertexCount; vertex++) {
         for (let component = 0; component < components; component++) {
           const offset = vertex * projection.arrayStride + entry.offset + component * width;
-          target[vertex * components + component] = short
-            ? view.getUint16(offset, true)
-            : view.getFloat32(offset, true);
+          target[vertex * components + component] = integer
+            ? view.getUint32(offset, true)
+            : short
+              ? view.getUint16(offset, true)
+              : view.getFloat32(offset, true);
         }
       }
     }

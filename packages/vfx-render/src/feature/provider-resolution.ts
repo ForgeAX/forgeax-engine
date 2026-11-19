@@ -1,6 +1,7 @@
 import type { RenderFeaturePlanContext } from '@forgeax/engine-render';
 import type { Result, TextureAsset } from '@forgeax/engine-types';
 import {
+  requiresExactVfxRecovery,
   type VfxDataInterfaceResource,
   type VfxDataInterfaceToken,
   type VfxForceFieldError,
@@ -13,7 +14,6 @@ import type { createVfxForceFieldPreparation, PreparedVfxForceFields } from './f
 export function resolveFields(
   emitter: VfxGpuTickIntent['emitter'],
   input: VfxGpuTickIntent['forceFields'],
-  sourceWorldIndex: number,
   context: RenderFeaturePlanContext,
   prepare: ReturnType<typeof createVfxForceFieldPreparation>,
 ): Result<PreparedVfxForceFields, VfxForceFieldError> | undefined {
@@ -28,7 +28,7 @@ export function resolveFields(
     delta?: import('@forgeax/engine-assets-runtime/internal').AssetVersionDelta;
   }[] = [];
   for (const reference of input.value) {
-    const asset = context.resolveAsset?.(sourceWorldIndex, reference.handle, reference.revision);
+    const asset = context.resolveAsset?.(reference.handle, reference.revision);
     if (!asset?.ok || asset.value.kind !== 'texture')
       return vfxForceFieldFailure(
         'vfx-field-asset-missing',
@@ -41,12 +41,55 @@ export function resolveFields(
 }
 
 export function resolveDataInterfaces(
-  intent: Pick<VfxGpuTickIntent, 'emitter' | 'instanceGeneration'>,
+  intent: Pick<VfxGpuTickIntent, 'emitter' | 'instanceGeneration'> &
+    Partial<Pick<VfxGpuTickIntent, 'recovering' | 'recoveryContext'>>,
   registry: Pick<VfxDataInterfaceRegistry, 'resolve'> | undefined,
+  portable?: readonly VfxDataInterfaceResource[],
 ): ReadonlyMap<VfxDataInterfaceToken, VfxDataInterfaceResource> | undefined {
   const requirements = intent.emitter.reflection.dataInterfaces ?? [];
   const resources = new Map<VfxDataInterfaceToken, VfxDataInterfaceResource>();
   for (const requirement of requirements) {
+    if (intent.recovering && requirement.kind === 'gpu-events') continue;
+    if (intent.recovering && requiresExactVfxRecovery(intent)) {
+      if (requirement.kind === 'force-fields') continue;
+      const resolveHistoricalResource = (): VfxDataInterfaceResource | undefined => {
+        const context = intent.recoveryContext;
+        const captured = context?.dataInterfaces.find(
+          (row) => row.token === requirement.token && row.generation === intent.instanceGeneration,
+        );
+        if (!context || !captured?.resource) return undefined;
+        if (captured.kind !== requirement.kind || captured.bindingType !== requirement.bindingType)
+          return undefined;
+        if (captured.resource.kind === 'uniform-data') {
+          return captured;
+        }
+        const snapshot = captured.recovery;
+        if (
+          !snapshot ||
+          snapshot.frameNumber !== context.frameNumber ||
+          snapshot.version.length === 0
+        )
+          return undefined;
+        return { ...captured, resource: snapshot.resource };
+      };
+      const historical = resolveHistoricalResource();
+      if (!historical) return undefined;
+      resources.set(requirement.token, historical);
+      continue;
+    }
+    const projected = portable?.find(
+      (row) => row.token === requirement.token && row.generation === intent.instanceGeneration,
+    );
+    if (projected) {
+      if (
+        projected.kind !== requirement.kind ||
+        projected.bindingType !== requirement.bindingType ||
+        !projected.resource
+      )
+        return undefined;
+      resources.set(requirement.token, projected);
+      continue;
+    }
     const resolved = registry?.resolve([requirement], intent.instanceGeneration);
     if (resolved === undefined) continue;
     if (!resolved.ok) {
@@ -55,6 +98,7 @@ export function resolveDataInterfaces(
       // Explicit unavailability and invalid provider contracts remain barriers.
       if (
         error?.code === 'vfx-data-interface-missing' &&
+        requirement.kind !== 'water-surface' &&
         (error.detail.providerId === undefined || error.detail.expectedResourceKind !== undefined)
       )
         continue;

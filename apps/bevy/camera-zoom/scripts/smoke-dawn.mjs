@@ -7,10 +7,11 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // Synthetic wheel input zooms the active projection and a synthetic Space edge
 // switches orthographic to perspective; app and smoke share src/camera-zoom.ts.
 //
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -100,7 +101,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { buildCameraZoomWorld, cameraZoomValue, ZoomCamera, stepCameraZoom } = await import(resolve(here, '..', 'src', 'camera-zoom.ts'));
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 
 let renderer;
 try {

@@ -55,13 +55,13 @@ const DEFAULT_NUM_LIGHTS = 32;
 const NUM_LIGHTS = (() => {
   if (typeof window !== 'undefined') {
     const requested = Number(new URL(window.location.href).searchParams.get('lights'));
-    if (Number.isInteger(requested) && requested >= 1 && requested <= 256) {
+    if (Number.isInteger(requested) && requested >= 1 && requested <= 1024) {
       return requested;
     }
   }
   return DEFAULT_NUM_LIGHTS;
 })();
-const STANDARD_LIGHT_COUNT = NUM_LIGHTS === 1 ? 1 : NUM_LIGHTS === 256 ? 256 : 32;
+const STANDARD_LIGHT_COUNT = NUM_LIGHTS;
 const CUBE_SCALE = 0.5;
 const CUBE_SPACING = 3.0;
 const CUBE_Y = -0.5;
@@ -91,9 +91,9 @@ function randomColor(state: number): [number, number, number, number] {
   const [s1, rv] = glibcRand(state);
   const [s2, gv] = glibcRand(s1);
   const [s3, bv] = glibcRand(s2);
-  const r = ((rv % 100) / 200.0) + 0.5;
-  const g = ((gv % 100) / 200.0) + 0.5;
-  const b = ((bv % 100) / 200.0) + 0.5;
+  const r = (rv % 100) / 200.0 + 0.5;
+  const g = (gv % 100) / 200.0 + 0.5;
+  const b = (bv % 100) / 200.0 + 0.5;
   return [r, g, b, s3];
 }
 
@@ -292,11 +292,7 @@ function installCaptureHook(app: App, world: App['world']): void {
   const lease = attached.value;
   win.__captureDeferred = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) throw frame.error;
     const observed = await renderer.observe(frame.value, { include: ['draws'] });
     if (!observed.ok) throw observed.error;

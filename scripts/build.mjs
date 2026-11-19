@@ -11,7 +11,10 @@ import {
   buildCanonicalKit,
   publishCanonicalKit,
 } from '../packages/preview/scripts/build-canonical-kit.mjs';
+import { restoreCoreBaseShader } from './ci/restore-core-shader-inputs.mjs';
 import { readPnpmVersion } from './forgeax/pnpm-version.mjs';
+import { admitSdkShaderInputs } from './forgeax/sdk-shader-inputs.mjs';
+import { runnerResources, shaderProducerHeapSize } from './lib/runner-resources.mjs';
 
 const root = resolve('.');
 const requestedModes = [
@@ -21,7 +24,36 @@ const requestedModes = [
 if (requestedModes.length > 1)
   throw new Error(`build modes are mutually exclusive: ${requestedModes.join(', ')}`);
 const mode = requestedModes[0] ?? 'full';
+const packageTargets = process.argv.slice(2).filter((argument) => argument.startsWith('--target='));
+if (packageTargets.length > 0 && mode !== 'packages-only')
+  throw new Error(
+    'package targets require --packages-only; Engine and full builds remain complete',
+  );
 const clean = process.argv.includes('--clean');
+const assetsSourceOption = process.argv.indexOf('--assets-source-root');
+const assetsSourceRoot = assetsSourceOption === -1 ? null : process.argv[assetsSourceOption + 1];
+if (assetsSourceOption !== -1 && (!assetsSourceRoot || assetsSourceRoot.startsWith('--')))
+  throw new Error('--assets-source-root requires an assets export directory');
+const baseShaderOption = process.argv.indexOf('--base-shader-input-root');
+const sourceRevisionOption = process.argv.indexOf('--source-revision');
+const baseShaderInputRoot = baseShaderOption < 0 ? null : process.argv[baseShaderOption + 1];
+const sourceRevision = sourceRevisionOption < 0 ? null : process.argv[sourceRevisionOption + 1];
+if (baseShaderOption >= 0 || sourceRevisionOption >= 0) {
+  if (
+    !baseShaderInputRoot ||
+    baseShaderInputRoot.startsWith('--') ||
+    !/^[a-f0-9]{40}$/.test(sourceRevision ?? '')
+  )
+    throw new Error('--base-shader-input-root requires --source-revision with an exact revision');
+  if (
+    mode !== 'engine' ||
+    process.env.FORGEAX_SDK_SHADER_INPUTS ||
+    process.env.FORGEAX_BUILD_NO_TASK_CACHE === '1'
+  )
+    throw new Error(
+      'BASE shader inputs require the cached Engine source build without SDK handoff',
+    );
+}
 // A missing required source submodule otherwise surfaces as module-resolution noise
 // deep inside the package stage.
 if (!existsSync(join(root, 'packages/modeling/package.json'))) {
@@ -161,12 +193,21 @@ async function writeEngineBuildProvenance() {
 persist();
 if (clean) await runStage('clean', process.execPath, ['scripts/clean-build-outputs.mjs']);
 
-await runStage('packages', process.execPath, ['scripts/build-packages.mjs'], {
-  ...process.env,
-  FORGEAX_REPO_ROOT: root,
-  FORGEAX_PACKAGE_FACTS_PATH: packageFactsPath,
-  FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitOutput,
-});
+await runStage(
+  'packages',
+  process.execPath,
+  [
+    'scripts/build-packages.mjs',
+    ...packageTargets,
+    ...(assetsSourceRoot === null ? [] : ['--assets-source-root', resolve(assetsSourceRoot)]),
+  ],
+  {
+    ...process.env,
+    FORGEAX_REPO_ROOT: root,
+    FORGEAX_PACKAGE_FACTS_PATH: packageFactsPath,
+    FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitOutput,
+  },
+);
 await ensureCanonicalKitStage();
 await publishCanonicalKit(canonicalKitOutput, canonicalKitPackageRoot);
 await runStage('package-runtime-dependencies', process.execPath, [
@@ -191,9 +232,18 @@ async function buildTypes() {
 const engineTypes = mode === 'engine' ? buildTypes() : null;
 
 let sharedManifest = null;
-if (mode !== 'packages-only') {
+if (process.env.FORGEAX_SDK_SHADER_INPUTS) {
+  if (mode !== 'engine') throw new Error('SDK shader handoff requires the Engine build');
+  sharedManifest = admitSdkShaderInputs(root);
+} else if (mode !== 'packages-only') {
+  if (baseShaderInputRoot !== null) {
+    // Copy no compiler/package outputs. Admission runs after their rebuild and
+    // leaves the POINT source producer below intact.
+    restoreCoreBaseShader(root, resolve(baseShaderInputRoot), { sourceRevision });
+    console.log(`[build] admitted original BASE shader input source=${sourceRevision}`);
+  }
   await runStage('producer', process.execPath, [
-    '--max-old-space-size=4096',
+    `--max-old-space-size=${shaderProducerHeapSize(runnerResources())}`,
     'scripts/build-shared-inputs.mjs',
     '--root',
     root,

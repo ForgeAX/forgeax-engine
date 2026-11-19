@@ -20,17 +20,17 @@ it('admits one source joint and one resource definition for 1024 Bindings withou
     resolve = vi.fn(() => skeleton(1)),
     scene = new SkinSceneInputs(arena, resolve);
   try {
-    for (let slot = 0; slot < 1024; slot++) scene.binding(slot, 0, undefined, binding);
+    for (let slot = 0; slot < 1024; slot++) scene.binding(slot, undefined, binding);
     expect(resolve).toHaveBeenCalledTimes(1);
-    expect([...(scene.firstJoints(0) ?? [])]).toEqual([19]);
-    scene.joint(0, 19, matrix(3));
-    expect(scene.firstJoints(0)?.size).toBe(0);
+    expect([...(scene.firstJoints() ?? [])]).toEqual([19]);
+    scene.joint(19, matrix(3));
+    expect(scene.firstJoints()?.size).toBe(0);
     const before = scene.capture(),
       bind = vi.spyOn(SkinInputs.prototype, 'bind'),
       available = vi.spyOn(SkinInputFrame.prototype, 'available');
     const write = vi.spyOn(SkinInputs.prototype, 'setJoint');
     try {
-      scene.joint(0, 19, matrix(8));
+      scene.joint(19, matrix(8));
       expect(bind).not.toHaveBeenCalled();
       expect(available).not.toHaveBeenCalled();
       expect(write).toHaveBeenCalledTimes(1);
@@ -63,17 +63,17 @@ it('restores a missing or removed shared definition without resolving or rewriti
     resolve = vi.fn(() => undefined),
     scene = new SkinSceneInputs(arena, resolve);
   try {
-    for (let slot = 0; slot < 64; slot++) scene.binding(slot, 0, undefined, binding);
-    scene.joint(0, 19, matrix(4));
+    for (let slot = 0; slot < 64; slot++) scene.binding(slot, undefined, binding);
+    scene.joint(19, matrix(4));
     const missing = scene.capture(),
       bind = vi.spyOn(SkinInputs.prototype, 'bind');
     try {
       expect(missing.available(63)).toBe(false);
-      scene.skeletonChanged(0, 7, skeleton(2));
+      scene.skeletonChanged(7, skeleton(2));
       const ready = scene.capture();
       try {
         expect(ready.available(63)).toBe(true);
-        scene.skeletonChanged(0, 7, undefined);
+        scene.skeletonChanged(7, undefined);
         const removed = scene.capture();
         try {
           expect(removed.available(63)).toBe(false);
@@ -81,7 +81,7 @@ it('restores a missing or removed shared definition without resolving or rewriti
         } finally {
           removed.release();
         }
-        scene.skeletonChanged(0, 7, skeleton(2));
+        scene.skeletonChanged(7, skeleton(2));
         const restored = scene.capture();
         try {
           expect(restored.available(63)).toBe(true);
@@ -94,7 +94,7 @@ it('restores a missing or removed shared definition without resolving or rewriti
       }
       expect(bind).not.toHaveBeenCalled();
       expect(resolve).toHaveBeenCalledTimes(1);
-      scene.skeletonChanged(0, 99, skeleton()); // Unreferenced assets allocate no Skin identity.
+      scene.skeletonChanged(99, skeleton()); // Unreferenced assets allocate no Skin identity.
       expect(resolve).toHaveBeenCalledTimes(1);
     } finally {
       bind.mockRestore();
@@ -106,28 +106,28 @@ it('restores a missing or removed shared definition without resolving or rewriti
   }
 });
 
-it('retires only last references, isolates Worlds and preserves old roots across source and Scene-slot reuse', () => {
+it('retires only last references, isolates distinct joint bindings and preserves old roots across source and Scene-slot reuse', () => {
   const arena = new GpuInputArena(),
-    scene = new SkinSceneInputs(arena, (world) => skeleton(world + 1));
+    scene = new SkinSceneInputs(arena, (handle) => skeleton(handle === 7 ? 1 : 2));
   try {
-    scene.binding(0, 0, undefined, binding);
-    scene.binding(1, 0, undefined, binding);
-    scene.binding(2, 1, undefined, binding);
-    scene.joint(0, 19, matrix(3));
-    scene.joint(1, 19, matrix(8));
+    scene.binding(0, undefined, binding);
+    scene.binding(1, undefined, binding);
+    scene.binding(2, undefined, { skeleton: 8, joints: [29] });
+    scene.joint(19, matrix(3));
+    scene.joint(29, matrix(8));
     const old = scene.capture(),
       out = mat4.create(),
       inverse = mat4.create();
     try {
-      scene.binding(0, 0, binding, undefined);
-      expect(scene.hasJoint(0, 19)).toBe(true);
-      scene.binding(1, 0, binding, undefined);
-      expect(scene.hasJoint(0, 19)).toBe(false);
-      expect(scene.firstJoints(0)).toBeUndefined();
-      scene.joint(0, 19, matrix(99)); // A late retired delta cannot create an orphan source.
-      scene.binding(0, 0, undefined, binding);
-      expect([...(scene.firstJoints(0) ?? [])]).toEqual([19]);
-      scene.joint(0, 19, matrix(11));
+      scene.binding(0, binding, undefined);
+      expect(scene.hasJoint(19)).toBe(true);
+      scene.binding(1, binding, undefined);
+      expect(scene.hasJoint(19)).toBe(false);
+      expect(scene.firstJoints()?.size).toBe(0);
+      scene.joint(19, matrix(99)); // A late retired delta cannot create an orphan source.
+      scene.binding(0, undefined, binding);
+      expect([...(scene.firstJoints() ?? [])]).toEqual([19]);
+      scene.joint(19, matrix(11));
       const next = scene.capture();
       try {
         expect(old.matrix(0, 0, out, inverse)).toBe(true);
@@ -162,19 +162,19 @@ it('balances repeated ordered joints and pending first references through a know
   const first: SkinBindingInput = { skeleton: 7, joints: Object.freeze([19, 19, 20]) },
     second: SkinBindingInput = { skeleton: 7, joints: Object.freeze([20, 21, 21]) };
   try {
-    scene.binding(0, 0, undefined, first);
-    scene.binding(1, 0, undefined, first);
-    scene.joint(0, 19, matrix());
-    scene.joint(0, 20, undefined);
-    expect(scene.firstJoints(0)?.size).toBe(0);
-    scene.binding(0, 0, first, second);
-    expect(scene.hasJoint(0, 19)).toBe(true);
-    expect([...(scene.firstJoints(0) ?? [])]).toEqual([21]);
-    scene.binding(1, 0, first, undefined);
-    expect(scene.hasJoint(0, 19)).toBe(false);
-    expect(scene.hasJoint(0, 20)).toBe(true);
-    scene.joint(0, 20, matrix(2));
-    scene.joint(0, 21, matrix(3));
+    scene.binding(0, undefined, first);
+    scene.binding(1, undefined, first);
+    scene.joint(19, matrix());
+    scene.joint(20, undefined);
+    expect(scene.firstJoints()?.size).toBe(0);
+    scene.binding(0, first, second);
+    expect(scene.hasJoint(19)).toBe(true);
+    expect([...(scene.firstJoints() ?? [])]).toEqual([21]);
+    scene.binding(1, first, undefined);
+    expect(scene.hasJoint(19)).toBe(false);
+    expect(scene.hasJoint(20)).toBe(true);
+    scene.joint(20, matrix(2));
+    scene.joint(21, matrix(3));
     const frame = scene.capture();
     try {
       expect(frame.available(0)).toBe(true);
@@ -182,8 +182,8 @@ it('balances repeated ordered joints and pending first references through a know
     } finally {
       frame.release();
     }
-    scene.binding(0, 0, second, undefined);
-    expect(scene.hasJoint(0, 21)).toBe(false);
+    scene.binding(0, second, undefined);
+    expect(scene.hasJoint(21)).toBe(false);
     const empty = scene.capture();
     try {
       expect(empty.jointCapacity).toBe(0);
@@ -199,8 +199,8 @@ it('balances repeated ordered joints and pending first references through a know
 it('terminates partial Scene adoption while an earlier frame remains independently readable', () => {
   const arena = new GpuInputArena(),
     scene = new SkinSceneInputs(arena, () => skeleton(1));
-  scene.binding(0, 0, undefined, binding);
-  scene.joint(0, 19, matrix(3));
+  scene.binding(0, undefined, binding);
+  scene.joint(19, matrix(3));
   const old = scene.capture(),
     actual = SkinInputs.prototype.setJoint;
   const failure = vi.spyOn(SkinInputs.prototype, 'setJoint').mockImplementationOnce(function (
@@ -213,9 +213,9 @@ it('terminates partial Scene adoption while an earlier frame remains independent
     throw new Error('after write');
   });
   try {
-    expect(() => scene.joint(0, 19, matrix(8))).toThrow('after write');
+    expect(() => scene.joint(19, matrix(8))).toThrow('after write');
     expect(() => scene.capture()).toThrow();
-    expect(() => scene.skeletonChanged(0, 7, skeleton())).toThrow();
+    expect(() => scene.skeletonChanged(7, skeleton())).toThrow();
     const out = mat4.create(),
       inverse = mat4.create();
     expect(old.matrix(0, 0, out, inverse)).toBe(true);

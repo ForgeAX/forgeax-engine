@@ -86,14 +86,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1296-byte payload, 1536-byte dynamic slot (256-byte alignment).
+// View UBO: 1312-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog (skyOpacity, reserved).
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -141,7 +141,7 @@ struct View {
   // group(0) bindings 16/17; these lanes carry its world-space basis and
   // bounded range/validity so every receiver can sample by world position.
   cloudShadowOrigin : vec4<f32>, // xyz projection origin, w cloud base height
-  cloudShadowRight : vec4<f32>, // xyz projection right, w cloud thickness
+  cloudShadowRight : vec4<f32>, // xyz projection right, w legacy thickness or Beer-map atmosphere strength
   cloudShadowUp : vec3<f32>,
   // Sun disc sin(half angle) = sin(0.5 * radians(DirectionalLight.sourceAngle)); 0 = point light.
   // Reuses the former cloudShadowUp.w padding lane (float 251), layout unchanged.
@@ -155,11 +155,16 @@ struct View {
   fogColorDensity : vec4<f32>,
   fogHeightOpacity : vec4<f32>,
   atmosphere : AtmosphereMedium,
-  // reference sample count (zero = LUT), sun radius, AP range km, enabled.
+  // reference sample count (zero = LUT), sun radius, AP range km, flags (1 aerial perspective, 2 captured atmosphere sun).
   atmosphereControl : vec4<f32>,
   // x = Fog.skyOpacity: scale of the fog opacity on background pixels under
-  // an Atmosphere (1 = physical distant fog, 0 = sky unfogged); yzw reserved.
+  // an Atmosphere (1 = physical distant fog, 0 = sky unfogged).
+  // y = admitted Forward vertex-height route; zero retains screen/capture
+  // consumers. The View owner selects it, never the material author.
+  // z = perspective camera height density; w reserved.
   fogSky : vec4<f32>,
+  // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
+  ssrQuality : vec4<f32>,
 };
 
 // Mesh contains only independent transform and temporal facts. Direct draws
@@ -297,7 +302,7 @@ struct DirectLightSlot {
   direction           : vec4<f32>, // row2: primary axis + second angular fact
   auxiliary           : vec4<f32>, // row3: auxiliary Rect axis
   metadata : vec4<u32>,
-  channels : vec4<u32>,
+  channels : vec4<u32>, // row5: lighting channels + Spot decay as f32 bits
 };
 
 @group(0) @binding(0) var<uniform> view : View;
@@ -307,6 +312,21 @@ fn viewDirectionToCamera(worldPosition : vec3<f32>) -> vec3<f32> {
   // column points toward the camera, including rotated and off-axis views.
   return normalize(select(view.cameraPos - worldPosition,
     view.inverseViewProj[2].xyz, view.temporalProjection.z > 0.5));
+}
+
+fn view_atmosphere_aerial_enabled(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 1u) != 0u;
+}
+
+fn view_atmosphere_light_enabled(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 2u) != 0u;
+}
+
+fn view_atmosphere_light_direction(v: View) -> vec3<f32> {
+#ifdef ATMOSPHERE_AVAILABLE
+  if view_atmosphere_light_enabled(v) { return normalize(-v.lightDir); }
+#endif
+  return vec3<f32>(0.0);
 }
 
 // feat-20260520-directional-light-shadow-mapping M3 / w16 (D-1 / plan-strategy §8.1):
@@ -452,10 +472,20 @@ struct ShadowCasterCascade {
 // family.
 @group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
 #else
+#ifdef GPU_SCENE_DIRECT
+#if STORAGE_BUFFER_AVAILABLE == true
+// Direct draws of a GPU Scene slot read its rows in place of `meshes`/`instances`.
+@group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
+#else
+// Texture-table direct draws keep this group; the transform table is in group(3).
+@group(2) @binding(0) var<uniform> meshes : array<Mesh, 128>;
+#endif
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
 @group(2) @binding(0) var<storage, read> meshes : array<Mesh>;
 #else
 @group(2) @binding(0) var<uniform> meshes : array<Mesh, 128>;
+#endif
 #endif
 #endif
 
@@ -625,10 +655,103 @@ fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
   return draw;
 }
 #else
+#ifdef GPU_SCENE_DIRECT
+// A direct draw's first instance is its slot's first scene instance row, so the
+// builtin instance index addresses the row; world, previous world and temporal
+// bits keep the scene-index composition above.
+#if STORAGE_BUFFER_AVAILABLE == true
+@group(3) @binding(0) var<storage, read> sceneInstances : array<GpuSceneInstance>;
+@group(3) @binding(6) var<storage, read> scenePrimitives : array<GpuScenePrimitive>;
+
+fn sceneInstanceRow(row : u32) -> GpuSceneInstance {
+  return sceneInstances[row];
+}
+
+// x = flags, y = root transform row.
+fn scenePrimitiveRoot(row : u32) -> vec2<u32> {
+  let primitive = scenePrimitives[row];
+  return vec2<u32>(primitive.flags, primitive.transformIndex);
+}
+
+fn sceneTransformRow(row : u32) -> GpuSceneTransform {
+  return sceneTransforms[row];
+}
+#else
+// Without vertex storage buffers the same table bytes live in rgba32uint
+// textures, 16-byte texels in row order, read texel by texel.
+@group(3) @binding(0) var sceneInstanceTable : texture_2d<u32>;
+@group(3) @binding(6) var scenePrimitiveTable : texture_2d<u32>;
+@group(3) @binding(7) var sceneTransformTable : texture_2d<u32>;
+
+fn sceneTableTexel(table : texture_2d<u32>, texel : u32) -> vec4<u32> {
+  let width = textureDimensions(table).x;
+  return textureLoad(table, vec2<i32>(i32(texel % width), i32(texel / width)), 0);
+}
+
+fn sceneInstanceRow(row : u32) -> GpuSceneInstance {
+  let texel = sceneTableTexel(sceneInstanceTable, row);
+  return GpuSceneInstance(texel.x, texel.y, texel.z, texel.w);
+}
+
+// x = flags, y = root transform row (texel 0 of the 64-byte primitive row).
+fn scenePrimitiveRoot(row : u32) -> vec2<u32> {
+  let texel = sceneTableTexel(scenePrimitiveTable, row * 4u);
+  return vec2<u32>(texel.y, texel.z);
+}
+
+fn sceneTransformRow(row : u32) -> GpuSceneTransform {
+  let first = row * 5u;
+  let world = mat4x4<f32>(
+    bitcast<vec4<f32>>(sceneTableTexel(sceneTransformTable, first)),
+    bitcast<vec4<f32>>(sceneTableTexel(sceneTransformTable, first + 1u)),
+    bitcast<vec4<f32>>(sceneTableTexel(sceneTransformTable, first + 2u)),
+    bitcast<vec4<f32>>(sceneTableTexel(sceneTransformTable, first + 3u)),
+  );
+  let tail = sceneTableTexel(sceneTransformTable, first + 4u);
+  return GpuSceneTransform(world, tail.x, tail.y);
+}
+#endif
+
+struct SceneIndexDraw {
+  world : mat4x4<f32>,
+  previousWorld : mat4x4<f32>,
+  // x = color-history reactive mask, y = current-frame motion validity.
+  temporal : vec2<f32>,
+};
+
+fn sceneTransformPrevious(row : GpuSceneTransform, frame : u32) -> mat4x4<f32> {
+  if (row.stamp == frame) {
+    return sceneTransformRow(row.previousIndex).currentWorld;
+  }
+  return row.currentWorld;
+}
+
+fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
+  let instance = sceneInstanceRow(instanceRow);
+  let primitive = scenePrimitiveRoot(instance.primitiveIndex);
+  let root = sceneTransformRow(primitive.y);
+  let frame = sceneTransformRow(0u).stamp;
+  var draw : SceneIndexDraw;
+  draw.world = root.currentWorld;
+  draw.previousWorld = sceneTransformPrevious(root, frame);
+  if (instance.transformIndex != 0u) {
+    let local = sceneTransformRow(instance.transformIndex);
+    draw.world = root.currentWorld * local.currentWorld;
+    draw.previousWorld = draw.previousWorld * sceneTransformPrevious(local, frame);
+  }
+  let pulses = select(0u, primitive.x, root.stamp == frame);
+  draw.temporal = vec2<f32>(
+    select(0.0, 1.0, (pulses & GPU_SCENE_PRIMITIVE_REACTIVE) != 0u),
+    select(1.0, 0.0, (pulses & GPU_SCENE_PRIMITIVE_MOTION_INVALID) != 0u),
+  );
+  return draw;
+}
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
 @group(3) @binding(0) var<storage, read> instances : array<InstanceData>;
 #else
 @group(3) @binding(0) var<uniform> instances : array<InstanceData, 128>;
+#endif
 #endif
 #endif
 

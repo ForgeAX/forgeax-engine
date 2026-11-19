@@ -12,7 +12,7 @@ import { filesUnder, SDK_NPM_PACKAGE_NAMES, sha256 } from './sdk-lib.mjs';
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const candidateSchemaPath = resolve(repositoryRoot, 'schemas/sdk-candidate.schema.json');
-export const CANDIDATE_SCHEMA_VERSION = '3.0.0';
+export const CANDIDATE_SCHEMA_VERSION = '4.0.0';
 export const CANDIDATE_GATES = Object.freeze([
   'npm-consumer',
   'archive-browser',
@@ -132,10 +132,29 @@ async function listNpmArchives(candidateRoot) {
   }));
 }
 
+function candidateOrigin(sourceWorkflowRunId, localRunId) {
+  const hasWorkflowRun = sourceWorkflowRunId !== undefined && sourceWorkflowRunId !== null;
+  const hasLocalRun = typeof localRunId === 'string' && localRunId.length > 0;
+  if (hasWorkflowRun === hasLocalRun) throw new Error('sdk-candidate-origin-invalid');
+  const runId = Number(sourceWorkflowRunId);
+  if (hasWorkflowRun && (!Number.isSafeInteger(runId) || runId < 1)) {
+    throw new Error('sdk-candidate-source-run-id-invalid');
+  }
+  if (
+    hasLocalRun &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(localRunId)
+  ) {
+    throw new Error('sdk-candidate-local-run-id-invalid');
+  }
+  if (hasWorkflowRun) return { origin: 'github-actions', sourceWorkflowRunId: runId };
+  return { origin: 'local', localRunId };
+}
+
 export async function sealCandidate({
   candidateRoot,
   sdkVersion,
   sourceWorkflowRunId,
+  localRunId,
   gateSpecs = [],
   now = new Date(),
 }) {
@@ -163,8 +182,7 @@ export async function sealCandidate({
   );
   if (!/^[0-9a-f]{40}$/.test(buildResult.viewCommit ?? ''))
     throw new Error('sdk-candidate-view-commit-invalid');
-  const runId = Number(sourceWorkflowRunId);
-  if (!Number.isInteger(runId) || runId < 1) throw new Error('sdk-candidate-source-run-id-invalid');
+  const origin = candidateOrigin(sourceWorkflowRunId, localRunId);
 
   const specs = gateSpecs.map((spec) => {
     const separator = spec.indexOf('=');
@@ -208,7 +226,7 @@ export async function sealCandidate({
     sdkVersion: version,
     engineCommit: buildResult.engineCommit,
     viewCommit: buildResult.viewCommit,
-    sourceWorkflowRunId: runId,
+    ...origin,
     artifacts,
     npmPackages,
     gates: gates.sort((left, right) => left.name.localeCompare(right.name)),
@@ -369,7 +387,10 @@ async function main() {
     const candidate = await sealCandidate({
       candidateRoot,
       sdkVersion: parsed.value('version'),
-      sourceWorkflowRunId: parsed.value('run-id') ?? process.env.GITHUB_RUN_ID,
+      sourceWorkflowRunId: parsed.value('local-run-id')
+        ? undefined
+        : (parsed.value('run-id') ?? process.env.GITHUB_RUN_ID),
+      localRunId: parsed.value('local-run-id'),
       gateSpecs: parsed.values('gate'),
     });
     process.stdout.write(`${JSON.stringify(candidate)}\n`);

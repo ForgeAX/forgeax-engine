@@ -1,3 +1,4 @@
+import { ExecutionParticleKernelOrder } from "./system-order";
 import {
   defineComponent,
   type QuerySpan,
@@ -26,13 +27,18 @@ export function runExecutionKernel(spans: readonly QuerySpan[]): void {
   }
 }
 
+const kernelModule = {
+  queries: [{ write: [ExecutionParticle] }],
+  run: runExecutionKernel,
+} as const;
+
 export function createExecutionKernel(moduleUrl: string) {
   return defineSharedKernel(moduleUrl, {
+    ...kernelModule,
+    sets: [ExecutionParticleKernelOrder],
     name: 'execution-particle-kernel',
-    queries: [{ write: [ExecutionParticle] }],
     minimumRows: 1,
-    run: runExecutionKernel,
   });
 }
 
-export default { run: runExecutionKernel };
+export default kernelModule;

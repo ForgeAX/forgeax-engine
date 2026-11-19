@@ -5,7 +5,7 @@ use anyrender::{
 use blitz_dom::{BaseDocument, NodeId, node::TextBrush, util::ToColorColor};
 use kurbo::{Affine, BezPath, Cap, Circle, Rect, Stroke};
 use parley::{Affinity, Cursor, Layout, Line, PositionedLayoutItem, Selection};
-use peniko::{Fill, Mix};
+use peniko::{Fill, Mix, StyleRef};
 use std::collections::HashMap;
 use std::sync::Arc;
 use style::properties::generated::longhands::text_decoration_style::computed_value::T as TextDecorationStyle;
@@ -13,6 +13,7 @@ use style::values::computed::{
     Length, LengthPercentage, TextDecorationLength, TextDecorationLine, TextUnderlinePosition,
 };
 use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
+use style::values::specified::svg::PaintOrder;
 
 use crate::color::{Color, ToColorColor as _};
 use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
@@ -659,6 +660,27 @@ pub(crate) fn stroke_text<'a>(
                     .skew()
                     .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
                 let embolden = glyph_embolden(font_size, scale, run.synthesis().embolden());
+                let stroke =
+                    Stroke::new(styles.clone__webkit_text_stroke_width().to_f64_px() * scale);
+                if stroke.width > 0.0 {
+                    scene.draw_glyphs(
+                        run.font(),
+                        font_size,
+                        !FONT_EMBOLDEN_ENABLED,
+                        bytemuck::cast_slice(run.normalized_coords()),
+                        embolden,
+                        &stroke,
+                        &anyrender::Paint::from(color),
+                        1.0,
+                        shadow_transform,
+                        glyph_xform,
+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                            id: glyph.id as _,
+                            x: glyph.x,
+                            y: glyph.y,
+                        }),
+                    );
+                }
                 scene.draw_glyphs(
                     run.font(),
                     font_size,
@@ -751,23 +773,57 @@ pub(crate) fn stroke_text<'a>(
                 let embolden = glyph_embolden(font_size, scale, synthesis.embolden());
 
                 let normalized_coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
-                scene.draw_glyphs(
-                    font,
-                    font_size,
-                    !FONT_EMBOLDEN_ENABLED, // hint
-                    normalized_coords,
-                    embolden,
-                    Fill::NonZero,
-                    &anyrender::Paint::from(text_color),
-                    1.0, // alpha
-                    transform,
-                    glyph_xform,
-                    glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                        id: glyph.id as _,
-                        x: glyph.x,
-                        y: glyph.y,
-                    }),
-                );
+                let styles = doc
+                    .get_node(style.brush.id)
+                    .and_then(|node| node.primary_styles());
+                let stroke_width = styles
+                    .as_ref()
+                    .map(|s| s.clone__webkit_text_stroke_width().to_f64_px() * scale)
+                    .unwrap_or(0.0);
+                let stroke_color = styles
+                    .as_ref()
+                    .map(|s| {
+                        s.clone__webkit_text_stroke_color()
+                            .resolve_to_absolute(&s.clone_color())
+                            .as_color_color()
+                    })
+                    .unwrap_or(text_color);
+                let order = styles.as_ref().map(|s| s.clone_paint_order());
+                let stroke_first = order.is_some_and(|order| {
+                    (0..3)
+                        .find(|&i| {
+                            matches!(order.order_at(i), PaintOrder::Fill | PaintOrder::Stroke)
+                        })
+                        .is_some_and(|i| order.order_at(i) == PaintOrder::Stroke)
+                });
+                let stroke = Stroke::new(stroke_width);
+                for outline in [stroke_first, !stroke_first] {
+                    if outline && stroke_width <= 0.0 {
+                        continue;
+                    }
+                    let paint_style = if outline {
+                        StyleRef::Stroke(&stroke)
+                    } else {
+                        StyleRef::Fill(Fill::NonZero)
+                    };
+                    scene.draw_glyphs(
+                        font,
+                        font_size,
+                        !FONT_EMBOLDEN_ENABLED,
+                        normalized_coords,
+                        embolden,
+                        paint_style,
+                        &anyrender::Paint::from(if outline { stroke_color } else { text_color }),
+                        1.0,
+                        transform,
+                        glyph_xform,
+                        glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
+                            id: glyph.id as _,
+                            x: glyph.x,
+                            y: glyph.y,
+                        }),
+                    );
+                }
 
                 // Accumulate this run's contribution to each decorating box on its ancestor
                 // path. The decoration is drawn once per box after the whole line has been

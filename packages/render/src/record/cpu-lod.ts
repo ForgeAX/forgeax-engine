@@ -218,21 +218,18 @@ export function selectCpuLodRows(
     const runs = cpuInstanceLodRuns(row.source, row.mesh, camera);
     const level = cpuLodLevel(row.source, row.mesh, camera);
     if (selection !== undefined && (row.source.lods?.length ?? 0) > 0) {
-      const world = row.source.worldId;
       const entity = row.source.entityKey;
-      if (!Number.isSafeInteger(world) || world < 0 || !Number.isSafeInteger(entity) || entity < 0)
+      if (!Number.isSafeInteger(entity) || entity < 0)
         throw new RangeError('CPU LOD query requires exact nonnegative source identities');
       const record = (selected: number): void => {
         const previous = selection.values;
         if (
           next === undefined &&
-          (previous[cursor] !== world ||
-            previous[cursor + 1] !== entity ||
-            previous[cursor + 2] !== selected)
+          (previous[cursor] !== entity || previous[cursor + 1] !== selected)
         )
           next = previous.slice(0, cursor);
-        next?.push(world, entity, selected);
-        cursor += 3;
+        next?.push(entity, selected);
+        cursor += 2;
       };
       recordCpuLodLevels(level, runs, record);
     }

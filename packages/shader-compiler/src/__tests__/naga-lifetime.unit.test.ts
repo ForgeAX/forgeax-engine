@@ -9,6 +9,24 @@ vi.mock('@forgeax/engine-naga', async (original) => {
   const actual = await original<typeof import('@forgeax/engine-naga')>();
   return {
     ...actual,
+    prepareNagaCompiler: async () => {
+      const result = await actual.prepareNagaCompiler();
+      if (!result.ok) return result;
+      const native = result.value;
+      return actual.ok({
+        ...native,
+        parse: (...args: Parameters<typeof native.parse>) => {
+          const parsed = native.parse(...args);
+          if (parsed.ok) handles.parsed.push({ free: vi.spyOn(parsed.value, 'free') });
+          return parsed;
+        },
+        validate: (...args: Parameters<typeof native.validate>) => {
+          const validated = native.validate(...args);
+          if (validated.ok) handles.validated.push({ free: vi.spyOn(validated.value, 'free') });
+          return validated;
+        },
+      });
+    },
     parse: async (...args: Parameters<typeof actual.parse>) => {
       const result = await actual.parse(...args);
       if (result.ok) {

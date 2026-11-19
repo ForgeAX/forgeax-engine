@@ -84,7 +84,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
     for (const start of [8, 44]) for (let i = 0; i < 4; i++) runtime[start + i * 5] = 1;
     const runtimeBuffer = buffer(runtime, true),
       alive = buffer(new Uint32Array(capacity));
-    const counters = buffer(new Uint32Array(6));
+    const counters = buffer(new Uint32Array(7));
     const entries = new Map([
       [0, buffer(particles)],
       [1, runtimeBuffer],
@@ -135,7 +135,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
           }
         words[75] = mode;
         device.queue.writeBuffer(runtimeBuffer, 0, runtime);
-        device.queue.writeBuffer(counters, 0, new Uint32Array([count, 0, 0, 0, 0, 0]));
+        device.queue.writeBuffer(counters, 0, new Uint32Array([count, 0, 0, 0, 0, 0, 0]));
         if (count > 0) device.queue.writeBuffer(alive, 0, new Uint32Array(order));
         const encoder = device.createCommandEncoder(),
           pass = encoder.beginComputePass();

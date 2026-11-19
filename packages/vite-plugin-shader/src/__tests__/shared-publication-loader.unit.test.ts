@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
+  createMaterialProgramArtifactReceipt,
   expandShaderManifestPublication,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
@@ -9,7 +10,35 @@ import {
 import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { publishShaderManifest } from '../manifest-publication.js';
-import { loadSharedEngineShaderManifest } from '../shared-engine-inputs.js';
+import {
+  loadSharedEngineShaderManifest,
+  projectShaderManifestInput,
+} from '../shared-engine-inputs.js';
+
+const projections = vi.hoisted(() => ({ indices: 0, fragments: 0 }));
+vi.mock('@forgeax/engine-shader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@forgeax/engine-shader')>();
+  return {
+    ...actual,
+    expandShaderManifestPublication: (
+      ...args: Parameters<typeof actual.expandShaderManifestPublication>
+    ) => {
+      const expanded = actual.expandShaderManifestPublication(...args);
+      return {
+        manifest: expanded.manifest,
+        fragmentTable: expanded.fragmentTable,
+        get sourceIndices() {
+          projections.indices++;
+          return expanded.sourceIndices;
+        },
+        get sourceFragments() {
+          projections.fragments++;
+          return expanded.sourceFragments;
+        },
+      };
+    },
+  };
+});
 
 let root: string;
 let manifestPath: string;
@@ -45,7 +74,27 @@ const engineIdentifiers = [
   'forgeax::default-shadow-caster',
   'forgeax::default-unlit',
   ...resampling.map(({ identifier }) => identifier),
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+  'forgeax::water-mesh-precise',
+  'forgeax::water-mesh-precise-msaa',
 ];
+const waterInfoIdentifiers = new Set([
+  'forgeax::water-info-raster-water',
+  'forgeax::water-info-raster-ground',
+  'forgeax::water-info-raster-dilation',
+  'forgeax::water-mesh-raster',
+]);
+const waterInfoReceipt = {
+  ...createMaterialProgramArtifactReceipt({
+    schema: [],
+    directEntry: 'vs_main',
+    vertexInputs: [],
+  }),
+  bindings: 'group-0' as const,
+};
 const entries = engineIdentifiers.map((identifier, index) => {
   const helper = resampling.find((entry) => entry.identifier === identifier);
   return {
@@ -70,6 +119,7 @@ const materialShaders = entries.map((entry) => ({
   composedWgsl: wgsl,
   paramSchema: '[]',
   variants: [],
+  ...(waterInfoIdentifiers.has(entry.identifier) ? { receipt: waterInfoReceipt } : {}),
 }));
 
 function writePayload(value: unknown): void {
@@ -115,7 +165,7 @@ it('serializes admitted shared blocks without expanding and splitting every mate
     return Reflect.apply(split, this, [separator, limit]) as string[];
   });
   try {
-    const manifest = await buildEngineShaderManifest();
+    const manifest = await buildEngineShaderManifest({ workspaceRoot: root });
     const wire = JSON.parse(JSON.stringify(manifest));
     expect(wire).toEqual({
       ...publication,
@@ -126,7 +176,9 @@ it('serializes admitted shared blocks without expanding and splitting every mate
     // stale cache hit or bypass the source digest check.
     publication.fragments[0] += 'corrupt';
     writePayload(publication);
-    await expect(buildEngineShaderManifest()).rejects.toThrow('digest mismatch');
+    await expect(buildEngineShaderManifest({ workspaceRoot: root })).rejects.toThrow(
+      'digest mismatch',
+    );
   } finally {
     spy.mockRestore();
   }
@@ -152,7 +204,9 @@ it('rejects shared engine profiles whose variant artifacts lack their own reflec
   writePayload(publishShaderManifest(entries, materialShadersWithIncompleteVariant));
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', manifestPath);
   const { buildEngineShaderManifest } = await import('../index.js');
-  await expect(buildEngineShaderManifest()).rejects.toThrow('shared input is incomplete or stale');
+  await expect(buildEngineShaderManifest({ workspaceRoot: root })).rejects.toThrow(
+    'shared input is incomplete or stale',
+  );
 });
 
 it('loads exact shared shader bytes in Node without a browser Crypto global', async () => {
@@ -167,7 +221,7 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
     if (separator === '' && result === wgsl) composed.push(result);
     return result;
   });
-  const loaded = await loadSharedEngineShaderManifest(manifestPath);
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
   const expected = expandShaderManifestPublication(publishShaderManifest(entries, materialShaders))
     .manifest as { entries: unknown[]; materialShaders: unknown[] };
   expect(composed).toEqual([]);
@@ -179,23 +233,172 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
   expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
 });
 
+it('verifies every source using one index snapshot without expanding fragment arrays', async () => {
+  const sourceCount = 128;
+  const distinctEntries = Array.from({ length: sourceCount }, (_, index) => ({
+    ...entries[0],
+    hash: (index + 1).toString(16).padStart(8, '0'),
+    wgsl: `${wgsl}\n// source ${index}`,
+  }));
+  const publication = publishShaderManifest(distinctEntries, []);
+  writePayload(publication);
+  projections.indices = 0;
+  projections.fragments = 0;
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  expect(loaded.entries.map((entry) => entry.wgsl)).toEqual(
+    distinctEntries.map((entry) => entry.wgsl),
+  );
+  expect(projections.indices).toBe(1);
+  expect(projections.fragments).toBe(0);
+  // The final source must still be checked, not just the first digest.
+  publication.fragments[publication.fragments.length - 1] += 'corrupt';
+  writePayload(publication);
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'digest mismatch',
+  );
+});
+
+it('shares immutable expanded reflection facts while rejecting malformed unused reflections eagerly', async () => {
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  // Version 6 wire rows contain binding indices; expansion owns the resolved
+  // reflection, shared by every row selecting the same table entry.
+  expect(loaded.entries[0]?.reflection).toEqual(reflection);
+  expect(loaded.entries[0]?.reflection).toBe(loaded.entries[1]?.reflection);
+  expect(loaded.entries[0]?.reflection).toBe(loaded.materialShaders[0]?.reflection);
+  expect(Object.isFrozen(loaded.entries[0]?.reflection)).toBe(true);
+  expect(Object.isFrozen(loaded.entries[0]?.reflection?.boundGlobals)).toBe(true);
+  expect(Object.isFrozen(loaded.publication.reflections[0])).toBe(true);
+  const malformed = publishShaderManifest(entries, materialShaders);
+  malformed.reflections.push({ schemaVersion: 'invalid', uvSetCount: 0, bindingIndices: [] });
+  writePayload(malformed);
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'Invalid shader manifest publication',
+  );
+});
+
+it('shares live immutable admission while keeping consumer collections independent', async () => {
+  const first = await loadSharedEngineShaderManifest(manifestPath, root);
+  const next = await loadSharedEngineShaderManifest(manifestPath, root);
+  expect(next.publication).toBe(first.publication);
+  expect(next.entries).not.toBe(first.entries);
+  expect(next.entries[0]).toBe(first.entries[0]);
+  expect(Object.isFrozen(first.entries[0])).toBe(true);
+  expect(Object.isFrozen(first.publication)).toBe(true);
+  expect(Object.isFrozen(first.publication.reflections)).toBe(true);
+  expect(Object.isFrozen(first.publication.reflections[0])).toBe(true);
+  first.entries.splice(0);
+  expect(next.entries.length).toBeGreaterThan(0);
+  rmSync(join(root, 'shared/shaders.json'));
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'inventory is missing',
+  );
+});
+
+it('projects shared row defaults without reading or replacing its lazy source owner', async () => {
+  let reads = 0;
+  const loaded = await loadSharedEngineShaderManifest(manifestPath, root);
+  const entry = loaded.entries[0];
+  if (entry === undefined) throw new Error('Shared fixture entry is missing');
+  const row = { ...entry };
+  Object.defineProperty(row, 'wgsl', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return wgsl;
+    },
+  });
+  Object.freeze(row);
+  const projected = projectShaderManifestInput(row, { uvSetCount: 0, glsl: '' });
+  expect(reads).toBe(0);
+  expect(projected.uvSetCount).toBe(0);
+  expect(projected.glsl).toBe('');
+  expect(Object.getOwnPropertyDescriptor(projected, 'wgsl')?.get).toBe(
+    Object.getOwnPropertyDescriptor(row, 'wgsl')?.get,
+  );
+  expect(projected.wgsl).toBe(wgsl);
+  expect(reads).toBe(1);
+});
+
 it('rejects changed source bytes under an unchanged source digest', async () => {
+  const previous = await loadSharedEngineShaderManifest(manifestPath, root);
   const publication = publishShaderManifest(entries, materialShaders);
   publication.fragments[0] += ' ';
   writePayload(publication);
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow('digest mismatch');
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'digest mismatch',
+  );
+  expect(Object.isFrozen(previous.publication)).toBe(true);
 });
 
 it('rejects unused source digests before accepting the shared publication', async () => {
   const publication = publishShaderManifest(entries, materialShaders);
   publication.sources['0'.repeat(64)] = [0];
   writePayload(publication);
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow('missing or unused');
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
+    'missing or unused',
+  );
 });
 
 it('retains the producer inventory gate before loading shader rows', async () => {
   rmSync(join(root, 'shared/shaders.json'));
-  await expect(loadSharedEngineShaderManifest(manifestPath)).rejects.toThrow(
+  await expect(loadSharedEngineShaderManifest(manifestPath, root)).rejects.toThrow(
     'inventory is missing',
   );
+});
+
+it.each([
+  '.',
+  'shared-build-inputs',
+  'cache/nested/profile',
+  '../external/profile',
+])('resolves repository-relative inventory at %s from the consumer project context', async (outputDirectory) => {
+  const fixture = mkdtempSync(join(tmpdir(), 'shared-root-authority-'));
+  const repository = join(fixture, 'checkout');
+  const output = join(repository, outputDirectory);
+  const payloadPath = join(output, 'shaders/manifest.json');
+  const transferPath = join(output, 'manifest.json');
+  const payload = relative(repository, payloadPath).replaceAll('\\', '/');
+  try {
+    mkdirSync(repository, { recursive: true });
+    writeFileSync(join(repository, 'pnpm-workspace.yaml'), 'packages: []\n');
+    const nestedProject = join(repository, 'apps/hello/fixture');
+    mkdirSync(nestedProject, { recursive: true });
+    mkdirSync(dirname(payloadPath), { recursive: true });
+    writeFileSync(payloadPath, JSON.stringify(publishShaderManifest(entries, materialShaders)));
+    writeFileSync(
+      transferPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        producer: 'repo-build-inputs',
+        inputFingerprint: 'explicit-root-fixture',
+        inventory: [payload],
+        payload: { engineShaderManifest: payload },
+      }),
+    );
+    const loaded = await loadSharedEngineShaderManifest(transferPath, repository);
+    expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
+    vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', transferPath);
+    const { buildEngineShaderManifest } = await import('../index.js');
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(nestedProject);
+    try {
+      const built = await buildEngineShaderManifest();
+      expect(JSON.parse(JSON.stringify(built))).toEqual({
+        ...loaded.publication,
+        entries: loaded.publication.entries.map((entry) => ({ ...entry, glsl: '' })),
+      });
+    } finally {
+      cwd.mockRestore();
+    }
+    const wrongProject = join(fixture, 'other/checkout');
+    mkdirSync(wrongProject, { recursive: true });
+    await expect(loadSharedEngineShaderManifest(transferPath, wrongProject)).rejects.toThrow(
+      'inventory is missing',
+    );
+    rmSync(payloadPath);
+    await expect(loadSharedEngineShaderManifest(transferPath, repository)).rejects.toThrow(
+      'inventory is missing',
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

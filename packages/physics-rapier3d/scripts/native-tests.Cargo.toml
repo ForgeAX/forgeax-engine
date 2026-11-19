@@ -13,6 +13,10 @@ rapier3d = { path = "../rapier/crates/rapier3d", features = ["serde-serialize"] 
 parry3d = { path = "../parry/crates/parry3d" }
 
 [[test]]
+name = "contact_point_velocity"
+path = "contact-point-velocity.rs"
+
+[[test]]
 name = "affine_bvh"
 path = "../parry/crates/parry3d/tests/affine_bvh.rs"
 

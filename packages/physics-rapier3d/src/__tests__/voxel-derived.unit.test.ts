@@ -2,6 +2,7 @@ import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   type DerivedPhysicsCandidateInput,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -19,7 +20,7 @@ async function fixture() {
   if ('code' in module) throw module;
   const physics = createRapier3DPhysicsWorld(module);
   physics.setGravity(vec3.create(0, 0, 0));
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const release = registerPhysicsSystems(world);
   const entity = world
     .spawn(

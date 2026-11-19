@@ -8,7 +8,6 @@ import { buildSsaoUniformPayload } from '../ssao-uniform';
 function camera(): CameraSnapshot {
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 0, 5),
     world: mat4.identity(mat4.create()),
@@ -45,6 +44,22 @@ function matrixPayload(source: CameraSnapshot): Float32Array {
 }
 
 describe('SSAO matrix scratch ownership', () => {
+  it('publishes the spiral estimator budget and scale without changing Cluster offsets', () => {
+    const config = { enabled: true, algorithm: 'spiral-ssao' as const, resolutionScale: 0.5 };
+    const payload = buildSsaoUniformPayload(camera(), config, {
+      originX: 7,
+      originY: 9,
+      textureWidth: 64,
+      packedWidth: 16,
+    });
+    expect(payload[51]).toBe(12);
+    expect(payload[52]).toBe(2);
+    expect(payload[60]).toBe(0.5);
+    expect([...new Uint32Array(payload.buffer).slice(56, 60)]).toEqual([7, 9, 64, 16]);
+    expect([...payload.slice(61)]).toEqual([0, 0, 0]);
+    expect(buildSsaoUniformPayload(camera(), { ...config, sampleCount: 16 })[51]).toBe(16);
+  });
+
   it.each([
     'perspective',
     'orthographic',
@@ -92,4 +107,38 @@ describe('SSAO matrix scratch ownership', () => {
     expect(() => buildSsaoUniformPayload(throwing, undefined)).toThrow(failure);
     expect(buildSsaoUniformPayload(source, undefined).slice(0, 48)).toEqual(expected);
   });
+});
+
+it('carries manual/auto scene-AO exposure metadata without sampling a CPU result', () => {
+  const source = { ...camera(), exposure: 0.4 };
+  const config = {
+    enabled: true,
+    application: 'scene-color' as const,
+    resolutionScale: 0.5,
+    sceneColorStrength: 0.8,
+  };
+  expect([...buildSsaoUniformPayload(source, config).slice(60)]).toEqual([
+    0.5,
+    Math.fround(0.8),
+    Math.fround(0.4),
+    0,
+  ]);
+  const auto = {
+    ...source,
+    output: {
+      exposure: {
+        kind: 'auto' as const,
+        compensationEv: 0,
+        rangeEv: [-2, 2] as const,
+        rates: [1, 1] as const,
+        fallback: 0.6,
+      },
+      temperature: 6504,
+      tint: 0,
+      colorLut: 0,
+      colorLutStrength: 0,
+    },
+  };
+  expect(buildSsaoUniformPayload(auto, config)[63]).toBe(Math.fround(0.6));
+  expect(buildSsaoUniformPayload({ ...auto, postProcessing: false }, config)[63]).toBe(0);
 });

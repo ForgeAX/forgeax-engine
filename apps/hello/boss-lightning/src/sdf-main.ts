@@ -6,8 +6,7 @@ import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, type FrameReceipt } from '@forgeax/engine-render';
 import { GlobalTransform, Transform, propagateTransforms, scenePlugin } from '@forgeax/engine-scene';
 
-import { loadVfxGpuEffect, ParticleEffectPlayer, createParticleEffectInstance, createVfxEffectContract,
-  VFX_GPU_RUNTIME_RESOURCE_KEY, type VfxGpuRuntime } from '@forgeax/engine-vfx';
+import { loadVfxGpuEffect, ParticleEffectPlayer, createParticleEffectInstance, createVfxEffectContract, VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { sdfGuid } from './sdf-guids';
@@ -20,7 +19,7 @@ const query = new URLSearchParams(location.search);
 const collision = query.get('collision') !== '0';
 const recoveryProbe = query.get('recovery') === '1';
 let signalLoss: (() => void) | undefined;
-const scenario = cases.find(item => item.id === (query.get('case') ?? 'default'));
+const scenario = cases.find((item) => item.id === (query.get('case') ?? 'default'));
 if (scenario === undefined) throw new Error('Unknown SDF case');
 let cameraEntity = 0 as EntityHandle;
 const vfx = createVfxRuntimeHost({
@@ -43,19 +42,21 @@ const vfx = createVfxRuntimeHost({
 const assembled = await createApp(canvas, {
   plugins: [scenePlugin()], features: [vfx.feature], assetRuntimeBinding: runtimeBinding,
   ...(recoveryProbe ? { rhiInstrumentation: {
-    // Exercise the existing host-loss seam on real GPU generations. A projected
-    // unexpected loss is a recovery fixture, not evidence of a driver reset.
-    deviceLost: (device) => Promise.race([device.lost, new Promise<Awaited<typeof device.lost>>((resolve) => {
+            // Exercise the existing host-loss seam on real GPU generations. A projected
+            // unexpected loss is a recovery fixture, not evidence of a driver reset.
+            deviceLost: (device) => Promise.race([device.lost, new Promise<Awaited<typeof device.lost>>((resolve) => {
       signalLoss = () => resolve({ reason: 'unknown', message: 'SDF recovery fixture host loss' });
     })]),
-  } } : {}),
-}, forgeaxBundlerAdapter());
+          },
+        } : {}),
+}, forgeaxBundlerAdapter(),
+);
 if (!assembled.ok) throw assembled.error;
 const app = assembled.value;
 const { world, renderer, assets } = app;
 if (assets === undefined) throw new Error('SDF fixture asset host unavailable');
 const errors: unknown[] = [];
-renderer.subscribe(event => { if (event.kind === 'error') errors.push(JSON.parse(JSON.stringify(event.error))); });
+renderer.subscribe((event) => { if (event.kind === 'error') errors.push(JSON.parse(JSON.stringify(event.error))); });
 (await vfx.attachWorld({ world, assets })).unwrap();
 cameraEntity = world.spawn(
   { component: Transform, data: { pos: scenario.camera, quat: scenario.cameraTarget === undefined
@@ -67,11 +68,12 @@ const mesh = (await assets.load(assets.parseGuid(sdfGuid(`mesh/${scenario.mesh}`
 const material = (await assets.load(assets.parseGuid(sdfGuid('material/obstacle')), 'material')).unwrap();
 const meshHandle = mesh;
 const materialHandle = material;
-const obstacles = scenario.obstacles.map(transform => world.spawn(
+const obstacles = scenario.obstacles.map((transform) => world.spawn(
   { component: Transform, data: transform },
   { component: MeshFilter, data: { assetHandle: meshHandle } },
   { component: MeshRenderer, data: { materials: [materialHandle] } },
-).unwrap());
+).unwrap(),
+);
 const loaded = await loadVfxGpuEffect(assets, sdfGuid(collision ? 'effect/collision' : 'effect/free'));
 if (!loaded.ok) throw loaded.error;
 const player = world.spawn({ component: ParticleEffectPlayer, data: {
@@ -79,7 +81,7 @@ const player = world.spawn({ component: ParticleEffectPlayer, data: {
 } }).unwrap();
 const emitter = assets.read(loaded.value).unwrap().program.emitters[0];
 if (emitter === undefined) throw new Error('Cooked SDF fixture has no emitter');
-world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY).attachInstance(player,
+world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY).attachInstance(player,
   createParticleEffectInstance(createVfxEffectContract(emitter.reflection.layout),
     { initialValues: scenario.parameters }));
 const attached = renderer.attach(world);
@@ -90,7 +92,7 @@ const probe = {
   async step(ticks = 1) {
     for (let i = 0; i < ticks; i++) world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     const completed = await drawn.value.completed;
     if (!completed.ok) throw completed.error;
@@ -114,7 +116,7 @@ const probe = {
     if (app.rhiCapture === undefined) throw new Error('Enable FORGEAX_ENGINE_RHI_DEBUG=1 for capture');
     const previous = renderer.inspect().frame;
     let receipt: FrameReceipt | undefined;
-    const release = subscribeBrowserFrameSubmitted(canvas, event => { receipt = event.receipt; });
+    const release = subscribeBrowserFrameSubmitted(canvas, (event) => { receipt = event.receipt; });
     try {
       const captured = await app.rhiCapture.captureFrame();
       if (!captured.ok) return captured;

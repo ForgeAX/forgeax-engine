@@ -7,11 +7,14 @@ import { runInNewContext } from 'node:vm';
 import { canvasAspectPlugin } from '@forgeax/engine-app';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
 import type { BlitzUi, BlitzUiOptions } from '@forgeax/engine-ui-blitz';
+import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
+import { gameRenderFeaturesSource } from '../../host/render-feature-contributions.js';
 import type { StartupUiOptions } from '../../host/startup-ui.js';
 import { prepareWechatBuild } from '../wechat.js';
+import { configurationHostScope } from './configuration-host.fixture';
 
 const { inspectUi } = (await import(
   new URL('../../../../ui/src/inspection.ts', import.meta.url).href
@@ -34,19 +37,25 @@ const fontRoot = dirname(
 );
 const [guideHtml, guideCss, guideLocalization, guideController] = await Promise.all([
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.html', import.meta.url),
+    new URL('../../../../../packages/ui/test-fixtures/game-guide/guide.ui.html', import.meta.url),
     'utf8',
   ),
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.css', import.meta.url),
+    new URL('../../../../../packages/ui/test-fixtures/game-guide/guide.ui.css', import.meta.url),
     'utf8',
   ),
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url),
+    new URL(
+      '../../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+      import.meta.url,
+    ),
     'utf8',
   ),
   import(
-    new URL('../../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+    new URL(
+      '../../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
+      import.meta.url,
+    ).href
   ),
 ]);
 const cleanup: (() => Promise<void>)[] = [];
@@ -131,6 +140,8 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
     },
     getPerformance: () => ({ now: () => performance.now() }),
     getDeviceInfo: () => ({ platform: 'devtools' }),
+    getStorageSync: () => '',
+    setStorageSync() {},
     getWindowInfo: () => {
       rejectAt('platform');
       return { windowWidth: 600, windowHeight: 400, pixelRatio: 1 };
@@ -160,11 +171,21 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
     wx[`on${event}`] = (listener: (event?: unknown) => void) => listeners.add(listener);
     wx[`off${event}`] = (listener: (event?: unknown) => void) => listeners.delete(listener);
   }
+  const compilerOptions = { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext };
+  const featureCode = ts.transpileModule(
+    gameRenderFeaturesSource(process.cwd(), process.cwd())
+      .replace(/^import .*;$/gm, '')
+      .replace('export function', 'function'),
+    { compilerOptions },
+  ).outputText;
+  const vfxCode = ts.transpileModule(
+    gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function'),
+    { compilerOptions },
+  ).outputText;
   const scope = {
-    createGameVfx: runInNewContext(
-      `${gameVfxSource.replace(/^import .*;$/gm, '').replace('export function', 'function')}\ncreateGameVfx`,
-      { createVfxRuntimeHost },
-    ),
+    ...configurationHostScope,
+    createGameRenderFeatures: runInNewContext(`${featureCode}\ncreateGameRenderFeatures`, {}),
+    createGameVfx: runInNewContext(`${vfxCode}\ncreateGameVfx`, { createVfxRuntimeHost }),
     inspectUi,
     AbortController,
     Error,

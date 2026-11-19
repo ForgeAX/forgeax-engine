@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::raster_source
 #import forgeax_view::common::{View, hash32}
-#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness, decodeStandardGBufferNormal, standardGBufferValid}
 #import forgeax_pbr::ray_bsdf::{rayBasis}
 
 @group(0) @binding(0) var depth: texture_depth_2d;
@@ -63,7 +63,9 @@ fn loadRasterReceiver(id: u32) -> RasterReceiver {
   let footprint = max(length(worldPosition(center + vec2f(1,0), z, extent) - position),
                       length(worldPosition(center + vec2f(0,1), z, extent) - position));
   if (!(footprint >= 0.0 && footprint < 1e30)) { return receiver; }
-  let shading = decodeStandardNormalRoughness(textureLoad(normal, pixel, 0).x);
+  let packedNormal = textureLoad(normal, pixel, 0).rg;
+  if (!standardGBufferValid(packedNormal)) { return receiver; }
+  let shading = decodeStandardGBufferNormal(packedNormal);
   receiver.status = 1u;
   receiver.position = position;
   receiver.ng = decodeStandardNormalRoughness(surface.z).xyz;

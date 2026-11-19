@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, World, type EntityHandle } from '@forgeax/engine-ecs';
 import {
@@ -69,7 +70,8 @@ function makeWorld(): {
       { component: MeshRenderer, data: {} },
     )
     .unwrap();
-  world.addSystem(Update, { name: 'input-frame-start-scan', queries: [], fn: () => {} }).unwrap();
+  const systemToken1 = defineSystem({ name: 'input-frame-start-scan', queries: [], fn: () => {} });
+world.addSystem(Update, systemToken1).unwrap();
   return { world, player, camera };
 }
 

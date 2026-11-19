@@ -5,6 +5,7 @@ import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer as constructRenderer } from '../../assembly/factory';
 import {
@@ -14,7 +15,6 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '../../components/camera';
 import {
-  type PostSubmissionQueue,
   PostSubmissions,
   RENDER_POST_CLEANUP_SYSTEM,
   RENDER_POST_COMMIT_SYSTEM,
@@ -64,7 +64,7 @@ async function createPostScenario() {
     )
     .unwrap();
   expect(world.update().ok).toBe(true);
-  const draw = () => renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+  const draw = () => renderer.draw({ source: lease });
   const renderWorld = () => created.find((candidate) => candidate.hasResource(PostSubmissions));
   return { renderer, draw, renderWorld };
 }
@@ -100,7 +100,9 @@ it('adopts no AA or bloom without the post commit system', async () => {
     const world = renderWorld();
     expect(world).toBeDefined();
     if (world === undefined) return;
-    world.removeSystem(RenderCommit, RENDER_POST_COMMIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-post-commit'))
+      .unwrap();
     expect(draw().ok).toBe(true);
     expect(renderer.inspect().observation.antialias).toBeUndefined();
     expect(renderer.inspect().bloom.state).not.toBe('active');
@@ -122,13 +124,15 @@ it('discards an unsubmitted candidate only through the post cleanup system', asy
     const world = renderWorld();
     expect(world).toBeDefined();
     if (world === undefined) return;
-    const queue = world.getResource<PostSubmissionQueue>(PostSubmissions);
+    const queue = world.getResource(PostSubmissions);
 
     submit.mockReturnValueOnce(err(failure));
     expect(draw().ok).toBe(false);
     expect(queue.staged).toHaveLength(0);
 
-    world.removeSystem(RenderCleanup, RENDER_POST_CLEANUP_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCleanup, registeredSystem(world, RenderCleanup, 'render-post-cleanup'))
+      .unwrap();
     submit.mockReturnValueOnce(err(failure));
     expect(draw().ok).toBe(false);
     expect(queue.staged).toHaveLength(1);

@@ -26,6 +26,7 @@ const inputs = [
   'scripts/build-simd-payload.mjs',
   'scripts/native-tests.Cargo.toml',
   'scripts/native-tests.Cargo.lock',
+  'src/__tests__/contact-point-velocity.native.rs',
   bindingsManifest,
   lockfile,
   '../../scripts/lib/rust-build-paths.mjs',
@@ -143,6 +144,7 @@ if (process.argv.includes('--test-native')) {
   await mkdir(tests, { recursive: true });
   await cp(join(root, 'scripts/native-tests.Cargo.toml'), join(tests, 'Cargo.toml'));
   await cp(join(root, 'scripts/native-tests.Cargo.lock'), join(tests, 'Cargo.lock'));
+  await cp(join(root, 'src/__tests__/contact-point-velocity.native.rs'), join(tests, 'contact-point-velocity.rs'));
   run('cargo', ['test', '--locked', '--manifest-path', join(tests, 'Cargo.toml')], root, {
     CARGO_TARGET_DIR: join(cache, 'native-test-target'),
     CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? '4',

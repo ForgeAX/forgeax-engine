@@ -34,7 +34,11 @@ for (const phase of phases) {
       config,
     ],
     {
-      env: { ...process.env, FORGEAX_COMPAT_PHASE: phase },
+      env: {
+        ...process.env,
+        DEBUG: [process.env.DEBUG, 'pw:browser'].filter(Boolean).join(','),
+        FORGEAX_COMPAT_PHASE: phase,
+      },
       label: `compatibility-${carrier}-${phase}`,
       timeoutMs: Math.min(240_000, remaining),
       gpuLease: true,

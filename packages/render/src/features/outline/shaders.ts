@@ -1,4 +1,5 @@
 import type { RenderFeatureFullscreenProgramDeclaration } from '../plan';
+import { DISTANCE_OUTLINE_PROGRAMS } from './distance-shaders';
 
 const vertex = /* wgsl */ `
 struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -65,7 +66,7 @@ const composite = /* wgsl */ `${vertex}
   return color;
 }`;
 const depthRead = { key: 'scene-depth', sampleType: 'depth' } as const;
-export const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
+const LEGACY_OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
   {
     kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.depth',
@@ -97,6 +98,10 @@ export const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaratio
     reads: ['scene-color', 'outline-mask', 'outline-expanded'],
   },
 ].map((program) => ({ ...program, params: { byteSize: 32, defaultValue: new Uint8Array(32) } }));
+export const OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
+  ...LEGACY_OUTLINE_PROGRAMS,
+  ...DISTANCE_OUTLINE_PROGRAMS,
+];
 
 /** Outline programs are graph-local producers, never encoded-output tail effects. */
 export function isOutlinePostProcess(identity: string): boolean {

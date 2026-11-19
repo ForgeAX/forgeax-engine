@@ -1,6 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import {
   MeshFilter,
   MeshRenderer,
@@ -29,16 +30,21 @@ import {
   DirectionalLight,
   Float32BufferAttribute,
   Group,
+  LineBasicMaterial,
+  LineSegments,
   LOD,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshMatcapMaterial,
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   NoToneMapping,
   OrthographicCamera,
   PerspectiveCamera,
   PointLight,
+  Points,
+  PointsMaterial,
   RepeatWrapping,
   Scene,
   ShaderMaterial,
@@ -49,9 +55,45 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contributions';
 import { cameraData } from '../camera';
+import { lineStyle } from '../lines';
 import { prepareMaterialPrograms } from '../material-programs';
 import { SceneProjection } from '../scene';
 import { featureCases } from './features.fixture';
+
+it('keeps affine dashed-line admission exact after runtime mesh adoption', () => {
+  const positions = Float32Array.of(0, 0, 0, 3, 4, 0, 3, 4, 12);
+  const geometry = new ThreeCore.BufferGeometry().setAttribute(
+    'position',
+    new Float32BufferAttribute(positions, 3),
+  );
+  const material = new ThreeCore.LineDashedMaterial({ scale: 2, dashSize: 4, gapSize: 2 });
+  const line = new ThreeCore.Line(geometry, material);
+  line.computeLineDistances();
+  const author: MeshAsset = {
+    kind: 'mesh',
+    vertices: positions,
+    attributes: { position: positions },
+    indices: Uint16Array.of(0, 1, 2),
+    materialSlots: [{ slotName: 'line' }],
+    submeshes: [
+      { indexOffset: 0, indexCount: 3, vertexCount: 3, materialSlot: 0, topology: 'line-strip' },
+    ],
+  };
+  const assets = new AssetRegistry();
+  try {
+    const handle = assets.create(author).unwrap(),
+      packed = assets.read(handle).unwrap();
+    expect(packed.attributes.position).toHaveLength(0);
+    expect(lineStyle(line, author, [material])).toEqual({ dashSize: 2, gapSize: 1, dashOffset: 0 });
+    expect(lineStyle(line, packed, [material])).toEqual(lineStyle(line, author, [material]));
+    geometry.getAttribute('lineDistance').setX(2, 18);
+    expect(() => lineStyle(line, packed, [material])).toThrow('arbitrary endpoint distances');
+  } finally {
+    assets.dispose();
+    geometry.dispose();
+    material.dispose();
+  }
+});
 
 describe('Three source to native World', () => {
   const featureAssets = new AssetRegistry();
@@ -93,7 +135,7 @@ describe('Three source to native World', () => {
             .unwrap().assetHandle;
           if (handle === 0) continue;
           const mesh = runtimeAssets(assets).borrow<MeshAsset>(handle).unwrap();
-          const position = mesh.attributes.position as Float32Array;
+          const position = copyMeshAttribute(mesh, 'position') as Float32Array;
           expect(position.length).toBeGreaterThan(0);
           expect(Array.from(position).every(Number.isFinite)).toBe(true);
           for (const index of mesh.indices as Uint16Array | Uint32Array)
@@ -156,6 +198,70 @@ describe('Three source to native World', () => {
     return { projection, assets, scene, camera, material, mesh, sync, entity };
   }
 
+  it('keeps Matcap sphere orientation separate from ordinary alpha UV inputs', () => {
+    const assets = new AssetRegistry();
+    assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const projection = new SceneProjection(assets);
+    owned.push({ projection, assets });
+    const pixels = new Uint8Array([255, 10, 20, 255, 30, 200, 40, 255]);
+    const image = new DataTexture(pixels, 1, 2);
+    image.needsUpdate = true;
+    const material = new MeshMatcapMaterial({ matcap: image, alphaMap: image });
+    const mesh = new Mesh(new BoxGeometry(), material),
+      scene = new Scene();
+    scene.add(mesh);
+    const camera = new PerspectiveCamera(50, 1, 0.1, 100);
+    camera.position.z = 5;
+    const sync = () => projection.sync(scene, camera, cameraData(camera, NoToneMapping, 1));
+    const content = () => {
+      const entity = projection.entityFor(mesh);
+      if (entity === undefined) throw new Error('missing source mesh');
+      const handle = projection.world.get(entity, MeshRenderer).unwrap().materials[0];
+      if (handle === undefined) throw new Error('missing source material');
+      return runtimeAssets(assets).borrow<MaterialAsset>(handle).unwrap();
+    };
+    sync();
+    const projected = content();
+    const alpha = projected.values?.alphaTexture as MaterialTextureValue;
+    const matcap = projected.values?.baseColorTexture as MaterialTextureValue;
+    if (
+      alpha === undefined ||
+      matcap === undefined ||
+      !('texture' in alpha) ||
+      !('texture' in matcap) ||
+      typeof alpha.texture !== 'number' ||
+      typeof matcap.texture !== 'number'
+    )
+      throw new Error('missing textures');
+    expect(alpha.texture).not.toBe(matcap.texture);
+    expect(alpha.sampler).toBe(matcap.sampler);
+    expect(runtimeAssets(assets).borrow<TextureAsset>(alpha.texture).unwrap().data).toEqual(pixels);
+    expect(runtimeAssets(assets).borrow<TextureAsset>(matcap.texture).unwrap().data).toEqual(
+      new Uint8Array([30, 200, 40, 255, 255, 10, 20, 255]),
+    );
+    const coverage = new DataTexture(pixels, 1, 2);
+    coverage.channel = 1;
+    coverage.repeat.set(2, 3);
+    coverage.offset.set(0.25, 0.125);
+    coverage.needsUpdate = true;
+    material.alphaMap = coverage;
+    mesh.geometry.setAttribute('uv1', mesh.geometry.getAttribute('uv').clone());
+    sync();
+    expect((content().values?.alphaTexture as MaterialTextureValue).coordinates).toMatchObject({
+      set: 1,
+      transform: { scale: [2, 3], offset: [0.25, 0.125] },
+    });
+    material.alphaMap = null;
+    sync();
+    expect(content().values?.alphaTexture).toBeUndefined();
+    expect(assets.validate(matcap.texture).ok).toBe(true);
+    expect(assets.validate(alpha.texture).ok).toBe(false);
+    mesh.geometry.dispose();
+    material.dispose();
+    image.dispose();
+    coverage.dispose();
+  });
+
   it('accepts the zero near plane of an orthographic camera without changing its cache semantics', () => {
     for (const reversed of [false, true]) {
       const camera = new OrthographicCamera(-2, 2, 2, -2, 0, 10);
@@ -179,7 +285,7 @@ describe('Three source to native World', () => {
     const handle = () => f.projection.world.get(f.entity(), MeshFilter).unwrap().assetHandle;
     const accepted = handle();
     const mesh = runtimeAssets(f.assets).borrow<MeshAsset>(accepted).unwrap();
-    const normals = mesh.attributes.normal as Float32Array;
+    const normals = copyMeshAttribute(mesh, 'normal') as Float32Array;
     expect(Array.from(normals)).toEqual(
       Array.from({ length: normals.length }, (_, i) => (i % 3 === 1 ? 1 : 0)),
     );
@@ -322,7 +428,7 @@ describe('Three source to native World', () => {
     });
   });
 
-  it('strips source camera scale as r184 does and rejects non-rigid view overrides', () => {
+  it('strips source camera scale as r187 does and rejects non-rigid view overrides', () => {
     const f = fixture();
     f.camera.scale.set(-2, 3, 4);
     const entity = f.sync();
@@ -350,7 +456,7 @@ describe('Three source to native World', () => {
   it('preserves manual affine matrices and frozen world matrices', () => {
     const f = fixture();
     f.mesh.matrixAutoUpdate = false;
-    f.mesh.matrix.copy(new Matrix4().set(1, 0.5, 0.2, 2, 0, 1, -0.3, 1, 0, 0, -2, 0, 0, 0, 0, 1));
+    f.mesh.matrix.copy(new Matrix4().set(1, 0, 0, 2, 0, 1.5, 0, 1, 0, 0, -2, 0, 0, 0, 0, 1));
     f.sync();
     const read = () => [...f.projection.world.get(f.entity(), GlobalTransform).unwrap().world];
     f.mesh.matrixWorld.elements.forEach((value, index) => {
@@ -364,6 +470,13 @@ describe('Three source to native World', () => {
     f.mesh.matrixWorld.makeTranslation(3, 4, 5);
     f.sync();
     expect(read().slice(12, 15)).toEqual([3, 4, 5]);
+  });
+
+  it('rejects a source matrix with shear that Transform cannot represent', () => {
+    const f = fixture();
+    f.mesh.matrixAutoUpdate = false;
+    f.mesh.matrix.makeShear(0, 0, 0.5, 0, 0, 0);
+    expect(f.sync).toThrow('with shear is not representable');
   });
 
   it('renders an Object3D root and preserves an externally parented camera cache', () => {
@@ -423,6 +536,142 @@ describe('Three source to native World', () => {
     expect(fixed.read<MaterialAsset>(first).unwrap()).toEqual(original);
     expect(fixed.matchesCurrent()).toBe(false);
     fixed.dispose();
+    changes.dispose();
+  });
+
+  it('projects point colors through existing geometry revisions while retaining the line guard', () => {
+    const f = fixture();
+    f.scene.remove(f.mesh);
+    const geometry = f.mesh.geometry;
+    const colors = new Float32BufferAttribute(
+      new Float32Array(geometry.getAttribute('position').count * 3),
+      3,
+    );
+    for (let i = 0; i < colors.count; i++) colors.setXYZ(i, 1, 0, 0);
+    geometry.setAttribute('color', colors);
+    const material = new PointsMaterial({ vertexColors: true });
+    const points = new Points(geometry, material);
+    f.scene.add(points);
+    f.sync();
+    const source = f.projection.sources().find((s) => s.uuid === points.uuid);
+    if (source === undefined) throw Error('missing points');
+    const entity = source.entityKey as EntityHandle;
+    const meshHandle = () => f.projection.world.get(entity, MeshFilter).unwrap().assetHandle;
+    const handle = meshHandle(),
+      materialHandle = f.projection.world.get(entity, MeshRenderer).unwrap().materials[0];
+    const readColor = () =>
+      copyMeshAttribute(
+        runtimeAssets(f.assets).borrow<MeshAsset>(handle).unwrap(),
+        'color',
+      ) as Float32Array;
+    expect([...readColor().slice(0, 4)]).toEqual([1, 0, 0, 1]);
+    const changes = f.assets.observe().unwrap();
+    try {
+      for (let i = 0; i < 20; i++) f.sync();
+      expect(changes.read().unwrap().changes).toEqual([]);
+      colors.setXYZ(0, 0, 1, 0);
+      colors.needsUpdate = true;
+      f.sync();
+      expect(meshHandle()).toBe(handle);
+      expect([...readColor().slice(0, 4)]).toEqual([0, 1, 0, 1]);
+      expect(f.projection.world.get(entity, MeshRenderer).unwrap().materials[0]).toBe(
+        materialHandle,
+      );
+      material.vertexColors = false;
+      f.sync();
+      expect(
+        copyMeshAttribute(
+          runtimeAssets(f.assets).borrow<MeshAsset>(meshHandle()).unwrap(),
+          'color',
+        ),
+      ).toBeUndefined();
+      const lineMaterial = new LineBasicMaterial({ vertexColors: true }),
+        line = new LineSegments(geometry, lineMaterial);
+      f.scene.add(line);
+      expect(() => f.sync()).toThrow('Native Lines do not transport per-vertex colors');
+      f.scene.remove(line);
+      f.sync();
+      lineMaterial.dispose();
+    } finally {
+      changes.dispose();
+      material.dispose();
+    }
+  });
+
+  it('isolates shared-geometry color morph weights and leaves unchanged bytes admitted', () => {
+    const f = fixture();
+    const count = f.mesh.geometry.getAttribute('position').count;
+    f.material.vertexColors = true;
+    f.mesh.geometry.setAttribute(
+      'color',
+      new Float32BufferAttribute(new Float32Array(count * 3).fill(0.2), 3),
+    );
+    f.mesh.geometry.morphAttributes.color = [
+      new Float32BufferAttribute(new Float32Array(count * 3).fill(0.8), 3),
+    ];
+    f.mesh.updateMorphTargets();
+    const other = new Mesh(f.mesh.geometry, f.material);
+    if (f.mesh.morphTargetInfluences === undefined || other.morphTargetInfluences === undefined)
+      throw new Error('missing color influences');
+    other.morphTargetInfluences[0] = 1;
+    f.scene.add(other);
+    f.sync();
+    const handle = (mesh: Mesh) =>
+      f.projection.world.get(f.entity(mesh), MeshFilter).unwrap().assetHandle;
+    const color = (mesh: Mesh) =>
+      copyMeshAttribute(
+        runtimeAssets(f.assets).borrow<MeshAsset>(handle(mesh)).unwrap(),
+        'color',
+      )?.[0];
+    expect(handle(f.mesh)).not.toBe(handle(other));
+    expect(color(f.mesh)).toBeCloseTo(0.2);
+    expect(color(other)).toBeCloseTo(0.8);
+    const changes = f.assets.observe().unwrap();
+    f.sync();
+    expect(changes.read().unwrap().changes).toEqual([]);
+    f.mesh.morphTargetInfluences[0] = 0.5;
+    f.sync();
+    expect(color(f.mesh)).toBeCloseTo(0.5);
+    expect(color(other)).toBeCloseTo(0.8);
+    expect(
+      changes
+        .read()
+        .unwrap()
+        .changes.map((change) => change.handle),
+    ).toEqual([handle(f.mesh)]);
+    changes.dispose();
+  });
+
+  it('shares a scalar source sampler while retaining compact alpha and color variants', () => {
+    const f = fixture();
+    const source = new DataTexture(new Uint8Array([128]), 1, 1, ThreeCore.RedFormat);
+    source.needsUpdate = true;
+    f.material.map = f.material.alphaMap = source;
+    f.sync();
+    const materialHandle = f.projection.world.get(f.entity(), MeshRenderer).unwrap().materials[0];
+    if (materialHandle === undefined) throw new Error('missing material');
+    const read = () => runtimeAssets(f.assets).borrow<MaterialAsset>(materialHandle).unwrap();
+    const color = read().values?.baseColorTexture as MaterialTextureValue;
+    const alpha = read().values?.alphaTexture as MaterialTextureValue;
+    expect(color.sampler).toBe(alpha.sampler);
+    const colorHandle = color.texture,
+      alphaHandle = alpha.texture;
+    if (typeof colorHandle !== 'number' || typeof alphaHandle !== 'number')
+      throw new Error('missing texture handles');
+    expect(colorHandle).not.toBe(alphaHandle);
+    expect(runtimeAssets(f.assets).borrow<TextureAsset>(colorHandle).unwrap().format).toBe(
+      'rgba8unorm',
+    );
+    expect(runtimeAssets(f.assets).borrow<TextureAsset>(alphaHandle).unwrap().format).toBe(
+      'r8unorm',
+    );
+    expect(source.format).toBe(ThreeCore.RedFormat);
+    const changes = f.assets.observe().unwrap();
+    f.sync();
+    expect(changes.read().unwrap().changes).toEqual([]);
+    f.material.map = null;
+    f.sync();
+    expect(runtimeAssets(f.assets).borrow<TextureAsset>(alphaHandle).ok).toBe(true);
     changes.dispose();
   });
 
@@ -668,26 +917,26 @@ describe('Three source to native World', () => {
         .read(f.projection.world.get(f.entity(mesh), MeshFilter).unwrap().assetHandle)
         .unwrap() as MeshAsset;
     f.sync();
-    expect(meshData(f.mesh).attributes.color).toBeUndefined();
-    expect(meshData(other).attributes.color?.[0]).toBe(0.25);
+    expect(copyMeshAttribute(meshData(f.mesh), 'color')).toBeUndefined();
+    expect(copyMeshAttribute(meshData(other), 'color')?.[0]).toBe(0.25);
     f.mesh.material = [colored, f.material];
     geometry.clearGroups();
     geometry.addGroup(0, 3, 0);
     geometry.addGroup(0, 3, 1);
     f.sync();
     const projected = meshData(f.mesh);
-    expect(projected.attributes.color?.length).toBe(count * 8);
-    expect(projected.attributes.color?.[count * 4]).toBe(1);
+    expect(copyMeshAttribute(projected, 'color')?.length).toBe(count * 8);
+    expect(copyMeshAttribute(projected, 'color')?.[count * 4]).toBe(1);
     expect(projected.indices?.[3]).toBe((projected.indices?.[0] ?? 0) + count);
     colors.setX(0, 0.75);
     colors.needsUpdate = true;
     f.sync();
-    expect(meshData(other).attributes.color?.[0]).toBe(0.75);
-    expect(meshData(f.mesh).attributes.color?.[0]).toBe(0.75);
+    expect(copyMeshAttribute(meshData(other), 'color')?.[0]).toBe(0.75);
+    expect(copyMeshAttribute(meshData(f.mesh), 'color')?.[0]).toBe(0.75);
     expect(geometry.getAttribute('position').count).toBe(count);
     geometry.deleteAttribute('color');
     f.sync();
-    expect(meshData(other).attributes.color).toBeUndefined();
+    expect(copyMeshAttribute(meshData(other), 'color')).toBeUndefined();
     colored.dispose();
   });
 
@@ -921,16 +1170,16 @@ describe('Three source to native World', () => {
     changes.dispose();
   });
 
-  it('ignores the WebGL compile hook as r184 WebGPU does', () => {
+  it('diagnoses a custom WebGL compile hook instead of silently losing its effect', () => {
     const f = fixture();
     const material = new MeshStandardMaterial();
     f.mesh.material = material;
     expect(f.sync).not.toThrow();
     material.onBeforeCompile = () => {};
-    expect(f.sync).not.toThrow();
+    expect(f.sync).toThrow('Material.onBeforeCompile');
   });
 
-  it('projects spot target, cone, power, finite range and camera layers into native light state', () => {
+  it('projects spot target, cone, power, decay, finite range and camera layers into native light state', () => {
     const f = fixture();
     const light = new SpotLight(0xffffff, 20, 0, Math.PI / 3, 0.25, 2);
     light.position.set(0, 0, 3);
@@ -944,19 +1193,27 @@ describe('Three source to native World', () => {
     expect(read()).toMatchObject({
       intensity: 20,
       range: Infinity,
+      decay: 2,
       outerConeDeg: 60,
       innerConeDeg: 45,
       castShadow: false,
     });
     light.target.position.x = 3;
     light.power = 30 * Math.PI;
+    light.decay = 0;
     light.distance = 7;
     light.angle = Math.PI / 4;
     light.penumbra = 0;
     f.sync();
     expect(read().direction[0]).toBeCloseTo(Math.SQRT1_2);
     expect(read().direction[2]).toBeCloseTo(-Math.SQRT1_2);
-    expect(read()).toMatchObject({ intensity: 30, range: 7, outerConeDeg: 45, innerConeDeg: 45 });
+    expect(read()).toMatchObject({
+      intensity: 30,
+      range: 7,
+      decay: 0,
+      outerConeDeg: 45,
+      innerConeDeg: 45,
+    });
     light.layers.set(2);
     f.sync();
     expect(read().intensity).toBe(0);

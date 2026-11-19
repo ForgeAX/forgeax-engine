@@ -94,7 +94,7 @@ export async function verifyOutput(
   renderer.toneMappingExposure = 0;
   expect(() => renderer.render(scene, camera)).toThrow('Zero exposure requires native Camera');
   renderer.toneMappingExposure = 1;
-  // r184 WebGPU applies output conversion to the completed frame; toneMapped is ignored.
+  // r187 WebGPU applies output conversion to the completed frame; toneMapped is ignored.
   const before = displayPixels(await renderer.captureFrame(scene, camera));
   untoned.material.toneMapped = true;
   await readyFrames(renderer, scene, camera);

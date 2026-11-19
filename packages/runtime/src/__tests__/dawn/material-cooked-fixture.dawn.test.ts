@@ -86,7 +86,7 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
       expect(cooked).toBeDefined();
       expect(cooked?.programs?.[0]?.artifact?.digest).toMatch(/^sha256:/);
       expect(cooked?.artifactDigest).toMatch(/^sha256:/);
-      expect(cooked?.receipt?.schemaVersion).toBe('material-cook/4');
+      expect(cooked?.receipt?.schemaVersion).toBe('material-cook/5');
       expect(cooked?.receipt?.identity?.layoutIdentity).toMatch(/^sha256-/);
       expect(cooked?.receipt?.identity?.programIdentity).toMatch(/^sha256:/);
       expect(cooked?.receipt?.identity?.pipelineIdentity).toMatch(/^sha256:/);
@@ -114,7 +114,7 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
 
   it('keeps cooked layout identity and authored coordinate transforms', () => {
     const cooked = root?.payload.cooked;
-    expect(cooked?.receipt?.schemaVersion).toBe('material-cook/4');
+    expect(cooked?.receipt?.schemaVersion).toBe('material-cook/5');
     expect(cooked?.receipt?.identity?.layoutIdentity).toMatch(/^sha256-/);
     expect(cooked?.receipt?.identity?.programIdentity).toMatch(/^sha256:/);
     expect(cooked?.receipt?.identity?.pipelineIdentity).toMatch(/^sha256:/);
@@ -228,7 +228,7 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
       const attached = renderer.attach(world);
       if (!attached.ok) throw attached.error;
       const lease = attached.value;
-      const frame = { leases: [lease], camera: { lease }, environment: { lease } };
+      const frame = { source: lease };
       const draw = () => {
         world.update().unwrap();
         const rendered = renderer.draw(frame);

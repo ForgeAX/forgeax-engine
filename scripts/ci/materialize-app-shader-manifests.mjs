@@ -8,9 +8,10 @@ import {
   readFileSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { writeArtifactJson } from '../lib/artifact-json.mjs';
+import { readShaderManifestText } from '../lib/shader-manifest.mjs';
 import {
   APP_SHADER_MANIFEST_DELTA,
   mergeAppShaderManifest,
@@ -178,7 +179,7 @@ for (const appRoot of appRoots) {
       try {
         const identity = fileIdentity(target);
         if (processedManifests.has(identity)) continue;
-        const appManifest = JSON.parse(readFileSync(target, 'utf8'));
+        const appManifest = JSON.parse(readShaderManifestText(target));
         if (appManifest?.forgeaxTransport === APP_SHADER_MANIFEST_DELTA) {
           if (
             Array.isArray(appManifest.entries) &&
@@ -188,7 +189,7 @@ for (const appRoot of appRoots) {
           ) {
             if (emptyDeltaSource === null) {
               const runtimeManifest = mergeAppShaderManifest(shared.manifest, appManifest, target);
-              writeFileSync(target, `${JSON.stringify(runtimeManifest, null, 2)}\n`);
+              writeArtifactJson(target, runtimeManifest);
               emptyDeltaSource = target;
             } else {
               unlinkSync(target);
@@ -196,7 +197,7 @@ for (const appRoot of appRoots) {
             }
           } else {
             const runtimeManifest = mergeAppShaderManifest(shared.manifest, appManifest, target);
-            writeFileSync(target, `${JSON.stringify(runtimeManifest, null, 2)}\n`);
+            writeArtifactJson(target, runtimeManifest);
           }
           merged.push({ app, path: relative(root, target).split('\\').join('/') });
         }

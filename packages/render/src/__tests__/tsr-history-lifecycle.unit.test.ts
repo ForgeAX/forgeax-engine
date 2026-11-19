@@ -1,4 +1,5 @@
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
+import { textureFormatBlock } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -206,9 +207,22 @@ it('counts the actual half-resolution Cloud histories beside TSR', async () => {
     { antialias: 'tsr' } as CameraSnapshot,
   );
   try {
-    const allocated = textures.mock.calls.reduce((sum, [d]) => {
-      const size = d.size as { width: number; height: number };
-      return sum + size.width * size.height * (d.format === 'rgba8unorm' ? 4 : 8);
+    const descriptors = textures.mock.calls.map(([descriptor]) => descriptor);
+    expect(
+      descriptors.filter((descriptor) => descriptor.label?.startsWith('cloud-history-depth-')),
+    ).toMatchObject([
+      { format: 'rgba32float', size: { width: 100, height: 75 } },
+      { format: 'rgba32float', size: { width: 100, height: 75 } },
+    ]);
+    const allocated = descriptors.reduce((sum, descriptor) => {
+      const { format } = descriptor;
+      if (format === undefined) {
+        throw new Error('Temporal texture descriptor must declare a format');
+      }
+      const { width, height } = descriptor.size as { width: number; height: number };
+      const { blockWidth, blockHeight, bytesPerBlock } = textureFormatBlock(format);
+      const blocks = Math.ceil(width / blockWidth) * Math.ceil(height / blockHeight);
+      return sum + blocks * bytesPerBlock;
     }, 0);
     expect(
       inspectTemporal(

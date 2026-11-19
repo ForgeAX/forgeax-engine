@@ -10,6 +10,10 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import { PostProcessError } from '../post-process-errors';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { RecoveryPostProcessResources } from '../recovery/types';
+import {
+  isDeferredPostProcessEntry,
+  preparedPostProcessSource,
+} from './deferred-post-process-entry';
 
 interface PostProcessParamsCandidate {
   readonly buffers: Map<string, Buffer>;
@@ -19,7 +23,7 @@ interface PostProcessParamsCandidate {
 /** Own post-process declarations and their device-bound parameter buffer lifecycle. */
 export function createPostProcessParamsOwner(
   internals: Pick<RenderSystemInternals, 'device' | 'errorRegistry'>,
-  invalidate: (id: string, moduleLabel: string) => void,
+  invalidate: (id: string, moduleLabel: string | undefined) => void,
 ) {
   // CPU post-process declarations are owned by the feature host and remain live
   // across recovery. Only device-bound buffers and pipelines are rebuilt here.
@@ -126,7 +130,8 @@ export function createPostProcessParamsOwner(
     const accepted = postProcessParamsBuffers.has(id) ? lookupPostProcess(id) : undefined;
     return (
       accepted !== undefined &&
-      postProcessShaderEntrySignature(accepted) === postProcessShaderEntrySignature(entry)
+      ((accepted === entry && isDeferredPostProcessEntry(entry)) ||
+        postProcessShaderEntrySignature(accepted) === postProcessShaderEntrySignature(entry))
     );
   };
   /**
@@ -175,7 +180,8 @@ export function createPostProcessParamsOwner(
       if (
         existing !== undefined &&
         accepted !== undefined &&
-        postProcessShaderEntrySignature(accepted) === postProcessShaderEntrySignature(entry)
+        ((accepted === entry && isDeferredPostProcessEntry(entry)) ||
+          postProcessShaderEntrySignature(accepted) === postProcessShaderEntrySignature(entry))
       ) {
         next.set(id, existing);
         continue;
@@ -295,7 +301,9 @@ export function createPostProcessParamsOwner(
         builtinPostProcessEntries.set(id, entry);
         if (paramsBuffer !== undefined)
           postProcessParamsBuffers = new Map(postProcessParamsBuffers).set(id, paramsBuffer);
-        const moduleLabel = postProcessShaderModuleLabel(entry.source);
+        const registeredModuleLabel = isDeferredPostProcessEntry(entry)
+          ? undefined
+          : postProcessShaderModuleLabel(entry);
         return () => {
           if (builtinPostProcessEntries.get(id) === entry) {
             builtinPostProcessEntries.delete(id);
@@ -306,7 +314,13 @@ export function createPostProcessParamsOwner(
             postProcessParamsBuffers = new Map(postProcessParamsBuffers);
             postProcessParamsBuffers.delete(id);
           }
-          invalidate(id, moduleLabel);
+          const source =
+            registeredModuleLabel === undefined ? preparedPostProcessSource(entry) : undefined;
+          invalidate(
+            id,
+            registeredModuleLabel ??
+              (source === undefined ? undefined : postProcessShaderModuleLabel(source)),
+          );
         };
       } catch (cause) {
         if (paramsBuffer !== undefined) internals.device.destroyBuffer(paramsBuffer);

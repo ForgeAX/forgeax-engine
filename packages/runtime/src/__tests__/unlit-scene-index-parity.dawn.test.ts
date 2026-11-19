@@ -174,7 +174,7 @@ it('renders opaque unlit rows identically from the GPU-driven lane and the direc
         propagateTransforms(world).unwrap();
         frame = await drawReadyFrame(
           renderer,
-          { leases: [lease], camera: { lease }, environment: { lease }, geometryLane },
+          { source: lease, geometryLane },
           index === FRAMES - 1 ? ['linear-ldr'] : undefined,
         );
       }

@@ -1,12 +1,15 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `soundtrack` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { type AudioState, AudioSource, type AudioBackend, audioPlugin } from '@forgeax/engine-audio';
+import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Time, Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -37,7 +40,7 @@ const scene = buildSoundtrackWorld(world, canvas.width / Math.max(canvas.height,
 const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-soundtrack: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-const audio = world.getResource<AudioBackend>('AudioEngine');
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 if (!audio) throw new Error('bevy-soundtrack: AudioEngine resource missing');
 
 let peacefulHandle: AssetHandle<'audio'> = HANDLE_NONE;
@@ -76,12 +79,12 @@ function writeTracks(): void {
   return;
 }
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'soundtrack-transition',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: () => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const space = input?.keyboard.down(' ') ?? false;
     if (space && !previousSpace && loaded === 2) {
       if (!started) started = true;
@@ -105,6 +108,7 @@ world.addSystem(Update, {
     controlStatus.textContent = `state=${current} | target=${target} | transition=${Math.min(1, transitionElapsed / FADE_SECONDS).toFixed(2)} | peaceful=${peacefulVolume.toFixed(2)} | battle=${battleVolume.toFixed(2)}`;
   },
 });
+world.addSystem(Update, systemToken1);
 
 const startedResult = app.start();
 if (!startedResult.ok) throw new Error(`bevy-soundtrack: app.start failed: ${startedResult.error.code}`);

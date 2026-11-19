@@ -32,6 +32,16 @@ try {
       if (options.typecheck.only === true) project.config.typecheck.enabled = true;
     }
   }
+  // A checkout can contain other active worktrees. Their tests and declarations
+  // belong to their own checkout, including projects with default include globs.
+  const checkoutExcludes = ['**/.worktrees/**', '**/.claude/worktrees/**'];
+  for (const project of context.projects) {
+    // createVitest does not apply these workspace CLI limits to resolved
+    // projects. The pool schedules by each project's maxWorkers.
+    if (options.maxWorkers !== undefined) project.config.maxWorkers = options.maxWorkers;
+    project.config.exclude = [...project.config.exclude, ...checkoutExcludes];
+    project.config.typecheck.exclude = [...project.config.typecheck.exclude, ...checkoutExcludes];
+  }
   // Vitest does not propagate workspace-level CLI exclusions into each
   // resolved project when using createVitest(). Preserve the CLI contract so
   // split coverage can run expensive semantic preflights exactly once.

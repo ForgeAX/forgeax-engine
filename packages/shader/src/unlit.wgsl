@@ -7,14 +7,18 @@
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, applyLodCoverage}
 #else
+#ifdef GPU_SCENE_DIRECT
+#import forgeax_view::common::{sceneIndexDraw}
+#else
 #import forgeax_view::common::{meshes, instances}
+#endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
-#import forgeax_material::alpha_hash::{applyAlphaHash}
-#import forgeax_material::alpha_hash::{alphaCoverage, materialOutputAlpha, materialOutputColor}
+#import forgeax_material::alpha_hash::{alphaHashThreshold, alphaCoverageValue, materialOutputAlpha, materialOutputColor}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
-#import forgeax_view::fog::{translucent_fog}
+#import forgeax_view::fog::{forward_fog}
+#import forgeax_view::fog::{vertex_height_fog}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
 #import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
 
@@ -26,6 +30,9 @@
 #pragma variant_axis SKINNING_DISABLED
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #pragma variant_axis LOD_DITHER
+#pragma variant_axis GPU_SCENE_DIRECT
+#pragma variant_axis ALPHA_MASK
+#pragma variant_axis CLIPPING_PLANES
 
 // @forgeax/engine-shader - unlit.wgsl (M5 feat-20260511-asset-system-v1;
 // refactored M5 T-18 feat-20260512-naga-oil-composition-hmr to pull View +
@@ -63,8 +70,12 @@
 
 struct Material {
   baseColor : vec4<f32>,
+#ifndef ALPHA_CLIPPING_DISABLED
   alphaCutoff : f32,
+#endif
+#ifndef ALPHA_HASH_DISABLED
   alphaHash : f32,
+#endif
   shadowAlphaMode : f32,
   alphaMode : f32,
   alphaToCoverage : f32,
@@ -101,11 +112,14 @@ struct Material {
 @group(1) @binding(46) var<storage, read> sceneMaterials : array<Material>;
 @group(3) @binding(2) var<storage, read> visibleItems : array<vec4<u32>>;
 var<private> material : Material;
+#if LOD_DITHER == true
+var<private> unlitLodFade : f32;
+#endif
 
-fn selectSceneMaterial(address : vec2<u32>, position : vec2<f32>) {
+fn selectSceneMaterial(address : vec2<u32>) {
   material = sceneMaterials[address.x];
 #if LOD_DITHER == true
-  applyLodCoverage(position, bitcast<f32>(address.y));
+  unlitLodFade = bitcast<f32>(address.y);
 #endif
 }
 #else
@@ -152,7 +166,7 @@ struct VsOut {
   @location(0) uv : vec2<f32>,
   @location(5) alphaUv : vec2<f32>,
   @location(1) worldPos : vec3<f32>,
-  @location(2) worldNormal : vec3<f32>,
+  @location(2) worldNormal : vec4<f32>,
 #ifdef VERTEX_COLOR_AVAILABLE
   @location(14) color : vec4<f32>,
 #endif
@@ -202,8 +216,13 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   // Scene rows carry the composed object world.
   let localToWorld = sceneIndexDraw(visible.x).world;
 #else
+#ifdef GPU_SCENE_DIRECT
+  // The draw's first instance is the slot's first scene instance row.
+  let localToWorld = sceneIndexDraw(idx).world;
+#else
   // Entity world from the dynamic-offset Mesh row times the per-instance local.
   let localToWorld = meshes[0].worldFromLocal * instances[idx].localFromInstance;
+#endif
 #endif
 #endif
   let world = localToWorld * vec4<f32>(in.pos, 1.0);
@@ -216,7 +235,7 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   out.uv = unlitUv(in, material.baseColorTextureCoordinatesMetadata.x, material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesRotation);
   out.alphaUv = unlitUv(in, material.alphaTextureCoordinatesMetadata.x, material.alphaTextureCoordinatesTransform, material.alphaTextureCoordinatesRotation);
   out.worldPos = world.xyz;
-  out.worldNormal = transformNormal(localToWorld, in.normal);
+  out.worldNormal = vec4<f32>(transformNormal(localToWorld, in.normal), vertex_height_fog(view, world.xyz));
 #ifdef VERTEX_COLOR_AVAILABLE
   out.color = in.color;
 #endif
@@ -231,7 +250,7 @@ fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
 @vertex
 fn vs_shadow(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
   var out = unlitVertex(in, idx);
-  out.clip = projectShadowPosition(vec4<f32>(out.worldPos, 1.0), out.worldNormal);
+  out.clip = projectShadowPosition(vec4<f32>(out.worldPos, 1.0), out.worldNormal.xyz);
   return out;
 }
 
@@ -251,7 +270,7 @@ fn unlitViewBasis() -> mat3x3<f32> {
 // View-space shading normal (x right, y up, z toward the camera); back faces
 // flip so double-sided surfaces visualize the side the camera sees.
 fn unlitViewNormal(in : VsOut, frontFacing : bool) -> vec3<f32> {
-  let n = normalize(in.worldNormal) * select(-1.0, 1.0, frontFacing);
+  let n = normalize(in.worldNormal.xyz) * select(-1.0, 1.0, frontFacing);
   return normalize(n * unlitViewBasis());
 }
 
@@ -281,19 +300,81 @@ fn materialVertexColor(in : VsOut) -> vec4<f32> {
 #endif
 }
 
-// Color, AO and temporal data share the same visible-surface predicate.
-fn unlitSurfaceCoverage(positionWS : vec3<f32>, positionOS : vec3<f32>, textureAlpha : f32, vertexAlpha : f32, mappedAlpha : f32) -> f32 {
-  applyViewClipping(positionWS, false);
-#ifdef MATERIAL_CLIPPING_AVAILABLE
-  applyLocalClipping(positionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
+fn unlitAlphaCutoff() -> f32 {
+#ifndef ALPHA_CLIPPING_DISABLED
+  return material.alphaCutoff;
+#else
+  return 0.0;
 #endif
-  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(textureAlpha) * vertexAlpha * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
-  applyAlphaHash(coverage, positionOS, material.alphaHash);
+}
+
+fn unlitAlphaHash() -> f32 {
+#ifndef ALPHA_HASH_DISABLED
+  return material.alphaHash;
+#else
+  return 0.0;
+#endif
+}
+
+struct UnlitCoverageTest {
+  cutoff : f32,
+  hash : f32,
+  cutoffEnabled : bool,
+  hashEnabled : bool,
+};
+
+// Derivatives precede every coverage, LOD and clipping discard. Color/depth
+// omit this call entirely in the opaque variant; temporal keeps its existing
+// exact material coverage even in the COVERAGE_ONLY publication lane.
+fn unlitCoverageTest(positionOS : vec3<f32>, smoothing : f32, hash : f32) -> UnlitCoverageTest {
+  let derivative = max(length(dpdx(positionOS)), length(dpdy(positionOS)));
+  var threshold = 0.0;
+  if (hash > 0.5) { threshold = alphaHashThreshold(positionOS, derivative); }
+  let cutoff = unlitAlphaCutoff();
+  return UnlitCoverageTest(select(cutoff, 0.0, smoothing > 0.5), threshold, cutoff > 0.0, hash > 0.5);
+}
+
+fn unlitCoverageRejected(coverage : f32, test : UnlitCoverageTest) -> bool {
+  return (test.cutoffEnabled && coverage <= test.cutoff) || (test.hashEnabled && coverage < test.hash);
+}
+
+fn applyUnlitClipping(positionWS : vec3<f32>, pixel : vec2<f32>, shadow : bool) {
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
+#if LOD_DITHER == true
+  applyLodCoverage(pixel, unlitLodFade);
+#endif
+#endif
+#if CLIPPING_PLANES == true
+  applyViewClipping(positionWS, shadow);
+#endif
+#ifdef MATERIAL_CLIPPING_AVAILABLE
+  applyLocalClipping(positionWS, shadow, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
+#endif
+}
+
+// Color and surface-data share the same compile-time material coverage lane.
+fn unlitCoverageValue(textureAlpha : f32, vertexAlpha : f32, mappedAlpha : f32) -> f32 {
+  let coverage = alphaCoverageValue(material.baseColor.a * unlitTextureAlpha(textureAlpha) * vertexAlpha * mappedAlpha, unlitAlphaCutoff(), material.alphaToCoverage);
   return coverage;
 }
 
+fn unlitColorCoverageRejected(coverage : f32, in : VsOut) -> bool {
+#if ALPHA_MASK == true
+  let test = unlitCoverageTest(in.positionOS, material.alphaToCoverage, unlitAlphaHash());
+  return unlitCoverageRejected(coverage, test);
+#else
+  return false;
+#endif
+}
+
+// Shading returns coverage rejection; only fragment entry points discard.
+struct UnlitColor {
+  color : vec4<f32>,
+  rejected : bool,
+};
+
 // Shaded, fogged straight-alpha color shared by the sorted and OIT entry points.
-fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
+fn unlitColor(in : VsOut, frontFacing : bool) -> UnlitColor {
   // Matcap reuses the base-color slot as its sphere image: one sample, one
   // binding layout, and only the lookup coordinate changes.
   var sampleUv = in.uv;
@@ -307,7 +388,8 @@ fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, sampleUv, sampleScale);
   let vertexColor = materialVertexColor(in);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
-  let coverage = unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, vertexColor.a, mappedAlpha);
+  let coverage = unlitCoverageValue(texSample.a, vertexColor.a, mappedAlpha);
+  let rejected = unlitColorCoverageRejected(coverage, in);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
   // Normal visualization is an exact encoded readback (Three fog: false).
   if (abs(material.shading - UNLIT_SHADING_NORMAL) < 0.5 || material.shading > 2.5) {
@@ -315,19 +397,24 @@ fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
     if (material.shading > 2.5) {
       normalColor = select(pow((normalColor + 0.055) / 1.055, vec3<f32>(2.4)), normalColor / 12.92, normalColor <= vec3<f32>(0.04045));
     }
-    return vec4<f32>(materialOutputColor(normalColor, alpha, material.alphaMode), alpha);
+    return UnlitColor(vec4<f32>(materialOutputColor(normalColor, alpha, material.alphaMode), alpha), rejected);
   }
   let shaded = materialOutputColor(material.baseColor.rgb * texSample.rgb * vertexColor.rgb, alpha, material.alphaMode);
-  let fogged = translucent_fog(view, in.worldPos, shaded, alpha);
-  return vec4<f32>(fogged, alpha);
+  let fogged = forward_fog(view, in.worldPos, in.worldNormal.w, shaded, alpha);
+  return UnlitColor(vec4<f32>(fogged, alpha), rejected);
 }
 
 @fragment
 fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) vec4<f32> {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
-  let color = unlitColor(in, frontFacing);
+  let shaded = unlitColor(in, frontFacing);
+#if ALPHA_MASK == true
+  if (shaded.rejected) { discard; }
+#endif
+  applyUnlitClipping(in.worldPos, in.clip.xy, false);
+  let color = shaded.color;
 #ifdef COVERAGE_ONLY
   return vec4<f32>(1.0);
 #else
@@ -345,21 +432,30 @@ fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 @fragment
 fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
-  unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, materialVertexColor(in).a, mappedAlpha);
-  return encodeStandardNormalRoughness(in.worldNormal * select(-1.0, 1.0, frontFacing), 1.0);
+  let coverage = unlitCoverageValue(texSample.a, materialVertexColor(in).a, mappedAlpha);
+#if ALPHA_MASK == true
+  if (unlitColorCoverageRejected(coverage, in)) { discard; }
+#endif
+  applyUnlitClipping(in.worldPos, in.clip.xy, false);
+  return encodeStandardNormalRoughness(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), 1.0);
 }
 
 // Weighted blended OIT accumulation for straight-alpha blend states.
 @fragment
 fn fs_oit(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
-  let color = unlitColor(in, frontFacing);
+  let shaded = unlitColor(in, frontFacing);
+#if ALPHA_MASK == true
+  if (shaded.rejected) { discard; }
+#endif
+  applyUnlitClipping(in.worldPos, in.clip.xy, false);
+  let color = shaded.color;
   return oitAccumulate(color.rgb * color.a, color.a, distance(in.worldPos, view.cameraPos));
 }
 
@@ -367,9 +463,14 @@ fn fs_oit(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
 @fragment
 fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
-  let color = unlitColor(in, frontFacing);
+  let shaded = unlitColor(in, frontFacing);
+#if ALPHA_MASK == true
+  if (shaded.rejected) { discard; }
+#endif
+  applyUnlitClipping(in.worldPos, in.clip.xy, false);
+  let color = shaded.color;
   return oitAccumulate(color.rgb, color.a, distance(in.worldPos, view.cameraPos));
 }
 
@@ -378,13 +479,8 @@ fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -
 @fragment
 fn fs_shadow(in : VsOut) {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
-  applyViewClipping(in.worldPos, true);
-#ifdef MATERIAL_CLIPPING_AVAILABLE
-  applyLocalClipping(in.worldPos, true, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
-#endif
-
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = materialVertexColor(in);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
@@ -393,12 +489,17 @@ fn fs_shadow(in : VsOut) {
   // derivative-bearing coverage must stay in uniform control flow.
   let textureOnly = material.shadowAlphaMode > 0.5;
   let textureAlpha = unlitTextureAlpha(texSample.a) * mappedAlpha;
-  let coverage = alphaCoverage(
+  let smoothing = select(material.alphaToCoverage, 0.0, textureOnly);
+  let coverage = alphaCoverageValue(
     select(material.baseColor.a * vertexColor.a, 1.0, textureOnly) * textureAlpha,
-    material.alphaCutoff,
-    select(material.alphaToCoverage, 0.0, textureOnly),
+    unlitAlphaCutoff(),
+    smoothing,
   );
-  applyAlphaHash(coverage, in.positionOS, select(material.alphaHash, 0.0, textureOnly));
+#if ALPHA_MASK == true
+  let test = unlitCoverageTest(in.positionOS, smoothing, select(unlitAlphaHash(), 0.0, textureOnly));
+  if (unlitCoverageRejected(coverage, test)) { discard; }
+#endif
+  applyUnlitClipping(in.worldPos, in.clip.xy, true);
 }
 
 struct TemporalVsOut {
@@ -417,6 +518,10 @@ struct TemporalVsOut {
   @location(7) @interpolate(flat) materialAddress : vec2<u32>,
   // x = color-history reactive mask, y = current-frame motion validity.
   @location(8) @interpolate(flat) sceneTemporal : vec2<f32>,
+#else
+#ifdef GPU_SCENE_DIRECT
+  @location(8) @interpolate(flat) sceneTemporal : vec2<f32>,
+#endif
 #endif
 };
 
@@ -438,9 +543,13 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   previousWorld = sceneIndexDraw(visibleItems[idx].x).previousWorld * vec4<f32>(in.pos, 1.0);
 #else
+#ifdef GPU_SCENE_DIRECT
+  previousWorld = sceneIndexDraw(idx).previousWorld * vec4<f32>(in.pos, 1.0);
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
   previousWorld = meshes[0].previousWorldFromLocal *
     instances[idx].previousLocalFromInstance * vec4<f32>(in.pos, 1.0);
+#endif
 #endif
 #endif
 #endif
@@ -448,6 +557,10 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   out.materialAddress = current.materialAddress;
   out.sceneTemporal = sceneIndexDraw(visibleItems[idx].x).temporal;
+#else
+#ifdef GPU_SCENE_DIRECT
+  out.sceneTemporal = sceneIndexDraw(idx).temporal;
+#endif
 #endif
 #if SKINNING_DISABLED == false
   out.skinHistoryValid = select(0u, 1u, skinTaskHistoryValid(descriptor));
@@ -478,12 +591,15 @@ fn temporalVertexColor(in : TemporalVsOut) -> vec4<f32> {
 @fragment
 fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  selectSceneMaterial(in.materialAddress, in.clip.xy);
+  selectSceneMaterial(in.materialAddress);
 #endif
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = temporalVertexColor(in);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
-  let coverage = unlitSurfaceCoverage(in.clippingPositionWS, in.positionOS, texSample.a, vertexColor.a, mappedAlpha);
+  let coverage = unlitCoverageValue(texSample.a, vertexColor.a, mappedAlpha);
+  let test = unlitCoverageTest(in.positionOS, material.alphaToCoverage, unlitAlphaHash());
+  if (unlitCoverageRejected(coverage, test)) { discard; }
+  applyUnlitClipping(in.clippingPositionWS, in.clip.xy, false);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
 #ifdef COVERAGE_ONLY
   return vec4<f32>(1.0);
@@ -494,14 +610,19 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   reactive = in.sceneTemporal.x;
   motionValid = in.sceneTemporal.y > 0.5;
 #else
+#ifdef GPU_SCENE_DIRECT
+  reactive = in.sceneTemporal.x;
+  motionValid = in.sceneTemporal.y > 0.5;
+#else
 #if STORAGE_BUFFER_AVAILABLE == true
   reactive = meshes[0].temporal.x;
   motionValid = meshMotionValid(meshes[0].temporal.y);
 #endif
 #endif
+#endif
   motionValid = motionValid && in.skinHistoryValid != 0u;
   // Material coverage is shared shader state, never copied into every Mesh row.
-  if (material.alphaHash <= 0.5 && alpha < 1.0) { reactive = 1.0; }
+  if (unlitAlphaHash() <= 0.5 && alpha < 1.0) { reactive = 1.0; }
   return packSceneTemporalV1WithValidity(
     in.currentClip,
     in.previousClip,

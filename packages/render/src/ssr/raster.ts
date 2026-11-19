@@ -15,6 +15,7 @@ import {
 import { createRasterState, type RasterState } from '../raster-graph-state';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 import type { SsrSpatialGraphInputs } from './graph';
 import { SSR_TEMPORAL_PARAMS_BYTES, type SsrSpatialResources } from './resources';
 
@@ -59,6 +60,13 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
       ],
       colorAttachments: outputs.map(({ view }) => ({ view, loadOp: 'clear', storeOp: 'store' })),
       encodeDirect: (pass, frame: RenderGraphFrame, resolver) => {
+        if (
+          input.gbufferV2 === true &&
+          (frame as RenderPipelineFrame).ssrShaders?.gbuffer !== 'standard-gbuffer/2'
+        )
+          throw computePipelineError(
+            'SSR standard-gbuffer/2 source contract; rebuild the Engine shader manifest',
+          );
         const code = (frame as RenderPipelineFrame).ssrShaders?.[source];
         if (
           code === undefined ||
@@ -84,6 +92,7 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
           'ssr_fullscreen',
           entry,
           outputs.map(({ format }) => format),
+          input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
         );
         pass.setPipeline(state.pipeline);
         pass.setBindGroup(
@@ -131,7 +140,8 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   );
   if (!trace.ok) return trace;
   const temporal = input.temporal;
-  if (temporal === undefined || resolved === undefined) return ok(Object.freeze(names));
+  if (temporal === undefined || temporal.profile !== 'opaque' || resolved === undefined)
+    return ok(Object.freeze(names));
   // MRT writes separate history, surface metadata and presented radiance together.
   const scratchTexture = graph.createTexture('ssr-resolved-fragment.scratch', {
     format: 'rgba16float',

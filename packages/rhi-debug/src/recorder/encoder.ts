@@ -187,12 +187,14 @@ export function createCommandEncoderProxy(
             : getHandleId(s, desc.timestampWrites.querySet as object, 'querySet'),
         desc: {
           ...(desc.label === undefined ? {} : { label: desc.label }),
-          colorAttachments: Array.from(desc.colorAttachments).map((attachment) =>
-            attachment === null || attachment === undefined ? attachment : { ...attachment },
-          ),
+          colorAttachments: Array.from(desc.colorAttachments).map((attachment) => {
+            if (attachment === null || attachment === undefined) return attachment;
+            const { view: _view, resolveTarget: _resolveTarget, ...recorded } = attachment;
+            return recorded;
+          }),
           ...(desc.depthStencilAttachment === undefined
             ? {}
-            : { depthStencilAttachment: { ...desc.depthStencilAttachment } }),
+            : { depthStencilAttachment: recordDepthAttachment(desc.depthStencilAttachment) }),
           ...(desc.timestampWrites === undefined
             ? {}
             : { timestampWrites: recordTimestampWrites(desc.timestampWrites) }),
@@ -448,6 +450,13 @@ export function createCommandEncoderProxy(
       return res;
     },
   };
+}
+
+function recordDepthAttachment(
+  attachment: NonNullable<RenderPassDescriptor['depthStencilAttachment']>,
+) {
+  const { view: _view, ...recorded } = attachment;
+  return recorded;
 }
 
 function recordTimestampWrites(writes: RenderPassDescriptor['timestampWrites']) {

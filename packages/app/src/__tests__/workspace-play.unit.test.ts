@@ -12,9 +12,19 @@ import {
   createEngineWorkspaceRuntime,
   type EngineWorkspacePlay,
   type EngineWorkspacePreview,
+  type EngineWorkspaceProjectReference,
 } from '../workspace';
 import { engineWorkspaceTargetToolsPlugin } from '../workspace-target-tools';
 import { createEngineWorkspaceTools, snapshotEngineWorkspace } from '../workspace-tools';
+
+function projectSession(root: string, generation: number): EngineWorkspaceProjectReference {
+  return {
+    project: { id: 'project', root },
+    handle: {},
+    status: { phase: 'preparing', sessionId: `project-${generation}`, generation },
+    subscribeStatus: () => () => {},
+  };
+}
 
 it('cancels unpublished Play without waiting for a browser', async () => {
   const controller = new AbortController();
@@ -36,7 +46,7 @@ it('cancels unpublished Play without waiting for a browser', async () => {
     close,
   };
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: 'project', root }, handle: {} }),
+    openProject: ({ root, generation }) => projectSession(root, generation),
     closeProject() {},
     listAssets: () => [],
     openPreview: () => game,
@@ -81,12 +91,33 @@ it.each([
     close,
   };
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({
-      project: { id: 'project', root },
-      handle: {},
-      browserGeneration: 1,
-      get phase() {
-        return projectPhase;
+    openProject: ({ root, generation }) => ({
+      ...projectSession(root, generation),
+      get status() {
+        const sessionId = `project-${generation}`;
+        const document = {
+          sessionId,
+          targetId: 'editor',
+          url: 'http://localhost/',
+          browserGeneration: 1,
+        };
+        return projectPhase === 'starting'
+          ? { phase: 'starting' as const, sessionId, generation, browserGeneration: 1, document }
+          : {
+              phase: 'running' as const,
+              sessionId,
+              generation,
+              browserGeneration: 1,
+              document,
+              target: {
+                targetId: 'editor',
+                sessionId,
+                worldId: 'editor-world',
+                headed: true,
+                width: 320,
+                height: 240,
+              },
+            };
       },
     }),
     closeProject() {},
@@ -139,7 +170,7 @@ it.each([
     close,
   };
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: 'project', root }, handle: {} }),
+    openProject: ({ root, generation }) => projectSession(root, generation),
     closeProject() {},
     listAssets: () => [],
     openPreview: () => game,
@@ -203,7 +234,7 @@ it.each([
     close,
   };
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: 'project', root }, handle: {} }),
+    openProject: ({ root, generation }) => projectSession(root, generation),
     closeProject() {},
     listAssets: () => [],
     openPreview: () => game,
@@ -273,7 +304,7 @@ it('routes the same API to edit and Play owners and rejects unrelated run target
     close: closeGame,
   };
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: 'project', root }, handle: {} }),
+    openProject: ({ root, generation }) => projectSession(root, generation),
     closeProject() {},
     listAssets: () => [{ guid: 'scene', kind: 'scene' }],
     openPreview: () => editor,
@@ -417,7 +448,7 @@ it('owns concurrent preview allocations without losing earlier targets or cleanu
   const closes = [vi.fn(), vi.fn(), vi.fn()];
   let next = 0;
   const runtime = createEngineWorkspaceRuntime({
-    openProject: ({ root }) => ({ project: { id: 'project', root }, handle: {} }),
+    openProject: ({ root, generation }) => projectSession(root, generation),
     closeProject() {},
     listAssets: () => [],
     openPreview: ({ asset }) => {

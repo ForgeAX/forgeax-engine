@@ -1,0 +1,31 @@
+{
+  "runId": 43746993655,
+  "head": "92b51c2042a603ea78def434c340bffef66c0170",
+  "completedOwnerSeconds": {
+    "diagnostic-pages": 664.075434881,
+    "diagnostic-texture": 265.104691721,
+    "diagnostic-gpu-2d": 110.349123951,
+    "diagnostic-gpu-array": 110.804872908,
+    "diagnostic-pack-authoring": 124.282385903,
+    "diagnostic-pack-save": 78.201554434,
+    "diagnostics": 1352.818063798
+  },
+  "completedStepSeconds": {
+    "tools/view/scripts/verify-diagnostic-pages-integration.mjs": 664.075434881,
+    "tools/view/scripts/verify-texture-preview-integration.mjs": 265.104691721,
+    "tools/view/scripts/verify-gpu-texture-preview.mjs [2d]": 110.349123951,
+    "tools/view/scripts/verify-gpu-texture-preview.mjs [array]": 110.804872908,
+    "tools/view/scripts/verify-pack-authoring-integration.mjs": 124.282385903,
+    "tools/view/scripts/verify-pack-save-reopen-integration.mjs": 78.201554434
+  },
+  "uncompletedOwners": ["modeling"],
+  "retainedOwnerSeconds": {
+    "modeling": 744.92
+  },
+  "retainedOwnerRun": {
+    "modeling": 41691406870
+  },
+  "prepareSeconds": 9.750309896,
+  "setupAndTransferReserveSeconds": 120,
+  "jobBudgetSeconds": 1800
+}

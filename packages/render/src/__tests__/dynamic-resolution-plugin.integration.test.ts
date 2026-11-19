@@ -11,7 +11,7 @@ import {
 } from '../index';
 import { renderComponentsPlugin } from '../plugin';
 import { extractCameraSnapshots } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 
 describe('DynamicResolution render component registration', () => {
   it('leases Fog vocabulary with the render component plugin', async () => {
@@ -44,7 +44,7 @@ describe('DynamicResolution render component registration', () => {
 
     world.removeComponent(entity, DynamicResolution).unwrap();
     expect(extractCameraSnapshots(world)[0]?.dynamicResolution).toBeUndefined();
-    expect(extractFrames([world], 0).cameras[0]?.dynamicResolution).toBeUndefined();
+    expect(extractSource(world).cameras[0]?.dynamicResolution).toBeUndefined();
     world
       .addComponent(entity, {
         component: DynamicResolution,
@@ -86,7 +86,7 @@ describe('DynamicResolution render component registration', () => {
       sampleCount: 6,
       targetFps: 60,
     });
-    expect(extractFrames([world], 0).cameras[0]?.motionBlur).toEqual({
+    expect(extractSource(world).cameras[0]?.motionBlur).toEqual({
       shutterAngle: 120,
       maxRadiusPixels: 12,
       sampleCount: 6,
@@ -124,12 +124,19 @@ it('leases camera AO vocabulary and removes its extracted demand when toggled of
       .spawn(
         { component: Transform, data: {} },
         { component: Camera, data: {} },
-        { component: AmbientOcclusion, data: { directLightingStrength: 0.7 } },
+        {
+          component: AmbientOcclusion,
+          data: { directLightingStrength: 0.7, application: 1, sceneColorStrength: 0.8 },
+        },
       )
       .unwrap();
     expect(extractCameraSnapshots(world)[0]?.ambientOcclusion?.directLightingStrength).toBeCloseTo(
       0.7,
     );
+    expect(extractCameraSnapshots(world)[0]?.ambientOcclusion).toMatchObject({
+      application: 1,
+      sceneColorStrength: Math.fround(0.8),
+    });
     world.removeComponent(camera, AmbientOcclusion).unwrap();
     expect(extractCameraSnapshots(world)[0]?.ambientOcclusion).toBeUndefined();
   } finally {

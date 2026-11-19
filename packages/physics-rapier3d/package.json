@@ -28,6 +28,7 @@
     "dist",
     "src",
     "!src/**/__tests__/**",
+    "src/__tests__/contact-point-velocity.native.rs",
     "README.md",
     "LICENSE",
     "pkg",
@@ -53,7 +54,7 @@
   },
   "devDependencies": {
     "@forgeax/engine-pack": "workspace:*",
-    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-water": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
     "esbuild": "0.28.2",
     "tsup": "9.0.0",

@@ -13,7 +13,7 @@
 // quatFromYRadians + bobOffset are pure so the rotation/bob math is testable;
 // the system fn wires them to the captured Core entity list + frame dt.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 
@@ -52,7 +52,7 @@ export function bobOffset(t: number): number {
  * A despawned Core (collected) yields a failed world.get -> skipped, so the
  * system tolerates the set shrinking mid-run without re-querying.
  */
-export function createSpinSystem(cores: ReadonlyArray<EntityHandle>): SystemHandle<readonly []> {
+export function createSpinSystem(cores: ReadonlyArray<EntityHandle>): System<readonly []> {
   let angle = 0;
   let phase = 0;
   return defineSystem({

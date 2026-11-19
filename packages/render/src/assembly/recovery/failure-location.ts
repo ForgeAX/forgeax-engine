@@ -1,4 +1,9 @@
 import type { DeviceResourceKind } from '../../device/resource-types';
+import {
+  createRecoveryFailedError,
+  type RecoverFailure,
+  type RecoveryFailureDetail,
+} from '../../errors/recover';
 import type { RecoveryGuidance, RecoveryPhase } from '../renderer-lifecycle';
 
 export interface RecoveryFailureLocation {
@@ -59,4 +64,57 @@ export function createRecoveryFailureLocation(
     cause,
     ...overrides,
   };
+}
+
+export function recoveryAttemptFailure(options: {
+  outcome: 'disposed' | 'failed';
+  failureLocation: RecoveryFailureLocation | undefined;
+  failurePhase: RecoveryPhase;
+  fromGeneration: number;
+  candidateGeneration: number;
+  attempt: number;
+  elapsedMs: number;
+  rehydratedRoots: number;
+  staleLossEvents: number;
+  error: RecoverFailure;
+  receipt: RecoveryFailureDetail['receipt'];
+}) {
+  const {
+    outcome,
+    failureLocation,
+    failurePhase,
+    fromGeneration,
+    candidateGeneration,
+    attempt,
+    elapsedMs,
+    rehydratedRoots,
+    staleLossEvents,
+    error,
+    receipt,
+  } = options;
+  const isAcquisitionPhase = (phase: RecoveryPhase): boolean =>
+    phase === 'acquire-adapter' || phase === 'acquire-device';
+  const retryable =
+    outcome === 'failed' && (failureLocation?.retryable ?? isAcquisitionPhase(failurePhase));
+  return createRecoveryFailedError({
+    phase: failurePhase,
+    oldGeneration: fromGeneration,
+    candidateGeneration,
+    attempt,
+    elapsedMs,
+    retryable,
+    guidance:
+      outcome === 'disposed'
+        ? 'rebuild-renderer'
+        : (failureLocation?.guidance ?? (retryable ? 'retry' : 'repair-owner')),
+    owner: outcome === 'disposed' ? 'renderer' : (failureLocation?.owner ?? 'renderer'),
+    resourceKind:
+      outcome === 'disposed' ? 'surface' : (failureLocation?.resourceKind ?? 'pipeline'),
+    lastOutcome: outcome,
+    rehydratedRoots,
+    staleLossEvents,
+    cause: outcome === 'disposed' ? error : (failureLocation?.cause ?? error),
+    cleanupFailures: [],
+    receipt,
+  });
 }

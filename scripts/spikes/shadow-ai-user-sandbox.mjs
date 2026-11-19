@@ -249,9 +249,9 @@ async function task1_renderAndReadback() {
   console.log('\n── T1: Same-entity light+shadow, render, debugReadback ──');
   const renderer = await createRendererWithManifest();
   const world = buildFixtureWorld(true);
-  renderer.attach(world).unwrap();
+  const lease = renderer.attach(world).unwrap();
   world.update().unwrap();
-  const drawResult = renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+  const drawResult = renderer.draw({ source: lease });
   if (!drawResult.ok) {
     return fail('draw(world) failed', drawResult.error);
   }
@@ -296,9 +296,9 @@ async function task2_separateEntities() {
   const errors = [];
   renderer.onError((err) => errors.push(err));
 
-  renderer.attach(world).unwrap();
+  const lease = renderer.attach(world).unwrap();
   world.update().unwrap();
-  const drawResult = renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+  const drawResult = renderer.draw({ source: lease });
   if (!drawResult.ok) {
     return fail('draw(world) failed', drawResult.error);
   }
@@ -419,9 +419,9 @@ async function task5_inspectorApi() {
   console.log('\n── T5: Inspector API (directionalShadow + runtime.shadow.*) ──');
   const renderer = await createRendererWithManifest();
   const world = buildFixtureWorld(true);
-  renderer.attach(world).unwrap();
+  const lease = renderer.attach(world).unwrap();
   world.update().unwrap();
-  const drawResult = renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
+  const drawResult = renderer.draw({ source: lease });
   if (!drawResult.ok) return fail('draw(world) failed', drawResult.error);
 
   // lights.directionalShadow

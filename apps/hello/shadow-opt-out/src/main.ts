@@ -68,16 +68,15 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         color: [1, 0.95, 0.9],
         intensity: 1.0,
         mapSize: 1024,
-        // feat-20260613-csm M6 / w23: shadow-opt-out runs the single-tile
-        // baseline (cascadeCount=1) so AC-10 ("cascadeCount=1 degenerates
-        // to single tile via the same WGSL path") is exercised in CI.
-        // The same shader code path covers N=1 and N=4; AC-03 forbids any
-        // host- or shader-side fallback branch.
-        cascadeCount: 1,
+      // feat-20260613-csm M6 / w23: shadow-opt-out runs the single-tile
+      // baseline (cascadeCount=1) so AC-10 ("cascadeCount=1 degenerates
+      // to single tile via the same WGSL path") is exercised in CI.
+      // The same shader code path covers N=1 and N=4; AC-03 forbids any
+      // host- or shader-side fallback branch.
+      cascadeCount: 1,
         shadowDistance: 60,
       },
-    },
-  );
+    });
 
   // ── Camera ────────────────────────────────────────────────────────────
   // Camera at (0, 12, 8) looking at origin (the three cubes + floor).
@@ -165,11 +164,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
 
   const frame = (): void => {
     world.update().unwrap();
-    const r = renderer.draw({
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    const r = renderer.draw({ source: worldAttachment1.value });
     if (!r.ok) console.error('[shadow-opt-out] draw error:', r.error);
     requestAnimationFrame(frame);
   };

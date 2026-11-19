@@ -8,9 +8,8 @@ import {
   ViewWorkspaceError,
 } from '@forgeax/view-workspace-core/contract';
 import {
-  adoptRemoteWorkspaceProject,
   isWorkspacePageLostError,
-  navigateToWorkspaceProjectTarget,
+  reopenWorkspaceProject,
   resolveWorkspaceFailure,
   resolveWorkspaceFailureCode,
   resolveWorkspaceReopenRoot,
@@ -87,57 +86,12 @@ test('isWorkspacePageLostError recognizes broker and transport codes', () => {
   assert.equal(isWorkspacePageLostError(new Error('other')), false);
 });
 
-test('adoptRemoteWorkspaceProject navigates an empty shell once and leaves a headed document', () => {
-  const target = 'http://127.0.0.1:9/?forgeaxWorkspace=1&forgeaxWorkspaceSession=session-1&forgeaxWorkspaceToken=secret';
-  const snapshot = {
-    project: { id: 'game', root: '/game' },
-    projectTarget: { url: target, targetId: 'target-1' },
-  };
-  const empty = { href: 'http://127.0.0.1:8/', assign(url) { this.href = url; this.assigned = (this.assigned ?? 0) + 1; } };
-  adoptRemoteWorkspaceProject(snapshot, { location: empty });
-  assert.equal(empty.href.split('#')[0], target);
-  // The adoption carries the session record hash for refresh recovery.
-  assert.equal(new URL(empty.href).hash.includes('forgeaxViewRestore'), true);
-  assert.equal(empty.assigned, 1);
-  // The adopted document carries the target session and is not navigated again.
-  adoptRemoteWorkspaceProject(snapshot, { location: empty });
-  assert.equal(empty.assigned, 1);
-
-  const headed = {
-    href: 'http://127.0.0.1:9/?forgeaxWorkspaceToken=other&forgeaxWorkspaceSession=session-1',
-    assign() { throw new Error('headed document must not navigate'); },
-  };
-  adoptRemoteWorkspaceProject(snapshot, { location: headed });
-  assert.equal(headed.href.includes('forgeaxWorkspaceSession=session-1'), true);
-
-  // A document carrying a different session is not this headed target; it
-  // adopts the current project URL instead of staying on a stale session.
-  const stale = { href: 'http://127.0.0.1:9/?forgeaxWorkspaceSession=session-0', assign(url) { this.href = url; } };
-  adoptRemoteWorkspaceProject(snapshot, { location: stale });
-  assert.equal(stale.href.split('#')[0], target);
-});
-
-test('adoptRemoteWorkspaceProject does not navigate when the workspace target is lost', () => {
-  const location = {
-    href: 'http://127.0.0.1:8/',
-    assign() { throw new Error('lost target must not navigate'); },
-  };
-  const snapshot = adoptRemoteWorkspaceProject({
-    workspaceTargetLost: true,
-    project: { root: '/game' },
-    projectTarget: { url: 'http://127.0.0.1:9/?forgeaxWorkspaceSession=session-1' },
-  }, { location });
-  assert.equal(snapshot.workspaceTargetLost, true);
-  assert.equal(location.href, 'http://127.0.0.1:8/');
-});
-
-test('navigateToWorkspaceProjectTarget assigns when the headed URL changes', () => {
-  const location = { href: 'http://localhost/old', assign(url) { this.href = url; } };
-  navigateToWorkspaceProjectTarget(
-    { projectTarget: { url: 'http://localhost/new' } },
-    { location },
-  );
-  assert.equal(location.href, 'http://localhost/new');
+test('project reopen returns Engine state without navigating the retained Shell', async () => {
+  const result = { project: { id: 'game', root: '/game' }, projectDocument: {
+    sessionId: 'session-1', targetId: 'target-1', url: 'http://localhost/game/', browserGeneration: 0,
+  } };
+  const opened = await reopenWorkspaceProject({ reopenProject: async () => result }, { tabId: VIEW_WORKSPACE_TAB_ID });
+  assert.equal(opened, result);
 });
 
 test('broker project.reopen reuses the known project root', async () => {

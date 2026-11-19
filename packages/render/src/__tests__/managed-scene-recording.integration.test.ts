@@ -123,7 +123,7 @@ it.each(
       );
       world
         .spawn(
-          { component: Transform, data: { pos: [0, 0, 5] } },
+          { component: Transform, data: { pos: [-5, 0, 0] } },
           {
             component: CubeCamera,
             data: {
@@ -167,20 +167,18 @@ it.each(
       draws.length = 0;
       world.update().unwrap();
       const receipt = result(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          geometryLane: mode === 'direct' ? 'direct' : 'automatic',
-        }),
+        renderer.draw({ source: lease, geometryLane: mode === 'direct' ? 'direct' : 'automatic' }),
       );
       if (receipt !== undefined) result(await receipt.completed);
       expect(errors).toEqual([]);
-      expect(passes.find((pass) => pass.pass === 'main')?.count).toBe(2);
+      expect(passes.find((pass) => pass.pass.split(' + ').includes('main'))?.count).toBe(2);
       const captureIndex = passes.findIndex((pass) => pass.pass.startsWith('cube-capture-face'));
       if (capture) {
         expect(captureIndex).toBeGreaterThanOrEqual(0);
-        expect(passes[captureIndex]?.count).toBe(2);
+        // The first three cube faces are +X, -X, +Y. From x=-5 only
+        // +X sees the two geometry rows; other faces must record no residual.
+        const captureDraws = frame === 0 ? 2 : 0;
+        expect(passes[captureIndex]?.count).toBe(captureDraws);
         expect(
           passes
             .slice(0, captureIndex)
@@ -195,9 +193,9 @@ it.each(
             .filter((pass) => pass.pass.startsWith('shadowCascade'))
             .reduce((sum, pass) => sum + pass.count, 0),
         ).toBe(2);
-        expect(draws.filter((draw) => draw.pass === 'main' && !draw.indirect)).toHaveLength(
-          mode === 'mixed' ? 1 : 2,
-        );
+        expect(
+          draws.filter((draw) => draw.pass.split(' + ').includes('main') && !draw.indirect),
+        ).toHaveLength(mode === 'mixed' ? 1 : 2);
         expect(draws.some((draw) => draw.indirect)).toBe(mode === 'mixed');
       }
     }

@@ -13,6 +13,7 @@ import {
   SCREEN_PROBE_TEXELS,
 } from '../../raytracing/screen-probe-plan';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
+import { gbufferNormalPixels } from './gbuffer-normal.fixture';
 
 it('keeps receiver ray samples stable across adaptive allocation order and advances frame jitter', async () => {
   const read = (name: string) =>
@@ -263,12 +264,16 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
       format: 'depth32float',
       usage: 4 | 16,
     });
-    const normal = device.createTexture({ size: [width, height], format: 'r32uint', usage: 4 | 2 });
+    const normal = device.createTexture({
+      size: [width, height],
+      format: 'rg32uint',
+      usage: 4 | 2,
+    });
     textures.push(depth, normal);
     device.queue.writeTexture(
       { texture: normal },
-      new Uint32Array(width * height).fill(2048 | (2048 << 12)),
-      { bytesPerRow: width * 4 },
+      gbufferNormalPixels(width * height),
+      { bytesPerRow: width * 8 },
       [width, height],
     );
     const resources = {

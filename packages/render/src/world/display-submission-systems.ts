@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import {
   type DynamicResolutionController,
   gpuPassFrameMilliseconds,
@@ -10,10 +11,11 @@ import type { RenderFrameState } from '../record/frame-snapshot';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
 import { recordFailureError } from '../render-system-record-attempt';
-import { RENDER_GRAPH_SETTLE_SYSTEM } from './graph-systems';
+import { RenderGraphSettleOrder, RenderRecordCommitOrder } from '../system-order';
+
 import { ViewRecorder, viewAccepted } from './render-views';
 import { frameAccepted, RenderCleanup, RenderCommit, renderSubmission } from './render-world';
-import { RENDER_RECORD_COMMIT_SYSTEM } from './submission-systems';
+
 import { requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { ownerOf } from './view-settlement';
@@ -73,6 +75,9 @@ export function commitDisplaySubmission(
   frameState.frameOutputs.sceneSubmitted = true;
   for (const capture of attempt.captureFrames)
     internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
+  const planar = attempt.planarCaptureFrame;
+  if (planar !== undefined)
+    internals.markRenderTargetSubmitted?.(planar.work.target, planar.work.physical);
   for (const work of recordContext(internals).captureView?.state.work ?? [])
     internals.markRenderTargetSubmitted?.(work.target, work.physical);
   resolution.commit(extent, () =>
@@ -98,48 +103,46 @@ export function stageDisplaySubmission(
 
 /** Promote the submitted display after graph promotion and before record history consumes it. */
 export function registerDisplaySubmissionSystems(world: World): void {
-  world
-    .addSystem(RenderCommit, {
-      commands: 'none',
-      name: RENDER_DISPLAY_COMMIT_SYSTEM,
-      after: [RENDER_GRAPH_SETTLE_SYSTEM],
-      before: [RENDER_RECORD_COMMIT_SYSTEM],
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [rows]) => {
-        const { frame } = renderSubmission(world);
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: RENDER_DISPLAY_COMMIT_SYSTEM,
+    after: [RenderGraphSettleOrder],
+    before: [RenderRecordCommitOrder],
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [rows]) => {
+      const { frame } = renderSubmission(world);
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const { internals, frameState } = ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          );
-          const submission = frameState.displaySubmission;
-          if (submission?.frame !== frame || !viewAccepted(world, entity)) return;
-          try {
-            commitDisplaySubmission(internals, frameState, submission);
-          } catch (cause) {
-            internals.errorRegistry.fire(recordFailureError(cause));
-          }
-        });
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_DISPLAY_DISCARD_SYSTEM,
-      queries: [{ read: [ViewRecorder] }],
-      fn: (world, [rows]) => {
-        rows.forEach((row) => {
-          const entity = row.entity;
-          ownerOf(
-            world,
-            requireViewField(world, entity, ViewRecorder, 'state'),
-          ).frameState.displaySubmission = undefined;
-        });
-      },
-    })
-    .unwrap();
+        const { internals, frameState } = ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        );
+        const submission = frameState.displaySubmission;
+        if (submission?.frame !== frame || !viewAccepted(world, entity)) return;
+        try {
+          commitDisplaySubmission(internals, frameState, submission);
+        } catch (cause) {
+          internals.errorRegistry.fire(recordFailureError(cause));
+        }
+      });
+    },
+  });
+  world.addSystem(RenderCommit, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    commands: 'none',
+    name: RENDER_DISPLAY_DISCARD_SYSTEM,
+    queries: [{ read: [ViewRecorder] }],
+    fn: (world, [rows]) => {
+      rows.forEach((row) => {
+        const entity = row.entity;
+        ownerOf(
+          world,
+          requireViewField(world, entity, ViewRecorder, 'state'),
+        ).frameState.displaySubmission = undefined;
+      });
+    },
+  });
+  world.addSystem(RenderCleanup, systemToken2).unwrap();
 }

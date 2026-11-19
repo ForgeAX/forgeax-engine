@@ -2,12 +2,14 @@ import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { ExecutionWorker, ExecutionWorkersOptions } from '@forgeax/engine-app';
 import { PACK_PROGRAM_WORKER_SOURCE } from '@forgeax/engine-pack/runtime-browser';
 import { moduleResolve } from 'import-meta-resolve';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import { normalizePath, type Plugin, type Rollup, searchForWorkspaceRoot } from 'vite';
 import { moduleSpecifierEdits } from './module-specifiers.js';
+import { moduleUrlResources } from './module-url-resources.js';
 import { PACK_PROGRAM_ENGINE_IMPORTS, runtimeProgramIdentity } from './pack-program-imports.js';
 
 const require = createRequire(import.meta.url);
@@ -81,6 +83,7 @@ export function executionWorkerEntries(
   runtimeImports: readonly string[] = PACK_PROGRAM_ENGINE_IMPORTS,
   delivery: 'browser' | 'native' = 'browser',
   hostRoot?: string,
+  workers: ExecutionWorkersOptions = {},
 ): Plugin {
   let building = false;
   let base = '/';
@@ -125,24 +128,45 @@ export function executionWorkerEntries(
     return selected;
   };
   const linkedEdges = new Map<string, { imports: string[]; dynamicImports: string[] }>();
-  const owners = new Map<string, Promise<boolean>>();
-  const engineOwner = (directory: string): Promise<boolean> => {
+  const owners = new Map<string, Promise<string | undefined>>();
+  const ownerName = (directory: string): Promise<string | undefined> => {
     const known = owners.get(directory);
-    if (known) return known;
+    if (known !== undefined) return known;
     const pending = (async () => {
       try {
         const manifest = JSON.parse(await readFile(resolve(directory, 'package.json'), 'utf8'));
-        if (typeof manifest.name === 'string')
-          return (
-            manifest.name === '@forgeax/engine' || manifest.name.startsWith('@forgeax/engine-')
-          );
+        if (typeof manifest.name === 'string') return manifest.name;
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
       }
-      return dirname(directory) !== directory && engineOwner(dirname(directory));
+      return dirname(directory) === directory ? undefined : ownerName(dirname(directory));
     })();
     owners.set(directory, pending);
     return pending;
+  };
+  const engineOwner = async (directory: string): Promise<boolean> => {
+    const name = await ownerName(directory);
+    return name === '@forgeax/engine' || name?.startsWith('@forgeax/engine-') === true;
+  };
+  const admitModuleResources = async (code: string, id: string): Promise<void> => {
+    const filename = id.split('?')[0] ?? id;
+    if (!isAbsolute(filename) || !(await engineOwner(dirname(filename)))) return;
+    for (const file of moduleUrlResources(code, filename))
+      admitDevelopmentModule(await canonicalModuleId(file));
+  };
+  const disabledAppWorker = async (
+    source: string,
+    id: string,
+  ): Promise<ExecutionWorker | undefined> => {
+    const kind = source.slice(2, source.indexOf('-worker-runtime'));
+    const worker = kind === 'task' ? 'kernels' : kind;
+    if (
+      (worker === 'engine' || worker === 'render' || worker === 'kernels') &&
+      workers[worker] === false &&
+      (await ownerName(dirname(id.split('?')[0] ?? id))) === '@forgeax/engine-app'
+    )
+      return worker;
+    return undefined;
   };
   return {
     name: executionWorkerEntriesName,
@@ -159,7 +183,9 @@ export function executionWorkerEntries(
       if (id.startsWith(externalPrefix)) return { id, external: true };
       if (!importer || !/^@forgeax\/engine(?:$|[/-])/.test(id)) return null;
       const filename = importer.split('?')[0] ?? importer;
-      if (isAbsolute(filename) && (await engineOwner(dirname(filename)))) return null;
+      // Dev capture must recognize transitive Engine imports as Host capabilities
+      // before project session URLs are frozen. Builds retain their internal graph.
+      if (building && isAbsolute(filename) && (await engineOwner(dirname(filename)))) return null;
       const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
       if (!resolved || resolved.external) this.error(`Engine capability unavailable: ${id}`);
       resolved.id = await canonicalModuleId(resolved.id);
@@ -416,7 +442,10 @@ export function loadImport(specifier) {
       };
     },
     async transform(code, id) {
-      if (!building) return null;
+      if (!building) {
+        await admitModuleResources(code, id);
+        return null;
+      }
       if (id === '\0vite/preload-helper.js') {
         // Vite owns DOM CSS loading, URL resolution, CSP and error events. The
         // same graph also runs without a document: there, keep native import
@@ -450,18 +479,29 @@ export function loadImport(specifier) {
         }
         return this.error('Vite preload helper no longer exposes its native import function');
       }
-      // These are the three App-owned literal constructor sites. Let Rollup
+      // These are the four App-owned literal constructor sites. Let Rollup
       // emit ordinary entries before Vite creates isolated Worker bundles;
       // otherwise a later bootstrap import evaluates Engine singletons twice
       // in the same realm (components, schedules and scene instance state).
       const pattern =
-        /new Worker\(\s*new URL\(\s*(['"])(\.\/(?:engine|render|kernel)-worker-runtime\.mjs)\1,\s*import\.meta\.url\s*\)/g;
+        /new Worker\(\s*new URL\(\s*(['"])(\.\/(?:engine|render|task)-worker-runtime\.mjs)\1,\s*import\.meta\.url\s*\)/g;
       const matches = [...code.matchAll(pattern)];
       if (matches.length === 0) return null;
       const output = new MagicString(code);
       for (const match of matches.reverse()) {
         const source = match[2];
         if (source === undefined || match.index === undefined) continue;
+        const worker = await disabledAppWorker(source, id);
+        if (worker !== undefined) {
+          // Keep the disabled path explicit if a consumer overrides its sealed policy.
+          // No URL remains for Vite to emit an unreachable Worker graph.
+          output.overwrite(
+            match.index,
+            match.index + match[0].length,
+            `new Worker((() => { throw new Error(${JSON.stringify(`Execution Worker disabled by build policy: ${worker}`)}); })()`,
+          );
+          continue;
+        }
         const resolved = await this.resolve(source, id, { skipSelf: true });
         if (resolved === null) this.error(`Cannot resolve execution Worker ${source} from ${id}`);
         const reference = this.emitFile({

@@ -1,5 +1,4 @@
 import type { AudioState } from '@forgeax/engine-audio';
-import type { HostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 import type { WorldExecutionHealth } from '@forgeax/engine-ecs/shared';
 import type {
   GpuPassTimingOptions,
@@ -10,6 +9,7 @@ import type {
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { Result, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { AppError } from '../errors';
+import type { ExecutionBootstrapEntry } from './bootstrap-entry';
 
 export const EXECUTION_WORKERS = ['engine', 'render', 'kernels'] as const;
 export type ExecutionWorker = (typeof EXECUTION_WORKERS)[number];
@@ -166,12 +166,14 @@ export interface ExecutionReport {
 }
 
 export interface ExecutionOptions {
-  /** Host-only factory, called again after rebuild; never transferred to a Worker. */
-  readonly createHostAudio?: () => HostAudioConsumer;
+  /** @deprecated Use AppHostAdapter.createHostAudio. Removed in 0.7. */
+  readonly createHostAudio?: import('../types').AppHostAdapter['createHostAudio'];
   /** Each omitted worker policy defaults to auto, including render plus kernels. */
   readonly workers?: ExecutionWorkersOptions;
   /** Absolute or import.meta.url-relative URL of an ExecutionBootstrapEntry module. */
   readonly bootstrap: string | URL;
+  /** Host-only entry from the same native module graph; used only when the Engine Worker is disabled. Never transferred. */
+  readonly localBootstrap?: ExecutionBootstrapEntry;
   /** Structured-cloneable input supplied identically to main and Worker realms. */
   readonly bootstrapData?: ExecutionBootstrapValue;
   /**
@@ -188,6 +190,8 @@ export interface ExecutionOptions {
   readonly assetCatalog?: ExecutionAssetCatalog;
   /** Opt-in diagnostics created inside the selected execution realm. */
   readonly diagnostics?: ExecutionDiagnosticsOptions;
+  /** Explicit aggregate in-flight cap for Worker feature-texture readbacks. */
+  readonly featureTextureReadbackBudgetBytes?: number;
   /** Bounds initialization and the first source frame; null waits until completion or cancellation. */
   readonly startupTimeoutMs?: number | null;
   /** Bounds source frame admission after the first source completion. */
@@ -256,6 +260,26 @@ export type ExecutionGeometryObservationResult =
   | { readonly ok: true; readonly value: import('@forgeax/engine-render').GeometryObservation }
   | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
 
+/**
+ * Detached pre-exposure scene color of one submitted frame. `bytes` are the
+ * padded `rgba16float` rows of the `linear-hdr` observation domain (scene
+ * color before exposure, tonemap and anti-aliasing). `barrelDistortion` is the
+ * frame's display mapping; absent means the frame had no accepted camera.
+ */
+export interface ExecutionHdrFrameObservation {
+  readonly frameId: number;
+  readonly width: number;
+  readonly height: number;
+  readonly bytesPerRow: number;
+  readonly format: import('@forgeax/engine-rhi').TextureFormat;
+  readonly bytes: Uint8Array;
+  readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
+}
+
+export type ExecutionHdrObservationResult =
+  | { readonly ok: true; readonly value: ExecutionHdrFrameObservation }
+  | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
+
 export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
 > extends RenderInspectionOptions<K> {
@@ -268,6 +292,10 @@ export interface ExecutionRendererInspectionContext {
   observeNextGeometry(options?: {
     readonly signal?: AbortSignal;
   }): Promise<ExecutionGeometryObservationResult>;
+  /** One intrusive diagnostic frame that also copies its linear-HDR scene color. */
+  observeNextHdrFrame(options?: {
+    readonly signal?: AbortSignal;
+  }): Promise<ExecutionHdrObservationResult>;
   inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
     options?: ExecutionRendererInspectionOptions<K>,
   ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>>;

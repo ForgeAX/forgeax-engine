@@ -4,11 +4,11 @@ import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/r
 let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -68,8 +68,8 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { makeTextureAsset, makeTexturePixels, buildShaderMaterialWorld, SHADER_ID, TEXTURE_SIZE } = await import(resolve(root, 'src', 'scene.ts'));
 
-const manifest = JSON.parse(readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8'));
-const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
+const manifest = JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json')));
+const manifestUrl = processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json'));
 let renderer;
 try {
   const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });

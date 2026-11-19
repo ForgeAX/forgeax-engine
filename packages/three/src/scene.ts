@@ -12,23 +12,34 @@ import {
   type CameraData,
   ClippingPlanes,
   clippingPlanesData,
+  FogModeValue,
   Instances,
   Layer,
   MeshFilter,
   MeshRenderer,
   Camera as NativeCamera,
   DirectionalLight as NativeDirectionalLight,
+  Fog as NativeFog,
   Lines as NativeLines,
   PointLight as NativePointLight,
   PointLightShadow as NativePointLightShadow,
   Points as NativePoints,
   RectAreaLight as NativeRectAreaLight,
   SpotLight as NativeSpotLight,
+  PointSizeUnitsValue,
+  RenderTargetEnvironment,
+  type RenderTargetEnvironmentSource,
   ShadowParticipation,
   SkyboxBackground,
   Skylight,
 } from '@forgeax/engine-render';
-import { MorphWeights, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
+import {
+  Children,
+  MorphWeights,
+  Name,
+  propagateTransforms,
+  Transform,
+} from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import {
   type AssetHandle,
@@ -44,6 +55,9 @@ import {
   type TextureAsset,
   withClipping,
 } from '@forgeax/engine-types';
+import IESSpotLight from 'three/src/lights/webgpu/IESSpotLight.js';
+import ProjectorLight from 'three/src/lights/webgpu/ProjectorLight.js';
+import type { RenderItem } from 'three/src/renderers/common/Renderer.js';
 import {
   AmbientLight,
   BatchedMesh,
@@ -51,25 +65,24 @@ import {
   Camera,
   Color,
   DirectionalLight,
+  Fog,
+  FogExp2,
   Frustum,
   Group,
   InstancedMesh,
   Line,
-  LineBasicMaterial,
   LineSegments,
   LOD,
   type Material,
   Matrix4,
   Mesh,
-  MeshBasicMaterial,
-  MeshMatcapMaterial,
-  MeshNormalMaterial,
   Object3D,
   PointLight,
   Points,
   PointsMaterial,
   Quaternion,
   RectAreaLight,
+  RedFormat,
   Scene,
   type Skeleton,
   SkinnedMesh,
@@ -77,11 +90,12 @@ import {
   Sprite,
   type Texture,
   Vector3,
+  Vector4,
   VSMShadowMap,
 } from 'three/src/Three.Core.js';
 import { objectClipping, projectClipping, type SourceClipping } from './clipping';
 import { projectEnvironment, scaleEnvironment } from './environment';
-import { invalid, unsupported } from './errors';
+import { invalid, ThreeCompatibilityError, unsupported } from './errors';
 import { type ExternalTextures, isExternalTexture } from './external-textures';
 import { projectFlatNormals } from './flat-normals';
 import { type GeometryMaterial, geometryValues, projectGeometry } from './geometry';
@@ -95,6 +109,18 @@ import {
   usesFlatShading,
   validateMaterial,
 } from './material';
+import {
+  isBasicMaterial,
+  isLineMaterial,
+  isMatcapMaterial,
+  isNormalMaterial,
+  isPointsMaterial,
+  isSpriteMaterial,
+} from './material-kinds';
+import { admitSurfaceInput, surfaceInput, usesTransmission } from './node-inputs';
+import { threeSurfaceUvSets, validateThreeSurfaceGeometry } from './node-surface';
+import type { RenderTargets } from './render-targets';
+import { expandScalarTexture } from './scalar-texture';
 import { type ShadowMapSettings, ShadowUpdates } from './shadow';
 import { SharedAssets, sameValues } from './shared-assets';
 import {
@@ -109,6 +135,8 @@ import {
   projectSampler,
   projectTextureUpload,
   samplerValues,
+  textureCoordinates,
+  textureUploadPending,
   textureValues,
   validateTexture,
 } from './texture';
@@ -134,7 +162,8 @@ function isRenderable(object: Object3D): object is Renderable {
 interface MaterialUse {
   readonly source: Material;
   readonly effective: SupportedMaterial;
-  readonly variant: string;
+  variant: string;
+  queue?: number;
   readonly clipping?: ClippingOptions;
   readonly shading: 0 | 1;
   readonly skinned: boolean;
@@ -151,12 +180,15 @@ interface MeshPlan {
   readonly instances: Float32Array | undefined;
   readonly nativeInstances: boolean;
   readonly morphWeights: Float32Array | undefined;
+  readonly pointStyle: ReturnType<typeof pointStyle> | undefined;
   readonly lineStyle: NonNullable<ReturnType<typeof lineStyle>> | undefined;
   readonly skin:
     | { skeleton: AssetHandle<'skeleton'>; joints: ReturnType<typeof projectJoints> }
     | undefined;
 }
 interface TexturePlan {
+  readonly orientation: 0 | 1;
+  readonly variant: '' | 'scalar-color' | 'scalar-data';
   readonly source: Texture;
   readonly values: unknown[];
   readonly payload: TextureAsset;
@@ -171,13 +203,27 @@ export interface ThreeSourceIdentity {
 }
 
 interface SceneBuffers {
+  pixelRatio?: number;
+  /** Keep leases observed by preceding offscreen passes in this composition. */
+  deferResourceSweep?: boolean;
   depth: boolean;
   stencil: boolean;
   sortObjects: boolean;
+  transparentSort?: ((a: RenderItem, b: RenderItem) => number) | null;
+  opaqueOrder?: boolean;
+  opaqueSort?: ((a: RenderItem, b: RenderItem) => number) | null;
   opaque: boolean;
   transparent: boolean;
   updateMatrices: boolean;
   shadowMap?: ShadowMapSettings;
+}
+
+interface SceneProjectionOptions {
+  readonly targets?: RenderTargets;
+  readonly world?: World;
+  readonly validateSource?: (object: Object3D, entity: EntityHandle | undefined) => void;
+  /** A mixed host owns its existing Scene/Physics propagation schedule. */
+  readonly propagate?: boolean;
 }
 
 /** Cached source world matrices author flat native affine transforms; Scene derives the GPU-facing matrices. */
@@ -189,8 +235,9 @@ export class SceneProjection {
       material: MaterialAsset,
       skinned?: boolean,
     ) => MaterialAsset,
+    private readonly options: SceneProjectionOptions = {},
   ) {
-    this.world = new World({ assets });
+    this.world = options.world ?? new World({ assets });
     this.geometry = new SharedAssets(assets);
     this.materials = [new SharedAssets(assets), new SharedAssets(assets)];
     this.textures = [new SharedAssets(assets), new SharedAssets(assets)];
@@ -253,7 +300,7 @@ export class SceneProjection {
       const commitScene = runtimeAssets(this.world.assets)
         .adoptClosure(() => ok(this.prepare(scene, camera, cameraData, buffers)))
         .unwrap();
-      for (const cache of caches) cache.commit();
+      for (const cache of caches) cache.commit(!buffers.deferResourceSweep);
       return commitScene();
     } catch (error) {
       for (const cache of caches) cache.abort();
@@ -267,6 +314,13 @@ export class SceneProjection {
     cameraData: CameraData,
     buffers: SceneBuffers,
   ): () => EntityHandle {
+    if (this.options.validateSource !== undefined) {
+      for (const [object, record] of this.nodes) {
+        this.assertRetirableNode(record);
+        this.options.validateSource(object, record.entity);
+      }
+      if (!this.nodes.has(camera)) this.options.validateSource(camera, undefined);
+    }
     this.shadowUpdates.begin();
     const uploadedTextures = new Set<Texture>();
     const lighting = this.prepareSceneLighting(scene, uploadedTextures);
@@ -290,6 +344,7 @@ export class SceneProjection {
     }
     const ambientIrradiance = sceneAmbientIrradiance(scene, frame.visible);
     // New resource leases stay provisional until all material preparation succeeds.
+    rankOpaqueMeshes(frame);
     this.publishMaterials(frame, this.publishTextures(frame));
     this.publishGeometry(frame);
     rankTransparentMeshes(frame);
@@ -305,8 +360,7 @@ export class SceneProjection {
         lightingRotation: [0, 0, 0, 1],
         backgroundRotation: [0, 0, 0, 1],
       };
-    if (scene.fog !== null)
-      return unsupported('Scene fog requires the native Three depth-fog law', scene.uuid).unwrap();
+    const fog = projectFog(scene);
     if (
       scene.background !== null &&
       !(scene.background instanceof Color) &&
@@ -316,7 +370,26 @@ export class SceneProjection {
         'Scene.backgroundBlurriness requires native sky roughness/LOD controls',
         scene.uuid,
       ).unwrap();
-    const lighting = this.environmentHandle(scene.environment, 1, uploadedTextures);
+    const targetEnvironment = scene.environment?.isRenderTargetTexture
+      ? (this.options.targets?.environment(scene.environment) ??
+        unsupported(
+          'GPU environment requires the renderer target owner',
+          scene.environment.uuid,
+        ).unwrap())
+      : undefined;
+    if (
+      scene.background !== null &&
+      !(scene.background instanceof Color) &&
+      scene.background.isRenderTargetTexture
+    )
+      return unsupported(
+        'GPU cube background requires native sky binding; use a Color or equirect background',
+        scene.uuid,
+      ).unwrap();
+    const lighting =
+      targetEnvironment === undefined
+        ? this.environmentHandle(scene.environment, 1, uploadedTextures)
+        : NO_EQUIRECT;
     const background =
       scene.background instanceof Color
         ? NO_EQUIRECT
@@ -325,7 +398,14 @@ export class SceneProjection {
     const backgroundRotation = new Quaternion().setFromEuler(scene.backgroundRotation).toArray();
     if (!Number.isFinite(scene.environmentIntensity) || scene.environmentIntensity < 0)
       return invalid('Scene.environmentIntensity', scene.uuid).unwrap();
-    return { lighting, background, lightingRotation, backgroundRotation };
+    return {
+      lighting,
+      background,
+      lightingRotation,
+      backgroundRotation,
+      fog,
+      ...(targetEnvironment === undefined ? {} : { targetEnvironment }),
+    };
   }
 
   private environmentHandle(
@@ -379,6 +459,7 @@ export class SceneProjection {
     parentClipping: SourceClipping | undefined,
     groupOrder: number,
   ): void {
+    if (!this.nodes.has(object)) this.options.validateSource?.(object, undefined);
     frame.nodes.add(object);
     const active = parentVisible && object.visible;
     if (active) frame.active.add(object);
@@ -414,7 +495,7 @@ export class SceneProjection {
     const camera = frame.camera;
     for (const object of frame.nodes) {
       if (object !== camera && !frame.visible.has(object)) continue;
-      const values = sourceMatrix(object, camera);
+      const values = sourceMatrix(object, camera, frame.scene);
       if (sameValues(this.nodes.get(object)?.transform ?? [], values)) continue;
       frame.transforms.set(object, {
         values: [...values],
@@ -439,7 +520,12 @@ export class SceneProjection {
     if (cpuSkin) for (const use of list) Object.assign(use, { skinned: false });
     const wireframe = isWireframe(object, list);
     rejectOrderedOpaque(frame, object, list);
-    const uv = projectUvs(object.geometry, uvTextures(list));
+    for (const use of list) validateThreeSurfaceGeometry(use.effective, object.geometry);
+    const uv = projectUvs(
+      object.geometry,
+      object instanceof Points ? [] : uvTextures(list),
+      list.flatMap((use) => [...threeSurfaceUvSets(use.effective)]),
+    );
     for (const [texture, value] of uv.coordinates) coordinates.set(texture, value);
     const shape: GeometryShape = {
       topology: wireframe ? 'line-list' : sourceTopology(object),
@@ -450,12 +536,11 @@ export class SceneProjection {
       flatMatcap: flatMatcapSlots(list),
       expanded: expandsInstances(object),
       cpuSkin,
+      morphColor: projectsMorphColor(object.geometry, selection),
     };
     const variant = geometryVariant(object, shape);
     const values = geometryCacheValues(object, shape, frame.camera, list[0]?.effective);
-    const payload =
-      this.geometry.read(object.geometry, values, variant)?.payload ??
-      projectMeshGeometry(object, shape);
+    const payload = this.readMeshGeometry(object, shape, values, variant);
     if (payload === undefined) return;
     for (const use of list) this.admitMaterialUse(frame, object, use);
     const lines = meshLineStyle(object, payload, list, wireframe);
@@ -479,7 +564,20 @@ export class SceneProjection {
       morphWeights,
       skin,
       lineStyle: lines,
+      pointStyle: object instanceof Points ? pointStyle(object, frame, list) : undefined,
     });
+  }
+
+  private readMeshGeometry(
+    object: Renderable,
+    shape: GeometryShape,
+    values: ReturnType<typeof geometryCacheValues>,
+    variant: string,
+  ): MeshAsset | undefined {
+    return (
+      this.geometry.read(object.geometry, values, variant)?.payload ??
+      projectMeshGeometry(object, shape)
+    );
   }
 
   /** Source matrices change only with their version; undefined keeps the published transforms. */
@@ -519,6 +617,13 @@ export class SceneProjection {
   /** Validate one selected material against its draw and plan its source textures. */
   private admitMaterialUse(frame: ScenePreparation, object: Renderable, use: MaterialUse): void {
     const source = use.effective;
+    if (!(object instanceof Points) && source.type === 'PointsNodeMaterial')
+      unsupported(
+        'PointsNodeMaterial requires Points; other topologies need native point sizing',
+        object.uuid,
+      ).unwrap();
+    if (!(object instanceof Sprite) && source.type === 'SpriteNodeMaterial')
+      unsupported('SpriteNodeMaterial requires a Sprite billboard', object.uuid).unwrap();
     if (use.clipping !== undefined && (object instanceof Line || object instanceof Points))
       unsupported('Native Lines/Points support camera clipping only', object.uuid).unwrap();
     if (frame.clipping.get(object) !== undefined && source.alphaToCoverage)
@@ -526,18 +631,59 @@ export class SceneProjection {
         'ClippingGroup alphaToCoverage requires native smooth clipping coverage',
         object.uuid,
       ).unwrap();
-    if (object instanceof Line || object instanceof Points) rejectLinePointMaterial(object, source);
-    if (source instanceof MeshNormalMaterial && !object.geometry.hasAttribute('normal'))
+    if (object instanceof Line || object instanceof Points)
+      projectLinePointMaterial(object, source, use.coordinates);
+    if (isNormalMaterial(source) && !object.geometry.hasAttribute('normal'))
       unsupported('Normal/Matcap without normals requires flat shading', object.uuid).unwrap();
     frame.usedMaterials[use.shading].add(use);
-    const orientation = source instanceof MeshMatcapMaterial ? 1 : 0;
-    for (const [, texture] of materialTextures(source)) {
-      if (frame.texturePlans[orientation].has(texture) || isExternalTexture(texture)) continue;
-      frame.texturePlans[orientation].set(texture, this.planTexture(texture, orientation));
+    for (const [parameter, texture] of materialTextures(source)) {
+      const projection = textureProjection(source, parameter, texture);
+      if (isExternalTexture(texture) || texture.isRenderTargetTexture) continue;
+      let plans = frame.texturePlans[projection];
+      if (plans === undefined) {
+        plans = new Map();
+        frame.texturePlans[projection] = plans;
+      }
+      if (!plans.has(texture)) plans.set(texture, this.planTexture(texture, projection));
     }
   }
 
-  private planTexture(texture: Texture, orientation: 0 | 1): TexturePlan {
+  /** Admit only this texture; no scene discovery, entity writes, or hidden render. */
+  prepareTexture(texture: Texture): { handle: AssetHandle<'texture'>; uploaded: boolean } {
+    const cache = this.textures[0];
+    cache.begin();
+    try {
+      const result = runtimeAssets(this.world.assets)
+        .adoptClosure(() => {
+          const plan = this.planTexture(texture, 0);
+          const previous = cache.read(texture, plan.values);
+          const entry = previous ?? cache.write(texture, plan.values, plan.payload);
+          cache.retain(texture);
+          return ok({
+            handle: entry.handle,
+            uploaded: previous === undefined || this.textureUpdates.has(texture),
+          });
+        })
+        .unwrap();
+      // Explicit preparation must not sweep textures used by the last scene frame.
+      cache.commit(false);
+      return result;
+    } catch (error) {
+      cache.abort();
+      throw error;
+    }
+  }
+
+  textureInitialized(texture: Texture, uploaded: boolean): void {
+    if (uploaded && !textureUploadPending(texture)) {
+      this.textureUpdates.delete(texture);
+      texture.onUpdate?.(texture);
+    }
+  }
+
+  private planTexture(texture: Texture, projection: TextureProjection): TexturePlan {
+    const orientation = projection === 1 || projection === 3 ? 1 : 0;
+    const variant = projection < 2 ? '' : projection === 4 ? 'scalar-data' : 'scalar-color';
     validateTexture(texture).unwrap();
     if (
       orientation === 1 &&
@@ -546,37 +692,54 @@ export class SceneProjection {
       unsupported('Matcap Texture UV transform', texture.uuid).unwrap();
     const values = textureValues(texture),
       samplerSignature = samplerValues(texture);
+    const previous = this.textures[orientation].read(texture, values, variant);
+    const raw =
+      previous?.payload ??
+      projectTextureUpload(
+        texture,
+        this.textures[orientation].read(texture, undefined, variant)?.payload,
+        orientation === 1 ? !texture.flipY : texture.flipY,
+      ).unwrap();
     return {
+      orientation,
+      variant,
       source: texture,
       values,
       samplerValues: samplerSignature,
       payload:
-        this.textures[orientation].read(texture, values)?.payload ??
-        projectTextureUpload(
-          texture,
-          this.textures[orientation].read(texture, undefined)?.payload,
-          orientation === 1 ? !texture.flipY : texture.flipY,
-        ).unwrap(),
+        previous?.payload ??
+        (variant === '' ? raw : expandScalarTexture(raw, variant === 'scalar-color')),
       sampler:
         this.samplers.read(texture, samplerSignature)?.payload ?? projectSampler(texture).unwrap(),
     };
   }
 
   private publishTextures(frame: ScenePreparation): TextureBindings {
-    const textureBindings = [
-      new Map<Texture, MaterialTextureValue>(),
-      new Map<Texture, MaterialTextureValue>(),
-    ] as const;
-    for (const orientation of [0, 1] as const) {
-      for (const plan of frame.texturePlans[orientation].values()) {
-        const previous = this.textures[orientation].read(plan.source, plan.values);
+    const textureBindings: TextureBindings = [
+      new Map(),
+      new Map(),
+      undefined,
+      undefined,
+      undefined,
+    ];
+    for (let projection = 0; projection < frame.texturePlans.length; projection++) {
+      const plans = frame.texturePlans[projection];
+      if (plans === undefined) continue;
+      let bindings = textureBindings[projection];
+      if (bindings === undefined) {
+        bindings = new Map();
+        textureBindings[projection] = bindings;
+      }
+      for (const plan of plans.values()) {
+        const cache = this.textures[plan.orientation];
+        const previous = cache.read(plan.source, plan.values, plan.variant);
         const texture =
-          previous ?? this.textures[orientation].write(plan.source, plan.values, plan.payload);
+          previous ?? cache.write(plan.source, plan.values, plan.payload, plan.variant);
         if (previous === undefined) recordUpload(frame.uploadedTextures, plan.source);
         const sampler =
           this.samplers.read(plan.source, plan.samplerValues) ??
           this.samplers.write(plan.source, plan.samplerValues, plan.sampler);
-        textureBindings[orientation].set(plan.source, {
+        bindings.set(plan.source, {
           texture: texture.handle,
           sampler: sampler.handle,
         });
@@ -590,9 +753,9 @@ export class SceneProjection {
       for (const use of frame.usedMaterials[shading]) {
         const source = use.effective;
         const bindings: Record<string, MaterialTextureValue> = {};
-        const values = [...materialValues(source), frame.varianceShadow];
+        const values = [...materialValues(source), frame.varianceShadow, use.queue];
         for (const [parameter, texture] of materialTextures(source)) {
-          const binding = this.textureBinding(use, texture, textureBindings);
+          const binding = this.textureBinding(use, parameter, texture, textureBindings);
           const coordinates = use.coordinates.get(texture);
           bindings[parameter] = {
             ...binding,
@@ -615,23 +778,27 @@ export class SceneProjection {
 
   private textureBinding(
     use: MaterialUse,
+    parameter: string,
     texture: Texture,
     textureBindings: TextureBindings,
   ): MaterialTextureValue {
-    const binding = isExternalTexture(texture)
-      ? ({
-          ...(this.external?.binding(texture) ??
-            unsupported(
-              'External texture requires a renderer import lease',
-              texture.uuid,
-            ).unwrap()),
-          sampler: (
-            this.samplers.read(texture, samplerValues(texture)) ??
-            this.samplers.write(texture, samplerValues(texture), projectSampler(texture).unwrap())
-          ).handle,
-          coordinates: use.coordinates.get(texture),
-        } as MaterialTextureValue)
-      : textureBindings[use.effective instanceof MeshMatcapMaterial ? 1 : 0].get(texture);
+    const binding =
+      isExternalTexture(texture) || texture.isRenderTargetTexture
+        ? ({
+            ...((texture.isRenderTargetTexture
+              ? this.options.targets?.binding(texture)
+              : this.external?.binding(texture)) ??
+              unsupported(
+                'External texture requires a renderer import lease',
+                texture.uuid,
+              ).unwrap()),
+            sampler: (
+              this.samplers.read(texture, samplerValues(texture)) ??
+              this.samplers.write(texture, samplerValues(texture), projectSampler(texture).unwrap())
+            ).handle,
+            coordinates: use.coordinates.get(texture),
+          } as MaterialTextureValue)
+        : textureBindings[textureProjection(use.effective, parameter, texture)]?.get(texture);
     if (binding === undefined)
       throw new Error('admitted texture missing its managed asset reference');
     return binding;
@@ -653,6 +820,7 @@ export class SceneProjection {
         return unsupported('Material has no shadow caster pass', source.uuid).unwrap();
       projected = { ...projected, passes: [first, ...rest] };
     }
+    if (use.queue !== undefined) projected = withOpaqueQueue(projected, use.queue);
     if (this.prepareMaterialPrograms !== undefined)
       projected = this.prepareMaterialPrograms(projected, use.skinned);
     return projected;
@@ -686,7 +854,7 @@ export class SceneProjection {
       this.ensure(cameraEntity, ClippingPlanes);
       this.write(cameraEntity, ClippingPlanes, clippingPlanesData(frame.cameraClipping));
     } else this.removeIfPresent(cameraEntity, ClippingPlanes);
-    propagateTransforms(this.world).unwrap();
+    if (this.options.propagate !== false) propagateTransforms(this.world).unwrap();
     for (const texture of frame.uploadedTextures) this.textureUpdates.add(texture);
     return cameraEntity;
   }
@@ -755,11 +923,24 @@ export class SceneProjection {
   ): void {
     const sceneEntity = this.nodes.get(scene)?.entity;
     if (sceneEntity === undefined) throw new Error('admitted scene missing its entity');
+    if (lighting.targetEnvironment !== undefined) {
+      this.ensure(sceneEntity, RenderTargetEnvironment);
+      this.write(sceneEntity, RenderTargetEnvironment, {
+        source: this.world.internSharedRef(
+          'RenderTargetEnvironmentSource',
+          lighting.targetEnvironment,
+        ),
+      });
+    } else this.removeIfPresent(sceneEntity, RenderTargetEnvironment);
     this.ensure(sceneEntity, Skylight, { intensity: 0 });
     this.write(sceneEntity, Skylight, {
       ambientIrradiance,
       equirect: lighting.lighting,
-      intensity: lighting.lighting !== 0 && scene instanceof Scene ? scene.environmentIntensity : 0,
+      intensity:
+        (lighting.lighting !== 0 || lighting.targetEnvironment !== undefined) &&
+        scene instanceof Scene
+          ? scene.environmentIntensity
+          : 0,
       rotation: lighting.lightingRotation,
     });
     if (lighting.background !== 0) {
@@ -769,6 +950,10 @@ export class SceneProjection {
         rotation: lighting.backgroundRotation,
       });
     } else this.removeIfPresent(sceneEntity, SkyboxBackground);
+    if (lighting.fog !== undefined) {
+      this.ensure(sceneEntity, NativeFog);
+      this.write(sceneEntity, NativeFog, lighting.fog);
+    } else this.removeIfPresent(sceneEntity, NativeFog);
   }
 
   /** Retire a node the source no longer reaches, or refresh its transform, name and shadow roles. */
@@ -798,8 +983,9 @@ export class SceneProjection {
 
   private releaseNode(record: NodeRecord): void {
     record.disposeSource?.();
-    for (const joint of record.joints ?? []) this.world.despawn(joint).unwrap();
-    this.world.despawn(record.entity).unwrap();
+    for (const joint of record.joints ?? [])
+      if (this.world.componentsOf(joint).ok) this.world.despawn(joint).unwrap();
+    if (this.world.componentsOf(record.entity).ok) this.world.despawn(record.entity).unwrap();
   }
 
   private writeLight(frame: ScenePreparation, object: Object3D, entity: EntityHandle): void {
@@ -851,6 +1037,7 @@ export class SceneProjection {
         ...light,
         ...shadow,
         range: object.distance === 0 ? Infinity : object.distance,
+        decay: object.decay,
         outerConeDeg: (object.angle * 180) / Math.PI,
         innerConeDeg: (object.angle * (1 - object.penumbra) * 180) / Math.PI,
       });
@@ -888,6 +1075,7 @@ export class SceneProjection {
       this.ensure(entity, NativeLines, { width: 1 });
       this.write(entity, NativeLines, plan.lineStyle);
     } else if (!(plan.source instanceof Line)) this.removeIfPresent(entity, NativeLines);
+    if (plan.pointStyle !== undefined) this.write(entity, NativePoints, plan.pointStyle);
     if (plan.nativeInstances) {
       this.ensure(entity, Instances);
       if (plan.instances !== undefined)
@@ -954,21 +1142,28 @@ export class SceneProjection {
     data: Partial<InputShapeOf<S>>,
   ): void {
     const current: Record<string, unknown> = this.world.get(entity, component).unwrap();
-    const changed = Object.entries(data).some(([name, value]) => {
+    for (const name in data) {
+      if (!Object.hasOwn(data, name)) continue;
+      const value = data[name];
       const type = component.fields[name]?.type;
       const f32 = type === 'f32' || type?.startsWith('array<f32') === true;
-      const equal = (stored: unknown, source: unknown) =>
-        Object.is(stored, f32 && typeof source === 'number' ? Math.fround(source) : source);
+      let changed = false;
       if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
         const source = value as ArrayLike<number>;
         const stored = current[name] as ArrayLike<number>;
-        if (stored.length !== source.length) return true;
-        for (let i = 0; i < source.length; i++) if (!equal(stored[i], source[i])) return true;
-        return false;
+        changed = stored.length !== source.length;
+        for (let i = 0; !changed && i < source.length; i++)
+          changed = !Object.is(stored[i], f32 ? Math.fround(source[i] as number) : source[i]);
+      } else
+        changed = !Object.is(
+          current[name],
+          f32 && typeof value === 'number' ? Math.fround(value) : value,
+        );
+      if (changed) {
+        this.world.set(entity, component, data).unwrap();
+        return;
       }
-      return !equal(current[name], value);
-    });
-    if (changed) this.world.set(entity, component, data).unwrap();
+    }
   }
 
   sources(): ThreeSourceIdentity[] {
@@ -980,7 +1175,31 @@ export class SceneProjection {
     }));
   }
 
+  /** Identity lookup never materializes the diagnostic source inventory. */
+  entityFor(source: Object3D): EntityHandle | undefined {
+    const entity = this.nodes.get(source)?.entity;
+    return entity !== undefined && this.world.hasComponent(entity, Transform) ? entity : undefined;
+  }
+
+  private assertRetirableNode(record: NodeRecord): void {
+    if (
+      this.options.world !== undefined &&
+      this.world.hasComponent(record.entity, Children) &&
+      this.world.get(record.entity, Children).unwrap().entities.length > 0
+    )
+      throw new ThreeCompatibilityError(
+        'three-interop-invalid',
+        'Native child of a Three-owned entity',
+        'Detach native ChildOf relationships before synchronizing or disposing this mount; native entities must not be cascade-despawned.',
+      );
+  }
+
+  assertRetirable(): void {
+    for (const record of this.nodes.values()) this.assertRetirableNode(record);
+  }
+
   dispose(): void {
+    this.assertRetirable();
     for (const record of this.nodes.values()) this.releaseNode(record);
     this.nodes.clear();
     for (const cache of [
@@ -1000,9 +1219,12 @@ export class SceneProjection {
       ![
         'Scene',
         'Object3D',
+        'AnimationPathHelper',
         'Group',
+        'BundleGroup',
         'LOD',
         'Mesh',
+        'MorphAnimMesh',
         'InstancedMesh',
         'BatchedMesh',
         'SkinnedMesh',
@@ -1011,6 +1233,7 @@ export class SceneProjection {
         'LineSegments',
         'Points',
         'Sprite',
+        'CubeCamera',
         'PerspectiveCamera',
         'OrthographicCamera',
         'AmbientLight',
@@ -1037,46 +1260,107 @@ export class SceneProjection {
       object instanceof PointLight ||
       object instanceof SpotLight
     ) {
-      if (
-        ![...object.color.toArray(), object.intensity].every(
-          (value) => Number.isFinite(value) && value >= 0,
-        )
-      )
-        invalid('Light color/intensity', object.uuid).unwrap();
-      if (
-        object instanceof RectAreaLight &&
-        ![object.width, object.height].every((value) => Number.isFinite(value) && value > 0)
-      )
-        invalid('RectAreaLight width/height', object.uuid).unwrap();
-      if (
-        (object instanceof PointLight || object instanceof SpotLight) &&
-        ![object.distance, object.decay].every((value) => Number.isFinite(value) && value >= 0)
-      )
-        invalid('Light distance/decay', object.uuid).unwrap();
-      if (object instanceof SpotLight) {
-        if (
-          !Number.isFinite(object.angle) ||
-          object.angle <= 0 ||
-          object.angle > Math.PI / 2 ||
-          !Number.isFinite(object.penumbra) ||
-          object.penumbra < 0 ||
-          object.penumbra > 1
-        )
-          invalid('SpotLight angle/penumbra', object.uuid).unwrap();
-        if (object.map !== null || object.decay !== 2)
-          unsupported('SpotLight map/non-default decay', object.uuid).unwrap();
-      }
+      validateLight(object);
     }
   }
+}
+
+function validateLight(
+  object: RectAreaLight | AmbientLight | DirectionalLight | PointLight | SpotLight,
+): void {
+  if (
+    ![...object.color.toArray(), object.intensity].every(
+      (value) => Number.isFinite(value) && value >= 0,
+    )
+  )
+    invalid('Light color/intensity', object.uuid).unwrap();
+  if (
+    object instanceof RectAreaLight &&
+    ![object.width, object.height].every((value) => Number.isFinite(value) && value > 0)
+  )
+    invalid('RectAreaLight width/height', object.uuid).unwrap();
+  if (
+    (object instanceof PointLight || object instanceof SpotLight) &&
+    (!Number.isFinite(object.distance) ||
+      object.distance < 0 ||
+      !Number.isFinite(Math.fround(object.decay)) ||
+      object.decay < 0)
+  )
+    invalid('Light distance/decay', object.uuid).unwrap();
+  if (object instanceof SpotLight) validateSpotLight(object);
+}
+
+function validateSpotLight(object: SpotLight): void {
+  if (
+    !Number.isFinite(object.angle) ||
+    object.angle <= 0 ||
+    object.angle > Math.PI / 2 ||
+    !Number.isFinite(object.penumbra) ||
+    object.penumbra < 0 ||
+    object.penumbra > 1
+  )
+    invalid('SpotLight angle/penumbra', object.uuid).unwrap();
+  if (object instanceof IESSpotLight && object.iesMap !== null)
+    unsupported(
+      'IESSpotLight.iesMap requires a native photometry conversion',
+      object.uuid,
+    ).unwrap();
+  if (object instanceof ProjectorLight)
+    unsupported('ProjectorLight requires native rectangular attenuation', object.uuid).unwrap();
+  if (object.map !== null)
+    unsupported('SpotLight map requires native projector texture projection', object.uuid).unwrap();
 }
 
 const NO_EQUIRECT = 0 as AssetHandle<'equirect'>;
 
 interface SceneLighting {
+  readonly targetEnvironment?: RenderTargetEnvironmentSource;
   readonly lighting: AssetHandle<'equirect'>;
   readonly background: AssetHandle<'equirect'>;
   readonly lightingRotation: number[];
   readonly backgroundRotation: number[];
+  readonly fog?: ReturnType<typeof projectFog>;
+}
+
+function projectFog(scene: Scene) {
+  const fog = scene.fog;
+  if (fog === null) return undefined;
+  if (!(fog instanceof Fog || fog instanceof FogExp2))
+    return unsupported('Scene.fog type', scene.uuid).unwrap();
+  const color = fog.color.toArray();
+  if (!color.every((value) => Number.isFinite(Math.fround(value)) && value >= 0))
+    invalid('Scene.fog.color', scene.uuid).unwrap();
+  if (fog instanceof Fog) {
+    if (
+      !Number.isFinite(Math.fround(fog.near)) ||
+      !Number.isFinite(Math.fround(fog.far)) ||
+      fog.near < 0 ||
+      fog.far <= fog.near
+    )
+      invalid('Scene.fog.near/far', scene.uuid).unwrap();
+    return {
+      color,
+      mode: FogModeValue.linear,
+      near: fog.near,
+      far: fog.far,
+      density: 0,
+      heightFalloff: 0,
+      maxOpacity: 1,
+      skyOpacity: 1,
+    };
+  }
+  if (!Number.isFinite(Math.fround(fog.density)) || fog.density < 0)
+    invalid('Scene.fog.density', scene.uuid).unwrap();
+  return {
+    color,
+    mode: FogModeValue.exp2,
+    density: fog.density,
+    near: 0,
+    far: 100,
+    heightFalloff: 0,
+    maxOpacity: 1,
+    skyOpacity: 1,
+  };
 }
 
 interface SourceTransform {
@@ -1085,14 +1369,18 @@ interface SourceTransform {
     pos: Float32Array;
     quat: Float32Array;
     scale: Float32Array;
-    shear: Float32Array;
   };
 }
 
-type TextureBindings = readonly [
-  Map<Texture, MaterialTextureValue>,
-  Map<Texture, MaterialTextureValue>,
+type TextureProjection = 0 | 1 | 2 | 3 | 4;
+type TextureBuckets<T> = [
+  Map<Texture, T>,
+  Map<Texture, T>,
+  Map<Texture, T> | undefined,
+  Map<Texture, T> | undefined,
+  Map<Texture, T> | undefined,
 ];
+type TextureBindings = TextureBuckets<MaterialTextureValue>;
 
 /** One sync's source walk and plans; prepare fills it, the deferred commit publishes it. */
 interface ScenePreparation {
@@ -1111,7 +1399,7 @@ interface ScenePreparation {
   readonly groupOrders: Map<Object3D, number>;
   readonly transforms: Map<Object3D, SourceTransform>;
   readonly meshes: Map<Renderable, MeshPlan>;
-  readonly texturePlans: readonly [Map<Texture, TexturePlan>, Map<Texture, TexturePlan>];
+  readonly texturePlans: TextureBuckets<TexturePlan>;
   readonly usedMaterials: readonly [Set<MaterialUse>, Set<MaterialUse>];
   readonly materialHandles: readonly [
     Map<MaterialUse, AssetHandle<'material'>>,
@@ -1121,6 +1409,7 @@ interface ScenePreparation {
   readonly transparentRanks: Map<Object3D, number>;
   readonly uploadedTextures: Set<Texture>;
   cameraClipping: ClippingOptions | undefined;
+  orderedOpaque?: boolean;
 }
 
 function createScenePreparation(
@@ -1142,7 +1431,7 @@ function createScenePreparation(
     groupOrders: new Map(),
     transforms: new Map(),
     meshes: new Map(),
-    texturePlans: [new Map(), new Map()],
+    texturePlans: [new Map(), new Map(), undefined, undefined, undefined],
     usedMaterials: [new Set(), new Set()],
     materialHandles: [new Map(), new Map()],
     geometryHandles: new Map(),
@@ -1162,6 +1451,7 @@ interface GeometryShape {
   readonly flatMatcap: ReadonlySet<number>;
   readonly expanded: boolean;
   readonly cpuSkin: boolean;
+  readonly morphColor: boolean;
 }
 
 /**
@@ -1210,11 +1500,17 @@ function clippingCandidates(visible: ReadonlySet<Object3D>): Renderable[] {
     );
 }
 
-function sourceMatrix(object: Object3D, camera: Camera): number[] {
+function sourceMatrix(object: Object3D, camera: Camera, scene: Object3D): number[] {
   if (object === camera) return camera.matrixWorldInverse.elements;
-  return object instanceof Sprite
-    ? spriteMatrix(object, camera).elements
-    : object.matrixWorld.elements;
+  if (object instanceof Sprite) {
+    const override =
+      scene instanceof Scene && object.material.allowOverride ? scene.overrideMaterial : null;
+    const material = override !== null && isSpriteMaterial(override) ? override : object.material;
+    const positionMaterial =
+      surfaceInput(object.material, 'positionNode') !== null ? object.material : material;
+    return spriteMatrix(object, camera, material, positionMaterial).elements;
+  }
+  return object.matrixWorld.elements;
 }
 
 function decomposeSourceMatrix(
@@ -1222,7 +1518,7 @@ function decomposeSourceMatrix(
   camera: Camera,
   values: readonly number[],
 ): SourceTransform['data'] {
-  // r184 removes camera scale when updating its view cache; manual view edits
+  // r187 removes camera scale when updating its view cache; manual view edits
   // and frozen inverses remain independent of the source world matrix.
   const matrix =
     object === camera ? camera.matrixWorldInverse.clone().invert().elements : [...values];
@@ -1247,7 +1543,12 @@ function decomposeSourceMatrix(
       'Camera.matrixWorldInverse requires a rigid view; non-rigid views need native camera support',
       camera.uuid,
     ).unwrap();
-  return { pos: position, quat: rotation, scale, shear };
+  if (shear.some((value) => Math.abs(value) > 1e-5))
+    unsupported(
+      'Object3D matrixWorld with shear is not representable by Transform',
+      object.uuid,
+    ).unwrap();
+  return { pos: position, quat: rotation, scale };
 }
 
 function isCulled(frame: ScenePreparation, object: Renderable, frustum: Frustum): boolean {
@@ -1296,9 +1597,26 @@ function selectMaterials(
       continue;
     const use = materialUse(frame, object, original, planes, coordinates);
     if (use === undefined) continue;
-    selection.push({ slot, vertexColors: use.effective.vertexColors });
+    selection.push({
+      slot,
+      vertexColors: use.effective.vertexColors,
+      tangentBasis: materialTangentBasis(use.effective),
+    });
     list.push(use);
   }
+}
+
+/** Only tangent-space consumers need a UV-derived frame; ordinary models share geometry. */
+function materialTangentBasis(material: SupportedMaterial): 'normal' | 'uv' {
+  return ('normalMap' in material && material.normalMap != null) ||
+    ('bumpMap' in material && material.bumpMap != null) ||
+    ('clearcoatNormalMap' in material && material.clearcoatNormalMap != null) ||
+    ('anisotropyMap' in material && material.anisotropyMap != null) ||
+    ('anisotropy' in material && material.anisotropy !== 0) ||
+    ('normalNode' in material && material.normalNode != null) ||
+    ('clearcoatNormalNode' in material && material.clearcoatNormalNode != null)
+    ? 'uv'
+    : 'normal';
 }
 
 /** Elements of one group that survive the geometry drawRange. */
@@ -1329,6 +1647,9 @@ function materialUse(
     scene instanceof Scene && original.allowOverride
       ? (scene.overrideMaterial ?? original)
       : original;
+  const inheritedPosition = surfaceInput(original, 'positionNode');
+  if (material !== original && inheritedPosition !== null && !('isNodeMaterial' in material))
+    admitSurfaceInput(original, 'positionNode', inheritedPosition).unwrap();
   const source = validateMaterial(effectiveMaterial(material, original, frame.buffers)).unwrap();
   if (isBlended(source) ? !frame.buffers.transparent : !frame.buffers.opaque) return undefined;
   const shading = Number(usesFlatShading(source, object.geometry.hasAttribute('normal'))) as 0 | 1;
@@ -1337,7 +1658,7 @@ function materialUse(
     source: material,
     effective: source,
     shading,
-    skinned: object instanceof SkinnedMesh && source instanceof MeshBasicMaterial,
+    skinned: object instanceof SkinnedMesh && isBasicMaterial(source),
     shadowOnly,
     coordinates,
     variant: JSON.stringify([
@@ -1350,17 +1671,22 @@ function materialUse(
   };
 }
 
-/** r184 inherits alpha coverage and transparency from each source draw when overriding. */
+/** r187 inherits alpha coverage and transparency from each source draw when overriding. */
 function effectiveMaterial(
   material: Material,
   original: Material,
   buffers: SceneBuffers,
 ): Material {
+  if (material !== original && 'isNodeMaterialInstance' in material)
+    unsupported('NodeMaterialInstance scene override', material.uuid).unwrap();
   return Object.assign(
     Object.create(material),
     material === original
       ? {}
       : {
+          // r187 inherits source position nodes, but keeps override rotation/scale.
+          positionNode:
+            surfaceInput(original, 'positionNode') ?? surfaceInput(material, 'positionNode'),
           alphaTest: original.alphaTest,
           alphaMap: 'alphaMap' in original ? original.alphaMap : null,
           transparent: isBlended(original),
@@ -1371,7 +1697,7 @@ function effectiveMaterial(
 }
 
 function isBlended(material: Material): boolean {
-  return material.transparent || ('transmission' in material && Number(material.transmission) > 0);
+  return material.transparent || usesTransmission(material);
 }
 
 function isWireframe(object: Renderable, list: readonly MaterialUse[]): boolean {
@@ -1391,23 +1717,61 @@ function rejectOrderedOpaque(
 ): void {
   if (
     (object.renderOrder !== 0 || (frame.groupOrders.get(object) ?? 0) !== 0) &&
-    list.some((use) => !use.effective.transparent)
-  )
-    unsupported('Opaque renderOrder requires native ordered opaque draws', object.uuid).unwrap();
+    list.some((use) => !use.shadowOnly && !isBlended(use.effective))
+  ) {
+    if (!frame.buffers.opaqueOrder)
+      unsupported('Opaque renderOrder requires renderer-owned ordering', object.uuid).unwrap();
+    frame.orderedOpaque = true;
+  }
+}
+
+const scalarColorParameters: readonly string[] = [
+  'baseColorTexture',
+  'emissiveTexture',
+  'specularColorTexture',
+  'sheenColorTexture',
+];
+const scalarRedParameters: readonly string[] = [
+  'alphaTexture',
+  'bumpTexture',
+  'displacementTexture',
+  'occlusionTexture',
+  'transmissionTexture',
+  'clearcoatTexture',
+  'iridescenceTexture',
+];
+
+/** Share existing orientation caches; scalar variants are created only when actually used. */
+function textureProjection(
+  material: SupportedMaterial,
+  parameter: string,
+  texture: Texture,
+): TextureProjection {
+  const sphere = isMatcapMaterial(material) && parameter === 'baseColorTexture';
+  if (texture.format !== RedFormat) return sphere ? 1 : 0;
+  if (scalarColorParameters.includes(parameter)) return sphere ? 3 : 2;
+  if (scalarRedParameters.includes(parameter)) return 0;
+  return 4;
 }
 
 function uvTextures(list: readonly MaterialUse[]): Texture[] {
-  return list.flatMap((use) =>
-    use.effective instanceof MeshMatcapMaterial
-      ? []
-      : materialTextures(use.effective).map(([, texture]) => texture),
-  );
+  const textures: Texture[] = [];
+  for (const use of list) {
+    // The sphere image uses generated coordinates. Without coverage, preserve
+    // the default Matcap path without enumerating or allocating texture slots.
+    if (isMatcapMaterial(use.effective)) {
+      if (use.effective.alphaMap != null) textures.push(use.effective.alphaMap);
+      continue;
+    }
+    for (const [, texture] of materialTextures(use.effective)) textures.push(texture);
+  }
+  return textures;
 }
 
 function flatMatcapSlots(list: readonly MaterialUse[]): Set<number> {
   return new Set(
     list.flatMap((use, slot) =>
-      use.effective instanceof MeshMatcapMaterial && use.shading === 1 ? [slot] : [],
+      isMatcapMaterial(use.effective) && use.shading === 1 ? [slot] : [],
     ),
   );
 }
@@ -1421,7 +1785,8 @@ function expandsInstances(object: Renderable): boolean {
 }
 
 function geometryVariant(object: Renderable, shape: GeometryShape): string {
-  const perObject = shape.expanded || shape.cpuSkin || shape.flatMatcap.size > 0;
+  const perObject =
+    shape.expanded || shape.cpuSkin || shape.flatMatcap.size > 0 || shape.morphColor;
   return JSON.stringify([
     shape.topology,
     shape.grouped,
@@ -1441,7 +1806,7 @@ function geometryCacheValues(
 ): unknown[] {
   const values = geometryValues(object.geometry, shape.grouped);
   if (shape.cpuSkin) values.push(...cpuSkinValues(object as SkinnedMesh));
-  if (shape.flatMatcap.size > 0 && object instanceof Mesh)
+  if ((shape.flatMatcap.size > 0 || shape.morphColor) && object instanceof Mesh)
     values.push(...(object.morphTargetInfluences ?? []));
   if (shape.expanded && firstMaterial !== undefined)
     values.push(
@@ -1458,6 +1823,7 @@ function projectMeshGeometry(object: Renderable, shape: GeometryShape): MeshAsse
     shape.topology,
     shape.uv.attributes,
     shape.wireframe,
+    sourceMorphColorWeights(object, shape.morphColor),
   ).unwrap();
   if (base === undefined) return undefined;
   if (shape.cpuSkin) base = projectCpuSkin(object as SkinnedMesh, base);
@@ -1471,16 +1837,76 @@ function projectMeshGeometry(object: Renderable, shape: GeometryShape): MeshAsse
   return base;
 }
 
-function rejectLinePointMaterial(object: Line | Points, source: SupportedMaterial): void {
-  if (!(source instanceof LineBasicMaterial || source instanceof PointsMaterial))
+function projectLinePointMaterial(
+  object: Line | Points,
+  source: SupportedMaterial,
+  coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>,
+): void {
+  if (!(isLineMaterial(source) || isPointsMaterial(source)))
     unsupported('Lines/Points require their unlit material family', object.uuid).unwrap();
-  if (source.vertexColors && object.geometry.hasAttribute('color'))
-    unsupported('Native Lines/Points do not transport per-vertex colors', object.uuid).unwrap();
-  if (materialTextures(source).length > 0)
+  if (object instanceof Line && source.vertexColors && object.geometry.hasAttribute('color'))
+    unsupported('Native Lines do not transport per-vertex colors', object.uuid).unwrap();
+  for (const [parameter, texture] of materialTextures(source)) {
+    if (
+      !(
+        object instanceof Points &&
+        source instanceof PointsMaterial &&
+        parameter === 'baseColorTexture'
+      )
+    )
+      unsupported(
+        'Native Lines/Points do not transport source UV or point coordinates for this texture slot',
+        object.uuid,
+      ).unwrap();
+    if (object.geometry.hasAttribute('uv'))
+      unsupported(
+        'PointsMaterial.map with a geometry UV needs per-point sampling',
+        object.uuid,
+      ).unwrap();
+    const { transform } = textureCoordinates(texture).unwrap();
+    // Three's sprite coordinate has its origin at the lower left. Flip the
+    // generated coordinates, while sharing the original texture publication.
+    const [sx, sy] = transform.scale;
+    const [x, y] = transform.offset;
+    coordinates.set(texture, {
+      set: 0,
+      transform: {
+        offset: [x - Math.sin(transform.rotation) * sy, y + Math.cos(transform.rotation) * sy],
+        scale: [sx, -sy],
+        rotation: transform.rotation,
+      },
+    });
+  }
+}
+
+function pointStyle(object: Points, frame: ScenePreparation, list: readonly MaterialUse[]) {
+  const source = list.find(({ effective }) => effective instanceof PointsMaterial)?.effective;
+  if (!(source instanceof PointsMaterial))
+    return { size: 1, sizeUnits: PointSizeUnitsValue.pixels, minPixelSize: 0 };
+  if (
+    list.some(
+      ({ effective }) =>
+        !(effective instanceof PointsMaterial) ||
+        effective.size !== source.size ||
+        effective.sizeAttenuation !== source.sizeAttenuation,
+    )
+  )
     unsupported(
-      'Native Lines/Points do not transport source UV or point coordinates',
+      'Points material groups need the same raster size and attenuation',
       object.uuid,
     ).unwrap();
+  const projection = frame.camera.projectionMatrix.elements;
+  const world = source.sizeAttenuation && projection[11] === -1;
+  const size = world
+    ? source.size / Math.abs(projection[5])
+    : source.size * (frame.buffers.pixelRatio ?? 1);
+  if (!Number.isFinite(Math.fround(size)) || Math.fround(size) <= 0)
+    invalid('PointsMaterial.size', source.uuid).unwrap();
+  return {
+    size,
+    sizeUnits: world ? PointSizeUnitsValue.world : PointSizeUnitsValue.pixels,
+    minPixelSize: 1,
+  };
 }
 
 function meshLineStyle(
@@ -1512,6 +1938,16 @@ function instanceSourceValues(object: InstancedMesh, expanded: boolean): readonl
     object.count,
     expanded,
   ];
+}
+
+function projectsMorphColor(
+  geometry: BufferGeometry,
+  materials: readonly GeometryMaterial[],
+): boolean {
+  return (
+    geometry.morphAttributes.color !== undefined &&
+    materials.some((material) => material.vertexColors)
+  );
 }
 
 function meshMorphWeights(object: Renderable, payload: MeshAsset): Float32Array | undefined {
@@ -1560,6 +1996,96 @@ function sceneAmbientIrradiance(
   return ambientIrradiance;
 }
 
+/** Preserve native batching until the caller explicitly requests opaque ordering. */
+function rankOpaqueMeshes(frame: ScenePreparation): void {
+  if (!frame.buffers.opaqueOrder) return;
+  if (!frame.orderedOpaque && frame.buffers.sortObjects && frame.buffers.opaqueSort == null) return;
+  const plans = [...frame.meshes.values()].filter((plan) =>
+    plan.materials.some((use) => !use.shadowOnly && !isBlended(use.effective)),
+  );
+  // Keep the priorities below the native transparent queue (3000).
+  if (plans.length > 1000)
+    unsupported('Ordered opaque draws support at most 1000 objects per scene').unwrap();
+  const projection = new Matrix4().multiplyMatrices(
+    frame.camera.projectionMatrix,
+    frame.camera.matrixWorldInverse,
+  );
+  const items = plans.map((plan) => {
+    if (
+      !(plan.source instanceof Mesh) ||
+      plan.source instanceof InstancedMesh ||
+      plan.source instanceof BatchedMesh ||
+      Array.isArray(plan.source.material) ||
+      plan.materials.length !== 1 ||
+      frame.clipping.get(plan.source) !== undefined
+    )
+      unsupported(
+        'Opaque ordering requires single-material, unclipped ordinary meshes',
+        plan.source.uuid,
+      ).unwrap();
+    return { plan, item: sourceRenderItem(frame, plan, projection) };
+  });
+  if (frame.buffers.sortObjects) {
+    const compare = frame.buffers.opaqueSort ?? painterSort;
+    items.sort((a, b) => compare(a.item, b.item));
+  }
+  for (const [rank, { plan }] of items.entries()) {
+    const use = plan.materials[0];
+    if (use === undefined) throw new Error('ordered mesh has no material');
+    // Object identity, rather than rank, keeps asset handles stable after reordering.
+    use.variant += `:opaque:${plan.source.uuid}`;
+    use.queue = 2000 + rank;
+  }
+}
+
+function painterSort(a: RenderItem, b: RenderItem): number {
+  return (
+    (a.groupOrder ?? 0) - (b.groupOrder ?? 0) ||
+    (a.renderOrder ?? 0) - (b.renderOrder ?? 0) ||
+    (a.z ?? 0) - (b.z ?? 0) ||
+    (a.id ?? 0) - (b.id ?? 0)
+  );
+}
+
+function withOpaqueQueue(material: MaterialAsset, queue: number): MaterialAsset {
+  if (material.parent !== undefined) throw new Error('ordered material must own its passes');
+  const [first, ...rest] = (material.passes ?? []).map((pass) =>
+    pass.name === 'shadow-caster' ? pass : { ...pass, renderState: { ...pass.renderState, queue } },
+  );
+  if (first === undefined) throw new Error('ordered material has no concrete passes');
+  return { ...material, passes: [first, ...rest] };
+}
+
+/** r187 StandardDrawingPipeline uses clip-space Z without division by W. */
+function sourceRenderItem(
+  frame: ScenePreparation,
+  plan: MeshPlan,
+  projection: Matrix4,
+): RenderItem {
+  const geometry = plan.source.geometry;
+  const bounds = plan.source instanceof SkinnedMesh ? plan.source : geometry;
+  if (bounds.boundingSphere === null) bounds.computeBoundingSphere();
+  const localCenter = bounds.boundingSphere?.center;
+  const center =
+    plan.source instanceof Sprite
+      ? new Vector4().setFromMatrixPosition(plan.source.matrixWorld)
+      : new Vector4()
+          .set(localCenter?.x ?? 0, localCenter?.y ?? 0, localCenter?.z ?? 0, 1)
+          .applyMatrix4(plan.source.matrixWorld);
+  center.applyMatrix4(projection);
+  return {
+    id: plan.source.id,
+    object: plan.source,
+    geometry,
+    material: plan.materials[0]?.source ?? null,
+    groupOrder: frame.groupOrders.get(plan.source) ?? 0,
+    renderOrder: plan.source.renderOrder,
+    z: center.z,
+    group: null,
+    clippingContext: null,
+  };
+}
+
 /**
  * Native layers express the source transparent order even when camera depth
  * differs from world Z. Opaque ordering remains a separate native contract.
@@ -1568,6 +2094,10 @@ function rankTransparentMeshes(frame: ScenePreparation): void {
   const transparent = [...frame.meshes.values()].filter((plan) =>
     plan.materials.some((use) => isBlended(use.effective)),
   );
+  if (frame.buffers.sortObjects && frame.buffers.transparentSort != null) {
+    rankCustomTransparent(frame, transparent, frame.buffers.transparentSort);
+    return;
+  }
   const depths = new Map(transparent.map((plan) => [plan, sourceDepth(plan, frame.camera)]));
   const groupOrders = frame.groupOrders;
   if (frame.buffers.sortObjects)
@@ -1591,4 +2121,42 @@ function sourceDepth(plan: MeshPlan, camera: Camera): number {
   return (geometry.boundingSphere?.center.clone() ?? new Vector3())
     .applyMatrix4(plan.source.matrixWorld)
     .applyMatrix4(camera.matrixWorldInverse).z;
+}
+
+/** Caller render items are created only when an explicit comparator is installed. */
+function rankCustomTransparent(
+  frame: ScenePreparation,
+  plans: MeshPlan[],
+  compare: (a: RenderItem, b: RenderItem) => number,
+): void {
+  const projection = new Matrix4().multiplyMatrices(
+    frame.camera.projectionMatrix,
+    frame.camera.matrixWorldInverse,
+  );
+  const items = plans.map((plan): RenderItem => {
+    if (plan.materials.length !== 1 || frame.clipping.get(plan.source) !== undefined)
+      unsupported(
+        'Custom transparent sorting requires single-material, unclipped objects',
+        plan.source.uuid,
+      ).unwrap();
+    return sourceRenderItem(frame, plan, projection);
+  });
+  items.sort(compare);
+  for (const [rank, item] of items.entries())
+    if (item.object !== null) frame.transparentRanks.set(item.object, rank);
+}
+
+function sourceMorphColorWeights(
+  object: Renderable,
+  enabled: boolean,
+): readonly number[] | undefined {
+  if (!enabled) return undefined;
+  if (!(object instanceof Mesh) || object instanceof InstancedMesh || object instanceof BatchedMesh)
+    return unsupported(
+      'Per-instance color morphs require native GPU color target channels',
+      object.uuid,
+    ).unwrap();
+  if (object.morphTargetInfluences === undefined)
+    return invalid('Mesh.morphTargetInfluences for color morphs', object.uuid).unwrap();
+  return object.morphTargetInfluences;
 }

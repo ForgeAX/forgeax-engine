@@ -7,6 +7,14 @@ lifetime. `ownedInputBackendPlugin(backend, dispose)` is the canvas-App form:
 DOM listener release is an effect of the same provider Fiber. World snapshot
 resources and scan systems remain a separate consumer capability.
 
+`InputSnapshot.focused` publishes the acquired Host focus for this frame;
+`focusReset` reports an acquisition reset since the previous scan, including
+blur/hidden transitions or consumer ownership transfer. A reset remains visible
+even when focus returns before sampling. Cancel held gestures on reset or lost
+focus; do not interpret either as a player release command. Both facts belong to
+the frozen snapshot, so consumers never call `backend.sample()` a second time or
+install gameplay DOM listeners. The neutral snapshot starts unfocused.
+
 `attachBrowserInputBackend(canvas, { uiRoot })` excludes composed UI events
 from gameplay and clears acquired input when an event enters that root. Node
 identity is checked in the root document’s realm, including same-origin iframe
@@ -25,7 +33,7 @@ and each frame still publishes a fresh frozen snapshot.
 ## 4 步 recipe
 
 ```ts
-import { Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, World } from '@forgeax/engine-ecs';
 import {
   attachBrowserInputBackend,
   INPUT_BACKEND_KEY,
@@ -60,12 +68,12 @@ world.addSystem(Update, InputFrameStartScan);
 // 3. user system reads the frozen snapshot via the standard Resource API;
 //    multi-device surface: keyboard + mouse + gamepad + pointer + virtualAxis
 //    + action + gesture
-world.addSystem(Update, {
+world.addSystem(Update, defineSystem({
   name: 'first-person-camera',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: (w) => {
-    const snap = w.getResource<InputSnapshot>('InputSnapshot');
+    const snap = w.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     // action: declare once, forget device — same isPressed() for keyboard AND gamepad
     if (snap.action('jump').justPressed()) {/* jump (space or gamepad A) */}
     const move = snap.getVector('moveLeft', 'moveRight', 'moveUp', 'moveDown');
@@ -88,7 +96,7 @@ world.addSystem(Update, {
     // capability probe (frozen at attach time)
     const hasGamepad = snap.capabilities.gamepad;
   },
-});
+}));
 
 // 4. on shutdown: detach the listeners so multiple Engine instances do not
 //    leak handlers (charter P3 explicit failure: detach is part of the contract)
@@ -206,7 +214,7 @@ Five gesture recognizers running in the backend closure (C-3 single legal cross-
 
 ## 形态铁律
 
-- **Resource 形态唯一入口** — 用户胶水通过 `world.getResource<InputSnapshot>('InputSnapshot')` 消费；不暴露 `world.input` 平行 API（charter P4 一致抽象）
+- **Resource 形态唯一入口** — 用户胶水通过 `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)` 消费；不暴露 `world.input` 平行 API（charter P4 一致抽象）
 - **PointerLock 内部消化** — `requestPointerLock` 用户激活、`pointerlockchange` 状态机、`movementX/Y` 单位陷阱、`firstMouse` flag 全部封装在 `browser-backend.ts`；`InputSnapshot` 表面仅暴露 `snap.mouse.pointerLocked`（合并锁态 boolean）与 `snap.mouse.movementDelta`（累加 delta），不暴露 W3C DOM 细节（plan-strategy OOS-1）
 - **帧首扫描后冻结** — `InputFrameStartScan` system token（顶层 `defineSystem`）先于其他用户系统跑（用 `before` 约束），从 `INPUT_BACKEND_KEY` resource 取 backend、扫描累积器后调用 `world.insertResource` 写入冻结快照；当帧内任何系统调 `snap.*` 看到的都是同一份值（architecture-principles #2 Derive）。backend 经 `world.insertResource(INPUT_BACKEND_KEY, backend)` 注入，descriptor 的 `resources:[INPUT_BACKEND_KEY]` 走结构化 ParamValidation（依赖未注入 -> invalid，非裸 throw）
 - **OOS-1 范围外** — PointerLock 进入/退出事件、`unadjustedMovement` 选项、hot-reload 不在本 MVP 内；后续作为独立 feat 拆出
@@ -361,17 +369,17 @@ works for ordinary input. Capability presence is API evidence; physical
 vibration requires a real-device check.
 
 ```ts
-import { Update } from '@forgeax/engine/ecs';
+import { defineSystem, Update } from '@forgeax/engine/ecs';
 import {
   GAMEPAD_FEEDBACK_KEY, INPUT_SNAPSHOT_RESOURCE_KEY,
   type GamepadFeedback, type InputSnapshot,
 } from '@forgeax/engine/input';
 
-app.world.addSystem(Update, {
-  name: 'fire-feedback', queries: [], after: ['input-frame-start-scan'],
+app.world.addSystem(Update, defineSystem({
+  name: 'fire-feedback', queries: [], after: [InputFrameStartScan],
   fn(world) {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
-    const feedback = world.getResource<GamepadFeedback>(GAMEPAD_FEEDBACK_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const feedback = world.getResource(GAMEPAD_FEEDBACK_KEY);
     const pad = input.gamepad(0);
     if (pad.feedbackTarget && pad.dualRumble && input.keyboard.justPressed(' ')) {
       const admitted = feedback.play(pad.feedbackTarget, {
@@ -381,7 +389,7 @@ app.world.addSystem(Update, {
     }
     for (const result of feedback.readResults()) console.log(result);
   },
-}).unwrap();
+})).unwrap();
 ```
 
 `play` and `stop` enqueue ordered POD intents; an accepted command gets a

@@ -7,6 +7,7 @@ import { runUnifiedCli } from '@forgeax/engine/devkit';
 import { parseImage } from '@forgeax/engine/image/parse-image';
 import { connectViewWorkspace } from '../dist/modules/workspace/resident.mjs';
 import { writeProofGameAssets } from './fixtures/plugin-assets.mjs';
+import { projectDocument } from './project-document.mjs';
 
 const checkout = resolve(import.meta.dirname, '../../..');
 const root = resolve(process.env.FORGEAX_TEXTURE_PREVIEW_PROJECT ?? join(checkout, 'artifacts/texture-preview/project'));
@@ -30,7 +31,7 @@ const command = async (...args) => {
 };
 await command('project','engine','use-local',checkout);
 await command('backend','start','--host-pack',join(view,'host.pack.json'));
-const start = await command('view','start','--input',JSON.stringify({ root, frontendConfig:{layout:{responsiveAutoTuck:false}} }));
+const start = await command('view','start','--input',JSON.stringify({ project:root, frontendConfig:{layout:{responsiveAutoTuck:false}} }));
 await writeFile(join(output,'entry.json'),JSON.stringify({url:start.url,root},null,2));
 console.log('View URL',start.url);
 const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap',start.url)).then(r=>r.json());
@@ -55,7 +56,8 @@ page.on('console',m=>{if(m.type()==='error') console.error('CONSOLE',m.text());}
 await page.addInitScript(()=>{try{localStorage.setItem('forgeax.view.locale','en');}catch{}});
 try {
  await page.goto(start.url);
- await page.waitForURL(url=>url.searchParams.has('forgeaxWorkspaceTarget'),{timeout:120000});
+ await projectDocument(page,120000);
+ assert.equal(page.url(),new URL(start.url).href);
  await page.waitForFunction(()=>{
    const failure = document.querySelector('#forgeax-fatal-details')?.textContent;
    if (failure) throw new Error(failure);
@@ -97,8 +99,9 @@ try {
    readCounts.set(target.targetId, 0);
    const panel=page.getByTestId('panel-texture-preview').filter({visible:true});
    await panel.getByRole('toolbar').waitFor({timeout:120000});
-   await panel.locator('canvas').waitFor({state:'visible'});
-   return {args,panel,info:await client.call('preview.texture.get',args)};
+   const canvas=page.frameLocator('iframe[data-forgeax-project-document]').locator(`canvas[data-forgeax-asset-preview="${target.targetId}"]`);
+   await canvas.waitFor({state:'visible'});
+   return {args,panel,canvas,info:await client.call('preview.texture.get',args)};
  };
  const capture = async (args,name) => {
    const result = await client.capture(args);
@@ -144,7 +147,7 @@ try {
  await capture(rgba.args,'one-to-one');
  assert.equal((await client.call('preview.texture.get',rgba.args)).options.zoom,1);
  await rgba.panel.getByRole('button',{name:'Fit',exact:true}).click();
- const canvas=rgba.panel.locator('canvas'), bounds=await canvas.boundingBox();
+ const bounds=await rgba.canvas.boundingBox();
  await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);
  await page.mouse.down(); await page.mouse.move(bounds.x+bounds.width/2+30,bounds.y+bounds.height/2+20); await page.mouse.up();
  await capture(rgba.args,'pan');
@@ -154,6 +157,23 @@ try {
  for (const [key,color] of [['array',[0,0,srgb(230/255)]],['volume',[0,srgb(220/255),0]]]) {
    const item=await open(`texture/${key}`);
    assert.equal(item.info.depth,2);
+   if (key === 'volume') {
+     assert.equal(item.info.dimension, '3d');
+     assert.equal(item.info.options.projection, 'atlas');
+     const canvas = item.canvas;
+     await canvas.waitFor({ state: 'visible' });
+     const projection = item.panel.getByLabel('View', { exact: true });
+     assert.equal(await projection.inputValue(), 'atlas');
+     const sliceZero = [200, 80, 20].map((value) => srgb(value / 255));
+     const atlas = await capture(item.args, 'volume-atlas');
+     // The two 64 × 64 slices are side by side; sample the same cell in each tile.
+     near(chartPixel(atlas, 0.28125, 0.5625, 2), sliceZero, 'volume atlas slice 0');
+     near(chartPixel(atlas, 0.78125, 0.5625, 2), color, 'volume atlas slice 1');
+     await projection.selectOption({ label: 'Slice' });
+     await waitOptions(item.args, { projection: 'flat', layer: 0 });
+     assert.equal(await item.panel.getByLabel('Slice', { exact: true }).inputValue(), '0');
+     near(chartPixel(await capture(item.args, 'volume-slice-0')), sliceZero, 'volume slice 0');
+   }
    await item.panel.getByLabel('Slice',{exact:true}).fill('1');
    await waitOptions(item.args,{layer:1});
    near(chartPixel(await capture(item.args,key)),color,`${key} slice 1`);

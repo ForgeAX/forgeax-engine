@@ -227,6 +227,11 @@ export interface TransmissionBindGroupResources {
   readonly backdropView?: TextureView | null;
 }
 
+export interface WaterFluidBindGroupResources {
+  readonly fields: TextureView;
+  readonly descriptors: Buffer;
+}
+
 /** Renderer-owned sampled resources consumed by the single-layer medium. */
 export interface SurfaceMediumBindGroupResources {
   readonly planarView: TextureView;
@@ -238,6 +243,11 @@ export interface SurfaceMediumBindGroupResources {
   readonly nearestLayerView: TextureView;
   readonly nearestDepthSampler: Sampler;
   readonly nearestDepthView: TextureView;
+  readonly foamSimulation?: {
+    readonly view: TextureView;
+    readonly sampler: Sampler;
+    readonly heightSampler: Sampler;
+  };
 }
 
 /** Engine-owned texture injection resources derived from material parameters. */
@@ -256,6 +266,7 @@ export function assembleMaterialWithSkylightEntries(
   transmission?: TransmissionBindGroupResources | null | undefined,
   textureInjections: readonly TextureInjectionResource[] = [],
   surfaceMedium?: SurfaceMediumBindGroupResources | undefined,
+  fluidSimulation?: WaterFluidBindGroupResources | undefined,
 ): BindGroupEntry[] {
   // IBL injection start = end of the user-region. The user-region IS
   // `materialEntries` (UBO binding 0 + N sampler/texture pairs), so its length
@@ -351,7 +362,31 @@ export function assembleMaterialWithSkylightEntries(
         },
       },
     );
+    if (surfaceMedium.foamSimulation !== undefined) {
+      result.push(
+        {
+          binding: surfaceStart + 8,
+          resource: { kind: 'sampler', value: surfaceMedium.foamSimulation.sampler },
+        },
+        {
+          binding: surfaceStart + 9,
+          resource: { kind: 'textureView', value: surfaceMedium.foamSimulation.view },
+        },
+        {
+          binding: surfaceStart + 10,
+          resource: { kind: 'sampler', value: surfaceMedium.foamSimulation.heightSampler },
+        },
+      );
+    }
   }
+  if (fluidSimulation !== undefined)
+    result.push(
+      { binding: iblStart + 19, resource: { kind: 'textureView', value: fluidSimulation.fields } },
+      {
+        binding: iblStart + 20,
+        resource: { kind: 'buffer', value: { buffer: fluidSimulation.descriptors } },
+      },
+    );
   // Standard physical maps occupy fixed bindings starting at STANDARD_PHYSICAL_BINDING_START.  The `slot` value
   // is the canonical index from STANDARD_PHYSICAL_TEXTURE_FIELDS; preserve
   // gaps for omitted authored maps instead of compacting this tail.
@@ -371,15 +406,13 @@ export function assembleMaterialWithSkylightEntries(
       },
     );
   }
-  if (surfaceMedium === undefined) {
-    result.push({
-      binding: 47,
-      resource: {
-        kind: 'textureView',
-        value: skylight.skylightPrefilterView ?? skylight.prefilterView,
-      },
-    });
-  }
+  result.push({
+    binding: 47,
+    resource: {
+      kind: 'textureView',
+      value: skylight.skylightPrefilterView ?? skylight.prefilterView,
+    },
+  });
   return result;
 }
 

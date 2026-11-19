@@ -35,7 +35,7 @@
       },
       "fps": {
         "enabled": false,
-        "reason": "feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / D-4 / L-8: AC-02 65536-cell tilemap p95>=60 fps gate cannot be validated on the GH-hosted ubuntu metrics-validate runner \u2014 that runner falls back to swiftshader WebGL2 where fps was previously fake-green (bug-20260612). The swiftshader software path slows progressively at large cell count, so the gate would flake or report unrealistic numbers. AC-02 p95 SSOT moved to verify-stage local sandbox run (charter P5); re-enable when a hardware-WebGPU CI runner is wired (precedent: apps/parity/instancing-static)."
+        "reason": "feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / D-4 / L-8: AC-02 65536-cell tilemap p95>=60 fps gate cannot be validated on the GH-hosted ubuntu metrics-validate runner — that runner falls back to swiftshader WebGL2 where fps was previously fake-green (bug-20260612). The swiftshader software path slows progressively at large cell count, so the gate would flake or report unrealistic numbers. AC-02 p95 SSOT moved to verify-stage local sandbox run (charter P5); re-enable when a hardware-WebGPU CI runner is wired (precedent: apps/parity/instancing-static)."
       },
       "bench": {
         "enabled": false,
@@ -55,13 +55,14 @@
     "@forgeax/engine-app": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
-    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
     "@forgeax/engine-graphics-extras": "workspace:*",
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-rhi": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
-    "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-types": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

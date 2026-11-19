@@ -1,4 +1,5 @@
 import {
+  addForwardOutputBloom,
   addObservationCapturePass,
   addTypedOutputTransformPass,
   createRenderPipelineTarget,
@@ -6,20 +7,25 @@ import {
   type RenderPipeline,
 } from '@forgeax/engine-render/authoring';
 
-/** r184 WebGPU blends linear scene color, then applies one full-frame output conversion. */
-export function threePipeline(format: 'rgba16float' | 'rgba8unorm'): RenderPipeline {
+/** r187 WebGPU blends premultiplied linear color and encodes unassociated color once. */
+export function createThreePipeline(
+  format: 'rgba16float' | 'rgba8unorm' = 'rgba16float',
+): RenderPipeline {
   return createStandardForwardPipeline({
     format,
     domain: 'linear-hdr',
-    build(context, _topology, color, _depth, surface) {
+    build(context, topology, color, _depth, surface) {
       const output = createRenderPipelineTarget(context.graph, 'three-output', {
         format: 'rgba8unorm',
         size: 'surface',
         domain: 'display-encoded',
       });
       if (!output.ok) return output;
-      const transformed = addTypedOutputTransformPass(context.graph, color, output.value, {
+      const hdr = addForwardOutputBloom(context, topology, color);
+      if (!hdr.ok) return hdr;
+      const transformed = addTypedOutputTransformPass(context.graph, hdr.value, output.value, {
         dither: false,
+        fragmentEntryPoint: 'fs_premultiplied',
       });
       if (!transformed.ok) return transformed;
       if (context.observationCaptureDomains?.includes('final-display')) {

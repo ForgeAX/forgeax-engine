@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { type ComponentData, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { type ComponentData, defineSystem, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { type DerivedPhysicsPublication, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
@@ -481,9 +483,8 @@ describe('dynamic geometry ECS publication host', () => {
   it('derives an omitted publication tick from the attached World FixedTime', () => {
     const invalidated: number[] = [];
     const world = new World({ assets: new AssetRegistry() });
-    expect(
-      world.addSystem(FixedUpdate, { name: 'advance-fixed-time', queries: [], fn: () => {} }).ok,
-    ).toBe(true);
+    const systemToken1 = defineSystem({ name: 'advance-fixed-time', queries: [], fn: () => {} });
+    expect(world.addSystem(FixedUpdate, systemToken1).ok).toBe(true);
     expect(world.update(1 / 60).ok).toBe(true);
     const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const nextMesh = mesh();
@@ -526,7 +527,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
 
-    const receipts = host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, [world]);
+    const receipts = host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, world);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]).toMatchObject({ fixedStep: 1, publicationFixedStep: 1 });
   });
@@ -538,9 +539,9 @@ describe('dynamic geometry ECS publication host', () => {
     store.configureGpuDevice(device, undefined, device.caps);
     const invalidated: number[] = [];
     const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
       invalidated.push(handle);
-      invalidateMesh(handle, worldId);
+      invalidateMesh(handle, scope);
     });
     const world = new World({ assets: new AssetRegistry() });
     const oldHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
@@ -581,7 +582,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(
       host.publishDynamicGeometry(
         { frameId: 1, deviceGeneration: 1, completed: firstCompleted },
-        [world],
+        world,
         0,
       ),
     ).toHaveLength(1);
@@ -593,7 +594,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(
       host.publishDynamicGeometry(
         { frameId: 2, deviceGeneration: 1, completed: secondCompleted },
-        [world],
+        world,
         0,
       ),
     ).toHaveLength(1);
@@ -642,9 +643,9 @@ describe('dynamic geometry ECS publication host', () => {
     store.configureGpuDevice(device, undefined, device.caps);
     const invalidated: number[] = [];
     const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
       invalidated.push(handle);
-      invalidateMesh(handle, worldId);
+      invalidateMesh(handle, scope);
     });
     const world = new World({ assets: new AssetRegistry() });
     const oldA = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
@@ -697,7 +698,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(
       host.publishDynamicGeometry(
         { frameId: 1, deviceGeneration: 1, completed: firstCompleted },
-        [world],
+        world,
         0,
       ),
     ).toHaveLength(1);
@@ -722,7 +723,7 @@ describe('dynamic geometry ECS publication host', () => {
     });
     const frameTwoReceipts = host.publishDynamicGeometry(
       { frameId: 2, deviceGeneration: 1, completed: secondCompleted },
-      [world],
+      world,
       0,
     );
     expect(frameTwoReceipts.map((receipt) => receipt.candidateId)).toEqual(
@@ -756,9 +757,9 @@ describe('dynamic geometry ECS publication host', () => {
     store.configureGpuDevice(device, undefined, device.caps);
     const invalidated: number[] = [];
     const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
       invalidated.push(handle);
-      invalidateMesh(handle, worldId);
+      invalidateMesh(handle, scope);
     });
     const world = new World({ assets: new AssetRegistry() });
     const oldA = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
@@ -806,7 +807,7 @@ describe('dynamic geometry ECS publication host', () => {
     expect(
       host.publishDynamicGeometry(
         { frameId: 1, deviceGeneration: 1, completed: pendingA },
-        [world],
+        world,
         0,
       ),
     ).toHaveLength(1);
@@ -842,9 +843,9 @@ describe('dynamic geometry ECS publication host', () => {
     store.configureGpuDevice(device, undefined, device.caps);
     const invalidated: number[] = [];
     const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, worldId = 0) => {
+    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
       invalidated.push(handle);
-      invalidateMesh(handle, worldId);
+      invalidateMesh(handle, scope);
     });
     const lifecycle = createDynamicGeometryLifecycle();
     const world = new World({ assets: new AssetRegistry() });
@@ -891,7 +892,7 @@ describe('dynamic geometry ECS publication host', () => {
       expect(
         host.publishDynamicGeometry(
           { frameId: revision, deviceGeneration: 1, completed: pending },
-          [world],
+          world,
           0,
         ),
       ).toHaveLength(1);
@@ -1134,9 +1135,7 @@ describe('dynamic geometry ECS publication host', () => {
 
     const replacementHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     expect(world.set(entity, MeshFilter, { assetHandle: replacementHandle }).ok).toBe(true);
-    expect(host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, [world], 0)).toEqual(
-      [],
-    );
+    expect(host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, world, 0)).toEqual([]);
     expect(host.dynamicGeometryReceipt(accepted.value)).toBeUndefined();
 
     expect(world.set(entity, MeshFilter, { assetHandle: meshHandle }).ok).toBe(true);
@@ -1147,7 +1146,7 @@ describe('dynamic geometry ECS publication host', () => {
     });
     const receipts = host.publishDynamicGeometry(
       { frameId: 2, deviceGeneration: 1, completed },
-      [world],
+      world,
       0,
     );
     expect(receipts).toHaveLength(1);
@@ -1160,7 +1159,7 @@ describe('dynamic geometry ECS publication host', () => {
     ];
     for (const binding of bindings) {
       world.removeComponent(entity, binding.component).unwrap();
-      expect(host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, [world], 0)).toEqual(
+      expect(host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, world, 0)).toEqual(
         [],
       );
       expect(host.dynamicGeometryReceipt(accepted.value)).toMatchObject({ frameId: 2 });
@@ -1261,9 +1260,22 @@ describe('dynamic geometry ECS publication host', () => {
         { component: MeshRenderer, data: { materials: [] } },
       )
       .unwrap();
-    let publication: { readonly revision: number; readonly fixedStep: number } | undefined;
+    let publication: DerivedPhysicsPublication | undefined;
     let admission: typeof publication;
-    world.insertResource('PhysicsWorld', {
+    const unexpectedPhysics = () => {
+      throw new Error('Only derived admission is exercised by this host fixture');
+    };
+    world.insertResource(PhysicsWorldResource, {
+      dispose: unexpectedPhysics,
+      setGravity: unexpectedPhysics,
+      getGravity: unexpectedPhysics,
+      raycast: unexpectedPhysics,
+      teleport: unexpectedPhysics,
+      synchronizeCharacter: unexpectedPhysics,
+      moveAndSlide: unexpectedPhysics,
+      step: unexpectedPhysics,
+      getBodyCount: unexpectedPhysics,
+      hasBody: unexpectedPhysics,
       getDerivedPublication: () => publication,
       getDerivedAdmission: () => admission,
     });
@@ -1298,7 +1310,15 @@ describe('dynamic geometry ECS publication host', () => {
       ok: false,
       error: { code: 'dynamic-geometry-ordering-required' },
     });
-    publication = { revision: 1, fixedStep: 0 };
+    publication = {
+      candidateId: 'fixture-candidate',
+      inputDigest: createHash('sha256').update(JSON.stringify(sourceMesh)).digest('hex'),
+      entity,
+      revision: 1,
+      fixedStep: 0,
+      shapeIds: [],
+      generation: 1,
+    };
     expect(host.acceptDynamicGeometry(prepared.value, { world, fixedStep: 0 })).toMatchObject({
       ok: false,
       error: { code: 'dynamic-geometry-ordering-required' },
@@ -1308,8 +1328,8 @@ describe('dynamic geometry ECS publication host', () => {
     admission = undefined;
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
-    expect(
-      host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, [world], 0),
-    ).toHaveLength(1);
+    expect(host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, world, 0)).toHaveLength(
+      1,
+    );
   });
 });

@@ -3,26 +3,39 @@ import { linearChannelToSrgb } from '@forgeax/engine-types';
 
 export function offscreenCanvas(width: number, height = width) {
   let texture: GPUTexture | undefined;
-  return {
-    canvas: {
-      width,
-      height,
-      getContext: () => ({
-        configure: (options: GPUCanvasConfiguration) => {
-          texture?.destroy();
-          texture = options.device.createTexture({
-            size: [width, height],
-            format: options.format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-            viewFormats: [options.format === 'bgra8unorm' ? 'bgra8unorm-srgb' : 'rgba8unorm-srgb'],
-          });
-        },
-        unconfigure: () => {},
-        getCurrentTexture: () => texture,
-      }),
-    },
-    destroy: () => texture?.destroy(),
+  let configuration: GPUCanvasConfiguration | undefined;
+  const currentTexture = () => {
+    if (
+      configuration !== undefined &&
+      (texture === undefined || texture.width !== canvas.width || texture.height !== canvas.height)
+    ) {
+      texture?.destroy();
+      texture = configuration.device.createTexture({
+        size: [canvas.width, canvas.height],
+        format: configuration.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        viewFormats: [
+          configuration.format === 'bgra8unorm' ? 'bgra8unorm-srgb' : 'rgba8unorm-srgb',
+        ],
+      });
+    }
+    return texture;
   };
+  const canvas = {
+    width,
+    height,
+    getContext: () => ({
+      configure: (options: GPUCanvasConfiguration) => {
+        texture?.destroy();
+        texture = undefined;
+        configuration = options;
+        currentTexture();
+      },
+      unconfigure: () => {},
+      getCurrentTexture: currentTexture,
+    }),
+  };
+  return { canvas, destroy: () => texture?.destroy() };
 }
 
 /** Nearest-neighbor `zoom` keeps the 128 px evidence legible in review. */

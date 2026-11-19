@@ -21,8 +21,8 @@ import {
 } from '@forgeax/engine-types';
 import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
+import { readDocumentJson } from './internal/pack-json.js';
 import { PackReader } from './internal/pack-reader.js';
-import { readDocumentJson } from './internal/retained-pack-json.js';
 import { runtimeSourceReader } from './internal/runtime-assets.js';
 import { assetLoadCancelled } from './internal/wait-for-asset.js';
 import { readArtifact, readStoredArtifact } from './registry/artifact-io.js';

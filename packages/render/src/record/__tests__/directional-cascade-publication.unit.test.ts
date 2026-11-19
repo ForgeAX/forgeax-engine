@@ -11,6 +11,7 @@ import { MeshChanges, type ShadowMeshReads } from '../../device/mesh-changes';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { ExtractedFrame } from '../../render-system-extract';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { renderLightsOf } from '../../world/render-lights';
@@ -116,7 +117,7 @@ function fixture(staggerCascades = true) {
     if (casters === undefined) throw new Error('expected caster projection');
     const input = shadowMeshReadsForQuery(
       state.directionalShadowCache,
-      [accepted.resources],
+      accepted.resources,
       casters,
       changes,
     );
@@ -128,8 +129,8 @@ function fixture(staggerCascades = true) {
     return prepareDirectionalShadowCache(
       internals,
       state,
-      [accepted.resources],
-      [],
+      accepted.resources,
+      undefined,
       viewLightsOf(accepted.frame),
       1024,
       input,
@@ -219,7 +220,9 @@ describe('accepted publication CPU shadow authority', () => {
     } finally {
       f.dispose();
     }
-    expect(currentDirectionalShadowPublication([], undefined, null)).toBeUndefined();
+    expect(
+      currentDirectionalShadowPublication(worldRenderResources(new World()), undefined, null),
+    ).toBeUndefined();
   });
 
   it('proves no-change publication content without treating every packet revision as content', () => {
@@ -233,7 +236,7 @@ describe('accepted publication CPU shadow authority', () => {
       const firstSource = requiredSource(f).source;
       const initial = f.decide(first);
       expect(initial.miss).toBe('first-publication');
-      expect(initial.next?.worldStateTokens).toEqual([]);
+      expect(initial.next?.worldStateToken).toBeUndefined();
       f.state.directionalShadowCache = initial.next;
       const accepted = f.publish();
       const next = requiredSource(f);
@@ -243,7 +246,7 @@ describe('accepted publication CPU shadow authority', () => {
       expect(f.decide(accepted).miss).toBeUndefined();
       expect(
         currentDirectionalShadowPublication(
-          [first.resources],
+          first.resources,
           next.casters,
           f.state.directionalShadowCache,
         ),
@@ -293,7 +296,7 @@ describe('accepted publication CPU shadow authority', () => {
       const different = other.publish();
       expect(
         currentDirectionalShadowPublication(
-          [different.resources],
+          different.resources,
           old.casters,
           f.state.directionalShadowCache,
         ),

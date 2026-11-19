@@ -1,4 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { PlanarCaptureState } from '../capture/planar-state';
 import { PlanarTargetLease } from '../capture/planar-target';
 import type { RenderFeatureFrameInput, RenderFeaturePlanExecution } from '../features/host';
@@ -8,10 +9,10 @@ import type { CaptureFaceFeatureWork } from '../record/target-capture-graph';
 import type { CameraSnapshot } from '../render-contract';
 import { projectAuxiliaryCamerasForView } from '../render-system-extract';
 import { featureCameraSelection } from '../render-system-projections';
+import { RenderCaptureFaceInputsOrder, RenderFeatureViewsOrder } from '../system-order';
 import {
   featureFrameOutcome,
   RENDER_CAPTURE_FACE_INPUTS_SYSTEM,
-  RENDER_FEATURE_VIEWS_SYSTEM,
   stageCaptureFaceInputs,
   viewFeatureFrameResult,
   viewFeatureInputOf,
@@ -119,35 +120,35 @@ export function planarFaceFeatureWork(
  * `render-feature-open` merges these inputs after the display views'.
  */
 export function registerCaptureFaceFeatureSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_CAPTURE_FACE_INPUTS_SYSTEM,
-      after: [RENDER_FEATURE_VIEWS_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const inputs: RenderFeatureFrameInput[] = [];
-        rows.forEach((row) => {
-          const entity = row.entity;
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame) return;
-          try {
-            const input = planarFaceInput(
-              world,
-              entity,
-              staged,
-              ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-            );
-            if (input !== undefined) inputs.push(input);
-          } catch {
-            // The face is optional Feature work; the capture schedule reports mirror failures.
-          }
-        });
-        stageCaptureFaceInputs(world, inputs);
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderCaptureFaceInputsOrder],
+    commands: 'none',
+    name: RENDER_CAPTURE_FACE_INPUTS_SYSTEM,
+    after: [RenderFeatureViewsOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const inputs: RenderFeatureFrameInput[] = [];
+      rows.forEach((row) => {
+        const entity = row.entity;
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame) return;
+        try {
+          const input = planarFaceInput(
+            world,
+            entity,
+            staged,
+            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+          );
+          if (input !== undefined) inputs.push(input);
+        } catch {
+          // The face is optional Feature work; the capture schedule reports mirror failures.
+        }
+      });
+      stageCaptureFaceInputs(world, inputs);
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

@@ -24,7 +24,7 @@ describe('_getArrayView count (AC-03 gate)', () => {
       'readPresentationWorldMatrix(world, joint as EntityHandle)',
     );
     expect(readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8')).toContain(
-      'readPresentationWorldMatrix(world, entity as EntityHandle)',
+      'copyPresentationWorldMatrix(world, entity as EntityHandle, this.jointScratch)',
     );
     const presentation = readFileSync(
       join(dirname(extractPaths[0]), '..', '..', 'scene', 'src', 'presentation.ts'),

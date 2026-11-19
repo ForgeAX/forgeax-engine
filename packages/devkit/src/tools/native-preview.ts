@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createToolPreviewRecipe, toolPreviewSubjectDrawn } from '@forgeax/engine-app';
-import { decodeCatalogWire } from '@forgeax/engine-pack';
 import {
   Context,
   createContextCapabilityResolver,
@@ -25,7 +24,7 @@ import type {
 } from '@forgeax/engine-tool-runtime';
 import { domainFailureError } from '@forgeax/engine-tool-runtime';
 import { readCatalogRows } from '@forgeax/engine-types';
-import { assetInspectCommand } from '../assets.js';
+import { assetInspectCommand, decodeCatalogDocument } from '../assets.js';
 import { readProjectFacts } from '../project.js';
 import type { CaptureBackend } from '../types.js';
 import {
@@ -73,9 +72,9 @@ type PreviewCatalogLookup =
 
 async function readPreviewCatalogRow(root: string, guid: string): Promise<PreviewCatalogLookup> {
   const indexPath = resolve(root, 'dist', 'pack-index.json');
-  let raw: string;
+  let raw: Uint8Array;
   try {
-    raw = await readFile(indexPath, 'utf8');
+    raw = await readFile(indexPath);
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
       return { ok: true, row: undefined };
@@ -88,7 +87,7 @@ async function readPreviewCatalogRow(root: string, guid: string): Promise<Previe
   }
   let parsed: unknown;
   try {
-    const decoded = decodeCatalogWire(JSON.parse(raw));
+    const decoded = await decodeCatalogDocument(raw);
     if (!decoded.ok) {
       return {
         ok: false,

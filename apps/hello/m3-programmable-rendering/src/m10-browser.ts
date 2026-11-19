@@ -85,11 +85,7 @@ const world = makeWorld();
 const attached = renderer.attach(world);
 if (!attached.ok) throw attached.error;
 world.update().unwrap();
-const frame = {
-  leases: [attached.value],
-  camera: { lease: attached.value },
-  environment: { lease: attached.value },
-};
+const frame = { source: attached.value };
 const firstDraw = renderer.draw(frame);
 const firstErrors = errors.slice();
 for (const state of states.values()) state.repaired = true;

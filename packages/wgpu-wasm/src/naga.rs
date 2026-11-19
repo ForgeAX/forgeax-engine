@@ -20,6 +20,7 @@
 //   (hasDynamicOffset / minBindingSize defaults written out), and the visibility field
 //   is an integer bitmask (plan-strategy §S-9 / D-R9).
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use naga::proc::Layouter;
@@ -32,6 +33,8 @@ use naga::{
 use serde::{Deserialize, Serialize};
 use serde_json;
 use wasm_bindgen::prelude::*;
+#[path = "naga_entry_canonical.rs"]
+mod entry_canonical;
 #[path = "naga_entry_reads.rs"]
 mod entry_reads;
 
@@ -42,6 +45,19 @@ mod entry_reads;
 #[wasm_bindgen]
 pub struct ParsedModule {
     module: Module,
+    validated_info: Option<ModuleInfo>,
+}
+
+struct CheckedProgram {
+    source: String,
+    module: Module,
+    info: ModuleInfo,
+}
+
+thread_local! {
+    // One-shot ownership transfer from the checked writer to parse/validate.
+    // Only the exact consumer text can consume this already validated IR.
+    static CHECKED_PROGRAM: RefCell<Option<CheckedProgram>> = RefCell::default();
 }
 
 /// Handle for the `validate` output. Carries both Module and ModuleInfo; passed into
@@ -61,6 +77,8 @@ struct ComputeEntrySource {
 
 // This is a build-time projection. Naga retains the selected entry's workgroup
 // size, overrides and reachable globals/functions, and remaps every IR handle.
+// The closure is then canonicalised so identical closures cut from different
+// programs write identical text (see naga_entry_canonical.rs).
 fn compute_entry_sources(
     source: &str,
     entries: &[String],
@@ -90,17 +108,57 @@ fn compute_entry_sources(
             continue;
         }
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
-        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
-            .validate(&module)
-            .map_err(|e| e.to_string())?;
+        let closure = written_interface(&module)?;
+        entry_canonical::canonicalize_closure(&mut module);
+        let info = validate_module(&module)?;
         let source = write_checked_wgsl(&module, &info)
             .map_err(|error| format!("shader-compile-failed: {error}"))?;
+        // Canonical text must expose exactly the interface of the closure's
+        // uncanonicalised text: bindings, layouts, entry reads, workgroup size.
+        let written = naga::front::wgsl::parse_str(&source).map_err(|e| e.to_string())?;
+        let canonical = compute_interface(&written, &validate_module(&written)?)?;
+        if canonical != closure {
+            return Err(format!(
+                "shader-compile-failed: canonical closure of {entry} changed its interface: {}",
+                first_difference(&closure.to_string(), &canonical.to_string())
+            ));
+        }
         output.push(ComputeEntrySource {
             entry_point: entry.clone(),
             source,
         });
     }
     Ok(output)
+}
+
+/// Interface of `module` as a consumer of its written WGSL observes it.
+fn written_interface(module: &Module) -> Result<serde_json::Value, String> {
+    let info = validate_module(module)?;
+    let source =
+        naga::back::wgsl::write_string(module, &info, naga::back::wgsl::WriterFlags::empty())
+            .map_err(|error| format!("WGSL writeback failed: {error}"))?;
+    let reparsed = naga::front::wgsl::parse_str(&source).map_err(|e| e.to_string())?;
+    compute_interface(&reparsed, &validate_module(&reparsed)?)
+}
+
+fn first_difference(before: &str, after: &str) -> String {
+    let at = before
+        .bytes()
+        .zip(after.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(before.len().min(after.len()));
+    let start = before.floor_char_boundary(at.saturating_sub(60));
+    let excerpt = |text: &str| {
+        let end = text.floor_char_boundary((at + 60).min(text.len()));
+        text[start.min(end)..end].to_string()
+    };
+    format!("before …{}… after …{}…", excerpt(before), excerpt(after))
+}
+
+fn validate_module(module: &Module) -> Result<ModuleInfo, String> {
+    Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(module)
+        .map_err(|e| e.to_string())
 }
 
 /// Produce portable WGSL for each selected compute entry; never driver binaries.
@@ -118,8 +176,18 @@ pub fn specialize_compute_entries(source: &str, entries_json: &str) -> Result<St
 /// `message` / `line_num` / `line_pos`.
 #[wasm_bindgen]
 pub fn parse(source: &str) -> Result<ParsedModule, JsError> {
+    let checked = CHECKED_PROGRAM.with(|slot| slot.borrow_mut().take());
+    if let Some(checked) = checked.filter(|checked| checked.source == source) {
+        return Ok(ParsedModule {
+            module: checked.module,
+            validated_info: Some(checked.info),
+        });
+    }
     match naga::front::wgsl::parse_str(source) {
-        Ok(module) => Ok(ParsedModule { module }),
+        Ok(module) => Ok(ParsedModule {
+            module,
+            validated_info: None,
+        }),
         Err(err) => {
             let loc = err.location(source);
             let summary = err.emit_to_string(source);
@@ -150,14 +218,16 @@ struct ParseErrorPayload {
 /// validator's prose diagnostic (no source position is attached).
 #[wasm_bindgen]
 pub fn validate(parsed: ParsedModule) -> Result<ValidatedModule, JsError> {
-    let mut validator = Validator::new(ValidationFlags::all(), Capabilities::all());
-    match validator.validate(&parsed.module) {
-        Ok(info) => Ok(ValidatedModule {
-            module: parsed.module,
-            info,
-        }),
-        Err(err) => Err(JsError::new(&format!("validate failed: {err}"))),
-    }
+    let info = match parsed.validated_info {
+        Some(info) => info,
+        None => Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&parsed.module)
+            .map_err(|err| JsError::new(&format!("validate failed: {err}")))?,
+    };
+    Ok(ValidatedModule {
+        module: parsed.module,
+        info,
+    })
 }
 
 // === Phase 3: emit_reflection ======================================================
@@ -272,22 +342,41 @@ pub fn emit_reflection(validated: &ValidatedModule, options_json: &str) -> Resul
         serde_json::from_str(options_json).unwrap_or(ReflectionOptions {
             dynamic_offsets: Vec::new(),
         });
-    let bgls = derive_bgls(&validated.module, &validated.info, &options);
-    let mut layouter = Layouter::default();
-    layouter
-        .update(validated.module.to_ctx())
-        .map_err(|error| JsError::new(&format!("reflection layout failed: {error}")))?;
-    let uv_set_count = derive_uv_set_count(&validated.module);
-    let output = ReflectionOutput {
-        schema_version: "shader-reflection/3",
-        bound_globals: derive_bound_globals(&validated.module, &validated.info, &layouter)
-            .map_err(|error| JsError::new(&error))?,
-        uv_set_count,
-        entry_points: entry_reads::derive(&validated.module, &validated.info),
-        bindings: bgls,
-    };
+    let output = reflection_output(&validated.module, &validated.info, &options)
+        .map_err(|error| JsError::new(&error))?;
     serde_json::to_string(&output)
         .map_err(|e| JsError::new(&format!("reflection serialize failed: {e}")))
+}
+
+fn reflection_output(
+    module: &Module,
+    info: &ModuleInfo,
+    options: &ReflectionOptions,
+) -> Result<ReflectionOutput, String> {
+    let mut layouter = Layouter::default();
+    layouter
+        .update(module.to_ctx())
+        .map_err(|error| format!("reflection layout failed: {error}"))?;
+    Ok(ReflectionOutput {
+        schema_version: "shader-reflection/3",
+        bound_globals: derive_bound_globals(module, info, &layouter)?,
+        uv_set_count: derive_uv_set_count(module),
+        entry_points: entry_reads::derive(module, info),
+        bindings: derive_bgls(module, info, options),
+    })
+}
+
+/// The interface a pipeline sees: every reflected binding, struct layout and
+/// entry read, plus the entry's stage and workgroup size.
+fn compute_interface(module: &Module, info: &ModuleInfo) -> Result<serde_json::Value, String> {
+    let reflection = reflection_output(module, info, &ReflectionOptions::default())?;
+    let entries: Vec<_> = module
+        .entry_points
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.workgroup_size))
+        .collect();
+    serde_json::to_value((reflection, entries))
+        .map_err(|error| format!("reflection serialize failed: {error}"))
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -942,13 +1031,32 @@ fn reflection_type_descriptor(
 /// compares its normalized projections before and after a parse/validate
 /// round-trip, ignoring compiler-generated names and Naga handle identities.
 pub(crate) fn write_checked_wgsl(module: &Module, info: &ModuleInfo) -> Result<String, String> {
+    write_checked_wgsl_with_transform(module, info, None)
+}
+
+pub(crate) fn write_checked_wgsl_with_transform(
+    module: &Module,
+    info: &ModuleInfo,
+    transform: Option<&js_sys::Function>,
+) -> Result<String, String> {
+    CHECKED_PROGRAM.with(|slot| *slot.borrow_mut() = None);
     let before = buffer_layout_projection(module)?;
     let source =
         naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())
             .map_err(|error| format!("WGSL writeback failed: {error}"))?;
+    // Normalize the actual consumer text before its independent parse,
+    // validation and ABI comparison. Arbitrary callbacks cannot bypass them.
+    let source = match transform {
+        Some(transform) => transform
+            .call1(&JsValue::UNDEFINED, &JsValue::from_str(&source))
+            .map_err(|error| format!("WGSL output transform failed: {error:?}"))?
+            .as_string()
+            .ok_or("WGSL output transform must return a source string")?,
+        None => source,
+    };
     let reparsed = naga::front::wgsl::parse_str(&source)
         .map_err(|error| format!("WGSL writer output failed to parse: {error}"))?;
-    let _reparsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
+    let reparsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
         .validate(&reparsed)
         .map_err(|error| format!("WGSL writer output failed validation: {error}"))?;
     let after = buffer_layout_projection(&reparsed)?;
@@ -967,6 +1075,15 @@ pub(crate) fn write_checked_wgsl(module: &Module, info: &ModuleInfo) -> Result<S
                 "WGSL writer changed buffer ABI at group={group} binding={binding}: before={before_json}; after={after_json}"
             ));
         }
+    }
+    if source.len() <= 2 * 1024 * 1024 {
+        CHECKED_PROGRAM.with(|slot| {
+            *slot.borrow_mut() = Some(CheckedProgram {
+                source: source.clone(),
+                module: reparsed,
+                info: reparsed_info,
+            });
+        });
     }
     Ok(source)
 }

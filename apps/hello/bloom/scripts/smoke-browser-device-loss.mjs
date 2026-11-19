@@ -16,11 +16,13 @@ import { PNG } from 'pngjs';
 import { createOwnedProcessGroupStopper } from '../../../shared/scripts/rhi-debug-process.mjs';
 import { resolveBrowserWebGpuLaunch } from '../../../shared/scripts/rhi-debug-verify.mjs';
 import browserLaunchConfig from '../../../../scripts/ci/browser-launch.json' with { type: 'json' };
+import { browserGpuLaunchOptions } from '../../../../scripts/ci/browser-executable.mjs';
+import { requireNativeBrowserAdapter } from '../../../../scripts/ci/browser-native-admission.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const repoRoot = resolve(appRoot, '..', '..', '..');
-const evidenceDir = resolve(appRoot, 'evidence');
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(appRoot, 'evidence'));
 const serverStartTimeoutMs = Number.parseInt(
   process.env.FORGEAX_BLOOM_SERVER_START_TIMEOUT_MS ?? '120000',
   10,
@@ -145,12 +147,16 @@ try {
     );
   }
   evidence.browser = { channel: browserChannel, headless: browserHeadless, args: browserArgs };
-  browser = await chromium.launch({
+  const launch = {
     channel: browserChannel,
     headless: browserHeadless,
     args: browserArgs,
     chromiumSandbox: true,
-  });
+  };
+  const selectedLaunch = process.env.FORGEAX_BROWSER_GPU === 'native'
+    ? browserGpuLaunchOptions(launch) : launch;
+  evidence.browser.launch = selectedLaunch;
+  browser = await chromium.launch({ ...selectedLaunch, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 400, height: 225 } });
   page.on('pageerror', (error) => evidence.pageErrors.push(error.message));
   page.on('console', (message) => {
@@ -160,6 +166,16 @@ try {
   // shader-heavy module graph. Give navigation the same startup budget while
   // retaining the 30-second renderer admission and recovery assertions below.
   await page.goto(`${serverUrl}/`, { waitUntil: 'domcontentloaded', timeout: serverStartTimeoutMs });
+  if (process.env.FORGEAX_BROWSER_GPU === 'native') {
+    evidence.browser.adapter = requireNativeBrowserAdapter(await page.evaluate(async () => {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (adapter === null) return null;
+      const info = adapter.info;
+      return { info: { vendor: info.vendor, architecture: info.architecture, device: info.device,
+        description: info.description, isFallbackAdapter: info.isFallbackAdapter } };
+    }));
+    console.log(`[bloom-device-loss] native-adapter=${JSON.stringify(evidence.browser.adapter)}`);
+  }
   await page.waitForFunction(
     () => typeof globalThis.__bloomCarrierProbe?.inspect === 'function',
     undefined,
@@ -188,7 +204,7 @@ try {
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true));
   evidence.completedReadyFramesBefore = await waitForReady(60);
   const before = await inspect();
-  if (before.bloom.graphStatus !== 'valid' || before.bloom.passCount !== 11 || before.bloom.enabled !== true) {
+  if (before.bloom.graphStatus !== 'valid' || before.bloom.passCount !== 10 || !before.passes.includes('standard-grade') || before.bloom.enabled !== true) {
     throw new Error(`Bloom initial ready frames lack their graph: ${JSON.stringify(before.bloom)}`);
   }
   await page.addStyleTag({ content: '#bloom-hud { visibility: hidden !important; }' });
@@ -243,7 +259,7 @@ try {
   if ((after.frame.deviceGeneration ?? 0) <= (before.frame.deviceGeneration ?? 0)) {
     throw new Error(`device generation did not advance: ${JSON.stringify({ before: before.frame, after: after.frame })}`);
   }
-  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 11 || after.bloom.enabled !== true) {
+  if (after.bloom.graphStatus !== 'valid' || after.bloom.passCount !== 10 || !after.passes.includes('standard-grade') || after.bloom.enabled !== true) {
     throw new Error(`Bloom was not rebuilt after device loss: ${JSON.stringify(after.bloom)}`);
   }
   if (

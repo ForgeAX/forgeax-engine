@@ -110,11 +110,20 @@ material contracts for 2D, 2D-array and 3D sampling. DevKit compiles them into
 the shader manifest; App creates the matching runtime material only for a
 texture preview. They are not project Catalog assets. No shader compilation
 occurs in the browser.
-The same options admit transparent output for cached thumbnails; source alpha
-and transparent margins are preserved instead of baking the interactive checker.
+Cached thumbnails select RGBA with a transparent background, preserving the
+source alpha and transparent margins.
 Normalized, compressed and floating-point color formats use their actual GPU
 samples. Integer and depth/stencil sources fail admission explicitly; their
 numeric visualization is outside this color-image inspector.
+
+Color previews initially select RGB, leaving Alpha available as an explicit
+channel. This keeps zero-alpha data textures visible without changing stored
+pixels. A 3D texture opens as an atlas of its selected mip's depth slices;
+columns use the next power of two above the square root of depth, and rows round
+up. `flat` selects a single depth slice; `volume` samples the three visible
+surfaces of an orthographic cube. Unused atlas cells remain background. The
+same ordinary GPU material renders these modes, without CPU flattening or a
+second texture resource. Non-volume textures reject atlas and volume modes.
 
 ## Unreal TextureEditor source review
 
@@ -178,9 +187,9 @@ asset registry, rendering context or camera authority is added to View.
 `THUMBNAIL_PREVIEW` specializes the ordinary resource presentation at 128x128:
 transparent background, neutral white lighting, no Bloom or temporal antialiasing,
 and a deterministic 30-frame VFX sample. Material spheres and meshes share the
-existing AABB framing owner. Texture previews retain source aspect and alpha;
-the interactive checker background is a presentation choice. Texture, 2D-array
-and 3D thumbnails use mip 0 / slice 0 through the same texture inspection material.
+existing AABB framing owner. Texture thumbnails retain source aspect and alpha.
+2D and 2D-array thumbnails use mip 0 / slice 0 through the texture inspection
+material. 3D thumbnails use its volume surface mode.
 Equirect thumbnails show the source panorama at its original aspect ratio;
 opening the asset retains the interactive directional environment view.
 

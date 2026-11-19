@@ -12,7 +12,7 @@ export interface SourceClipping {
   readonly intersection: readonly ClippingPlane[];
 }
 
-/** r184 accumulates each kind across nested ClippingGroups. */
+/** r187 accumulates each kind across nested ClippingGroups. */
 export function objectClipping(
   object: Object3D,
   parent?: SourceClipping,

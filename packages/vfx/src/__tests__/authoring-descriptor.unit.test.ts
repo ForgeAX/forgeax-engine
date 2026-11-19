@@ -11,7 +11,7 @@ const effect = {
   programFingerprint: 'sha256:effect',
   emitters: [{ id: 'sparks', capacity: 128 }],
   program: {
-    format: 'forgeax-vfx-program-4',
+    format: 'forgeax-vfx-program-5',
     fingerprint: 'sha256:effect',
     emitters: [
       {
@@ -92,7 +92,7 @@ const effect = {
 
 describe('VFX authoring descriptor', () => {
   it('keeps the complete program format and asset-local artifact key canonical', () => {
-    expect(VFX_GPU_PROGRAM_FORMAT).toBe('forgeax-vfx-program-4');
+    expect(VFX_GPU_PROGRAM_FORMAT).toBe('forgeax-vfx-program-5');
     expect(VFX_GPU_PROGRAM_ARTIFACT_KEY).toBe('particle-effect/program.json');
     expect(effect.program.format).toBe(VFX_GPU_PROGRAM_FORMAT);
     expect(effect.programFingerprint).toMatch(/^sha256:/);

@@ -14,6 +14,7 @@
 // The World + draw step live in the shared src/axes-demo.ts (SSOT for this app AND the dawn
 // smoke), so the two never drift.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -49,12 +50,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   buildAxesWorld(app.world);
 
   // Bevy's draw_axes: each frame, draw every ShowAxes entity's local coordinate frame.
-  app.world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'bevy-axes-draw',
       queries: [],
       fn: () => drawAxesForEntities(app.world, debugDraw),
-    })
+    });
+app.world
+    .addSystem(Update, systemToken1)
     .unwrap();
 
   const started = app.start();

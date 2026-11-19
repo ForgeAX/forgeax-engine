@@ -1,5 +1,7 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import { TemporalViewHistory } from '../../temporal/frame';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewRecorder, ViewSubmission } from '../render-views';
@@ -122,7 +124,7 @@ it('schedules the temporal commits after record-commit in dependency order, and 
     expect(system?.queries[0]?.write ?? []).toEqual([]);
   }
   for (const [before, after] of chain.slice(0, -1).map((name, i) => [name, chain[i + 1]]))
-    expect(commit?.dependencies).toContainEqual([before, after]);
+    expect(dependencyNames(commit)).toContainEqual([before, after]);
   expect(cleanup?.systems.map((system) => system.name)).toContain(RENDER_TEMPORAL_DISCARD_SYSTEM);
 });
 
@@ -203,7 +205,7 @@ it('without the commit systems an accepted submission leaves history unadvanced'
     RENDER_STANDARD_OUTPUT_COMMIT_SYSTEM,
     RENDER_TEMPORAL_FRAME_COMMIT_SYSTEM,
   ])
-    world.removeSystem(RenderCommit, name).unwrap();
+    world.removeSystem(RenderCommit, registeredSystem(world, RenderCommit, name)).unwrap();
   frame(1, { accepted: true });
   expect(transaction.commit).not.toHaveBeenCalledWith({ accepted: true });
   expect(frameState.activeTemporalGpuState).toBeUndefined();

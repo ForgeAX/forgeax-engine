@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { EngineWorkspacePreview } from '@forgeax/engine-app';
 import { createBackendHost } from '@forgeax/engine-host/backend';
@@ -8,14 +7,38 @@ import type { PackDraftReply, PackDraftSnapshot } from '@forgeax/engine-pack/sou
 import type { PluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createServer, type Plugin, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { allocateLoopbackPort } from '../tools/browser-host.js';
 import { createWorkspacePackAuthoring } from '../workspace-pack-authoring.js';
 
 it('publishes saved authoring sources without replacing the editing document', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-authoring-publication-')));
-  const backend = await createBackendHost();
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-authoring-publication-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  const root = await realpath(directory.root);
+  const temporaryRoot = await realpath(directory.temporaryRoot);
+  let publications = 0;
+  const backend = await createBackendHost({
+    startupPlugins: [
+      {
+        provide: ['engineWorkspaceCatalog'],
+        apply(ctx) {
+          ctx.provide('engineWorkspaceCatalog', {
+            notePublished() {
+              publications++;
+            },
+          });
+        },
+      },
+    ],
+  });
   let server: ViteDevServer | undefined;
   const source = resolve(root, 'assets/scene.pack.json');
   const authored = (intensity: number) =>
@@ -32,6 +55,13 @@ it('publishes saved authoring sources without replacing the editing document', a
       },
     });
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await writeFile(
       resolve(root, 'package.json'),
@@ -95,6 +125,7 @@ it('publishes saved authoring sources without replacing the editing document', a
     }) as typeof server.ws.send;
     for (const intensity of [1, 3.2]) {
       const previous = pack.catalogSnapshot().find((row) => row.kind === 'scene')?.revision?.digest;
+      const previousPublications = publications;
       await writeFile(source, authored(intensity));
       await expect(
         lifecycle.hotUpdate.call(
@@ -109,11 +140,15 @@ it('publishes saved authoring sources without replacing the editing document', a
           } as never,
         ),
       ).resolves.toEqual([]);
+      // A temporarily absent row is not a completed publication. Wait for the
+      // actual producer receipt before another write can overlap its scan.
       await expect
-        .poll(() => pack.catalogSnapshot().find((row) => row.kind === 'scene')?.revision?.digest, {
-          timeout: 3000,
-        })
-        .not.toBe(previous);
+        .poll(() => publications, { timeout: 3000 })
+        .toBeGreaterThan(previousPublications);
+      const published = pack.catalogSnapshot().find((row) => row.kind === 'scene')
+        ?.revision?.digest;
+      expect(published).toBeDefined();
+      expect(published).not.toBe(previous);
     }
     expect(consumed).toEqual([source, source]);
     expect(reloads).toEqual([]);
@@ -205,6 +240,10 @@ it('publishes saved authoring sources without replacing the editing document', a
     }
     expect(consumed).toHaveLength(notificationsBeforeFailure);
 
+    // Missing-source read probes can queue unchanged catalog scans. Drain the
+    // producer queue before deleting their input and before server teardown.
+    await pack.rebuildCatalogInPlace([]);
+    const publicationsBeforeDelete = publications;
     await rm(source);
     let deletedReads = 0;
     await expect(
@@ -225,15 +264,25 @@ it('publishes saved authoring sources without replacing the editing document', a
     ).resolves.toEqual([]);
     expect(deletedReads).toBe(0);
     expect(consumed.at(-1)).toBe(source);
+    await expect
+      .poll(() => publications, { timeout: 3000 })
+      .toBeGreaterThan(publicationsBeforeDelete);
+    expect(pack.catalogSnapshot().find((row) => row.kind === 'scene')).toBeUndefined();
   } finally {
     await server?.close();
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
 
 it('waits for the Vite read barrier before notifying the Pack authoring owner', async () => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-authoring-read-barrier-')));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-authoring-read-barrier-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  const root = await realpath(directory.root);
+  const temporaryRoot = await realpath(directory.temporaryRoot);
   const backend = await createBackendHost();
   let server: ViteDevServer | undefined;
   let owner: ReturnType<typeof createWorkspacePackAuthoring> | undefined;
@@ -267,6 +316,13 @@ it('waits for the Vite read barrier before notifying the Pack authoring owner', 
     asset: { path: relativeSource },
   } as unknown as EngineWorkspacePreview;
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({
+        sourceRoot: resolve(import.meta.dirname, '../../../..'),
+        projectRoot: root,
+        temporaryRoot,
+        manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+      });
     await mkdir(resolve(root, 'assets'));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(
@@ -443,6 +499,6 @@ it('waits for the Vite read barrier before notifying the Pack authoring owner', 
     await server?.close();
     owner?.dispose();
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

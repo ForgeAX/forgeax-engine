@@ -1,5 +1,5 @@
 import { rhi } from '@forgeax/engine-rhi-null';
-import { type BindGroupLayoutEntry, ok } from '@forgeax/engine-types';
+import { type BindGroupLayoutEntry, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 
@@ -307,6 +307,205 @@ describe('RenderFeature buffer ranges', () => {
     } finally {
       writes.mockRestore();
       allocations.mockRestore();
+      f.dispose();
+    }
+  });
+
+  it('initializes static contents once per physical buffer and retries failed seeds safely', async () => {
+    const f = await fixture();
+    const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+    const allocations = vi.spyOn(f.device, 'createBuffer');
+    let allowCopy = false;
+    const initialization = {
+      version: 'field-v1',
+      byteLength: 8,
+      copyInto(target: Uint8Array) {
+        if (!allowCopy) return false;
+        new Uint32Array(target.buffer, target.byteOffset, 2).set([41, 42]);
+        return true;
+      },
+    };
+    const descriptor = {
+      size: 16,
+      usage: ['storage'] as const,
+      allocationKey: initialization.version,
+      initialization,
+    };
+    try {
+      expect(
+        f.session.prepareBuffer('static-field', { ...descriptor, initialization: null as never }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'render-feature-preparation-failed',
+          detail: {
+            featureIdentity: 'buffer-ranges',
+            stage: 'prepare',
+            operation: 'write-gpu-buffer',
+            resourceName: 'static-field',
+            reason: 'initialization-invalid',
+          },
+        },
+      });
+      expect(allocations).not.toHaveBeenCalled();
+      expect(writes).not.toHaveBeenCalled();
+
+      expect(f.session.prepareBuffer('static-field', descriptor).ok).toBe(false);
+      expect(writes).not.toHaveBeenCalled();
+      allowCopy = true;
+      const first = f.session.prepareBuffer('static-field', descriptor).unwrap();
+      expect(allocations).toHaveBeenCalledOnce();
+      expect(writes).toHaveBeenCalledOnce();
+      const written = writes.mock.calls[0]?.[2];
+      if (!ArrayBuffer.isView(written)) throw new Error('Missing initializer bytes');
+      expect([
+        ...new Uint32Array(written.buffer, written.byteOffset, written.byteLength / 4),
+      ]).toEqual([41, 42]);
+      expect(f.session.prepareBuffer('static-field', descriptor).unwrap()).toBe(first);
+      expect(writes).toHaveBeenCalledOnce();
+
+      f.session.commitFrame();
+      f.session.beginFrame();
+      const priorBuffer = f.session.resolveBuffer(first)?.buffer;
+      let allowReplacementCopy = false;
+      const replacement = {
+        version: 'field-v2',
+        byteLength: 8,
+        copyInto(target: Uint8Array) {
+          if (!allowReplacementCopy) return false;
+          new Uint32Array(target.buffer, target.byteOffset, 2).set([51, 52]);
+          return true;
+        },
+      };
+      const changedDescriptor = {
+        ...descriptor,
+        allocationKey: replacement.version,
+        initialization: replacement,
+      };
+      expect(f.session.prepareBuffer('static-field', changedDescriptor).ok).toBe(false);
+      f.session.abortFrame().unwrap();
+      expect(f.session.resolveBuffer(first)?.buffer).toBe(priorBuffer);
+
+      f.session.beginFrame();
+      allowReplacementCopy = true;
+      const replaced = f.session.prepareBuffer('static-field', changedDescriptor).unwrap();
+      expect(replaced).not.toBe(first);
+      expect(f.session.resolveBuffer(first)?.buffer).toBe(priorBuffer);
+      expect(f.session.resolveBuffer(replaced)?.buffer).not.toBe(priorBuffer);
+      expect(writes).toHaveBeenCalledTimes(2);
+      for (const lease of f.session.commitFrame()) lease.release();
+    } finally {
+      writes.mockRestore();
+      allocations.mockRestore();
+      f.dispose();
+    }
+  });
+
+  it('reseeds a retained physical buffer when initialization byte length changes with its version', async () => {
+    const f = await fixture();
+    const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+    const allocations = vi.spyOn(f.device, 'createBuffer');
+    const initial = {
+      version: 'field-v1',
+      byteLength: 8,
+      copyInto(target: Uint8Array) {
+        new Uint32Array(target.buffer, target.byteOffset, 2).set([1, 2]);
+        return true;
+      },
+    };
+    const descriptor = {
+      size: 16,
+      usage: ['storage'] as const,
+      allocationKey: initial.version,
+      initialization: initial,
+    };
+    try {
+      const first = f.session.prepareBuffer('static-field', descriptor).unwrap();
+      expect(writes).toHaveBeenCalledOnce();
+      f.session.commitFrame();
+
+      f.session.beginFrame();
+      const wider = {
+        ...descriptor,
+        initialization: {
+          version: initial.version,
+          byteLength: 12,
+          copyInto(target: Uint8Array) {
+            new Uint32Array(target.buffer, target.byteOffset, 3).set([3, 4, 5]);
+            return true;
+          },
+        },
+      };
+      expect(f.session.prepareBuffer('static-field', wider).unwrap()).toBe(first);
+      expect(allocations).toHaveBeenCalledOnce();
+      expect(writes).toHaveBeenCalledTimes(2);
+      const written = writes.mock.calls[1]?.[2];
+      if (!ArrayBuffer.isView(written)) throw new Error('Missing resized initializer bytes');
+      expect([
+        ...new Uint32Array(written.buffer, written.byteOffset, written.byteLength / 4),
+      ]).toEqual([3, 4, 5]);
+      for (const lease of f.session.commitFrame()) lease.release();
+
+      f.session.beginFrame();
+      const overridden = {
+        ...wider,
+        uploads: [{ offset: 8, data: new Uint32Array([9]) }],
+      };
+      expect(f.session.prepareBuffer('static-field', overridden).unwrap()).toBe(first);
+      expect(writes).toHaveBeenCalledTimes(4);
+      expect(writes.mock.calls[2]?.[1]).toBe(0);
+      expect(writes.mock.calls[3]?.[1]).toBe(8);
+      for (const lease of f.session.commitFrame()) lease.release();
+
+      f.session.beginFrame();
+      expect(f.session.prepareBuffer('static-field', wider).unwrap()).toBe(first);
+      expect(writes).toHaveBeenCalledTimes(5);
+      expect(writes.mock.calls[4]?.[1]).toBe(0);
+      const restored = writes.mock.calls[4]?.[2];
+      if (!ArrayBuffer.isView(restored)) throw new Error('Missing restored initializer bytes');
+      expect([
+        ...new Uint32Array(restored.buffer, restored.byteOffset, restored.byteLength / 4),
+      ]).toEqual([3, 4, 5]);
+      for (const lease of f.session.commitFrame()) lease.release();
+    } finally {
+      writes.mockRestore();
+      allocations.mockRestore();
+      f.dispose();
+    }
+  });
+
+  it('does not mark copied bytes initialized when the physical queue write fails', async () => {
+    const f = await fixture();
+    const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+    let copies = 0;
+    const initialization = {
+      version: 'field-v1',
+      byteLength: 4,
+      copyInto(target: Uint8Array) {
+        copies++;
+        new Uint32Array(target.buffer, target.byteOffset, 1)[0] = 9;
+        return true;
+      },
+    };
+    const descriptor = {
+      size: 16,
+      usage: ['storage'] as const,
+      allocationKey: initialization.version,
+      initialization,
+    };
+    try {
+      writes.mockImplementationOnce(() => err({ code: 'synthetic-write-failure' } as never));
+      expect(f.session.prepareBuffer('static-field', descriptor).ok).toBe(false);
+      expect(copies).toBe(1);
+      const ready = f.session.prepareBuffer('static-field', descriptor);
+      expect(ready.ok).toBe(true);
+      expect(copies).toBe(2);
+      expect(writes).toHaveBeenCalledTimes(2);
+      expect(f.session.prepareBuffer('static-field', descriptor).ok).toBe(true);
+      expect(copies).toBe(2);
+      expect(writes).toHaveBeenCalledTimes(2);
+    } finally {
+      writes.mockRestore();
       f.dispose();
     }
   });

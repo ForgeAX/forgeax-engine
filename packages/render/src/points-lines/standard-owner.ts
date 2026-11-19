@@ -1,7 +1,3 @@
-import {
-  DEFAULT_VERTEX_ATTRIBUTE_MAP,
-  deriveVertexLayoutProjection,
-} from '@forgeax/engine-geometry';
 import { err, ok } from '@forgeax/engine-rhi';
 import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { PointShapeValue, PointSizeUnitsValue } from '../components/points';
@@ -28,6 +24,7 @@ import {
 } from './prepare';
 import {
   createPointsLinesLaneAdapter,
+  POINTS_LINES_VERTEX_LAYOUT,
   type PointsLinesBackend,
   type PointsLinesLane,
 } from './record';
@@ -60,10 +57,22 @@ export type PointsLinesFrameOutcome =
   | { readonly ok: false; readonly cause: unknown };
 
 /** The identity a prepared row is taken by. */
-export function pointsLinesRowKey(
-  source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
-): string {
-  return `${source.worldId}:${source.entityKey}`;
+export function pointsLinesRowKey(source: Pick<RenderableSnapshot, 'entityKey'>): string {
+  return `${source.entityKey}`;
+}
+
+function admissionStyle(
+  style: PointsLinesPreparedSnapshot['style'],
+): Pick<Parameters<typeof admitPointsLines>[0], 'points' | 'lines'> {
+  if (style?.kind !== 'points') return { lines: style ?? {} };
+  return {
+    points: {
+      size: style.size,
+      minPixelSize: style.minPixelSize ?? 0,
+      sizeUnits: PointSizeUnitsValue[style.sizeUnits],
+      shape: PointShapeValue[style.shape],
+    },
+  };
 }
 
 /**
@@ -82,7 +91,6 @@ export class StandardPointsLinesOwner {
   /** What this view's current attempt prepared; promoted by `commit`, dropped by `discard`. */
   private pending = new Map<string, PointsLinesInspection>();
   private published = new Map<string, PointsLinesInspection>();
-  private readonly layoutProjection = deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP);
   /** The RenderPrepare outcome of the Renderer frame it names; recording takes it. */
   private frameOutcome: { frame: number; outcome: PointsLinesFrameOutcome } | undefined;
 
@@ -95,7 +103,7 @@ export class StandardPointsLinesOwner {
    */
   prepareFrame(
     rows: FrameList<RenderableSnapshot>,
-    scopeOf: (worldId: number) => RenderResourceScope,
+    scopeOf: () => RenderResourceScope,
     clustered: boolean,
   ): PointsLinesFrameOutcome {
     try {
@@ -107,7 +115,7 @@ export class StandardPointsLinesOwner {
         // Every retained row is prepared: the camera cull is a draw-time predicate, and a
         // capture pass admits rows without it.
         if (points === undefined) continue;
-        const world = scopeOf(source.worldId);
+        const world = scopeOf();
         const mesh = renderAssetRevision(world, points.meshHandle) ?? 0;
         const material = renderAssetRevision(world, points.materialHandle) ?? 0;
         prepared.set(pointsLinesRowKey(source), {
@@ -162,7 +170,7 @@ export class StandardPointsLinesOwner {
       meshGeneration: renderAssetRevision(entry.world, source.meshHandle) ?? 0,
       materialGeneration: renderAssetRevision(entry.world, source.materialHandle) ?? 0,
     };
-    const key = `${snapshot.worldId}:${snapshot.entityKey}`;
+    const key = `${snapshot.entityKey}`;
     const backend = this.backend(runtime);
     const lane = backend === 'wgpu-webgl2' ? 'cpu-webgl2' : clustered ? 'clustered' : 'direct';
     const meshResult = entry.world.resolveAsset<MeshAsset>(
@@ -189,15 +197,7 @@ export class StandardPointsLinesOwner {
       entity: snapshot.entityKey,
       mesh: meshResult.value,
       material: materialResult.value,
-      ...(snapshot.style?.kind === 'points'
-        ? {
-            points: {
-              size: snapshot.style.size,
-              sizeUnits: PointSizeUnitsValue[snapshot.style.sizeUnits],
-              shape: PointShapeValue[snapshot.style.shape],
-            },
-          }
-        : { lines: snapshot.style ?? {} }),
+      ...admissionStyle(snapshot.style),
     });
     if (!admission.ok) {
       this.publishRefusal(inspections, snapshot, admission.error);
@@ -264,7 +264,7 @@ export class StandardPointsLinesOwner {
           plan: lkgPlan,
           vertexBuffer: lkg.resource.vertexBuffer,
           indexBuffer: lkg.resource.indexBuffer,
-          layoutProjection: this.layoutProjection,
+          layoutProjection: POINTS_LINES_VERTEX_LAYOUT,
         };
       }
       this.publishRefusal(inspections, snapshot, prepared.error);
@@ -299,7 +299,7 @@ export class StandardPointsLinesOwner {
       plan,
       vertexBuffer: prepared.value.resource.vertexBuffer,
       indexBuffer: prepared.value.resource.indexBuffer,
-      layoutProjection: this.layoutProjection,
+      layoutProjection: POINTS_LINES_VERTEX_LAYOUT,
     };
   }
 
@@ -378,7 +378,7 @@ export class StandardPointsLinesOwner {
     error: PointsLinesSourceError,
   ): void {
     inspections.set(
-      `${snapshot.worldId}:${snapshot.entityKey}`,
+      `${snapshot.entityKey}`,
       inspectPointsLines({
         snapshot,
         topology: snapshot.component === 'Points' ? 'point-list' : 'line-list',

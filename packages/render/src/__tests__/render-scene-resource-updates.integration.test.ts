@@ -16,7 +16,7 @@ import {
   VisibilityStateValue,
 } from '../components';
 import { Materials } from '../materials';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
   PersistentRenderScene,
@@ -59,14 +59,13 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
   const requests: PersistentRenderCandidateRequest[] = [];
   const build = (request: PersistentRenderCandidateRequest) => {
     requests.push(request);
-    return extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
+    return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
     });
   };
-  const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  const draw = () => scene.extractComposition(world, assets, build, lease);
   try {
     draw();
     requests.length = 0;
@@ -88,7 +87,7 @@ it('refreshes frame resources without rebuilding retained geometry, including mi
       edit();
       world.update(0).unwrap();
       const frame = draw();
-      const oracle = extractFrames([world], 0);
+      const oracle = extractSource(world);
       expect(frame.cameras).toEqual(oracle.cameras);
       expect(frame.lights).toEqual(oracle.lights);
       expect(frame.skylight).toEqual(oracle.skylight);
@@ -132,14 +131,13 @@ it('retries consumed transforms when a mixed source publication fails', () => {
       failPartial = false;
       throw new Error('source publication failed');
     }
-    return extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
+    return extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
     });
   };
-  const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  const draw = () => scene.extractComposition(world, assets, build, lease);
   try {
     draw();
     world.set(moved, Transform, { pos: [2, 0, 0] }).unwrap();
@@ -148,7 +146,7 @@ it('retries consumed transforms when a mixed source publication fails', () => {
     failPartial = true;
     expect(draw).toThrow('source publication failed');
     const recovered = draw();
-    const oracle = extractFrames([world], 0, assets, undefined, {
+    const oracle = extractSource(world, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -172,71 +170,50 @@ it('retries consumed transforms when a mixed source publication fails', () => {
   }
 });
 
-it('keeps untouched World hidden reports during partial edits and removals', () => {
-  const owners = [new AssetRegistry(), new AssetRegistry()] as const;
-  const assets = owners[0];
-  const worlds = owners.map((assets) => new World({ assets }));
-  const entities = worlds.map((world, index) => {
-    const owner = owners[index];
-    if (owner === undefined) throw new Error('expected a World asset owner');
-    const meshHandle = owner.create(createPrimitiveMesh('cube').unwrap()).unwrap();
-    registerPropagateTransforms(world);
-    const entity = world
+it('keeps untouched entity hidden reports during partial edits and removals', () => {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  registerPropagateTransforms(world);
+  const mesh = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const spawn = () =>
+    world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: meshHandle } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: {} },
         { component: Visibility, data: { state: VisibilityStateValue.hidden } },
       )
       .unwrap();
-    world.update(0).unwrap();
-    return entity;
-  });
-  const leases = worlds.map((world) => createRenderReadLease(world));
-  const [firstWorld, secondWorld] = worlds;
-  const [firstEntity, secondEntity] = entities;
-  if (
-    firstWorld === undefined ||
-    secondWorld === undefined ||
-    firstEntity === undefined ||
-    secondEntity === undefined
-  )
-    throw new Error('expected two Worlds and entities');
+  const first = spawn();
+  const second = spawn();
+  world.update(0).unwrap();
+  const lease = createRenderReadLease(world);
   const scene = new PersistentRenderScene();
   const options = { cull: 'none', retainHidden: true } as const;
-  const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames(worlds, 0, assets, scene.materialSnapshotCacheStore(), {
-      ...options,
-      renderables: request,
-    });
+  const build = (renderables: PersistentRenderCandidateRequest) =>
+    extractSource(world, assets, scene.materialSnapshotCacheStore(), { ...options, renderables });
   const check = () => {
-    const frame = scene.extractComposition(
-      worlds,
-      { cameraOwner: 0, resourceOwner: 0 },
-      assets,
-      build,
-      leases,
-    );
-    const oracle = extractFrames(worlds, 0, assets, undefined, options);
+    const frame = scene.extractComposition(world, assets, build, lease);
+    const oracle = extractSource(world, assets, undefined, options);
     const hidden = (value: typeof frame) =>
-      value.hiddenEntityReports.map((report) => `${report.world.identity}:${report.entity}`).sort();
+      value.hiddenEntityReports.map((report) => `${report.entity}`).sort();
     expect(hidden(frame)).toEqual(hidden(oracle));
     expect(frame.visibilityStats).toEqual(oracle.visibilityStats);
   };
   try {
     check();
-    firstWorld.set(firstEntity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    firstWorld.update(0).unwrap();
+    world.set(first, Visibility, { state: VisibilityStateValue.visible }).unwrap();
+    world.update(0).unwrap();
     check();
-    secondWorld.despawn(secondEntity).unwrap();
-    secondWorld.update(0).unwrap();
+    world.despawn(second).unwrap();
+    world.update(0).unwrap();
     check();
   } finally {
-    for (const lease of leases) lease.dispose();
+    lease.dispose();
     scene.dispose();
+    assets.dispose();
   }
 });
-
 it('keeps pending temporal sources hidden until the same identity publishes an accepted material', () => {
   const assets = new AssetRegistry();
   const world = new World({ assets });
@@ -261,7 +238,7 @@ it('keeps pending temporal sources hidden until the same identity publishes an a
     scene = new PersistentRenderScene();
   let available = true;
   const build = (request: PersistentRenderCandidateRequest) => {
-    const frame = extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
+    const frame = extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
@@ -270,8 +247,7 @@ it('keeps pending temporal sources hidden until the same identity publishes an a
       ? { ...frame, renderables: [], dispatch: [] }
       : frame;
   };
-  const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  const draw = () => scene.extractComposition(world, assets, build, lease);
   try {
     expect(draw().renderables.length).toBe(1);
     available = false;
@@ -325,13 +301,12 @@ it('does not read retired material versions while an authored temporal source is
   const lease = createRenderReadLease(world),
     scene = new PersistentRenderScene({ assets });
   const build = (request: PersistentRenderCandidateRequest) =>
-    extractFrames([world], 0, assets, scene.materialSnapshotCacheStore(), {
+    extractSource(world, assets, scene.materialSnapshotCacheStore(), {
       cull: 'none',
       retainHidden: true,
       renderables: request,
     });
-  const draw = () =>
-    scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [lease]);
+  const draw = () => scene.extractComposition(world, assets, build, lease);
   try {
     const initial = draw();
     expect(initial.renderables.length).toBe(1);

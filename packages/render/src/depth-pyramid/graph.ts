@@ -31,9 +31,8 @@ import { createDepthPyramidProgramResolver } from './programs';
 import { addFragmentDepthPyramidPasses } from './raster';
 
 /**
- * Which depth bound each texel keeps. `closest` feeds screen-space tracers
- * (SSR); `furthest` feeds occlusion culling, where a texel may only hide
- * geometry that lies behind every sample it covers.
+ * Which positive view-distance bound each texel keeps. Consumers must select
+ * traversal inequalities for this reduction, including its empty sentinel.
  */
 export type DepthPyramidReduction = 'closest' | 'furthest';
 
@@ -112,8 +111,9 @@ function seedBindGroup(
   return rememberBindGroup(leaf, label, group, counts);
 }
 
-/** One view's closest-depth hierarchy, built once and read by every consumer. */
+/** One view's hierarchy and the bound its producer actually reduced. */
 export interface DepthPyramid {
+  readonly reduction: DepthPyramidReduction;
   readonly plan: DepthPyramidPlan;
   readonly texture: GraphTexture;
   /** Single-mip storage views, one per level, used by the producer chain. */
@@ -123,6 +123,8 @@ export interface DepthPyramid {
 }
 
 interface DepthPyramidGraphInputBase {
+  /** Distinct consumers may build the same reduction from different scene stages. */
+  readonly label?: string;
   /** Full-resolution scene depth of the view. */
   readonly depth: GraphTextureView;
   /** Finite physical plan; compute remains the default for existing callers. */
@@ -236,6 +238,7 @@ function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   extent: DepthPyramidExtent,
   name: string,
+  reduction: DepthPyramidReduction,
 ): Result<DepthPyramid, RenderGraphError> {
   const plan = planViewDepthPyramid(extent);
   const created = graph.createTexture(name, {
@@ -258,6 +261,7 @@ function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
   const pyramid = graph.view(created.value, { label: `${name}.view`, dimension: '2d' });
   if (!pyramid.ok) return pyramid;
   return ok({
+    reduction,
     plan,
     texture: created.value,
     levels: Object.freeze(levels),
@@ -295,13 +299,15 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
     );
   const reduction = input.reduction ?? 'closest';
   const names = REDUCTION_NAMES[reduction];
+  const label = input.label ?? names.graph;
   const multisampled = input.reduction === 'furthest' && input.multisampled === true;
-  const seedPass = `${names.graph}-seed`;
-  const reducePass = `${names.graph}-reduce-chain`;
+  const seedPass = `${label}-seed`;
+  const reducePass = `${label}-reduce-chain`;
   const created = createDepthPyramid(
     graph,
     { width: input.width, height: input.height },
-    names.graph,
+    label,
+    reduction,
   );
   if (!created.ok) return created;
   const pyramid = created.value;

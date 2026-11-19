@@ -1,9 +1,7 @@
 import type { WorkspaceState } from './contract.ts';
 import type { ViewWorkspaceClient, WorkspaceOptions } from './client.ts';
-import type { ProjectSessionWindow } from './project-session.ts';
 import { workspaceDiagnosticRecord } from './command-error.ts';
 import { VIEW_WORKSPACE_TAB_ID, isOpaqueWorkspaceDiagnostic, workspaceError } from './contract.ts';
-import { navigateProjectSession } from './project-session.ts';
 
 export const VIEW_WORKSPACE_PAGE_LOST_CODE = 'view-workspace-page-lost';
 
@@ -183,80 +181,16 @@ export function resolveWorkspaceReopenRoot(snapshot: WorkspaceState | null | und
   return candidate;
 }
 
-export function workspaceProjectTargetUrl(snapshot: WorkspaceState | null | undefined) {
-  const url = snapshot?.projectTarget?.url;
-  return typeof url === 'string' && url.trim() !== '' ? url : undefined;
-}
-
-const WORKSPACE_SESSION_PARAM = 'forgeaxWorkspaceSession';
-
-function workspaceSessionFromHref(href: unknown) {
-  if (typeof href !== 'string' || href.trim() === '') return undefined;
-  try {
-    const session = new URL(href).searchParams.get(WORKSPACE_SESSION_PARAM);
-    return session && session.trim() !== '' ? session : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The empty shell has no headed session. A document that already carries the
- * target's forgeaxWorkspaceSession is the project page; assigning again
- * reloads it and Engine treats that navigation as a lost workspace. Compare
- * the session parameter, not the full href: encoding or parameter order may
- * differ from the snapshot URL for the same document.
- */
-export function shouldAdoptRemoteWorkspaceProject(snapshot: WorkspaceState | null | undefined, locationLike: string | { href?: string } | undefined) {
-  if (!snapshot || snapshot.workspaceTargetLost === true) return false;
-  if (typeof snapshot.project?.root !== 'string' || snapshot.project.root.trim() === '') return false;
-  const url = workspaceProjectTargetUrl(snapshot);
-  if (!url) return false;
-  const href = typeof locationLike === 'string' ? locationLike : locationLike?.href;
-  const currentSession = workspaceSessionFromHref(href);
-  if (currentSession !== undefined && currentSession === workspaceSessionFromHref(url)) return false;
-  return true;
-}
-
-/** Navigate only into the target's headed document. That document itself and lost targets stay put. */
-export function adoptRemoteWorkspaceProject(snapshot: WorkspaceState, windowLike: ProjectSessionWindow = globalThis) {
-  if (!shouldAdoptRemoteWorkspaceProject(snapshot, windowLike?.location)) return snapshot;
-  return navigateToWorkspaceProjectTarget(snapshot, windowLike);
-}
-
-/**
- * After project.reopen, adopt the new headed target URL when it differs from the
- * current document. No-op when navigation is unavailable (Node callers).
- */
-export function navigateToWorkspaceProjectTarget(snapshot: WorkspaceState, windowLike: ProjectSessionWindow = globalThis) {
-  const url = workspaceProjectTargetUrl(snapshot);
-  if (!url) {
-    throw workspaceError(
-      'view-workspace-reopen-incomplete',
-      'the reopened project to publish a headed target URL',
-      'Retry reconnecting or restart the View owner process.',
-      {},
-    );
-  }
-  const location = windowLike?.location;
-  if (!location || typeof location.assign !== 'function') return snapshot;
-  const nextHref = new URL(url, location.href).href;
-  if (nextHref !== location.href) navigateProjectSession(snapshot, windowLike);
-  return snapshot;
-}
-
 /** @param {unknown} client
  * @param {{ root?: string, tabId?: string, window?: unknown }} options
  */
 export async function reopenWorkspaceProject(client: Pick<ViewWorkspaceClient, 'reopenProject'> | undefined, {
   root,
   tabId = VIEW_WORKSPACE_TAB_ID,
-  window: windowLike,
   ...options
-}: WorkspaceOptions & { window?: ProjectSessionWindow } = {}) {
+}: WorkspaceOptions = {}) {
   if (!client || typeof client.reopenProject !== 'function') {
     throw new TypeError('Workspace recovery requires a View workspace client');
   }
-  const snapshot = await client.reopenProject({ ...options, root, tabId });
-  return navigateToWorkspaceProjectTarget(snapshot, windowLike ?? globalThis);
+  return client.reopenProject({ ...options, root, tabId });
 }

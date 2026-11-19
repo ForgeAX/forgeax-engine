@@ -7,6 +7,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import {
+  ArtifactRangesUnavailable,
+  tryDownloadArtifactRanges,
+} from './artifact-range-download.mjs';
 
 export const RETRY_DELAYS_SECONDS = [0, 5, 15];
 // Bound response-header stalls, not the duration of a progressing archive.
@@ -329,10 +333,21 @@ export async function downloadArtifact(
     }, idleTimeoutMs);
   };
   try {
-    const responseResult = await responseFor(
-      `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`,
-      requestTimeoutMs,
-    );
+    const archiveUrl = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`;
+    let responseResult = await responseFor(archiveUrl, requestTimeoutMs);
+    try {
+      const bytes = await tryDownloadArtifactRanges({
+        ...responseResult,
+        metadata,
+        destination,
+        requestTimeoutMs,
+        idleTimeoutMs,
+      });
+      if (bytes !== null) return bytes;
+    } catch (error) {
+      if (!(error instanceof ArtifactRangesUnavailable)) throw error;
+      responseResult = await responseFor(archiveUrl, requestTimeoutMs);
+    }
     transferController = responseResult.controller;
     const response = responseResult.response;
     if (!response.body) throw new Error(`artifact ${artifactId} response has no body`);
@@ -373,14 +388,14 @@ export function artifactDestination(path, artifactName, mergeMultiple = false) {
   return mergeMultiple ? path : join(path, artifactName);
 }
 
-async function hydrateArtifact(repository, artifactId, path) {
+async function hydrateArtifact(repository, artifactId, path, transportOptions) {
   const root = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), 'forgeax-artifact-'));
   const archive = join(root, `${artifactId}.zip`);
   try {
     await ensureArtifactDestination(path);
     const hydrated = await retryArtifact(
       async () => {
-        const bytes = await downloadArtifact(repository, artifactId, archive);
+        const bytes = await downloadArtifact(repository, artifactId, archive, transportOptions);
         execFileSync('unzip', ['-q', '-o', archive, '-d', path], { stdio: 'inherit' });
         return bytes;
       },
@@ -408,6 +423,10 @@ async function main() {
   const pattern = argument('--artifact-pattern');
   const expectedCountArgument = argument('--expected-count');
   const path = resolve(argument('--path') ?? '.');
+  const idleTimeout = argument('--idle-timeout-ms');
+  const transportOptions = {
+    idleTimeoutMs: idleTimeout === null ? undefined : positiveInteger(idleTimeout, 'idle timeout'),
+  };
   const mergeMultiple = process.argv.includes('--merge-multiple');
   const staggerSeconds = Number(argument('--stagger-seconds') ?? '0');
   if (!repository) throw new Error('GITHUB_REPOSITORY is required');
@@ -428,7 +447,7 @@ async function main() {
   }
   if (exactIdMode) {
     for (const artifactId of parseArtifactIds(artifactIds))
-      await hydrateArtifact(repository, artifactId, path);
+      await hydrateArtifact(repository, artifactId, path, transportOptions);
     return;
   }
   const runId = positiveInteger(runIdArgument, 'run ID');
@@ -439,6 +458,7 @@ async function main() {
       repository,
       String(artifact.id),
       artifactDestination(path, artifact.name, mergeMultiple),
+      transportOptions,
     );
   }
 }

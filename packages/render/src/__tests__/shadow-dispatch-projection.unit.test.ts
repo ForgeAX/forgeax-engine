@@ -28,6 +28,7 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
     materialProgramKeys: { shadow: 'forgeax::default-standard-pbr' },
   });
   const c = {
+    camera: {},
     dispatch: [],
     materialFrame: new MaterialDispatch().materials().with(material),
     materialSlots: [material.snapshot],
@@ -40,7 +41,6 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
         renderableIndex: 4,
         meshSlot: paged ? 25 : 0,
         source: {
-          worldId: 0,
           entityKey: 1,
           transform: { world: mat4.identity(mat4.create()) },
           material,
@@ -162,6 +162,7 @@ it('records an accepted caster for three directional cascades, six point faces a
 
 it('fails before recording when directional, point or spot bindings are unavailable', () => {
   const c = {
+    camera: {},
     validatedOrdered: [{}],
     runtime: { device: { caps: { storageBuffer: false } }, getMaterialShaderPipeline: () => ({}) },
     pipelineState: { perPassResources: { shadowSampler: null } },

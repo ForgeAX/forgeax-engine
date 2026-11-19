@@ -1,4 +1,5 @@
 import type {
+  GraphAccess,
   GraphTextureDescriptor,
   RenderGraphBuilder,
   RenderGraphError,
@@ -10,6 +11,7 @@ import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-pa
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { renderExtentSize } from '../pipeline/render-extent';
+import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import { selectMainPassMaterials } from '../record/main-pass';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { scenePassContext } from '../record/scene-pass-work';
@@ -28,6 +30,7 @@ import {
 } from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
 import {
+  type SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
@@ -40,6 +43,7 @@ export function bindStandardSceneDataTarget(
   topology: import('../render-pipeline').RenderPipelineTopology,
   schema:
     | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
+    | typeof SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
     | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
 ): RenderPipelineTarget {
@@ -82,10 +86,18 @@ export interface StandardTemporalDemandInput {
   readonly motionBlur: boolean;
   readonly ssr?: boolean;
   readonly visibleSurface?: boolean;
+  /** Diffuse GI reprojects its history through the shared motion target. */
+  readonly diffuseGi?: boolean;
 }
 
 export interface StandardTemporalDemand {
-  readonly consumerIds: readonly ('taa' | 'motion-blur' | 'ssr' | 'visible-surface')[];
+  readonly consumerIds: readonly (
+    | 'taa'
+    | 'motion-blur'
+    | 'ssr'
+    | 'visible-surface'
+    | 'diffuse-gi'
+  )[];
   readonly targetCount: 0 | 1;
   readonly producerPassCount: 0 | 1;
   readonly historyCount: 0 | 1;
@@ -108,6 +120,7 @@ export function aggregateTemporalDemand(
     ...(input.motionBlur ? (['motion-blur'] as const) : []),
     ...(input.ssr ? (['ssr'] as const) : []),
     ...(input.visibleSurface ? (['visible-surface'] as const) : []),
+    ...(input.diffuseGi ? (['diffuse-gi'] as const) : []),
   ];
   const requested = consumerIds.length > 0;
   return Object.freeze({
@@ -276,6 +289,7 @@ export function createStandardSceneSurfaceDepthTarget(
 export function createStandardSceneSurfaceDataTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   size: GraphTextureDescriptor['size'],
+  sharedDepth?: RenderPipelineTarget,
 ): Result<StandardSceneSurfaceDataTargets, RenderGraphError> {
   const normal = createRenderPipelineTarget(graph, 'standard-scene-surface-normal', {
     format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
@@ -284,7 +298,10 @@ export function createStandardSceneSurfaceDataTargets(
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!normal.ok) return normal;
-  const depth = createStandardSceneSurfaceDepthTarget(graph, size);
+  const depth =
+    sharedDepth === undefined
+      ? createStandardSceneSurfaceDepthTarget(graph, size)
+      : ok(sharedDepth);
   if (!depth.ok) return depth;
   return ok({
     normalSchema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
@@ -300,11 +317,14 @@ export function addStandardSceneDataPass(
   depth: RenderPipelineTarget,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   surfaces: 'opaque' | 'forward-only-opaque' = 'opaque',
+  waterInfoTargets?: WaterInfoGraphTargets,
+  extraAccesses?: readonly GraphAccess[],
 ): Result<void, RenderGraphError> {
   const selector = COLOR_PASS_SELECTOR;
   const excludeSelector = surfaces === 'forward-only-opaque' ? DEFERRED_PASS_SELECTOR : undefined;
   return addTypedScenePass(graph, {
     name: 'standard-scene-data',
+    extraAccesses,
     // GBuffer already wrote this loaded target. An empty CPU supplement has
     // no work. The GPU owner derives live eligibility from its encoder predicate.
     executeIf:
@@ -319,6 +339,7 @@ export function addStandardSceneDataPass(
             )?.size !== 0 || gpuDriven?.hasWork(surfaces, 'fs_temporal') === true,
     gpuDrivenFilter: surfaces,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
+    ...(waterInfoTargets === undefined || waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
     color: target,
     depth,
     selector,
@@ -350,9 +371,11 @@ export function addStandardSceneSurfaceDataPass(
   targets: Pick<StandardSceneSurfaceDataTargets, 'depth'> &
     Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
+  name = 'standard-scene-surface-data',
+  fragmentEntryPoint = 'fs_ao_input',
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
-    name: 'standard-scene-surface-data',
+    name,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     gpuDrivenFilter: 'opaque',
     ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
@@ -360,7 +383,7 @@ export function addStandardSceneSurfaceDataPass(
     selector: FORWARD_PASS_SELECTOR,
     recordMode: 'opaque',
     passKind: 'forward',
-    fragmentEntryPoint: 'fs_ao_input',
+    fragmentEntryPoint,
     colorLoadOp: 'clear',
     depthLoadOp: 'clear',
   });

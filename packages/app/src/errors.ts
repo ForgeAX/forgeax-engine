@@ -46,8 +46,8 @@
 // alongside RhiErrorCode et al.); charter P3 (explicit failure) + P4
 // (closed-union exhaustive switch).
 
-import type { RhiError } from '@forgeax/engine-rhi/errors';
 import type { ExecutionCapabilityName, ExecutionWorker } from './execution/types';
+import type { CanvasAppError } from './types';
 
 /**
  * Closed AppErrorCode union (13 members).
@@ -83,7 +83,7 @@ export interface AppDetailCanvasDetached {
  * `cause instanceof EcsError` / `cause instanceof RhiError` narrow without
  * losing structure. `systemName` is populated when the call site can name
  * the offending system (input-attach cleanup path forwards
- * `FRAME_START_SCAN_SYSTEM_NAME`).
+ * `InputFrameStartScan.name`).
  */
 export interface AppDetailSystemUpdateFailed {
   readonly cause: unknown;
@@ -447,10 +447,10 @@ export const APP_ERROR_HINTS: Readonly<Record<AppErrorCode, string>> = Object.fr
  * canonical idiom in JSDoc / README so AI users do not need to reason
  * about cross-realm `instanceof` quirks.
  *
- * The parameter accepts the complete App/RHI boundary union so callers can
+ * The parameter accepts the complete canvas creation boundary so callers can
  * narrow the error without casts.
  */
-export function isAppError(err: AppError | RhiError): err is AppError {
+export function isAppError(err: CanvasAppError): err is AppError {
   return err instanceof AppErrorClass;
 }
 

@@ -22,11 +22,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import {
-  ParticleEffectPlayer,
-  VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
-} from '@forgeax/engine-vfx';
+import { ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -203,7 +199,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       },
     })
     .unwrap();
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const lease = options.publication ? undefined : renderValue(renderer.attach(world));
   const publisher = options.publication
     ? createRenderPublisher(world, assets, identity, renderer.inspect().capabilities, [
@@ -223,23 +219,17 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
             transfer: renderPublicationTransfers(candidate.message),
           });
     candidate?.accept();
+    const sourceReceipts: Parameters<
+      NonNullable<typeof publisher>['acknowledgeFeatures']
+    >[1][number][] = [];
     try {
       const result = renderer.draw(
         packet === undefined
-          ? {
-              leases: [required(lease)],
-              camera: { lease: required(lease) },
-              environment: { lease: required(lease) },
-            }
+          ? { source: required(lease) }
           : {
               publication: packet,
-              onFeatureSourceSubmitted: (feature, feedback) => {
-                acknowledgements++;
-                required(publisher)
-                  .acknowledgeFeatures(packet.revision, [
-                    { identity: feature, feedback: structuredClone(feedback) },
-                  ])
-                  .unwrap();
+              onFeatureSourceSubmitted: (feature, feedback, submission) => {
+                sourceReceipts.push(structuredClone({ identity: feature, feedback, submission }));
               },
             },
       );
@@ -258,6 +248,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
                 : value,
           ),
         );
+      if (packet !== undefined && sourceReceipts.length > 0) {
+        required(publisher).acknowledgeFeatures(packet.revision, sourceReceipts).unwrap();
+        acknowledgements++;
+      }
       renderValue(await result.value.completed);
       return result.value;
     } finally {

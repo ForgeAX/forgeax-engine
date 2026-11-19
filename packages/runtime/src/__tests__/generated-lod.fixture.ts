@@ -154,9 +154,7 @@ export async function verifyGeneratedLods(
             renderer,
             {
               ...(level === 3 ? {} : { geometryLane: 'direct' as const }),
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
+              source: lease,
             },
             frame === 59 ? ['linear-hdr'] : undefined,
           );

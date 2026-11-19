@@ -38,7 +38,7 @@ describe('system-set-lifecycle.test.ts', () => {
       world.addSystems(Update, GameplaySet, [sysA, sysB]);
 
       // Remove sysA
-      const r = world.removeSystem(Update, 'life-a');
+      const r = world.removeSystem(Update, sysA);
       expect(r.ok).toBe(true);
 
       // sysA is gone, sysB should still run
@@ -60,14 +60,15 @@ describe('system-set-lifecycle.test.ts', () => {
       world.addSystems(Update, TagSet, [sys]);
 
       // Remove
-      world.removeSystem(Update, 'tag-sys');
+      world.removeSystem(Update, sys);
 
       // Re-add via addSystem (not addSystems) — system is back but not in set
-      world.addSystem(Update, {
+      const systemToken1 = defineSystem({
         name: 'tag-sys',
         queries: [],
         fn: () => {},
       });
+world.addSystem(Update, systemToken1);
 
       // Check inspect: sets should be empty for the re-added system
       const snap = world.inspect();
@@ -94,11 +95,11 @@ describe('system-set-lifecycle.test.ts', () => {
       world.addSystems(Update, LogicSet, [sys]);
 
       // Replace with new fn
-      const r = world.replaceSystem(Update, 'logic-sys', {
+      const r = world.replaceSystem(Update, sys, defineSystem({
         name: 'logic-sys',
         queries: [],
         fn: () => log.push('logic-new'),
-      });
+      }));
       expect(r.ok).toBe(true);
 
       world.update();
@@ -155,11 +156,12 @@ describe('system-set-lifecycle.test.ts', () => {
     it('systems without set membership: sets is an empty array', () => {
       const world = new World();
 
-      world.addSystem(Update, {
+      const systemToken2 = defineSystem({
         name: 'free-sys',
         queries: [],
         fn: () => {},
       });
+world.addSystem(Update, systemToken2);
 
       // RED: sets field not yet present
       const snap = world.inspect();

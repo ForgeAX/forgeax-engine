@@ -11,6 +11,7 @@ import { defineRelationship } from '../relationship-index';
 import { Update } from '../schedule-token';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
+import { worldRead } from '../world-read';
 
 const Position = defineComponent('WorldHealthPosition', { x: 'f32' });
 const { source: WorldHealthChildOf, target: WorldHealthChildren } = defineRelationship({
@@ -76,10 +77,10 @@ describe('World execution health', () => {
     const target = world.spawn({ component: WorldHealthChildren, data: { entities: [] } }).unwrap();
     const targetArchetype = world[worldInternal].getEntityArchetype(target);
     if (targetArchetype === undefined) throw new Error('fixture target archetype missing');
-    const targetTable = world[worldInternal].getGraph().tables[targetArchetype.tableId];
+    const targetTable = targetArchetype.table;
     const targetStorage = targetTable?.storage.get(componentId(WorldHealthChildren));
     if (targetStorage === undefined) throw new Error('fixture target storage missing');
-    targetStorage.fields.delete('entities:count');
+    targetStorage.fields.delete('entities');
 
     const buffer = createCommandBuffer(world, 'relationship-flush', Update.name);
     const pending = buffer.spawn({ component: WorldHealthChildOf, data: { parent: target } });
@@ -179,6 +180,36 @@ describe('World execution health', () => {
     );
   });
 
+  it('preserves removal, addition, and row order when re-adding the same relationship', () => {
+    const world = new World();
+    const parent = world.spawn().unwrap();
+    const input = { component: WorldHealthChildOf, data: { parent } };
+    const children = Array.from({ length: 3 }, () => world.spawn(input).unwrap());
+    const query = world.query({ read: [WorldHealthChildOf] }).unwrap();
+    const added = world.query({ read: [WorldHealthChildOf], added: [WorldHealthChildOf] }).unwrap();
+    const read = world[worldRead];
+    const cursor = { value: 0 };
+    const removed: number[] = [];
+    const collectRemovals = () =>
+      read.readRemoved(WorldHealthChildOf, cursor, (entity) => removed.push(entity as number));
+    collectRemovals();
+    const middle = children[1];
+    if (middle === undefined) throw new Error('missing fixture child');
+    expect(Array.from(query, (row) => row.entity)).toEqual(children);
+    expect(Array.from(added, (row) => row.entity)).toEqual(children);
+    const structure = world.getStructureEpoch();
+
+    world.addComponent(middle, input).unwrap();
+
+    collectRemovals();
+    expect(removed).toEqual([middle]);
+    expect(Array.from(added, (row) => row.entity)).toEqual([middle]);
+    expect(world.getStructureEpoch()).toBe(structure + 2);
+    const ordered = [children[0], children[2], middle];
+    expect(Array.from(query, (row) => row.entity)).toEqual(ordered);
+    expect(Array.from(world.get(parent, WorldHealthChildren).unwrap().entities)).toEqual(ordered);
+  });
+
   it('transitions once to poisoned after a possible partial write and rejects future update', () => {
     const world = new World();
     world.spawn({ component: Position, data: { x: 1 } }).unwrap();
@@ -251,4 +282,26 @@ describe('World execution health', () => {
     const [row] = world.query({ read: [Position] }).unwrap();
     expect(row?.get(Position).x).toBe(3);
   });
+});
+
+it('refuses hierarchy calls before reading poisoned relationship storage', () => {
+  const world = new World();
+  const parent = world.spawn().unwrap();
+  const child = world.spawn().unwrap();
+  world[worldInternal].poisonExecution({
+    code: 'shared-kernel-failed',
+    kernelName: 'health-fixture',
+    cause: new Error('poison fixture'),
+    partialWrite: true,
+    retryable: false,
+  });
+  const unknownRole = defineComponent('PoisonedUnknownRole', {});
+  for (const result of [
+    world.addChild(parent, child, unknownRole, {}),
+    world.removeChild(parent, child, unknownRole),
+    world.reparent(child, parent, unknownRole, {}),
+  ]) {
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('world-poisoned');
+  }
 });

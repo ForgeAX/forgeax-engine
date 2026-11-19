@@ -1,4 +1,5 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { AnimationGraphEvaluation, AnimationPlayback } from '../system-order';
 // @forgeax/engine-animation -- evaluateAnimationGraph system (post-order DAG eval).
 //
 // feat-20260713-animation-state-machine-plugin M3 / w25 (plan D-2 independent
@@ -28,7 +29,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 // the direct-write SSOT (single evaluation path, plan D-3). advance's mixing
 // math never branches on graph mode; it just consumes whatever fills the slots.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import {
   defineSystem,
   FixedTime,
@@ -39,7 +40,7 @@ import {
 } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type { AnimationClip, AnimationGraph, AssetHandle } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, ok, toShared } from '@forgeax/engine-types';
 import { resolveAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationBlendError } from '../blend-errors';
@@ -52,29 +53,6 @@ import {
 } from '../playback-interval';
 import { resolveAnimationAsset } from '../resolve-animation-asset';
 import { collectTimelineEvents } from '../timeline';
-import { ADVANCE_ANIMATION_PLAYER_SYSTEM } from './advance-animation-player';
-
-/**
- * System name used when `registerEvaluateAnimationGraph` installs the system.
- * External consumers can reference this constant to declare ordering against the
- * graph-evaluation seam.
- */
-export const EVALUATE_ANIMATION_GRAPH_SYSTEM = 'evaluateAnimationGraph' as const;
-
-/**
- * Resolved per-entity graph-mode columns (a `world.get` snapshot). `graph` is the
- * raw shared handle (0 = no graph); the three node-* columns are per-node runtime
- * knobs indexed by graph node index.
- */
-interface PlayerGraphColumns {
-  readonly graph: number;
-  readonly nodeWeights: Float32Array;
-  readonly nodeTimes: Float64Array;
-  readonly nodeSpeeds: Float32Array;
-  readonly nodeMasks: Uint32Array;
-  readonly paused: boolean;
-  readonly looping: boolean;
-}
 
 /** Read `arr[i]` when in range, else the default (missing per-node knobs default). */
 function readAt(arr: ArrayLike<number>, i: number, dflt: number): number {
@@ -131,7 +109,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   if (graphRaw === undefined || graphRaw === 0) return;
   const apRes = world.get(entity, AnimationPlayer);
   if (!apRes.ok) return;
-  const ap = apRes.value as unknown as PlayerGraphColumns;
+  const ap = apRes.value;
 
   const graphLookup = runtimeAssets(world.assets).resolveAsset<AnimationGraph>(graphRaw);
   if (!graphLookup.ok) throw graphLookup.error;
@@ -237,7 +215,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   const masks =
     ap.nodeMasks.length === 0
       ? []
-      : clipNodeIndices.map((nodeIndex) => ap.nodeMasks[nodeIndex] ?? 0);
+      : clipNodeIndices.map((nodeIndex) => ap.nodeMasks[nodeIndex] ?? toShared<'AnimationMask'>(0));
   for (let k = 0; k < slotCount; k++) {
     // biome-ignore lint/style/noNonNullAssertion: parallel to clipNodeIndices
     const nodeIndex = clipNodeIndices[k]!;
@@ -268,10 +246,11 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
  * is labelled `'animation'`. Registered by the default `animationPlugin` (w26),
  * so it is on the default path (AC-09), not opt-in.
  */
-export const EvaluateAnimationGraph: SystemHandle<readonly []> = defineSystem({
-  name: EVALUATE_ANIMATION_GRAPH_SYSTEM,
+export const EvaluateAnimationGraph: System<readonly []> = defineSystem({
+  name: 'evaluateAnimationGraph',
+  sets: [AnimationGraphEvaluation],
   queries: [],
-  before: [ADVANCE_ANIMATION_PLAYER_SYSTEM],
+  before: [AnimationPlayback],
   fn: (world) => {
     evaluateAnimationGraph(world, world.getResource(Time).delta);
   },
@@ -286,22 +265,16 @@ export function registerEvaluateAnimationGraph(
   world: World,
   schedule: ScheduleToken = Update,
 ): () => void {
-  world
-    .addSystem(schedule, {
-      name: EVALUATE_ANIMATION_GRAPH_SYSTEM,
-      queries: [],
-      before: [ADVANCE_ANIMATION_PLAYER_SYSTEM],
-      fn: (world) => {
-        evaluateAnimationGraph(
-          world,
-          schedule === FixedUpdate
-            ? world.getResource(FixedTime).delta
-            : world.getResource(Time).delta,
-        );
-      },
-    })
-    .unwrap();
+  world.addSystem(schedule, EvaluateAnimationGraph).unwrap();
+  if (schedule === FixedUpdate) {
+    world
+      .replaceSystem(schedule, EvaluateAnimationGraph, {
+        ...EvaluateAnimationGraph,
+        fn: (world) => evaluateAnimationGraph(world, world.getResource(FixedTime).delta),
+      })
+      .unwrap();
+  }
   return () => {
-    world.removeSystem(schedule, EVALUATE_ANIMATION_GRAPH_SYSTEM);
+    world.removeSystem(schedule, EvaluateAnimationGraph);
   };
 }

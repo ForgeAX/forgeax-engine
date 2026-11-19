@@ -1,0 +1,8 @@
+{
+  "id": "water-mesh-demo",
+  "name": "Water R2 Observatory",
+  "schemaVersion": "3.0.0",
+  "roots": {},
+  "assetRoots": ["assets"],
+  "assetLibraries": ["@forgeax/engine/content"]
+}

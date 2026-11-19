@@ -57,7 +57,13 @@ const FULLSCREEN_DEFAULT_SPEC: PipelineSpec = Object.freeze({
  * AI-user affordance: IDE autocomplete exposes `'depth'` at the register call
  * site; misspellings are caught by the type system (AC-08).
  */
-export type PostProcessReadSampleType = 'depth' | 'multisampled-float';
+export type PostProcessReadSampleType =
+  | 'depth'
+  | 'multisampled-float'
+  | 'float-3d-repeat'
+  | 'unfilterable-float'
+  | 'uint'
+  | 'multisampled-uint';
 
 // ─── Post-process shader entry (owned by the fullscreen feature host) ──────
 
@@ -81,12 +87,17 @@ export type PostProcessReadSampleType = 'depth' | 'multisampled-float';
  * and binds it at depthTex@3 / depthSampler@4 in the fullscreen bind group.
  */
 export interface PostProcessShaderEntry {
+  readonly chain?: true;
+  readonly vertexLayout?: 'clip-position-color';
+  readonly depthSampleCount?: 1 | 4;
   /** Composed WGSL source for the fragment stage (post-naga_oil). */
   readonly source: string;
   /** Automatic chain placement; before-temporal reads and writes scene-linear HDR. */
   readonly stage?: import('./features/plan').FullscreenRenderFeatureStage;
   /** Fragment entry point selected by the typed graph; defaults to `fs_main`. */
   readonly fragmentEntryPoint?: string | undefined;
+  /** Explicit hardware-depth producer; ordinary image effects omit it. */
+  readonly depthOutput?: GPUTextureFormat | undefined;
   /**
    * Params UBO schema. When undefined, the generic shader has no uniform buffer
    * and the BGL degrades to 2 entries (texture@0 + sampler@1). When present, the
@@ -99,7 +110,7 @@ export interface PostProcessShaderEntry {
    * Graph resource keys this post-process reads (as input textures).
    * The primitive binds the first read as its input texture at @group(1)
    * @binding(0) (the sampler is @group(1) @binding(1); group 0 is reserved for a
-   * future view bind group — dispatchFullscreenPass calls setBindGroup(1, ...)).
+   * View bind group, or an explicitly bound empty group when View is unused).
    * When empty or omitted, the pass reads the swap-chain directly.
    *
    * Each entry is either a bare string (backward-compatible color input) or an
@@ -127,15 +138,18 @@ function postProcessSourceDigest(source: string): string {
 }
 
 /** Content-addressed PSO label shared by the post-process pipeline factory. */
-export function postProcessShaderPipelineLabel(identity: string, source: string): string {
-  return `post-process-${identity}-pso-${postProcessSourceDigest(source)}`;
+export function postProcessShaderPipelineLabel(
+  identity: string,
+  source: string | PostProcessShaderEntry,
+): string {
+  return `post-process-${identity}-pso-${postProcessLabelDigest(source)}`;
 }
 
 /** Content-addressed shader-module label shared by prewarm and lazy paths. */
-export function postProcessShaderModuleLabel(source: string): string {
+export function postProcessShaderModuleLabel(source: string | PostProcessShaderEntry): string {
   // Graph-local names and public feature identities may alias the same source.
   // Share the prewarmed module, while pipelines retain their own layouts/targets.
-  return `post-process-module-${postProcessSourceDigest(source)}`;
+  return `post-process-module-${postProcessLabelDigest(source)}`;
 }
 
 /**
@@ -145,11 +159,14 @@ export function postProcessShaderModuleLabel(source: string): string {
  * allocating, and re-derives the string only when one actually changed.
  */
 interface PostProcessSignatureCapture {
+  readonly vertexLayout: PostProcessShaderEntry['vertexLayout'];
+  readonly depthSampleCount: PostProcessShaderEntry['depthSampleCount'];
   readonly source: string;
   readonly sourceDigest: string;
   readonly signature: string;
   readonly stage: PostProcessShaderEntry['stage'];
   readonly fragmentEntryPoint: string | undefined;
+  readonly depthOutput: GPUTextureFormat | undefined;
   readonly params: PostProcessParamsSchema | undefined;
   readonly byteSize: number | undefined;
   readonly defaultValue: Uint8Array | undefined;
@@ -167,14 +184,27 @@ const postProcessSignatures = new GenerationalWeakMap<
   PostProcessSignatureCapture
 >();
 
+function postProcessLabelDigest(source: string | PostProcessShaderEntry): string {
+  if (typeof source === 'string') return postProcessSourceDigest(source);
+  const captured = postProcessSignatures.get(source);
+  // Layout/parameter changes do not affect module content. The ordinary
+  // signature lookup still observes those live fields before PSO admission.
+  if (captured?.source === source.source) return captured.sourceDigest;
+  postProcessShaderEntrySignature(source);
+  return (postProcessSignatures.get(source) as PostProcessSignatureCapture).sourceDigest;
+}
+
 function sameSignatureInputs(
   entry: PostProcessShaderEntry,
   captured: PostProcessSignatureCapture,
 ): boolean {
   return (
+    entry.vertexLayout === captured.vertexLayout &&
+    entry.depthSampleCount === captured.depthSampleCount &&
     entry.source === captured.source &&
     entry.stage === captured.stage &&
     entry.fragmentEntryPoint === captured.fragmentEntryPoint &&
+    entry.depthOutput === captured.depthOutput &&
     entry.usesView === captured.usesView &&
     entry.params === captured.params &&
     entry.reads === captured.reads &&
@@ -250,9 +280,12 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
       : postProcessSourceDigest(entry.source);
   const reads = entry.reads;
   const signature = JSON.stringify({
+    vertexLayout: entry.vertexLayout,
+    depthSampleCount: entry.depthSampleCount,
     source: sourceDigest,
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
+    depthOutput: entry.depthOutput,
     params:
       entry.params === undefined
         ? undefined
@@ -265,11 +298,14 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     storageBindings: entry.storageBindings,
   });
   postProcessSignatures.set(entry, {
+    vertexLayout: entry.vertexLayout,
+    depthSampleCount: entry.depthSampleCount,
     source: entry.source,
     signature,
     sourceDigest,
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
+    depthOutput: entry.depthOutput,
     params: entry.params,
     byteSize: entry.params?.byteSize,
     defaultValue: entry.params === undefined ? undefined : entry.params.defaultValue.slice(),
@@ -356,18 +392,22 @@ export interface FullscreenPostProcessDeviceContext {
  */
 const fullscreenSamplers = new WeakMap<RhiDevice, Sampler>();
 const depthSamplers = new WeakMap<RhiDevice, Sampler>();
+const repeatFullscreenSamplers = new WeakMap<RhiDevice, Sampler>();
 
-function createFullscreenSampler(device: RhiDevice): Sampler | null {
-  const cached = fullscreenSamplers.get(device);
+function createFullscreenSampler(device: RhiDevice, repeat = false): Sampler | null {
+  const cache = repeat ? repeatFullscreenSamplers : fullscreenSamplers;
+  const mode = repeat ? 'repeat' : 'clamp-to-edge';
+  const cached = cache.get(device);
   if (cached !== undefined) return cached;
   const res = device.createSampler({
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
+    addressModeU: mode,
+    addressModeV: mode,
+    ...(repeat ? { addressModeW: mode, mipmapFilter: 'linear' as const } : {}),
     magFilter: 'linear',
     minFilter: 'linear',
   });
   if (!res.ok) return null;
-  fullscreenSamplers.set(device, res.value);
+  cache.set(device, res.value);
   return res.value;
 }
 
@@ -497,12 +537,56 @@ const builtFullscreenPasses = new WeakMap<
   >
 >();
 
+const emptyFullscreenBindGroups = new WeakMap<RhiDevice, BindGroup>();
+
+function emptyFullscreenBindGroup(ctx: FullscreenPostProcessDeviceContext): BindGroup | null {
+  const cached = emptyFullscreenBindGroups.get(ctx.device);
+  if (cached !== undefined) return cached;
+  const layout = ctx.device.createBindGroupLayout({ entries: [] });
+  if (!layout.ok) {
+    ctx.errorRegistry.fire(layout.error);
+    return null;
+  }
+  const group = ctx.device.createBindGroup({ layout: layout.value, entries: [] });
+  if (!group.ok) {
+    ctx.errorRegistry.fire(group.error);
+    return null;
+  }
+  emptyFullscreenBindGroups.set(ctx.device, group.value);
+  return group.value;
+}
+
+function fullscreenBindGroupKind(
+  entry: PostProcessShaderEntry,
+  hasDepth: boolean,
+  depthMultisampled: boolean,
+): BglKind {
+  const hasMultisampledColor = (entry.reads ?? []).some(
+    (read) => typeof read !== 'string' && read.sampleType === 'multisampled-float',
+  );
+  return hasDepth
+    ? depthMultisampled
+      ? hasMultisampledColor
+        ? 'fullscreen-post-with-paired-msaa'
+        : 'fullscreen-post-with-scene-depth-msaa'
+      : 'fullscreen-post-with-scene-depth'
+    : entry.params !== undefined
+      ? 'fullscreen-post-with-params'
+      : 'fullscreen-post';
+}
+
 function createFullscreenPostProcessPass(
   ctx: FullscreenPostProcessDeviceContext,
   entry: PostProcessShaderEntry,
   depthMultisampled: boolean,
 ): BuiltFullscreenPostProcessPass | null {
   const { device } = ctx;
+
+  // Explicit layouts reserve group zero even when the shader only reads group one.
+  // Older WebGPU implementations require that empty slot to be bound before draw.
+  // Empty explicit layouts are structurally compatible; retain one group per device.
+  const emptyGroup = entry.usesView === true ? null : emptyFullscreenBindGroup(ctx);
+  if (entry.usesView !== true && emptyGroup === null) return null;
 
   // Step 1: BGL (input texture + sampler [+ params buffer] [+ depth]).
   // D-13 round-2: route through dispatcher; sampleType derives from
@@ -516,31 +600,29 @@ function createFullscreenPostProcessPass(
   // texture variant for a 4-sample scene target. params@2 is always present to
   // avoid 2x2 kind explosion.
   const hasDepth = entryHasDepthRead(entry);
-  const hasMultisampledColor = (entry.reads ?? []).some(
-    (read) => typeof read !== 'string' && read.sampleType === 'multisampled-float',
-  );
-  const bglKind: BglKind = hasDepth
-    ? depthMultisampled
-      ? hasMultisampledColor
-        ? 'fullscreen-post-with-paired-msaa'
-        : 'fullscreen-post-with-scene-depth-msaa'
-      : 'fullscreen-post-with-scene-depth'
-    : entry.params !== undefined
-      ? 'fullscreen-post-with-params'
-      : 'fullscreen-post';
+  const bglKind = fullscreenBindGroupKind(entry, hasDepth, depthMultisampled);
   const descriptor = buildBindGroupLayoutDescriptor(FULLSCREEN_DEFAULT_SPEC, { kind: bglKind });
   const colorReads = (entry.reads ?? []).filter(
     (read) => typeof read === 'string' || read.sampleType !== 'depth',
   );
   const extraColorCount = Math.max(0, colorReads.length - 1);
   const firstExtraBinding = hasDepth ? 5 : entry.params === undefined ? 2 : 3;
-  for (let index = 0; index < extraColorCount; index += 1) {
-    descriptor.entries.push({
-      binding: firstExtraBinding + index,
-      visibility: GPU_SHADER_STAGE_FRAGMENT,
-      texture: { sampleType: 'float', viewDimension: '2d' },
-    });
-  }
+  const appendFullscreenColorReads = () => {
+    const firstRead = colorReads[0];
+    if (typeof firstRead !== 'string' && firstRead?.sampleType !== undefined) {
+      const input = descriptor.entries.find((entry) => entry.binding === 0);
+      if (input !== undefined) input.texture = fullscreenReadTexture(firstRead.sampleType);
+    }
+    for (let index = 0; index < extraColorCount; index += 1) {
+      const read = colorReads[index + 1];
+      descriptor.entries.push({
+        binding: firstExtraBinding + index,
+        visibility: GPU_SHADER_STAGE_FRAGMENT,
+        texture: fullscreenReadTexture(typeof read === 'string' ? undefined : read?.sampleType),
+      });
+    }
+  };
+  appendFullscreenColorReads();
   const firstStorageBinding = firstExtraBinding + extraColorCount;
   for (const [index, binding] of (entry.storageBindings ?? []).entries()) {
     descriptor.entries.push({
@@ -556,7 +638,10 @@ function createFullscreenPostProcessPass(
   }
 
   // Step 2: Samplers.
-  const sampler = createFullscreenSampler(device);
+  const sampler = createFullscreenSampler(
+    device,
+    colorReads.some((read) => typeof read !== 'string' && read.sampleType === 'float-3d-repeat'),
+  );
   const depthSampler = hasDepth ? createDepthSampler(device) : null;
 
   return {
@@ -574,13 +659,30 @@ function createFullscreenPostProcessPass(
       paramsBuffer,
       draw(encoder, _inputView) {
         encoder.setPipeline(pipeline as never);
+        if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
         // The bind group is composed per-frame by the record stage (mirrors
         // recordFxaaPass's lazy bindgroup compose in render-system-record.ts).
-        // This draw() method only sets the pipeline — the caller is responsible
-        // for bind group composition + setBindGroup before calling draw().
+        // The caller owns group one and any declared View binding at group zero.
         encoder.draw(3, 1, 0, 0);
       },
     }),
+  };
+}
+
+function fullscreenReadTexture(sampleType: PostProcessReadSampleType | undefined): {
+  sampleType: 'float' | 'unfilterable-float' | 'uint';
+  viewDimension: '2d' | '3d';
+  multisampled: boolean;
+} {
+  return {
+    sampleType:
+      sampleType === 'uint' || sampleType === 'multisampled-uint'
+        ? 'uint'
+        : sampleType === 'multisampled-float' || sampleType === 'unfilterable-float'
+          ? 'unfilterable-float'
+          : 'float',
+    viewDimension: sampleType === 'float-3d-repeat' ? '3d' : '2d',
+    multisampled: sampleType === 'multisampled-float' || sampleType === 'multisampled-uint',
   };
 }
 

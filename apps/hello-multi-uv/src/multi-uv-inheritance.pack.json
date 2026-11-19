@@ -9,7 +9,7 @@
         "kind": "material",
         "role": "root",
         "cooked": {
-          "schemaVersion": "material-cook/4",
+          "schemaVersion": "material-cook/5",
           "guid": "71935b00-7d8c-4c4e-8f12-345678abcd02",
           "materialGuid": "71935b00-7d8c-4c4e-8f12-345678abcd02",
           "publicationGeneration": 1,
@@ -475,7 +475,7 @@
             }
           ],
           "receipt": {
-            "schemaVersion": "material-cook/4",
+            "schemaVersion": "material-cook/5",
             "sourceClosure": ["multi-uv-demo.wgsl"],
             "profile": "webgpu/v1",
             "compilerVersion": "forgeax-material-cooker/1",
@@ -520,7 +520,7 @@
           "baseColorUvTransform": [0, 0, 1, 1]
         },
         "cooked": {
-          "schemaVersion": "material-cook/4",
+          "schemaVersion": "material-cook/5",
           "guid": "71935b00-7d8c-4c4e-8f12-345678abcd03",
           "materialGuid": "71935b00-7d8c-4c4e-8f12-345678abcd03",
           "publicationGeneration": 1,
@@ -953,7 +953,7 @@
             }
           ],
           "receipt": {
-            "schemaVersion": "material-cook/4",
+            "schemaVersion": "material-cook/5",
             "sourceClosure": ["multi-uv-demo.wgsl"],
             "profile": "webgpu/v1",
             "compilerVersion": "forgeax-material-cooker/1",

@@ -29,7 +29,6 @@ function sourceFixture(firstInstances = 1) {
     });
     const instanceCount = index === 0 ? firstInstances : 1;
     return preparedPbrSnapshot({
-      worldId: 0,
       entityKey: index + 1,
       assetHandle: index + 7,
       transform: { world },
@@ -62,7 +61,6 @@ function sourceFixture(firstInstances = 1) {
   scene.apply(
     snapshots.map((snapshot) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey: snapshot.entityKey,
       snapshot,
     })),
@@ -83,7 +81,7 @@ it('retains unaffected source and shadow command windows through removal and car
   expect(selected.batches.map((batch) => [batch.visibleBase, batch.indirectOffset])).toEqual(
     before.batches.slice(1).map((batch) => [batch.visibleBase, batch.indirectOffset]),
   );
-  f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
+  f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 1 }]));
   const after = f.topology.query(f.topology.sourcePlan(), undefined);
   expect(after.batches.at(0)).toBe(before.batches.at(1));
   expect(after.batches.at(1)).toBe(before.batches.at(2));
@@ -97,7 +95,6 @@ it('retains unaffected source and shadow command windows through removal and car
     g.scene.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 1,
         instances: {
           ...original.instances,
@@ -188,14 +185,14 @@ it('reclaims retired ranges through repeated growth and reuse without moving sur
         ),
       },
     };
-    f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 1, snapshot }]));
+    f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 1, snapshot }]));
     const grown = f.topology.query(f.topology.sourcePlan(), undefined);
     expect(grown.batches.at(1)).toBe(initial.batches.at(1));
     expect(grown.batches.at(2)).toBe(initial.batches.at(2));
     expect(grown.batches.at(0)?.candidates).toHaveLength(instanceCount);
     expectDisjointRanges(grown);
     expect(grown.visibleCapacity).toBeLessThanOrEqual(384);
-    f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
+    f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 1 }]));
     expectDisjointRanges(f.topology.query(f.topology.sourcePlan(), undefined));
   }
   f.topology.rebuild(f.scene.slotsSnapshot());

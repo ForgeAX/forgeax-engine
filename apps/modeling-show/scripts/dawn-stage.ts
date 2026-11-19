@@ -5,7 +5,7 @@ import { deserialize, serialize } from 'node:v8';
 import { type AssetRegistry, createCatalogSource, createMaterialLoader } from '@forgeax/engine/assets-runtime';
 import { animationPlugin } from '@forgeax/engine/animation';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
-import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine/pack';
+import { encodeMaterialProgramWire, validateCookedMaterialRecord } from '@forgeax/engine/pack';
 import { AssetGuid, type PackageId } from '@forgeax/engine/pack/guid';
 import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
 import { type RenderTargetAuthoring, renderComponentsPlugin } from '@forgeax/engine/render';
@@ -115,7 +115,7 @@ export async function createDawnStage(width: number, height: number): Promise<Da
         world.update(dt).unwrap();
         const capture = recorder !== undefined && (ordinal === 0 || ordinal === 13) && i === count - 1 ? recorder.captureFrame() : undefined;
         if (capture !== undefined) (await recorder?.frameBoundary())?.unwrap();
-        await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } }).catch((error: unknown) => {
+        await drawReadyFrame(renderer, { source: lease }).catch((error: unknown) => {
           // Keep the original readiness failure; diagnose only its bounded
           // recent renderer errors, without collecting more successful frames.
           console.error('show renderer errors at failure:', errors.slice(-8));
@@ -222,7 +222,7 @@ export async function publishPackOutputs(
         refs: [...r.refs.parent, ...r.refs.textures, ...r.refs.samplers, ...r.refs.modules].filter(
           (reference) => AssetGuid.parse(reference).ok,
         ),
-        asset: { kind: 'material', ...r.resolved, cooked: JSON.parse(serializeCookedMaterialRecord(r)) } as unknown as Asset,
+        asset: { kind: 'material', ...r.resolved, cooked: r } as unknown as Asset,
       });
     } else if (asset.kind === 'texture') {
       cooked.push({ guid, asset, refs: [] });
@@ -256,7 +256,8 @@ export async function publishPackOutputs(
     });
     bodies.set(
       packageUrl,
-      JSON.stringify(publication.pack, (_key, value) => (ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value)),
+      JSON.stringify(encodeMaterialProgramWire(publication.pack), (_key, value) =>ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+      ),
     );
     for (const { guid, asset } of members) {
       catalog.push({ guid, kind: asset.kind, packageUrl, sourcePath, publication: publication.publication });

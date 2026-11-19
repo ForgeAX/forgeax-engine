@@ -1,5 +1,11 @@
-import { Time, Update, World } from '@forgeax/engine/ecs';
+import { defineResource, defineSystem, Time, Update, World } from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
+
+const resource3 = defineResource<unknown>('FLResMissing');
+
+const resource2 = defineResource<number>('FLResToken');
+
+const resource1 = defineResource<{ hits: number; dispose: () => void }>('FLResExternal');
 
 function code(body: () => unknown): string {
   try {
@@ -15,7 +21,7 @@ export default defineFeature({
   catalog: 'ECS Resource',
   kind: 'headless',
   summary:
-    'World stores non-owning resource values by string or token key; it never disposes an external payload.',
+    'World stores non-owning resource values by typed resource identity; it never disposes an external payload.',
   expect:
     'All checks pass: insert/get/has/remove work, systems see the same object, removal never calls dispose, and missing/protected keys give structured codes.',
   run(checks) {
@@ -27,29 +33,30 @@ export default defineFeature({
         disposed += 1;
       },
     };
-    world.insertResource('FLResExternal', external);
-    checks.ok('hasResource', world.hasResource('FLResExternal'));
-    checks.ok('same object identity', world.getResource('FLResExternal') === external);
-    world.addSystem(Update, {
+    world.insertResource(resource1, external);
+    checks.ok('hasResource', world.hasResource(resource1));
+    checks.ok('same object identity', world.getResource(resource1) === external);
+    const systemToken1 = defineSystem({
       name: 'fl-res-hit',
       queries: [],
       fn: (world) => {
-        world.getResource<typeof external>('FLResExternal').hits += 1;
+        world.getResource(resource1).hits += 1;
       },
     });
+    world.addSystem(Update, systemToken1);
     world.update(1 / 60);
     world.update(1 / 60);
     checks.equal('system mutates the stored object', external.hits, 2);
-    world.insertResource({ name: 'FLResToken' }, 42);
-    checks.equal('token key', world.getResource<number>({ name: 'FLResToken' }), 42);
-    world.insertResource('FLResToken', 43);
-    checks.equal('insert overwrites', world.getResource<number>('FLResToken'), 43);
-    world.removeResource('FLResExternal');
-    checks.ok('removed', !world.hasResource('FLResExternal'));
+    world.insertResource(resource2, 42);
+    checks.equal('token key', world.getResource(resource2), 42);
+    world.insertResource(resource2, 43);
+    checks.equal('insert overwrites', world.getResource(resource2), 43);
+    world.removeResource(resource1);
+    checks.ok('removed', !world.hasResource(resource1));
     checks.equal('World did not dispose payload', disposed, 0);
     checks.equal(
       'missing resource',
-      code(() => world.getResource('FLResMissing')),
+      code(() => world.getResource(resource3)),
       'resource-not-found',
     );
     checks.equal(

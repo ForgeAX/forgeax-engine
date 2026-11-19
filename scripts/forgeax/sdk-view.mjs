@@ -2,13 +2,30 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { filesUnder } from './sdk-lib.mjs';
 
+const VIEW_CONSUMER_SKILLS = Object.freeze(['forgeax-view-cli', 'forgeax-view-start']);
+
+/** Publish the same View-owned guidance in the tool and SDK game skill inventory. */
+export async function stageViewConsumerSkills(viewRoot, skillsRoot) {
+  for (const id of VIEW_CONSUMER_SKILLS) {
+    const destination = resolve(skillsRoot, id);
+    await mkdir(destination, { recursive: true });
+    await cp(resolve(viewRoot, 'skills', id, 'SKILL.md'), resolve(destination, 'SKILL.md'), {
+      errorOnExist: true,
+      force: false,
+    });
+  }
+  return [...VIEW_CONSUMER_SKILLS];
+}
+
 export const VIEW_TOOL_FILES = Object.freeze([
   'dist',
+  'start.mjs',
   'host.pack.json',
   'skills',
   'README.md',
   'LICENSE',
   'scripts/browser-proof-workload.mjs',
+  'scripts/project-document.mjs',
   'scripts/runtime-content-import.mjs',
   'scripts/verify-runtime-content-engine.mjs',
   'scripts/verify-game3d-workspace.mjs',
@@ -19,8 +36,10 @@ export const VIEW_TOOL_FILES = Object.freeze([
 export async function stageViewToolPackage(viewRoot, packageRoot, version) {
   await mkdir(packageRoot, { recursive: true });
   const files = VIEW_TOOL_FILES;
-  for (const file of files)
+  for (const file of files.filter((file) => file !== 'skills'))
     await cp(resolve(viewRoot, file), resolve(packageRoot, file), { recursive: true });
+  await rm(resolve(packageRoot, 'skills'), { recursive: true, force: true });
+  await stageViewConsumerSkills(viewRoot, resolve(packageRoot, 'skills'));
   const manifest = JSON.parse(await readFile(resolve(viewRoot, 'package.json'), 'utf8'));
   manifest.private = true;
   manifest.version = version;

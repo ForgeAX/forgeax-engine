@@ -1,8 +1,9 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // @forgeax/engine-physics — PhysicsWorld Resource interface.
 //
 // The physics backend (RapierPhysicsWorld3D / RapierPhysicsWorld2D) implements
-// this interface and registers as the 'PhysicsWorld' World Resource.
-// AI users obtain it via `world.getResource<PhysicsWorld>('PhysicsWorld')`.
+// this interface and inserts it under PhysicsWorldResource.
+// AI users obtain it via `world.getResource(PhysicsWorldResource)`.
 
 import type { Vec2, Vec3 } from '@forgeax/engine-math';
 import type { Result, RigidBodyType } from '@forgeax/engine-types';
@@ -16,6 +17,7 @@ import type {
   DerivedPhysicsAdmissionGuard,
   DerivedPhysicsCandidate,
   DerivedPhysicsCandidateInput,
+  DerivedPhysicsCollisionReceipt,
   DerivedPhysicsError,
   DerivedPhysicsFailure,
   DerivedPhysicsMotion,
@@ -27,6 +29,16 @@ import type {
   PhysicsVector,
 } from './derived-physics.js';
 import type {
+  PhysicsBodyDynamics,
+  PhysicsBodyForceInput,
+  PhysicsBodyObbQuery,
+  PhysicsBodyTorqueInput,
+  PhysicsColliderPrimitives,
+  PhysicsFixedError,
+  PhysicsSensorOverlaps,
+} from './fixed-dynamics.js';
+import type {
+  BodyMassProperties,
   BodyMotion,
   ManagedJointBinding,
   ManagedJointInput,
@@ -37,6 +49,9 @@ import type {
   PairIsolationInput,
   PairIsolationLease,
 } from './pair-isolation.js';
+import type { PhysicsQueryFailure, ShapeSweepResult } from './shape-query.js';
+import type { ShapeSweepQuery } from './shape-sweep.js';
+import type { SphereSweepQuery, SphereSweepResult } from './sphere-sweep.js';
 
 /**
  * Raycast hit result — returned by `PhysicsWorld.raycast()`.
@@ -51,6 +66,12 @@ export interface RaycastHit {
   point: Vec3;
   normal: Vec3;
   timeOfImpact: number;
+}
+
+/** Native 3D ray filtering, applied before nearest-hit selection. */
+export interface RaycastOptions {
+  /** Exclude all colliders attached to these ECS bodies for this query only. */
+  readonly excludeEntities?: readonly number[];
 }
 
 /** Per-call policy for 3D character movement; the character itself still moves. */
@@ -77,25 +98,120 @@ export interface CharacterSynchronization {
   readonly position: Vec3;
   readonly grounded: boolean;
 }
+/** Detached hit of a sphere moving from start to end; TOI is in [0, 1]. */
+export interface SphereSweepHit {
+  readonly entity: number;
+  readonly colliderId: number;
+  readonly timeOfImpact: number;
+  readonly point: Vec3;
+  readonly normal: Vec3;
+  readonly initialOverlap: boolean;
+}
+
+export type PhysicsSweepError = Readonly<{
+  code: 'sweep-input-invalid' | 'sweep-unavailable';
+  expected: string;
+  hint: string;
+  detail: Readonly<{ field: string; actual?: unknown }>;
+}>;
+
+/** Fresh Rapier internal timings for one successfully completed native 3D step. */
+export interface NativePhysicsStepTiming {
+  readonly nativeStepIndex: number;
+  /** World fixed-step tick associated with this native solve. */
+  readonly fixedStep: number;
+  readonly deltaSeconds: number;
+  /** Rapier-reported durations in milliseconds. Sub-phases are included in their aggregate. */
+  readonly timingMs: Readonly<{
+    readonly step: number;
+    readonly userChanges: number;
+    readonly islandConstruction: number;
+    readonly broadPhase: number;
+    readonly narrowPhase: number;
+    readonly collisionDetection: number;
+    readonly solver: number;
+    readonly velocityAssembly: number;
+    readonly velocityResolution: number;
+    readonly velocityUpdate: number;
+    readonly velocityWriteback: number;
+    readonly ccd: number;
+    readonly ccdToiComputation: number;
+    readonly ccdBroadPhase: number;
+    readonly ccdNarrowPhase: number;
+    readonly ccdSolver: number;
+  }>;
+}
 
 /**
  * PhysicsWorld Resource interface — the engine-side API surface for physics
  * operations. Backend implementations (RapierPhysicsWorld3D/2D) satisfy this
  * contract.
  *
- * Inserted as `'PhysicsWorld'` resource by `createApp` when `opts.physics`
- * is set. AI users retrieve via `world.getResource<PhysicsWorld>('PhysicsWorld')`.
+ * Inserted under `PhysicsWorldResource` by `createApp` when `opts.physics`
+ * is set. AI users retrieve via `world.getResource(PhysicsWorldResource)`.
  *
  * All mutation methods are synchronous; physics step is driven by the tick
  * systems (syncBackend → stepSimulation → writeback), not by user calls.
  */
 export interface PhysicsWorld {
+  /** Read-only 3D volume sweep over native colliders; never a ray substitute. */
+  sweepSphere?: (input: SphereSweepQuery) => Result<SphereSweepResult, PhysicsQueryFailure>;
+  /** Native oriented primitive sweep, including stationary volume overlap. */
+  sweepShape?: (input: ShapeSweepQuery) => Result<ShapeSweepResult, PhysicsQueryFailure>;
+  /**
+   * Observe fresh timing facts immediately after each successful native 3D
+   * integration. Available only when `profileNativeStepTimings` was enabled
+   * at backend construction. Worker steps and failed/skipped steps are omitted.
+   */
+  observeNativeStepTiming?: (listener: (timing: NativePhysicsStepTiming) => void) => () => void;
+  /** Independent external results clock, already advanced by this World's host update.
+   * Consumers must not add the current fixed delta a second time. */
+  getSolverClock?: () => import('./solver-participant.js').PhysicsSolverClock;
+  /** Bounded serialized input/output handoff. The backend invokes the callback inside step(),
+   * after geometry admission and before native integration; results publish after writeback. */
+  createSolverParticipant?: (
+    input: import('./solver-participant.js').PhysicsSolverParticipantInput,
+  ) => Result<import('./solver-participant.js').PhysicsSolverParticipant, PhysicsFixedError>;
+  /** Last completed root-body sensor roster, including a valid empty publication.
+   * Remains readable after sync and force admission; never queries a future step. */
+  getSensorOverlaps?: (
+    rootEntity: number,
+    filterMask?: number,
+  ) => Result<PhysicsSensorOverlaps, PhysicsFixedError>;
+  getCommittedBodyDynamics?: (entity: number) => Result<PhysicsBodyDynamics, PhysicsFixedError>;
+  /** Native primitive snapshots; packed groups use raycast's bilateral membership/filter rule. */
+  getCommittedColliderPrimitives?: (
+    entity: number,
+    filterMask?: number,
+  ) => Result<PhysicsColliderPrimitives, PhysicsFixedError>;
+  /** Native OBB selects a whole accepted body, independently of snapshot element filters. */
+  intersectsCommittedBodyObb?: (input: PhysicsBodyObbQuery) => Result<boolean, PhysicsFixedError>;
+  /** Native additive force at a world point. Consumed and cleared by this exact step. */
+  applyBodyForceAtPoint?: (input: PhysicsBodyForceInput) => Result<void, PhysicsFixedError>;
+  /** Native additive world torque with the same accumulator lifetime as point forces. */
+  applyBodyTorque?: (input: PhysicsBodyTorqueInput) => Result<void, PhysicsFixedError>;
+  /** All enabled native collider hits, sorted by TOI then stable collider id.
+   * Packed groups use the same bilateral membership/filter rule as raycast.
+   * A backend without this capability cannot qualify a multi-hit consumer. */
+  sweepSphereAll?: (
+    startM: Vec3,
+    endM: Vec3,
+    radiusM: number,
+    filterMask?: number,
+  ) => Result<readonly SphereSweepHit[], PhysicsSweepError>;
   /** Transactionally create ordinary body joints; all endpoints must already be synchronized. */
   createManagedJoints?: (
     inputs: readonly ManagedJointInput[],
   ) => Result<ManagedJointBinding, ManagedPhysicsFailure>;
   /** Detached world-space body evidence; no Rapier object escapes. */
   getBodyMotion?: (entity: number) => Result<BodyMotion, ManagedPhysicsFailure>;
+  /** Detached current native mass, world COM and effective inverse mass/inertia, without waking. */
+  getBodyMassProperties?: (entity: number) => Result<BodyMassProperties, ManagedPhysicsFailure>;
+  /** Detached world-space velocity at a finite world-space point, including angular motion about native COM. */
+  getBodyPointVelocity?: (
+    entity: number,
+    point: PhysicsVector,
+  ) => Result<PhysicsVector, ManagedPhysicsFailure>;
   /** Subscribe to motion invalidation, without allocating detached poses for unchanged bodies.
    * Covers explicit writes, lifecycle/policy changes and completed-step active/final-sleep
    * bodies. Notifications may repeat and do not certify a readable admission boundary:
@@ -142,6 +258,17 @@ export interface PhysicsWorld {
     entity: number,
     impulse: PhysicsVector,
   ) => Result<void, ManagedPhysicsFailure>;
+  /** World-space impulse at a finite world-space point, including native angular response about COM. */
+  applyBodyImpulseAtPoint?: (
+    entity: number,
+    impulse: PhysicsVector,
+    point: PhysicsVector,
+  ) => Result<void, ManagedPhysicsFailure>;
+  /** World-space angular impulse in N m s; wakes a dynamic body without moving its pose. */
+  applyBodyAngularImpulse?: (
+    entity: number,
+    impulse: PhysicsVector,
+  ) => Result<void, ManagedPhysicsFailure>;
   /** Current native solver joint count, including managed and derived joints. */
   getJointCount?: () => number;
   /**
@@ -175,6 +302,7 @@ export interface PhysicsWorld {
     direction: Vec3,
     maxDist: number,
     filterMask?: number,
+    options?: RaycastOptions,
   ): RaycastHit | undefined;
 
   /**
@@ -347,6 +475,15 @@ export interface PhysicsWorld {
   ) => { readonly asset: number; readonly version: number } | undefined;
   /** Read the most recent fixed-step publication for one body. */
   getDerivedPublication?: (entity: number) => DerivedPhysicsPublication | undefined;
+  /** Retire one exact owned source without requiring another simulation tick.
+   * A current candidate covers first-step shutdown before publication. The promise
+   * settles after native readers release it; stale/foreign/replaced tokens fail.
+   * Ordinary colliders, the ECS body and other source generations remain live. */
+  retireDerivedSource?: (
+    credential: DerivedPhysicsPublication | DerivedPhysicsCandidate,
+  ) => Promise<Result<void, DerivedPhysicsError>>;
+  /** Detached accepted collider shapes for one body, from the exact publication above. */
+  getDerivedCollisionReceipt?: (entity: number) => DerivedPhysicsCollisionReceipt | undefined;
   /** Read the structured failure from the latest rejected admission, if any. */
   getDerivedFailure?: (entity: number) => DerivedPhysicsFailure | undefined;
   /** Read the committed body type without exposing a native Rapier body. */
@@ -398,6 +535,16 @@ export interface PhysicsWorld {
     input: PhysicsConstraintInput,
   ) => Result<{ readonly id: string; readonly revision: number }, DerivedPhysicsError>;
   removeDerivedConstraint?: (id: string) => Result<void, DerivedPhysicsError>;
+  /** Controls the currently committed hinge without replacing it; revision fences stale owners. */
+  setDerivedHingeMotor?: (
+    id: string,
+    revision: number,
+    motor: {
+      readonly targetVelocity: number;
+      readonly damping: number;
+      readonly maxForce: number;
+    } | null,
+  ) => Result<void, DerivedPhysicsError>;
 }
 
 /** 2D raycast hit result. */
@@ -456,3 +603,7 @@ export interface PhysicsWorld2D {
    */
   hasBody(entity: number): boolean;
 }
+
+export const PhysicsWorldResource = defineResource<PhysicsWorld>('PhysicsWorld');
+
+export const PhysicsWorld2DResource = defineResource<PhysicsWorld2D>('PhysicsWorld2D');

@@ -19,6 +19,7 @@ it('derives the actual packed mip chain and array layers without rewriting sourc
   const info = describeTextureView(texture);
   expect(info).toMatchObject({ mipCount: 4, depth: 2, width: 8, height: 4, sourceBytes: 344 });
   expect(textureViewSource(texture)).toBe(texture);
+  expect(info.options.channels).toEqual([true, true, true, false]);
   expect(validateTextureViewOptions(info, { mip: 3, layer: 1 }).mip).toBe(3);
   for (const patch of [
     { mip: 4 },
@@ -65,6 +66,13 @@ it('bounds volume slices at the selected mip and detaches accepted option arrays
     mips: { kind: 'packed', levelCount: 2 },
   };
   const info = describeTextureView(volume);
+  expect(info.options.projection).toBe('atlas');
+  expect(validateTextureViewOptions(info, { projection: 'volume' }).projection).toBe('volume');
+  expect(validateTextureViewOptions(info, { projection: 'flat' }).projection).toBe('flat');
+  expect(() => validateTextureViewOptions(info, { projection: 'cross' })).toThrow();
+  expect(() =>
+    validateTextureViewOptions(describeTextureView(texture), { projection: 'atlas' }),
+  ).toThrow();
   expect(() => validateTextureViewOptions(info, { mip: 1, layer: 2 })).toThrow();
   const channels = [true, false, false, false];
   const options = validateTextureViewOptions(info, { mip: 1, layer: 1, channels });

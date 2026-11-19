@@ -1,7 +1,8 @@
 import type { ProfileClock } from './clock.js';
-import { boundaryError, type ProfilerResult, stateError } from './errors.js';
+import { boundaryError, type ProfilerError, type ProfilerResult, stateError } from './errors.js';
 import type {
   ProfileCapture,
+  ProfileFrameToken,
   ProfilePhaseStart,
   ProfileRecord,
   ProfileSkipInput,
@@ -21,7 +22,15 @@ export type RecorderPhaseCatalog = Readonly<Record<ProfileSource, readonly strin
 export interface RecorderSession {
   readonly captureId: string;
   readonly detail: ProfileDetail;
+  /** Allocate the next identity from this capture, shared by all frame owners. */
+  beginFrame(): ProfilerResult<ProfileFrameToken>;
   beginFrame(frameId: number): ProfilerResult<void>;
+  /** Detached first undeclared-phase failure retained by this capture, if any. */
+  firstSourceFailure():
+    | Extract<ProfilerError, { readonly code: 'profile-source-failed' }>
+    | undefined;
+  /** The Profiler frame currently being recorded, with no inferred App counter. */
+  currentFrameToken(): ProfileFrameToken | undefined;
   beginPhase(input: ProfilePhaseStart): ProfilerResult<void>;
   beginPhase(source: ProfileSource, phase: string): ProfilerResult<void>;
   endPhase(): ProfilerResult<void>;
@@ -68,8 +77,10 @@ interface RecorderState {
   openStartMicros: Array<number | undefined>;
   openDepth: number;
   droppedEventCount: number;
+  incompleteReason?: string;
   firstAffectedFrameId: number | undefined;
   lastAffectedFrameId: number | undefined;
+  firstSourceFailure: { source: string; phase: string; frameId: number } | undefined;
   terminal: ProfilerResult<ProfileCapture> | undefined;
 }
 
@@ -79,7 +90,7 @@ function positiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-function validateRecorderLimits(limits: RecorderLimits): ProfilerResult<void> {
+export function validateRecorderLimits(limits: RecorderLimits): ProfilerResult<void> {
   if (!positiveSafeInteger(limits.frameLimit) || !positiveSafeInteger(limits.eventLimit)) {
     return { ok: false, error: boundaryError(limits.frameLimit, limits.eventLimit) };
   }
@@ -107,15 +118,16 @@ function sourceHasPhase(state: RecorderState, source: string, phase: string): bo
   return state.phaseCache[key].names.has(phase);
 }
 
-function sourceError(source: string, phase: string, frameId: number): ProfilerResult<never> {
+function sourceError(
+  source: string,
+  phase: string,
+  frameId: number,
+): Extract<ProfilerError, { readonly code: 'profile-source-failed' }> {
   return {
-    ok: false,
-    error: {
-      code: 'profile-source-failed',
-      expected: 'a phase declared by the source catalog',
-      hint: 'Use the source-owned phase catalog and retry the frame.',
-      detail: { source, phase, frameId },
-    },
+    code: 'profile-source-failed',
+    expected: 'a phase declared by the source catalog',
+    hint: 'Use the source-owned phase catalog and retry the frame.',
+    detail: { source, phase, frameId },
   };
 }
 
@@ -219,14 +231,20 @@ function buildCapture(state: RecorderState): ProfileCapture {
   const status =
     state.droppedEventCount > 0
       ? 'overflow'
-      : state.frameCount < state.limits.frameLimit || state.currentFrameId !== undefined
+      : state.incompleteReason !== undefined ||
+          state.frameCount < state.limits.frameLimit ||
+          state.currentFrameId !== undefined
         ? 'partial'
         : 'complete';
   const completeness = {
     status,
     retainedEventCount: state.recordStore.count,
     droppedEventCount: state.droppedEventCount,
-    ...(status === 'partial' ? { incompleteReason: 'stopped-before-frame' } : {}),
+    ...(state.incompleteReason !== undefined
+      ? { incompleteReason: state.incompleteReason }
+      : status === 'partial'
+        ? { incompleteReason: 'stopped-before-frame' }
+        : {}),
     ...(state.firstAffectedFrameId !== undefined
       ? { firstAffectedFrameId: state.firstAffectedFrameId }
       : {}),
@@ -264,13 +282,22 @@ export function createRecorder(
   };
   const validLimits = validateRecorderLimits(limits);
   if (!validLimits.ok) return validLimits;
+  // Freeze the source-owned catalog at admission. Later lifecycle changes in
+  // the App or Render owner affect the next capture, never this session.
+  const sessionPhaseCatalog: RecorderPhaseCatalog = Object.freeze({
+    app: Object.freeze([...phaseCatalog.app]),
+    render: Object.freeze([...phaseCatalog.render]),
+  });
   const initialRecordCapacity = Math.min(limits.eventLimit, INITIAL_RECORD_CAPACITY);
   const state: RecorderState = {
     limits,
-    phaseCatalog,
+    phaseCatalog: sessionPhaseCatalog,
     phaseCache: {
-      app: { definition: phaseCatalog.app, names: new Set(phaseCatalog.app) },
-      render: { definition: phaseCatalog.render, names: new Set(phaseCatalog.render) },
+      app: { definition: sessionPhaseCatalog.app, names: new Set(sessionPhaseCatalog.app) },
+      render: {
+        definition: sessionPhaseCatalog.render,
+        names: new Set(sessionPhaseCatalog.render),
+      },
     },
     recordStore: {
       kinds: new Array(initialRecordCapacity),
@@ -296,29 +323,47 @@ export function createRecorder(
     droppedEventCount: 0,
     firstAffectedFrameId: undefined,
     lastAffectedFrameId: undefined,
+    firstSourceFailure: undefined,
     terminal: undefined,
   };
+
+  function beginFrame(): ProfilerResult<ProfileFrameToken>;
+  function beginFrame(frameId: number): ProfilerResult<void>;
+  function beginFrame(frameId?: number): ProfilerResult<ProfileFrameToken | void> {
+    const stateCheck = stateResult(state, 'beginFrame');
+    if (!stateCheck.ok) return stateCheck;
+    const nextFrameId = frameId === undefined ? state.lastFrameId + 1 : frameId;
+    if (
+      !positiveSafeInteger(nextFrameId) ||
+      state.currentFrameId !== undefined ||
+      nextFrameId <= state.lastFrameId
+    ) {
+      return { ok: false, error: stateError('beginFrame') };
+    }
+    state.lastFrameId = nextFrameId;
+    state.currentFrameId = nextFrameId;
+    state.frameCount += 1;
+    if (state.frameCount > state.limits.frameLimit) recordOverflow(state, state.limits.frameLimit);
+    return frameId === undefined
+      ? { ok: true, value: Object.freeze({ captureId, frameId: nextFrameId }) }
+      : OK_VOID;
+  }
 
   const session: RecorderSession = {
     captureId,
     detail: limits.detail,
-    beginFrame(frameId) {
-      const stateCheck = stateResult(state, 'beginFrame');
-      if (!stateCheck.ok) return stateCheck;
-      if (
-        !positiveSafeInteger(frameId) ||
-        state.currentFrameId !== undefined ||
-        frameId <= state.lastFrameId
-      ) {
-        return { ok: false, error: stateError('beginFrame') };
-      }
-      state.lastFrameId = frameId;
-      state.currentFrameId = frameId;
-      state.frameCount += 1;
-      if (state.frameCount > state.limits.frameLimit)
-        recordOverflow(state, state.limits.frameLimit);
-      return OK_VOID;
+    firstSourceFailure() {
+      const failure = state.firstSourceFailure;
+      return failure === undefined
+        ? undefined
+        : sourceError(failure.source, failure.phase, failure.frameId);
     },
+    currentFrameToken() {
+      return state.currentFrameId === undefined
+        ? undefined
+        : Object.freeze({ captureId: state.captureId, frameId: state.currentFrameId });
+    },
+    beginFrame,
     beginPhase(inputOrSource: ProfilePhaseStart | ProfileSource, phaseName?: string) {
       const stateCheck = stateResult(state, 'beginPhase');
       if (!stateCheck.ok) return stateCheck;
@@ -327,7 +372,14 @@ export function createRecorder(
       const source = typeof inputOrSource === 'string' ? inputOrSource : inputOrSource.source;
       const phase = typeof inputOrSource === 'string' ? phaseName : inputOrSource.phase;
       if (phase === undefined) return { ok: false, error: stateError('beginPhase') };
-      if (!sourceHasPhase(state, source, phase)) return sourceError(source, phase, frameId);
+      if (!sourceHasPhase(state, source, phase)) {
+        // A phase owner published after capture start (or used an undeclared
+        // name). Preserve strict validation and mark the artifact partial;
+        // this is a schema miss, not a capacity overflow.
+        state.firstSourceFailure ??= { source, phase, frameId };
+        state.incompleteReason ??= 'phase-not-declared';
+        return { ok: false, error: sourceError(source, phase, frameId) };
+      }
       const index = state.openDepth;
       state.openSources[index] = source;
       state.openPhaseNames[index] = phase;
@@ -377,12 +429,20 @@ export function createRecorder(
       const stateCheck = stateResult(state, 'recordSkip');
       if (!stateCheck.ok) return stateCheck;
       const frameId = state.currentFrameId;
-      if (frameId === undefined || state.openDepth > 0)
-        return { ok: false, error: stateError('recordSkip') };
-      if (!sourceHasPhase(state, input.source, input.phase))
-        return sourceError(input.source, input.phase, frameId);
+      // A skip is an instantaneous control-flow fact and carries no CPU span.
+      // It is valid inside a parent phase (for example, a system rejected by
+      // runIf during an App/Render schedule); open parent spans retain their
+      // ordinary nesting and are closed by their original owners.
+      if (frameId === undefined) return { ok: false, error: stateError('recordSkip') };
+      const source = input.source;
+      const phase = input.phase;
+      if (!sourceHasPhase(state, source, phase)) {
+        state.firstSourceFailure ??= { source, phase, frameId };
+        state.incompleteReason ??= 'phase-not-declared';
+        return { ok: false, error: sourceError(source, phase, frameId) };
+      }
       if (state.droppedEventCount > 0) recordOverflow(state, frameId);
-      else retainSkipRecord(state, input.source, frameId, input.phase, input.reason);
+      else retainSkipRecord(state, source, frameId, phase, input.reason);
       return OK_VOID;
     },
     endFrame() {

@@ -37,6 +37,7 @@
     { "path": "../vite-plugin-shader" },
     { "path": "../skinning" },
     { "path": "../terrain" },
+    { "path": "../water" },
     { "path": "../types" }
   ]
 }

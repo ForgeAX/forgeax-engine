@@ -37,12 +37,14 @@ describe('frame loop submission pause scheduling', () => {
       entry[1](++clock);
     };
     let draws = 0;
+    const measuredDraws: [number, number | undefined][] = [];
     let pausedOnce = false;
     let loop!: ReturnType<typeof createFrameLoop>;
     const renderer = {
       state: () => 'alive' as const,
       attach: () => ({ ok: true, value: createRenderReadLease(world) }),
       draw: (_request: RenderFrameInput) => {
+        clock += 7;
         draws++;
         return { ok: true, value: makeReceipt(draws) };
       },
@@ -50,7 +52,11 @@ describe('frame loop submission pause scheduling', () => {
     loop = createFrameLoop({
       world,
       renderer,
-      onSubmitted: () => {
+      beforeDraw: () => {
+        clock += 13;
+      },
+      onSubmitted: (receipt, cpuMs) => {
+        measuredDraws.push([receipt.frameId, cpuMs]);
         if (pausedOnce) return;
         pausedOnce = true;
         expect(loop.pause().ok).toBe(true);
@@ -58,7 +64,7 @@ describe('frame loop submission pause scheduling', () => {
           expect(loop.resume().ok).toBe(true);
         });
       },
-      platform: testPlatform({ now: () => ++clock, raf, caf }),
+      platform: testPlatform({ now: () => clock, raf, caf }),
     });
 
     expect(loop.start().ok).toBe(true);
@@ -70,6 +76,10 @@ describe('frame loop submission pause scheduling', () => {
     expect(callbacks.size).toBe(1);
     pumpOne();
     expect(draws).toBe(2);
+    expect(measuredDraws).toEqual([
+      [1, 7],
+      [2, 7],
+    ]);
     expect(callbacks.size).toBe(1);
     loop.stop();
   });

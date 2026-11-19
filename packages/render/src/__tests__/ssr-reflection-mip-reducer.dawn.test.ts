@@ -60,6 +60,7 @@ async function compileTemporalShader(): Promise<string> {
     imports: {
       'forgeax_view::common': readShader('common'),
       'forgeax_pbr::gbuffer': gbufferSource,
+      forgeax_scene_temporal: readShader('scene-temporal'),
     },
   });
   if (!result.ok || result.value === undefined) throw new Error(JSON.stringify(result.error));

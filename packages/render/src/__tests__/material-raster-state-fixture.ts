@@ -10,6 +10,7 @@ import * as backend from '@forgeax/engine-rhi-webgpu';
 import type { MaterialRenderState, Result } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { seededDepthRenderState } from '../material-render-state';
 import { Materials } from '../materials';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import { pipelineRenderState } from '../render-system-extract';
@@ -21,6 +22,13 @@ function value<T>(result: Result<T, { readonly hint: string }>): T {
 
 export const rasterCases = [
   { name: 'default', state: {}, expected: [255, 255, 255, 255] },
+  {
+    name: 'seeded-opaque-read-only',
+    state: {},
+    seeded: true,
+    behind: true,
+    expected: [255, 255, 255, 255],
+  },
   { name: 'red-blue', state: { colorWriteMask: 5 }, expected: [255, 0, 255, 0] },
   { name: 'green-only', state: { colorWriteMask: 2 }, expected: [0, 255, 0, 0] },
   { name: 'alpha-only', state: { colorWriteMask: 8 }, expected: [0, 0, 0, 255] },
@@ -80,6 +88,7 @@ export const rasterCases = [
 
 interface RasterCase {
   readonly name: string;
+  readonly seeded?: boolean;
   readonly state: MaterialRenderState;
   readonly expected: readonly number[];
   readonly behind?: boolean;
@@ -158,20 +167,28 @@ export async function verifyRasterCase(testCase: RasterCase) {
         ),
       );
     };
-    const first = pipeline(
-      testCase.overlay ? {} : testCase.state,
-      testCase.overlay ? [1, 0, 0, 1] : [1, 1, 1, 1],
-      0.5,
-      testCase.shadow,
-    );
-    const second =
-      testCase.behind || testCase.overlay || testCase.shadow
-        ? pipeline(
-            testCase.overlay ? testCase.state : {},
-            [0, 1, 0, 1],
-            testCase.behind ? 0.6 : (testCase.overlayDepth ?? 0.5),
-          )
-        : undefined;
+    const fixturePipelines = () => {
+      const first = pipeline(
+        testCase.seeded
+          ? (seededDepthRenderState(testCase.state, false) ?? testCase.state)
+          : testCase.overlay
+            ? {}
+            : testCase.state,
+        testCase.overlay ? [1, 0, 0, 1] : [1, 1, 1, 1],
+        0.5,
+        testCase.shadow,
+      );
+      const second =
+        testCase.behind || testCase.overlay || testCase.shadow
+          ? pipeline(
+              testCase.overlay ? testCase.state : {},
+              [0, 1, 0, 1],
+              testCase.behind ? 0.6 : (testCase.overlayDepth ?? 0.5),
+            )
+          : undefined;
+      return { first, second };
+    };
+    const { first, second } = fixturePipelines();
     const encoder = value(device.createCommandEncoder({}));
     const draw = (pipelines: readonly RenderPipeline[], shadow: boolean, clearDepth: boolean) => {
       const pass = encoder.beginRenderPass({
@@ -198,7 +215,12 @@ export async function verifyRasterCase(testCase: RasterCase) {
       }
       pass.end();
     };
-    if (testCase.shadow) {
+    if (testCase.seeded) {
+      // Identical position-only prepass, then ordinary base shading over its depth.
+      const prepass = pipeline({}, [], 0.5, true);
+      draw([prepass], true, true);
+      draw(second === undefined ? [first] : [first, second], false, false);
+    } else if (testCase.shadow) {
       draw([first], true, true);
       if (second === undefined) throw new Error('missing shadow receiver');
       draw([second], false, false);
@@ -228,7 +250,7 @@ export async function verifyRasterCase(testCase: RasterCase) {
         await session.inspectWork(workIndex, ['pipeline', 'bindings', 'pixels']),
       );
       expect(equalBytes(inspection.attachment?.bytes, live)).toBe(true);
-      const inspectedWork = testCase.overlay ? workIndex : 0;
+      const inspectedWork = testCase.seeded ? 1 : testCase.overlay ? workIndex : 0;
       const event = model.works[inspectedWork]?.pipeline.descriptor;
       if (event === null || typeof event !== 'object' || !('desc' in event))
         throw new Error('missing pipeline event');
@@ -246,6 +268,11 @@ export async function verifyRasterCase(testCase: RasterCase) {
             : { depthBiasSlopeScale: -testCase.state.depthBiasSlopeScale }),
         },
       });
+      if (testCase.seeded) {
+        expect(descriptor).toMatchObject({
+          depthStencil: { depthCompare: 'greater-equal', depthWriteEnabled: false },
+        });
+      }
       if (!testCase.shadow && testCase.state.colorWriteMask !== undefined) {
         expect(descriptor).toMatchObject({
           fragment: { targets: [{ writeMask: testCase.state.colorWriteMask }] },

@@ -7,7 +7,7 @@ import { observeAssetThumbnails } from '../packages/view-workspace-core/src/asse
 const asset = { guid: 'material', kind: 'material', name: 'Ground' };
 const output = (guid, refs, kind = 'material') => ({ guid, kind, refs });
 const publication = { generation: 1, digest: 'bound', outputs: [output('sibling', ['sibling-texture']), output('material', ['base', 'sampler', 'normal', 'BASE', 'missing', 'env'])] };
-const textures = [{ guid: 'base', kind: 'texture', publicationId: 'base-v1' }, { guid: 'normal', kind: 'texture' }, { guid: 'env', kind: 'equirect' },
+const textures = [{ guid: 'base', kind: 'texture', publicationId: 'base-v1' }, { guid: 'normal', kind: 'gpu-texture' }, { guid: 'env', kind: 'equirect' },
   { guid: 'sampler', kind: 'sampler' }, { guid: 'sibling-texture', kind: 'texture' }];
 const preview = { asset, target: { targetId: 'material-preview', generation: 4, worldId: 'world' }, assetBinding: { publication, meta: { kind: 'material' } } };
 const state = { project: { id: 'project', root: '/project' }, projectTarget: { targetId: 'project-target', generation: 1 },

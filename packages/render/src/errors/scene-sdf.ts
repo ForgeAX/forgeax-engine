@@ -10,12 +10,11 @@ export type SceneSdfUnavailableReason =
 
 export class SceneSdfUnavailableError extends Error {
   readonly code = 'scene-sdf-unavailable' as const;
-  readonly expected = 'a current geometric field for the complete requested World and range';
+  readonly expected = 'a current geometric field for the current source and requested range';
   readonly hint =
     'inspect detail, cook the same Mesh GUID with a geometric distance-field policy, or recover the named producer';
   readonly detail: {
     readonly reason: SceneSdfUnavailableReason;
-    readonly world: number;
     readonly entity?: number;
     readonly cause?: unknown;
   };

@@ -1,4 +1,5 @@
 import type { FrameModel, FramePass, JsonValue, ResourceEntry, WorkEntry } from './frame-model';
+import { projectTextureExtent } from './texel-layout';
 
 /** A color or depth attachment resolved through its view to the texture it renders into. */
 export interface PassTargetSummary {
@@ -6,6 +7,7 @@ export interface PassTargetSummary {
   readonly textureId: string | null;
   /** Texture `desc.label`; the tape records no label for swapchain-backed textures. */
   readonly label: string | null;
+  /** Rendered extent at the attachment view's base mip, not the backing texture's extent. */
   readonly width: number | null;
   readonly height: number | null;
   readonly format: string | null;
@@ -60,19 +62,20 @@ function labelOf(entry: ResourceEntry | undefined): string | null {
   return typeof label === 'string' && label.length > 0 ? label : null;
 }
 
-function numberAt(value: JsonValue | undefined): number | null {
-  return typeof value === 'number' ? value : null;
-}
-
-/** `size` is `{width,height}` in recorded tapes and `[w,h,d]` in hand-built ones. */
-function extentOf(desc: JsonRecord | undefined): {
+function extentOf(
+  desc: JsonRecord | undefined,
+  mip: JsonValue = 0,
+): {
   readonly width: number | null;
   readonly height: number | null;
 } {
-  const size = desc?.size;
-  if (Array.isArray(size)) return { width: numberAt(size[0]), height: numberAt(size[1]) };
-  if (isRecord(size)) return { width: numberAt(size.width), height: numberAt(size.height) };
-  return { width: null, height: null };
+  const size = projectTextureExtent(desc?.size);
+  if (size === undefined || typeof mip !== 'number' || !Number.isInteger(mip) || mip < 0)
+    return { width: null, height: null };
+  return {
+    width: Math.max(1, Math.floor(size.width / 2 ** mip)),
+    height: Math.max(1, Math.floor(size.height / 2 ** mip)),
+  };
 }
 
 function targetOf(
@@ -85,12 +88,18 @@ function targetOf(
   const textureId = typeof source === 'string' ? source : null;
   const texture = textureId === null ? undefined : resources.get(textureId);
   const desc = descOf(texture);
+  const viewDesc = descOf(view);
   return {
     viewId,
     textureId,
     label: labelOf(texture) ?? labelOf(view),
-    ...extentOf(desc),
-    format: typeof desc?.format === 'string' ? desc.format : null,
+    ...extentOf(desc, viewDesc?.baseMipLevel ?? 0),
+    format:
+      typeof viewDesc?.format === 'string'
+        ? viewDesc.format
+        : typeof desc?.format === 'string'
+          ? desc.format
+          : null,
   };
 }
 

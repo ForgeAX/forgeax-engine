@@ -143,9 +143,7 @@ it('keeps shared source binding facts when only one member is removed', () => {
   topology.rebuild(scene.slotsSnapshot());
   const before = topology.sourcePlan(),
     held = required(before.batches.at(0));
-  topology.apply(
-    scene.apply([{ kind: 'remove', worldId: source.worldId, entityKey: source.entityKey + 1 }]),
-  );
+  topology.apply(scene.apply([{ kind: 'remove', entityKey: source.entityKey + 1 }]));
   const current = required(topology.sourcePlan().batches.at(0));
   expect(current.binding).toBe(held.binding);
   expect(current.key).toBe(held.key);

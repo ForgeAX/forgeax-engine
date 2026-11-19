@@ -2,9 +2,9 @@
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const { create, globals } = await import('@forgeax/engine-dawn-node');
 Object.assign(globalThis, globals);
@@ -31,7 +31,7 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifest);
 const originalRequestAdapter = gpu.requestAdapter.bind(gpu);
 gpu.requestAdapter = async (options) => {
   const adapter = await originalRequestAdapter(options);

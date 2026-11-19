@@ -112,7 +112,7 @@ ${kind === 'texture' ? 'struct Numeric { pad: array<vec4<f32>, 5>, uv: vec4<f32>
     textureViews.length === 0
       ? [materialUniformResources([]), materialUniformResources([])]
       : textureViews.map((view) => materialUniformResources([view]));
-  const scopes =
+  const sourceScope =
     kind === 'texture'
       ? textureVersions.map(
           ({ asset }, index) =>
@@ -122,7 +122,7 @@ ${kind === 'texture' ? 'struct Numeric { pad: array<vec4<f32>, 5>, uv: vec4<f32>
             }) as unknown as RenderResourceScope,
         )
       : [{} as RenderResourceScope, {} as RenderResourceScope];
-  const [oldScope, newScope] = scopes;
+  const [oldScope, newScope] = sourceScope;
   const [oldResources, newResources] = resources;
   assert(oldScope && newScope && oldResources && newResources);
   const old = root.snapshot;

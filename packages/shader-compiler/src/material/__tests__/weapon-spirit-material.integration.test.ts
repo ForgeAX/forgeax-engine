@@ -106,7 +106,27 @@ describe('ai-weapon-spirit frozen Toon material', () => {
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
     expect(record.resolved.parameters).toEqual(original.parameters);
-    expect(record.programs).toHaveLength(12);
+    expect(record.programs).toHaveLength(18);
+    expect(
+      record.programs.filter((program) =>
+        program.selections.some(
+          (selection) =>
+            selection.context.pipeline !== 'ray' &&
+            selection.context.lodCoverage !== true &&
+            selection.context.viewClipping !== true,
+        ),
+      ),
+    ).toHaveLength(12);
+    const clipped = record.programs
+      .flatMap((program) => program.selections)
+      .filter(
+        (selection) =>
+          selection.context.pipeline !== 'ray' &&
+          selection.context.lodCoverage !== true &&
+          selection.context.viewClipping === true,
+      );
+    expect(clipped).toHaveLength(6);
+    expect(new Set(clipped.map((selection) => selection.pass))).toEqual(new Set(['ShadowCaster']));
     const shadow = record.programs.find((program) =>
       program.selections.some((selection) => selection.pass === 'ShadowCaster'),
     );

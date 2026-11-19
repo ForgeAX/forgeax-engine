@@ -87,16 +87,28 @@ test('npm and pnpm install one offline bundle with transitive and duplicate vers
       resolve(root, 'member'),
       'package',
     ]);
+    const view = resolve(root, 'view');
+    await fixture(
+      view,
+      '@forgeax/view',
+      '1.2.3',
+      "import {answer} from '@forgeax/engine'; import a from 'a'; export const result=[answer,a];",
+      { '@forgeax/engine': '1.2.3', a: '1.0.0' },
+    );
+    await writeFile(resolve(view, 'host.pack.json'), '{}');
+    const viewTool = { root: view, dependencySource: leaf };
     await bundleEngineArchive({
       engineArchive: archive,
       members: [{ name: '@forgeax/engine-leaf', root: leaf, archive: memberArchive }],
       version: '1.2.3',
+      viewTool,
     });
     const first = await readFile(archive);
     await bundleEngineArchive({
       engineArchive: archive,
       members: [{ name: '@forgeax/engine-leaf', root: leaf, archive: memberArchive }],
       version: '1.2.3',
+      viewTool,
     });
     assert.deepEqual(await readFile(archive), first, 'repeat packaging preserves sealed bytes');
     for (const manager of ['npm', 'pnpm']) {
@@ -135,6 +147,21 @@ test('npm and pnpm install one offline bundle with transitive and duplicate vers
         { cwd: consumer },
       );
       assert.equal(result.stdout.trim(), '[1,2]');
+      const embedded = await execute(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          "import {createRequire} from 'node:module'; import {pathToFileURL} from 'node:url'; const r=createRequire(import.meta.url); const e=r.resolve('@forgeax/engine'); const v=new URL('./tools/view/index.mjs',pathToFileURL(e)); console.log(JSON.stringify((await import(v)).result));",
+        ],
+        { cwd: consumer },
+      );
+      assert.equal(embedded.stdout.trim(), '[[1,2],1]');
+      const installed = resolve(consumer, 'node_modules/@forgeax/engine');
+      const manifest = JSON.parse(await readFile(resolve(installed, 'package.json'), 'utf8'));
+      assert.equal(Object.hasOwn(manifest.dependencies, '@forgeax/view'), false);
+      assert.equal(manifest.bundledDependencies.includes('@forgeax/view'), false);
+      assert.equal(await readFile(resolve(installed, 'tools/view/host.pack.json'), 'utf8'), '{}');
     }
   } finally {
     await rm(root, { recursive: true, force: true });

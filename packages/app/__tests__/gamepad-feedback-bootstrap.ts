@@ -1,5 +1,9 @@
+import { defineSystemSet } from '@forgeax/engine-ecs';
+export const GamepadFeedbackProbeOrder = defineSystemSet({ name: 'gamepad-feedback-browser-probe' });
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
-import { GAMEPAD_FEEDBACK_KEY, INPUT_SNAPSHOT_RESOURCE_KEY, type GamepadFeedback, type InputSnapshot } from '@forgeax/engine-input';
+import { GAMEPAD_FEEDBACK_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { Camera, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
@@ -20,12 +24,12 @@ const entry: ExecutionBootstrapEntry = () => ({
       let loadTick = 0;
       if (port) port.onmessage = event => { load = event.data.kind === 'load' ? event.data : undefined; loadTick = 0; };
       ctx.effect(() => {
-        ctx.world.addSystem(Update, {
-          name: 'gamepad-feedback-browser-probe', queries: [], after: ['input-frame-start-scan'],
+        const systemToken1 = defineSystem({
+          name: 'gamepad-feedback-browser-probe', sets: [GamepadFeedbackProbeOrder], queries: [], after: [InputFrameStartScan],
           fn(world) {
             const tickStart = performance.now();
-            const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
-            const feedback = world.getResource<GamepadFeedback>(GAMEPAD_FEEDBACK_KEY);
+            const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
+            const feedback = world.getResource(GAMEPAD_FEEDBACK_KEY);
             const target = input.gamepad(0).feedbackTarget;
             if (!sent && target) {
               sent = true;
@@ -43,8 +47,9 @@ const entry: ExecutionBootstrapEntry = () => ({
             for (const result of feedback.readResults()) port?.postMessage({ kind: 'feedback-result', result });
             if (load) { loadTick++; port?.postMessage({ ...load, kind: 'load-frame', tickStart, producerMs: performance.now() - tickStart }); }
           },
-        }).unwrap();
-        return () => ctx.world.removeSystem(Update, 'gamepad-feedback-browser-probe');
+        });
+ctx.world.addSystem(Update, systemToken1).unwrap();
+        return () => ctx.world.removeSystem(Update, systemToken1);
       });
     },
   }],

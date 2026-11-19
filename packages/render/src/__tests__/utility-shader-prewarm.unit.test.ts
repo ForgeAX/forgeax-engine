@@ -23,6 +23,25 @@ const prewarmSsr = (
 ) => prewarmUtilityShaders('SSR', SSR_SHADER_STAGES, entries, compile, seed);
 
 describe('utility shader bundle preparation', () => {
+  it('admits G-buffer metadata from the selected compiled SSR entries without identifiers', async () => {
+    const entries = ssrEntries.map((entry) => ({
+      ...entry,
+      programContract: {
+        schemaVersion: 'shader-program-contract/1' as const,
+        gbuffer: 'standard-gbuffer/2' as const,
+      },
+    }));
+    const prepare = (rows: readonly ManifestEntry[]) =>
+      prewarmSsrWithDepthPyramid(
+        [...pyramidEntries, ...rows],
+        async () => ({}) as ShaderModule,
+        vi.fn(),
+      );
+    expect((await prepare(entries))?.ssr.gbuffer).toBe('standard-gbuffer/2');
+    const unversioned = ssrEntries[0];
+    if (unversioned === undefined) throw new Error('Missing unversioned SSR fixture');
+    expect((await prepare([unversioned, ...entries.slice(1)]))?.ssr.gbuffer).toBeUndefined();
+  });
   it('selects reflected utility entries without reading unselected source bodies', async () => {
     const unread: ManifestEntry = {
       hash: 'unselected-utility-fixture',

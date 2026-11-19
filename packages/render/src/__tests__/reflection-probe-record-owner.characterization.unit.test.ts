@@ -29,7 +29,7 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     expect(ownerContractsSource).toContain('candidate: PmremAtlas;');
     expect(ownerContractsSource).toContain('spare: PmremAtlas | undefined;');
     expect(ownerSource).toContain('const active = resource.activeFact?.center.every');
-    expect(ownerSource).toContain('if (active === undefined) return undefined;');
+    expect(ownerSource).toMatch(/if \(active === undefined\)\s+return undefined;/);
     expect(ownerSource).toContain('filteredView: active.view');
   });
 
@@ -38,15 +38,14 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     expect(ownerSource).toContain(
       'completeSubmission: (submitted, completed, fallbackOutput, fallbackRequested = true) =>',
     );
-    expect(ownerSource).toContain('if (!submitted || pending === undefined) continue;');
+    expect(ownerSource).toMatch(/if \(!submitted \|\| pending === undefined\)\s+continue;/);
     expect(ownerSource).toContain('resource.rawFaceCursor = Math.min(');
     expect(ownerSource).toContain(
       'resource.filter = commitProbeFilterStep(resource.filter, true);',
     );
-    expect(ownerSource).toContain('resource.active = resource.candidate;');
-    expect(ownerSource).toContain(
-      'resource.candidate = resource.spare ?? previous ?? resource.candidate;',
-    );
+    expect(ownerSource).toContain('const pmrem = resource.pmrem;');
+    expect(ownerSource).toContain('pmrem.active = pmrem.candidate;');
+    expect(ownerSource).toContain('pmrem.candidate = pmrem.spare ?? previous ?? pmrem.candidate;');
   });
 
   it('discards failed completion and preserves incremental filter state', () => {
@@ -54,8 +53,8 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     expect(ownerSource).toMatch(
       /if \(fallbackRequested\)\s+await this\.completeFallbackSubmission\(/,
     );
-    expect(ownerSource).toContain('if (pending.step === undefined) continue;');
-    expect(ownerSource).toContain('if (resource.pending !== undefined) continue;');
+    expect(ownerSource).toMatch(/if \(pending.step === undefined\)\s+continue;/);
+    expect(ownerSource).toMatch(/if \(resource.pending !== undefined\)\s+continue;/);
 
     const initial = createProbeFilterState({ probeIndex: 2, mipCount: 2 });
     expect(commitProbeFilterStep(initial, false)).toEqual(initial);

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { ensureShaderManifestProfile } from '../../../../../scripts/lib/shader-manifest.mjs';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { Update } from '@forgeax/engine-ecs';
@@ -152,6 +154,7 @@ const mockCanvas = {
 
 // --- 3. Shader manifest ---
 
+await ensureShaderManifestProfile('point-ssao');
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const ENGINE_MANIFEST = await buildEngineShaderManifest({ pointShadows: true });
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
@@ -296,7 +299,7 @@ const cameraEntity = world.spawn(
 // Per-frame light orbit.
 if (lightEntity !== null) {
   let elapsed = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'point-light-orbit-smoke',
     queries: [],
     fn: () => {
@@ -307,6 +310,7 @@ if (lightEntity !== null) {
       });
     },
   });
+world.addSystem(Update, systemToken1);
 }
 
 // --- 6. Render the configured readiness window ---
@@ -319,7 +323,7 @@ let totalFrames = 0;
 const lease = app.renderer.attach(world).unwrap();
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(app.renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  await drawReadyFrame(app.renderer, { source: lease });
   totalFrames++;
   if (i % 8 === 7 || i === SMOKE_MIN_FRAMES - 1) {
     console.log(`[smoke] progress frame=${totalFrames} elapsedMs=${Date.now() - frameStart}`);
@@ -380,7 +384,7 @@ const bytes = await readPixels();
 async function renderControl() {
   // Do not advance World time: geometry, camera and light pose are identical.
   for (let frame = 0; frame < 8; frame++) {
-    const result = app.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }).unwrap();
+    const result = app.renderer.draw({ source: lease }).unwrap();
     (await result.completed).unwrap();
     await device.queue.onSubmittedWorkDone();
     await delay(1);
@@ -399,7 +403,10 @@ for (let index = 0; index < bytes.length; index++) {
   litPixelDifference += Math.abs(noShadow[index] - noLight[index]);
 }
 const wallOffset = (Math.floor(HEIGHT / 2) * WIDTH + Math.floor(WIDTH / 2)) * 4;
-const wallLightDelta = Math.max(...[0, 1, 2].map(channel => (noShadow[wallOffset + channel] - noLight[wallOffset + channel]) / 255));
+const wallLightDelta = Math.max(...[0, 1, 2].map(
+    (channel) => (noShadow[wallOffset + channel] - noLight[wallOffset + channel]) / 255,
+  ),
+);
 console.log(`[smoke] controls=${JSON.stringify({ shadowPixelDifference, litPixelDifference, wallLightDelta })}`);
 
 const readRgba = (px, py) => {
@@ -439,8 +446,8 @@ for (let gy = 0; gy < 4; gy++) {
   const row = [];
   for (let gx = 0; gx < 4; gx++) {
     let cellMax = 0;
-    for (let y = gy * HEIGHT / 4; y < (gy + 1) * HEIGHT / 4; y += 1) {
-      for (let x = gx * WIDTH / 4; x < (gx + 1) * WIDTH / 4; x += 1) {
+    for (let y = (gy * HEIGHT) / 4; y < ((gy + 1) * HEIGHT) / 4; y += 1) {
+      for (let x = (gx * WIDTH) / 4; x < ((gx + 1) * WIDTH) / 4; x += 1) {
         cellMax = Math.max(cellMax, ...readRgba(x, y));
       }
     }

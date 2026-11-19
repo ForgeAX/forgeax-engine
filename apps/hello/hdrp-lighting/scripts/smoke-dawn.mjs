@@ -9,8 +9,7 @@
 // FALSIFY=force-forward -- selects the forward graph variant while retaining
 // the same unified clustered light transport. It is a local topology probe,
 // and records the clustered lighting transport used by the frame.
-
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -20,6 +19,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const lightweight = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1';
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? (lightweight ? '60' : '60'), 10);
@@ -148,7 +148,10 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const constructed = await constructRuntimeRendererHost(
   mockCanvas,
@@ -298,11 +301,7 @@ let totalFrames = 0;
 let latestReceipt;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  latestReceipt = await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-  });
+  latestReceipt = await drawReadyFrame(renderer, { source: lease });
   totalFrames++;
 }
 

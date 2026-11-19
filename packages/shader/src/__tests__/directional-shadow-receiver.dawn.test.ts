@@ -147,6 +147,7 @@ ${fullscreen}
   let factors = Factors(receiveShadows, ${clearcoat});
   let depths = array<f32,4>(1.0, 1.9, 3.9, 7.0);
   let in = Input(vec3((f32(x)-8.0)/4.0,0.0,0.5), -depths[x % 4u], p);
+  let standardPositionWS = in.worldPos;
   let normalZ = array<f32,4>(1.0, 0.0, -1.0, -0.000001);
   let n = normalize(vec3(select(-0.4,0.4,y >= 2u),0.0,${backfaces ? 'normalZ[x % 4u]' : '1.0'}));
   let physicalNormal = n;

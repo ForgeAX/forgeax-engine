@@ -46,9 +46,22 @@ export function prepareDerivedBodyTypes(
       'read each current getDerivedPublication receipt and prepare the complete group',
       { reason },
     );
+  const callerReadFailure = (cause: unknown) =>
+    new DerivedPhysicsError(
+      'derived-candidate-invalid',
+      'caller-owned candidate data is readable without re-entering the Native PhysicsWorld',
+      'read immutable candidate data before preparation and do not call Physics mutation APIs from getters',
+      { reason: cause instanceof Error ? cause.message : String(cause) },
+      { cause },
+    );
   let complete = false;
   try {
-    const count = Array.isArray(inputs) ? inputs.length : 0;
+    let count: number;
+    try {
+      count = Array.isArray(inputs) ? inputs.length : 0;
+    } catch (cause) {
+      return err(callerReadFailure(cause));
+    }
     if (
       !Number.isSafeInteger(count) ||
       count <= 0 ||
@@ -69,14 +82,30 @@ export function prepareDerivedBodyTypes(
       );
     const entities = new Set<number>();
     for (let index = 0; index < count; index++) {
-      const input = inputs[index];
+      let input: DerivedBodyTypeCandidateInput | undefined;
+      let publication: DerivedPhysicsPublication | undefined;
+      let bodyType: DerivedBodyTypeCandidateInput['bodyType'] | undefined;
+      let entity: number | undefined;
+      let publicationGeneration: number | undefined;
+      let publicationCandidateId: string | undefined;
+      let publicationRevision: number | undefined;
+      try {
+        input = inputs[index];
+        publication = input?.publication;
+        bodyType = input?.bodyType;
+        entity = publication?.entity;
+        publicationGeneration = publication?.generation;
+        publicationCandidateId = publication?.candidateId;
+        publicationRevision = publication?.revision;
+      } catch (cause) {
+        return err(callerReadFailure(cause));
+      }
       if (input == null) return err(invalid('missing member'));
-      const publication = input.publication;
-      const bodyType = input.bodyType;
       if (
         publication == null ||
-        owner.publications.get(publication.entity) !== publication ||
-        publication.generation !== owner.generation
+        entity === undefined ||
+        owner.publications.get(entity) !== publication ||
+        publicationGeneration !== owner.generation
       )
         return err(
           new DerivedPhysicsError(
@@ -87,78 +116,116 @@ export function prepareDerivedBodyTypes(
         );
       if (records.some((record) => owner.candidates.get(record.token.candidateId) !== record))
         return err(invalid('the preparation was invalidated while reading caller inputs'));
-      const active = owner.bodies.get(publication.entity);
+      const active = owner.bodies.get(entity);
       if (
         active === undefined ||
-        active.candidateId !== publication.candidateId ||
-        active.revision !== publication.revision ||
-        entities.has(publication.entity)
+        active.candidateId !== publicationCandidateId ||
+        active.revision !== publicationRevision ||
+        entities.has(entity)
       )
         return err(invalid('missing, replaced or duplicate committed body'));
       if (bodyType !== 'static' && bodyType !== 'dynamic' && bodyType !== 'kinematic')
         return err(invalid('invalid body type'));
-      if (!owner.healthy)
-        return err(
-          new DerivedPhysicsError(
-            'derived-recovery-invalid',
-            'type-only updates require a healthy committed PhysicsWorld',
-            'rebuild the PhysicsWorld before retrying',
-          ),
-        );
-      if (!owner.hasBody(active.entity))
-        return err(
-          new DerivedPhysicsError(
-            'derived-body-not-found',
-            'the accepted body still has a live native owner',
-            'reconcile physics before retrying',
-          ),
-        );
-      for (const id of owner.pending)
-        if (owner.candidates.get(id)?.input.entity === active.entity)
+      const validateNativeBodyAdmission = () => {
+        if (active.sourceTransform !== undefined && bodyType !== 'static')
           return err(
             new DerivedPhysicsError(
-              'derived-candidate-pending',
-              'the body has no queued replacement',
-              'wait for its current preparation to publish',
+              'derived-candidate-invalid',
+              'source-owned affine geometry remains on a static derived body',
+              'replace the complete source-owned body before transferring pose ownership',
+              { entity: active.entity, actual: bodyType },
             ),
           );
-      const privateInput: DerivedPhysicsCandidateInput = Object.freeze({
-        entity: active.entity,
-        revision: active.revision,
-        sourceKey: active.sourceKey,
-        shapes: Object.freeze(active.shapes.map((shape) => shape.input)),
-        bodyType,
-        ...(active.massProperties === undefined ? {} : { massProperties: active.massProperties }),
-        velocityPolicy: 'preserve',
-      });
-      const publicInput = cloneDerivedPhysicsInput(privateInput);
-      if (!publicInput.ok) return publicInput;
-      const bytes = estimateDerivedPhysicsInputBytes(privateInput);
-      const candidateId = owner.nextId(active.entity, active.revision);
-      const token: DerivedPhysicsCandidate = Object.freeze({
-        candidateId,
-        generation: owner.generation,
-        owner: owner.identity,
-        input: publicInput.value,
-        state: 'ready',
-      });
-      const record: DerivedCandidateRecord = {
-        token,
-        nativeColliders: [],
-        input: privateInput,
-        retainedGeometry: active,
-        bytes,
-        state: 'ready',
-        batch,
+        if (!owner.healthy)
+          return err(
+            new DerivedPhysicsError(
+              'derived-recovery-invalid',
+              'type-only updates require a healthy committed PhysicsWorld',
+              'rebuild the PhysicsWorld before retrying',
+            ),
+          );
+        if (!owner.hasBody(active.entity))
+          return err(
+            new DerivedPhysicsError(
+              'derived-body-not-found',
+              'the accepted body still has a live native owner',
+              'reconcile physics before retrying',
+            ),
+          );
+        for (const id of owner.pending)
+          if (owner.candidates.get(id)?.input.entity === active.entity)
+            return err(
+              new DerivedPhysicsError(
+                'derived-candidate-pending',
+                'the body has no queued replacement',
+                'wait for its current preparation to publish',
+              ),
+            );
+
+        return undefined;
       };
-      const retained = owner.retain(record);
-      if (!retained.ok) return retained;
-      records.push(record);
-      entities.add(active.entity);
+      const validateNativeBodyAdmissionFailure = validateNativeBodyAdmission();
+      if (validateNativeBodyAdmissionFailure !== undefined)
+        return validateNativeBodyAdmissionFailure;
+
+      const retainBodyTypeCandidate = () => {
+        const privateInput: DerivedPhysicsCandidateInput = Object.freeze({
+          entity: active.entity,
+          revision: active.revision,
+          sourceKey: active.sourceKey,
+          shapes: Object.freeze(active.shapes.map((shape) => shape.input)),
+          bodyType,
+          ...(active.sourceTransform === undefined
+            ? {}
+            : { sourceTransform: active.sourceTransform }),
+          ...(active.massProperties === undefined ? {} : { massProperties: active.massProperties }),
+          velocityPolicy: 'preserve',
+        });
+        const publicInput = cloneDerivedPhysicsInput(privateInput);
+        if (!publicInput.ok) return publicInput;
+        const bytes = estimateDerivedPhysicsInputBytes(privateInput);
+        const candidateId = owner.nextId(active.entity, active.revision);
+        let record: DerivedCandidateRecord;
+        const token: DerivedPhysicsCandidate = Object.freeze({
+          candidateId,
+          generation: owner.generation,
+          owner: owner.identity,
+          input: publicInput.value,
+          get state() {
+            return record.state;
+          },
+        });
+        record = {
+          token,
+          nativeColliders: [],
+          input: privateInput,
+          retainedGeometry: active,
+          bytes,
+          state: 'ready',
+          batch,
+        };
+        const retained = owner.retain(record);
+        if (!retained.ok) return retained;
+        records.push(record);
+        entities.add(active.entity);
+        return undefined;
+      };
+      const retainedFailure = retainBodyTypeCandidate();
+      if (retainedFailure !== undefined) return retainedFailure;
     }
     Object.freeze(records);
     complete = true;
     return ok(Object.freeze(records.map((record) => record.token)));
+  } catch (cause) {
+    return err(
+      new DerivedPhysicsError(
+        'derived-candidate-stale',
+        'caller-owned candidate getters complete without re-entering the Native PhysicsWorld',
+        'read immutable candidate data before preparation and do not call Physics mutation APIs from getters',
+        { reason: cause instanceof Error ? cause.message : String(cause) },
+        { cause },
+      ),
+    );
   } finally {
     if (!complete) for (const record of records) owner.release(record.token.candidateId);
   }

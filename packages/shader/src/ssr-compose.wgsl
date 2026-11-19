@@ -1,5 +1,5 @@
 #define_import_path forgeax_ssr::compose
-#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid}
 
 struct ComposeVertex {
   @builtin(position) position : vec4<f32>,
@@ -55,8 +55,8 @@ fn evaluateSsrCompose(in : ComposeVertex) -> vec4<f32> {
   let pixel = vec2<i32>(in.position.xy);
   // Fragment position already names the full-resolution pixel center.
   let uv = in.position.xy / vec2<f32>(textureDimensions(fallback, 0));
-  let packedReceiver = textureLoad(normalRoughness, pixel, 0).r;
-  let receiver = decodeStandardNormalRoughness(packedReceiver);
+  if (!loadStandardSceneSurfaceValid(normalRoughness, pixel)) { return vec4<f32>(0.0); }
+  let receiver = loadStandardNormalRoughness(normalRoughness, pixel);
   let environment = textureLoad(fallback, pixel, 0);
   let roughnessLimit = clamp(view.ssrParams.z, 0.0, 1.0);
   if (!(view.ssrParams.w > 0.5 && view.ssrParams.w < 3.402823e+38) ||
@@ -66,7 +66,8 @@ fn evaluateSsrCompose(in : ComposeVertex) -> vec4<f32> {
   let roughness = clamp(receiver.a, 0.04, 1.0);
   let lod = ssrReflectionLod(roughness);
   // Temporal resolve publishes on the same full-resolution raster lattice.
-  let base = textureLoad(radiance, pixel, 0);
+  let radiancePixel = min(vec2<i32>(uv * vec2<f32>(textureDimensions(radiance, 0))), vec2<i32>(textureDimensions(radiance, 0)) - vec2<i32>(1));
+  let base = textureLoad(radiance, radiancePixel, 0);
   var filtered = base;
   if (lod < 1.0) {
     // Preserve the exact receiver sample at the sharp end and transition

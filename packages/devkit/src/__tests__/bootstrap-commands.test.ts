@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { doctorCommand, initCommand, newCommand } from '../bootstrap-commands.js';
 import { MINIMUM_SUPPORTED_PNPM, pnpmVersionAtLeast } from '../sdk-bootstrap.js';
+import { installPackAuthorDependencies } from './fixtures/pack-author-dependencies.js';
 
 describe('pnpm support range', () => {
   it('accepts current pnpm 12 releases while rejecting older, other-major, and prerelease versions', () => {
@@ -866,6 +867,53 @@ describe('newCommand', () => {
 });
 
 describe('doctorCommand', () => {
+  it('rejects a scene Pack import outside the live generation list with the code play reports', async () => {
+    const sdk = await sdkFixture(false);
+    await installPackAuthorDependencies(sdk.template, ['engine']);
+    await mkdir(resolve(sdk.template, 'assets'), { recursive: true });
+    const source = (component: string) =>
+      [
+        "import { definePack, definePackageId } from '@forgeax/engine/pack/source';",
+        `import { DirectionalLight, ${component} } from '@forgeax/engine/render';`,
+        "import { ok } from '@forgeax/engine/types';",
+        'export default definePack({',
+        "  schemaVersion: '2.0.0',",
+        "  packageId: definePackageId('01900000-0000-7000-8000-0000000000c1'),",
+        '  parameters: [',
+        "    { name: 'sun', type: 'f32', default: 1, apply: { asset: 'scene/main', path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'] } },",
+        '  ],',
+        `  sceneComponents: [DirectionalLight, ${component}],`,
+        "  build: () => ok({ 'scene/main': { kind: 'scene', entities: { sun: { components: { DirectionalLight: {} } } } } }),",
+        '});',
+        '',
+      ].join('\n');
+    await writeFile(
+      resolve(sdk.template, 'assets', 'scene.pack.ts'),
+      source('ShadowParticipation'),
+    );
+
+    const result = await doctorCommand({ root: sdk.template });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'pack-source-mutation-unsupported',
+        detail: { via: 'pack-malformed-meta' },
+      },
+    });
+    const error = result.ok ? undefined : result.error;
+    expect(error?.hint).toContain(
+      'ShadowParticipation from @forgeax/engine/render: not on the live generation list',
+    );
+    expect(String(error?.detail.path)).toMatch(/scene\.pack\.ts$/);
+
+    await writeFile(resolve(sdk.template, 'assets', 'scene.pack.ts'), source('Skylight'));
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: true,
+      value: { packSources: 1 },
+    });
+  });
+
   it('keeps exact-version dependencies on the registry path without a local binding', async () => {
     const sdk = await sdkFixture(false);
     await writeFile(
@@ -971,6 +1019,7 @@ describe('doctorCommand', () => {
   it.each([
     'workspace:*',
     'file:../../engine',
+    'link:../../engine',
   ])('still requires an explicit Engine binding for %s', async (specifier) => {
     const { sdk } = await localDoctorFixture();
     await rm(resolve(sdk.template, '.forgeax', 'engine-binding.json'));
@@ -982,6 +1031,46 @@ describe('doctorCommand', () => {
     expect(await doctorCommand({ root: sdk.template })).toMatchObject({
       ok: false,
       error: { code: 'project-local-dependency', detail: { dependencies: ['@forgeax/engine'] } },
+    });
+  });
+
+  it.each([
+    false,
+    true,
+  ])('requires a binding for an Engine source link (override: %s)', async (override) => {
+    const sdk = await sdkFixture(false);
+    const source = resolve(await writeLocalEngine(sdk.root, '0.0.0'), 'packages/engine');
+    const name = '@forgeax/engine';
+    const specifier = `link:${source}`;
+    const overrides = override ? { overrides: { [name]: specifier } } : {};
+    const manifest = {
+      name: 'game',
+      version: '0.0.0',
+      dependencies: { [name]: override ? '0.4.18' : specifier },
+    };
+    await writeFile(resolve(sdk.template, 'package.json'), JSON.stringify(manifest));
+    await writeFile(
+      resolve(sdk.template, 'pnpm-workspace.yaml'),
+      JSON.stringify({ packages: [], ...overrides }),
+    );
+    await writeFile(
+      resolve(sdk.template, 'pnpm-lock.yaml'),
+      JSON.stringify({
+        lockfileVersion: '9.0',
+        ...overrides,
+        importers: {
+          '.': { dependencies: { [name]: { specifier, version: specifier } } },
+        },
+      }),
+    );
+    const installed = resolve(sdk.template, 'node_modules', name);
+    await mkdir(dirname(installed), { recursive: true });
+    await symlink(source, installed, 'junction');
+    await writeWorkspaceInstallState(sdk.template, [sdk.template], []);
+
+    expect(await doctorCommand({ root: sdk.template })).toMatchObject({
+      ok: false,
+      error: { code: 'project-local-dependency' },
     });
   });
 

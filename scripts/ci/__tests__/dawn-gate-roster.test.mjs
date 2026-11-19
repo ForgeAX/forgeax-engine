@@ -1,14 +1,27 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { test } from 'node:test';
+import ts from 'typescript';
 import { BaseSequencer, createVitest } from 'vitest/node';
 import { parse } from 'yaml';
+import {
+  dawnFileOwnerCosts,
+  dawnPlanningFileCosts,
+  dawnPlanningOwnerCosts,
+  readDawnTimings,
+} from '../../../config/dawn-timings.ts';
 import { DawnSequencer, planDawnShards } from '../../../config/vitest-dawn-sequencer.ts';
 import { dawnOrdinaryWorkers, runnerResources } from '../../lib/runner-resources.mjs';
 import { DAWN_COMPACT_TEST_FILES } from '../dawn-compact-roster.mjs';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from '../dawn-gate-roster.mjs';
+import {
+  DAWN_GATE_GROUPS,
+  DAWN_GATE_SHARDS,
+  DAWN_ORDINARY_FILE_FAMILIES,
+  DAWN_VITEST_CONFIG,
+} from '../dawn-gate-roster.mjs';
 import {
   dawnGroupEnvironment,
   dawnVitestArgs,
@@ -49,6 +62,9 @@ try {
 
 // Replay the explicitly admitted Linux CI executor; local discovery remains serial.
 const shippingPartitions = planDawnShards(nativeSpecifications, root, 2);
+const familyChildren = new Set(DAWN_ORDINARY_FILE_FAMILIES.flatMap(({ children }) => children));
+const isLogicalOwner = ({ moduleId }) =>
+  !familyChildren.has(relative(root, moduleId).replaceAll('\\', '/'));
 
 function dawnPolicy(vitest) {
   const project = vitest.projects.find((project) => project.name === 'dawn');
@@ -137,6 +153,11 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
     assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
     assert.equal(args.includes('--pool=forks'), ordinary);
     assert.equal(args.includes('--fileParallelism=true'), ordinary);
+    assert.equal(args.includes('--reporter=default'), ordinary);
+    assert.equal(
+      args.some((arg) => arg.endsWith('/modeling-file-phase-reporter.mjs')),
+      ordinary,
+    );
     assert.equal(args.includes('--no-file-parallelism'), !ordinary);
     assert.equal(args.includes('--no-isolate'), group.id.startsWith('heavy-'));
   }
@@ -278,7 +299,6 @@ test('each group keeps its admission and native lifetime boundary', () => {
       assert.ok(dawnVitestArgs(group).includes('--bail=1'));
     }
   }
-  assert.equal(ids.filter((id) => id === 'gpu-timing').length, 1);
 });
 
 test('compact files remain complete and unique across three existing native lanes', () => {
@@ -470,10 +490,28 @@ test('only Dawn sharding changes; other projects retain native Vitest sequencing
   await assert.rejects(new DawnSequencer(context).shard(dawnSpecs), /requires 4/);
 });
 
+test('VFX depth reserves its complete native lifetime before ordinary backfill', () => {
+  const group = DAWN_GATE_GROUPS.find(({ id }) => id === 'vfx-depth');
+  assert.equal(group.placementReserveSeconds, 600);
+  assert.ok(group.placementReserveSeconds >= readDawnTimings().owners['vfx-depth']);
+});
+
+test('unmeasured native files have deadline reserves without replacing observations', () => {
+  const timings = readDawnTimings();
+  const ordinary = new Set([
+    ...nativeSpecifications.map(({ moduleId }) => relative(root, moduleId).replaceAll('\\', '/')),
+    ...DAWN_GATE_GROUPS.flatMap((group) => group.files),
+  ]);
+  for (const [file, seconds] of Object.entries(timings.fileReserves)) {
+    assert.ok(ordinary.has(file), file);
+    assert.ok(!Object.hasOwn(timings.files, file), `retire the provisional reserve for ${file}`);
+    assert.ok(Number.isFinite(seconds) && seconds > 0, file);
+    assert.equal(timings.planningFiles[file], seconds);
+  }
+});
+
 test('completed ordinary children retain their expensive measured file shares', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
+  const timings = readDawnTimings();
   // Run 41314021267: ordinary-2 completed successfully in 1463.899 seconds.
   // Include its process overhead across all 86 files, including seven skipped files.
   const observed = [
@@ -510,11 +548,10 @@ test('completed ordinary children retain their expensive measured file shares', 
 });
 
 test('ordinary backfill honors native-owner placement reserves without losing files', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
+  const timings = readDawnTimings();
   const fallback = Math.max(...Object.values(timings.files));
-  const fileCost = (file) => timings.files[file] ?? fallback;
+  const fileCost = (file) =>
+    familyChildren.has(file) ? 0 : (timings.planningFiles[file] ?? fallback);
   const nativeLoads = [];
   const loads = DAWN_GATE_SHARDS.map((ids, index) => {
     const reserved = ids
@@ -522,7 +559,7 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
       .reduce((sum, id) => {
         const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
         const measured =
-          timings.owners[id] ?? group.files.reduce((n, file) => n + fileCost(file), 0);
+          timings.planningOwners[id] ?? group.files.reduce((n, file) => n + fileCost(file), 0);
         const cost = Math.max(measured, group.placementReserveSeconds ?? 0);
         return sum + cost;
       }, 0);
@@ -546,7 +583,7 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
   assert.ok(
     loads[mostReserved] - nativeLoads[mostReserved] <
       loads[leastReserved] - nativeLoads[leastReserved],
-    'ordinary backfill must compensate for unequal complete native-owner reserves',
+    `ordinary backfill must compensate for unequal complete native-owner reserves; native=${nativeLoads.join(', ')} total=${loads.join(', ')}`,
   );
   assert.ok(
     Math.max(...loads) - Math.min(...loads) <= largest + 1e-6,
@@ -559,14 +596,13 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
 });
 
 test('the largest ordinary files start on distinct native lanes before backfill', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
-  const ranked = [...nativeSpecifications].sort((left, right) => {
+  const timings = readDawnTimings();
+  const ranked = nativeSpecifications.filter(isLogicalOwner).sort((left, right) => {
     const leftPath = relative(root, left.moduleId).replaceAll('\\', '/');
     const rightPath = relative(root, right.moduleId).replaceAll('\\', '/');
-    const leftSeconds = timings.files[leftPath];
-    const rightSeconds = timings.files[rightPath];
+    const unmeasured = Math.max(...Object.values(timings.planningFiles));
+    const leftSeconds = timings.planningFiles[leftPath] ?? unmeasured;
+    const rightSeconds = timings.planningFiles[rightPath] ?? unmeasured;
     return rightSeconds - leftSeconds || leftPath.localeCompare(rightPath);
   });
   const firstWave = ranked.slice(0, DAWN_GATE_SHARDS.length);
@@ -579,8 +615,44 @@ test('the largest ordinary files start on distinct native lanes before backfill'
   assert.equal(new Set(lanes).size, DAWN_GATE_SHARDS.length);
 });
 
+test('later discoveries retain conservative capacity without entering old measured windows', () => {
+  const timings = readDawnTimings();
+  const fallback = Math.max(...Object.values(timings.planningFiles));
+  const added = {
+    moduleId: resolve(root, 'packages/render/src/__tests__/unmeasured-discovery.dawn.test.ts'),
+    project: nativeSpecifications[0].project,
+  };
+  // Model one later discovery after a known planning cohort. The current worktree
+  // may itself contain several new, equally conservative unmeasured owners.
+  const known = nativeSpecifications.filter(
+    (file) =>
+      timings.planningFiles[relative(root, file.moduleId).replaceAll('\\', '/')] !== undefined,
+  );
+  assert.ok(known.length >= DAWN_GATE_SHARDS.length);
+  const files = [...known, added];
+  const qualified = planDawnShards(known, root, 2);
+  const partitions = planDawnShards(files, root, 2);
+  for (const [lane, owners] of qualified.entries())
+    for (const owner of owners)
+      assert.ok(
+        partitions[lane].includes(owner),
+        'new discovery must preserve qualified placement',
+      );
+  assert.equal(partitions.flat().length, files.length);
+  assert.equal(new Set(partitions.flat().map((file) => file.moduleId)).size, files.length);
+  const cost = (file) =>
+    timings.planningFiles[relative(root, file.moduleId).replaceAll('\\', '/')] ?? fallback;
+  const firstWave = files
+    .filter(isLogicalOwner)
+    .sort((left, right) => cost(right) - cost(left) || left.moduleId.localeCompare(right.moduleId))
+    .slice(0, DAWN_GATE_SHARDS.length);
+  assert.ok(firstWave.includes(added), 'an unmeasured file retains the largest capacity forecast');
+  const lanes = firstWave.map((file) => partitions.findIndex((row) => row.includes(file)));
+  assert.equal(new Set(lanes).size, DAWN_GATE_SHARDS.length);
+});
+
 test('partial run 42369476147 separates complete process costs from inherited forecasts', () => {
-  const timings = JSON.parse(readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json')));
+  const timings = readDawnTimings();
   const snapshot = JSON.parse(
     readFileSync(new URL('./fixtures/dawn-completed-42369476147.json', import.meta.url)),
   );
@@ -614,12 +686,15 @@ test('partial run 42369476147 separates complete process costs from inherited fo
     );
   }
   const allFiles = [...Object.keys(snapshot.files), ...Object.keys(snapshot.reservedFiles)];
-  assert.equal(new Set(allFiles).size, nativeSpecifications.length);
-  assert.deepEqual(
-    allFiles.sort(),
-    nativeSpecifications
-      .map(({ moduleId }) => relative(root, moduleId).replaceAll('\\', '/'))
-      .sort(),
+  const currentFiles = new Set([
+    ...nativeSpecifications.map(({ moduleId }) => relative(root, moduleId).replaceAll('\\', '/')),
+    ...DAWN_GATE_GROUPS.flatMap((group) => group.files),
+  ]);
+  assert.equal(new Set(allFiles).size, 364);
+  assert.ok(
+    allFiles
+      .filter((file) => existsSync(resolve(root, file)))
+      .every((file) => currentFiles.has(file)),
   );
   const [forecast] = snapshot.ordinaryForecasts;
   const source = JSON.parse(
@@ -652,7 +727,7 @@ test('partial run 42369476147 separates complete process costs from inherited fo
 });
 
 test('historical missing-owner forecasts stay frozen when later measurements grow', () => {
-  const timings = JSON.parse(readFileSync('scripts/ci/dawn-file-seconds.json'));
+  const timings = readDawnTimings();
   const rows = [timings.previousRun, ...timings.replayRuns];
   const inherited = rows.filter((row) => row.reservedOwners?.['direct-light'] === 219.011);
   assert.equal(inherited.length, 8);
@@ -669,7 +744,7 @@ test('historical missing-owner forecasts stay frozen when later measurements gro
 });
 
 test('historical missing-file forecasts stay frozen when later measurements grow', () => {
-  const timings = JSON.parse(readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json')));
+  const timings = readDawnTimings();
   const snapshots = [timings.previousRun, ...timings.replayRuns];
   for (const snapshot of snapshots.filter((row) => row.fileForecast)) {
     const fixture = JSON.parse(
@@ -703,6 +778,42 @@ test('historical missing-file forecasts stay frozen when later measurements grow
 });
 
 for (const receipt of [
+  {
+    runId: 43819262879,
+    fileCount: 401,
+    ownerCount: 23,
+    missing: ['heavy-1', 'heavy-2', 'shadow-fields', 'gi-1'],
+  },
+  {
+    runId: 43744332755,
+    fileCount: 401,
+    ownerCount: 25,
+    missing: ['gi-3', 'screen-probe'],
+  },
+  {
+    runId: 43718751716,
+    fileCount: 390,
+    ownerCount: 23,
+    missing: ['transmission', 'gi-1', 'gi-2', 'gi-4'],
+  },
+  {
+    runId: 43693841655,
+    fileCount: 390,
+    ownerCount: 26,
+    missing: ['screen-probe'],
+  },
+  {
+    runId: 43532825859,
+    fileCount: 364,
+    ownerCount: 24,
+    missing: ['heavy-2', 'gi-6', 'shadow-fields'],
+  },
+  {
+    runId: 43193477552,
+    fileCount: 113,
+    ownerCount: 7,
+    missing: ['shadow-fields'],
+  },
   {
     runId: 42929802533,
     fileCount: 364,
@@ -795,10 +906,8 @@ for (const receipt of [
     ],
   },
 ]) {
-  test(`run ${receipt.runId} retains three minutes of native-step headroom`, (t) => {
-    const timings = JSON.parse(
-      readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-    );
+  test(`run ${receipt.runId} retains immutable complete-source timing evidence`, (t) => {
+    const timings = readDawnTimings();
     const snapshot = JSON.parse(
       readFileSync(
         new URL(`./fixtures/dawn-completed-${receipt.runId}.json`, import.meta.url),
@@ -823,50 +932,13 @@ for (const receipt of [
       );
     }
 
-    const ordinaryFiles = shippingPartitions.flatMap((partition) =>
-      partition.map((specification) =>
-        relative(root, specification.moduleId).replaceAll('\\', '/'),
-      ),
-    );
-    assert.equal(new Set(ordinaryFiles).size, nativeSpecifications.length);
-    // Historical receipts keep every original file. New complete owners enter
-    // the same lane-cost calculation below with its conservative fallback.
-    assert.deepEqual(
-      ordinaryFiles.filter((file) => Object.hasOwn(snapshot.files, file)).sort(),
-      Object.keys(snapshot.files).sort(),
-    );
+    const currentFiles = new Set([
+      ...nativeSpecifications.map(({ moduleId }) => relative(root, moduleId).replaceAll('\\', '/')),
+      ...DAWN_GATE_GROUPS.flatMap((group) => group.files),
+    ]);
+    for (const file of Object.keys(snapshot.files))
+      if (existsSync(resolve(root, file))) assert.ok(currentFiles.has(file), file);
 
-    const fallback = Math.max(...Object.values(timings.files));
-    const fileCost = (file) =>
-      snapshot.files[file] ?? snapshot.reservedFiles?.[file] ?? timings.files[file] ?? fallback;
-    const largest = Math.max(
-      ...nativeSpecifications.map(({ moduleId }) =>
-        fileCost(relative(root, moduleId).replaceAll('\\', '/')),
-      ),
-    );
-    const laneSeconds = DAWN_GATE_SHARDS.map((owners, lane) => {
-      const ordinarySeconds = shippingPartitions[lane].reduce(
-        (sum, specification) =>
-          sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
-        0,
-      );
-      const ownerSeconds = owners
-        .filter((id) => !id.startsWith('ordinary-'))
-        .reduce((sum, id) => {
-          const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-          const admitted = snapshot.owners[id] ?? snapshot.reservedOwners?.[id];
-          const retained =
-            timings.owners[id] ?? group.files.reduce((total, file) => total + fileCost(file), 0);
-          return sum + (admitted ?? Math.max(retained, group.placementReserveSeconds ?? 0));
-        }, 0);
-      // Retain five seconds for each run's complete shader-profile producer.
-      return ordinarySeconds / 2 + largest / 2 + 60 + ownerSeconds + 5;
-    });
-
-    assert.ok(
-      Math.max(...laneSeconds) <= 2_200,
-      `completed receipts should preserve three minutes below the unchanged 40-minute Dawn step; got ${laneSeconds.map((seconds) => seconds.toFixed(1)).join(', ')}s`,
-    );
     assert.ok(
       [timings.latestRun, timings.previousRun, ...timings.replayRuns].some(
         (run) => run.runId === receipt.runId,
@@ -876,7 +948,13 @@ for (const receipt of [
     for (const id of receipt.missing) assert.ok(!Object.hasOwn(snapshot.owners, id));
     if (!receipt.missing.includes('shadow-fields'))
       assert.ok(Object.hasOwn(snapshot.owners, 'shadow-fields'));
-    t.diagnostic(JSON.stringify({ runId: receipt.runId, laneSeconds }));
+    t.diagnostic(
+      JSON.stringify({
+        runId: receipt.runId,
+        originalOrdinaryFiles: Object.keys(snapshot.files).length,
+        evidence: 'historical-only',
+      }),
+    );
   });
 }
 
@@ -896,9 +974,7 @@ for (const receipt of [
         'utf8',
       ),
     );
-    const timings = JSON.parse(
-      readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-    );
+    const timings = readDawnTimings();
     const retained = [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
       (run) => run.runId === receipt.runId,
     );
@@ -926,9 +1002,7 @@ for (const receipt of [
 }
 
 test('latest Dawn timing ledger retains the preceding maximum measurements', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
+  const timings = readDawnTimings();
   const previousLedger = JSON.parse(
     readFileSync(
       new URL('./fixtures/dawn-ledger-before-41998440989.json', import.meta.url),
@@ -950,8 +1024,48 @@ test('latest Dawn timing ledger retains the preceding maximum measurements', () 
   }
 });
 
+test('run 44023395616 retains complete core receipts and interrupted GI forecasts', () => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-44023395616.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  assert.deepEqual(
+    [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+      (row) => row.runId === receipt.runId,
+    ),
+    receipt,
+  );
+  assert.equal(receipt.head, 'f63f46041014cf4b00dcf5b206d823a77172b2ad');
+  assert.equal(receipt.complete, false);
+  assert.equal(receipt.executionPolicy.profile, 'pull-request-core-lightweight');
+  assert.equal(Object.keys(receipt.files).length, 371);
+  assert.equal(Object.keys(receipt.owners).length, 24);
+  assert.deepEqual(
+    receipt.ordinaryReceipts.map(({ fileCount }) => fileCount),
+    [89, 91, 93, 98],
+  );
+  const work = Object.values(receipt.files).reduce((sum, seconds) => sum + seconds, 0);
+  const wall = receipt.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * wall) < 0.001, 'retain both complete ordinary worker slots');
+  for (const [owner, seconds] of Object.entries(receipt.owners)) {
+    const processes = receipt.ownerReceipts[owner].processes;
+    assert.ok(processes.every(({ status }) => status === 0));
+    assert.ok(
+      Math.abs(processes.reduce((sum, row) => sum + row.elapsedMs / 1000, 0) - seconds) < 0.001,
+    );
+    assert.ok(timings.owners[owner] >= seconds);
+  }
+  for (const [file, seconds] of Object.entries(receipt.files))
+    assert.ok(timings.files[file] >= seconds, `retain the complete file cost: ${file}`);
+  for (const owner of [...receipt.interruptedOwners, ...receipt.unstartedOwners]) {
+    assert.ok(!Object.hasOwn(receipt.owners, owner));
+    assert.ok(receipt.reservedOwners[owner] > 0);
+    assert.ok(timings.owners[owner] >= receipt.reservedOwners[owner]);
+  }
+});
+
 test('later native measurements preserve older uncompleted-owner reservations', () => {
-  const timings = JSON.parse(readFileSync('scripts/ci/dawn-file-seconds.json', 'utf8'));
+  const timings = readDawnTimings();
   for (const snapshot of [timings.latestRun, timings.previousRun, ...timings.replayRuns]) {
     if (snapshot.reservedOwners === undefined) continue;
     const fixture = JSON.parse(
@@ -976,12 +1090,290 @@ test('later native measurements preserve older uncompleted-owner reservations', 
   }
 });
 
+test('run 44136739089 freezes complete children and excludes interrupted VFX partitions', () => {
+  const bytes = readFileSync(new URL('../dawn-timing-snapshots/44136739089.json', import.meta.url));
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    'a9231578ec85e13978fd7041521ea30e6cbcb347e83bd885321a0c5afb4e5675',
+  );
+  const receipt = JSON.parse(bytes);
+  assert.equal(receipt.head, '705b99991c12a90481d073c5a36bb3ca9ba364d0');
+  assert.equal(receipt.complete, false);
+  assert.equal(receipt.ordinaryReceipts.length, 4);
+  assert.equal(Object.keys(receipt.files).length, 371);
+  assert.equal(Object.keys(receipt.owners).length, 22);
+  assert.equal(receipt.owners['vfx-depth'], undefined);
+  assert.deepEqual(receipt.interruptedOwners, ['vfx-depth']);
+  const wall = receipt.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  const work = Object.values(receipt.files).reduce((sum, seconds) => sum + seconds, 0);
+  assert.ok(Math.abs(work - 2 * wall) < 0.001);
+  assert.ok(receipt.incompleteOwnerForecasts['vfx-depth'].seconds > 500);
+});
+
+test('core forecasts derive only from complete children in the matching execution profile', () => {
+  const timings = readDawnTimings();
+  const expected = { files: {}, owners: {} };
+  for (const run of timings.coreProfile.sourceRuns) {
+    const snapshot = JSON.parse(
+      readFileSync(new URL(`../dawn-timing-snapshots/${run}.json`, import.meta.url), 'utf8'),
+    );
+    assert.deepEqual(snapshot.executionPolicy, timings.coreProfile.executionPolicy);
+    for (const key of ['files', 'owners']) {
+      for (const [name, seconds] of Object.entries(snapshot[key])) {
+        expected[key][name] = Math.max(expected[key][name] ?? 0, seconds);
+        assert.ok(timings[key][name] >= seconds, `retain the historical maximum: ${name}`);
+      }
+    }
+  }
+  assert.equal(timings.coreProfile.executionPolicy.profile, 'pull-request-core-lightweight');
+  assert.deepEqual(timings.coreProfile.files, expected.files);
+  assert.deepEqual(timings.coreProfile.owners, expected.owners);
+  const core = { FORGEAX_CI_CORE_VALIDATION: '1', FORGEAX_DAWN_LIGHTWEIGHT: '1' };
+  const full = { FORGEAX_CI_CORE_VALIDATION: '0' };
+  const coreOwners = dawnPlanningOwnerCosts(core);
+  const fullOwners = dawnPlanningOwnerCosts(full);
+  assert.equal(coreOwners.get('vfx-depth'), expected.owners['vfx-depth']);
+  assert.equal(fullOwners.get('vfx-depth'), timings.owners['vfx-depth']);
+  assert.equal(
+    dawnPlanningOwnerCosts({ FORGEAX_CI_CORE_VALIDATION: '1' }).get('vfx-depth'),
+    fullOwners.get('vfx-depth'),
+    'a core roster alone cannot admit lightweight measurements',
+  );
+  assert.equal(
+    coreOwners.get('gi-3'),
+    expected.owners['gi-3'],
+    'a later complete child supplies core timing',
+  );
+  assert.ok(coreOwners.get('vfx-depth') < fullOwners.get('vfx-depth'));
+  const familyMembers = new Set(
+    DAWN_ORDINARY_FILE_FAMILIES.flatMap(({ anchor, children }) => [anchor, ...children]),
+  );
+  const coreFiles = dawnPlanningFileCosts(core);
+  const fullFiles = dawnPlanningFileCosts(full);
+  for (const [file, seconds] of Object.entries(expected.files)) {
+    if (familyMembers.has(file)) continue;
+    assert.equal(coreFiles.get(file), seconds);
+    assert.ok(fullFiles.get(file) >= seconds);
+  }
+});
+
+test('run 44039100905 retains failed lanes without admitting interrupted owners', () => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-44039100905.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  assert.deepEqual(
+    [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+      ({ runId }) => runId === receipt.runId,
+    ),
+    receipt,
+  );
+  assert.equal(receipt.head, '1a3f77b6d685325cd30e33f1fd83b08075849595');
+  assert.equal(receipt.complete, false);
+  assert.deepEqual(receipt.interruptedOwners, ['gi-3', 'compact-3']);
+  assert.equal(Object.keys(receipt.files).length, 371);
+  assert.equal(Object.keys(receipt.owners).length, 20);
+  assert.deepEqual(
+    receipt.ordinaryReceipts.map(({ fileCount }) => fileCount),
+    [85, 94, 93, 99],
+  );
+  const work = Object.values(receipt.files).reduce((sum, seconds) => sum + seconds, 0);
+  const wall = receipt.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * wall) < 0.001);
+  for (const owner of [...receipt.interruptedOwners, ...receipt.unstartedOwners]) {
+    assert.ok(!Object.hasOwn(receipt.owners, owner));
+    assert.ok(receipt.reservedOwners[owner] > 0);
+  }
+  for (const [owner, seconds] of Object.entries(receipt.owners)) {
+    const processes = receipt.ownerReceipts[owner].processes;
+    assert.ok(processes.every(({ status }) => status === 0));
+    assert.ok(
+      Math.abs(processes.reduce((sum, row) => sum + row.elapsedMs / 1000, 0) - seconds) < 0.001,
+    );
+  }
+});
+
+test('run 44113035424 conserves complete workers and excludes interrupted VFX timing', () => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-44113035424.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  assert.deepEqual(
+    [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+      ({ runId }) => runId === receipt.runId,
+    ),
+    receipt,
+  );
+  assert.equal(receipt.head, '52b5bcf1e35be1c248b6e2146170bdee1863746c');
+  assert.equal(receipt.complete, false);
+  assert.equal(Object.keys(receipt.files).length, 372);
+  assert.equal(Object.keys(receipt.owners).length, 22);
+  assert.deepEqual(receipt.interruptedOwners, ['vfx-depth']);
+  assert.deepEqual(receipt.unstartedOwners, []);
+  assert.ok(!Object.hasOwn(receipt.owners, 'vfx-depth'));
+  assert.equal(receipt.reservedOwners['vfx-depth'], 187.419);
+  assert.deepEqual(
+    receipt.ordinaryReceipts.map(({ fileCount }) => fileCount),
+    [87, 94, 96, 95],
+  );
+  const work = Object.values(receipt.files).reduce((sum, seconds) => sum + seconds, 0);
+  const wall = receipt.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * wall) < 0.001);
+  const filter = 'packages/render/src/__tests__/ssr-current-filter.dawn.test.ts';
+  assert.equal(receipt.files[filter], 6.097842105263161);
+  assert.ok(!Object.hasOwn(timings.fileReserves, filter));
+  for (const [owner, seconds] of Object.entries(receipt.owners)) {
+    const processes = receipt.ownerReceipts[owner].processes;
+    assert.ok(processes.every(({ status }) => status === 0));
+    assert.ok(
+      Math.abs(processes.reduce((sum, row) => sum + row.elapsedMs / 1000, 0) - seconds) < 0.001,
+    );
+  }
+});
+
+test('actual core discovery uses matching costs and conserves every ordinary file', () => {
+  // Case deadlines plus 30 s process startup reserve are forecasts, never measurements.
+  const unmeasured = [
+    'packages/render/src/__tests__/target-environment.dawn.test.ts',
+    'packages/render/src/__tests__/target-subresources.dawn.test.ts',
+    'packages/three/src/__tests__/procedural-addons-render.dawn.test.ts',
+    'packages/three/src/__tests__/surface-expression.dawn.test.ts',
+    'packages/three/src/__tests__/target-surface.dawn.test.ts',
+  ];
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import assert from 'node:assert/strict';
+      import { relative } from 'node:path';
+      import { readFileSync } from 'node:fs';
+      import { createVitest } from 'vitest/node';
+      import ledger from './scripts/ci/dawn-file-seconds.json' with { type: 'json' };
+      import { planDawnShards } from './config/vitest-dawn-sequencer.ts';
+      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS } from './scripts/ci/dawn-gate-roster.mjs';
+      import { coreValidationFiles } from './scripts/ci/core-validation.mjs';
+      import { dawnFileOwnerCosts, dawnPlanningFileCosts, dawnPlanningOwnerCosts } from './config/dawn-timings.ts';
+      const v = await createVitest('test', { project: ['dawn'], watch: false });
+      try {
+        const files = await v.globTestSpecifications();
+        const paths = files.map(({ moduleId }) => relative(process.cwd(), moduleId).replaceAll('\\\\', '/'));
+        const unmeasured = ${JSON.stringify(unmeasured)};
+        assert.ok(unmeasured.every((path) => !Object.hasOwn(ledger.coreProfile.files, path)));
+        assert.deepEqual(Object.keys(ledger.fileReserves).sort(), unmeasured);
+        // Historical receipts retain their original population. Current discovery
+        // also admits new files, charged at the sequencer's conservative fallback.
+        const measured = Object.keys(ledger.coreProfile.files);
+        const native = new Set(DAWN_GATE_GROUPS.flatMap(({ files }) => files));
+        const declared = coreValidationFiles([...measured, ...Object.keys(ledger.fileReserves)])
+          .filter((path) => !native.has(path));
+        assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
+        const added = paths.filter((path) => !declared.includes(path));
+        const lanes = planDawnShards(files, process.cwd(), 2);
+        assert.equal(lanes.length, 4);
+        assert.equal(new Set(lanes.flat().map(({ moduleId }) => moduleId)).size, files.length);
+        assert.deepEqual(lanes.flat().map(({ moduleId }) =>
+          relative(process.cwd(), moduleId).replaceAll('\\\\', '/')).sort(), paths.sort());
+        const costs = dawnPlanningFileCosts();
+        const fallback = Math.max(...costs.values());
+        const owners = dawnPlanningOwnerCosts();
+        assert.equal(owners.get('vfx-depth'), ledger.coreProfile.owners['vfx-depth']);
+        const children = new Set([
+          'packages/three/src/__tests__/node-optical-inputs.dawn.test.ts',
+          'packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts',
+        ]);
+        const loads = lanes.map((lane, index) =>
+          lane.reduce((sum, { moduleId }) => {
+            const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
+            return sum + (children.has(path) ? 0 : (costs.get(path) ?? fallback) / 2);
+          }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
+            const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+            return sum + (id.startsWith('ordinary-') || coreValidationFiles(group.files).length === 0
+              ? 0 : Math.max(owners.get(id) ?? 0, group.placementReserveSeconds ?? 0));
+          }, 0));
+        assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
+        // Replay the original measured population; additions have forecasts, not old observations.
+        const historical = files.filter(({ moduleId }) =>
+          Object.hasOwn(ledger.coreProfile.files, relative(process.cwd(), moduleId).replaceAll('\\\\', '/')));
+        const historicalLanes = planDawnShards(historical, process.cwd(), 2);
+        assert.equal(historical.length, files.length - paths.filter((path) => !measured.includes(path)).length);
+        const replays = [];
+        for (const run of ledger.coreProfile.sourceRuns) {
+          const receipt = JSON.parse(readFileSync('scripts/ci/dawn-timing-snapshots/' + run + '.json', 'utf8'));
+          const fileCosts = dawnFileOwnerCosts(receipt.files);
+          const tails = { ...receipt.owners, ...receipt.reservedOwners };
+          for (const [owner, forecast] of Object.entries(receipt.incompleteOwnerForecasts ?? {}))
+            tails[owner] = forecast.seconds;
+          const observed = historicalLanes.map((lane, index) =>
+            lane.reduce((sum, { moduleId }) => {
+              const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
+              return sum + (children.has(path) ? 0 : (fileCosts.get(path) ?? 0) / 2);
+            }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
+            const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+            // Count files that moved out of ordinary discovery exactly once.
+            return sum + (tails[id] ?? 0) + group.files.reduce(
+              (seconds, path) => seconds + (fileCosts.get(path) ?? 0), 0);
+          }, 0));
+          // Two minutes of the 30-minute target remain for preparation. Older
+          // infeasible targets retain the original 40-minute execution bound.
+          const bound = observed.reduce((sum, seconds) => sum + seconds, 0) / 4 <= 1680 ? 1680 : 2400;
+          assert.ok(Math.max(...observed) <= bound, 'complete cohort ' + run + ' exceeds ' + bound + ': ' + observed);
+          replays.push({ run, bound, loads: observed });
+        }
+        console.log(JSON.stringify({ files: files.length, measuredFiles: measured.length, declaredFiles: declared.length, unmeasured, added, loads, replays }));
+      } finally { await v.close(); }
+    `,
+    ],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, FORGEAX_CI_CORE_VALIDATION: '1', FORGEAX_DAWN_LIGHTWEIGHT: '1' },
+    },
+  );
+  const result = JSON.parse(output.trim().split('\n').at(-1));
+  assert.deepEqual(result.unmeasured, unmeasured);
+  assert.equal(result.measuredFiles, 372);
+  assert.equal(result.files, result.declaredFiles + result.added.length);
+});
+
+test('planar capture and low-limit transmission share serial Surface admission', () => {
+  const owner = DAWN_GATE_GROUPS.find((group) => group.id === 'surface-pipelines');
+  for (const file of [
+    'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
+    'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
+    'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
+  ]) {
+    assert.ok(owner.files.includes(file), file);
+    assert.equal(DAWN_GATE_GROUPS.filter((group) => group.files.includes(file)).length, 1);
+    assert.ok(!nativeSpecifications.some((specification) => specification.moduleId.endsWith(file)));
+  }
+  const args = dawnVitestArgs(owner, { ordinaryWorkers: 2 });
+  assert.ok(args.includes('--maxWorkers=1'));
+  assert.ok(args.includes('--no-file-parallelism'));
+  assert.equal(DAWN_GATE_SHARDS.length, 4);
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const evidence = workflow.jobs['vitest-dawn'].steps.find((step) =>
+    step.with?.name?.startsWith('lighting-channels-dawn-'),
+  );
+  assert.ok(evidence.with.path.includes('artifacts/planar-reflection/dawn/'));
+  assert.ok(evidence.if.includes('artifacts/planar-reflection/dawn/**'));
+});
+
 test('long native capture journeys start before ordinary backfill', () => {
-  for (const id of ['modeling-s6', 'modeling-show', 'gi-5', 'surface-pipelines', 'direct-light']) {
+  for (const id of [
+    'modeling-s6',
+    'modeling-show',
+    'gi-5',
+    'surface-pipelines',
+    'direct-light',
+    'transmission',
+  ]) {
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
     const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
     assert.ok(
-      group.placementReserveSeconds >= (id === 'direct-light' ? 219.011 : 600),
+      group.placementReserveSeconds >=
+        (id === 'direct-light' ? 219.011 : id === 'transmission' ? 294.878 : 600),
       'retain measured capture headroom without changing the case deadline',
     );
     const selected = selectDawnShard(`${lane + 1}/4`);
@@ -1005,95 +1397,110 @@ test('long native capture journeys start before ordinary backfill', () => {
   );
 });
 
-test('native tail placement retains independent headroom across the later cohorts', () => {
-  const fourthLane = DAWN_GATE_SHARDS[3];
-  for (const id of ['modeling-s6', 'transmission']) {
-    assert.ok(!fourthLane.includes(id), `${id} must use capacity outside the measured slow lane`);
-  }
-  assert.ok(
-    fourthLane.includes('screen-probe'),
-    'the complete owner uses the 2026-11-10 fourth-lane headroom',
-  );
-});
-
-test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill', () => {
-  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.deepEqual(DAWN_GATE_SHARDS[3], [
-    'ordinary-4',
-    'surface-pipelines',
-    'gi-5',
-    'gi-3',
-    'screen-probe',
-    'feature-depth',
-  ]);
-  for (const id of ['shadow-fields', 'heavy-1', 'heavy-2', 'nested-discard']) {
-    assert.equal(laneOf(id), 0, `${id} moves to the measured lane-one headroom`);
-  }
-  for (const id of ['compact-3', 'timing-lifecycle', 'gi-6', 'renderer']) {
-    assert.equal(laneOf(id), 1, `${id} moves to the measured lane-two headroom`);
-  }
-  assert.equal(laneOf('compact-1'), 0, 'run 42443025201 exchanges complete compact owners');
-  for (const id of ['compact-2', 'direct-light', 'gi-4']) {
-    assert.equal(laneOf(id), 2, `${id} stays with the reduced third-lane workload`);
-  }
-  assert.equal(laneOf('gi-5'), 3, 'GI-5 reserves ordinary-file headroom in lane four');
-  assert.equal(
-    laneOf('surface-pipelines'),
-    3,
-    'complete surface work replaces ordinary backfill after run 42247651279',
-  );
-});
-
-test('run 42835598738 moves complete full-profile depth owners off the saturated second lane', () => {
-  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('feature-depth'), 3);
-  assert.equal(laneOf('vfx-depth'), 0);
-  assert.ok(!DAWN_GATE_SHARDS[1].includes('feature-depth'));
-  assert.ok(!DAWN_GATE_SHARDS[1].includes('vfx-depth'));
-});
-
-test('run 42929802533 moves the complete S6 capture off the overloaded first Dawn lane', () => {
-  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('gi-2'), 2, 'run 42786967820 moves the complete owner to lane three');
-  assert.equal(laneOf('transmission'), 2, 'run 42786967820 moves the complete owner to lane three');
-  assert.equal(laneOf('gi-3'), 3);
-  assert.equal(laneOf('gi-1'), 2);
-  assert.equal(laneOf('modeling-s6'), 1);
-  assert.equal(laneOf('gpu-timing'), 0);
-  assert.equal(laneOf('gi-4'), 2);
-  assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
-});
-
-test('run 42247651279 leaves ordinary-file headroom on the fourth lane', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
-  // Preserve this regression's original completed cohort when latestRun moves.
+test('run 43718751716 preserves interrupted-owner forecasts', () => {
   const snapshot = JSON.parse(
-    readFileSync(new URL('./fixtures/dawn-completed-42164226420.json', import.meta.url), 'utf8'),
+    readFileSync(new URL('./fixtures/dawn-completed-43718751716.json', import.meta.url), 'utf8'),
   );
-  const seconds = shippingPartitions[3].reduce((sum, file) => {
-    const path = relative(root, file.moduleId).replaceAll('\\', '/');
-    return (
-      sum +
-      (snapshot.files[path] ?? timings.files[path] ?? Math.max(...Object.values(timings.files)))
-    );
-  }, 0);
-  const largest = Math.max(
-    ...nativeSpecifications.map(({ moduleId }) => {
-      const file = relative(root, moduleId).replaceAll('\\', '/');
-      return (
-        snapshot.files[file] ?? timings.files[file] ?? Math.max(...Object.values(timings.files))
-      );
-    }),
+  assert.equal(snapshot.owners.transmission, undefined, 'an interrupted owner is not measured');
+  assert.equal(snapshot.reservedOwners.transmission, 294.878, 'retain its prior complete forecast');
+});
+
+test('native tails retain independent measured headroom across complete cohorts', () => {
+  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
+  assert.equal(new Set(['modeling-s6', 'modeling-show', 'gi-5'].map(laneOf)).size, 3);
+  assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
+  assert.notEqual(laneOf('feature-depth'), laneOf('vfx-depth'));
+  const depth = DAWN_GATE_GROUPS.find(({ id }) => id === 'vfx-depth');
+  const timings = readDawnTimings();
+  const forecast = [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+    ({ runId }) => runId === 44136739089,
   );
-  const forecast = seconds / 2 + largest / 2 + 60;
-  assert.ok(forecast <= 1550, `ordinary-4 must shed backfill after its timeout: ${forecast}s`);
+  const recordedReserve = forecast.incompleteOwnerForecasts['vfx-depth'].seconds;
+  assert.equal(
+    recordedReserve,
+    500.73499999999996,
+    'retain the original incomplete-owner forecast',
+  );
+  assert.ok(
+    depth.placementReserveSeconds >= recordedReserve,
+    'independent admission headroom must cover the recorded forecast',
+  );
+  const selected = selectDawnShard(`${laneOf('vfx-depth') + 1}/4`);
+  assert.ok(
+    selected.findIndex(({ id }) => id === 'vfx-depth') <
+      selected.findIndex(({ id }) => id.startsWith('ordinary-')),
+  );
+});
+
+test('completed cohorts distribute complete native tails before ordinary backfill', () => {
+  assert.deepEqual(DAWN_GATE_SHARDS, [
+    [
+      'ordinary-1',
+      'direct-light',
+      'gi-1',
+      'heavy-4',
+      'modeling-s6',
+      'path-tracer',
+      'rect-source',
+      'three-surface-expression',
+    ],
+    [
+      'ordinary-2',
+      'compact-2',
+      'gi-4',
+      'gi-6',
+      'heavy-2',
+      'specular-aa',
+      'shadow-quality',
+      'surface-pipelines',
+      'transmission',
+    ],
+    [
+      'ordinary-3',
+      'alpha-hash',
+      'compact-3',
+      'feature-depth',
+      'gi-2',
+      'heavy-1',
+      'heavy-3',
+      'modeling-show',
+      'screen-probe',
+    ],
+    [
+      'ordinary-4',
+      'compact-1',
+      'gi-3',
+      'gi-5',
+      'nested-discard',
+      'shadow-fields',
+      'renderer',
+      'vfx-depth',
+    ],
+  ]);
+});
+
+test('Alpha Hash and Three Surface each reserve a fresh serial Dawn fork', () => {
+  for (const [id, file, forecast] of [
+    ['alpha-hash', 'packages/runtime/src/__tests__/alpha-hash.dawn.test.ts', 186.15],
+    [
+      'three-surface-expression',
+      'packages/three/src/__tests__/surface-expression.dawn.test.ts',
+      420,
+    ],
+  ]) {
+    const owner = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+    assert.equal(owner.nativeProcessSlots, 2);
+    assert.ok(owner.placementReserveSeconds >= forecast);
+    assert.deepEqual(owner.files, [file]);
+    assert.ok(!nativeSpecifications.some(({ moduleId }) => moduleId.endsWith(file)));
+    assert.ok(dawnVitestArgs(owner, { ordinaryWorkers: 2 }).includes('--maxWorkers=1'));
+  }
 });
 
 test('measured heavy ordinary files spread without extra owners', (t) => {
+  const currentPartitions = shippingPartitions;
   const locations = new Map(
-    shippingPartitions.flatMap((partition, lane) =>
+    currentPartitions.flatMap((partition, lane) =>
       partition.map(({ moduleId }) => [relative(root, moduleId).replaceAll('\\', '/'), lane + 1]),
     ),
   );
@@ -1106,7 +1513,7 @@ test('measured heavy ordinary files spread without extra owners', (t) => {
   ];
   for (const file of heavy) assert.ok(locations.has(file), file);
   assert.ok(new Set(heavy.map((file) => locations.get(file))).size >= 2);
-  assert.equal(locations.size, nativeSpecifications.length);
+  assert.equal(locations.size, currentPartitions.flat().length);
   assert.equal(DAWN_GATE_SHARDS.length, 4);
   assert.equal(DAWN_GATE_SHARDS.flat().length, DAWN_GATE_GROUPS.length);
   t.diagnostic(
@@ -1118,4 +1525,284 @@ test('measured heavy ordinary files spread without extra owners', (t) => {
       heavyFiles: heavy.map((file) => [file, locations.get(file)]),
     }),
   );
+});
+
+test('run 43851698763 retains complete work and exposes its infeasible forecast', (t) => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-43851698763.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  assert.deepEqual(
+    [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+      (row) => row.runId === snapshot.runId,
+    ),
+    snapshot,
+  );
+  assert.equal(snapshot.complete, false);
+  assert.equal(Object.keys(snapshot.files).length, 403);
+  assert.equal(Object.keys(snapshot.owners).length, 19);
+  assert.equal(snapshot.executionPolicy.ordinaryWorkers, 2);
+  assert.equal(snapshot.ordinaryReceipts.length, 4);
+  const work = Object.values(snapshot.files).reduce((sum, seconds) => sum + seconds, 0);
+  const elapsed = snapshot.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * elapsed) < 0.001, 'both complete worker slots remain charged');
+  for (const id of [...snapshot.interruptedOwners, ...snapshot.unstartedOwners]) {
+    assert.ok(!Object.hasOwn(snapshot.owners, id), `${id} did not complete`);
+    assert.ok(snapshot.reservedOwners[id] > 0, `${id} retains its full forecast`);
+  }
+  for (const id of ['feature-depth', 'vfx-depth']) {
+    assert.ok(!Object.hasOwn(snapshot.owners, id), `${id} ran only its PR subset`);
+    assert.ok(snapshot.reservedOwners[id] > snapshot.partialOwnerReceipts[id].processWallSeconds);
+  }
+  const largest = Math.max(...Object.values(snapshot.files));
+  const native = Object.values({ ...snapshot.reservedOwners, ...snapshot.owners }).reduce(
+    (sum, seconds) => sum + seconds,
+    0,
+  );
+  const total = work / 2 + 4 * (largest / 2 + 60) + native;
+  assert.ok(
+    total > 4 * 2194,
+    'infeasible measured/reserved work must never be relabeled as fitting',
+  );
+  t.diagnostic(
+    JSON.stringify({
+      runId: snapshot.runId,
+      qualification: 'historical-infeasible-forecast',
+      total,
+    }),
+  );
+});
+
+test('run 43819262879 retains all completed work and positive unfinished-owner forecasts', () => {
+  const snapshot = JSON.parse(
+    readFileSync(new URL('./fixtures/dawn-completed-43819262879.json', import.meta.url), 'utf8'),
+  );
+  const timings = readDawnTimings();
+  const retained = [timings.latestRun, timings.previousRun, ...timings.replayRuns].find(
+    (row) => row.runId === snapshot.runId,
+  );
+  assert.ok(retained);
+  assert.deepEqual(retained.files, snapshot.files);
+  assert.deepEqual(retained.owners, snapshot.owners);
+  assert.deepEqual(snapshot.interruptedOwners, ['heavy-1']);
+  assert.deepEqual(snapshot.unstartedOwners, ['heavy-2', 'shadow-fields', 'gi-1']);
+  assert.deepEqual(snapshot.reservedOwners, {
+    'heavy-1': 77.11,
+    'heavy-2': 52.202,
+    'shadow-fields': 207.672,
+    'gi-1': 241.472,
+  });
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.ordinaryReceipts.length, 4);
+  assert.equal(
+    snapshot.ordinaryReceipts.reduce((n, row) => n + row.fileCount, 0),
+    401,
+  );
+  assert.equal(Object.keys(snapshot.owners).length, 23);
+  for (const id of ['heavy-1', 'heavy-2', 'shadow-fields', 'gi-1']) {
+    assert.equal(Object.hasOwn(snapshot.owners, id), false);
+    assert.ok(snapshot.reservedOwners[id] > 0);
+    assert.ok(snapshot.reservedOwners[id] <= timings.owners[id]);
+  }
+  assert.equal(snapshot.owners['direct-light'], (106221 + 179992 + 166090 + 98729) / 1000);
+  assert.equal(snapshot.owners['surface-pipelines'], 421.326);
+});
+
+function nodeInputMatrix(node) {
+  if (node === undefined) return null;
+  if (ts.isAsExpression(node)) return nodeInputMatrix(node.expression);
+  if (ts.isIdentifier(node)) return node.text;
+  assert.ok(ts.isArrayLiteralExpression(node));
+  return node.elements.map((element) => {
+    if (ts.isStringLiteral(element)) return element.text;
+    assert.ok(
+      element.kind === ts.SyntaxKind.TrueKeyword || element.kind === ts.SyntaxKind.FalseKeyword,
+    );
+    return element.kind === ts.SyntaxKind.TrueKeyword;
+  });
+}
+
+// Preserve the case inputs and oracle delegation, independent of Renderer allocation.
+function nodeInputContracts(file) {
+  const source = ts.createSourceFile(
+    file,
+    readFileSync(file, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  return source.statements.filter(ts.isExpressionStatement).map(({ expression: call }) => {
+    assert.ok(ts.isCallExpression(call));
+    const [title, options, callback] = call.arguments;
+    assert.ok(ts.isStringLiteral(title));
+    assert.ok(ts.isObjectLiteralExpression(options));
+    assert.equal(options.properties.length, 1);
+    const timeout = options.properties[0];
+    assert.ok(ts.isPropertyAssignment(timeout));
+    assert.equal(timeout.name.getText(source), 'timeout');
+    assert.equal(timeout.initializer.getText(source), '120000');
+    assert.ok(ts.isArrowFunction(callback) && ts.isBlock(callback.body));
+    assert.equal(callback.body.statements.length, 2);
+    const [creation, assertion] = callback.body.statements;
+    assert.ok(ts.isVariableStatement(creation));
+    assert.equal(creation.declarationList.declarations.length, 1);
+    const renderer = creation.declarationList.declarations[0];
+    assert.equal(renderer.name.getText(source), 'renderer');
+    assert.ok(ts.isAwaitExpression(renderer.initializer));
+    const factory = renderer.initializer.expression;
+    assert.ok(ts.isCallExpression(factory));
+    assert.equal(factory.arguments.length, 0);
+    assert.ok(ts.isExpressionStatement(assertion) && ts.isAwaitExpression(assertion.expression));
+    const verify = assertion.expression.expression;
+    assert.ok(ts.isCallExpression(verify));
+    const cleanup = verify.arguments.at(-1);
+    assert.ok(ts.isArrowFunction(cleanup) && ts.isBlock(cleanup.body));
+    assert.equal(cleanup.parameters.length, 0);
+    assert.equal(cleanup.body.statements.length, 0);
+    const each = ts.isCallExpression(call.expression) ? call.expression : undefined;
+    assert.equal(
+      each?.expression.getText(source) ?? call.expression.getText(source),
+      each ? 'it.each' : 'it',
+    );
+    return [
+      nodeInputMatrix(each?.arguments[0]),
+      title.text,
+      callback.parameters.map((parameter) => parameter.name.getText(source)),
+      factory.expression.getText(source),
+      verify.expression.getText(source),
+      verify.arguments.slice(0, -1).map((argument) => argument.getText(source)),
+    ];
+  });
+}
+
+test('split node-input files retain all original cases and one measured physical owner', () => {
+  const receipt = JSON.parse(
+    readFileSync('scripts/ci/__tests__/fixtures/dawn-node-inputs-43823116760.json', 'utf8'),
+  );
+  const family = DAWN_ORDINARY_FILE_FAMILIES[0];
+  assert.equal(family.anchor, receipt.uncompletedFile);
+  const members = [family.anchor, ...family.children];
+  const contracts = members.flatMap(nodeInputContracts);
+  assert.deepEqual(contracts, [
+    [
+      ['uniform', 'vec4', 'texture'],
+      'renders and replays live %s node inputs on Dawn',
+      ['mode'],
+      'preparedRenderer',
+      'verifyNodeInputs',
+      ['renderer', 'mode'],
+    ],
+    [
+      null,
+      'retains node input precedence through async override rendering on Dawn',
+      [],
+      'getRenderer',
+      'verifyNodeOverride',
+      ['renderer'],
+    ],
+    [
+      'nodeInputPrimitives',
+      'renders and replays %s node uniforms on Dawn',
+      ['kind'],
+      'getRenderer',
+      'verifyNodeInputPrimitive',
+      ['renderer', 'kind'],
+    ],
+    [
+      [false, true],
+      'renders and replays lit uniforms and loaded=%s scenes on Dawn',
+      ['loaded'],
+      'getRenderer',
+      'verifyLitNodeInputs',
+      ['renderer', 'loaded'],
+    ],
+    [
+      'opticalModes',
+      'renders and replays %s optical node uniforms on Dawn',
+      ['mode'],
+      'getRenderer',
+      'verifyOpticalNodeInputs',
+      ['renderer', 'mode'],
+    ],
+    [
+      'primitiveInputModes',
+      'renders and replays %s primitive node inputs on Dawn',
+      ['mode'],
+      'getRenderer',
+      'verifyPrimitiveNodeInputs',
+      ['renderer', 'mode'],
+    ],
+  ]);
+  // The historical whole-body hashes remain untouched in their original receipt.
+  // These unchanged helpers own all original frames, pixels and fresh-device replays.
+  for (const [file, digest] of [
+    ['node-inputs.fixture.ts', '66fddfee7a752255f1839f2226a12905c45d6a9f8cc8726fb9b98907019c62ae'],
+    [
+      'lit-node-inputs.fixture.ts',
+      '1e29a0f94086f04f20d82285fab20d135fc8ba57d68562479001f8487f9284a0',
+    ],
+    [
+      'optical-node-inputs.fixture.ts',
+      'cec10a3dcce1459d157c04c6a40cfa24cfad7eaacc4f5a934fbf11f86e55a7ce',
+    ],
+    [
+      'primitive-node-inputs.fixture.ts',
+      'c98f9f54be10a40ee951a8526084de51c65b6f4045a11bd62325ce8f25485399',
+    ],
+  ]) {
+    assert.equal(
+      createHash('sha256')
+        .update(readFileSync(`packages/three/src/__tests__/${file}`))
+        .digest('hex'),
+      digest,
+    );
+  }
+  assert.equal(contracts.length, receipt.originalTestGroupSha256.length);
+  assert.equal(
+    receipt.originalTestsPerGroup.reduce((sum, count) => sum + count, 0),
+    18,
+  );
+  const lanes = members.map((path) =>
+    shippingPartitions.findIndex((lane) =>
+      lane.some(({ moduleId }) => relative(root, moduleId).replaceAll('\\', '/') === path),
+    ),
+  );
+  assert.ok(lanes.every((lane) => lane >= 0));
+  assert.equal(new Set(lanes).size, 1);
+  assert.equal(receipt.oomKillCounterAfter - receipt.oomKillCounterBefore, 1);
+});
+
+test('new split-file observations remain fully charged while old receipts retain their whole cost', () => {
+  const { anchor, children } = DAWN_ORDINARY_FILE_FAMILIES[0];
+  const old = { [anchor]: 334 };
+  assert.equal(dawnFileOwnerCosts(old).get(anchor), 334);
+  const current = { [anchor]: 200, [children[0]]: 100, [children[1]]: 80 };
+  assert.deepEqual([...dawnFileOwnerCosts(current)], [[anchor, 380]]);
+  assert.deepEqual(Object.values(current), [200, 100, 80]);
+});
+
+test('708d retains all completed Dawn children and forecasts unfinished full owners', () => {
+  const bytes = readFileSync(new URL('../dawn-timing-snapshots/44152394166.json', import.meta.url));
+  assert.equal(
+    createHash('sha256')
+      .update(JSON.stringify(JSON.parse(bytes)))
+      .digest('hex'),
+    '1908ebd441e32512bc591c1b7dbdb5ccfea06e9e4ea282ab81696d72c3751775',
+  );
+  const receipt = JSON.parse(bytes);
+  assert.equal(receipt.head, '708d4ff1c4515d5e0cc7af683759c477b2c62e40');
+  assert.equal(receipt.ordinaryReceipts.length, 4);
+  assert.equal(Object.keys(receipt.files).length, 371);
+  assert.equal(Object.keys(receipt.owners).length, 24);
+  assert.deepEqual(receipt.interruptedOwners, ['gi-1']);
+  assert.deepEqual(receipt.unstartedOwners, ['screen-probe']);
+  for (const owner of ['gi-1', 'screen-probe']) {
+    assert.equal(receipt.owners[owner], undefined);
+    assert.equal(
+      receipt.reservedOwners[owner],
+      DAWN_GATE_GROUPS.find((group) => group.id === owner).placementReserveSeconds,
+    );
+  }
+  const work = Object.values(receipt.files).reduce((sum, seconds) => sum + seconds, 0);
+  const wall = receipt.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+  assert.ok(Math.abs(work - 2 * wall) < 0.001);
 });

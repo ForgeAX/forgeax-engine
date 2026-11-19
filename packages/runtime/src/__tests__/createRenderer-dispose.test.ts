@@ -80,11 +80,7 @@ describe('createRenderer disposal contract', () => {
     expect(attached.ok).toBe(true);
     if (!attached.ok) return;
     renderer.dispose();
-    const result = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const result = renderer.draw({ source: attached.value });
     expect(result.ok).toBe(false);
   });
 });

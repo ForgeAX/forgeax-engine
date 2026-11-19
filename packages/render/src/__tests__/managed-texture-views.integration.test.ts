@@ -73,7 +73,7 @@ it('adopts a local texture and sampler revision once across two actual CameraVie
       .length;
   const draw = async () => {
     world.update(0).unwrap();
-    const submitted = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const submitted = renderer.draw({ source: lease });
     if (!submitted.ok) throw submitted.error;
     assert(submitted.value);
     const completed = await submitted.value.completed;

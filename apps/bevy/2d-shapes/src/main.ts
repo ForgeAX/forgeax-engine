@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -22,11 +23,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (!appResult.ok) return console.error('[bevy-2d-shapes] createApp failed:', appResult.error);
   const app = appResult.value;
   const scene = build2dShapesWorld(app.world);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'rotate-2d-shapes',
     queries: [],
     fn: (world) => step2dShapes(world, scene, world.getResource(Time).delta),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) return console.error('[bevy-2d-shapes] app.start failed:', started.error);
   const evidenceGlobal = globalThis as EvidenceGlobal;

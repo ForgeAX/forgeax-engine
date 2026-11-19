@@ -1,3 +1,5 @@
+import { defineSystem } from '@forgeax/engine-ecs';
+
 export type {
   PackDraftField,
   PackDraftReply,
@@ -39,6 +41,8 @@ import {
   workspaceAssetFacts,
   workspaceAssetKind,
 } from './workspace-asset-facts';
+import { inspectWorkspaceCloudMaterial } from './workspace-cloud-material';
+import { snapshotEngineWorkspaceProjectStatus } from './workspace-project-status';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
 
@@ -48,7 +52,7 @@ import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
  * registry, scene loader, camera controller, or renderer.
  */
 export const ENGINE_WORKSPACE_PLUGIN_ID = 'forgeax:engine-workspace';
-export const ENGINE_WORKSPACE_API_VERSION = 'forgeax.engine.workspace/1';
+export const ENGINE_WORKSPACE_API_VERSION = 'forgeax.engine.workspace/2';
 /** Host transport topic used to dispatch commands into the browser realm. */
 export const ENGINE_WORKSPACE_COMMAND_TOPIC = 'engine.workspace.command';
 /** Host transport service used by the browser realm to return command results. */
@@ -61,6 +65,8 @@ export const ENGINE_WORKSPACE_PREVIEWABLE_KINDS = [
   'material',
   'mesh',
   'texture',
+  'texture-generator',
+  'gpu-texture',
   'equirect',
   'vfx',
 ] as const;
@@ -304,7 +310,9 @@ export interface EngineWorkspacePreview {
   readonly close?: (input?: { readonly targetId?: string }) => Promise<void> | void;
 }
 
-export interface EngineWorkspacePlay extends EngineWorkspacePreview {
+export interface EngineWorkspacePlay extends Omit<EngineWorkspacePreview, 'target'> {
+  /** A published page has a surface identity before its real World authenticates. */
+  readonly target: Omit<EngineWorkspaceTarget, 'worldId'> & { readonly worldId?: string };
   readonly phase: 'starting' | 'running' | 'failed';
   /** Accepted browser handshakes; absent providers have not reported one yet. */
   readonly browserGeneration?: number | undefined;
@@ -319,6 +327,7 @@ export interface EngineWorkspacePlay extends EngineWorkspacePreview {
  * workspace preview below.
  */
 export interface EngineWorkspaceResourcePreviewOwner {
+  readonly refreshContent?: () => void;
   readonly material?: EngineWorkspacePreview['material'];
   readonly texture?: TextureViewControl;
   readonly assetBinding?: EngineWorkspaceAssetBinding;
@@ -355,25 +364,110 @@ export async function loadEngineWorkspaceMaterialSlots(
   return handles;
 }
 
+export type EngineWorkspaceProjectLifecycle =
+  | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
+  | {
+      readonly phase: 'starting';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document: EngineWorkspaceProjectDocument;
+      readonly target?: EngineWorkspaceTarget;
+      readonly browserGeneration: number;
+    }
+  | {
+      readonly phase: 'running';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document: EngineWorkspaceProjectDocument;
+      readonly target: EngineWorkspaceTarget;
+      readonly browserGeneration: number;
+    }
+  | {
+      readonly phase: 'failed';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document?: EngineWorkspaceProjectDocument;
+      readonly target?: EngineWorkspaceTarget;
+      readonly failure: unknown;
+      readonly browserGeneration?: number;
+    };
+
+export interface EngineWorkspaceProjectDocument {
+  readonly sessionId: string;
+  readonly targetId: string;
+  /** Host-published document address; it carries no claim that a World is ready. */
+  readonly url: string;
+  readonly browserGeneration: number;
+}
+
+export type EngineWorkspaceProjectTargetIdentity = Omit<EngineWorkspaceTarget, 'surface'>;
+export interface EngineWorkspaceProjectFailure {
+  readonly code: string;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail?: Readonly<Record<string, unknown>>;
+  readonly detailOmitted?: {
+    readonly reason: 'not-a-record' | 'non-json-value';
+    readonly summary: string;
+  };
+}
+/** Closed, serializable projection of an owner lifecycle snapshot. */
+export type EngineWorkspaceProjectStatus =
+  | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
+  | {
+      readonly phase: 'starting';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document: EngineWorkspaceProjectDocument;
+      readonly target?: EngineWorkspaceProjectTargetIdentity;
+      readonly browserGeneration: number;
+    }
+  | {
+      readonly phase: 'running';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document: EngineWorkspaceProjectDocument;
+      readonly target: EngineWorkspaceProjectTargetIdentity;
+      readonly browserGeneration: number;
+    }
+  | {
+      readonly phase: 'failed';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly document?: EngineWorkspaceProjectDocument;
+      readonly target?: EngineWorkspaceProjectTargetIdentity;
+      readonly failure: EngineWorkspaceProjectFailure;
+      readonly browserGeneration?: number;
+    };
+
 export interface EngineWorkspaceProjectHandle {
   readonly project: EngineWorkspaceProject;
-  /** The long-lived headed target created while opening the project. */
-  readonly target?: EngineWorkspaceTarget;
+  /** One coherent owner snapshot; target operations narrow this before use. */
+  readonly status: EngineWorkspaceProjectLifecycle;
+  /** Exact disposer for updates from this project session owner. */
+  readonly subscribeStatus: (listener: () => void) => () => void;
   readonly handle?: unknown;
-  /** Current terminal failure, projected from the session owner rather than probed by a command. */
-  readonly failure?: unknown;
-  /** Browser realm lifecycle. `starting` covers the first boot and a refresh detach. */
-  readonly phase?: 'starting' | 'running' | 'failed' | undefined;
-  /** Increments each time a browser page for this session reports ready. */
-  readonly browserGeneration?: number | undefined;
 }
+/** Project/session identity passed to a domain operation; lifecycle stays with the owner. */
+export type EngineWorkspaceProjectReference = Pick<
+  EngineWorkspaceProjectHandle,
+  'project' | 'handle'
+>;
+export type EngineWorkspaceProjectExpectation =
+  | { readonly kind: 'empty' }
+  | {
+      readonly kind: 'session';
+      readonly sessionId: string;
+      readonly generation: number;
+      readonly recovery?: 'lost';
+    };
 
 /**
  * The Engine Host's concrete project boundary. A host creates one App,
  * AssetRegistry and headed target per session, then gives that session to the
  * public workspace provider below. Consumers never construct these values.
  */
-export interface EngineWorkspaceProjectSession extends EngineWorkspaceProjectHandle {
+export type EngineWorkspaceProjectSession = EngineWorkspaceProjectHandle & {
   readonly authorPack?: EngineWorkspaceProvider['authorPack'];
   readonly inspectAsset?: (input: {
     readonly guid: string;
@@ -390,7 +484,6 @@ export interface EngineWorkspaceProjectSession extends EngineWorkspaceProjectHan
    */
   readonly app?: App;
   readonly assets?: AssetRegistry;
-  readonly target: EngineWorkspaceTarget;
   readonly presentation?: EngineWorkspacePresentation;
   readonly capture?: EngineWorkspacePreview['capture'];
   readonly applyInput?: (
@@ -413,11 +506,12 @@ export interface EngineWorkspaceProjectSession extends EngineWorkspaceProjectHan
     readonly signal?: AbortSignal;
   }) => Promise<EngineWorkspacePreview> | EngineWorkspacePreview;
   readonly close?: () => Promise<void> | void;
-}
+};
 
 export interface EngineWorkspaceProjectSessionFactory {
   readonly openProjectSession: (input: {
     readonly root: string;
+    readonly generation: number;
     readonly signal?: AbortSignal;
   }) => Promise<EngineWorkspaceProjectSession> | EngineWorkspaceProjectSession;
 }
@@ -429,7 +523,7 @@ export interface EngineWorkspaceAssetInput {
   readonly signal?: AbortSignal;
 }
 
-export interface EngineWorkspaceRuntimePackInput extends EngineWorkspaceProjectHandle {
+export interface EngineWorkspaceRuntimePackInput extends EngineWorkspaceProjectReference {
   readonly targetId: string;
   readonly worldId: string;
   readonly request: EngineWorkspaceRuntimePackRequest;
@@ -440,7 +534,7 @@ export interface EngineWorkspaceRuntimePackInput extends EngineWorkspaceProjectH
 
 export interface EngineWorkspaceProvider {
   readonly authorPack?: (
-    input: EngineWorkspaceProjectHandle & {
+    input: EngineWorkspaceProjectReference & {
       readonly request: PackDraftRequest;
       readonly previewTargetId?: string;
       readonly signal?: AbortSignal;
@@ -448,13 +542,13 @@ export interface EngineWorkspaceProvider {
   ) => Promise<PackDraftSnapshot | PackDraftUpdate | { readonly closed: string }>;
   readonly runtimePack?: (input: EngineWorkspaceRuntimePackInput) => Promise<unknown>;
   readonly prepareRuntimePackProgram?: (
-    input: EngineWorkspaceProjectHandle & {
+    input: EngineWorkspaceProjectReference & {
       readonly source: PackProgramSource;
       readonly signal?: AbortSignal;
     },
   ) => unknown | Promise<unknown>;
   readonly startPlay?: (
-    input: EngineWorkspaceProjectHandle & { readonly signal?: AbortSignal },
+    input: EngineWorkspaceProjectReference & { readonly signal?: AbortSignal },
   ) => Promise<EngineWorkspacePlay>;
   readonly inspectAsset?: (input: EngineWorkspaceAssetInput) => unknown | Promise<unknown>;
   readonly rebuildAssetSource?: (
@@ -466,6 +560,7 @@ export interface EngineWorkspaceProvider {
   ) => unknown | Promise<unknown>;
   readonly openProject: (input: {
     readonly root: string;
+    readonly generation: number;
     readonly signal?: AbortSignal;
   }) => Promise<EngineWorkspaceProjectHandle> | EngineWorkspaceProjectHandle;
   readonly closeProject: (input: {
@@ -505,7 +600,7 @@ export function createEngineWorkspaceProvider(
     if (
       handle === null ||
       typeof handle !== 'object' ||
-      !('target' in handle) ||
+      !('project' in handle) ||
       (typeof (handle as { readonly openPreview?: unknown }).openPreview !== 'function' &&
         typeof (handle as { readonly listAssets?: unknown }).listAssets !== 'function' &&
         !('app' in handle && 'assets' in handle))
@@ -568,22 +663,66 @@ export function createEngineWorkspaceProvider(
       if (!session || typeof session !== 'object') {
         throw new TypeError('Engine workspace session factory must return a session');
       }
-      assertTarget(session.target);
+      const admittedStatus = session.status;
+      try {
+        assertProjectLifecycle(admittedStatus);
+        if (
+          admittedStatus.generation !== input.generation ||
+          typeof session.subscribeStatus !== 'function'
+        ) {
+          throw new EngineWorkspaceError(
+            'engine-workspace-project-invalid',
+            'A project session with the requested generation and owner notifications',
+          );
+        }
+        if (
+          typeof session.project.id !== 'string' ||
+          !session.project.id ||
+          typeof session.project.root !== 'string' ||
+          !session.project.root
+        ) {
+          throw new EngineWorkspaceError(
+            'engine-workspace-project-invalid',
+            'Validated project facts',
+          );
+        }
+      } catch (error) {
+        try {
+          await Promise.resolve(session.close?.());
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            'Project session admission and cleanup failed',
+          );
+        }
+        throw error;
+      }
+      const readStatus = (): EngineWorkspaceProjectLifecycle => {
+        const current = session.status;
+        assertProjectLifecycle(current);
+        if (
+          current.sessionId !== admittedStatus.sessionId ||
+          current.generation !== admittedStatus.generation
+        ) {
+          throw new EngineWorkspaceError(
+            'engine-workspace-project-status-invalid',
+            'The admitted project session identity to remain stable',
+            'Retire the project session whose lifecycle owner changed identity.',
+          );
+        }
+        return current;
+      };
       return {
         project: session.project,
-        get target() {
-          return session.target;
+        get status() {
+          return readStatus();
         },
         handle: session,
-        get failure() {
-          return session.failure;
-        },
-        get phase() {
-          return session.phase;
-        },
-        get browserGeneration() {
-          return session.browserGeneration;
-        },
+        subscribeStatus: (listener) =>
+          session.subscribeStatus(() => {
+            readStatus();
+            listener();
+          }),
       };
     },
     async closeProject(input) {
@@ -605,8 +744,22 @@ export function createEngineWorkspaceProvider(
       if (session.project.id !== input.project.id) {
         throw new Error('Engine workspace project session identity mismatch');
       }
+      const status = session.status;
+      const admittedTarget = status.phase === 'running' ? status.target : undefined;
+      if (admittedTarget === undefined) {
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'A prepared Engine target',
+          'Wait for the project session to publish its target or inspect its preparation failure.',
+          {
+            phase: status.phase,
+            projectId: session.project.id,
+            ...(status.phase === 'failed' ? { failure: status.failure } : {}),
+          },
+        );
+      }
       const target = {
-        ...session.target,
+        ...admittedTarget,
         width: input.width,
         height: input.height,
       };
@@ -663,6 +816,10 @@ export interface EngineWorkspaceRuntime {
   readonly apiVersion: typeof ENGINE_WORKSPACE_API_VERSION;
   /** Current Engine owners; resource handles remain process-local. */
   readonly project: EngineWorkspaceProjectHandle | undefined;
+  /** Surface-free wire projection of the current lifecycle, owned by Engine. */
+  readonly projectStatus: EngineWorkspaceProjectStatus | undefined;
+  /** Exact disposer for the current project session's owner notifications. */
+  readonly subscribeProjectStatus: (listener: () => void) => () => void;
   /** Most recently opened preview, derived from the owned collection. */
   readonly preview: EngineWorkspacePreview | undefined;
   readonly previews: readonly EngineWorkspacePreview[];
@@ -673,8 +830,7 @@ export interface EngineWorkspaceRuntime {
   readonly rebuildAssetSource?: EngineWorkspaceProvider['rebuildAssetSource'];
   readonly openProject: (input: {
     readonly root: string;
-    readonly expectedTargetId?: string | null;
-    readonly expectedTargetState?: 'lost';
+    readonly expectedProject?: EngineWorkspaceProjectExpectation;
     readonly signal?: AbortSignal;
   }) => Promise<EngineWorkspaceProjectHandle>;
   readonly closeProject: EngineWorkspaceProvider['closeProject'];
@@ -689,7 +845,10 @@ interface RuntimeState {
   previews: Map<string, EngineWorkspacePreview>;
   play?: EngineWorkspacePlay | undefined;
   generation: number;
+  admissionGeneration: number;
+  nextProjectGeneration: number;
   disposed: boolean;
+  projectStatusDisposer?: (() => void) | undefined;
 }
 
 function abortError(signal: AbortSignal | undefined): never | void {
@@ -719,6 +878,101 @@ function assertTarget(target: EngineWorkspaceTarget): void {
     throw new TypeError(
       'Engine workspace preview must return a stable target with session, World, extent, and headed identities',
     );
+  }
+}
+
+function assertStartingProject(
+  status: Extract<EngineWorkspaceProjectLifecycle, { phase: 'starting' }>,
+): void {
+  if (!Number.isSafeInteger(status.browserGeneration) || status.browserGeneration < 0)
+    throw new TypeError('Starting Engine workspace lifecycle requires a valid browser generation');
+  const target = status.target;
+  if (!status.document?.targetId.trim() || !status.document.url.trim())
+    throw new TypeError(
+      'Starting Engine workspace lifecycle requires a Host-published presentation',
+    );
+  if (
+    status.document.sessionId !== status.sessionId ||
+    status.document.browserGeneration !== status.browserGeneration
+  )
+    throw new TypeError('Starting project document identity must match its lifecycle owner');
+  if (target !== undefined) assertTarget(target);
+  if (target !== undefined && status.document.targetId !== target.targetId)
+    throw new TypeError('Starting project document identity must match its retained Engine target');
+}
+
+function assertRunningProject(
+  status: Extract<EngineWorkspaceProjectLifecycle, { phase: 'running' }>,
+): void {
+  if (!Number.isSafeInteger(status.browserGeneration) || status.browserGeneration < 1)
+    throw new TypeError(
+      'Running Engine workspace lifecycle requires an admitted browser generation',
+    );
+  assertTarget(status.target);
+  if (!status.document?.targetId.trim() || !status.document.url.trim())
+    throw new TypeError(
+      'Running Engine workspace lifecycle requires its Host-published presentation',
+    );
+  if (
+    status.document.sessionId !== status.sessionId ||
+    status.document.targetId !== status.target.targetId ||
+    status.document.browserGeneration !== status.browserGeneration
+  )
+    throw new TypeError('Running project document identity must match its real Engine target');
+}
+
+function assertFailedProject(
+  status: Extract<EngineWorkspaceProjectLifecycle, { phase: 'failed' }>,
+): void {
+  if (
+    status.browserGeneration !== undefined &&
+    (!Number.isSafeInteger(status.browserGeneration) || status.browserGeneration < 0)
+  )
+    throw new TypeError('Failed Engine workspace lifecycle has an invalid browser generation');
+  if (status.target !== undefined) assertTarget(status.target);
+  if (
+    status.document !== undefined &&
+    (!status.document.targetId.trim() || !status.document.url.trim())
+  )
+    throw new TypeError('Failed Engine workspace lifecycle has an invalid presentation descriptor');
+  if (status.document !== undefined && status.document.sessionId !== status.sessionId)
+    throw new TypeError('Failed project document identity must match its lifecycle owner');
+  if (status.failure === undefined)
+    throw new TypeError('Failed Engine workspace lifecycle must retain its owner failure');
+}
+
+function assertProjectLifecycle(status: EngineWorkspaceProjectLifecycle): void {
+  if (
+    typeof status.sessionId !== 'string' ||
+    !status.sessionId ||
+    !Number.isSafeInteger(status.generation) ||
+    status.generation < 1
+  ) {
+    throw new TypeError('Engine workspace lifecycle must identify its session and generation');
+  }
+  let target: EngineWorkspaceTarget | undefined;
+  switch (status.phase) {
+    case 'preparing':
+      break;
+    case 'starting':
+      assertStartingProject(status);
+      target = status.target;
+      break;
+    case 'running':
+      assertRunningProject(status);
+      target = status.target;
+      break;
+    case 'failed':
+      assertFailedProject(status);
+      target = status.target;
+      break;
+    default:
+      throw new TypeError('Engine workspace lifecycle phase is unsupported');
+  }
+  if (target !== undefined) {
+    if (target.sessionId !== status.sessionId) {
+      throw new TypeError('Engine workspace lifecycle target must belong to its session');
+    }
   }
 }
 
@@ -956,7 +1210,8 @@ function createDefaultWorkspaceCameraInputController(
       },
     });
   };
-  world.addSystem(Update, { name: systemName, queries: [], fn: tick }).unwrap();
+  const systemToken1 = defineSystem({ name: systemName, queries: [], fn: tick });
+  world.addSystem(Update, systemToken1).unwrap();
   return {
     apply,
     get pivot() {
@@ -969,7 +1224,7 @@ function createDefaultWorkspaceCameraInputController(
       velocity = [0, 0, 0];
     },
     dispose() {
-      world.removeSystem(Update, systemName);
+      world.removeSystem(Update, systemToken1);
       velocity = [0, 0, 0];
     },
   };
@@ -993,10 +1248,29 @@ export function createEngineWorkspaceRuntime(
   if (typeof provider.openPreview !== 'function') {
     throw new TypeError('Engine workspace provider requires openPreview');
   }
-  const state: RuntimeState = { previews: new Map(), generation: 0, disposed: false };
+  const state: RuntimeState = {
+    previews: new Map(),
+    generation: 0,
+    admissionGeneration: 0,
+    nextProjectGeneration: 0,
+    disposed: false,
+  };
+  const projectStatusListeners = new Set<() => void>();
+  const notifyProjectStatus = () => {
+    for (const listener of projectStatusListeners) {
+      try {
+        listener();
+      } catch {
+        /* observers cannot own or fail the project session */
+      }
+    }
+  };
   let previewGeneration = 0;
   let mutation = Promise.resolve();
   let disposal: Promise<void> | undefined;
+  let retirementFailure:
+    | { project: EngineWorkspaceProjectHandle | undefined; cause: unknown }
+    | undefined;
 
   const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = mutation.then(operation, operation);
@@ -1014,7 +1288,14 @@ export function createEngineWorkspaceRuntime(
       state.previews.delete(preview.target.targetId);
   };
   const closePreviews = async (): Promise<void> => {
-    for (const preview of [...state.previews.values()]) await closePreview(preview).catch(() => {});
+    const results = await Promise.allSettled(
+      [...state.previews.values()].map((preview) => closePreview(preview)),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Workspace preview cleanup failed');
   };
   const closeUnadoptedPreview = async (preview: EngineWorkspacePreview): Promise<void> => {
     const current = state.previews.get(preview.target.targetId);
@@ -1028,11 +1309,45 @@ export function createEngineWorkspaceRuntime(
     // handshake. Keep that server and presentation alive until the browser can
     // acknowledge cleanup. A readiness failure must not become a successful stop.
     const parentRetired =
-      state.project?.phase === 'starting' && (state.project.browserGeneration ?? 0) > 0;
+      state.project?.status.phase === 'starting' && state.project.status.browserGeneration > 0;
     if (play.phase === 'starting' && (play.browserGeneration ?? 0) === 0 && !parentRetired)
       await play.ready();
     await play.close?.({ targetId: play.target.targetId });
     if (state.play === play) state.play = undefined;
+  };
+
+  const assertRetirementAvailable = (): void => {
+    const failure =
+      state.project?.status.phase === 'failed' ? record(state.project.status.failure) : undefined;
+    if (
+      failure?.code === 'engine-workspace-page-lost' &&
+      record(failure.detail)?.cleanup === 'unconfirmed'
+    )
+      retirementFailure = undefined;
+    if (retirementFailure && retirementFailure.project === state.project)
+      throw retirementFailure.cause;
+  };
+  const retireProjectResources = async (): Promise<void> => {
+    assertRetirementAvailable();
+    const project = state.project;
+    if (project?.status.phase === 'failed') {
+      const failure = record(project.status.failure);
+      if (
+        failure?.code === 'engine-workspace-page-lost' &&
+        record(failure.detail)?.cleanup === 'unconfirmed'
+      )
+        return;
+    }
+    try {
+      if (state.play) await stopPlay(state.play);
+      await closePreviews();
+      if (project) await provider.closeProject(project);
+    } catch (cause) {
+      // A failed retirement belongs to this admitted owner. A retry cannot
+      // allocate replacement resources or substitute a generic failure.
+      retirementFailure = { project, cause };
+      throw cause;
+    }
   };
 
   const startPlay = provider.startPlay?.bind(provider);
@@ -1104,6 +1419,13 @@ export function createEngineWorkspaceRuntime(
     get project() {
       return state.project;
     },
+    get projectStatus() {
+      return snapshotEngineWorkspaceProjectStatus(state.project?.status);
+    },
+    subscribeProjectStatus(listener) {
+      projectStatusListeners.add(listener);
+      return () => projectStatusListeners.delete(listener);
+    },
     get preview() {
       return [...state.previews.values()].at(-1);
     },
@@ -1116,7 +1438,7 @@ export function createEngineWorkspaceRuntime(
     stopPlay: (play) => enqueue(() => stopPlay(play)),
     ...(startPlay
       ? {
-          startPlay: (input: EngineWorkspaceProjectHandle & { signal?: AbortSignal }) =>
+          startPlay: (input: EngineWorkspaceProjectReference & { signal?: AbortSignal }) =>
             enqueue(async () => {
               abortError(input.signal);
               if (state.disposed || !state.project || input.handle !== state.project.handle)
@@ -1157,39 +1479,62 @@ export function createEngineWorkspaceRuntime(
     async openProject(input) {
       abortError(input.signal);
       if (state.disposed) throw new Error('engine workspace is disposed');
-      if (
-        input.expectedTargetState !== undefined &&
-        (input.expectedTargetState !== 'lost' ||
-          typeof input.expectedTargetId !== 'string' ||
-          !input.expectedTargetId.trim())
-      )
-        throw new TypeError('Expected lost state requires an exact target identity');
-      let generation = input.expectedTargetId === undefined ? ++state.generation : state.generation;
+      const admission = ++state.admissionGeneration;
+      const generation = ++state.nextProjectGeneration;
       return enqueue(async () => {
         abortError(input.signal);
-        if (input.expectedTargetId !== undefined) {
-          if ((state.project?.target?.targetId ?? null) !== input.expectedTargetId)
-            throw new EngineWorkspaceError(
-              'engine-workspace-target-mismatch',
-              'The expected project target must still be current',
-              'Another page changed the project. Refresh state and choose explicitly.',
-            );
-          if (
-            input.expectedTargetState === 'lost' &&
-            record(state.project?.failure)?.code !== 'engine-workspace-page-lost'
-          )
-            throw new EngineWorkspaceError(
-              'engine-workspace-target-busy',
-              'Replacement requires the identified target to be lost',
-              'The current target is not known to be lost.',
-            );
-          generation = ++state.generation;
-        }
-        if (state.play) await stopPlay(state.play);
+        if (admission !== state.admissionGeneration)
+          throw new Error('engine workspace project open was superseded before admission');
+        const assertExpectedProject = () => {
+          const expected = input.expectedProject;
+          if (expected?.kind === 'empty') {
+            if (state.project !== undefined)
+              throw new EngineWorkspaceError(
+                'engine-workspace-target-mismatch',
+                'The workspace to remain empty until project admission',
+                'Another page changed the project. Refresh state and choose explicitly.',
+              );
+          } else if (expected?.kind === 'session') {
+            const current = state.project;
+            if (
+              current?.status.sessionId !== expected.sessionId ||
+              current.status.generation !== expected.generation
+            )
+              throw new EngineWorkspaceError(
+                'engine-workspace-target-mismatch',
+                'The expected project session owner and generation to remain current',
+                'Another page changed the project. Refresh state and choose explicitly.',
+              );
+            if (
+              expected.recovery === 'lost' &&
+              (current.status.phase !== 'failed' ||
+                record(current.status.failure)?.code !== 'engine-workspace-page-lost')
+            )
+              throw new EngineWorkspaceError(
+                'engine-workspace-target-busy',
+                'Recovery requires the identified project session to be lost',
+                'The current target is not known to be lost.',
+              );
+          } else if (expected !== undefined)
+            throw new TypeError('Invalid project owner expectation');
+        };
+        assertExpectedProject();
+        assertRetirementAvailable();
         let opened: EngineWorkspaceProjectHandle | undefined;
+        const discardOpened = async (cause: unknown, message: string): Promise<never> => {
+          if (opened !== undefined) {
+            try {
+              await Promise.resolve(provider.closeProject(opened));
+            } catch (cleanup) {
+              throw new AggregateError([cause, cleanup], message);
+            }
+          }
+          throw cause;
+        };
         try {
           opened = await provider.openProject({
             root: input.root,
+            generation,
             ...(input.signal ? { signal: input.signal } : {}),
           });
           abortError(input.signal);
@@ -1199,31 +1544,53 @@ export function createEngineWorkspaceRuntime(
           // wins the generation race.
           if (
             opened !== undefined &&
-            (input.signal?.aborted || generation !== state.generation || state.disposed)
+            (input.signal?.aborted || admission !== state.admissionGeneration || state.disposed)
           ) {
-            await Promise.resolve(provider.closeProject(opened)).catch(() => {});
+            await discardOpened(error, 'Stale project admission cleanup failed');
           }
           throw error;
         }
-        if (generation !== state.generation || state.disposed) {
-          await Promise.resolve(provider.closeProject(opened)).catch(() => {});
-          throw new Error('engine workspace project open became stale');
-        }
-        await closePreviews();
-        if (state.project !== undefined) {
-          const oldProject = state.project;
-          try {
-            await provider.closeProject(oldProject);
-          } catch (cause) {
-            try {
-              await provider.closeProject(opened);
-            } catch (cleanup) {
-              throw new AggregateError([cause, cleanup], 'Workspace replacement cleanup failed');
-            }
-            throw cause;
+        try {
+          assertProjectLifecycle(opened.status);
+          if (opened.status.generation !== generation) {
+            throw new TypeError(
+              'Engine workspace admission must expose the requested session generation',
+            );
           }
+        } catch (error) {
+          await discardOpened(error, 'Invalid project admission cleanup failed');
         }
+        if (admission !== state.admissionGeneration || state.disposed) {
+          await discardOpened(
+            new Error('engine workspace project open became stale'),
+            'Stale project admission cleanup failed',
+          );
+        }
+        try {
+          await retireProjectResources();
+        } catch (cause) {
+          await discardOpened(cause, 'Workspace replacement cleanup failed');
+        }
+        state.projectStatusDisposer?.();
         state.project = opened;
+        state.generation = generation;
+        const admittedSessionId = opened.status.sessionId;
+        const admittedGeneration = opened.status.generation;
+        state.projectStatusDisposer = opened.subscribeStatus(() => {
+          if (state.project !== opened) return;
+          const current = opened.status;
+          assertProjectLifecycle(current);
+          if (
+            current.sessionId !== admittedSessionId ||
+            current.generation !== admittedGeneration
+          ) {
+            throw new TypeError(
+              'Project status notification changed its admitted session identity',
+            );
+          }
+          notifyProjectStatus();
+        });
+        notifyProjectStatus();
         return opened;
       });
     },
@@ -1239,13 +1606,14 @@ export function createEngineWorkspaceRuntime(
         );
       }
       ++state.generation;
+      ++state.admissionGeneration;
       await enqueue(async () => {
-        if (state.play) await stopPlay(state.play);
-        await closePreviews();
+        await retireProjectResources();
         if (state.project !== undefined) {
-          const project = state.project;
-          await provider.closeProject(project);
+          state.projectStatusDisposer?.();
+          state.projectStatusDisposer = undefined;
           state.project = undefined;
+          notifyProjectStatus();
         }
       });
     },
@@ -1287,9 +1655,17 @@ export function createEngineWorkspaceRuntime(
           },
         };
         if (input.signal?.aborted || epoch !== state.generation || state.disposed) {
-          await closeUnadoptedPreview(preview).catch(() => {});
-          abortError(input.signal);
-          throw new Error('engine workspace preview open became stale');
+          const stale = input.signal?.aborted
+            ? input.signal.reason instanceof Error
+              ? input.signal.reason
+              : new Error('engine workspace preview open was cancelled')
+            : new Error('engine workspace preview open became stale');
+          try {
+            await closeUnadoptedPreview(preview);
+          } catch (cleanup) {
+            throw new AggregateError([stale, cleanup], 'Stale workspace preview cleanup failed');
+          }
+          throw stale;
         }
         const replaced = state.previews.get(preview.target.targetId);
         if (replaced) await closePreview(replaced);
@@ -1306,11 +1682,12 @@ export function createEngineWorkspaceRuntime(
         const failures: unknown[] = [];
         try {
           await enqueue(async () => {
-            if (state.play) await stopPlay(state.play);
-            await closePreviews();
+            await retireProjectResources();
             if (state.project !== undefined) {
-              await provider.closeProject(state.project);
+              state.projectStatusDisposer?.();
+              state.projectStatusDisposer = undefined;
               state.project = undefined;
+              notifyProjectStatus();
             }
           });
         } catch (cause) {
@@ -1599,6 +1976,7 @@ export async function createEngineWorkspaceAppPreview(
         )?.unwrap();
       }
       assetBinding = nextBinding;
+      resourceOwner?.refreshContent?.();
     },
     get target() {
       return target.target;
@@ -1742,6 +2120,7 @@ export function createEngineWorkspaceAppTarget(
   const control = tools?.control;
   const pick = tools?.pick;
   const highlight = tools?.highlight;
+  const assistance = tools?.assistance;
   const preview: EngineWorkspacePreview = {
     get target() {
       return currentTarget;
@@ -1787,9 +2166,19 @@ export function createEngineWorkspaceAppTarget(
       ? {}
       : {
           tools: {
+            ...(assistance
+              ? {
+                  assistance: (
+                    value: import('./workspace-editor-assistance').EngineWorkspaceAssistanceRequest,
+                  ) => {
+                    assertOpen();
+                    return assistance(value);
+                  },
+                }
+              : {}),
             ...(pick
               ? {
-                  pick: (value: { x: number; y: number }) => {
+                  pick: (value: Parameters<NonNullable<EngineWorkspaceTargetTools['pick']>>[0]) => {
                     assertOpen();
                     return pick(value);
                   },
@@ -2009,6 +2398,7 @@ export function createEngineWorkspaceAppTarget(
           connectionId: value.connectionId,
           reason: 'client-disconnected',
         });
+      tools?.revokeConnection?.(value.connectionId);
       tools?.control?.revoke(value.connectionId);
       return camera();
     },
@@ -2064,7 +2454,17 @@ export async function inspectEngineWorkspaceAsset(
     : undefined;
   // Neutral catalog kinds remain inspectable even without a runtime loader.
   const kind = entry?.kind ?? 'mesh';
-  if (kind !== 'mesh' && kind !== 'material' && kind !== 'texture' && kind !== 'equirect')
+  if (kind === 'cloud-material' || kind === 'cloud-material-instance') {
+    return { ...identity, ...(await inspectWorkspaceCloudMaterial(assets, guid, kind, signal)) };
+  }
+  if (
+    kind !== 'mesh' &&
+    kind !== 'material' &&
+    kind !== 'texture' &&
+    kind !== 'equirect' &&
+    kind !== 'texture-generator' &&
+    kind !== 'gpu-texture'
+  )
     return identity;
   const handle = (await assets.load(guid, kind, signal === undefined ? {} : { signal })).unwrap();
   try {

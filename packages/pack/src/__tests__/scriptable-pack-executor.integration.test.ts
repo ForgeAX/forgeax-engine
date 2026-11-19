@@ -9,6 +9,32 @@ import {
   loadScriptablePack,
   type ScriptablePackModuleExecutor,
 } from '../scriptable-pack-node.js';
+import { createScriptablePackSourceSnapshot } from '../scriptable-pack-source-snapshot.js';
+
+it('preserves captured binary resource bytes after deletion without UTF-8 decoding', async () => {
+  await withPool(32, async ({ acquire, source }) => {
+    const binary = join(dirname(source), 'pixels.raw');
+    const bytes = new Uint8Array([0, 255, 128, 192, 0, 188, 13, 10]);
+    await writeFile(binary, bytes);
+    await writeFile(
+      source,
+      `import pixels from './pixels.raw?bytes';
+      export default { schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(1),
+        build: () => { if (pixels.join(',') !== '${bytes.join(',')}') throw new Error('binary changed');
+          return { ok: true, value: {} }; } };`,
+    );
+    const snapshot = createScriptablePackSourceSnapshot();
+    await snapshot.moduleSources(source);
+    await rm(binary);
+    const loaded = await loadScriptablePack(source, {
+      executor: await acquire(),
+      sourceSnapshot: snapshot,
+    });
+    if (!loaded.ok) throw loaded.error;
+    await build(loaded.value);
+    expect((await snapshot.verify()).ok).toBe(false);
+  });
+});
 
 interface OwnedExecutor {
   readonly worker: Worker;

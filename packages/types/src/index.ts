@@ -16,7 +16,7 @@ export type { ByteCache } from './byte-cache.js';
 export { canonicalJson } from './canonical-json.js';
 export * from './core-contracts.js';
 export { fnv1a32, fnv1aUtf16 } from './fnv1a.js';
-export { internJson, isDeepFrozenJson } from './frozen-json.js';
+export { freezeJson, isDeepFrozenJson } from './frozen-json.js';
 export {
   addLoadPhases,
   addLoadWork,
@@ -63,12 +63,25 @@ export type { PackageFetcher, PackageRequest, PackageResponse } from './package-
 export { pipelineDescriptorJson, snapshotPipelineDescriptor } from './pipeline-descriptor.js';
 export * from './plugin-asset.js';
 export * from './runtime-contracts.js';
-export { sha256 } from './sha256.js';
+export { sha256, sha256Bytes } from './sha256.js';
 export {
   ShaderSource,
   shaderSourceDescriptor,
   shaderSourceForDescriptor,
 } from './shader-source.js';
+export type {
+  TaskContext,
+  TaskExecutor,
+  TaskHandle,
+  TaskInitContext,
+  TaskKindRegistration,
+  TaskModule,
+  TaskPriority,
+  TaskRegistry,
+  TaskResult,
+  TaskSubmitOptions,
+} from './task-executor.js';
+export { taskAbortError } from './task-executor.js';
 export type {
   TerrainAsset,
   TerrainError,
@@ -79,6 +92,18 @@ export type {
   TerrainSource,
 } from './terrain.js';
 export { type TextureFormatBlock, textureFormatBlock } from './texture/block.js';
+export type {
+  GeneratedTextureDescriptor,
+  GeneratedTextureSource,
+  GpuTextureMipFilter,
+  TextureGenerationPass,
+  TextureGenerationRead,
+  TextureGeneratorAsset,
+  TextureGeneratorPrograms,
+} from './texture/generator.js';
+export { validateTextureGenerator } from './texture/generator.js';
+export type { GpuTextureAsset, SampledTextureAsset } from './texture/gpu-asset.js';
+export { isGpuTextureAsset } from './texture/gpu-asset.js';
 export type {
   UiGpuDataTexture,
   UiGpuFrame,

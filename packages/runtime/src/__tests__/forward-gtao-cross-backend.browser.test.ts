@@ -216,11 +216,7 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     failureOperation = 'renderer.draw';
     propagateTransforms(world).unwrap();
     world.update(1 / 60).unwrap();
-    const result = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const result = renderer.draw({ source: lease });
     if (!result.ok) throw result.error;
     const receipt = result.value;
     failureReceipt = {

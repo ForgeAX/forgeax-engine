@@ -1,13 +1,18 @@
-import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createProfiler, type RecorderSession } from '@forgeax/engine-profiler';
 import type { TextureView } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import {
   emptyFrameRecordingOutputs,
   resetFrameRecordingOutputs,
 } from '../../record/frame-snapshot';
+import { RENDER_PHASE_CATALOG } from '../../render-contract';
 import type { RecordAttempt } from '../../render-system-record-attempt';
 import { ShadowDepthLayers } from '../../shadow-depth-layers';
+import { RenderRecordCommitOrder } from '../../system-order';
 import { viewDirectionalShadow } from '../../view-inspection';
 import { RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM } from '../capture-graph-systems';
 import { RENDER_DISPLAY_DISCARD_SYSTEM } from '../display-submission-systems';
@@ -16,6 +21,7 @@ import { RENDER_GRAPH_SEAL_RELEASE_SYSTEM } from '../graph-seal-systems';
 import { RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM } from '../graph-submission-systems';
 import { RENDER_GRAPH_COMPILE_RELEASE_SYSTEM } from '../graph-systems';
 import { RENDER_POST_CLEANUP_SYSTEM } from '../post-systems';
+import { renderSchedulePhaseCatalog } from '../profiled-schedule-runs';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewCascadeFit } from '../render-lights';
 import { RenderView, ViewRecorder, ViewSubmission } from '../render-views';
@@ -154,19 +160,28 @@ function recordedView(
   >;
   const stage = (input: {
     readonly frame: number;
+    readonly configurationRevision?: number;
+    readonly sceneSubmitted?: boolean;
     readonly accepted: boolean;
     readonly submitted?: boolean;
     readonly cameraCount?: number;
     readonly profile?: string;
+    readonly profileSession?: RecorderSession;
+    readonly ownsProfileFrame?: boolean;
     readonly failure?: unknown;
   }): RecordAttempt => {
     const submitted = input.submitted ?? true;
     const attempt = {
       scopes: [],
-      composition: { owners: { resourceOwner: 0 } },
-      profileSession: { endFrame: () => order.push(`end-frame:${input.profile ?? 'attempt'}`) },
+      composition: { owners: {} },
+      profileSession: input.profileSession ?? {
+        endFrame: () => {
+          order.push(`end-frame:${input.profile ?? 'attempt'}`);
+          return { ok: true, value: undefined };
+        },
+      },
       submitted,
-      sceneSubmitted: submitted,
+      sceneSubmitted: input.sceneSubmitted ?? submitted,
       outcome: submitted
         ? {
             frame: {},
@@ -174,7 +189,6 @@ function recordedView(
             cameraCount: input.cameraCount ?? 0,
             presentation: { presentation: 'ready', reason: undefined },
             presentationRenderables: [],
-            worldKeys: [],
             draws: {
               presentedDraws: {},
               drawObservation: { commit: () => ({ status: 'complete', draws: [] }) },
@@ -190,12 +204,13 @@ function recordedView(
         temporal: false,
       });
     history.stage({
+      configurationRevision: input.configurationRevision,
       frame: input.frame,
       generation: 7,
       attempt,
       accepted: input.accepted,
       failure: input.failure,
-      ownsProfileFrame: true,
+      ownsProfileFrame: input.ownsProfileFrame ?? true,
     });
     return attempt;
   };
@@ -225,6 +240,146 @@ async function shadowRecordedView() {
 }
 
 describe('Render submission lifecycle', () => {
+  it('keeps the last accepted scene revision across rejected candidates and clears it on non-scene output', () => {
+    const f = recordedView();
+    beginRenderFrame(f.world, 1);
+    f.stage({ frame: 1, accepted: true, configurationRevision: 1 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBe(1);
+    beginRenderFrame(f.world, 2);
+    f.stage({ frame: 2, accepted: false, configurationRevision: 2 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBe(1);
+    beginRenderFrame(f.world, 3);
+    f.stage({ frame: 3, accepted: true, sceneSubmitted: false, configurationRevision: 2 });
+    accept(f.world, true);
+    endRenderFrame(f.world);
+    expect(f.history.configurationRevision).toBeUndefined();
+  });
+
+  it.each([
+    true,
+    false,
+  ])('closes an owned profile frame after nested Cleanup for accepted=%s', (accepted) => {
+    const f = recordedView();
+    const profiler = createProfiler({
+      phaseCatalog: {
+        app: [],
+        render: [...RENDER_PHASE_CATALOG, ...renderSchedulePhaseCatalog(f.world)],
+      },
+    });
+    const started = profiler.startCapture({ frameLimit: 48, eventLimit: 8192, detail: 'nested' });
+    if (!started.ok) throw started.error;
+    const session = started.value;
+    expect(session.beginFrame(1).ok).toBe(true);
+    const endFrame = vi.spyOn(session, 'endFrame');
+    beginRenderFrame(f.world, 1, session);
+    f.stage({ frame: 1, accepted, submitted: accepted, profileSession: session });
+    accept(f.world, accepted);
+    endRenderFrame(f.world);
+    expect(endFrame).toHaveBeenCalledTimes(1);
+    expect(endFrame.mock.results[0]?.value).toMatchObject({ ok: true });
+    const capture = session.finish();
+    expect(capture.ok).toBe(true);
+    if (capture.ok) {
+      const cleanup = capture.value.records.filter(
+        (row) => row.kind === 'phase' && row.phase === 'cleanup-schedule',
+      );
+      expect(cleanup).toHaveLength(1);
+    }
+    endRenderFrame(f.world);
+    expect(endFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an external profile token frame open for its caller', () => {
+    const f = recordedView();
+    const profiler = createProfiler({
+      phaseCatalog: {
+        app: [],
+        render: [...RENDER_PHASE_CATALOG, ...renderSchedulePhaseCatalog(f.world)],
+      },
+    });
+    const started = profiler.startCapture({ frameLimit: 48, eventLimit: 8192, detail: 'nested' });
+    if (!started.ok) throw started.error;
+    const session = started.value;
+    expect(session.beginFrame(7).ok).toBe(true);
+    const endFrame = vi.spyOn(session, 'endFrame');
+    beginRenderFrame(f.world, 1, session);
+    f.stage({ frame: 1, accepted: false, profileSession: session, ownsProfileFrame: false });
+    accept(f.world, false);
+    endRenderFrame(f.world);
+    expect(endFrame).not.toHaveBeenCalled();
+    expect(session.endFrame().ok).toBe(true);
+    expect(session.finish().ok).toBe(true);
+  });
+
+  it('reports an owned profile retirement Result failure once through the existing owner error channel', () => {
+    const f = recordedView();
+    const profiler = createProfiler({
+      phaseCatalog: {
+        app: [],
+        render: [...RENDER_PHASE_CATALOG, ...renderSchedulePhaseCatalog(f.world)],
+      },
+    });
+    const started = profiler.startCapture({ frameLimit: 48, eventLimit: 8192, detail: 'nested' });
+    if (!started.ok) throw started.error;
+    const session = started.value;
+    // A deliberately missing beginFrame is an invalid owned retirement.
+    const endFrame = vi.spyOn(session, 'endFrame');
+    beginRenderFrame(f.world, 1, session);
+    f.stage({ frame: 1, accepted: false, profileSession: session });
+    accept(f.world, false);
+    endRenderFrame(f.world);
+    expect(endFrame).toHaveBeenCalledTimes(1);
+    expect(f.owner.internals.errorRegistry.fire).toHaveBeenCalledTimes(1);
+    expect(f.owner.internals.errorRegistry.fire.mock.calls[0]?.[0]).toMatchObject({
+      code: 'internal-error',
+      detail: { error: { code: 'render-retirement-failed' } },
+    });
+    endRenderFrame(f.world);
+    expect(endFrame).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes an already retired owned frame even when a later Cleanup system fails', () => {
+    const f = recordedView();
+    f.world
+      .addSystem(
+        RenderCleanup,
+        defineSystem({
+          name: 'failing-later-cleanup',
+          queries: [],
+          commands: 'none',
+          after: [registeredSystem(f.world, RenderCleanup, RENDER_RECORD_RETIRE_SYSTEM)],
+          fn: () => {
+            throw new Error('later cleanup');
+          },
+        }),
+      )
+      .unwrap();
+    const profiler = createProfiler({
+      phaseCatalog: {
+        app: [],
+        render: [...RENDER_PHASE_CATALOG, ...renderSchedulePhaseCatalog(f.world)],
+      },
+    });
+    const started = profiler.startCapture({ frameLimit: 48, eventLimit: 8192, detail: 'nested' });
+    if (!started.ok) throw started.error;
+    const session = started.value;
+    expect(session.beginFrame(1).ok).toBe(true);
+    const endFrame = vi.spyOn(session, 'endFrame');
+    beginRenderFrame(f.world, 1, session);
+    f.stage({ frame: 1, accepted: false, submitted: false, profileSession: session });
+    accept(f.world, false);
+    expect(() => endRenderFrame(f.world)).toThrow();
+    expect(endFrame).toHaveBeenCalledTimes(1);
+    expect(endFrame.mock.results[0]?.value).toMatchObject({ ok: true });
+    expect(session.finish().ok).toBe(true);
+    endRenderFrame(f.world);
+    expect(endFrame).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps settled receiver facts while the next attempt resets only recording outputs', async () => {
     const { owner, graph, layers, inspect } = await shadowRecordedView();
     try {
@@ -451,7 +606,7 @@ describe('Render submission lifecycle', () => {
       'render-view-record-abandon',
       'render-view-record-release',
     ]);
-    expect(cleanup?.dependencies).toContainEqual([
+    expect(dependencyNames(cleanup)).toContainEqual([
       RENDER_RECORD_RETIRE_SYSTEM,
       RENDER_SUBMISSION_RETIRE_SYSTEM,
     ]);
@@ -459,16 +614,15 @@ describe('Render submission lifecycle', () => {
 
   it('commits an accepted attempt before consumers and retires every attempt once', () => {
     const { world, view, owner, history, stage, order } = recordedView();
-    world
-      .addSystem(RenderCommit, {
-        name: 'consumer',
-        queries: [{ read: [ViewSubmission] }],
-        after: [RENDER_RECORD_COMMIT_SYSTEM],
-        fn: (_world, [rows]) => {
-          for (const row of rows) order.push(`consumer:${row.get(ViewSubmission).temporal}`);
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'consumer',
+      queries: [{ read: [ViewSubmission] }],
+      after: [RenderRecordCommitOrder],
+      fn: (_world, [rows]) => {
+        for (const row of rows) order.push(`consumer:${row.get(ViewSubmission).temporal}`);
+      },
+    });
+    world.addSystem(RenderCommit, systemToken1).unwrap();
     beginRenderFrame(world, 1);
     stage({ frame: 1, accepted: true, profile: 'display' });
     stage({ frame: 1, accepted: false, profile: 'rejected' });
@@ -478,8 +632,9 @@ describe('Render submission lifecycle', () => {
     expect(order).toEqual([
       'temporal-commit:true',
       'consumer:true',
-      'end-frame:display',
       'temporal-discard',
+      // Frame closure follows every Cleanup owner, after its profiling phases.
+      'end-frame:display',
       'end-frame:rejected',
       'end-frame:stale',
     ]);
@@ -508,6 +663,64 @@ describe('Render submission lifecycle', () => {
     endRenderFrame(world);
     expect(history.presentation).toBe('pending');
     expect(history.pendingReason).toEqual({ code: 'compiled-graph-unavailable' });
+  });
+
+  it('qualifies a submitted capture from its actual capture work without a display graph', () => {
+    const { world, owner, history, stage } = recordedView();
+    owner.frameState.compiledFrameGraph = null as never;
+    beginRenderFrame(world, 1);
+    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    Object.assign(attempt, { mode: 'capture', sceneSubmitted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    expect(history.pendingReason).toBeUndefined();
+  });
+
+  it('keeps capture pending when no scene work was submitted', () => {
+    const { world, owner, history, stage } = recordedView();
+    owner.frameState.compiledFrameGraph = null as never;
+    beginRenderFrame(world, 1);
+    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    Object.assign(attempt, { mode: 'capture', sceneSubmitted: false });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('pending');
+    expect(history.pendingReason).toEqual({ code: 'compiled-graph-unavailable' });
+  });
+
+  it.each([
+    { mode: 'capture', submitted: false },
+    { mode: 'capture', submitted: true },
+    { mode: true, submitted: false },
+    { mode: true, submitted: true },
+  ] as const)('replaces prior readiness when $mode pipeline preparation holds submission ($submitted)', ({
+    mode,
+    submitted,
+  }) => {
+    const { world, owner, history, stage } = recordedView();
+    beginRenderFrame(world, 1);
+    stage({ frame: 1, accepted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    beginRenderFrame(world, 2);
+    const attempt = stage({ frame: 2, accepted: false, submitted });
+    Object.assign(attempt, { mode });
+    owner.frameState.pipelinePreparationPending = true;
+    accept(world, false);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('pending');
+    expect(history.pendingReason).toEqual({ code: 'pipeline-preparation' });
+    expect(history.submittedFrames).toBe(1);
+    beginRenderFrame(world, 3);
+    owner.frameState.pipelinePreparationPending = false;
+    stage({ frame: 3, accepted: true });
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('ready');
+    expect(history.pendingReason).toBeUndefined();
+    expect(history.submittedFrames).toBe(2);
   });
 
   it('a submitted scene still pending pipeline preparation does not advance temporal history', () => {
@@ -579,7 +792,9 @@ describe('Render submission lifecycle', () => {
 
   it('without the commit system an accepted attempt publishes nothing', () => {
     const { world, history, stage, order } = recordedView();
-    world.removeSystem(RenderCommit, RENDER_RECORD_COMMIT_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-record-commit'))
+      .unwrap();
     beginRenderFrame(world, 1);
     stage({ frame: 1, accepted: true });
     accept(world, true);
@@ -592,7 +807,9 @@ describe('Render submission lifecycle', () => {
 
   it('without the retire system a staged attempt never ends its profiler frame', () => {
     const { world, history, stage, order } = recordedView();
-    world.removeSystem(RenderCleanup, RENDER_RECORD_RETIRE_SYSTEM).unwrap();
+    world
+      .removeSystem(RenderCleanup, registeredSystem(world, RenderCleanup, 'render-record-retire'))
+      .unwrap();
     beginRenderFrame(world, 1);
     stage({ frame: 1, accepted: false });
     accept(world, false);
@@ -678,7 +895,12 @@ describe('Render submission lifecycle', () => {
 
   it('without the retire system an in-frame retirement is never released', async () => {
     const world = createRenderWorld();
-    world.removeSystem(RenderCleanup, RENDER_SUBMISSION_RETIRE_SYSTEM).unwrap();
+    world
+      .removeSystem(
+        RenderCleanup,
+        registeredSystem(world, RenderCleanup, 'render-submission-retire'),
+      )
+      .unwrap();
     const release = vi.fn();
     beginRenderFrame(world, 1);
     retireAfterSubmission(world, {
@@ -689,5 +911,28 @@ describe('Render submission lifecycle', () => {
     endRenderFrame(world);
     await flush();
     expect(release).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'reject',
+    'throw',
+  ] as const)('reports a %s fence and still releases its resource', async (failure) => {
+    const cause = new Error('retirement fence failed');
+    const release = vi.fn();
+    const onFailure = vi.fn();
+    retireAfterSubmission(createRenderWorld(), {
+      generation: 1,
+      queue: {
+        onSubmittedWorkDone: () => {
+          if (failure === 'throw') throw cause;
+          return Promise.reject(cause);
+        },
+      },
+      release,
+      onFailure,
+    });
+    await flush();
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith(cause);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

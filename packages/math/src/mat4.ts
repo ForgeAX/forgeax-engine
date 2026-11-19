@@ -501,10 +501,9 @@ export function lookAt(out: Mat4, eye: Vec3Like, target: Vec3Like, up: Vec3Like)
 }
 
 /**
- * out = T * R * H * S. Optional shear H has upper-triangular XY, XZ, YZ entries;
- * omission is ordinary TRS. Returns out.
+ * out = T * R * S. Returns out.
  */
-export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like, shear?: Vec3Like): Mat4 {
+export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like): Mat4 {
   // build R (from quat) first, then scale each column, finally write translation
   const x = r[0] as number;
   const y = r[1] as number;
@@ -528,9 +527,6 @@ export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like, shear?
   const tx = t[0] as number,
     ty = t[1] as number,
     tz = t[2] as number;
-  const hxy = shear?.[0] ?? 0,
-    hxz = shear?.[1] ?? 0,
-    hyz = shear?.[2] ?? 0;
 
   out[0] = (1 - (yy + zz)) * sx;
   out[1] = (xy + wz) * sx;
@@ -548,14 +544,6 @@ export function compose(out: Mat4, t: Vec3Like, r: QuatLike, s: Vec3Like, shear?
   out[13] = ty;
   out[14] = tz;
   out[15] = 1;
-  if (hxy !== 0 || hxz !== 0 || hyz !== 0) {
-    out[4] = (xy - wz + (1 - (yy + zz)) * hxy) * sy;
-    out[5] = (1 - (xx + zz) + (xy + wz) * hxy) * sy;
-    out[6] = (yz + wx + (xz - wy) * hxy) * sy;
-    out[8] = (xz + wy + (1 - (yy + zz)) * hxz + (xy - wz) * hyz) * sz;
-    out[9] = (yz - wx + (xy + wz) * hxz + (1 - (xx + zz)) * hyz) * sz;
-    out[10] = (1 - (xx + yy) + (xz - wy) * hxz + (yz + wx) * hyz) * sz;
-  }
   return out;
 }
 

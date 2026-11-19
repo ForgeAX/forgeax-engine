@@ -216,7 +216,6 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     );
   }
   const snapshot: RenderableSnapshot = {
-    worldId: 0,
     entityKey: Number(entity),
     assetHandle: Number(meshHandle),
     transform: { world: mat4.identity(mat4.create()) },
@@ -260,31 +259,29 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     frustumStats: { culled: 0, total: 1 },
     visibilityStats: { explicitlyHidden: 0 },
     postProcessParams: new Map(),
-    visibilitySnapshots: [],
-    featureVisibilitySnapshots: [],
+    visibilitySnapshot: undefined,
     hiddenEntityReports: [],
   };
   const extract = () => {
     persistent.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) =>
         typeof request === 'object'
           ? {
               ...frame,
               renderables: frame.renderables.filter((snapshot) =>
-                request.entitiesByWorld[snapshot.worldId]?.has(snapshot.entityKey),
+                request.entities?.has(snapshot.entityKey),
               ),
             }
           : request === 'none'
             ? { ...frame, renderables: [] }
             : frame,
-      [lease],
+      lease,
     );
     const scene = persistent.compositionGpuDrivenState();
     assert(scene);
-    return { scene, worlds: [worldRenderResources(world)], leases: [lease] };
+    return { scene, sourceScope: worldRenderResources(world), lease };
   };
   const errors: unknown[] = [];
   const runtime = {
@@ -715,8 +712,8 @@ it('uses the receiver accepted revision as an attempt fence without rebuilding u
     expect(first.resources.revision).toBe(first.packet.revision);
     const current = probeGlobalAttemptCurrent({
       scene: initial,
-      worlds: [first.resources],
-      leases: undefined,
+      sourceScope: first.resources,
+      lease: undefined,
     });
     expect(current()).toBe(true);
     const second = accept();
@@ -734,8 +731,8 @@ it('uses the receiver accepted revision as an attempt fence without rebuilding u
     expect(
       probeGlobalAttemptCurrent({
         scene: refreshed,
-        worlds: [second.resources],
-        leases: undefined,
+        sourceScope: second.resources,
+        lease: undefined,
       })(),
     ).toBe(true);
   } finally {
@@ -857,8 +854,8 @@ it('fences asset writes through the held closure without reading the source rost
           },
         },
       },
-      worlds: [worldRenderResources(f.world)],
-      leases: [],
+      sourceScope: worldRenderResources(f.world),
+      lease: undefined,
     };
     expect(probeGlobalSourceReferences(source, 7)).toEqual([retained.identity, 7]);
     expect(retained.isCurrent()).toBe(true);
@@ -895,6 +892,10 @@ async function editableIrradianceFixture() {
   const entries = ['ray-irradiance-field', 'ray-diffuse-composite', 'ray-reflection-composite'].map(
     (name) => ({
       wgsl: readFileSync(new URL(`../../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8'),
+      programContract: {
+        schemaVersion: 'shader-program-contract/1' as const,
+        gbuffer: 'standard-gbuffer/2' as const,
+      },
     }),
   );
   Object.assign(f.runtime.shaderRegistry ?? {}, { entries: () => entries });

@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { GpuDrivenMaterialProgramIndex } from '../gpu-driven/material-artifacts';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
@@ -6,17 +7,22 @@ import type { GpuDrivenRecordInput } from '../record/frame';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { GpuRasterOwnership } from '../scene/render-scene';
 import {
-  RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
+  RenderGpuDrivenPrepareOrder,
+  RenderGpuDrivenRasterOrder,
+  RenderOpaquePlanOrder,
+  RenderSkinDemandOrder,
+} from '../system-order';
+import {
   storeViewGpuDrivenOutcome,
   ViewGpuDriven,
   ViewGpuDrivenPrepareInput,
   viewGpuDrivenOf,
   viewGpuDrivenSourcesOf,
 } from './gpu-driven-systems';
-import { RENDER_OPAQUE_PLAN_SYSTEM, ViewPassPlans, viewPassPlanQueue } from './pass-plan-systems';
+import { ViewPassPlans, viewPassPlanQueue } from './pass-plan-systems';
 import { ViewRecorder } from './render-views';
 import { RenderQueue, renderWorldFor } from './render-world';
-import { RENDER_SKIN_DEMAND_SYSTEM } from './skin-systems';
+
 import { requireViewField } from './view-field';
 import { ownerOf } from './view-settlement';
 
@@ -75,56 +81,52 @@ export function consumeViewGpuDrivenRaster(
 
 /** Stage the next lane after Skin consumed the previous one, and refine HZB before compile. */
 export function registerGpuDrivenRasterSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_GPU_DRIVEN_RASTER_SYSTEM,
-      after: [
-        RENDER_GPU_DRIVEN_PREPARE_SYSTEM,
-        RENDER_SKIN_DEMAND_SYSTEM,
-        RENDER_OPAQUE_PLAN_SYSTEM,
-      ],
-      queries: [
-        {
-          read: [ViewRecorder, ViewGpuDriven, ViewPassPlans],
-          optional: [ViewGpuDrivenPrepareInput],
-        },
-      ],
-      fn: (world, [views]) => {
-        views.forEach((row) => {
-          const entity = row.entity;
-
-          const outcome = viewGpuDrivenOf(world, entity);
-          if (outcome?.kind !== 'selected' || outcome.raster !== undefined) return;
-          try {
-            const sources = viewGpuDrivenSourcesOf(world, entity);
-            if (sources === undefined) return;
-            const lane = rasterLane(
-              outcome.gpuLane ? sources.gpuDriven : undefined,
-              outcome.preparation?.prepared,
-              sources.captureShadows === true,
-              sources.shadowCasterProjection?.materialPrograms,
-            );
-            ownerOf(
-              world,
-              requireViewField(world, entity, ViewRecorder, 'state'),
-            ).scene.stageRasterLane(lane.ownership);
-            const queue = viewPassPlanQueue(world, entity);
-            if (queue.opaque !== undefined)
-              queue.opaque = {
-                ...queue.opaque,
-                lateOcclusion: queue.opaque.lateOcclusion && lane.raster !== undefined,
-              };
-            storeViewGpuDrivenOutcome(world, entity, { ...outcome, raster: lane });
-          } catch (cause) {
-            storeViewGpuDrivenOutcome(world, entity, {
-              kind: 'failed',
-              code: 'raster-lane-rejected',
-              cause,
-            });
-          }
-        });
+  const systemToken1 = defineSystem({
+    sets: [RenderGpuDrivenRasterOrder],
+    commands: 'none',
+    name: RENDER_GPU_DRIVEN_RASTER_SYSTEM,
+    after: [RenderGpuDrivenPrepareOrder, RenderSkinDemandOrder, RenderOpaquePlanOrder],
+    queries: [
+      {
+        read: [ViewRecorder, ViewGpuDriven, ViewPassPlans],
+        optional: [ViewGpuDrivenPrepareInput],
       },
-    })
-    .unwrap();
+    ],
+    fn: (world, [views]) => {
+      views.forEach((row) => {
+        const entity = row.entity;
+
+        const outcome = viewGpuDrivenOf(world, entity);
+        if (outcome?.kind !== 'selected' || outcome.raster !== undefined) return;
+        try {
+          const sources = viewGpuDrivenSourcesOf(world, entity);
+          if (sources === undefined) return;
+          const lane = rasterLane(
+            outcome.gpuLane ? sources.gpuDriven : undefined,
+            outcome.preparation?.prepared,
+            sources.captureShadows === true,
+            sources.shadowCasterProjection?.materialPrograms,
+          );
+          ownerOf(
+            world,
+            requireViewField(world, entity, ViewRecorder, 'state'),
+          ).scene.stageRasterLane(lane.ownership);
+          const queue = viewPassPlanQueue(world, entity);
+          if (queue.opaque !== undefined)
+            queue.opaque = {
+              ...queue.opaque,
+              lateOcclusion: queue.opaque.lateOcclusion && lane.raster !== undefined,
+            };
+          storeViewGpuDrivenOutcome(world, entity, { ...outcome, raster: lane });
+        } catch (cause) {
+          storeViewGpuDrivenOutcome(world, entity, {
+            kind: 'failed',
+            code: 'raster-lane-rejected',
+            cause,
+          });
+        }
+      });
+    },
+  });
+  world.addSystem(RenderQueue, systemToken1).unwrap();
 }

@@ -1,13 +1,13 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { AudioTickOrder } from "@forgeax/engine-audio";
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { AUDIO_ENGINE_RESOURCE_KEY, AUDIO_TICK_SYSTEM_NAME, AudioSource, type AudioBackend, audioPlugin } from '@forgeax/engine-audio';
+import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
-import {
-  FRAME_START_SCAN_SYSTEM_NAME,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { FixedTime, Update, FixedUpdate } from '@forgeax/engine-ecs';
 import { CollidingEntities } from '@forgeax/engine-physics';
 import physics3d from '@forgeax/engine-physics-rapier3d';
@@ -22,6 +22,14 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { CapstoneVelocity, buildCapstoneScene } from './scene';
 import './pulse-material.wgsl';
 import { CAPSTONE_CONTENT_GUID, capstoneContentKind, capstoneContentDecoder } from './reimport';
+const resource4 = defineResource<unknown>("m8CapstoneFault");
+
+const resource3 = defineResource<unknown>("m8CapstonePickCount");
+
+const resource2 = defineResource<unknown>("m8CapstoneFixedTicks");
+
+const resource1 = defineResource<unknown>("m8CapstoneContent");
+
 
 const SFX_GUID = '019e7535-5e5e-75fe-a328-0b08e3a72744';
 const Phase = defineState('M8CapstonePhase', ['boot', 'playing', 'mutated', 'recovered'] as const);
@@ -123,13 +131,13 @@ const contentPayload = assets.read(contentResult.value).unwrap();
 content.title = contentPayload.title;
 content.markers = contentPayload.markers.length;
 
-const audio = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
-world.insertResource('m8CapstoneContent', content);
-world.insertResource('m8CapstoneFixedTicks', fixedTicks);
-world.insertResource('m8CapstonePickCount', pickCount);
-world.insertResource('m8CapstoneFault', fault);
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
+world.insertResource(resource1, content);
+world.insertResource(resource2, fixedTicks);
+world.insertResource(resource3, pickCount);
+world.insertResource(resource4, fault);
 
-world.addSystem(FixedUpdate, {
+const systemToken1 = defineSystem({
   name: 'm8-capstone-fixed-motion',
   queries: [],
   fn: () => {
@@ -143,15 +151,16 @@ world.addSystem(FixedUpdate, {
     if (next > 1.7 || next < -1.7) world.set(scene.cursor, CapstoneVelocity, { x: -speed });
     world.set(scene.cursor, Transform, { pos: [next, position[1] ?? 0, position[2] ?? 0] });
   },
-}).unwrap();
+});
+world.addSystem(FixedUpdate, systemToken1).unwrap();
 
-world.addSystem(Update, {
+const systemToken2 = defineSystem({
   name: 'm8-capstone-observe-input',
-  after: [FRAME_START_SCAN_SYSTEM_NAME],
-  before: [AUDIO_TICK_SYSTEM_NAME],
+  after: [InputFrameStartScan],
+  before: [AudioTickOrder],
   queries: [],
   fn: () => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const spaceUp = input.keyboard.up(' ');
     if (!rearmAudio && spaceUp && clipHandle !== (0 as unknown as AssetHandle<'audio'>)) {
       world.set(scene.emitter, AudioSource, { clip: clipHandle, playing: true, spatialBlend: 1, bus: 'sfx' });
@@ -186,7 +195,8 @@ world.addSystem(Update, {
     ].join(' ');
     audioStatus.textContent = `audio=${audioState.contextState} active=${audioState.activeSourceCount} starts=${audioCounters.starts}`;
   },
-}).unwrap();
+});
+world.addSystem(Update, systemToken2).unwrap();
 
 const markMutated = () => {
   if (phase.value === 'playing') setNextState(world, Phase, 'mutated');
@@ -211,7 +221,7 @@ const injectFault = () => {
   const result = world.update(-1);
   if (result.ok) throw new Error('m8-capstone invalid delta unexpectedly succeeded');
   fault.code = result.error.code;
-  world.insertResource('m8CapstoneFault', fault);
+  world.insertResource(resource4, fault);
   return { ok: false, code: result.error.code };
 };
 const recover = () => {

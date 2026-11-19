@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/5.advanced-lighting/5.parallax-mapping/scripts/smoke-dawn.mjs
 //
@@ -17,14 +18,14 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] PASS`
 //   - `[smoke] FAIL`
-
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -171,8 +172,8 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   );
   process.exit(1);
 }
-const demoManifest = JSON.parse(readFileSync(DEMO_MANIFEST_PATH, 'utf8'));
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(JSON.stringify(demoManifest))}`;
+
+const MANIFEST_URL = processShaderManifestUrl(DEMO_MANIFEST_PATH);
 
 let renderer;
 let assets;
@@ -245,9 +246,9 @@ const matHandle = world.assets.create({
   values: {
     baseColor: [1.0, 1.0, 1.0, 1.0],
     heightScale: 0.1,
-    // POM (2.0) -> exercises the deepest march path so the structural smoke
-    // covers the heaviest pipeline branch.
-    algoMode: 2.0,
+      // POM (2.0) -> exercises the deepest march path so the structural smoke
+      // covers the heaviest pipeline branch.
+      algoMode: 2.0,
     baseColorTexture: unwrapHandle(diffuseHandle),
     normalTexture: unwrapHandle(normalHandle),
     heightTexture: unwrapHandle(heightHandle),
@@ -281,7 +282,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

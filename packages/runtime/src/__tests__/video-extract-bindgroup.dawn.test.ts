@@ -37,10 +37,11 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import { Camera, MeshFilter, MeshRenderer, type Renderer } from '@forgeax/engine-render';
+import type { RhiDevice } from '@forgeax/engine-rhi';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MaterialPass, MeshAsset, VideoAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFailed, onTestFinished } from 'vitest';
 import {
   Camera as SourceCamera,
   MeshFilter as SourceMeshFilter,
@@ -61,6 +62,23 @@ const FORWARD_PBR_PASS: MaterialPass = {
   name: 'Forward',
   program: { module: STANDARD_PBR_SHADER },
 };
+
+/** Reach resource binding after the selected native pipeline has completed. */
+async function submitVideoBindingFrame(
+  renderer: Renderer,
+  device: RhiDevice,
+  request: Parameters<Renderer['draw']>[0],
+  observedUnsupported: () => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const receipt = renderValue(renderer.draw(request));
+    if (receipt.preparationCompleted !== undefined) renderValue(await receipt.preparationCompleted);
+    renderValue(await receipt.completed);
+    await device.queue.onSubmittedWorkDone();
+    if (observedUnsupported() || receipt.presentation === 'ready') return;
+  }
+  throw new Error('Video binding was not reached after native pipeline preparation');
+}
 
 function transformData(x: number, y: number, z: number) {
   return {
@@ -145,7 +163,7 @@ describe('AC-06 / R-7 — video GUID in values is a recognised texture field (M4
     propagateTransforms(world);
     const frame = extractFrame(world, prepareExtractContext(world, { assets, cull: 'none' }));
     expect(frame.renderables.length).toBe(1);
-    const mat = frame.renderables[0]?.material.snapshot;
+    const mat = frame.renderables.at(0)?.material.snapshot;
     expect(mat).toBeDefined();
 
     // Desired post-w14 behavior (RED before w14):
@@ -170,7 +188,11 @@ const ENGINE_MANIFEST = await (async () => {
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
-async function bootDawn(): Promise<DawnHarness | null> {
+async function bootDawn(
+  observePhase?: (phase: string) => void,
+  observeDevice?: (device: RhiDevice) => void,
+): Promise<DawnHarness | null> {
+  observePhase?.('boot.adapter-wiring');
   const dawnAvailable = typeof globalThis.navigator?.gpu?.requestAdapter === 'function';
   if (!dawnAvailable) {
     throw new Error('dawn-node navigator.gpu not injected; vitest.setup-webgpu.ts regressed');
@@ -180,11 +202,22 @@ async function bootDawn(): Promise<DawnHarness | null> {
     globalThis.navigator.gpu,
   );
   globalThis.navigator.gpu.requestAdapter = async (opts) => {
+    observePhase?.('boot.adapter-request');
     const rawAdapter = await originalRequestAdapter(opts);
+    observePhase?.('boot.adapter-returned');
     if (rawAdapter === null) return rawAdapter;
     const originalRequestDevice = rawAdapter.requestDevice.bind(rawAdapter);
     rawAdapter.requestDevice = async (desc) => {
+      observePhase?.('boot.device-request');
       const dev = await originalRequestDevice(desc);
+      observePhase?.('boot.device-returned');
+      if (observeDevice !== undefined) {
+        dev.addEventListener('uncapturederror', (event) => {
+          console.error(
+            `[video-bindgroup] native-error=${JSON.stringify({ message: event.error.message })}`,
+          );
+        });
+      }
       if (sharedDevice === undefined) sharedDevice = dev;
       return dev;
     };
@@ -229,13 +262,24 @@ async function bootDawn(): Promise<DawnHarness | null> {
 
   let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
   try {
+    observePhase?.('boot.renderer-construction');
     host = await constructRuntimeRendererHost(
       mockCanvas,
-      {},
+      observeDevice === undefined
+        ? {}
+        : {
+            rhiInstrumentation: {
+              deviceLost(device) {
+                observeDevice(device);
+                return device.lost;
+              },
+            },
+          },
       {
         shaderManifestUrl: ENGINE_MANIFEST_URL,
       },
     );
+    observePhase?.('boot.renderer-returned');
   } finally {
     globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
   }
@@ -250,15 +294,85 @@ async function bootDawn(): Promise<DawnHarness | null> {
 
 describe('AC-06 — extract->record->bind group does not blow up on a video field (dawn) (M4 / w13)', () => {
   it('a renderer frame with a video-sourced baseColorTexture draws with 0 RhiError', async () => {
-    const harness = await bootDawn();
+    const startedAt = performance.now();
+    let phase = 'boot.start';
+    let currentRenderer: DawnHarness['renderer'] | undefined;
+    let bootDevice: RhiDevice | undefined;
+    let bootObserver: ReturnType<typeof setInterval> | undefined;
+    let previousBootProgress: string | undefined;
+    const observePhase = (next: string) => {
+      phase = next;
+      console.error(
+        `[video-bindgroup] ${JSON.stringify({ phase, elapsedMs: performance.now() - startedAt })}`,
+      );
+    };
+    const observeBootProgress = () => {
+      if (currentRenderer !== undefined) return;
+      const library = bootDevice?.pipelineLibrary?.inspect({ runtimeRequests: true });
+      if (library === undefined) return;
+      const progress = {
+        shaders: library.shaders,
+        compilationPending: library.compilationPending,
+        compilationCompleted: library.compilationCompleted,
+        failures: library.failures,
+        latestSequence: library.runtimeRequests?.latestSequence,
+        overwritten: library.runtimeRequests?.overwritten,
+        requests: library.runtimeRequests?.requests.map((request) => ({
+          sequence: request.sequence,
+          kind: request.kind,
+          mode: request.mode,
+          label: request.label,
+          outcome: request.outcome,
+          requestedAtMs: request.requestedAtMs,
+          startedAtMs: request.startedAtMs,
+          completedAtMs: request.completedAtMs,
+          localIdentity: request.pipeline?.localIdentity,
+          recipe: request.pipeline?.recipe,
+          shaders: request.pipeline?.shaders,
+        })),
+      };
+      const encoded = JSON.stringify(progress);
+      if (encoded === previousBootProgress) return;
+      previousBootProgress = encoded;
+      console.error(
+        `[video-bindgroup] boot-progress=${JSON.stringify({ elapsedMs: performance.now() - startedAt, ...progress })}`,
+      );
+    };
+    onTestFinished(() => clearInterval(bootObserver));
+    onTestFailed(() => {
+      observeBootProgress();
+      console.error(
+        `[video-bindgroup] failure=${JSON.stringify({
+          phase,
+          elapsedMs: performance.now() - startedAt,
+          bootPipelineLibrary: bootDevice?.pipelineLibrary?.inspect({ runtimeRequests: true }),
+          renderer: currentRenderer?.inspect({
+            fields: ['pipelineLibrary', 'frame'],
+            runtimeRequests: true,
+          }),
+        })}`,
+      );
+    });
+    observePhase(phase);
+    const harness = await bootDawn(observePhase, (device) => {
+      bootDevice = device;
+      observePhase('boot.rhi-device-admitted');
+      observeBootProgress();
+      bootObserver = setInterval(observeBootProgress, 1000);
+      bootObserver.unref();
+    });
     if (harness === null) return;
     const { renderer, assets, device } = harness;
+    currentRenderer = renderer;
+    clearInterval(bootObserver);
 
     const videoGuid = AssetGuid.random();
     const videoGuidStr = AssetGuid.format(videoGuid);
     const video: VideoAsset = { kind: 'video', url: 'extract-bindgroup-clip.webm' };
     publishRuntimeAssets(assets, [{ guid: videoGuidStr, asset: video }]);
+    observePhase('video.asset-load');
     (await assets.load(videoGuid, 'video')).unwrap();
+    observePhase('video.asset-loaded');
 
     const materialPayload: MaterialAsset = {
       kind: 'material' as const,
@@ -303,10 +417,15 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
 
     // This is an expected unsupported-resource submission, not a ready picture.
     const lease = renderValue(renderer.attach(world));
+    observePhase('world.update');
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    observePhase('renderer.draw');
+    const drawn = renderer.draw({ source: lease });
+    observePhase('renderer.draw-returned');
     expect(drawn.ok).toBe(true);
+    observePhase('queue.completion');
     await device.queue.onSubmittedWorkDone();
+    observePhase('queue.completed');
     if (typeof unsub === 'function') unsub();
 
     // The video-sourced texture field must not trip any WebGPU VALIDATION error
@@ -401,9 +520,13 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
     // This is an expected unsupported-resource submission, not a ready picture.
     const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    expect(drawn.ok).toBe(true);
-    await device.queue.onSubmittedWorkDone();
+    await submitVideoBindingFrame(renderer, device, { source: lease }, () =>
+      fired.some(
+        (event) =>
+          event.code === 'video-upload-unsupported' ||
+          event.causeCode === 'video-upload-unsupported',
+      ),
+    );
     if (typeof unsub === 'function') unsub();
 
     const unsupported = fired.filter(

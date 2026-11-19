@@ -8,7 +8,7 @@ import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { PointLight } from '../components/point-light';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 describe('surface lighting channels', () => {
@@ -36,10 +36,7 @@ describe('surface lighting channels', () => {
       .unwrap();
     expect(world.get(entity, MeshRenderer).unwrap().lightingChannels).toBe(mask);
   });
-  it('rejects NaN at the existing ECS numeric write boundary', () => {
-    const result = new World().spawn({ component: MeshRenderer, data: { lightingChannels: NaN } });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe('component-numeric-value-invalid');
+  it('rejects a NaN channel mask', () => {
     expect(validateChannelMask(NaN)?.code).toBe('resource-invalid-value');
   });
   it('packs light channels as u32 and uses primitive padding without enlarging its row', () => {
@@ -80,11 +77,11 @@ describe('surface lighting channels', () => {
     world.spawn({ component: PointLight, data: { lightingChannels: 0x80000000 } }).unwrap();
     // Receiver channels must not materialise the unrelated materials array.
     const read = vi.spyOn(world, 'get');
-    const frame = extractFrames([world], 0, assets);
+    const frame = extractSource(world, assets);
     expect(frame.renderables.at(0)?.lightingChannels).toBe(0x80000001);
     expect(frame.lights.point[0]?.lightingChannels).toBe(0x80000000);
     expect(read.mock.calls.filter(([, component]) => component === MeshRenderer)).toEqual([]);
     world.set(receiver, MeshRenderer, { lightingChannels: 0x40000000 }).unwrap();
-    expect(extractFrames([world], 0, assets).renderables.at(0)?.lightingChannels).toBe(0x40000000);
+    expect(extractSource(world, assets).renderables.at(0)?.lightingChannels).toBe(0x40000000);
   });
 });

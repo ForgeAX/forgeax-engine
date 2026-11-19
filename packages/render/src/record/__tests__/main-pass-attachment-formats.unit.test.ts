@@ -1,5 +1,13 @@
 import { rhi } from '@forgeax/engine-rhi-null';
+import { SINGLE_LAYER_WATER_PASS_OUTPUTS } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import {
+  MaterialPipelineRequestCache,
+  materialPipelineRequestFacts,
+} from '../../assembly/material/pipeline-request-cache';
+import { buildPipelineDescriptor, cacheKeyOf, type PipelineSpec } from '../../pipeline-spec';
+import { FORWARD_PASS_SELECTOR } from '../../systems/pass-selector';
+import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
@@ -166,6 +174,77 @@ it.each([
   }
 });
 
+const waterPasses = [
+  ['water-prepass', 'depth', 'fs_water_prepass'],
+  ['water-color', 'color', 'fs_water_color'],
+  ['water-shadow', 'shadow', 'fs_water_shadow'],
+  ['water-velocity', 'velocity', 'fs_water_velocity'],
+] as const;
+
+it('prepares an explicit opaque-normal entry at four samples with equal-depth read-only admission', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, submeshes: 1 });
+  Object.assign(entry.source, {
+    pipelinePreparation: [
+      {
+        materialHandle: 7,
+        passIndex: 0,
+        tags: { LightMode: 'Forward' },
+        materialShaderId: entry.source.material.snapshot.materialShaderId,
+        vertexEntry: 'vs_main',
+        fragmentEntry: 'fs_main',
+      },
+    ],
+  });
+  Object.assign(f.c, { pipelinePreparationEntries: [entry] });
+  f.acceptMaterials();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  try {
+    prepareMainPassPipelines(
+      f.c,
+      FORWARD_PASS_SELECTOR,
+      { passKind: 'forward', recordMode: 'opaque', fragmentEntryPoint: 'fs_ao_input_msaa' },
+      4,
+      ['rgba8uint'],
+    );
+    expect(lookup).toHaveBeenCalledTimes(1);
+    const request = lookup.mock.calls[0];
+    if (request === undefined) throw new Error('missing normal pipeline request');
+    expect(request[19]).toBe('fs_ao_input_msaa');
+    const fragmentEntry = request[19];
+    if (fragmentEntry == null) throw new Error('missing explicit normal fragment entry');
+    expect(
+      buildPipelineDescriptor(
+        {
+          shader: {
+            id: request[0],
+            passKind: request[6] ?? 'forward',
+            variantSet: request[5],
+            fragmentEntry,
+          },
+          attachments: {
+            colorFormats: ['rgba8uint'],
+            depthFormat: 'depth32float-stencil8',
+            sampleCount: 4,
+          },
+          geometry: { topology: 'triangle-list', vertexLayout: {} },
+          renderState: request[2],
+        },
+        { vertex: module, fragment: module },
+      ),
+    ).toMatchObject({
+      multisample: { count: 4 },
+      depthStencil: { depthCompare: 'greater-equal', depthWriteEnabled: false },
+      fragment: { entryPoint: 'fs_ao_input_msaa', targets: [{ format: 'rgba8uint' }] },
+    });
+  } finally {
+    lookup.mockRestore();
+    f.dispose();
+  }
+});
+
 it('requests a colorless PSO only when the forward pass binds no color target', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
@@ -199,6 +278,103 @@ it('requests a colorless PSO only when the forward pass binds no color target', 
     expect(lookup.mock.calls.at(-1)?.[9]).not.toBeNull();
     record([]);
     expect(lookup.mock.calls.at(-1)?.[9]).toBeNull();
+    expect(f.errors).toEqual([]);
+  } finally {
+    lookup.mockRestore();
+    f.dispose();
+  }
+});
+
+it('prepares distinct Water pipelines with equal-depth read-only velocity and fixed Surface outputs', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, submeshes: 1 });
+  const materialShaderId = 'test::compatible-water-root';
+  entry.source.material.adopt({
+    ...entry.source.material.snapshot,
+    materialShaderId,
+    surfaceModel: 'single-layer-water',
+  });
+  Object.assign(entry.source, {
+    pipelinePreparation: [
+      {
+        materialHandle: 7,
+        passIndex: 0,
+        tags: { LightMode: 'Forward' },
+        materialShaderId,
+        vertexEntry: 'vs_main',
+        fragmentEntry: 'fs_main',
+      },
+    ],
+  });
+  Object.assign(f.c, { pipelinePreparationEntries: [entry] });
+  f.acceptMaterials();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const requests = new MaterialPipelineRequestCache<object>();
+  const specKeys = new Set<string>();
+  try {
+    for (const [index, [mode, surfacePass, fragmentEntryPoint]] of waterPasses.entries()) {
+      const outputs = SINGLE_LAYER_WATER_PASS_OUTPUTS[surfacePass];
+      const colorFormats = outputs.map((output) => output.format);
+      prepareMainPassPipelines(
+        f.c,
+        FORWARD_PASS_SELECTOR,
+        { recordMode: mode, fragmentEntryPoint },
+        1,
+        colorFormats,
+      );
+      expect(lookup).toHaveBeenCalledTimes(index + 1);
+      const request = lookup.mock.calls[index];
+      expect(request).toBeDefined();
+      if (request === undefined) throw new Error('Water pipeline request is required');
+      expect(request[0]).toBe(materialShaderId);
+      expect(request[2]?.outputs).toBe(outputs);
+      expect(request[17]).toEqual(colorFormats.slice(1));
+      expect(request[19]).toBe(fragmentEntryPoint);
+      const spec: PipelineSpec = {
+        shader: {
+          id: request[0],
+          passKind: request[6] ?? 'forward',
+          variantSet: request[5],
+          fragmentEntry: fragmentEntryPoint,
+        },
+        attachments: { colorFormats, depthFormat: 'depth32float', sampleCount: 1 },
+        geometry: { topology: 'triangle-list', vertexLayout: {} },
+        renderState: request[2],
+      };
+      const descriptor = buildPipelineDescriptor(spec, { vertex: module, fragment: module });
+      expect(descriptor).toMatchObject({
+        depthStencil: {
+          depthCompare: surfacePass === 'velocity' ? 'greater-equal' : 'greater',
+          depthWriteEnabled: surfacePass !== 'velocity',
+        },
+      });
+      if (colorFormats.length === 0) expect(descriptor.fragment).toBeUndefined();
+      else
+        expect(descriptor.fragment).toMatchObject({
+          entryPoint: fragmentEntryPoint,
+          targets: colorFormats.map((format) => ({ format })),
+        });
+      const facts = materialPipelineRequestFacts(request);
+      expect(requests.get(facts)).toBeUndefined();
+      const cached = {};
+      requests.set(facts, cached);
+      expect(requests.get(materialPipelineRequestFacts(request))).toBe(cached);
+      specKeys.add(cacheKeyOf(spec));
+      const alternateDepth = {
+        depthWriteEnabled: surfacePass === 'velocity',
+        depthCompare: surfacePass === 'velocity' ? ('less' as const) : ('less-equal' as const),
+      };
+      const alternateRequest = [...request] as typeof request;
+      alternateRequest[2] = { ...request[2], ...alternateDepth };
+      expect(requests.get(materialPipelineRequestFacts(alternateRequest))).toBeUndefined();
+      expect(
+        cacheKeyOf({ ...spec, renderState: { ...spec.renderState, ...alternateDepth } }),
+      ).not.toBe(cacheKeyOf(spec));
+    }
+    expect(specKeys.size).toBe(waterPasses.length);
+    expect(f.receipts).toEqual([]);
     expect(f.errors).toEqual([]);
   } finally {
     lookup.mockRestore();

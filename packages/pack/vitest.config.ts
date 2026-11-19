@@ -1,6 +1,10 @@
+import { fileURLToPath } from 'node:url';
 import { defineProject } from "vitest/config";
 
 export default defineProject({
+	root: fileURLToPath(new URL('.', import.meta.url)),
+	// Transform under the shared policy; tsc owns project-reference validation.
+	tsconfig: fileURLToPath(new URL('../../tsconfig.base.json', import.meta.url)),
 	test: {
 		environment: "node",
 		name: "@forgeax/engine-pack",

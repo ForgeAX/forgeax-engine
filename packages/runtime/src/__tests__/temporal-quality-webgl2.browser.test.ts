@@ -80,7 +80,7 @@ async function route(name: string, aa: number, scale: number, extent = size) {
       const start = performance.now();
       const receipt = await drawReadyFrame(
         renderer,
-        { leases: [lease], camera: { lease }, environment: { lease }, sampleTimeSeconds: i / 60 },
+        { source: lease, sampleTimeSeconds: i / 60 },
         observe ? ['linear-ldr'] : undefined,
       );
       if (i >= 16 && i < count - 16) completionMs.push(performance.now() - start);

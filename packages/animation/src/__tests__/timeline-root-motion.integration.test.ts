@@ -3,7 +3,7 @@ import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTimelineKey, AssetHandle } from '@forgeax/engine-types';
-import { ok } from '@forgeax/engine-types';
+import { ok, toShared } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { defineAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
@@ -261,7 +261,8 @@ describe('timeline and root motion use the real default World schedule', () => {
   });
   it('weights motion including a stationary slot, and honors root masks', async () => {
     const { world, player } = await fixture(false, { ...clip, events: [] });
-    const moving = world.get(player, AnimationPlayer).unwrap().clips[0] ?? 0;
+    const moving = world.get(player, AnimationPlayer).unwrap().clips[0];
+    if (moving === undefined) throw new Error('Fixture requires a moving clip');
     const still = runtimeAssetRegistry(world.assets)
       .create({ ...clip, channels: [], events: [] })
       .unwrap();
@@ -279,7 +280,7 @@ describe('timeline and root motion use the real default World schedule', () => {
       'AnimationMask',
       defineAnimationMask([{ targetId, weight: 0 }], 1).unwrap(),
     );
-    world.set(player, AnimationPlayer, { masks: [mask, 0] }).unwrap();
+    world.set(player, AnimationPlayer, { masks: [mask, toShared<'AnimationMask'>(0)] }).unwrap();
     world.update(0.5).unwrap();
     expect(world.get(player, AnimationRootMotion).unwrap().position[0]).toBe(0);
   });

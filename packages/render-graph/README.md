@@ -79,6 +79,45 @@ graph-created attachment still needs initialization before a possible load.
 This lets presentation select clear/load from actual scene output without
 recompiling the graph or replacing its physical output.
 
+### Color resolve placement
+
+Compilation removes a private color resolve only when the same view is resolved
+again unconditionally before any other access to its allocation. Intermediate
+readers, aliased views, conditional writers, subgraphs and imported publication
+targets retain their boundaries. Declaration validation runs first; callbacks keep
+their declared resource visibility, and committed texture contents track only
+retained native writes. Resource allocation and lifetime bounds remain conservative.
+
+Color attachments may select `storeOp: 'auto'` to permit releasing dead resolved
+MSAA samples. Compilation keeps `store` unless the source is graph-created and
+transient, starts with an unconditional clear of the same view, and ends with an
+unconditional resolve without a later source access or subgraph boundary. Aliases,
+persistent/imported sources and explicit diagnostic usage retain storage. Explicit
+`store` and `discard` keep their authored meanings. The RHI receives only native
+store operations; committed-content facts invalidate discarded sample ranges while
+the resolved image remains stored. This does not remove the MSAA allocation.
+
+### Native raster batches
+
+Compilation joins consecutive, unconditional raster stages with matching attachment
+views and compatible loads/stores. Intermediate resolves, clears, query sets,
+writable storage, subgraphs, copies and conflicting sampled aliases retain native
+boundaries. No feature work is reordered. Every logical callback keeps its own
+resolver and debug group; viewport, scissor, blend constant and stencil reference
+restart with native defaults. A depth-bearing background needs a pipeline with the
+same depth format, even when it neither tests nor writes depth.
+
+| Observation | Meaning |
+| :-- | :-- |
+| `inspect().passes[].rasterBatch` | Logical names in a compiled physical group |
+| `runPass` | Each logical stage, in declaration order |
+| `instrumentation.begin` | One actual native pass, with `logicalPassNames` for a batch |
+| `runPass.requiresPassBoundary(name)` | Explicit per-stage native observation/copy boundary |
+
+Ordinary CPU wrappers and GPU timestamp collection preserve batching. A runner
+that copies or observes attachments around its callback must declare that stage's
+boundary; wrappers preserve this property. Conditional stages stay independent.
+
 ### Allocation-explicit pass callbacks
 
 Use `encodeDirect(pass, frame, resources)` for raster/compute callbacks and
@@ -221,7 +260,8 @@ that callback without rebuilding the graph; descriptor getters are snapshot data
 `executeIf(frame) === false` skips only that pass. Graph-created storage persists
 until retirement: a skipped producer leaves its previous contents intact, including
 the backend's initialized contents before its first write (zero for WebGPU buffers).
-A newly compiled graph owns fresh storage, not the retired graph's history.
+A newly allocated graph texture has no committed-content proof until a submitted
+pass writes its range.
 Dependencies and `uninitialized-read` validate declared access ordering; they do not
 assert that a conditional producer executed or supplied business-valid data.
 Consumers must accept the retained/initial contents, share the producer's condition,
@@ -231,7 +271,14 @@ cover first skip, write, later skip and first execution after rebuild.
 
 `resources.textureViewExtent(view)` returns the declared view’s compiled pixel width and height, including its base mip. It applies the same graph ownership and exact pass-access checks as `textureView(view)` and derives from existing allocation facts, including imported surface extents; consumers do not keep a second size catalogue.
 
+Texture extents may use `surface`, `half-surface`, or `quarter-surface`. Relative extents resolve against each compilation's surface size, rounding each axis up. Quarter extents preserve the final odd-edge sample during cloud Mode 0 tracing; they do not change resource access, initialization, or retirement rules.
+
 `execute(frame)` resolves imported handles for that frame and encodes passes in declaration order. Execution walks the sealed dense Pass array by index. A compute Pass with no dynamic begin descriptor reuses its graph-owned label descriptor; explicit begin and timing instrumentation still resolve on each execution. `inspect()` returns a frozen projection of pass kinds, accesses, dependencies, resource origin, derived usage, lifetime bounds, and (for graph-created resources) `resourceAllocation`.
+
+After successful import resolution, resource rows expose the actual imported
+`physicalAllocationKey`. Unexecuted or failed resolutions expose no import key.
+An unchanged handle retains the inspection snapshot; replacement handles publish
+a new snapshot without changing prior observations or graph-owned byte totals.
 
 `inspect().resourceAllocation` is the single compiled-graph logical ledger:
 `liveBytes` are graph-created handles currently live, and
@@ -255,9 +302,13 @@ label and resolved physical descriptor matches share graph-created textures.
 Views of that same physical texture also retain their handles when all view
 fields match; graph-local ordinals only accelerate the lookup, and labels do
 not affect view compatibility. Existing compiled view records own this reuse.
-Buffers and imported resources are not pooled. The successor still validates
-initialization and accesses, and its first write must initialize the resource
-before a read. Execute generations sequentially on the same device queue;
+Buffers and imported resources are not pooled. A successor may read a persistent
+texture range before writing only when this exact reused allocation has committed
+stored writes covering that mip/layer/aspect range. `execute()` stages write facts;
+the owner must call `commitExecution()` after accepting the submission, or
+`discardExecution()` when the frame is rejected. Encoding alone never commits
+content. Discarded raster stores invalidate prior proof for their range. Execute
+generations sequentially on the same device queue;
 shared targets do not preserve a separate image for each graph. Resizing or a
 descriptor change allocates separately. A failed candidate releases only its
 leases, leaving the previous graph usable for rollback.

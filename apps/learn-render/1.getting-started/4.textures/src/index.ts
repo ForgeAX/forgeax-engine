@@ -354,8 +354,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     // to a typed local with no `as` cast (charter P4 consistent abstraction).
     // AI users read this block as the single grep target for AC-09.
     const mat = assets.read(matHandleRes.value).unwrap();
-    const slot =
-      (mat.values?.baseColorTexture as AssetHandle<'texture'> | undefined);
+    const slot =mat.values?.baseColorTexture as AssetHandle<'texture'> | undefined;
     console.warn(
       `[learn-render 1.4 textures] baseColorTexture slot=${
         slot === undefined ? 'undefined' : Number(slot).toString()
@@ -367,16 +366,12 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     // TextureGpuView (research F-6 fix) on every frame.
     const tick = (): void => {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      const drawn = renderer.draw({ source: worldAttachment1.value });
       if (!drawn.ok) {
         console.error('[learn-render 1.4 textures] draw failed:', drawn.error);
         return;
       }
-      requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
     // Capture hook used by the M8 bench-screenshot recorder + any
@@ -389,11 +384,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     const win = window as unknown as { __captureTextures?: TexturesCaptureHook };
     win.__captureTextures = async (): Promise<Uint8Array> => {
       world.update().unwrap();
-      renderer.draw({
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      });
+      renderer.draw({ source: worldAttachment1.value });
       const r = await captureCanvasPixels(target);
       if (!r.ok) throw new Error(`[learn-render 1.4 textures] canvas capture failed: ${r.error.hint}`);
       return r.value;

@@ -299,7 +299,11 @@ export const assetListInputSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     root: packRootSchema,
-    type: packStringSchema,
+    type: {
+      type: 'string',
+      description:
+        'Asset kind filter, e.g. scene, material or mesh. A listed scene renders through its authored camera, without playing, with asset preview --kind scene --guid <guid>.',
+    },
     limit: { type: 'integer', minimum: 1, maximum: 256 },
     cursor: packStringSchema,
     json: packBooleanSchema,

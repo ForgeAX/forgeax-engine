@@ -30,6 +30,8 @@ describe('Asset union covers all engine-known kinds', () => {
     expectTypeOf<Asset['kind']>().toEqualTypeOf<
       | 'mesh'
       | 'texture'
+      | 'gpu-texture'
+      | 'texture-generator'
       | 'sampler'
       | 'material'
       | 'scene'
@@ -48,6 +50,11 @@ describe('Asset union covers all engine-known kinds', () => {
       | 'plugin'
       | 'terrain'
       | 'navigation-mesh'
+      | 'water-body'
+      | 'water-zone'
+      | 'water-wave-set'
+      | 'water-brush-recipe'
+      | 'water-simulation-recipe'
     >();
   });
 });

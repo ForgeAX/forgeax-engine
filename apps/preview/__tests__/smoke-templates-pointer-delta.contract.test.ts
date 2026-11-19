@@ -99,7 +99,7 @@ describe('template smoke locked pointer delta', () => {
     const gameAssets = resolve(import.meta.dirname, '../../../templates/game-3d/assets');
     const roots = collectAssetDeclarationRoots(gameAssets);
 
-    expect(roots).toContain(resolve(gameAssets, 'guide.ui.html.meta.json'));
+    expect(roots).toContain(resolve(gameAssets, 'ui/guide.ui.html.meta.json'));
     expect(roots).not.toContain(resolve(gameAssets, 'guide.ui.html'));
     expect(roots).not.toContain(resolve(gameAssets, 'guide.ui.css'));
   });
@@ -180,9 +180,25 @@ describe('template smoke locked pointer delta', () => {
     expect(smokeSource).toContain('GAME3D_FIXED_TICK_STALL_TIMEOUT_MS = 20_000');
     expect(smokeSource).toContain('waitForGame3dFixedTicks');
     expect(smokeSource).toContain('lastProgressTick');
-    expect(smokeSource).toContain("collisionStart.simulation.fixedTick,\n      48,\n      'game-3d collision approach'");
+    expect(smokeSource).toContain("collisionStart.simulation.fixedTick,\n      60,\n      'game-3d collision approach'");
     expect(smokeSource).not.toContain("'game-3d collision approach',\n      15_000");
     expect(smokeSource).toContain('game-3d collision continued simulation');
+  });
+
+  it('proves the iron sphere blocks forward passage and releases input before settling', () => {
+    const collisionSmokeSource = smokeSource.slice(
+      smokeSource.indexOf('async function smokeGame3dCollision'),
+      smokeSource.indexOf('async function smokeGame3d(evidence)'),
+    );
+    const continuedSimulation = collisionSmokeSource.indexOf('game-3d collision continued simulation');
+    const releaseForwardInput = collisionSmokeSource.indexOf("await page.keyboard.up('KeyW')");
+    const settlingSimulation = collisionSmokeSource.indexOf('game-3d collision settling simulation');
+
+    expect(smokeSource).toContain('GAME3D_COLLISION_SPHERE_CENTER_Z = 2.4');
+    expect(collisionSmokeSource).toContain('collisionForwardClearance < 0.25');
+    expect(continuedSimulation).toBeGreaterThan(-1);
+    expect(releaseForwardInput).toBeGreaterThan(continuedSimulation);
+    expect(settlingSimulation).toBeGreaterThan(releaseForwardInput);
   });
 
   it('rejects a healthy renderer that only presents the clear color', () => {
@@ -251,7 +267,7 @@ describe('template startup asset ownership', () => {
     expect(viteConfigSource).toContain(
       "...(selectedTemplateSlugs.length > 0 || process.env.FORGEAX_TEMPLATE_SMOKE === '1'",
     );
-    expect(viteConfigSource).toContain(': [surfaceEvidencePackRoot, previewUiAuthoringMetaPath])');
+    expect(viteConfigSource).toContain(': [surfaceEvidencePackRoot, ...waterRecipePackRoots, previewUiAuthoringMetaPath])');
     expect(smokeSource).toContain('for (const template of templates)');
   });
 });

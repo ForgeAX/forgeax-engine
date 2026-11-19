@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { mat4 } from '@forgeax/engine-math';
 import UPNG from 'upng-js';
 import { create, globals } from 'webgpu';
-import { arcOracle } from '../../../../packages/path/bench/oracle.mjs';
+import { arcOracle } from '../../../../packages/path/src/__tests__/arc-oracle.mjs';
 import {
   bindingReadRequest,
   buildFrameModel,

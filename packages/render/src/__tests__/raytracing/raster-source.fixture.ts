@@ -30,7 +30,7 @@ export async function verifyRasterRaySource(
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     const textures = new Map<TextureView, Texture>();
-    const make = (format: 'r32uint' | 'rgba32uint' | 'depth32float') => {
+    const make = (format: 'rg32uint' | 'r32uint' | 'rgba32uint' | 'depth32float') => {
       const texture = device
         .createTexture({
           size: { width: 8, height: 1, depthOrArrayLayers: 1 },
@@ -44,7 +44,7 @@ export async function verifyRasterRaySource(
       return view;
     };
     const depth = make('depth32float'),
-      normal = make('r32uint'),
+      normal = make('rg32uint'),
       albedo = make('r32uint'),
       identity = make('rgba32uint'),
       response = make('r32uint');
@@ -79,7 +79,7 @@ export async function verifyRasterRaySource(
           module,
           entryPoint: 'fs',
           targets: [
-            { format: 'r32uint' },
+            { format: 'rg32uint' },
             { format: 'r32uint' },
             { format: 'rgba32uint' },
             { format: 'r32uint' },
@@ -222,7 +222,7 @@ export async function verifyRasterRaySource(
               depth,
               normal,
               albedoMetallic: albedo,
-              f0Occlusion: response,
+              dielectricSpecular: response,
               view: { buffer: view },
             },
             count,
@@ -279,13 +279,9 @@ export async function verifyRasterRaySource(
     const overwrite = (target: typeof albedo, value: number | Uint32Array) => {
       const texture = textures.get(target);
       assert(texture);
+      const data = typeof value === 'number' ? new Uint32Array(8).fill(value) : value;
       device.queue
-        .writeTexture(
-          { texture },
-          typeof value === 'number' ? new Uint32Array(8).fill(value) : value,
-          { bytesPerRow: 32 },
-          { width: 8, height: 1 },
-        )
+        .writeTexture({ texture }, data, { bytesPerRow: data.byteLength }, { width: 8, height: 1 })
         .unwrap();
     };
     overwrite(albedo, 0);
@@ -294,10 +290,31 @@ export async function verifyRasterRaySource(
     originalAlbedo[1] = 0;
     originalAlbedo[6] = 0xff4080ff;
     overwrite(albedo, originalAlbedo);
-    overwrite(response, 0x00333333);
+    // GBuffer-v2 stores AO in the packed normal, not reflectance alpha.
+    // Preserve the actual raster normals, validity and roughness during each falsifier.
+    const normalTexture = textures.get(normal);
+    assert(normalTexture);
+    const normalReadback = buffer(256);
+    const copyNormal = device.createCommandEncoder({}).unwrap();
+    copyNormal.copyTextureToBuffer(
+      { texture: normalTexture },
+      { buffer: normalReadback, bytesPerRow: 256 },
+      { width: 8, height: 1 },
+    );
+    device.queue.submit([copyNormal.finish().unwrap()]).unwrap();
+    const originalNormals = new Uint32Array((await readBuffer(device, normalReadback, 64)).buffer);
+    device.destroyBuffer(normalReadback).unwrap();
+    const overwriteAo = (ao: number) =>
+      overwrite(
+        normal,
+        originalNormals.map((word, index) =>
+          index % 2 === 1 ? (word & ~0xff00) | (ao << 8) : word,
+        ),
+      );
+    overwriteAo(0);
     unchanged(await compose());
     // A nontrivial AO factor must weight only indirect once (not the baseline).
-    overwrite(response, 0x80333333);
+    overwriteAo(128);
     const occluded = decode(await compose());
     for (let c = 0; c < 3; c++)
       expect(

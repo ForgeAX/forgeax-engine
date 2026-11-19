@@ -1,4 +1,5 @@
 import type { RhiDevice } from '@forgeax/engine-rhi';
+import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import type { RenderResourceScope } from '../../../publication/resource-scope';
 import {
@@ -10,6 +11,7 @@ import { createStandardLutState } from '../lut-state';
 import {
   commitStandardOutputSubmission,
   discardStandardOutputStates,
+  disposeStandardOutput,
   prepareStandardOutputResources,
   stageStandardOutputStates,
 } from '../resources';
@@ -108,4 +110,70 @@ describe('Standard output on devices without exposure metering', () => {
       },
     });
   });
+});
+
+it('retains metering history on a graph replacement and invalidates it on a camera cut', async () => {
+  const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+  const state = {
+    compiledFrameGraphGeneration: 4,
+    frameNumber: 42,
+    standardLutState: createStandardLutState(),
+  } as RenderFrameState;
+  const internals = {
+    device,
+    deviceScope: { generation: 2 },
+    canvas: { width: 640, height: 360 },
+  } as RenderSystemInternals;
+  const camera = {
+    ...makeZeroCameraFallbackSnapshot(),
+    output: {
+      exposure: {
+        kind: 'auto' as const,
+        fallback: 0.6,
+        compensationEv: 1,
+        rangeEv: [-2, 1] as const,
+        rates: [2, 1] as const,
+      },
+      temperature: 6504,
+      tint: 0,
+      colorLut: 0,
+      colorLutStrength: 0,
+    },
+  };
+  try {
+    prepareStandardOutputResources(state, internals, camera, {} as RenderResourceScope).unwrap();
+    const parameters = state.pendingAutoExposureGpuResources?.parameters;
+    expect(parameters).toBeDefined();
+    const writes = vi.spyOn(device.queue, 'writeBuffer');
+    const revision = () => {
+      const upload = writes.mock.calls.findLast(([buffer]) => buffer === parameters)?.[2];
+      expect(upload).toBeInstanceOf(Float32Array);
+      return (upload as Float32Array)[7];
+    };
+
+    stageStandardOutputStates(state, internals, camera, 1 / 60);
+    const firstRevision = revision();
+    commitStandardOutputSubmission(state, device.queue);
+    await device.queue.onSubmittedWorkDone();
+
+    state.compiledFrameGraphGeneration++;
+    state.frameNumber++;
+    stageStandardOutputStates(state, internals, camera, 1 / 60);
+    expect(revision()).toBe(firstRevision);
+    commitStandardOutputSubmission(state, device.queue);
+    await device.queue.onSubmittedWorkDone();
+
+    state.frameNumber++;
+    stageStandardOutputStates(
+      state,
+      internals,
+      { ...camera, historyVersion: camera.historyVersion + 1 },
+      1 / 60,
+    );
+    expect(revision()).toBeGreaterThan(firstRevision ?? 0);
+    discardStandardOutputStates(state);
+  } finally {
+    disposeStandardOutput(state);
+    await device.queue.onSubmittedWorkDone();
+  }
 });

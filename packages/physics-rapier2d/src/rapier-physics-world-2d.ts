@@ -1,5 +1,12 @@
 import { componentDefinition, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
+import {
+  PhysicsSimulation,
+  PhysicsSync,
+  PhysicsWorld2DResource,
+  PhysicsWritebackPhase,
+} from '@forgeax/engine-physics';
+import { PropagateTransformsFixed } from '@forgeax/engine-scene';
 // @forgeax/engine-physics-rapier2d — RapierPhysicsWorld2D class and three-phase
 // tick systems (syncBackend / stepSimulation / writeback).
 //
@@ -13,7 +20,7 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 //   2. stepSimulation: call rapierWorld.step(eventQueue).
 //   3. writeback: read Rapier body positions (dynamic only).
 
-import type { Component, EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { Component, EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { mat4, quat, type Vec2, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
 import type {
@@ -33,6 +40,7 @@ import {
   PHYSICS_ERROR_HINTS,
   PhysicsError,
   PhysicsSet,
+  physicsSimulationRunning,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -50,6 +58,7 @@ interface Rapier2DKinematicControllerState {
 
 interface PhysicsEntityRecord {
   bodyHandle: number;
+  canSleep?: boolean;
   lockRotation: boolean;
 }
 
@@ -622,6 +631,7 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
       angularDamping: number;
       gravityScale: number;
       ccdEnabled: number;
+      canSleep?: boolean;
       lockRotation?: boolean;
       additionalSolverIterations?: number;
     },
@@ -632,6 +642,10 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
     );
     const existing = this.entityMap.get(entity);
     if (existing) {
+      if (existing.canSleep !== undefined && existing.canSleep !== (rigidBody.canSleep ?? true))
+        throw new TypeError(
+          'RigidBody.canSleep is a creation policy; retire and respawn the body to change it.',
+        );
       const body = this.raw.getRigidBody(existing.bodyHandle);
       if (body.additionalSolverIterations() !== solverIterations)
         body.setAdditionalSolverIterations(solverIterations);
@@ -650,55 +664,64 @@ export class RapierPhysicsWorld2D implements PhysicsWorld2D {
 
     // ── Create RigidBodyDesc (2D) ──
     const rbType = rigidBodyTypeFromF32(rigidBody.type);
-    let body: RapierRigidBody2D;
-    switch (rbType) {
-      case 'dynamic': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.dynamic()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation)
-          .setLinearDamping(rigidBody.linearDamping)
-          .setAngularDamping(rigidBody.angularDamping)
-          .setGravityScale(rigidBody.gravityScale);
-        if (rigidBody.mass > 0) {
-          desc.setAdditionalMass(rigidBody.mass);
+    const createNativeBody = () => {
+      let body: RapierRigidBody2D;
+      switch (rbType) {
+        case 'dynamic': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.dynamic()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setLinearDamping(rigidBody.linearDamping)
+            .setAngularDamping(rigidBody.angularDamping)
+            .setGravityScale(rigidBody.gravityScale)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          if (rigidBody.mass > 0) {
+            desc.setAdditionalMass(rigidBody.mass);
+          }
+          if (rigidBody.ccdEnabled) {
+            desc.setCcdEnabled(true);
+          }
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        if (rigidBody.ccdEnabled) {
-          desc.setCcdEnabled(true);
+        case 'static': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.fixed()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
-      }
-      case 'static': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.fixed()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation);
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
-      }
-      case 'kinematic': {
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
-        const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
-          .setTranslation(transform.position.x, transform.position.y)
-          .setRotation(transform.rotation);
-        // CCD sweeps the collider along its per-step kinematic translation so a
-        // fast mover reliably contacts dynamics instead of tunneling through
-        // them on discrete steps.
-        if (rigidBody.ccdEnabled) {
-          desc.setCcdEnabled(true);
+        case 'kinematic': {
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier RigidBodyDesc
+          const desc = (RAPIER as any).RigidBodyDesc.kinematicPositionBased()
+            .setTranslation(transform.position.x, transform.position.y)
+            .setRotation(transform.rotation)
+            .setCanSleep(rigidBody.canSleep ?? true);
+          // CCD sweeps the collider along its per-step kinematic translation so a
+          // fast mover reliably contacts dynamics instead of tunneling through
+          // them on discrete steps.
+          if (rigidBody.ccdEnabled) {
+            desc.setCcdEnabled(true);
+          }
+          // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
+          body = (this.raw as any).createRigidBody(desc);
+          break;
         }
-        // biome-ignore lint/suspicious/noExplicitAny: Rapier World.createRigidBody
-        body = (this.raw as any).createRigidBody(desc);
-        break;
       }
-    }
 
+      return body;
+    };
+    const body = createNativeBody();
     body.setAdditionalSolverIterations(solverIterations);
     body.userData = entity;
     this.registerBody(entity, body.handle);
+    const createdRecord = this.entityMap.get(entity);
+    if (createdRecord !== undefined) createdRecord.canSleep = rigidBody.canSleep ?? true;
     const record = this.entityMap.get(entity);
     if (record !== undefined) this.syncRotationLock(record, body, Boolean(rigidBody.lockRotation));
 
@@ -1008,10 +1031,11 @@ function resolveTransform(world: World): typeof Transform | undefined {
  * static level geometry is authored. The 2D suffix keeps the name distinct from
  * the 3D system in the shared schedule (D-5).
  */
-export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsSyncBackend2D: System<readonly []> = defineSystem({
+  sets: [PhysicsSync],
   name: PHYSICS_SYNC_BACKEND_2D,
   queries: [],
-  after: ['propagateTransformsFixed'],
+  after: [PropagateTransformsFixed],
   fn: (world) => {
     const transformComponent = resolveTransform(world);
     const globalTransformComponent = world.components.resolve('GlobalTransform') as
@@ -1020,7 +1044,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
     if (transformComponent === undefined || globalTransformComponent === undefined) return;
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: PhysicsWorld resource not yet ready — safe early out
     }
@@ -1057,6 +1081,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
       const rbAngularDamping = batch.read(RigidBody, 'angularDamping');
       const rbGravityScale = batch.read(RigidBody, 'gravityScale');
       const rbCcdEnabled = batch.read(RigidBody, 'ccdEnabled');
+      const rbCanSleep = batch.read(RigidBody, 'canSleep');
       const rbLockRotation = batch.read(RigidBody, 'lockRotation');
       const rbAdditionalSolverIterations = batch.read(RigidBody, 'additionalSolverIterations');
       for (let ordinal = 0; ordinal < batch.count; ordinal++) {
@@ -1107,6 +1132,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
           angularDamping: number;
           gravityScale: number;
           ccdEnabled: number;
+          canSleep?: boolean;
           lockRotation?: boolean;
           additionalSolverIterations?: number;
         } =
@@ -1118,6 +1144,7 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
                 angularDamping: rbAngularDamping?.[row] as number,
                 gravityScale: rbGravityScale?.[row] as number,
                 ccdEnabled: rbCcdEnabled?.[row] as number,
+                canSleep: rbCanSleep?.[row] !== 0,
                 lockRotation: rbLockRotation?.[row] === 1,
                 additionalSolverIterations: rbAdditionalSolverIterations?.[row] as number,
               }
@@ -1169,14 +1196,16 @@ export const PhysicsSyncBackend2D: SystemHandle<readonly []> = defineSystem({
  *
  * After physicsSyncBackend2D — read FixedTime.delta and call pw.step() with dt-gating.
  */
-export const PhysicsStepSimulation2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsStepSimulation2D: System<readonly []> = defineSystem({
+  sets: [PhysicsSimulation],
   name: PHYSICS_STEP_SIMULATION_2D,
   queries: [],
-  after: [PHYSICS_SYNC_BACKEND_2D],
+  after: [PhysicsSyncBackend2D],
+  runIf: physicsSimulationRunning,
   fn: (world) => {
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: safe early out
     }
@@ -1195,16 +1224,17 @@ export const PhysicsStepSimulation2D: SystemHandle<readonly []> = defineSystem({
  * positions + rotation back to ECS Transform (resolved from the ECS
  * component vocabulary, D-3; 2D scalar angle -> quat via quat.fromAxisAngle z-axis).
  */
-export const PhysicsWriteback2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsWriteback2D: System<readonly []> = defineSystem({
+  sets: [PhysicsWritebackPhase],
   name: PHYSICS_WRITEBACK_2D,
   queries: [],
-  after: [PHYSICS_STEP_SIMULATION_2D],
+  after: [PhysicsStepSimulation2D],
   fn: (world) => {
     const transformComponent = resolveTransform(world);
     if (transformComponent === undefined) return;
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return; // C-2: safe early out
     }
@@ -1241,14 +1271,14 @@ export const PhysicsWriteback2D: SystemHandle<readonly []> = defineSystem({
   },
 });
 
-export const PhysicsCollisionSync2D: SystemHandle<readonly []> = defineSystem({
+export const PhysicsCollisionSync2D: System<readonly []> = defineSystem({
   name: PHYSICS_COLLISION_SYNC_2D,
   queries: [],
-  after: [PHYSICS_WRITEBACK_2D],
+  after: [PhysicsWriteback2D],
   fn: (world) => {
     let pw: RapierPhysicsWorld2D;
     try {
-      pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+      pw = requireRapierPhysicsWorld2D(world);
     } catch {
       return;
     }
@@ -1279,7 +1309,7 @@ export function registerPhysicsSystems2D(world: World): () => void {
   // the backend for the global Collider.onRemove dispatch (despawn cleanup).
   const transformComponent = resolveTransform(world);
   try {
-    const pw = world.getResource<RapierPhysicsWorld2D>('PhysicsWorld');
+    const pw = requireRapierPhysicsWorld2D(world);
     if (transformComponent !== undefined) {
       pw.setMoveContext(world, transformComponent);
     }
@@ -1297,10 +1327,17 @@ export function registerPhysicsSystems2D(world: World): () => void {
     ])
     .unwrap();
   return () => {
-    world.removeSystem(FixedUpdate, PHYSICS_COLLISION_SYNC_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_WRITEBACK_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_STEP_SIMULATION_2D);
-    world.removeSystem(FixedUpdate, PHYSICS_SYNC_BACKEND_2D);
+    world.removeSystem(FixedUpdate, PhysicsCollisionSync2D);
+    world.removeSystem(FixedUpdate, PhysicsWriteback2D);
+    world.removeSystem(FixedUpdate, PhysicsStepSimulation2D);
+    world.removeSystem(FixedUpdate, PhysicsSyncBackend2D);
     releaseComponents();
   };
+}
+
+export function requireRapierPhysicsWorld2D(world: World): RapierPhysicsWorld2D {
+  const physics = world.getResource(PhysicsWorld2DResource);
+  if (!(physics instanceof RapierPhysicsWorld2D))
+    throw new TypeError('The World uses a different physics backend');
+  return physics;
 }

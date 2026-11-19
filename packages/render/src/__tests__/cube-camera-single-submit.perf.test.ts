@@ -33,11 +33,7 @@ describe('CubeCamera single-submit benchmark contract', () => {
     const initial = renderer.inspect().frame;
     const receipts = [];
     for (let index = 0; index < 6; index += 1) {
-      const frame = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const frame = renderer.draw({ source: attached.value });
       expect(frame.ok).toBe(true);
       if (!frame.ok || frame.value === undefined) return;
       receipts.push(frame.value);

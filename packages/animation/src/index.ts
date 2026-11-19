@@ -72,13 +72,23 @@ export { createSkeletonRetargeter, type SkeletonRetargeter } from './retarget';
 export { retargetAnimationClip } from './retarget-clip';
 export type { SkeletonRetargetOptions } from './retarget-core';
 export { AnimationRootMotion } from './root-motion';
+export { SkeletalMotionResource } from './skeletal-motion';
 export {
   AnimationBindingError,
   type AnimationBindingErrorCode,
   type AnimationError,
 } from './solver-errors';
 export {
-  ADVANCE_ANIMATION_PLAYER_SYSTEM,
+  AnimationGraphEvaluation,
+  AnimationPlayback,
+  SkeletalMotionCapture,
+  SkeletalMotionCompose,
+  SkeletalMotionPrepare,
+  SkeletalMotionRestore,
+  SplineIKRestore,
+  SplineIKSolve,
+} from './system-order';
+export {
   AdvanceAnimationPlayer,
   AnimationSet,
   advanceAnimationPlayer,

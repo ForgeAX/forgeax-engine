@@ -29,7 +29,6 @@ function snapshot(
 ): RenderableSnapshot {
   return {
     assetHandle: 9,
-    worldId: 0,
     entityKey,
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
@@ -54,7 +53,6 @@ function snapshot(
 
 const update = (value: RenderableSnapshot) => ({
   kind: 'update' as const,
-  worldId: value.worldId,
   entityKey: value.entityKey,
   snapshot: value,
 });
@@ -264,9 +262,7 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
     scene.sync(projection.apply([])).unwrap();
     await probe(identity, identity);
 
-    scene
-      .sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: ordinary.entityKey }]))
-      .unwrap();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: ordinary.entityKey }])).unwrap();
     ordinary = snapshot(3, rootB);
     sync([ordinary]);
     await probe(rootB, rootB);
@@ -295,4 +291,4 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
     for (const value of buffers) device.destroyBuffer(value);
     native.destroy();
   }
-}, 30_000);
+}, 30000);

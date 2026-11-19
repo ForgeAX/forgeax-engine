@@ -7,6 +7,7 @@ export {
   type DynamicGeometryResidencyPort,
 } from './assembly/dynamic-geometry-host';
 export { DeviceScope } from './device/device-scope';
+export { assertTextureMipSkip } from './device/texture-mip-skip';
 export { createLightResourceUnavailable } from './errors/render';
 export {
   type FullscreenRenderFeatureDeclaration,
@@ -44,7 +45,6 @@ export {
   type PackedRowsMesh,
   packedRowsEligible,
 } from './publication/packed-rows-mesh';
-export { verifyPublicationPrograms } from './publication/programs';
 export { ownReceivedPublicationMaterials } from './publication/received-materials';
 export { RenderPublicationReceiver } from './publication/receiver';
 export {
@@ -225,3 +225,13 @@ export {
   type SsrTemporalInspection,
 } from './ssr/temporal';
 export { TemporalFrameCoordinator } from './temporal/frame-coordinator';
+export {
+  createWaterUnderwaterFeature,
+  WATER_UNDERWATER_FEATURE_IDENTITY,
+} from './water/underwater-feature';
+export {
+  createWaterInfoCaptureDeferralProbe,
+  createWaterInfoSourceFeature,
+  WATER_INFO_FEATURE_IDENTITY,
+  type WaterInfoPublicationInput,
+} from './water/water-info-feature';

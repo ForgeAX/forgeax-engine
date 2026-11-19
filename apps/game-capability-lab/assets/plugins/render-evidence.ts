@@ -17,7 +17,6 @@ import type {
 import type { ChromaticAberrationHandle, ChromaticAberrationSnapshot } from './chromatic-aberration';
 import type { FbxSkinnedTargetSnapshot } from './fbx-skinned-target';
 import type { WorldScoreTextSnapshot } from './world-score-text';
-import type { MultiWorldOverlaySnapshot } from './multi-world-overlay';
 import type { VisibilityLoopSnapshot } from './visibility-loop';
 import type { JpegTextureSnapshot } from './jpeg-texture-swap';
 import { activeScoringTargetEntities, type ScoringTargetQuery } from './scoring-target';
@@ -100,7 +99,6 @@ export type GameDefaultRenderEvidence = {
     readonly targetDisabling: TargetDisablingWitness;
     readonly worldScoreText: WorldScoreTextSnapshot;
     readonly multiMaterial: MultiMaterialEvidence;
-    readonly multiWorld: MultiWorldOverlaySnapshot;
     readonly visibility: VisibilityLoopSnapshot;
     readonly jpegTexture: JpegTextureSnapshot;
     readonly materialShaderIdentifiers: readonly string[];
@@ -182,7 +180,6 @@ type RenderEvidenceArgs = {
   readonly targetDisabling?: () => TargetDisablingWitness;
   readonly worldScoreText?: () => WorldScoreTextSnapshot;
   readonly multiMaterial?: () => MultiMaterialEvidence;
-  readonly multiWorld?: () => MultiWorldOverlaySnapshot;
   readonly visibility?: () => VisibilityLoopSnapshot;
   readonly isFlashed: (entity: EntityHandle) => boolean;
   readonly reset: () => void;
@@ -282,7 +279,6 @@ export function installRenderEvidence(args: RenderEvidenceArgs): void {
       targetDisabling: args.targetDisabling?.() ?? { activeCount: 0, disabledCount: 0, disableEvents: 0 },
       worldScoreText: args.worldScoreText?.() ?? { available: false, baked: false, active: false, text: '', age: 0, position: [0, 0, 0], fontSource: 'legacy-pack', fontGuid: null, fontSize: 0, color: [1, 1, 1, 1], toggles: 0 },
       multiMaterial: args.multiMaterial?.() ?? { available: false, materialCount: 0, submeshCount: 0, topologies: [], slotsAligned: false },
-      multiWorld: args.multiWorld?.() ?? { enabled: false, worldCount: 1, entityCount: 0, cameraOwner: 0, resourceOwner: 0 },
       visibility: args.visibility?.() ?? {
         available: false,
         intent: 'inherited',

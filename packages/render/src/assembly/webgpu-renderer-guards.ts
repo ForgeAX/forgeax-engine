@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import type { DynamicGeometryError } from '../dynamic-geometry';
 import { RendererContractFailureError, RendererOperationError } from '../errors/render';
 
@@ -8,14 +9,11 @@ import { RendererContractFailureError, RendererOperationError } from '../errors/
  * never consumes a half-published World snapshot.
  */
 export function derivedPhysicsFrameError(
-  worlds: readonly World[],
+  world: World,
 ): RendererOperationError<'frame-input-invalid'> | undefined {
-  for (const world of worlds) {
-    if (!world.hasResource('PhysicsWorld')) continue;
-    const physics = world.getResource<{
-      readonly getDerivedAdmission?: () => unknown;
-      readonly getDerivedRecoveryState?: () => string;
-    }>('PhysicsWorld');
+  {
+    if (!world.hasResource(PhysicsWorldResource)) return undefined;
+    const physics = world.getResource(PhysicsWorldResource);
     if (
       physics?.getDerivedAdmission?.() !== undefined ||
       physics?.getDerivedRecoveryState?.() === 'rebuild-required'
@@ -34,10 +32,10 @@ export function derivedPhysicsFrameError(
 
 /** A host-side atomic-swap fault fences every later frame for that World. */
 export function dynamicGeometryFrameError(
-  worlds: readonly World[],
+  world: World,
   faultForWorld: (world: World) => DynamicGeometryError | undefined,
 ): RendererOperationError<'frame-input-invalid'> | undefined {
-  for (const world of worlds) {
+  {
     const fault = faultForWorld(world);
     if (fault !== undefined) {
       return new RendererOperationError('frame-input-invalid', {

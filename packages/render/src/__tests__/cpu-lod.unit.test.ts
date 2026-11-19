@@ -39,7 +39,6 @@ function source(overrides: Partial<RenderableSnapshot> = {}): RenderableSnapshot
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey: 1,
     lods: [{ mesh: LOD_MESH_GUID, screenCoverage: 0.5 }],
     lodHysteresis: 0,
@@ -224,8 +223,8 @@ describe('actual Direct-shadow LOD query output', () => {
     expect(same[0]?.source.transform.world[12]).toBe(1);
     selectCpuLodRows(currentRows, cameraAt(5), selection);
     expect(selection.token).not.toBe(a);
-    expect(selection.values).toEqual([0, 1, 0]);
-    expect(numbers).toEqual([0, 1, 1]);
+    expect(selection.values).toEqual([1, 0]);
+    expect(numbers).toEqual([1, 1]);
   });
 
   it('keeps only authored LOD results and detects shorter matching prefixes', () => {
@@ -237,13 +236,13 @@ describe('actual Direct-shadow LOD query output', () => {
     selectCpuLodRows([a, plain, b], cameraAt(40), selection);
     const numbers = selection.values,
       token = selection.token;
-    expect(numbers).toEqual([0, 1, 1, 0, 2, 1]);
+    expect(numbers).toEqual([1, 1, 2, 1]);
     selectCpuLodRows([a, b], cameraAt(40), selection);
     expect(selection.token).toBe(token); // non-LOD members have no numeric copies
     selectCpuLodRows([a], cameraAt(40), selection);
     expect(selection.token).not.toBe(token);
-    expect(selection.values).toEqual([0, 1, 1]);
-    expect(numbers).toEqual([0, 1, 1, 0, 2, 1]);
+    expect(selection.values).toEqual([1, 1]);
+    expect(numbers).toEqual([1, 1, 2, 1]);
     selectCpuLodRows([plain], cameraAt(40), selection);
     const empty = selection.token;
     expect(selection.values).toEqual([]);
@@ -285,16 +284,16 @@ describe('actual Direct-shadow LOD query output', () => {
     const lowerA = createBoxGeometry(1, 1, 1).unwrap();
     const lowerB = createBoxGeometry(0.5, 0.5, 0.5).unwrap();
     const handle = 9 as import('@forgeax/engine-types').AssetHandle<'mesh'>;
-    const a = store.ensureResident(handle, shape, 0, [lowerA]).unwrap();
+    const a = store.ensureResident(handle, shape, undefined, [lowerA]).unwrap();
     const reads = new ShadowMeshReads(store.meshChanges);
     reads.add(a.changeToken);
     const upper = store.meshChanges.epoch;
     const selection = { values: [] as readonly number[], token: {} };
     selectCpuLodRows([row(source(), a)], cameraAt(40), selection);
     const token = selection.token;
-    expect(selection.values).toEqual([0, 1, 1]);
+    expect(selection.values).toEqual([1, 1]);
     try {
-      const b = store.ensureResident(handle, shape, 0, [lowerB]).unwrap();
+      const b = store.ensureResident(handle, shape, undefined, [lowerB]).unwrap();
       expect(b).not.toBe(a);
       selectCpuLodRows([row(source(), b)], cameraAt(40), selection);
       expect(selection.token).toBe(token);

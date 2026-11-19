@@ -5,11 +5,27 @@ export const TOOL_OWNERS = new Map([
   ['dsh', 'Node AI CLI process host'],
   ['intelligence-dsh', 'Node AI CLI transport'],
   ['mesh-io', 'Node-only source-format import and static mesh export workers'],
-  ['shader-compiler', 'Offline shader compiler and cooker'],
   ['vfx-compiler', 'Offline VFX program compiler'],
   ['vite-plugin-pack', 'Explicit Vite asset adapter'],
   ['vite-plugin-shader', 'Explicit Vite shader adapter'],
   ['vite-plugin-rhi-debug', 'Explicit Vite capture transport'],
+]);
+
+// The program compiler is portable. Only these file/process adapters own Node inputs.
+export const NODE_TOOL_ENTRIES = new Map([
+  ['packages/shader-compiler/src/index.ts', 'Node authoring and cooker umbrella'],
+  ['packages/shader-compiler/src/compiler-fingerprint.ts', 'Node source/compiler fingerprint'],
+  ['packages/shader-compiler/src/program-compiler.ts', 'Node bounded program reuse host'],
+  ['packages/shader-compiler/src/texture-generator-cooker.ts', 'Node texture-generator producer'],
+  ['packages/shader-compiler/src/material/pack-cooker.ts', 'Node material file discovery and cook'],
+  ['packages/shader-compiler/src/material/pack-variant-reuse.ts', 'Node cook reuse hashing'],
+  ['packages/shader-compiler/src/material/node-program-compiler.ts', 'Node program worker host'],
+  ['packages/shader-compiler/src/material/node-material-cooker.ts', 'Node material worker host'],
+]);
+
+const PORTABLE_SHADER_PROGRAM_EXPORTS = new Set([
+  '@forgeax/engine-shader-compiler/program',
+  '@forgeax/engine/shader-compiler/program',
 ]);
 
 export const HOST_ENVIRONMENT_ENTRIES = new Map([
@@ -88,6 +104,14 @@ export const TOOL_SOURCE_ENTRIES = new Map([
 
 export const MIXED_TOOL_DEPENDENCIES = new Map([
   [
+    'runtime',
+    {
+      dependencies: new Set(['@forgeax/engine-shader-compiler']),
+      reason:
+        'The host lazily imports only the portable /program service for source-template publications; Node cooker entries remain forbidden.',
+    },
+  ],
+  [
     'pack',
     {
       dependencies: new Set(['typescript']),
@@ -129,7 +153,7 @@ export function sourceAuthority(file) {
   const engineToolEntry =
     file === 'packages/engine/dist/bin/forgeax.mjs' ||
     (engineFacade && isBuildTool(`@forgeax/engine/${engineFacade}`));
-  const tool = TOOL_OWNERS.has(owner);
+  const tool = TOOL_OWNERS.has(owner) || NODE_TOOL_ENTRIES.has(sourceFile);
   return {
     tools:
       tool ||
@@ -156,6 +180,7 @@ export function isBuildTool(specifier) {
     isPackToolSpecifier(specifier) ||
     /^@forgeax\/engine-vite-plugin-/.test(specifier) ||
     TOOL_OWNERS.has(engineOwner) ||
+    (engineOwner === 'shader-compiler' && !PORTABLE_SHADER_PROGRAM_EXPORTS.has(specifier)) ||
     /^@forgeax\/engine(?:-|\/)three\/build(?:\/|$)/.test(specifier) ||
     specifier.startsWith('virtual:')
   );

@@ -2,7 +2,7 @@ import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { AssetHandle } from '@forgeax/engine-types';
 // game-default gameplay audio: GUID-loaded spatial SFX plus looping music bus controls.
 
-import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, type AudioBackend } from '@forgeax/engine-audio';
+import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource } from '@forgeax/engine-audio';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
@@ -50,7 +50,7 @@ export async function installGameplayAudio(
   let musicVolume = 0.7;
   let musicMuted = false;
   const audio = world.hasResource(AUDIO_ENGINE_RESOURCE_KEY)
-    ? world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY)
+    ? world.getResource(AUDIO_ENGINE_RESOURCE_KEY)
     : undefined;
 
   if (!assets) {

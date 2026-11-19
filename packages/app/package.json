@@ -19,6 +19,10 @@
     "./host-adapter": {
       "types": "./dist/host-adapter.d.ts",
       "import": "./dist/host-adapter.mjs"
+    },
+    "./configuration": {
+      "types": "./dist/configuration.d.ts",
+      "import": "./dist/configuration.mjs"
     }
   },
   "main": "./dist/index.mjs",

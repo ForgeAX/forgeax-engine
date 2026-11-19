@@ -34,7 +34,7 @@ import { gpuDrivenMeshesForFrame } from './resident-meshes';
 export interface FrameGpuDrivenSources {
   readonly internals: RenderSystemInternals;
   readonly frameState: RenderFrameState;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly camera: CameraSnapshot;
   readonly lights: ViewLights;
   readonly renderables: FrameList<RenderableSnapshot>;
@@ -67,8 +67,8 @@ export function buildFrameGpuDrivenInput(
   standard: StandardTopologyInputValue,
   pipelineState: PipelineState,
 ): FrameGpuDrivenInput {
-  const { internals, frameState, worlds, renderables, shadowCasterProjection } = sources;
-  const meshes = gpuDrivenMeshesForFrame(internals, worlds, input?.scene);
+  const { internals, frameState, sourceScope, renderables, shadowCasterProjection } = sources;
+  const meshes = gpuDrivenMeshesForFrame(internals, sourceScope, input?.scene);
   const visibleSurface = projectFrameVisibleSurface(internals, frame?.scene, renderables);
   const deferredProbeBuffer = prepareDeferredProbeBuffer(
     internals,
@@ -105,11 +105,12 @@ export function buildFrameGpuDrivenInput(
   if (hasShadows)
     collectGpuShadowMaterials(
       internals,
-      worlds,
+      sourceScope,
       artifacts.batchExecutions,
       meshes,
       shadowMaterials,
       undefined,
+      shadowCasterProjection,
     );
   const probeBuffer = gpuProbeBlendBufferFor(
     internals,

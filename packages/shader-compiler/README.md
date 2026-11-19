@@ -1,5 +1,31 @@
 # @forgeax/engine-shader-compiler
 
+## Portable program compiler
+
+`@forgeax/engine-shader-compiler/program` exposes `prepareShaderCompiler()`.
+Initialization verifies and prepares the native compiler once; its returned
+`compile` and `program` calls synchronously compose, validate and reflect the
+requested program. They return structured Result values and release invocation-owned
+IR before returning. Build and runtime requests use the same semantic core.
+Program caching belongs to ShaderRegistry, not a second compiler registry.
+Prepared composition retains the checked writer's final validated IR through
+selected graphics-interface checks and reflection. Portability normalization
+runs inside that checked output boundary. Compute-entry projection still admits
+its actual projected source separately; it cannot borrow reflection for the
+unprojected module. Asynchronous build and prepared requests preserve the same
+WGSL, complete reflection and structured failure contracts.
+
+On a cold asynchronous build-cache miss, composition transfers its canonical,
+validated writer-output handle to that invocation's reflection step. Selected
+graphics interfaces still validate against the native IR. The caller frees the
+handle in `finally`, including result-cache hits and rejected selections. No IR
+handle survives the invocation or enters either bounded source/result cache.
+Composition-cache hits without a handle retain ordinary parse/validation.
+
+`prepareEngineShaderSource` owns Standard Surface, parameter and scene-index
+lowering for both hosts. The root export still owns Node file discovery and Pack
+production. Browser consumers use `/program` and explicit source/module inputs.
+
 ## Focused source checks
 
 `materialShaderSourceRoots()` returns the compiler owner's installed Engine/VFX shader roots. `reachableShaderImportIds(source, imports)` identifies the transitive module closure, including dotted module names and selective-symbol imports. DevKit uses these owners to compile a named source without compiling unrelated game or asset code. Full material cooking still owns generated parameters, Surface lowering, pass variants and ABI receipts.
@@ -55,7 +81,59 @@ retains its authored maps. Custom Surface and shadow overrides are preserved.
 The selected schema derives alpha-clipping availability for Standard and temporal
 programs; absent cutoffs become zero without a runtime early-return branch.
 
+Scene-index Standard and Skin vertex entries omit the material-row copy when
+the compiler proves canonical Engine geometry without displacement or authored
+deformation. This also applies to a custom fragment Surface. Its fragment entry
+still selects the material row; terrain and unproven vertex programs retain
+their reads. Other custom Surface inputs remain conservative.
+
+Ordinary raster contexts omit `viewClipping`; the producer publishes their
+`viewClipping: true` counterparts for receiving views that need camera planes.
+The existing runtime program family selects those cooked bytes per view. Material-local
+planes remain independent; temporal entries retain their exact coverage contract.
+Producer cache revision 5 invalidates earlier rosters, including fenced source
+snapshots whose WGSL bytes are unchanged. The additive raster context keeps the
+existing cooked-record wire version.
+
+Pack variant reuse stores idle plain-data snapshots in a private compressed
+cache. Standard raster, ray-hit and Card contexts share the same 64 MiB and
+256-context limits. A single expanded snapshot above 64 MiB is not retained.
+Cache hits restore read-only program facts without shader composition or
+validation. Value-only publications resolve fresh material data and recheck ray
+admission. The encoding does not change asset wire data.
+
+Derivative publication selects its actual pass names before compilation while
+schema, physical layers and scene addressing still derive from the complete
+resolved material. Clipping and LOD contexts do not compile unrelated passes
+only to discard them later. Vertex-color publication retains shadow Surface
+coverage as well as color writers. Selection membership participates
+in the existing variant cache identity; published program bytes remain unchanged.
+
+Custom Standard Surface threshold/hash coverage follows the root's existing
+`staticSwitches.alphaClipping` and `staticSwitches.alphaHash` choices in every
+raster pass. A selected custom threshold need not read stock `alphaCutoff`;
+opaque choices remove the template threshold gate before Naga composition.
+Authored discard, LOD and view/local clipping remain independent. Custom
+receipts do not invent the stock `baseColor.a / alphaCutoff` input pair. That
+legacy pair is not a fragment-side-effect certificate. Re-cook publications
+after changing this selection contract; the producer fingerprint invalidates
+earlier schema-only coverage selection.
+
+The scoped program compiler supplies its portability normalizer before Naga's
+checked WGSL writeback. This preserves one normalization owner while letting the
+native parse/validate phase consume the exact IR already verified against the
+consumer bytes. Changed inputs retain fresh parsing; every render-entry,
+reflection and buffer-ABI check remains.
+
+Compiler snapshots copy caller containers and deeply freeze their owned output.
+Later snapshots can share descendants certified by this same owner; an arbitrary
+caller-frozen object is still copied. This removes repeated reflection/binding
+copies during result admission while retaining detached caller inputs and the
+existing per-stage byte budgets.
+
 ## Sampled-texture capability publications
+
+Single-layer medium Surface textures occupy the schema-derived author region. Cook relocates the Engine-owned IBL, paired color/depth and planar-reflection declarations after that region in both direct and scene-index programs, matching Render's material layout. Author textures do not require custom GPU bindings.
 
 The cooker publishes storage-backed minimum, projector, extended-lighting and atmosphere
 View programs alongside uniform fallback, preserving each authored Surface and parameter schema.
@@ -80,11 +158,10 @@ cook 使用的 reflection 与 artifact 输入。`coordinateSet`、transform 和
 
 ## Layer 1 — API surface (what you call)
 
-Build-time Surface source-closure and helper-name digests use Node's native
-SHA-256 on Node and the existing portable SHA-256 in browser source utilities.
-The native module is loaded only on Node. Canonical
-module ordering, UTF-8 replacement bytes, digest prefixes and published helper
-names remain identical; source changes still invalidate derived receipts.
+Surface source-closure and helper-name digests use the same portable SHA-256
+in build and runtime source preparation. Canonical module ordering, UTF-8
+replacement bytes, digest prefixes and helper names remain identical; source
+changes invalidate their derived programs.
 
 **Single entry.** `compileShader(source, options)` — pure function, `Promise<Result<CompileResult, ShaderError>>`. Same input produces same output; no mutable global state.
 
@@ -158,6 +235,15 @@ Generation omits only resource names already declared by the selected template;
 its built-in bindings and custom resources retain one declaration per binding in
 both direct and scene-index programs.
 
+When composable helpers import generated parameters, the selected Surface and
+its helpers share one canonical parameter provider, including the private
+scene-index row. Lexical references also import implicitly used schema resources;
+local declarations, fields, members and qualified names do not create imports.
+The compiler derives the complete Engine template closure before validating
+Surface helpers. A Surface may reuse resources from those same Engine modules;
+new resource-bearing helpers, unrelated Engine modules and project-owned resource
+declarations remain forbidden. This does not create a resource-name whitelist.
+
 Full-custom raster programs may conditionally declare `vs_scene_index` under
 `GPU_DRIVEN_SCENE_INDEX_AVAILABLE` and keep their direct entry in the opposite
 branch. Cook compiles each address independently with the native selector,
@@ -172,10 +258,40 @@ program publishes the same address pair from the root parameter schema. Its
 default opaque coverage requires position and vertex normal (plus skin attributes when
 selected), while retaining native transforms, clipping and LOD coverage.
 
-Material publications use `material-cook/4`: one validated root contract and a
+Material publications use `material-cook/5`: one validated root contract and a
 complete program set selected by Pass and compiler context. Pack and Native
 cookers share the publication builder. Independent modules retain independent
 WGSL; shared modules reuse code while entry choices remain pipeline facts.
+Program identity includes the immutable parameter schema, including color-space
+projections. Equal WGSL and bindings do not permit sharing incompatible CPU
+parameter encodings. Parameter defaults remain material values and do not split
+program identity. Raster variants use producer fingerprint `material-raster-variants/6`
+to retire products created before this identity boundary.
+
+The Pack cooker producer identity is `material-pack-cooker/6`. It invalidates
+older derived products without changing the durable `material-cook/5` wire
+schema; source, canonical deformation layout and compiler fingerprints still
+participate in the normal identity. Re-cook affected Water publications.
+
+Water's `waterVertexMapping` defaults to true. The compiler enables
+`WATER_HEIGHT_MAPPING_AVAILABLE` only when that choice and a selected
+WaterInfo, Baked or fixed-height source are both available. It does not change
+fragment field selection or `waterWaves`. Independent
+`waterDynamicBoundsClip` lowers to `WATER_DYNAMIC_BOUNDS_CLIP`, default false;
+its value is never inferred from WaterInfo, mapping or a family name.
+
+`WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves and an enabled
+Lake/Ocean transition. The selected default deformation requires
+`waveVelocityMaskThresholdMPerSec: f32`; when fixed/Baked velocity does not take
+precedence, it also requires `maximumFlowVelocityMPerSec: f32` even if Info is
+enabled, because source mode can select vertex fallback. Missing or incompatible
+fields return `material-derived-interface-mismatch` before shader compilation.
+
+`WATER_DEFAULT_DEFORMATION_AVAILABLE` derives from the resolved deformation module,
+including inheritance. Only the Engine default selects the stock fragment wave
+normal recomputation; custom deformation normals remain authoritative. An unused
+optional deformation slot does not revoke Standard's position-bounds proof, but
+any selected deformation still prevents that undeformed-position certification.
 
 Standard Pack materials publish both plain and vertex-color programs, including
 matching direct and scene-index address pairs. The ABI receipt's vertex inputs
@@ -340,20 +456,18 @@ The build-only `createShaderProgramCompiler()` serves material and VFX cooking.
 Explicit compiler instances retain their caller-owned lifetime. Node Material Pack
 cookers share one lazy pool per loaded compiler module. A complete material is
 the parallel unit: source collection, Surface lowering, hashing, variant compilation
-and ray cooking run together off the host thread. Each material Worker uses the
-serial program compiler; Pack concurrency does not create nested shader pools.
-Jobs keep program affinity: a material whose contract (everything but uniform
-values, within one source directory and root set) a lane already cooked waits for
-that lane, so that Worker's bounded program reuse composes each unique program
-once per build instead of once per lane. Unheld contracts go to any idle lane;
-the routing key is the SHA-256 of that canonical (sorted-key) content, so a build
-schedules the same way every time, and routing never changes a draft.
-
-The existing material queue places uniform-only siblings on one warm lane while
-independent contracts use other idle lanes. Placement derives from roots, profile
-and the detached source contract without uniform values; it never admits cached
-output. Live/default cooks reread source bytes; every cook validates its actual values and
-publishes its own GUID, references and artifacts. A build host can explicitly pass
+and ray cooking run together off the host thread. After reserving material
+lanes, the first lane can use spare CPU and memory for independent program
+compilation. Other lanes compile inline. Both share one process-wide budget, so
+parallel Pack requests do not multiply the configured program slots.
+The material queue places uniform-only siblings on one warm lane while independent
+contracts can use other idle lanes. The routing key hashes the roots, profile and
+normalized source contract. In a shorthand Standard material, authored value names
+can select parameter declarations even though the values themselves stay out of
+the key. The queue considers a batch of sibling submissions before filling idle
+lanes, so a lane can take pending work for a contract it has already cooked.
+Routing never admits cached output. Live/default cooks reread source bytes and
+validate their own values, GUIDs, references and artifacts. A build host can explicitly pass
 `captureMaterialSourceSnapshot()` through `sourceSnapshot` after capturing its
 files and namespace with the build source fence. The cooker detaches and freezes
 that input, retains at most 16 prepared catalogs, and sends it once per Worker lane
@@ -368,26 +482,45 @@ contracts in the two-lane fixture.
 | --- | --- |
 | Unset | Up to four workers, bounded by available CPU and memory |
 | `1` | Original serial material cooker |
-| `2` through `4` | Requested pool, clamped to CPU and memory admission |
+| `2` or higher | Combined material and program worker budget, clamped to CPU and memory admission |
 
 Admission keeps 2 GiB of host headroom and budgets 2 GiB per material lane.
-Automatic admission reserves one CPU for the host. An explicit worker request
-may use every available CPU, still bounded by four lanes and the same memory
-admission. The two-CPU, 8 GiB native fixture exercises serial/parallel byte parity,
+Automatic admission reserves one CPU for the host. An explicit request can
+reserve up to two slots for program compilation within the first material
+while keeping at least two material slots when resources allow it. At most four
+material lanes run, and extra program slots require half a GiB each beyond the
+material reservation. The two-CPU, 8 GiB native fixture exercises serial/parallel byte parity,
 warm contract placement and two simultaneous independent contracts.
 Each Worker has a 1 GiB old-generation heap limit; native/WASM memory is separate.
 Idle workers are unreferenced and do not hold Node open. A failed job rejects its
 caller; a failed Worker is replaced for later jobs without retrying failed work.
 Caller inputs and returned artifacts remain independently owned.
 
-Exact source and selected ABI facts validate on every cook. A bounded Surface
+Each cook reads current source and resolves the selected material contract. A bounded Surface
 lowering cache reuses only the pure string rewrite after validation: 128 entries,
-16 MiB retained UTF-16 payload, and at most 1 MiB per entry. Its key includes every
-lowering input, including generated parameters, ABI and inlined helpers. Source
-collection remains fresh for live/default cooks. Explicit fenced snapshots retain
+16 MiB retained UTF-16 input/output payload, and at most 1 MiB per entry. It
+compares every lowering input exactly, including generated parameters, ABI and
+owned snapshots of inlined helpers, without rehashing unchanged template bodies.
+Boolean projection sends only directive lines through its conditional grammar;
+ordinary WGSL and define-only modules preserve the existing selected source and
+line-ending rules. Source collection remains fresh for live/default cooks. Explicit fenced snapshots retain
 only detached source records and prepared catalogs; no World or material values
 are retained. Diagnostic ownership remains per invocation. Shader plugins and VFX keep
 their existing lifecycle-owned compiler instances.
+
+Pack publication derives independent `lodCoverage` and `viewClipping` contexts
+for Engine roots. LOD rows require an actual scene-index compile and a template
+that reads coverage; direct-only, terrain and uniform-fallback contexts retain
+only their clipping pair. Vertex-color rows preserve both coverage selections.
+These are derived programs of one MaterialAsset, not new authoring assets.
+
+Pack variant reuse belongs to the Node material compiler across cooker instances.
+Its existing cache retains at most 128 variants and 64 MiB of distinct-string
+payload, keyed by the complete source identity, static contract, raster context
+and color ABI. A new cooker re-resolves its own GUID, values and ancestry while
+borrowing immutable validated passes and layer facts. Changed source or selectors,
+failed compilation and accessor-backed inputs retain the ordinary compiler path.
+The cache owns CPU facts, with no GPU resources or retained native IR handles.
 
 `createShaderProgramCompiler()` shares pending composition and validation and retains successful
 compilation stages with independent retained-payload budgets: 32 MiB for composition
@@ -402,7 +535,7 @@ result budget. Keys include raw source, imported bytes and all options, preservi
 explicit undefined/scalar values. Selector containers are captured per invocation;
 immutable WGSL strings are shared. Accessor-backed/non-data inputs and failures
 stay on the ordinary admission path. Validation
-reuse requires identical actual WGSL, selected vertex/fragment entries, ordered
+reuse requires identical actual WGSL, selected compute or vertex/fragment entries, ordered
 attachment formats and dynamic-offset annotations. Distinct source contexts
 that compose to those same facts reuse one validated result; changed programs
 or selections run the real Naga path. Each invocation projects its own declared
@@ -429,7 +562,9 @@ source. Evicted pending validation cannot restore its entry on completion.
 
 Keys hash source chunks directly instead of JSON-expanding WGSL. Composition
 remains keyed by prepared source, imported bytes and relevant
-boolean axes. Malformed selectors still reach native rejection. Conditional
+boolean axes. Conservative literal matching retains names in comments and longer
+identifiers; the exact definition map still reaches native conflict admission.
+Malformed selectors retain native rejection. Conditional
 specialization and source diagnostics remain on the ordinary compiler path;
 only successful program facts are retained, never native IR handles.
 
@@ -471,6 +606,11 @@ module IDs and source paths relative to distinct package/project root slots.
 Relocating an unchanged checkout keeps that identity; changes to source bytes,
 imports or relative source mappings invalidate it. Extra root discovery order
 does not affect the identity.
+
+The returned native draft fingerprint derives from the existing complete cook
+identity, including the selected ABI/reflection and compiler provenance. Updating
+native entry facts with unchanged WGSL therefore invalidates downstream Pack
+transport caches too; a new product cannot reuse an older reflection payload.
 
 Cooked shader closures identify roots and imports by module ID. Their published
 bytes and digests survive checkout relocation; the Pack cooker resolves those
@@ -575,6 +715,10 @@ projection preserves active backend directives; explicit author axes or `all`
 flatten active boolean branches too. Opaque expressions retain their nesting.
 Directive scanning uses Types' `stripWgslComments`, sharing nested-comment,
 quoted-path and source-offset handling with material schema readers.
+Each composition projects imported modules once and uses those same bytes for
+reachability. Modules without conditional or group-import work retain their
+ordinary source with normalized line endings; source diagnostics still inspect
+the complete declared import table before native composition.
 
 Surface dynamic-input field types and byte footprints have one Types authority.
 The derived layout supplies CPU write widths and generated WGSL word loads;
@@ -593,3 +737,27 @@ All scene-index programs share reflection admission for scene-material and
 visible-item storage addresses, read-only bindings, array strides and row span.
 Standard rows additionally validate derived members; medium templates keep their
 opaque payload without maintaining a second copy of those storage checks.
+
+## Texture generator program preparation
+
+`createTextureGeneratorPackCooker(roots, { sourceSnapshot })` registers the
+`texture-generator` native producer. It composes each selected fragment with the
+Engine full-screen vertex stage and validates the actual MRT target interface.
+The result owns its WGSL/reflection program closure, compiler fingerprint and
+shader source dependencies. No GPU device or pixel generation runs during Cook.
+Cache identity includes the executing compiler dependencies and shader sources.
+
+### Native source-template service
+
+`prepareShaderProgramCompiler()` from `/program` supplies the initialized service
+consumed by `ShaderRegistry`. It shares Engine Surface lowering, parameter
+schemas, scene addressing, feature projection and ABI receipts with build tools.
+Each request compiles the selected source's complete conditional import closure;
+it does not preprocess unrelated modules from the Engine catalog. The ordinary
+build API retains its caller-import admission and HMR dependency contract.
+
+Filesystem discovery, worker pools and Pack publication remain Node tool entries.
+Engine source recipes carry their explicit parameter schema. Custom parameter
+layouts use their own MaterialAsset program rather than a stock Engine receipt.
+The Registry owns successful selection reuse; this service adds no second cache
+or GPU resource lifetime.

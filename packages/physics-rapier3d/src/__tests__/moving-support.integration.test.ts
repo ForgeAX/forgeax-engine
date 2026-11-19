@@ -1,21 +1,23 @@
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import {
   GlobalTransform,
-  PROPAGATE_TRANSFORMS_FIXED_SYSTEM,
+  PropagateTransformsFixed,
   readPresentationWorldMatrix,
   registerPropagateTransforms,
   Transform,
 } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { PhysicsStepSimulation, PhysicsSyncBackend } from '../physics-sync';
 import { registerPhysicsSystems } from '../physics-sync.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
@@ -28,7 +30,7 @@ it('retains fixed-step support through reversals, jump and support retirement', 
   world.components.register(GlobalTransform).unwrap();
   registerPhysicsComponents(world);
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releaseScene = registerPropagateTransforms(world);
   const releasePhysics = registerPhysicsSystems(world);
   const support = world
@@ -56,41 +58,38 @@ it('retains fixed-step support through reversals, jump and support retirement', 
   let verticalVelocity = 0;
   let retired = false;
   let jumpQueued = false;
-  world
-    .addSystem(FixedUpdate, {
-      name: 'test-support-motion',
-      before: [PROPAGATE_TRANSFORMS_FIXED_SYSTEM],
-      queries: [],
-      fn() {
-        tick++;
-        if (retired) {
-          return;
-        }
-        const x = 0.6 * Math.sin(tick / 60);
-        const y = 0.1 * Math.sin(tick / 90);
-        world.set(support, Transform, { pos: [x, y, 0] }).unwrap();
-      },
-    })
-    .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'test-character-motion',
-      after: ['physicsSyncBackend'],
-      before: ['physicsStepSimulation'],
-      queries: [],
-      fn() {
-        if (!physics.hasBody(character)) return;
-        const dt = world.getResource(FixedTime).delta;
-        if (jumpQueued) {
-          verticalVelocity = 4;
-          jumpQueued = false;
-        } else if (world.get(character, CharacterController).unwrap().grounded)
-          verticalVelocity = 0;
-        verticalVelocity -= 9.81 * dt;
-        physics.moveAndSlide(character, vec3.create(0, verticalVelocity * dt, 0));
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'test-support-motion',
+    before: [PropagateTransformsFixed],
+    queries: [],
+    fn() {
+      tick++;
+      if (retired) {
+        return;
+      }
+      const x = 0.6 * Math.sin(tick / 60);
+      const y = 0.1 * Math.sin(tick / 90);
+      world.set(support, Transform, { pos: [x, y, 0] }).unwrap();
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    name: 'test-character-motion',
+    after: [PhysicsSyncBackend],
+    before: [PhysicsStepSimulation],
+    queries: [],
+    fn() {
+      if (!physics.hasBody(character)) return;
+      const dt = world.getResource(FixedTime).delta;
+      if (jumpQueued) {
+        verticalVelocity = 4;
+        jumpQueued = false;
+      } else if (world.get(character, CharacterController).unwrap().grounded) verticalVelocity = 0;
+      verticalVelocity -= 9.81 * dt;
+      physics.moveAndSlide(character, vec3.create(0, verticalVelocity * dt, 0));
+    },
+  });
+  world.addSystem(FixedUpdate, systemToken2).unwrap();
   let contactOffset: number | undefined;
   let presentationLagObserved = false;
   try {
@@ -132,8 +131,8 @@ it('retains fixed-step support through reversals, jump and support retirement', 
     expect(world.get(character, Transform).unwrap().pos[1]).toBeLessThan(before - 0.1);
     expect(world.get(character, CharacterController).unwrap().grounded).toBe(false);
   } finally {
-    world.removeSystem(FixedUpdate, 'test-character-motion').unwrap();
-    world.removeSystem(FixedUpdate, 'test-support-motion').unwrap();
+    world.removeSystem(FixedUpdate, systemToken2).unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
     releasePhysics();
     releaseScene();
     physics.dispose();

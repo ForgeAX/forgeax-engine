@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { ResourceInvalidValueError } from '../errors/component-validation';
 // @forgeax/engine-runtime - TransparentSortConfig KV resource + helpers.
 //
 // feat-20260520-2d-sprite-layer-mvp M-2 w14 / requirements AC-08 + AC-18
@@ -57,7 +59,7 @@
 // other engine resource consumer).
 
 import type { World } from '@forgeax/engine-ecs';
-import { ResourceInvalidValueError } from '@forgeax/engine-ecs/projection';
+
 import { err, ok, type Result } from '@forgeax/engine-types';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -82,7 +84,8 @@ export interface TransparentSortConfig {
 }
 
 /** World resource key for `TransparentSortConfig` KV entry. */
-export const TRANSPARENT_SORT_CONFIG_KEY = 'TransparentSortConfig' as const;
+export const TRANSPARENT_SORT_CONFIG_KEY =
+  defineResource<TransparentSortConfig>('TransparentSortConfig');
 
 /** horizontal / side-scroller: sortValue = posZ. */
 export const TRANSPARENT_SORT_MODE_LAYER_Z = 0;
@@ -158,7 +161,7 @@ export function getTransparentSortConfig(world: World): TransparentSortConfig {
   if (!world.hasResource(TRANSPARENT_SORT_CONFIG_KEY)) {
     return DEFAULT_CONFIG;
   }
-  return world.getResource<TransparentSortConfig>(TRANSPARENT_SORT_CONFIG_KEY);
+  return world.getResource(TRANSPARENT_SORT_CONFIG_KEY);
 }
 
 /**
@@ -207,7 +210,7 @@ export function setTransparentSortConfig(
     return err(
       new ResourceInvalidValueError(EXPECTED_MODE, HINT_MODE, {
         receivedMode: cfg.mode,
-        receivedKey: TRANSPARENT_SORT_CONFIG_KEY,
+        receivedKey: TRANSPARENT_SORT_CONFIG_KEY.name,
       }),
     );
   }

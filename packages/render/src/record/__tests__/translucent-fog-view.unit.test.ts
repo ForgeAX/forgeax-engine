@@ -1,13 +1,16 @@
 import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
+import { earthAtmosphere } from '../../__tests__/atmosphere-fixture';
 import type { CameraSnapshot } from '../../render-contract';
 import {
+  materialFogViewOffset,
   PLANAR_REFLECTION_UNIFORM_OFFSET,
   REFLECTION_PROBE_VIEW_SLOT_BASE,
   REFLECTION_PROBE_VIEW_SLOT_COUNT,
   translucentFogComposition,
   translucentViewOffset,
+  UNFOGGED_VIEW_UNIFORM_OFFSET,
   VIEW_UNIFORM_BUFFER_SIZE,
   VIEW_UNIFORM_BYTES,
   VIEW_UNIFORM_SLOT_STRIDE,
@@ -20,6 +23,7 @@ const add = (srcFactor: GPUBlendFactor, dstFactor: GPUBlendFactor): GPUBlendComp
   operation: 'add',
 });
 const blend = (color: GPUBlendComponent): GPUBlendState => ({ color, alpha: color });
+const CAMERA_HEIGHT = 3;
 
 function camera(): CameraSnapshot {
   const world = new Float32Array(16);
@@ -27,11 +31,11 @@ function camera(): CameraSnapshot {
   world[5] = 1;
   world[10] = 1;
   world[15] = 1;
+  world[13] = CAMERA_HEIGHT;
   return {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
-    position: vec3.create(0, 0, 5),
+    position: vec3.create(0, CAMERA_HEIGHT, 5),
     world,
     fov: Math.PI / 3,
     aspect: 1,
@@ -56,6 +60,92 @@ function camera(): CameraSnapshot {
 }
 
 describe('translucent fog composition', () => {
+  it('selects the unfogged native display slot without replacing capture or legacy slots', () => {
+    for (const composition of [undefined, 'straight', 'premultiplied', 'additive'] as const) {
+      expect(materialFogViewOffset(0, true, false, composition)).toBe(UNFOGGED_VIEW_UNIFORM_OFFSET);
+      expect(materialFogViewOffset(0, false, false, composition)).toBe(0);
+      expect(
+        materialFogViewOffset(PLANAR_REFLECTION_UNIFORM_OFFSET, true, false, composition),
+      ).toBe(PLANAR_REFLECTION_UNIFORM_OFFSET);
+    }
+    expect(materialFogViewOffset(0, true, undefined, undefined)).toBe(0);
+    expect(materialFogViewOffset(0, true, true, 'additive')).toBe(
+      translucentViewOffset('additive'),
+    );
+  });
+  it.each([
+    [false, false, true],
+    [true, false, true],
+    [false, true, true],
+    [false, 'background', true],
+    [false, false, false],
+  ] as const)('admits vertex height fog (capture=%s atmosphere=%s active=%s)', (capture, atmosphere, active) => {
+    const writes: { offset: number; floats: Float32Array }[] = [];
+    const queue = {
+      writeBuffer: (_buffer: Buffer, offset: number, data: Float32Array) => {
+        writes.push({ offset, floats: data.slice() });
+        return { ok: true, value: undefined } as const;
+      },
+    } as unknown as RhiQueue;
+    const fog = {
+      color: [0.5, 0.6, 0.7] as const,
+      density: 0.2,
+      heightFalloff: 0.1,
+      maxOpacity: active ? 0.9 : 0,
+      mode: 'exp' as const,
+      near: 0,
+      far: 100,
+      skyOpacity: 1,
+      vertexHeight: true,
+    };
+    writeViewUbo(
+      queue,
+      {} as Buffer,
+      camera(),
+      {
+        kind: 'directional',
+        direction: vec3.create(0, -1, 0),
+        color: vec3.create(1, 1, 1),
+        intensity: 1,
+        contactShadowLength: 0,
+      } as never,
+      { point: [], spot: [] } as never,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      fog,
+      atmosphere ? { ...earthAtmosphere, backgroundOnly: atmosphere === 'background' } : undefined,
+      capture,
+      12.5,
+    );
+    const main = writes[0]?.floats;
+    const admitted = !capture && (!atmosphere || atmosphere === 'background') && active;
+    expect(main?.[321]).toBe(admitted ? 1 : 0);
+    expect(main?.[322]).toBeCloseTo(admitted ? 0.2 * Math.exp(-0.1 * CAMERA_HEIGHT) : 0, 6);
+    const disabled = writes.find((write) => write.offset === UNFOGGED_VIEW_UNIFORM_OFFSET);
+    if (!admitted) {
+      expect(disabled).toBeUndefined();
+      return;
+    }
+    expect(disabled).toBeDefined();
+    const expected = main?.slice();
+    if (expected === undefined || disabled === undefined) throw Error('Missing display uploads');
+    expected[289] = 0;
+    expected[290] = 0;
+    expected[321] = 0;
+    expect(disabled.floats).toEqual(expected);
+    expect(disabled.floats[291]).toBe(12.5);
+    for (const composition of ['straight', 'premultiplied', 'additive'] as const) {
+      const blended = writes.find((write) => write.offset === translucentViewOffset(composition));
+      expect(blended?.floats[321]).toBe(1);
+    }
+    expect(UNFOGGED_VIEW_UNIFORM_OFFSET % 256).toBe(0);
+    expect(UNFOGGED_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_BYTES).toBeLessThanOrEqual(
+      PLANAR_REFLECTION_UNIFORM_OFFSET,
+    );
+  });
+
   it('keeps local lights in the Cluster transport without changing the shared View payload', () => {
     const uploads: Float32Array[] = [];
     const queue = {

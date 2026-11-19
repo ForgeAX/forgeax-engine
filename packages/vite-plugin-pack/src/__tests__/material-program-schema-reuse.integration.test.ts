@@ -1,23 +1,41 @@
-import * as naga from '@forgeax/engine-naga';
+import { createHash } from 'node:crypto';
 import { Materials } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
 
-// Observe the real inline compiler in a fresh consumer realm, retaining every
-// portable backend/context. Each schema transition has its own thirty-second budget.
-vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
+// Keep Pack admission observable in this realm while real shader programs use
+// the existing bounded compiler workers. Every portable variant is still cooked.
+vi.mock('../../../shader-compiler/src/material/node-material-cooker', () => ({
+  withNodeMaterialWorkers: (cooker: unknown) => cooker,
+}));
 
-import { createHash } from 'node:crypto';
+type CompilerModule = typeof import('../../../shader-compiler/src/material/node-program-compiler');
+const { compilers } = vi.hoisted(() => ({
+  compilers: [] as Array<ReturnType<CompilerModule['createNodeMaterialProgramCompiler']>>,
+}));
+vi.mock('../../../shader-compiler/src/material/node-program-compiler', async (importOriginal) => {
+  const actual = await importOriginal<CompilerModule>();
+  return {
+    ...actual,
+    createNodeMaterialProgramCompiler: () => {
+      const compiler = actual.createNodeMaterialProgramCompiler();
+      const observed = { ...compiler, compile: vi.fn(compiler.compile) };
+      compilers.push(observed);
+      return observed;
+    },
+  };
+});
 
 describe.sequential('Standard program reuse across material schemas', () => {
-  const composition = vi.spyOn(naga, 'composeShader');
+  const compiler = compilers[0];
+  if (compiler === undefined) throw new Error('Pack program compiler was not initialized');
+  const compilation = vi.mocked(compiler.compile);
   const cooker = createMaterialPackCooker();
   const standard = Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 });
 
-  afterAll(() => {
-    composition.mockRestore();
-    vi.unstubAllEnvs();
+  afterAll(async () => {
+    await Promise.all(compilers.map((compiler) => compiler.close()));
   });
 
   const hashes = (draft: Awaited<ReturnType<typeof cooker.cook>>) =>
@@ -26,8 +44,15 @@ describe.sequential('Standard program reuse across material schemas', () => {
       createHash('sha256').update(artifact.bytes).digest('hex'),
     ]);
 
-  it('reuses the complete Standard publication after a clearcoat schema', async () => {
+  let baseline: ReturnType<typeof hashes>;
+  beforeAll(async () => {
     const first = await cooker.cook({ guid: 'mixed-standard-first', source: standard });
+    baseline = hashes(first);
+    expect(compilation).toHaveBeenCalled();
+  }, 30_000);
+
+  it('reuses the complete Standard publication after a clearcoat schema', async () => {
+    const before = compilation.mock.calls.length;
     await cooker.cook({
       guid: 'mixed-painted',
       source: Materials.standard({
@@ -39,18 +64,20 @@ describe.sequential('Standard program reuse across material schemas', () => {
         clearcoatRoughness: 0.08,
       }),
     });
-    const compositions = composition.mock.calls.length;
-    expect(compositions).toBeGreaterThan(0);
+    const compilations = compilation.mock.calls.length;
+    expect(compilations).toBeGreaterThan(before);
     const repeated = await cooker.cook({
       guid: 'mixed-standard-after-clearcoat',
       source: standard,
     });
-    expect(composition).toHaveBeenCalledTimes(compositions);
-    expect(hashes(repeated)).toEqual(hashes(first));
+    expect(compilation).toHaveBeenCalledTimes(compilations);
+    expect(hashes(repeated)).toEqual(baseline);
   }, 30_000);
 
   it('reuses the complete Standard publication after a skinned schema in the same cooker', async () => {
-    const first = await cooker.cook({ guid: 'mixed-standard-before-skin', source: standard });
+    // The cold beforeAll publication is the baseline even when this case runs
+    // alone. A second warm Standard cook adds no new coverage to the transition.
+    const before = compilation.mock.calls.length;
     const body = Materials.standard({
       baseColor: [0.72, 0.78, 0.73, 1],
       metallic: 0.22,
@@ -66,10 +93,10 @@ describe.sequential('Standard program reuse across material schemas', () => {
       guid: 'mixed-skinned',
       source: { ...body, passes: [skin(bodyFirst), ...bodyRest.map(skin)] },
     });
-    const compositions = composition.mock.calls.length;
-    expect(compositions).toBeGreaterThan(0);
+    const compilations = compilation.mock.calls.length;
+    expect(compilations).toBeGreaterThan(before);
     const repeated = await cooker.cook({ guid: 'mixed-standard-return', source: standard });
-    expect(composition).toHaveBeenCalledTimes(compositions);
-    expect(hashes(repeated)).toEqual(hashes(first));
+    expect(compilation).toHaveBeenCalledTimes(compilations);
+    expect(hashes(repeated)).toEqual(baseline);
   }, 30_000);
 });

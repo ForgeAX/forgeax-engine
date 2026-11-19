@@ -24,6 +24,121 @@ async function fixture(iterations = 4) {
   return { physics, raw, body, floor };
 }
 
+it('publishes native pre-response point velocities in queried-body order as detached facts', async () => {
+  const { physics, raw, body } = await fixture();
+  try {
+    raw.gravity = { x: 0, y: 0, z: 0 };
+    body.setTranslation({ x: 0, y: 0.71, z: 0 }, true);
+    body.setLinvel({ x: 0, y: -12, z: 0 }, true);
+    physics.step(1 / 60);
+    const snapshot = physics.getCurrentContacts(2).unwrap();
+    const opposite = physics.getCurrentContacts(1).unwrap();
+    expect(snapshot.manifolds.length).toBeGreaterThan(0);
+    for (const manifold of snapshot.manifolds) {
+      expect(manifold.preSolveVelocities).toHaveLength(manifold.points.length);
+      for (const velocities of manifold.preSolveVelocities) {
+        expect(velocities).not.toBeNull();
+        expect(velocities?.body).toEqual([0, -12, 0]);
+        expect(velocities?.other).toEqual([0, 0, 0]);
+      }
+    }
+    for (const manifold of opposite.manifolds)
+      for (const velocities of manifold.preSolveVelocities) {
+        expect(velocities?.body).toEqual([0, 0, 0]);
+        expect(velocities?.other).toEqual([0, -12, 0]);
+      }
+    expect(body.linvel().y).toBeGreaterThan(-2);
+    const retained = JSON.stringify(snapshot);
+    body.setLinvel({ x: 3, y: 0, z: 0 }, true);
+    physics.step(1 / 60);
+    expect(JSON.stringify(snapshot)).toBe(retained);
+    body.sleep();
+    physics.step(1 / 60);
+    expect(body.isSleeping()).toBe(true);
+    for (const manifold of physics.getCurrentContacts(2).unwrap().manifolds)
+      expect(manifold.preSolveVelocities).toEqual(manifold.points.map(() => null));
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('publishes exact per-solver-point normal impulses rather than a divided manifold total', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  try {
+    raw.gravity = { x: 0, y: 0, z: 0 };
+    body.setTranslation({ x: 0, y: 0.71, z: 0 }, true);
+    body.setLinvel({ x: 0, y: -12, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 2 }, true);
+    physics.step(1 / 60);
+    const snapshot = physics.getCurrentContacts(2).unwrap();
+    const native: number[][] = [];
+    raw.contactPair(
+      body.collider(0),
+      floor.collider(0),
+      (manifold: { numSolverContacts(): number; solverContactImpulse(index: number): number }) =>
+        native.push(
+          Array.from({ length: manifold.numSolverContacts() }, (_, index) =>
+            manifold.solverContactImpulse(index),
+          ),
+        ),
+    );
+    expect(snapshot.manifolds.map((manifold) => manifold.normalImpulses)).toEqual(native);
+    const loads = snapshot.manifolds.flatMap((manifold) => manifold.normalImpulses);
+    expect(loads.length).toBeGreaterThan(1);
+    expect(new Set(loads.map((value) => value?.toFixed(5))).size).toBeGreaterThan(1);
+    for (const manifold of snapshot.manifolds) {
+      const total = manifold.normalImpulse;
+      if (total === undefined || total === null)
+        throw new Error('Expected available current normal impulse');
+      expect(
+        manifold.normalImpulses.reduce<number>((sum, value) => {
+          if (value === undefined || value === null)
+            throw new Error('Expected solved contact impulse');
+          return sum + value;
+        }, 0),
+      ).toBeCloseTo(total, 6);
+    }
+    const retained = JSON.stringify(snapshot);
+    body.sleep();
+    physics.step(1 / 60);
+    for (const manifold of physics.getCurrentContacts(2).unwrap().manifolds)
+      expect(manifold.normalImpulses).toEqual(manifold.points.map(() => null));
+    expect(JSON.stringify(snapshot)).toBe(retained);
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('samples angular point motion about an offset native center of mass', async () => {
+  const { physics, raw, body } = await fixture();
+  try {
+    raw.gravity = { x: 0, y: 0, z: 0 };
+    body.collider(0).setTranslationWrtParent({ x: 0.2, y: 0, z: 0 });
+    physics.step(1 / 60);
+    expect(body.localCom().x).toBeCloseTo(0.2, 5);
+    body.setTranslation({ x: 0, y: 0.71, z: 0 }, true);
+    body.setLinvel({ x: 0, y: -6, z: 0 }, true);
+    body.setAngvel({ x: 0, y: 0, z: 2 }, true);
+    physics.step(1 / 60);
+    const contacts = physics.getCurrentContacts(2).unwrap().manifolds;
+    const velocities = contacts.flatMap((m) => m.preSolveVelocities);
+    expect(velocities.length).toBeGreaterThan(0);
+    for (const velocity of velocities) {
+      expect(velocity).not.toBeNull();
+      expect(velocity?.body[0]).toBeCloseTo(1, 4);
+      expect(
+        Math.min(Math.abs((velocity?.body[1] ?? 0) + 7), Math.abs((velocity?.body[1] ?? 0) + 5)),
+      ).toBeLessThan(1e-4);
+      expect(velocity?.body[2]).toBeCloseTo(0, 5);
+      expect(velocity?.other).toEqual([0, 0, 0]);
+    }
+    expect(velocities.some((v) => Math.abs((v?.body[1] ?? 0) + 7) < 1e-4)).toBe(true);
+    expect(velocities.some((v) => Math.abs((v?.body[1] ?? 0) + 5) < 1e-4)).toBe(true);
+  } finally {
+    physics.dispose();
+  }
+});
+
 it.each([
   1, 2, 4, 8,
 ])('reports only this step impulse with %i solver iterations', async (iterations) => {

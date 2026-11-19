@@ -18,7 +18,7 @@ export const SCENE_ENTITY_COMPONENTS = {
   spotLight: ['SpotLight'],
   areaLight: ['RectAreaLight'],
   skylight: ['Skylight'],
-  sky: ['SkyboxBackground', 'Atmosphere', 'CloudLayer'],
+  sky: ['SkyboxBackground', 'Atmosphere', 'CloudLayer', 'VolumetricCloudLayer'],
   fog: ['Fog', 'VolumetricFog'],
   reflection: ['ReflectionProbe', 'LightProbe', 'PlanarReflection'],
   postProcess: ['PostProcessParams', 'AmbientOcclusion', 'DepthOfField', 'ScreenSpaceReflection', 'MotionBlur', 'LensEffects', 'LensFlare', 'BarrelDistortion', 'DynamicResolution', 'Outline'],

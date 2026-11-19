@@ -10,6 +10,7 @@ export default defineConfig({
   build: { target: 'esnext', rollupOptions: { input: {
     main: fileURLToPath(new URL('./index.html', import.meta.url)),
     compare: fileURLToPath(new URL('./compare.html', import.meta.url)),
+    mixed: fileURLToPath(new URL('./mixed.html', import.meta.url)),
     textures: fileURLToPath(new URL('./textures.html', import.meta.url)),
   } } },
 });

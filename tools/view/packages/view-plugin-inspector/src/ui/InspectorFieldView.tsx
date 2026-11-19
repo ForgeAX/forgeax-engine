@@ -7,6 +7,8 @@ import { InspectorAssetReference } from './InspectorAssetReference';
 export function InspectorFieldView({ field, openAsset, browseAsset }: { field: InspectorField; openAsset: (guid: string) => void; browseAsset?: (guid: string) => void }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
+  if (field.unavailable) return <span>{t('inspector.unavailable')}</span>;
+  if (field.inherited) return <span title={JSON.stringify(field.rawValue)}>{t('inspector.inheritedCloudMaterial')}</span>;
   if (field.presentation === 'handle') return <span className="insp-handle-value" title={JSON.stringify(field.rawValue)}>{t('inspector.handleReference', { handle: String(field.rawValue) })}</span>;
   if (field.presentation === 'resource' && field.resource) return <InspectorAssetReference reference={field.resource} openAsset={openAsset} browseAsset={browseAsset} inline />;
   if (field.resources) return <div className="insp-material-list">{field.resources.map((resource, index) => <div className="insp-material-item" key={index}>

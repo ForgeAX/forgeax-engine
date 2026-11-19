@@ -10,6 +10,7 @@ import { HOST_ACTIVATION_REPORT_SERVICE } from '@forgeax/engine-host/transport';
 import { startAuthority } from './authority-e2e.mjs';
 import { startChaosWebSocketProxy } from './chaos-websocket.mjs';
 import { installTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
+import { pnpmCommand } from '../../../scripts/lib/pnpm-command.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 
 export const RECONNECT_TARGET_ID = 'multiplayer-snake-reconnect';
@@ -238,7 +239,8 @@ function assertNamedPhases(phases) {
 }
 
 function startVite() {
-  const child = spawn('pnpm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port', '0'], {
+  const [manager, ...managerArgs] = pnpmCommand();
+  const child = spawn(manager, [...managerArgs, 'run', 'dev', '--', '--host', '127.0.0.1', '--port', '0'], {
     cwd: dirname(dirname(fileURLToPath(import.meta.url))),
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,

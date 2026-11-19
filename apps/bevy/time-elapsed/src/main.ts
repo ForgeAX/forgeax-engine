@@ -1,3 +1,4 @@
+import { Time } from '@forgeax/engine-ecs';
 // apps/bevy/time-elapsed - reproduction of Bevy's `time` example (elapsed-keyed motion).
 //
 // Bevy source (references/repos/bevy/examples/time/time.rs): reads Time::elapsed to drive
@@ -12,6 +13,7 @@
 // The World + step math live in the shared src/time-elapsed.ts (SSOT for this app AND the
 // dawn smoke), so the two never drift.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
@@ -42,16 +44,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Update system: drive the cube from the ABSOLUTE elapsed clock (Bevy's
   // Time::elapsed), not by integrating dt. Reads Time.elapsed straight off the resource.
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'oscillate-by-elapsed',
     queries: [],
     fn: (world) => {
-      const elapsed = world.hasResource('Time')
-        ? world.getResource<{ dt: number; elapsed: number }>('Time').elapsed
+      const elapsed = world.hasResource(Time)
+        ? world.getResource(Time).elapsed
         : 0;
       stepByElapsed(world, elapsed);
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-time-elapsed] app.start failed:', started.error);

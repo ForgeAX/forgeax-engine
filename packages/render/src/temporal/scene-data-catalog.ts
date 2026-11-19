@@ -3,6 +3,8 @@ import type { RenderError } from '../errors/render';
 import { SceneDataUnavailableError } from '../errors/render';
 import {
   registerSceneDataTarget,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
@@ -77,6 +79,36 @@ export interface SceneDataCatalog {
   inspect(schema?: SceneDataSchemaId): SceneDataInspection;
 }
 
+function surfaceAvailability(
+  options: SceneDataCatalogOptions,
+  schema: SceneDataSchemaId,
+): SceneDataAvailability {
+  const admission = options.surfaceAdmission;
+  if (
+    (schema === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA &&
+      admission?.renderPath !== 'deferred') ||
+    (schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA &&
+      admission?.renderPath === 'deferred')
+  )
+    return { status: 'unavailable', reason: 'producer-missing' };
+  const viewIdentity = options.viewIdentity ?? options.featureIdentity;
+  if (
+    admission === undefined ||
+    admission.status !== 'available' ||
+    admission.viewIdentity !== viewIdentity ||
+    admission.generation !== options.generation ||
+    (options.deviceGeneration !== undefined &&
+      admission.deviceGeneration !== options.deviceGeneration)
+  ) {
+    return {
+      status: 'unavailable',
+      reason: admission?.status === 'unavailable' ? admission.reason : 'producer-missing',
+    };
+  }
+
+  return { status: 'available', completeness: 'exact' };
+}
+
 function availability(
   options: SceneDataCatalogOptions,
   schema: SceneDataSchemaId,
@@ -89,23 +121,7 @@ function availability(
     return { status: 'unavailable', reason: 'producer-missing' };
   if (temporal && options.coverageComplete === false)
     return { status: 'unavailable', reason: 'coverage-incomplete' };
-  if (!temporal) {
-    const admission = options.surfaceAdmission;
-    const viewIdentity = options.viewIdentity ?? options.featureIdentity;
-    if (
-      admission === undefined ||
-      admission.status !== 'available' ||
-      admission.viewIdentity !== viewIdentity ||
-      admission.generation !== options.generation ||
-      (options.deviceGeneration !== undefined &&
-        admission.deviceGeneration !== options.deviceGeneration)
-    ) {
-      return {
-        status: 'unavailable',
-        reason: admission?.status === 'unavailable' ? admission.reason : 'producer-missing',
-      };
-    }
-  }
+  if (!temporal) return surfaceAvailability(options, schema);
   return {
     status: 'available',
     completeness: temporal && options.reactiveFallback ? 'exact-with-reactive-fallback' : 'exact',
@@ -126,22 +142,24 @@ function createTarget<Schema extends SceneDataSchemaId>(
   const target = Object.freeze(
     schema === SCENE_DATA_TEMPORAL_V1_SCHEMA
       ? { ...base, format: SCENE_DATA_TEMPORAL_V1_DESCRIPTOR.format }
-      : schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
-        ? {
-            ...base,
-            format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
-            space: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.space,
-            encoding: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.encoding,
-            coverage: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.coverage,
-          }
-        : {
-            ...base,
-            format: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format,
-            space: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.space,
-            encoding: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.encoding,
-            reconstruction: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.reconstruction,
-            coverage: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.coverage,
-          },
+      : schema === SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA
+        ? { ...base, ...SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR }
+        : schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
+          ? {
+              ...base,
+              format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
+              space: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.space,
+              encoding: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.encoding,
+              coverage: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.coverage,
+            }
+          : {
+              ...base,
+              format: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format,
+              space: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.space,
+              encoding: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.encoding,
+              reconstruction: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.reconstruction,
+              coverage: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.coverage,
+            },
   ) as SceneDataTarget<Schema>;
   registerSceneDataTarget(target, {
     featureIdentity: owner.featureIdentity,
@@ -273,6 +291,7 @@ export function createSceneDataCatalog(options: SceneDataCatalogOptions): SceneD
       if (
         schema !== SCENE_DATA_TEMPORAL_V1_SCHEMA &&
         schema !== SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA &&
+        schema !== SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA &&
         schema !== SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA
       ) {
         throw tokenError(options, 'require scene-data target');
@@ -340,6 +359,8 @@ export function createSceneDataCatalog(options: SceneDataCatalogOptions): SceneD
 }
 
 export {
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,

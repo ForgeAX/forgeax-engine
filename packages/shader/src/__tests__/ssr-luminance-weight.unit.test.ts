@@ -91,7 +91,7 @@ describe('SSR luminance weighting (Unreal SSRTReflections)', () => {
       [2000, 1800, 1500],
     ] as const satisfies readonly Rgb[]) {
       const back = unweight(average([weight(c), weight(c), weight(c), weight(c)]));
-      for (let i = 0; i < 3; i++) expect(back[i]).toBeCloseTo(c[i], 3);
+      for (const i of [0, 1, 2] as const) expect(back[i]).toBeCloseTo(c[i], 3);
       // FP16 attachments: weighted luminance stays below the largest value below one.
       expect(luma(weight(c))).toBeLessThan(1 - FP16_BELOW_ONE);
     }

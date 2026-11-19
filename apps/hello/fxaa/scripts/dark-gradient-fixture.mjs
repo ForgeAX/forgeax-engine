@@ -15,6 +15,14 @@ const PIXEL_SOURCE_BY_BACKEND = Object.freeze({
   'chromium-webgl2': Object.freeze({ endpoint: 'surface.display.final', method: 'chromium-compositor-rgba8' }),
 });
 
+export function isDarkGradientFxaaGraph(observation) {
+  return DARK_GRADIENT_FIXTURE.outputGraphs.some((route) =>
+    route.passes.every((pass) => observation?.passNames?.includes(pass)) &&
+    observation?.standardOutputColor?.format === route.format &&
+    observation.standardOutputColor.domain === route.domain,
+  );
+}
+
 const isWebgl2Backend = (backendId) => backendId === 'webkit-webgl2' || backendId === 'chromium-webgl2';
 
 export function pixelSourceForBackend(backendId) {
@@ -466,7 +474,7 @@ export function createDarkGradientFixtureReport({ backendId, lane, bytes, refere
     [referenceIdentity?.surfaceProfile === 'dual-view' || referenceIdentity?.surfaceProfile === 'raw-only', 'referenceObservation.surfaceProfile'],
     [identity?.rgba16floatRenderable === true, 'observation.rgba16floatRenderable'],
     [referenceIdentity?.rgba16floatRenderable === true, 'referenceObservation.rgba16floatRenderable'],
-    [Array.isArray(identity?.passNames) && identity.passNames.includes('output-transform') && identity.passNames.includes('fxaa'), 'observation.passNames'],
+    [isDarkGradientFxaaGraph(identity), 'observation.passNames'],
     [Array.isArray(referenceIdentity?.passNames), 'referenceObservation.passNames'],
     [identity?.standardOutputColor?.format === 'rgba16float' && identity.standardOutputColor?.domain === 'display-encoded', 'observation.standardOutputColor'],
     [identity?.observationId !== referenceIdentity?.observationId || identity?.frameId !== referenceIdentity?.frameId, 'pairedObservationIdentity'],

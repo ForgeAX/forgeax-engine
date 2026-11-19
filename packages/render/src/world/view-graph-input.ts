@@ -122,7 +122,7 @@ export function readViewGraphInput(
     ssr: ssr.admission,
     renderExtent: gi.value.renderExtent,
     analyticFog: inputs.analyticFog,
-    cloudShadowResolution: inputs.cloudShadow?.resolution,
+    cloudShadowResolution: inputs.cloudShadow?.rawResolution,
     terrainReceivers: inputs.terrainReceivers,
     subsurface: subsurface.value,
     rendererRecording: request.rendererRecording,

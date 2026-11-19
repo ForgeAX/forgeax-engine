@@ -40,7 +40,8 @@ describe('SSR spatial confidence and composition contract', () => {
   it('keeps trace work bounded and explicitly full-resolution', () => {
     expect(buildSsrTracePlan()).toEqual({
       resolution: 'full',
-      coarseSteps: 48,
+      hizIterations: 64,
+      linearIterations: 1024,
       refineSteps: 5,
     });
   });

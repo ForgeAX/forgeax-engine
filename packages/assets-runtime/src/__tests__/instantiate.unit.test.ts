@@ -213,14 +213,13 @@ describe('AssetRegistry.instantiate', () => {
     () => new SharedArrayBuffer(3),
   ])('round-trips the exact byte window of every native buffer input', async (makeBuffer) => {
     const input = makeBuffer();
-    const expected = Array.from(
-      ArrayBuffer.isView(input)
-        ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
-        : new Uint8Array(input),
-    );
+    const bytes = ArrayBuffer.isView(input)
+      ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+      : new Uint8Array(input);
+    const expected = Array.from(bytes);
     const BufferCarrier = defineComponent('ReflectedByteWindow', {
-      bytes: 'buffer',
-      fixed: `buffer<${expected.length}>`,
+      bytes: 'array<u8>',
+      fixed: `array<u8, ${expected.length}>`,
     });
     const reg = makeRegistry();
     const world = makeWorld(reg);
@@ -229,7 +228,7 @@ describe('AssetRegistry.instantiate', () => {
       {
         kind: 'scene',
         entities: {
-          root: { components: { [BufferCarrier.name]: { bytes: input, fixed: input } } },
+          root: { components: { [BufferCarrier.name]: { bytes, fixed: bytes } } },
         },
       },
       () => componentSchema(BufferCarrier),
@@ -411,8 +410,8 @@ describe('AssetRegistry.instantiate', () => {
     const reg = makeRegistry();
     const world = makeWorld(reg);
     const Custom = defineComponent('ReflectedInvalidArray', {
-      bytes: 'buffer',
-      fixedBytes: 'buffer<3>',
+      bytes: 'array<u8>',
+      fixedBytes: 'array<u8, 3>',
       vector: 'array<f32, 3>',
       fixedRefs: 'array<asset<material>, 2>',
       fixedEntities: 'array<entity, 2>',
@@ -447,7 +446,6 @@ describe('AssetRegistry.instantiate', () => {
       u8: 1,
       bool: true,
       enum: 2,
-      ref: 7,
     } as const;
     const schema: ComponentSchema = {};
     const values: Record<string, unknown> = {};
@@ -463,8 +461,8 @@ describe('AssetRegistry.instantiate', () => {
     const All = defineComponent('ReflectedSceneAllStorage', {
       ...schema,
       text: 'string',
-      bytes: 'buffer',
-      fixedBytes: 'buffer<3>',
+      bytes: 'array<u8>',
+      fixedBytes: 'array<u8, 3>',
       owned: { type: 'unique<SceneNestedFixture>', shape: 'nested' },
       target: 'entity',
       optionalTarget: { type: 'entity', shape: 'optional', default: null },

@@ -385,7 +385,8 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   let mutantRenderer: typeof renderer | undefined;
   let mutantObservationHost: (RendererLegacyHostAdapter & typeof debugDrawHost) | undefined;
   let mutantFrameRequest: RenderFrameInput | undefined;
-  let mutantReceipt: { identifier: string; sourceClosureDigest: string; productManifestDigest: string; productClosure: false } | undefined;
+  let mutantReceipt:
+    | { identifier: string; sourceClosureDigest: string; productManifestDigest: string; productClosure: false } | undefined;
   const mutantCanvas = document.createElement('canvas');
   mutantCanvas.width = WIDTH;
   mutantCanvas.height = caseInput.render.height;
@@ -435,11 +436,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     });
     const mutantAttachment = mutantRenderer.attach(world);
     if (!mutantAttachment.ok) throw new Error(`mutant renderer attach failed: ${mutantAttachment.error.code}`);
-    mutantFrameRequest = {
-      leases: [mutantAttachment.value],
-      camera: { lease: mutantAttachment.value },
-      environment: { lease: mutantAttachment.value },
-    };
+    mutantFrameRequest = { source: mutantAttachment.value };
     } catch (error: unknown) {
       evidence?.errors.push(error instanceof Error ? `mutant-setup:${error.message}` : `mutant-setup:${String(error)}`);
     }

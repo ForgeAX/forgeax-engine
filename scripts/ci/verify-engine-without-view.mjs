@@ -4,6 +4,11 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { SDK_SOURCE_GIT_DEPENDENCIES, SDK_SOURCE_WASM } from '../forgeax/sdk-lib.mjs';
+import {
+  engineWithoutViewBuildEnvironment,
+  prepareEngineWithoutViewContent,
+} from './engine-without-view-source.mjs';
+import { runViewSourceCommand } from './view-source-command.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const scratch =
@@ -29,7 +34,15 @@ const selected = spawnSync('git', ['ls-files', '--stage', '-z'], {
 });
 assert.equal(selected.status, 0);
 const entries = selected.stdout.split('\0').filter(Boolean);
+const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
+assert.equal(revision.status, 0, revision.stderr);
+const sourceRevision = revision.stdout.trim();
+assert.match(sourceRevision, /^[a-f0-9]{40}$/);
 try {
+  const projectedAt = performance.now();
+  console.error(
+    JSON.stringify({ kind: 'view-source-projection', phase: 'start', sourceRoot: scratch }),
+  );
   for (const entry of entries) {
     if (entry.startsWith('160000 ')) continue;
     const file = entry.slice(entry.indexOf('\t') + 1);
@@ -67,16 +80,34 @@ try {
       await mkdir(dirname(destination), { recursive: true });
       await cp(resolve(root, owner, file), destination);
     }
+  await prepareEngineWithoutViewContent({
+    repositoryRoot: root,
+    sourceRoot: scratch,
+    sharedInputsRoot: resolve(root, 'shared-app-inputs'),
+  });
+  console.error(
+    JSON.stringify({
+      kind: 'view-source-projection',
+      phase: 'end',
+      elapsedMs: Math.round(performance.now() - projectedAt),
+    }),
+  );
   for (const [name, args] of [
     ['install', ['install', '--frozen-lockfile', '--ignore-scripts']],
-    ['build:engine', ['build:engine']],
+    [
+      'build:engine',
+      ['build:engine', '--base-shader-input-root', root, '--source-revision', sourceRevision],
+    ],
   ]) {
     const start = performance.now();
-    const run = spawnSync('pnpm', args, {
+    const run = await runViewSourceCommand('pnpm', args, {
       cwd: scratch,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, FORGEAX_SKIP_HARNESS_SYNC: '1' },
+      env: {
+        ...(name === 'build:engine' ? engineWithoutViewBuildEnvironment(process.env) : process.env),
+        FORGEAX_SKIP_HARNESS_SYNC: '1',
+      },
     });
     result.stages.push({ name, milliseconds: performance.now() - start, exitCode: run.status });
     await mkdir(output, { recursive: true });

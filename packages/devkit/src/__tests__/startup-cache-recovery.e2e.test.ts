@@ -1,13 +1,19 @@
 import { existsSync } from 'node:fs';
 // @perf-budget-skip: generated Engine loading/HTTP cache lifecycle; GPU acceptance is separate.
 import { createServer, type ServerResponse } from 'node:http';
+import { type LoadProgressLabelInput, resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { chromium } from 'playwright';
 import { expect, it } from 'vitest';
 import { createStartupCacheIdentity } from '../host/startup-cache-identity.js';
 import { type StartupCacheIdentity, startupEntrySource } from '../host/startup-cache-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 
-async function fixture(resetInvalidatesDocument = false, holdReset = false) {
+async function fixture(
+  resetInvalidatesDocument = false,
+  holdReset = false,
+  input?: LoadProgressLabelInput,
+) {
+  const labels = resolveLoadProgressLabels(input);
   let resetGate: ServerResponse | undefined;
   let identity: StartupCacheIdentity = createStartupCacheIdentity({
     project: 'cache-test',
@@ -76,10 +82,10 @@ async function fixture(resetInvalidatesDocument = false, holdReset = false) {
       return;
     }
     pages++;
-    const html = hostStartupDocument('Engine default loading', undefined, identity).replace(
+    const html = hostStartupDocument('Engine default loading', labels, identity).replace(
       '</body>',
       `
-      <script>${hostStartupScript(true, 'undefined', undefined, identity)}</script>
+      <script>${hostStartupScript(true, 'undefined', labels, identity)}</script>
       <script type="module" src="./loader-${encodeURIComponent(JSON.stringify(identity))}.mjs"></script>
       </body>`,
     );
@@ -376,6 +382,45 @@ it('keeps default loading nonterminal while its cache reset is pending', async (
     expect(await f.page.locator('#forgeax-loading').isVisible()).toBe(true);
     f.releaseReset();
     await f.page.waitForFunction(() => Reflect.get(globalThis, 'entryVersion') === 1);
+    expect(f.resets).toBe(1);
+  } finally {
+    await f.close();
+  }
+}, 60000);
+
+it('retains configured Host text through the real single cache retry and both original failures', async () => {
+  const f = await fixture(false, true, {
+    host: {
+      game: 'Application',
+      engine: 'Runtime',
+      cacheRefreshing: 'Refreshing application resources',
+      cacheRetried: 'Application cache retry exhausted',
+      firstFailure: 'Initial application failure:',
+      startupFailed: 'Application startup unavailable',
+    },
+  });
+  try {
+    f.change({}, 'throw Error("original second initialization failure");');
+    await f.seedWorker();
+    await f.open();
+    await expect.poll(() => f.resetPending, { timeout: 5000 }).toBe(true);
+    expect(await f.page.locator('#forgeax-loading-status').textContent()).toBe(
+      'Refreshing application resources',
+    );
+    f.releaseReset();
+    await f.page.waitForFunction(() =>
+      document
+        .querySelector('#forgeax-fatal-details')
+        ?.textContent?.includes('Application cache retry exhausted'),
+    );
+    const details = await f.page.locator('#forgeax-fatal-details').textContent();
+    expect(details).toContain('Initial application failure:');
+    expect(details).toContain('Application game-1 | Runtime engine-1');
+    expect(details).toContain('stale Engine module before game code');
+    expect(details).toContain('original second initialization failure');
+    expect(await f.page.locator('#forgeax-fatal-message').textContent()).toBe(
+      'Application startup unavailable',
+    );
     expect(f.resets).toBe(1);
   } finally {
     await f.close();

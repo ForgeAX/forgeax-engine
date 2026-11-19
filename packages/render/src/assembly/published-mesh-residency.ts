@@ -242,9 +242,12 @@ export function createPublishedMeshResidencyHost(options: {
       consumeRecordStage: (frame, entity) => {
         // A real current draw proves its own complete raster demand. Hidden or
         // unused assets retain their preparation proof until actual consumption.
-        if (!currentFrame(frame) || !Number.isSafeInteger(entity)) return undefined;
+        // The lane is one receipt lookup; ask it before the lease, device and publication
+        // currency checks, which only a consumed mesh needs.
+        if (!Number.isSafeInteger(entity)) return undefined;
         const lane = laneFor(entity);
-        if (lane !== undefined) releasePreparation();
+        if (lane === undefined || !currentFrame(frame)) return undefined;
+        releasePreparation();
         return lane;
       },
       recordStageLane: (frame, entity) => {

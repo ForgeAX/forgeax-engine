@@ -1,4 +1,5 @@
 import type { AssetHandle } from '@forgeax/engine-types';
+import { CoreCollectOrder, GuardianHitOrder, PlayerMoveOrder } from '../system-order';
 
 // apps/collectathon -- audio-cue: 3D spatial audio for the four game cues
 // (AC-10 footstep / pickup / Guardian / BGM, dual sfx+music bus, F-07
@@ -36,10 +37,10 @@ import type { AssetHandle } from '@forgeax/engine-types';
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AudioSource } from '@forgeax/engine-audio';
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { GAME_PROGRESS_KEY, type GameProgress } from '../resources';
+import { GAME_PROGRESS_KEY } from '../resources';
 import { readDt } from './frame-time';
 import type { PlayerMoveSignal } from './player-move';
 
@@ -176,7 +177,7 @@ interface CueState {
 export function createAudioCueSystem(
   cues: AudioCueEntities,
   signal: PlayerMoveSignal,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   const state: CueState = {
     prevScore: 0,
     prevHealth: Number.POSITIVE_INFINITY,
@@ -196,7 +197,7 @@ export function createAudioCueSystem(
 
   return defineSystem({
     name: 'audio-cue',
-    after: ['player-move', 'core-collect', 'guardian-hit'],
+    after: [PlayerMoveOrder, CoreCollectOrder, GuardianHitOrder],
     queries: [],
     fn: (world: World) => {
       // Re-arm: clear any one-shot that was triggered last frame (false edge so
@@ -220,7 +221,7 @@ export function createAudioCueSystem(
       }
 
       if (!world.hasResource(GAME_PROGRESS_KEY)) return;
-      const progress = world.getResource<GameProgress>(GAME_PROGRESS_KEY);
+      const progress = world.getResource(GAME_PROGRESS_KEY);
 
       if (progress.score > state.prevScore) {
         setPlaying(world, cues.pickup, true);

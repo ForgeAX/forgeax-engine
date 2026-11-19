@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
@@ -138,11 +138,14 @@ describe('render-graph-settle system', () => {
     // Registered first, so only the schedule-level `before` orders the settle ahead of it.
     const view = adoptedView((world) =>
       world
-        .addSystem(RenderCommit, {
-          name: 'probe-commit',
-          queries: [],
-          fn: () => seen.push(frameState?.compiledFrameGraphCandidate),
-        })
+        .addSystem(
+          RenderCommit,
+          defineSystem({
+            name: 'probe-commit',
+            queries: [],
+            fn: () => seen.push(frameState?.compiledFrameGraphCandidate),
+          }),
+        )
         .unwrap(),
     );
     frameState = view.frameState;

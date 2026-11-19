@@ -3,7 +3,8 @@ import type { Component } from '../component';
 import { componentId, defineComponent } from '../component';
 import { Disabled, Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import { SparseStorageRequiresTagError } from '../errors';
+import type { SystemOrderReference } from '../schedule';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 import { sparseTagHas } from '../storage/change-detection';
 import { World } from '../world';
@@ -17,7 +18,7 @@ describe('sparse tag storage', () => {
     expect(Disabled.storage).toBe('table');
     expect(() =>
       defineComponent('InvalidSparseData', { value: 'f32' }, { storage: 'sparse' }),
-    ).toThrow(SparseStorageRequiresTagError);
+    ).toThrow(expect.objectContaining({ code: 'sparse-storage-requires-tag' }));
   });
 
   it('shares one Table across Archetypes that differ only by sparse membership', () => {
@@ -28,12 +29,12 @@ describe('sparse tag storage', () => {
     const selected = world
       .spawn({ component: Position, data: { x: 2 } }, { component: Selected, data: {} })
       .unwrap();
-    const graph = world[worldInternal].getGraph();
+    const graph = world[worldInternal].graph;
     const plainArchetype = world[worldInternal].getEntityArchetype(plain);
     const selectedArchetype = world[worldInternal].getEntityArchetype(selected);
 
     expect(plainArchetype).not.toBe(selectedArchetype);
-    expect(plainArchetype?.tableId).toBe(selectedArchetype?.tableId);
+    expect(plainArchetype?.table).toBe(selectedArchetype?.table);
     expect(graph.tables).toHaveLength(1);
     expect(graph.tables[0]?.components.map((component: Component) => component.name)).toEqual([
       'Entity',
@@ -51,10 +52,9 @@ describe('sparse tag storage', () => {
     const Selected = defineComponent('SparseFlipSelected', {}, { storage: 'sparse' });
     const world = new World();
     const entity = world.spawn({ component: Wide, data: { a: 1, b: 2, c: 3, d: 4 } }).unwrap();
-    const graph = world[worldInternal].getGraph();
     const sourceArchetype = world[worldInternal].getEntityArchetype(entity);
     if (sourceArchetype === undefined) throw new Error('source archetype missing');
-    const table = graph.tables[sourceArchetype.tableId];
+    const table = sourceArchetype.table;
     if (table === undefined) throw new Error('table missing');
     const tableRow = sourceArchetype.rows[0] ?? -1;
     const before = {
@@ -73,7 +73,7 @@ describe('sparse tag storage', () => {
 
     world.addComponent(entity, { component: Selected, data: {} }).unwrap();
     const selectedArchetype = world[worldInternal].getEntityArchetype(entity);
-    expect(selectedArchetype?.tableId).toBe(table.id);
+    expect(selectedArchetype?.table).toBe(table);
     expect(selectedArchetype?.rows[0]).toBe(tableRow);
     expect(table.size).toBe(before.size);
     expect(table.capacity).toBe(before.capacity);
@@ -91,7 +91,7 @@ describe('sparse tag storage', () => {
     );
 
     world.removeComponent(entity, Selected).unwrap();
-    expect(world[worldInternal].getEntityArchetype(entity)?.tableId).toBe(table.id);
+    expect(world[worldInternal].getEntityArchetype(entity)?.table).toBe(table);
     expect(table.size).toBe(before.size);
     expect(table.version).toBe(before.version);
   });
@@ -146,7 +146,7 @@ describe('sparse tag storage', () => {
     world.despawn(first).unwrap();
     const replacement = world.spawn().unwrap();
     expect(replacement as number).not.toBe(first as number);
-    const set = world[worldInternal].getGraph().sparseTags.get(componentId(Selected));
+    const set = world[worldInternal].graph.sparseTags.get(componentId(Selected));
     expect(set === undefined ? false : sparseTagHas(set, replacement)).toBe(false);
     expect([...world.query({ with: [Selected] }).unwrap()]).toEqual([]);
   });
@@ -157,16 +157,18 @@ describe('sparse tag storage', () => {
     const existing = world.spawn().unwrap();
     let observed: EntityHandle[] = [];
 
-    world.addSystem(Update, {
+    const forwardOrder1: SystemOrderReference[] = [];
+    const systemToken1 = defineSystem({
       name: 'deferred-sparse-producer',
       queries: [],
-      before: ['deferred-sparse-consumer'],
+      before: forwardOrder1,
       fn: (_world, _queries, commands) => {
         commands.spawn({ component: Selected, data: {} });
         commands.addComponent(existing, { component: Selected, data: {} });
       },
     });
-    world.addSystem(Update, {
+    world.addSystem(Update, systemToken1);
+    const systemToken2 = defineSystem({
       name: 'deferred-sparse-consumer',
       queries: [{ with: [Selected] }],
       fn: (_world, [selected], commands) => {
@@ -174,6 +176,8 @@ describe('sparse tag storage', () => {
         commands.removeComponent(existing, Selected);
       },
     });
+    forwardOrder1.push(systemToken2);
+    world.addSystem(Update, systemToken2);
 
     expect(world.update(0).ok).toBe(true);
     expect(observed).toHaveLength(2);

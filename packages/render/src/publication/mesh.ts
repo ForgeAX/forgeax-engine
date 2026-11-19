@@ -1,4 +1,5 @@
 import type { MeshAsset } from '@forgeax/engine-types';
+import { ownPublishedMeshBuffers } from './mesh-buffer-ownership';
 import {
   isPackedRowsMesh,
   type PackedRowsMesh,
@@ -43,7 +44,7 @@ export function copyPublishedMesh(mesh: MeshAsset): MeshAsset {
     if (Array.isArray(value)) return value.map(copy);
     return Object.fromEntries(Object.entries(value).map(([key, field]) => [key, copy(field)]));
   };
-  return copy(mesh) as MeshAsset;
+  return ownPublishedMeshBuffers(copy(mesh) as MeshAsset);
 }
 
 /** Native message bytes are already receiver-owned; shared or non-POD data still needs a copy. */
@@ -67,7 +68,7 @@ export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
     visiting.delete(value);
     return true;
   };
-  return owned(mesh) ? mesh : copyPublishedMesh(mesh);
+  return owned(mesh) ? ownPublishedMeshBuffers(mesh) : copyPublishedMesh(mesh);
 }
 
 /**
@@ -123,7 +124,11 @@ function samePackedAndFullMesh(left: MeshAsset, right: MeshAsset): boolean {
   const leftPacked = isPackedRowsMesh(left);
   const packed = (leftPacked ? left : right) as PackedRowsMesh;
   const full = leftPacked ? right : left;
-  const { attributes: packedAttributes, renderAttributeStorage: _storage, ...packedRest } = packed;
+  const {
+    attributes: packedAttributes,
+    attributeStorage: _attributeStorage,
+    ...packedRest
+  } = packed;
   const { attributes: fullAttributes, ...fullRest } = full;
   if (!samePublishedMesh(packedRest as MeshAsset, fullRest as MeshAsset)) return false;
   const packedChannels = packedAttributes as Record<string, unknown>;

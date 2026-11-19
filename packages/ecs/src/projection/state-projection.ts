@@ -1,8 +1,7 @@
 import type { Component } from '../component';
 import { componentId } from '../component';
 import { type EntityHandle, encodeEntity } from '../entity-handle';
-import { DerivedWriteActiveError } from '../errors';
-import { worldPoisonedError } from '../errors/shared-kernel-errors';
+import { DerivedWriteActiveError, worldPoisonedError } from '../errors';
 import { archetypeHasComponent } from '../storage/archetype';
 import type { World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -92,7 +91,7 @@ class CurrentStateProjection implements StateProjection {
   }
 
   #inputsUnchangedSince(epoch: number): boolean {
-    const epochs = this.#owner.getComponentMutationEpochs();
+    const epochs = this.#owner.componentMutationEpochs;
     for (let cursor = 0; cursor < this.#ids.length; cursor++)
       if ((epochs[this.#ids[cursor] as number] ?? 0) > epoch) return false;
     for (let cursor = 0; cursor < this.#candidateIds.length; cursor++)
@@ -101,8 +100,7 @@ class CurrentStateProjection implements StateProjection {
   }
 
   #matches(index: number): boolean {
-    const archetype =
-      this.#owner.getGraph().archetypes[this.#owner.getRecords().archetypeId[index] ?? -1];
+    const archetype = this.#owner.graph.archetypes[this.#owner.records.archetypeId[index] ?? -1];
     if (archetype === undefined) return false;
     for (let cursor = 0; cursor < this.#candidateIds.length; cursor++)
       if (archetypeHasComponent(archetype, this.#candidateIds[cursor] as number)) return true;
@@ -138,14 +136,14 @@ class CurrentStateProjection implements StateProjection {
     );
   }
   entity(index: number): EntityHandle | undefined {
-    const records = this.#owner.getRecords();
+    const records = this.#owner.records;
     return (records.archetypeId[index] ?? -1) < 0
       ? undefined
       : encodeEntity(index, records.generation[index] as number);
   }
   changed(entity: EntityHandle, component: Component): boolean {
     const id = componentId(component);
-    if ((this.#owner.getComponentMutationEpochs()[id] ?? 0) <= this.#acceptedEpoch) return false;
+    if ((this.#owner.componentMutationEpochs[id] ?? 0) <= this.#acceptedEpoch) return false;
     return (this.#owner.getComponentChange(entity, id)?.changed ?? -1) > this.#acceptedEpoch;
   }
   invalidate(): void {
@@ -168,29 +166,35 @@ class CurrentStateProjection implements StateProjection {
     this.#scannedRows = 0;
     this.#stamped = true;
     const changedComponents = this.#changedComponents();
-    const mutationEpochs = this.#owner.getComponentMutationEpochs();
+    const mutationEpochs = this.#owner.componentMutationEpochs;
     let checkedIndexEntries = 0;
     if (this.#invalid) {
       this.#membershipWork = true;
       for (let index = 0; index < this.#flags.length; index++)
         if (((this.#flags[index] ?? 0) & ACCEPTED) !== 0) this.#enqueue(index);
       for (let cursor = 0; cursor < this.#candidateIds.length; cursor++) {
-        const index = this.#owner.getComponentChangeIndex(this.#candidateIds[cursor] as number);
-        index?.visitSince(-1, epoch, this.#enqueue);
-        checkedIndexEntries += index?.checkedEntries ?? 0;
+        checkedIndexEntries += this.#owner.visitComponentChanged(
+          this.#candidateIds[cursor] as number,
+          -1,
+          epoch,
+          this.#enqueue,
+        );
       }
     } else {
       this.#membershipWork = false;
       for (let cursor = 0; cursor < this.#ids.length; cursor++) {
         const id = this.#ids[cursor] as number;
         if ((mutationEpochs[id] ?? 0) <= this.#acceptedEpoch) continue;
-        const index = this.#owner.getComponentChangeIndex(id);
-        index?.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
-        checkedIndexEntries += index?.checkedEntries ?? 0;
+        checkedIndexEntries += this.#owner.visitComponentChanged(
+          id,
+          this.#acceptedEpoch,
+          epoch,
+          this.#enqueue,
+        );
       }
       if (structure !== this.#acceptedStructure) {
         this.#membershipWork = true;
-        const index = this.#owner.getStructuralChangeIndex();
+        const index = this.#owner.structuralChangeIndex;
         index.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
         checkedIndexEntries += index.checkedEntries;
       }
@@ -208,7 +212,7 @@ class CurrentStateProjection implements StateProjection {
   }
 
   #changedComponents(): readonly Component[] {
-    const epochs = this.#owner.getComponentMutationEpochs();
+    const epochs = this.#owner.componentMutationEpochs;
     let count = 0;
     for (let cursor = 0; cursor < this.#ids.length; cursor++)
       if ((epochs[this.#ids[cursor] as number] ?? 0) > this.#acceptedEpoch) count++;

@@ -41,11 +41,17 @@ describe('Standard surface discard override', () => {
   it('keeps the shared surface LOD coverage and view clipping calls inside the source macro', () => {
     const body = evaluateStandardSurfaceBody(shader);
     expect(body).toMatch(
-      /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#endif\s*#endif/,
+      /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*#if WATER_WAVES_AVAILABLE == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#else\s*applyLodCoverage\(in\.clip\.xy, in\.lodFade\);\s*#endif\s*#endif\s*#endif/,
     );
-    expect(body).toMatch(
-      /#if CLIPPING_PLANES == true\s*applyViewClipping\(in\.worldPos, false\);\s*#endif/,
+    expect(body).not.toContain('applyViewClipping(');
+    const rejection = shader.slice(
+      shader.indexOf('fn standardSurfaceRejected('),
+      shader.indexOf('fn alphaTestSurface('),
     );
+    expect(rejection).toMatch(
+      /#if CLIPPING_PLANES == true\s*if \(viewClippingRejected\(standardPositionWS, false\)\) \{ return true; \}\s*#endif/,
+    );
+    expect(rejection).not.toContain('discard;');
     expect(body).not.toContain('standardSurfaceDiscards');
     // Material-local clipping is a per-material fact and stays unconditional.
     expect(body).toMatch(/#ifdef MATERIAL_CLIPPING_AVAILABLE\s*applyLocalClipping\(/);
@@ -56,6 +62,33 @@ describe('Standard surface discard override', () => {
     expect(temporal).toMatch(/\n {2}applyViewClipping\(in\.clippingPositionWS, false\);/);
     expect(temporal).toMatch(/\n {2}applyLodCoverage\(in\.clip\.xy, in\.temporal\.z\);/);
     expect(read('default-standard-pbr-skin.wgsl')).not.toContain('standardSurfaceDiscards');
+  });
+
+  it('rejects uncovered Water geometry in every Standard raster entry after Surface evaluation', () => {
+    for (const entry of [
+      'fs_main',
+      'fs_opaque',
+      'fs_forward_screen',
+      'fs_oit',
+      'fs_oit_premultiplied',
+      'fs_gbuffer',
+      'fs_depth_masked',
+      'fs_ao_input',
+      'fs_ao_input_msaa',
+    ]) {
+      const start = shader.indexOf(`fn ${entry}(`);
+      expect(start, entry).toBeGreaterThanOrEqual(0);
+      const end = shader.indexOf('\n}', start);
+      const body = shader.slice(start, end);
+      expect(body, entry).toContain('if (!standardWaterCovered) { discard; }');
+      expect(body, entry).toMatch(
+        /(?:standardForward|standardGBuffer|evaluateStandardSurface|standardAoInput)[\s\S]*if \(!standardWaterCovered\)/,
+      );
+    }
+    const evaluator = evaluateStandardSurfaceBody(shader);
+    expect(evaluator).toContain('!(in.worldNormal.w <= 0.0)');
+    expect(evaluator).toContain('waterMeshCoverageContains(');
+    expect(evaluator).toContain('waterDynamicBoundsContains(');
   });
 
   it('records declared numeric override ids on the material program', () => {
@@ -77,6 +110,6 @@ describe('Standard surface discard override', () => {
 it('reads shadow reception per draw, folding only a shadow-free View override', () => {
   expect(shader).toContain('@id(64002) override standardShadowReception: u32 = 1u;');
   expect(shader).toMatch(
-    /fn standardReceivesShadows\(in : VsOut\) -> bool \{\s*if \(standardShadowReception == 0u\) \{ return false; \}\s*#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*return \(in\.materialAddress\.x & STANDARD_NO_RECEIVE_BIT\) == 0u;/,
+    /fn standardReceivesShadows\(in : VsOut\) -> bool \{\s*if \(standardShadowReception == 0u\) \{ return false; \}\s*#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*return \(standardMaterialRow\(in\) & STANDARD_NO_RECEIVE_BIT\) == 0u;/,
   );
 });

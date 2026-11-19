@@ -143,6 +143,16 @@ test('motion blur trace requires on semantics and accepts either legal off pass 
   );
 });
 
+test('motion blur trace recognizes native Grade and still requires an encoding writer', () => {
+  const off = { motionBlur: { enabled: false, status: 'off', temporalDemand: null },
+    passes: ['standard-grade', 'standard-final'] };
+  const on = { motionBlur: { enabled: true, status: 'active', temporalDemand: 'scene-data-temporal-v1' },
+    passes: ['motion-blur', 'standard-grade', 'standard-final'] };
+  assert.equal(validateMotionBlurTrace(off, 'off').ok, true);
+  assert.equal(validateMotionBlurTrace(on, 'on').ok, true);
+  assert.equal(validateMotionBlurTrace({ ...on, passes: ['motion-blur', 'standard-final'] }, 'on').ok, false);
+});
+
 test('motion blur trace accepts the split LUT output encoding writer', () => {
   const state = {
     motionBlur: { enabled: true, status: 'active', temporalDemand: 'scene-data-temporal-v1' },

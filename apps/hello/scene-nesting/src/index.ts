@@ -244,7 +244,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       if (!update.ok) {
         console.error(`[hello-scene-nesting] world.update failed: ${update.error.code}`);
       } else {
-        const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const draw = renderer.draw({ source: lease });
         if (!draw.ok) console.error(`[hello-scene-nesting] draw failed: ${draw.error.code}`);
         else void renderer.observe(draw.value, { include: ['draws'] });
       }

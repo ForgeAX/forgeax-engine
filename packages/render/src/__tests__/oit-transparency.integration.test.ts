@@ -36,7 +36,12 @@ import { RENDER_TRANSPARENT_PLAN_SYSTEM } from '../world/pass-plan-systems';
 import * as renderWorldModule from '../world/render-world';
 import { RenderQueue } from '../world/render-world';
 import { testAssets } from './helpers/runtime-assets';
-import { standardPbrFixtureVariants } from './shader-manifest-fixture';
+import { registeredSystem } from './registered-system.fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrFixtureVariants,
+  waterInfoShaderFixture,
+} from './shader-manifest-fixture';
 
 const STRAIGHT_OVER: GPUBlendState = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -58,20 +63,26 @@ const MANIFEST = `data:application/json,${encodeURIComponent(
       { hash: 'pbr00000', wgsl: '/* f_schlick( */', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: '/* unlit */', glsl: '', bindings: '' },
       { hash: 'tonemap0', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
+      ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
     ],
     materialShaders: [
-      ['forgeax::default-standard-pbr', DEFAULT_STANDARD_PBR_PARAM_SCHEMA, '/* f_schlick( */'],
-      ['forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, '/* unlit */'],
-    ].map(([identifier, schema, wgsl]) => ({
-      identifier,
-      sourcePath: `${identifier}.wgsl`,
-      composedWgsl: wgsl,
-      paramSchema: JSON.stringify(schema),
-      variants:
-        identifier === 'forgeax::default-standard-pbr'
-          ? standardPbrFixtureVariants(wgsl as string)
-          : [],
-    })),
+      ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
+      ...[
+        ['forgeax::default-standard-pbr', DEFAULT_STANDARD_PBR_PARAM_SCHEMA, '/* f_schlick( */'],
+        ['forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, '/* unlit */'],
+      ].map(([identifier, schema, wgsl]) => ({
+        identifier,
+        sourcePath: `${identifier}.wgsl`,
+        composedWgsl: wgsl,
+        paramSchema: JSON.stringify(schema),
+        variants:
+          identifier === 'forgeax::default-standard-pbr'
+            ? standardPbrFixtureVariants(wgsl as string)
+            : [],
+      })),
+    ],
   }),
 )}`;
 
@@ -213,11 +224,7 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
       );
     });
   };
-  const request = {
-    leases: [lease.value],
-    camera: { lease: lease.value },
-    environment: { lease: lease.value },
-  } as const;
+  const request = { source: lease.value } as const;
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
@@ -296,7 +303,7 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
         if (device === undefined) throw new Error('Missing live device');
         const first = device.framePassNames.length;
         await host.draw();
-        const executed = device.framePassNames.slice(first);
+        const executed = device.framePassNames.slice(first).flatMap((name) => name.split(' + '));
         expect(executed.includes('transparent')).toBe(kinds.length > 0);
         expect(executed).toContain('main');
       }
@@ -315,9 +322,21 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
       await host.draw();
       const device = host.adapter.devices.at(-1);
       if (device === undefined) throw new Error('Missing live device');
-      const first = device.framePassNames.length;
-      await host.draw();
-      expect(device.framePassNames.slice(first)).toContain('transparent');
+      const begin = vi.spyOn(RhiNullCommandEncoder.prototype, 'beginRenderPass');
+      try {
+        await host.draw();
+        const scene = begin.mock.calls.find(([descriptor]) =>
+          descriptor.label?.split(' + ').includes('transparent'),
+        )?.[0];
+        expect(scene).toBeDefined();
+        const resolved = Array.from(scene?.colorAttachments ?? []).filter(
+          (attachment) => attachment?.resolveTarget !== undefined,
+        );
+        expect(resolved).toHaveLength(1);
+        expect(resolved[0]?.storeOp).toBe('discard');
+      } finally {
+        begin.mockRestore();
+      }
       expect(host.errors).toEqual([]);
     } finally {
       host.dispose();
@@ -364,7 +383,12 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
       if (renderWorld === undefined) throw new Error('Missing planned Render World');
       const inspection = await host.draw();
       expect(inspection.transparency?.resolved).toBe('weighted-blended');
-      expect(renderWorld.removeSystem(RenderQueue, RENDER_TRANSPARENT_PLAN_SYSTEM).ok).toBe(true);
+      expect(
+        renderWorld.removeSystem(
+          RenderQueue,
+          registeredSystem(renderWorld, RenderQueue, 'render-transparent-plan'),
+        ).ok,
+      ).toBe(true);
       // Without its family system the view has no plan, so compile never runs
       // on a re-derived composition: the frame fails naming the system.
       await expect(host.draw()).rejects.toThrow(RENDER_TRANSPARENT_PLAN_SYSTEM);

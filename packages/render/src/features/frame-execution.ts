@@ -1,5 +1,9 @@
 import type { RenderGraphFrame } from '@forgeax/engine-render-graph';
-import type { RenderFeaturePlanExecution, RenderFeaturePlanExecutionPass } from './host';
+import {
+  findRenderFeatureExecutionPass,
+  type RenderFeaturePlanExecution,
+  type RenderFeaturePlanExecutionPass,
+} from './host';
 
 /** The accepted plan for this submission, independent of cached graph topology. */
 export interface RenderFeatureExecutionFrame extends RenderGraphFrame {
@@ -20,7 +24,7 @@ export function currentRenderFeaturePass(
       (scope !== undefined && execution.scope !== scope)
     )
       continue;
-    const pass = execution.passes.find((pass) => pass.name === passName);
+    const pass = findRenderFeatureExecutionPass(execution, passName);
     if (pass !== undefined) return pass;
   }
   return undefined;

@@ -399,6 +399,8 @@ export type ImportProductFinalizeResult =
 
 /** Optional producer capability exposed to the generic import runner. */
 export interface ImporterCapabilities {
+  /** Source preparation can overlap other imports before ordered publication. */
+  readonly parallelPreparation?: true;
   /** Producer-owned single-output source formats admitted by asset add. */
   readonly sourceFormats?: readonly {
     readonly extensions: readonly string[];

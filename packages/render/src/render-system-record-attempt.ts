@@ -1,6 +1,10 @@
+import type { World } from '@forgeax/engine-ecs';
+import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ShaderError } from '@forgeax/engine-shader';
+import { cloudMode0TransportFormat } from './cloud/reconstruction/history';
+import { runtimeFailureDetails } from './errors/runtime-failure-details';
 import { resolveDepthOfFieldFrameParams } from './features/depth-of-field/depth-of-field-params';
 import type { RenderFeatureFrameResult } from './features/host';
 import { resolveStandardRenderFeatureTargets } from './features/targets';
@@ -14,7 +18,7 @@ import type { GpuTimingCapture } from './record/gpu-timing';
 import type { PipelineState, RenderSystemInternals } from './record/render-context';
 import type {
   CameraSnapshot,
-  DrawOwnerOptions,
+  DrawOptions,
   FramePresentationPendingReason,
 } from './render-contract';
 import type { ExtractedFrame, RenderableSnapshot } from './render-system-extract';
@@ -22,7 +26,6 @@ import type {
   createPresentationDraws,
   FramePresentationCandidate,
 } from './render-system-presentation';
-import type { canonicalizeWorldComposition } from './render-system-projections';
 import type { FrameList } from './scene/frame-list';
 import type { ViewLights } from './world/render-lights';
 import type { ViewFrameResult, ViewRecordMode } from './world/view-frame-systems';
@@ -30,10 +33,11 @@ import { recordContext } from './world/view-record-context';
 
 /** One `record` call: its canonical inputs and the submission outcome it reports. */
 export interface RecordAttempt {
-  readonly composition: ReturnType<typeof canonicalizeWorldComposition>;
-  /** Resource scopes aligned with `composition.worlds`, or the single publication scope. */
-  readonly scopes: readonly RenderResourceScope[];
-  readonly opts: DrawOwnerOptions;
+  readonly sourceWorld: World | undefined;
+  readonly readLease: RenderReadLease | undefined;
+  /** The attached source lifetime for local or published input. */
+  readonly sourceScope: RenderResourceScope;
+  readonly opts: DrawOptions;
   readonly publication: PreparedRenderPublication | undefined;
   /** The view's `render-view-frame` product this attempt records. */
   readonly frame: ViewFrameResult;
@@ -57,7 +61,6 @@ export interface RecordOutcome {
   readonly cameraCount: number;
   readonly presentation: FramePresentationCandidate;
   readonly presentationRenderables: FrameList<RenderableSnapshot>;
-  readonly worldKeys: readonly number[];
   readonly draws: RecordDraws;
 }
 
@@ -120,6 +123,7 @@ function recordFailureDetail(cause: unknown) {
       ...(cause.detail === undefined ? {} : { detail: cause.detail }),
     };
   if (cause instanceof RhiError) return cause;
+  if (cause instanceof Error) return runtimeFailureDetails(cause);
   if (
     typeof cause === 'object' &&
     cause !== null &&
@@ -139,10 +143,11 @@ function recordFailureDetail(cause: unknown) {
 }
 
 export function resolveFeatureTargets(
-  internals: RenderSystemInternals,
-  pipelineState: PipelineState | null,
-  camera: CameraSnapshot | undefined,
+  internals: Pick<RenderSystemInternals, 'device'>,
+  pipelineState: Pick<PipelineState, 'colorAttachmentFormat'> | null,
+  camera: Pick<CameraSnapshot, 'tonemap' | 'antialias'> | undefined,
   cloudLayer: ExtractedFrame['cloudLayer'],
+  singleLayerWater = false,
 ) {
   if (pipelineState === null || camera === undefined) return [];
   return resolveStandardRenderFeatureTargets({
@@ -152,6 +157,9 @@ export function resolveFeatureTargets(
     storageBuffer: internals.device.caps.storageBuffer,
     multisample: internals.device.caps.backendKind !== 'wgpu-webgl2',
     cloudHistory: cloudLayer !== undefined,
+    analyticCloud: cloudLayer !== undefined,
+    cloudTransportFormat: cloudMode0TransportFormat(internals.device),
+    singleLayerWater,
   });
 }
 

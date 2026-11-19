@@ -1,4 +1,8 @@
-import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import {
@@ -134,9 +138,9 @@ it.each([
         decoders: runtimePackDecoders,
       });
       expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
-      expect((defined(result.unwrap().get(guid)) as MeshAsset).attributes.position).toEqual(
-        input.original.attributes.position,
-      );
+      expect(
+        copyMeshAttribute(defined(result.unwrap().get(guid)) as MeshAsset, 'position'),
+      ).toEqual(copyMeshAttribute(input.original, 'position'));
     }
   }
 });
@@ -277,7 +281,7 @@ it.each([
   'identity',
   'zstd',
   'mutated',
-] as const)('retains loaded %s bytes without repeating identity transport or trusting mutable cache bytes', async (mode) => {
+] as const)('captures loaded %s bytes from one fresh transport read without trusting mutable loaded bytes', async (mode) => {
   const input = await fixture(false, mode === 'zstd' ? 'zstd' : 'identity');
   const fetcher = vi.fn(input.fetcher);
   const source = createCatalogSource({ entries: input.rows });
@@ -318,7 +322,8 @@ it.each([
       expect(decodePackBlob(defined(result.unwrap().blobs['mesh.bin.zst']))).toEqual(
         input.compressed,
       );
-    expect(fetcher.mock.calls.length).toBe(before);
+    // Nothing completed is retained: a capture re-reads the package document and the body once each.
+    expect(fetcher.mock.calls.length).toBe(before + (mode === 'mutated' ? 3 : 2));
   } finally {
     registry.clearCatalogSource();
   }
@@ -488,8 +493,8 @@ it.each([
   ).unwrap();
   expect(decoded.size).toBe(2);
   registry?.dispose();
-  expect((defined(decoded.get(guid)) as MeshAsset).attributes.position).toEqual(
-    input.original.attributes.position,
+  expect(copyMeshAttribute(defined(decoded.get(guid)) as MeshAsset, 'position')).toEqual(
+    copyMeshAttribute(input.original, 'position'),
   );
   expect((defined(decoded.get(sibling)) as MeshAsset).indices).toEqual(input.original.indices);
 });

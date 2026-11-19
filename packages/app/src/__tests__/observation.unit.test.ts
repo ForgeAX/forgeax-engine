@@ -1,10 +1,41 @@
 import { World } from '@forgeax/engine-ecs';
-import { Camera, MeshFilter, type Renderer, setActiveCamera } from '@forgeax/engine-render';
+import {
+  Camera,
+  CameraView,
+  getActiveCamera,
+  MeshFilter,
+  type Renderer,
+  setActiveCamera,
+} from '@forgeax/engine-render';
 import { ChildOf, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { createAppObservation } from '../observation';
 
 describe('createAppObservation', () => {
+  it('borrows a declared view for the transient camera and clears that selection on release', () => {
+    const world = new World();
+    const source = world
+      .spawn(
+        { component: Transform, data: { pos: [1, 2, 3] } },
+        { component: Camera, data: {} },
+        { component: CameraView, data: { resolutionScale: 0.5 } },
+      )
+      .unwrap();
+    const before = world.get(source, CameraView).unwrap();
+    const observation = createAppObservation(
+      world,
+      { bounds: () => undefined },
+      { report: () => ({}) },
+    );
+    const selected = observation.camera.set({ position: [8, 6, 8] }) as { entity: number };
+    observation.prepareFrame();
+    expect(getActiveCamera(world)).toEqual({ entity: selected.entity, viewEntity: source });
+    expect(world.get(source, CameraView).unwrap()).toEqual(before);
+    expect(world.get(source, Transform).unwrap().pos).toEqual(new Float32Array([1, 2, 3]));
+    observation.release();
+    expect(getActiveCamera(world)).toEqual({ entity: source });
+    expect(world.get(source, CameraView).unwrap()).toEqual(before);
+  });
   it('restores a game camera selected during observation, including immediately before release', () => {
     const world = new World();
     const spawn = () =>

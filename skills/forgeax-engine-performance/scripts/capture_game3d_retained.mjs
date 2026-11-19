@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { moveGame3dWindow } from './game3d_motion.mjs';
 import { archiveScreenshot } from './capture_game3d_allocations.mjs';
 import { captureTraceWindow } from './capture_trace_window.mjs';
-import { inspectGame3dApp } from './inspect_game3d_app.mjs';
+import { game3dArchiveDrained, inspectGame3dApp } from './inspect_game3d_app.mjs';
 import { admitGame3dWorkload, assertGame3dWorkloadStable } from './game3d_workload.mjs';
 const hash = (x) => createHash('sha256').update(x).digest('hex');
 export default async function retained(play) {
@@ -14,7 +14,9 @@ export default async function retained(play) {
 }
 
 export async function captureGame3dHeap(play, traceAllocations = false) {
-  const out = traceAllocations ? process.env.FORGEAX_TRACE_OUTPUT : process.env.FORGEAX_RETAINED_OUTPUT;
+  const out = traceAllocations
+    ? process.env.FORGEAX_TRACE_OUTPUT
+    : process.env.FORGEAX_RETAINED_OUTPUT;
   assert(out && isAbsolute(out), 'Set FORGEAX_RETAINED_OUTPUT to a new absolute private directory');
   const sourceRoot = await realpath(new URL('../../../', import.meta.url));
   const destination = resolve(await realpath(dirname(out)), out.slice(dirname(out).length + 1));
@@ -82,10 +84,16 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
   const inspect = () => page.evaluate(() => globalThis.__forgeaxGameInspection.renderer());
 
   try {
-    report.workload = await admitGame3dWorkload(play);
-    report.workloadHelperSha256 = hash(await readFile(new URL('./game3d_workload.mjs', import.meta.url)));
+    report.workload = await admitGame3dWorkload(play, {
+      scenario: process.env.FORGEAX_MEMORY_WORKLOAD ?? 'runtime-vase',
+    });
+    report.workloadHelperSha256 = hash(
+      await readFile(new URL('./game3d_workload.mjs', import.meta.url)),
+    );
     report.motionSha256 = hash(await readFile(new URL('./game3d_motion.mjs', import.meta.url)));
-    report.appControlSha256 = hash(await readFile(new URL('./inspect_game3d_app.mjs', import.meta.url)));
+    report.appControlSha256 = hash(
+      await readFile(new URL('./inspect_game3d_app.mjs', import.meta.url)),
+    );
     report.browser = await root.send('Browser.getVersion');
     for (const target of (await root.send('Target.getTargets')).targetInfos.filter(
       (t) => t.type === 'worker',
@@ -101,13 +109,17 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
       realms.push({ name: r.result.value, target, sessionId });
     }
     const selected = realms.filter((r) =>
-      ['forgeax-engine', 'forgeax-render', 'forgeax-frame-clock'].includes(r.name));
+      ['forgeax-engine', 'forgeax-render', 'forgeax-frame-clock'].includes(r.name),
+    );
     for (const name of ['forgeax-engine', 'forgeax-render'])
       assert.equal(selected.filter((r) => r.name === name).length, 1);
     assert(selected.filter((r) => r.name === 'forgeax-frame-clock').length <= 1);
     report.start = await inspect();
     report.startPlayer = await play.state('game-3d.player');
-    report.motion = await moveGame3dWindow({ page, signal, state: name => play.state(name), wait: ms => play.wait(ms) }, 6000);
+    report.motion = await moveGame3dWindow(
+      { page, signal, state: (name) => play.state(name), wait: (ms) => play.wait(ms) },
+      6000,
+    );
     report.travel = report.motion.travel;
     report.moved = await play.state('game-3d.player');
     report.movingFrame = await inspect();
@@ -122,7 +134,7 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
     assert(report.pause.ok);
     paused = true;
     await page.waitForFunction(
-      () => globalThis.__forgeaxGameInspection.renderer().execution.frame.inFlight === 0,
+      `(${game3dArchiveDrained.toString()})(globalThis.__forgeaxGameInspection.renderer())`,
       undefined,
       { timeout: 15000, polling: 50 },
     );
@@ -132,7 +144,12 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
     if (traceAllocations) {
       report.traceStartDrained = report.drained;
       report.drained = await captureTraceWindow({
-        selected, send, out, report, save, inspect,
+        selected,
+        send,
+        out,
+        report,
+        save,
+        inspect,
         resume: async () => {
           assert(await callApp('function(){return this.resume().ok;}'));
           paused = false;
@@ -140,41 +157,58 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
         pause: async () => {
           assert(await callApp('function(){return this.pause().ok;}'));
           paused = true;
-          await page.waitForFunction(() => globalThis.__forgeaxGameInspection.renderer().execution.frame.inFlight === 0, undefined, {timeout:15000,polling:50});
+          await page.waitForFunction(
+            () => globalThis.__forgeaxGameInspection.renderer().execution.frame.inFlight === 0,
+            undefined,
+            { timeout: 15000, polling: 50 },
+          );
         },
-        move: ms => moveGame3dWindow({page,signal,state:name=>play.state(name),wait:ms=>play.wait(ms)},ms),
+        move: (ms) =>
+          moveGame3dWindow(
+            { page, signal, state: (name) => play.state(name), wait: (ms) => play.wait(ms) },
+            ms,
+          ),
       });
-    } else for (const realm of selected) {
-      await send(realm.sessionId, 'HeapProfiler.enable');
-      await send(realm.sessionId, 'HeapProfiler.collectGarbage', {}, 60000);
-      const before = await send(realm.sessionId, 'Runtime.getHeapUsage');
-      realm.chunks = [];
-      realm.size = 0;
-      realm.overflow = false;
-      const started = Date.now();
-      await send(
-        realm.sessionId,
-        'HeapProfiler.takeHeapSnapshot',
-        { reportProgress: false },
-        120000,
-      );
-      assert(!realm.overflow, 'Snapshot exceeded 256 MiB bound');
-      const bytes = Buffer.from(realm.chunks.join(''));
-      delete realm.chunks;
-      const path = out + '/' + realm.name + '.heapsnapshot';
-      await writeFile(path, bytes);
-      report.realms.push({
-        name: realm.name,
-        target: realm.target,
-        before,
-        after: await send(realm.sessionId, 'Runtime.getHeapUsage'),
-        snapshot: { path, bytes: bytes.length, sha256: hash(bytes) },
-        snapshotWallMs: Date.now() - started,
-      });
-      await send(realm.sessionId, 'HeapProfiler.disable');
-      await save();
-    }
+    } else
+      for (const realm of selected) {
+        await send(realm.sessionId, 'HeapProfiler.enable');
+        await send(realm.sessionId, 'HeapProfiler.collectGarbage', {}, 60000);
+        const before = await send(realm.sessionId, 'Runtime.getHeapUsage');
+        realm.chunks = [];
+        realm.size = 0;
+        realm.overflow = false;
+        const started = Date.now();
+        await send(
+          realm.sessionId,
+          'HeapProfiler.takeHeapSnapshot',
+          { reportProgress: false },
+          120000,
+        );
+        assert(!realm.overflow, 'Snapshot exceeded 256 MiB bound');
+        const bytes = Buffer.from(realm.chunks.join(''));
+        delete realm.chunks;
+        const path = out + '/' + realm.name + '.heapsnapshot';
+        await writeFile(path, bytes);
+        report.realms.push({
+          name: realm.name,
+          target: realm.target,
+          before,
+          after: await send(realm.sessionId, 'Runtime.getHeapUsage'),
+          snapshot: { path, bytes: bytes.length, sha256: hash(bytes) },
+          snapshotWallMs: Date.now() - started,
+        });
+        await send(realm.sessionId, 'HeapProfiler.disable');
+        await save();
+      }
     report.afterSnapshots = await inspect();
+    assert(
+      game3dArchiveDrained(report.afterSnapshots),
+      'All execution and physical Render work must stay drained',
+    );
+    assert.equal(
+      report.afterSnapshots.execution.render.completedFrame,
+      report.drained.execution.render.completedFrame,
+    );
     assert.equal(report.afterSnapshots.execution.frame.inFlight, 0);
     assert.equal(
       report.afterSnapshots.execution.frame.completed,
@@ -203,7 +237,12 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
     return { status: report.status, report: out + '/report.json' };
   } catch (error) {
     report.status = 'failed';
-    report.error = { message: String(error), stack: error.stack, motion: error.motion, workload: error.workload };
+    report.error = {
+      message: String(error),
+      stack: error.stack,
+      motion: error.motion,
+      workload: error.workload,
+    };
     await save();
     throw error;
   } finally {
@@ -215,7 +254,11 @@ export async function captureGame3dHeap(play, traceAllocations = false) {
     }
     for (const r of realms) {
       if (r.tracking) await send(r.sessionId, 'HeapProfiler.disable', {}, 120000).catch(() => {});
-      if (r.controlOwned) await send(r.sessionId,'Runtime.evaluate',{expression:'delete globalThis.__forgeaxTraceControl;delete globalThis.__forgeaxTraceRing;delete globalThis.__forgeaxTraceWitness;'}).catch(()=>{});
+      if (r.controlOwned)
+        await send(r.sessionId, 'Runtime.evaluate', {
+          expression:
+            'delete globalThis.__forgeaxTraceControl;delete globalThis.__forgeaxTraceRing;delete globalThis.__forgeaxTraceWitness;',
+        }).catch(() => {});
       await root.send('Target.detachFromTarget', { sessionId: r.sessionId }).catch(() => {});
     }
     for (const r of pending.values()) {

@@ -97,6 +97,12 @@ describe('MaterialAsset runtime and module projection', () => {
       POINT_SHADOW_AVAILABLE: false,
       MATERIAL_VALIDATION_ENABLED: false,
       VISIBLE_SURFACE_AVAILABLE: false,
+      CLIPPING_PLANES: false,
+      LOD_DITHER: false,
+    });
+    expect(lowerMaterialVariantContext({ ...context, viewClipping: true })).toMatchObject({
+      CLIPPING_PLANES: true,
+      LOD_DITHER: false,
     });
     expect(
       lowerMaterialVariantContext({ ...context, capability: 'storage-buffer-atmosphere' }),

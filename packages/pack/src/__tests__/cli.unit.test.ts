@@ -133,17 +133,21 @@ async function writeSolidPng(
     });
 
     describe('atlas CLI happy path (T-26 / AC-06)', () => {
-      it('packs 3 PNGs into <name>.atlas.png + <name>.atlas.meta.json', async () => {
+      it.each([
+        '*.png',
+        '@(walk-*).png',
+      ])('packs 3 PNGs into atlas artifacts through %s', async (pattern) => {
         await writeSolidPng(join(tmp, 'walk-0.png'), 64, 64, [255, 0, 0, 255]);
         await writeSolidPng(join(tmp, 'walk-1.png'), 64, 64, [0, 255, 0, 255]);
         await writeSolidPng(join(tmp, 'walk-2.png'), 64, 64, [0, 0, 255, 255]);
+        await mkdir(join(tmp, 'walk-directory.png'));
 
         const io = makeIO();
         const code = await runCliAsset(
           [
             'atlas',
             '--input',
-            `${tmp}/*.png`,
+            `${tmp}/${pattern}`,
             '--name',
             'walk',
             '--output',

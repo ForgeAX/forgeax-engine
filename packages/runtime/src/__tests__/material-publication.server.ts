@@ -6,10 +6,12 @@ import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { createStandaloneRuntimeAssetBinding, type MaterialAsset } from '@forgeax/engine-types';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { createServer } from 'vite';
+import { installPackProject } from './helpers/pack-project';
 
 /** Real disk -> registered cooker -> Vite HTTP producer for both GPU backends. */
 export async function startMaterialPublicationServer() {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-material-publication-'));
+  await installPackProject(root, ['pack', 'types', 'geometry', 'vfx-compiler']);
   const assets = join(root, 'assets');
   await mkdir(assets);
   const source = (
@@ -209,6 +211,7 @@ export type SurfaceMaterialPublicationValue =
  */
 export async function startSurfaceMaterialPublicationServer() {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-surface-publication-'));
+  await installPackProject(root, ['pack', 'types']);
   const assets = join(root, 'assets');
   await mkdir(assets);
   const packageId = '019a0000-0000-7000-8000-000000000120';

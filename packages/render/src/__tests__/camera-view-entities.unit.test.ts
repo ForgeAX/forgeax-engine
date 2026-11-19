@@ -42,9 +42,8 @@ it.each([
   const draw = async (entity?: number) => {
     world.update().unwrap();
     const result = renderer.draw({
-      leases: [attached],
-      camera: { lease: attached, ...(entity === undefined ? {} : { entityKey: entity }) },
-      environment: { lease: attached },
+      source: attached,
+      camera: { ...(entity === undefined ? {} : { entityKey: entity }) },
     });
     if (!result.ok) throw result.error;
     const receipt = result.value;
@@ -110,11 +109,7 @@ it('projects the fixed short-side budget through extraction and Render World wit
     .unwrap();
   const draw = async () => {
     world.update().unwrap();
-    const result = renderer.draw({
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    });
+    const result = renderer.draw({ source: attached });
     if (!result.ok) throw result.error;
     const receipt = result.value;
     if (receipt === undefined) throw Error('expected submitted receipt');
@@ -155,11 +150,7 @@ it('adds and removes a CameraView without rebuilding the other views', async () 
         { component: CameraView, data: { order, viewport: new Float32Array([0, 0, 0.5, 0.5]) } },
       )
       .unwrap();
-  const input = {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  };
+  const input = { source: attached.value };
   const draw = async (frames: number) => {
     for (let frame = 0; frame < frames; frame++) {
       expect(world.update().ok).toBe(true);

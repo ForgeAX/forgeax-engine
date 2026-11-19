@@ -101,16 +101,14 @@ it('reads the exact held Mesh descriptor after replacement, aborted preparation 
   const projection = new RenderScene();
   const mesh = createPrimitiveMesh('cube').unwrap();
   const source = receiptRow().source;
-  const first = new MeshFrame().with(0, 9, { ...mesh, aabb: Float32Array.of(-2, -1, -1, 2, 1, 1) });
+  const first = new MeshFrame().with(9, { ...mesh, aabb: Float32Array.of(-2, -1, -1, 2, 1, 1) });
   const readback = device.createBuffer({ size: 28, usage: 1 | 8 }).unwrap();
   native.pushErrorScope('validation');
   const oldFrames: import('../gpu-scene').GpuSceneResourceFrame[] = [];
   try {
     scene
       .sync({
-        ...projection.apply([
-          { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source },
-        ]),
+        ...projection.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]),
         meshes: first,
       })
       .unwrap();
@@ -118,24 +116,22 @@ it('reads the exact held Mesh descriptor after replacement, aborted preparation 
     const capacity = scene.rowCapacity;
     const a = scene.captureResources().unwrap();
     oldFrames.push(a);
-    const address = a.indexForGeometry(0, 9, first.get(0, 9));
+    const address = a.indexForGeometry(9, first.get(9));
     if (address === undefined) throw Error('missing held geometry');
     const oldInput = a.inputReads().buffer().unwrap().buffer;
     a.seal().unwrap();
-    const next = first.with(0, 9, { ...mesh, aabb: Float32Array.of(-9, -1, -1, 9, 1, 1) });
+    const next = first.with(9, { ...mesh, aabb: Float32Array.of(-9, -1, -1, 9, 1, 1) });
     scene.sync({ ...projection.apply([]), meshes: next }).unwrap();
     const b = scene.captureResources().unwrap();
     oldFrames.push(b);
-    const newAddress = b.indexForGeometry(0, 9, next.get(0, 9));
+    const newAddress = b.indexForGeometry(9, next.get(9));
     if (newAddress === undefined) throw Error('B did not pin its current Mesh version');
     expect(newAddress).not.toBe(address);
     b.inputReads().buffer().unwrap();
     b.seal().unwrap();
     b.release(); // Abort B; the current Scene still owns B until removal.
-    scene
-      .sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: source.entityKey }]))
-      .unwrap();
-    expect(scene.geometryIndexForResource(0, 9)).toBeUndefined();
+    scene.sync(projection.apply([{ kind: 'remove', entityKey: source.entityKey }])).unwrap();
+    expect(scene.geometryIndexForResource(9)).toBeUndefined();
     expect(scene.rowCapacity).toBe(capacity);
     expect(scene.primitiveBuffer).toBe(buffers[0]);
     expect(scene.instanceBuffer).toBe(buffers[1]);
@@ -165,7 +161,7 @@ it('reads the exact held Mesh descriptor after replacement, aborted preparation 
     await device.queue.onSubmittedWorkDone();
     native.destroy();
   }
-}, 30_000);
+}, 30000);
 
 it('culls old and current shared Mesh bounds with actual descriptor and map upload costs', async () => {
   const result = await runSharedGeometryCullEvidence();

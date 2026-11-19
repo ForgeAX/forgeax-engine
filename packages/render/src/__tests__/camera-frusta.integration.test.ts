@@ -8,7 +8,7 @@ import { Camera, MeshFilter, MeshRenderer, orthographic, perspective } from '../
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { Materials } from '../materials';
 import type { ExtractedFrame } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { meshDrawSnapshot } from '../scene/mesh-draw';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { testAssets } from './helpers/runtime-assets';
@@ -57,8 +57,8 @@ describe('CameraSnapshot frustum consumers', () => {
     const outside = spawnCube(world, 100);
     world.update(0).unwrap();
 
-    const direct = extractFrames([world], 0, assets);
-    const uncull = extractFrames([world], 0, assets, undefined, {
+    const direct = extractSource(world, assets);
+    const uncull = extractSource(world, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -67,13 +67,7 @@ describe('CameraSnapshot frustum consumers', () => {
     const lease = createRenderReadLease(world);
     const scene = new PersistentRenderScene({ assets });
     try {
-      const persistent = scene.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
-        assets,
-        () => uncull,
-        [lease],
-      );
+      const persistent = scene.extractComposition(world, assets, () => uncull, lease);
 
       expect(renderableKeys(direct)).toEqual([inside]);
       expect(renderableKeys(persistent)).toEqual([inside]);
@@ -98,7 +92,7 @@ describe('CameraSnapshot frustum consumers', () => {
     // stands behind it and the CPU cull must still reject it off screen.
     const outsideResidual = spawnCube(world, -100);
     world.update(0).unwrap();
-    const uncull = extractFrames([world], 0, assets, undefined, {
+    const uncull = extractSource(world, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
@@ -150,14 +144,7 @@ describe('CameraSnapshot frustum consumers', () => {
         throw error;
       },
     });
-    const extract = () =>
-      scene.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
-        assets,
-        () => gpuDriven,
-        [lease],
-      );
+    const extract = () => scene.extractComposition(world, assets, () => gpuDriven, lease);
     try {
       expect(renderableKeys(extract())).toEqual([inside]);
       const fixed = scene.shadowCasterProjection();
@@ -167,7 +154,7 @@ describe('CameraSnapshot frustum consumers', () => {
         .map((slot) => meshDrawSnapshot(slot.snapshot, fixed.content.meshes));
       // The raster selection executes the scene's own source batches.
       const state = scene.compositionGpuDrivenState();
-      const residualSlot = state?.slotForEntity?.(0, outsideResidual)?.slot;
+      const residualSlot = state?.slotForEntity?.(outsideResidual)?.slot;
       const selection = new GpuDrawSelection(
         [...(state?.plan.batches ?? [])].filter(
           (batch) => !batch.candidates.some((row) => row.primitiveIndex === residualSlot),
@@ -222,20 +209,14 @@ describe('CameraSnapshot frustum consumers', () => {
     const outside = spawnCube(world, 4);
     world.update(0).unwrap();
 
-    const uncull = extractFrames([world], 0, assets, undefined, {
+    const uncull = extractSource(world, assets, undefined, {
       cull: 'none',
       retainHidden: true,
     });
     const lease = createRenderReadLease(world);
     const scene = new PersistentRenderScene({ assets });
     try {
-      const persistent = scene.extractComposition(
-        [world],
-        { cameraOwner: 0, resourceOwner: 0 },
-        assets,
-        () => uncull,
-        [lease],
-      );
+      const persistent = scene.extractComposition(world, assets, () => uncull, lease);
 
       expect(renderableKeys(persistent)).toEqual([inside]);
       expect(renderableKeys(persistent)).not.toContain(outside);
@@ -256,7 +237,7 @@ describe('CameraSnapshot frustum consumers', () => {
     const outside = spawnCube(world, 4);
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0, assets);
+    const frame = extractSource(world, assets);
 
     expect(renderableKeys(frame)).toEqual([inside]);
     expect(renderableKeys(frame)).not.toContain(outside);

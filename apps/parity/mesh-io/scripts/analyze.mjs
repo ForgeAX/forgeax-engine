@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import UPNG from 'upng-js';
 import { matchesSourceSrgb, sourceSrgbInterval } from './srgb-oracle.mjs';
 import { decodeTape, buildFrameModel, handleAccess } from '@forgeax/engine-rhi-debug';
+import { recordedBufferInitialization } from './recorded-buffer-initialization.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../artifacts/mesh-io/acceptance');
 const budgets=JSON.parse(await readFile(new URL('../acceptance-budgets.json',import.meta.url),'utf8'));
 const enforcePhysicalBudgets=process.env.FIDELITY_ENFORCE_PHYSICAL_BUDGET==='1';
@@ -47,10 +48,15 @@ for(const row of report.results){
   const creation=tape.bootstrap.find(entry=>entry.handleId===resource.resourceId).create;
   let conclusion;
   if(creation.kind==='createBuffer'){
+   if(creation.desc.usage!==9){
+    if((creation.desc.usage&8)===0)throw new Error('unseeded buffer has no copy-destination usage');
+    conclusion=recordedBufferInitialization(tape,model.resources.find(entry=>entry.resourceId===resource.resourceId),creation.desc.size,model.works);
+   }else{
    const copies=tape.events.flatMap((event,eventIndex)=>event.kind==='copyBufferToBuffer'&&event.destinationHandleId===resource.resourceId?[{eventIndex,offset:event.destinationOffset,size:event.size}]:event.kind==='copyTextureToBuffer'&&event.destination.bufferHandleId===resource.resourceId?[{eventIndex,offset:0,size:event.destination.bytesPerRow*event.copySize.height}]:[]);
    let end=0;for(const copy of [...copies].sort((a,b)=>a.offset-b.offset)){if(copy.offset>end)throw new Error('readback initialization hole');end=Math.max(end,copy.offset+copy.size);}
    if(end>creation.desc.size||creation.desc.usage!==9||accesses.some(access=>access.access==='read'))throw new Error(`unseeded buffer is not a completely initialized readback: ${JSON.stringify({case:row.id,resource,desc:creation.desc,end,copies})}`);
    conclusion={kind:'copy-only-readback',usage:creation.desc.usage,size:creation.desc.size,copiedPrefixBytes:end,unusedTailBytes:creation.desc.size-end,gpuReadCount:0,copies};
+   }
   }else{
    const clears=tape.events.flatMap((event,eventIndex)=>{
     if(event.kind!=='beginRenderPass')return[];

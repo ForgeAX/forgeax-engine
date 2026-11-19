@@ -9,14 +9,8 @@
 // `query.iter_combinations_mut()`, then verlet-integrated. Bodies clump over time.
 //
 // forgeax mapping:
-//   - query.iter_combinations_mut() -> query.combinations(2), the pairwise
-//                                   iterator. Before it, a pairwise system had to
-//                                   run a row query, collect handles, then
-//                                   collect handles → hand-write a nested
-//                                   for i/for j=i+1 loop. forgeax's world.get/set
-//                                   Result model needs no mutable-aliasing cursor
-//                                   (Bevy's iter_combinations_mut exists only for
-//                                   Rust's borrow checker).
+//   - query.iter_combinations_mut() -> collect matching entity handles and visit
+//     each unordered pair with two loops. World.get/set reads and writes the bodies.
 //   - Mass / Acceleration / LastPos -> user-defined components (game data in app)
 //   - verlet integrate              -> stepIntegrate (pure world+dt function)
 //   - Res<Time>                     -> world.getResource(Time).delta (auto by createApp)
@@ -139,45 +133,45 @@ function collectBodyHandles(world: World): EntityHandle[] {
 
 /**
  * Accumulate the pairwise gravitational force into every body's `acc`, applying
- * each unordered PAIR exactly once via `query.combinations(2)` — the direct
- * transcription of Bevy's `interact_bodies` (`query.iter_combinations_mut()`).
+ * each unordered pair exactly once in query order.
  */
 export function stepInteract(world: World): void {
-  const query = world.query({ with: [Transform, Body] }).unwrap();
-  for (const pair of query.combinations(2)) {
-    const a = pair[0]?.entity;
-    const b = pair[1]?.entity;
-    if (a === undefined || b === undefined) continue;
-    const ta = world.get(a, Transform);
-    const tb = world.get(b, Transform);
-    const ba = world.get(a, Body);
-    const bb = world.get(b, Body);
-    if (!ta.ok || !tb.ok || !ba.ok || !bb.ok) continue;
+  const handles = collectBodyHandles(world);
+  for (let i = 0; i < handles.length; i++) {
+    const a = handles[i] as EntityHandle;
+    for (let j = i + 1; j < handles.length; j++) {
+      const b = handles[j] as EntityHandle;
+      const ta = world.get(a, Transform);
+      const tb = world.get(b, Transform);
+      const ba = world.get(a, Body);
+      const bb = world.get(b, Body);
+      if (!ta.ok || !tb.ok || !ba.ok || !bb.ok) continue;
 
-    const pa = ta.value.pos;
-    const pb = tb.value.pos;
-    const dx = (pb[0] ?? 0) - (pa[0] ?? 0);
-    const dy = (pb[1] ?? 0) - (pa[1] ?? 0);
-    const dz = (pb[2] ?? 0) - (pa[2] ?? 0);
-    const distSq = dx * dx + dy * dy + dz * dz + 0.5; // softening avoids singularity
-    const f = GRAVITY_CONSTANT / distSq;
-    const inv = 1 / Math.sqrt(distSq);
-    // force per unit mass along the a→b direction
-    const fx = dx * inv * f;
-    const fy = dy * inv * f;
-    const fz = dz * inv * f;
+      const pa = ta.value.pos;
+      const pb = tb.value.pos;
+      const dx = (pb[0] ?? 0) - (pa[0] ?? 0);
+      const dy = (pb[1] ?? 0) - (pa[1] ?? 0);
+      const dz = (pb[2] ?? 0) - (pa[2] ?? 0);
+      const distSq = dx * dx + dy * dy + dz * dz + 0.5; // softening avoids singularity
+      const f = GRAVITY_CONSTANT / distSq;
+      const inv = 1 / Math.sqrt(distSq);
+      // force per unit mass along the a→b direction
+      const fx = dx * inv * f;
+      const fy = dy * inv * f;
+      const fz = dz * inv * f;
 
-    const ma = ba.value.mass ?? BODY_MASS;
-    const mb = bb.value.mass ?? BODY_MASS;
-    const aa = ba.value.acc;
-    const ab = bb.value.acc;
-    // Newton's third law: a pulled toward b by mb, b pulled toward a by ma.
-    world.set(a, Body, {
-      acc: [(aa[0] ?? 0) + fx * mb, (aa[1] ?? 0) + fy * mb, (aa[2] ?? 0) + fz * mb],
-    });
-    world.set(b, Body, {
-      acc: [(ab[0] ?? 0) - fx * ma, (ab[1] ?? 0) - fy * ma, (ab[2] ?? 0) - fz * ma],
-    });
+      const ma = ba.value.mass ?? BODY_MASS;
+      const mb = bb.value.mass ?? BODY_MASS;
+      const aa = ba.value.acc;
+      const ab = bb.value.acc;
+      // Newton's third law: a pulled toward b by mb, b pulled toward a by ma.
+      world.set(a, Body, {
+        acc: [(aa[0] ?? 0) + fx * mb, (aa[1] ?? 0) + fy * mb, (aa[2] ?? 0) + fz * mb],
+      });
+      world.set(b, Body, {
+        acc: [(ab[0] ?? 0) - fx * ma, (ab[1] ?? 0) - fy * ma, (ab[2] ?? 0) - fz * ma],
+      });
+    }
   }
 }
 

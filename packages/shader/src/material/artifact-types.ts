@@ -150,11 +150,22 @@ export function createStandardPbrArtifactReceipt(
       : []),
     ...(vertexColorAvailable ? [{ semantic: 'color', location: 13, format: 'float32x4' }] : []),
   ];
-  const layoutIdentity = `standard-pbr/${STANDARD_PIPELINE_DERIVED.layoutIdentity}/address-16/vertex-contract-5${vertexColorAvailable ? '/vertex-color' : ''}`;
+  const layoutIdentity = `standard-pbr/${STANDARD_PIPELINE_DERIVED.layoutIdentity}/address-16/vertex-contract-5/gbuffer-2${vertexColorAvailable ? '/vertex-color' : ''}`;
   return {
+    gbuffer: 'standard-gbuffer/2',
     positionBounds: 'standard-input',
     directEntry: 'vs_main',
     sceneIndexEntry: 'vs_scene_index',
+    tangentFrame32: {
+      directEntry: 'vs_main_packed',
+      sceneIndexEntry: 'vs_scene_index_packed',
+      vertexInputs: [
+        ...vertexInputs.filter(
+          (input) => input.semantic !== 'normal' && input.semantic !== 'tangent',
+        ),
+        { semantic: 'tangentFrame', location: 14, format: 'uint32' },
+      ],
+    },
     materialRow: {
       byteLength: GPU_DRIVEN_MATERIAL_ROW_BYTES,
       addressUnitBytes: MATERIAL_SCENE_ADDRESS_UNIT_BYTES,
@@ -170,7 +181,7 @@ export function createStandardPbrArtifactReceipt(
       vertexInputs,
     },
     receiptIdentity: layoutIdentity,
-    generation: 5,
+    generation: 6,
   };
 }
 

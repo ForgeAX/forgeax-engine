@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -6,30 +7,39 @@ import { parse } from 'yaml';
 
 const bevyRoot = join(process.cwd(), 'apps', 'bevy');
 
-test('Bevy fleet prepares Chrome Beta before the Skybox WebGL2 smoke', () => {
+test('existing smoke workers own every Bevy gate and protected Bevy names only project their result', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const worker = workflow.jobs['smoke-fleet'];
+  const legacy = workflow.jobs['bevy-smoke-fleet'];
+  assert.deepEqual(worker.strategy.matrix.group, [0, 1, 2, 3]);
+  assert.deepEqual(legacy.strategy.matrix.group, [0, 1, 2]);
+  assert.deepEqual(legacy.needs, ['smoke-fleet']);
+  assert.match(legacy['runs-on'], /standard/);
+  assert.equal(legacy.steps.length, 1);
+  assert.match(legacy.steps[0].run, /success\|skipped/);
+  assert.match(legacy.steps[0].env.MATRIX_RESULT, /needs.smoke-fleet.result/);
+  const install = worker.steps.findIndex(
+    (step) => step.uses === './.github/actions/install-playwright-chrome-beta',
+  );
+  const bevy = worker.steps.findIndex(
+    (step) => step.name === 'Bevy examples headless smokes (dawn-node)',
+  );
+  assert.ok(install >= 0 && bevy > install);
+  assert.equal(worker.steps[bevy].if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.match(worker.steps[bevy].run, /--groups 4 --concurrency auto/);
+  assert.ok(!worker.steps.some((step) => step.run?.includes('--app-root apps/bevy')));
+  assert.match(
+    readFileSync('scripts/bevy-demo.mjs', 'utf8'),
+    /apps\.flatMap\(\(app\) => \[.*--app-root/,
+  );
+  assert.equal(worker.steps[bevy].env.SMOKE_MIN_FRAMES, 60);
+  assert.equal(worker.steps[bevy].env.SMOKE_DURATION_MS, 1000);
+  assert.ok(!worker.steps[install]['continue-on-error']);
+  const evidence = worker.steps.find((step) => step.name === 'Preserve Bevy SSAO failure evidence');
+  assert.equal(evidence.with.path, 'apps/bevy/ssao/artifacts/');
+  assert.match(evidence.if, /failure\(\)/);
   const skybox = JSON.parse(readFileSync(join(bevyRoot, 'skybox/package.json'), 'utf8'));
   assert.match(skybox.scripts.smoke, /smoke:webgl2/);
-  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
-  const start = workflow.indexOf('\n  bevy-smoke-fleet:\n');
-  const end = workflow.indexOf('\n  bevy-smoke-fleet-required-context:\n', start);
-  assert.ok(start >= 0 && end > start, 'the complete Bevy matrix must remain explicit');
-  const job = workflow.slice(start, end);
-  const install = job.indexOf('uses: ./.github/actions/install-playwright-chrome-beta');
-  const smoke = job.indexOf('run: pnpm bevy:smokes');
-  assert.ok(install >= 0 && install < smoke, 'prepare the browser before the composite smoke');
-  const step = job.slice(
-    job.lastIndexOf('\n      - ', install),
-    job.indexOf('\n      - ', install),
-  );
-  const browserStep = parse(workflow).jobs['bevy-smoke-fleet'].steps.find(
-    (candidate) => candidate.uses === './.github/actions/install-playwright-chrome-beta',
-  );
-  assert.equal(
-    browserStep.if,
-    "steps.ci-repair.outputs.reused != 'true'",
-    'every executed Bevy lane must support package-derived membership',
-  );
-  assert.ok(!step.includes('continue-on-error'), 'browser preparation must fail visibly');
 });
 
 test('Bevy smoke scripts declare every direct ForgeAX package import', () => {
@@ -63,4 +73,27 @@ test('Bevy smoke scripts declare every direct ForgeAX package import', () => {
     }
   }
   assert.deepEqual(missing, []);
+});
+
+test('four merged Bevy partitions execute every registered example exactly once', () => {
+  const reference = spawnSync(process.execPath, ['scripts/bevy-demo.mjs', 'smokes', '--dry-run'], {
+    encoding: 'utf8',
+  });
+  assert.equal(reference.status, 0, reference.stderr);
+  const members = (output) =>
+    [...output.matchAll(/\[bevy-smoke\] pnpm --filter (\S+) smoke/g)].map((match) => match[1]);
+  const expected = members(reference.stdout).sort();
+  assert.ok(expected.length > 0);
+  const actual = [];
+  for (let group = 0; group < 4; group++) {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/bevy-demo.mjs', 'smokes', '--dry-run', '--group', String(group), '--groups', '4'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    actual.push(...members(result.stdout));
+  }
+  assert.equal(new Set(actual).size, actual.length);
+  assert.deepEqual(actual.sort(), expected);
 });

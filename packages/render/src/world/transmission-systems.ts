@@ -1,8 +1,10 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiDevice, TextureFormat } from '@forgeax/engine-rhi';
 import { numMipLevels } from '@forgeax/engine-types';
+import { isMultisampleAntialias } from '../components/camera';
 import { TransmissionCapabilityMissingError } from '../errors/render';
 import type { CameraSnapshot } from '../render-contract';
+import { RenderViewFrameOrder } from '../system-order';
 import {
   evaluateTransmissionCapability,
   probeTransmissionCapability,
@@ -19,7 +21,7 @@ import {
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
 import { readViewField, requireViewField } from './view-field';
-import { RENDER_VIEW_FRAME_SYSTEM, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
@@ -125,11 +127,11 @@ function admitCandidate(
   if (demand.activeCount === 0) return { kind: 'admitted' };
   const topology = resolveTransmissionBackdropTopology({
     demand,
-    sourceSampleCount: antialias === 'msaa' ? 4 : 1,
+    sourceSampleCount: isMultisampleAntialias(antialias) ? 4 : 1,
   });
   const capability = {
     ...capabilityOf(state, internals.device),
-    msaaResolve: antialias === 'msaa' || topology.sourceSampleCount === 1,
+    msaaResolve: isMultisampleAntialias(antialias) || topology.sourceSampleCount === 1,
   } as const;
   const verdict = evaluateTransmissionCapability(capability);
   if (verdict.ok) return { kind: 'admitted' };
@@ -189,7 +191,7 @@ function refreshInspection(
   };
   const topology = resolveTransmissionBackdropTopology({
     demand,
-    sourceSampleCount: antialias === 'msaa' ? 4 : 1,
+    sourceSampleCount: isMultisampleAntialias(antialias) ? 4 : 1,
   });
   const format = descriptor?.format ?? 'rgba16float';
   const mipCount =
@@ -211,7 +213,7 @@ function refreshInspection(
       demand,
       {
         ...capabilityOf(state, internals.device, format),
-        msaaResolve: antialias === 'msaa' || topology.sourceSampleCount === 1,
+        msaaResolve: isMultisampleAntialias(antialias) || topology.sourceSampleCount === 1,
       },
       resource,
     );
@@ -279,58 +281,57 @@ export function recoverViewTransmission(
  * outcome the recording rejects on; it is never thrown here.
  */
 export function registerTransmissionSystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: VIEW_TRANSMISSION_ADMIT_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewTransmission] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewTransmissionState }[] = [];
+  const systemToken1 = defineSystem({
+    commands: 'none',
+    name: VIEW_TRANSMISSION_ADMIT_SYSTEM,
+    after: [RenderViewFrameOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewTransmission] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewTransmissionState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
-          const stored = readViewField(world, entity, ViewTransmission, 'state');
-          const state: ViewTransmissionState =
-            stored === undefined
-              ? {
-                  frame,
-                  outcome: { kind: 'admitted' },
-                  admission: new TransmissionCandidateAdmission(),
-                  inspection: undefined,
-                  key: '',
-                  antialias: 'none',
-                  capabilities: undefined,
-                }
-              : world.resolveUniqueRef<ViewTransmissionState>(stored).unwrap();
-          const antialias = staged.result.value.cameras[0]?.antialias ?? 'none';
-          state.frame = frame;
-          try {
-            state.outcome = admitCandidate(state, owner, antialias);
-            if (state.outcome.kind === 'capability-missing')
-              refreshInspection(state, owner, antialias, false);
-          } catch (cause) {
-            state.outcome = { kind: 'failed', cause };
-          }
-          state.antialias = antialias;
-          if (stored === undefined) first.push({ entity: entity, state });
-        });
-        // A view's first admission attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewTransmission,
-              data: { state: world.allocUniqueRef('ViewTransmission', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+        const stored = readViewField(world, entity, ViewTransmission, 'state');
+        const state: ViewTransmissionState =
+          stored === undefined
+            ? {
+                frame,
+                outcome: { kind: 'admitted' },
+                admission: new TransmissionCandidateAdmission(),
+                inspection: undefined,
+                key: '',
+                antialias: 'none',
+                capabilities: undefined,
+              }
+            : world.resolveUniqueRef<ViewTransmissionState>(stored).unwrap();
+        const antialias = staged.result.value.cameras[0]?.antialias ?? 'none';
+        state.frame = frame;
+        try {
+          state.outcome = admitCandidate(state, owner, antialias);
+          if (state.outcome.kind === 'capability-missing')
+            refreshInspection(state, owner, antialias, false);
+        } catch (cause) {
+          state.outcome = { kind: 'failed', cause };
+        }
+        state.antialias = antialias;
+        if (stored === undefined) first.push({ entity: entity, state });
+      });
+      // A view's first admission attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewTransmission,
+            data: { state: world.allocUniqueRef('ViewTransmission', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

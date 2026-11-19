@@ -30,4 +30,11 @@ export interface TextureAsset {
   readonly encoding?: 'basis' | 'ktx2';
   readonly colorSpace: 'srgb' | 'linear';
   readonly mips: TextureMipPolicy;
+  /**
+   * Opt-in for the Renderer's `textureMipSkip` option: a packed 2D or 2D-array
+   * chain may start below its authored base level on the GPU. Leave unset for
+   * lookup tables, texel-addressed data and any texture whose texel extent is
+   * part of its meaning. Omitted means the full authored chain is uploaded.
+   */
+  readonly skippableMips?: boolean;
 }

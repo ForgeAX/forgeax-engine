@@ -1,5 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -7,6 +8,7 @@ import { err, type MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { ShadowMeshReads } from '../device/mesh-changes';
+import { worldRenderResources } from '../publication/resource-scope';
 
 async function fixture(indexFormat: 'uint16' | 'uint32' = 'uint32') {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -304,7 +306,8 @@ it('publishes actual range edits without making metadata readers physical COW ow
 
 it('separates same-handle generations in distinct residency scopes while sharing bytes', async () => {
   const f = await fixture();
-  const other = f.store.ensureResident(f.handle, f.current(), 1).unwrap();
+  const otherScope = worldRenderResources(new World());
+  const other = f.store.ensureResident(f.handle, f.current(), otherScope).unwrap();
   const a = new ShadowMeshReads(f.store.meshChanges),
     b = new ShadowMeshReads(f.store.meshChanges);
   a.add(f.first.changeToken);
@@ -313,9 +316,9 @@ it('separates same-handle generations in distinct residency scopes while sharing
   try {
     expect(f.first.changeToken).not.toBe(other.changeToken);
     expect(f.first.vertexBuffer).toBe(other.vertexBuffer);
-    f.store.invalidateMesh(f.handle, 0);
-    expect(f.store.getMeshGpuHandles(f.handle, 0)).toBeUndefined();
-    expect(f.store.getMeshGpuHandles(f.handle, 1)).toBe(other);
+    f.store.invalidateMesh(f.handle, undefined);
+    expect(f.store.getMeshGpuHandles(f.handle, undefined)).toBeUndefined();
+    expect(f.store.getMeshGpuHandles(f.handle, otherScope)).toBe(other);
     expect(f.store.meshChanges.query(accepted, a.generation, a.tokens)).toBe('invalidated');
     expect(f.store.meshChanges.query(accepted, b.generation, b.tokens)).toBe('quiet');
     expect(other.vertexBuffer.isDestroyed).toBe(false);

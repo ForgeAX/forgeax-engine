@@ -1,3 +1,4 @@
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import {
   MAX_SHADOW_CAPSULES_PER_SKELETON,
   type MeshAsset,
@@ -147,7 +148,10 @@ function fitJoint(joint: number, points: readonly number[]): FittedCapsule | und
  * qualifies; the result is deterministic for identical input.
  */
 export function fitShadowCapsules(
-  meshes: readonly Pick<MeshAsset, 'attributes'>[],
+  meshes: readonly (
+    | Pick<MeshAsset, 'attributes'>
+    | Pick<MeshAsset, 'vertices' | 'attributes' | 'attributeStorage'>
+  )[],
   jointCount: number,
   options: FitShadowCapsulesOptions = {},
 ): ShadowCapsuleSet | undefined {
@@ -157,9 +161,16 @@ export function fitShadowCapsules(
   );
   const perJoint: number[][] = Array.from({ length: jointCount }, () => []);
   for (const mesh of meshes) {
-    const positions = mesh.attributes.position;
-    const skinIndex = indexArray(mesh.attributes.skinIndex);
-    const skinWeight = indexArray(mesh.attributes.skinWeight);
+    const packed =
+      'attributeStorage' in mesh && mesh.attributeStorage === 'interleaved' ? mesh : undefined;
+    const positions =
+      packed !== undefined ? copyMeshAttribute(packed, 'position') : mesh.attributes.position;
+    const skinIndex = indexArray(
+      packed !== undefined ? copyMeshAttribute(packed, 'skinIndex') : mesh.attributes.skinIndex,
+    );
+    const skinWeight = indexArray(
+      packed !== undefined ? copyMeshAttribute(packed, 'skinWeight') : mesh.attributes.skinWeight,
+    );
     if (!(positions instanceof Float32Array) || skinIndex === undefined || skinWeight === undefined)
       continue;
     const vertexCount = Math.min(positions.length / 3, skinIndex.length / 4, skinWeight.length / 4);

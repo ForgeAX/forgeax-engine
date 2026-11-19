@@ -1,6 +1,7 @@
-import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools, EngineWorkspacePreviewDisplay, EngineWorkspacePreviewDisplayOptions } from '@forgeax/engine/app';
+import type { EngineWorkspaceTarget, EngineWorkspaceProject, EngineWorkspaceProjectDocument, EngineWorkspaceProjectStatus, EngineWorkspaceAsset, EngineWorkspaceCameraResult, EngineWorkspaceAssetBinding, EngineWorkspaceTargetTools, EngineWorkspacePreviewDisplay, EngineWorkspacePreviewDisplayOptions } from '@forgeax/engine/app';
 import { createWorkspaceId } from './id.ts';
 export type { MaterialPreviewMesh, MaterialPreviewState } from '@forgeax/engine/app';
+export type { WorkspaceCloudMaterialInspection } from '@forgeax/engine/app';
 export type { PresentationSnapshot, WorkspacePresentation } from './presentation.ts';
 import { serializeWorkspaceSceneSelection } from './scene-selection.ts';
 /** Optional display producer projection. Consumers must discover the operation before calling. */
@@ -44,8 +45,9 @@ export type WorkspaceOpenRequest = {
 };
 export type WorkspaceState = {
   apiVersion?: string; revision?: number; selectedTabId?: string | null; tabs?: readonly WorkspaceTab[];
-  projectIntent?: { root: string };
-  project?: WorkspaceProject | null; projectTarget?: WorkspaceTarget | null; assets?: readonly WorkspaceAsset[] | null;
+  projectDocumentPresentation?: 'presenter' | 'observer';
+  project?: WorkspaceProject | null; projectTarget?: WorkspaceTarget | null; projectDocument?: EngineWorkspaceProjectDocument | null;
+  projectStatus?: EngineWorkspaceProjectStatus | null; assets?: readonly WorkspaceAsset[] | null;
   preview?: WorkspacePreview | null; previews?: readonly WorkspacePreview[]; scenePreview?: WorkspacePreview | null;
   play?: { target: WorkspaceTarget; phase?: string } | null; targetBinding?: string;
   inspection?: WorkspaceInspection | null; openRequest?: WorkspaceOpenRequest | null;
@@ -74,7 +76,7 @@ export type WorkspacePackRevealResult = {
  * the same Engine Host service.  No command implementation lives in the
  * frontend.
  */
-export const VIEW_WORKSPACE_API_VERSION = 'forgeax.view.workspace/1';
+export const VIEW_WORKSPACE_API_VERSION = 'forgeax.view.workspace/2';
 
 export const VIEW_WORKSPACE_SERVICES = Object.freeze({
   capabilities: 'forgeax.view.workspace.capabilities',
@@ -111,6 +113,8 @@ export const VIEW_WORKSPACE_CORE_OPERATION_EFFECTS = Object.freeze({
   'presentation.page.select': 'command',
   'presentation.page.close': 'command',
   'presentation.panel.reveal': 'command',
+  'presentation.document.release': 'command',
+  'project.present': 'command',
   'summary.get': 'query',
   'pages.list': 'query',
   'pack.reveal': 'command',
@@ -125,6 +129,9 @@ export const VIEW_WORKSPACE_CORE_OPERATION_EFFECTS = Object.freeze({
 } as const);
 export const VIEW_WORKSPACE_DOMAIN_OPERATION_EFFECTS = Object.freeze({
   ...VIEW_WORKSPACE_CORE_OPERATION_EFFECTS,
+  'project.list': 'query',
+  'project.browse': 'query',
+  'project.register': 'command',
   'history.list': 'query',
   'history.get': 'query',
   'history.artifact.read': 'query',
@@ -596,9 +603,11 @@ export function serializeWorkspaceState(state: WorkspaceState): WorkspaceState {
     revision: state.revision,
     selectedTabId: state.selectedTabId,
     tabs: state.tabs,
+    ...(state.projectDocumentPresentation === undefined ? {} : { projectDocumentPresentation: state.projectDocumentPresentation }),
     project: serializeWorkspaceProject(state.project),
-    ...(typeof state.projectIntent?.root === 'string' ? { projectIntent: { root: state.projectIntent.root } } : {}),
     projectTarget: serializeWorkspaceTarget(state.projectTarget),
+    projectDocument: state.projectDocument ? { ...state.projectDocument } : null,
+    ...(state.projectStatus === undefined ? {} : { projectStatus: state.projectStatus === null ? null : cloneWorkspaceValue(state.projectStatus) }),
     assets: Array.isArray(state.assets) ? state.assets.map((asset) => serializeWorkspaceAsset(asset)) : null,
     preview: state.preview
       ? {

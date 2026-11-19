@@ -1,7 +1,7 @@
 import { defineComponent, World } from '@forgeax/engine-ecs';
-import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import { expect, it, vi } from 'vitest';
-import { EMPTY_VIEW_STATE_UPDATE, readViewField, requireViewField } from '../view-field';
+import { readViewField, requireViewField } from '../view-field';
 import { ViewFrame, type ViewFrameState, viewFrameOf } from '../view-frame-systems';
 
 const Values = defineComponent('ViewFieldValues', { enabled: 'bool', count: 'u32' });
@@ -11,7 +11,7 @@ it('reads a staged view through its live scalar handle without a component snaps
   const world = new World();
   const state: ViewFrameState = {
     frame: 0,
-    opts: { cameraOwner: 0, resourceOwner: 0 },
+    opts: {},
     mode: true,
     publication: undefined,
     result: undefined,
@@ -102,7 +102,7 @@ it('retains eager write evidence without replacing or releasing the managed refe
   const changed = world.query({ read: [State], changed: [State] }).unwrap();
   for (const row of changed) expect(row.entity).toBe(entity);
   payload.value = 2;
-  setDerivedComponent(world, entity, State, EMPTY_VIEW_STATE_UPDATE).unwrap();
+  markDerivedComponentChanged(world, entity, State).unwrap();
   const selected = [];
   for (const row of changed) selected.push(row.entity);
   expect(selected).toEqual([entity]);

@@ -11,7 +11,8 @@ import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
+import { beginRecordAttempt } from '../render-system-record';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { terrainDrawSection } from '../terrain/source';
 import { captureSubmittedTerrain } from '../terrain/submitted';
@@ -94,18 +95,17 @@ function fixture(worker: boolean, columns = 2, rows = 2, n = 2, entities = 1) {
       return frame;
     }
     return scene.extractComposition(
-      [world],
-      { cameraOwner: 0, resourceOwner: 0 },
+      world,
       assets,
       (request) => {
         if (request !== 'none') extracted++;
-        return extractFrames([world], 0, assets, caches, {
+        return extractSource(world, assets, caches, {
           cull: 'none',
           retainHidden: true,
           renderables: request,
         });
       },
-      [lease],
+      lease,
     );
   };
   return {
@@ -141,13 +141,61 @@ it.each([
     expect(after.renderables.at(0)?.localAabb?.[4]).toBeGreaterThanOrEqual(3);
     expect(oldSection?.source.asset.heightRange).toEqual([0, 1]);
     expect(
-      captureSubmittedTerrain(before.renderables, [f.world].map(worldRenderResources))[0]?.surface
+      captureSubmittedTerrain(before.renderables, worldRenderResources(f.world))[0]?.surface
         .heights,
     ).toEqual(new Uint8Array(new Float32Array([0, 0, 0, 1, 0]).buffer));
     expect(after.renderables.at(0)?.material.snapshot.paramSnapshot?.terrainLod).toEqual([
       0, 0, 1, 1,
     ]);
     expect(f.work()).toEqual(work);
+  } finally {
+    f.dispose();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('keeps prepared Terrain reuse candidates through queue attempt startup (worker=%s)', (worker) => {
+  const f = fixture(worker);
+  try {
+    const before = f.draw();
+    const first = before.renderables.at(0)?.material;
+    assert(first);
+
+    // Renderer Queue starts after this persistent scene projection. Starting
+    // the attempt late must not erase the Terrain candidate prepared above.
+    beginRecordAttempt(
+      {
+        scene: f.scene,
+        internals: {} as Parameters<typeof beginRecordAttempt>[0]['internals'],
+        recording: { directFrameId: 0 },
+      } as Parameters<typeof beginRecordAttempt>[0],
+      { mode: 'capture', profileSession: undefined } as Parameters<typeof beginRecordAttempt>[1],
+    );
+    expect(f.scene.commitTemporalFrame(true).ok).toBe(true);
+
+    const after = f.draw();
+    expect(after.renderables.at(0)?.material).toBe(first);
+
+    f.draw();
+    f.scene.discardTemporalFrame();
+    expect(f.draw().renderables.at(0)?.material).toBe(first);
+
+    f.scene.resetView();
+    const switchedView = f.draw().renderables.at(0)?.material;
+    assert(switchedView);
+    expect(switchedView).not.toBe(first);
+    f.scene.commitTemporalFrame(true).unwrap();
+
+    f.assets.update(f.root, { heights: new Float32Array([0, 0, 0, 3]) }).unwrap();
+    const changedSource = f.draw();
+    const changedMaterial = changedSource.renderables.at(0)?.material;
+    assert(changedMaterial);
+    expect(changedMaterial).not.toBe(switchedView);
+    expect(changedSource.renderables.at(0)?.localAabb?.[4]).toBeGreaterThanOrEqual(3);
+    f.scene.commitTemporalFrame(true).unwrap();
+    expect(f.draw().renderables.at(0)?.material).toBe(changedMaterial);
   } finally {
     f.dispose();
   }
@@ -202,10 +250,7 @@ it.each([
       instance.filter((row) => row.temporal?.reactive).map((row) => row.terrainSection?.index),
     ).toEqual([0, 1]);
     expect(after.renderables.every((row) => row.terrainSection?.source === next)).toBe(true);
-    const oldReceipt = captureSubmittedTerrain(
-      before.renderables,
-      [f.world].map(worldRenderResources),
-    );
+    const oldReceipt = captureSubmittedTerrain(before.renderables, worldRenderResources(f.world));
     expect(oldReceipt[0]?.surface.heights).toBe(terrainDrawSection(old, 0).heights);
     expect(f.work()).toEqual(work);
   } finally {

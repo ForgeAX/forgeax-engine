@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,7 +21,22 @@ import {
   browserTestFiles,
   ciBrowserShardTailSeconds,
   parseArgs,
+  planBrowserGroups,
 } from '../run-split-vitest-browser.mjs';
+
+test('local failure collection is explicit and retains four balanced complete shards', () => {
+  assert.equal(parseArgs([]).continueOnFailure, false);
+  const options = parseArgs([
+    '--continue-on-failure',
+    '--shard-strategy=balanced',
+    '--shard-count=4',
+    '--shard-index=3',
+  ]);
+  assert.equal(options.continueOnFailure, true);
+  assert.equal(options.shardCount, 4);
+  assert.equal(options.shardIndex, 3);
+  assert.deepEqual(options.files, []);
+});
 
 test('browser host contracts never share a GPU owner group', () => {
   assert.equal(new Set(hostFiles).size, hostFiles.length);
@@ -148,6 +164,15 @@ test('complete directional and spot shadow journeys drain competing browser grou
     const file = `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`;
     assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
   }
+});
+
+test('Three mixed native shadows start in a fresh browser and drain neighboring work', () => {
+  const file = 'packages/three/src/__tests__/interop.browser.test.ts';
+  assert.deepEqual(
+    dryRunGroups(8).filter((group) => group.includes(file)),
+    [[file]],
+  );
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
 });
 
 test('both complete shadow alpha material journeys keep independent exclusive processes', () => {
@@ -498,7 +523,7 @@ test('short renderer deadlines own an exclusive runner without serializing ordin
     'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
     'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
     'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
-    'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
+    'packages/runtime/src/__tests__/single-source-skybox.browser.test.ts',
     'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
   ]) {
     assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
@@ -508,6 +533,15 @@ test('short renderer deadlines own an exclusive runner without serializing ordin
     );
   }
   assert.equal(browserGroupRequiresExclusiveRunner([]), false);
+});
+
+test('the Three Surface expression group drains other browser work', () => {
+  const file = 'packages/three/src/__tests__/surface-expression.browser.test.ts';
+  const owners = dryRunGroups().filter((group) => group.includes(file));
+  assert.equal(owners.length, 1);
+  assert.ok(owners[0].includes('packages/three/src/__tests__/special-lights.browser.test.ts'));
+  assert.equal(browserGroupRequiresExclusiveRunner(owners[0]), true);
+  assert.ok(browserGroupWeight(owners[0]) >= 225);
 });
 
 test('the measured video benchmark keeps neighboring render groups outside its memory window', () => {
@@ -660,7 +694,10 @@ test('floating harness experiments stay outside the Engine browser roster', () =
   }
 });
 
+const dryRunGroupCache = new Map();
+
 function dryRunGroups(groupSize = 8) {
+  if (dryRunGroupCache.has(groupSize)) return structuredClone(dryRunGroupCache.get(groupSize));
   const result = spawnSync(
     process.execPath,
     [
@@ -673,11 +710,13 @@ function dryRunGroups(groupSize = 8) {
     { cwd: process.cwd(), encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
-  return result.stdout
+  const groups = result.stdout
     .trim()
     .split('\n')
     .filter(Boolean)
     .map((line) => line.slice(line.indexOf(': ') + 2).split(', '));
+  dryRunGroupCache.set(groupSize, groups);
+  return structuredClone(groups);
 }
 
 test('browser discovery preserves repository-relative exclusions while retaining Engine owners', () => {
@@ -813,7 +852,7 @@ for (const target of [
   'packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts',
   'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
   'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
-  'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
+  'packages/runtime/src/__tests__/single-source-skybox.browser.test.ts',
   'packages/runtime/src/__tests__/external-texture-perf.browser.test.ts',
   'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
   'packages/render/src/__tests__/ssr-gpu-dispatch.browser.test.ts',
@@ -1098,21 +1137,22 @@ test('before-consume catalog producers own the runner and are charged every lane
   assert.equal(assignment[1], assignment[2]);
 });
 
-test('Surface provenance owns a singleton with its complete before-consume catalog', () => {
-  const target = 'packages/runtime/src/__tests__/surface-standard-pipeline.browser.test.ts';
+test('Surface rendering and recovery each own a complete before-consume singleton', () => {
   const groups = dryRunGroups();
-  assert.deepEqual(
-    groups.filter((group) => group.includes(target)),
-    [[target]],
-  );
-  assert.equal(browserProducerReadiness([target], 'on-demand'), 'before-consume');
+  for (const owner of ['pipeline', 'lifecycle']) {
+    const target = `packages/runtime/src/__tests__/surface-standard-${owner}.browser.test.ts`;
+    assert.deepEqual(
+      groups.filter((group) => group.includes(target)),
+      [[target]],
+    );
+    assert.equal(browserProducerReadiness([target], 'on-demand'), 'before-consume');
+    assert.equal(browserGroupRequiresExclusiveRunner([target]), true);
+    assert.match(readFileSync(target, 'utf8'), /timeout: 300_000/);
+  }
   const runner = readFileSync('scripts/ci/run-split-vitest-browser.mjs', 'utf8');
   assert.match(runner, /const surfaceProvenanceBrowserGroupTimeoutMs = 360_000;/);
-  assert.match(
-    runner,
-    /group\.includes\(surfaceProvenanceBrowserFile\)\s*\? surfaceProvenanceBrowserGroupTimeoutMs/,
-  );
-  assert.match(readFileSync(target, 'utf8'), /timeout: 300_000/);
+  assert.match(runner, /surfaceProvenance\s*\? surfaceProvenanceBrowserGroupTimeoutMs/);
+  assert.match(runner, /FORGEAX_BROWSER_SURFACE_ONLY: surfaceProvenance \?/);
 });
 
 test('twenty shadow contact cases retain five independent four-filter processes', () => {
@@ -1156,6 +1196,7 @@ test('VFX mesh local lighting and native publication retain independent complete
   const groups = dryRunGroups();
   for (const name of ['vfx-mesh-lighting', 'vfx-mesh-lighting-publication']) {
     const target = `packages/runtime/src/__tests__/${name}.browser.test.ts`;
+    assert.equal(browserGroupRequiresExclusiveRunner([target]), true);
     assert.deepEqual(
       groups.filter((group) => group.includes(target)),
       [[target]],
@@ -1245,7 +1286,10 @@ test('serial CI tails are reserved as concurrency-scaled group seconds', () => {
       Math.max(...withTails) - Math.min(...withTails) <= largest,
       `tail-aware lanes are imbalanced: ${withTails}`,
     );
-    assert.ok(groupSeconds[2] < groupSeconds[3]);
+    assert.ok(
+      Math.abs(groupSeconds[2] - groupSeconds[3]) <
+        Math.max(...groups.map((group) => browserGroupWeight(group))) * concurrency,
+    );
   }
 });
 
@@ -1267,7 +1311,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     condition('Directional CSM Browser WebGPU smoke (M5 MVD)'),
     "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
   );
-  assert.deepEqual(ciBrowserShardTailSeconds, [210, 530, 225, 0]);
+  assert.deepEqual(ciBrowserShardTailSeconds, [210, 180, 0, 0]);
   assert.equal(
     condition('Prepare Dawn device-limit normalization for CSM replay'),
     "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
@@ -1277,10 +1321,7 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
   );
   const stepIndex = (name) => steps.findIndex((step) => step.name === name);
-  assert.ok(
-    stepIndex('Runtime Pack Worker dev/build JS/TS browser gate') <
-      stepIndex('Prepare Dawn device-limit normalization for CSM replay'),
-  );
+  assert.equal(stepIndex('Runtime Pack Worker dev/build JS/TS browser gate'), -1);
   assert.ok(
     stepIndex('Prepare Dawn device-limit normalization for CSM replay') <
       stepIndex('Directional CSM Browser WebGPU smoke (M5 MVD)'),
@@ -1293,26 +1334,14 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     condition('Preserve render browser failure evidence'),
     "steps.ci-repair.outputs.reused != 'true' && (failure())",
   );
-  assert.equal(
-    condition('Runtime Pack Worker dev/build JS/TS browser gate'),
-    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
-  );
-  assert.equal(
-    condition('Mesh interchange Catalog and RHI replay browser gate'),
-    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 2)",
-  );
+  assert.equal(condition('Runtime Pack Worker dev/build JS/TS browser gate'), undefined);
+  assert.equal(condition('Mesh interchange Catalog and RHI replay browser gate'), undefined);
+  assert.doesNotMatch(job, /test:runtime-browser/);
   assert.match(
-    job,
-    /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a pnpm --filter @forgeax\/engine-devkit test:runtime-browser/,
-  );
-  assert.match(
-    job,
+    ci,
     /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a pnpm --filter @forgeax\/mesh-io-parity verify/,
   );
-  assert.equal(
-    condition('Preserve Runtime Pack Worker evidence'),
-    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
-  );
+  assert.equal(condition('Preserve Runtime Pack Worker evidence'), undefined);
 });
 
 test('completed Browser cohort retains serial-tail headroom in all four jobs', () => {
@@ -1320,18 +1349,25 @@ test('completed Browser cohort retains serial-tail headroom in all four jobs', (
     readFileSync('scripts/ci/__tests__/fixtures/browser-cost-run-42300870201.json', 'utf8'),
   );
   assert.equal(observed.completeChildren, 147);
-  const groups = dryRunGroups();
+  const recordedFiles = Object.keys(observed.files);
+  const fileWeight = (file) => {
+    const seconds = observed.files[file];
+    assert.ok(Number.isFinite(seconds) && seconds > 0, `missing recorded cost: ${file}`);
+    return seconds;
+  };
+  // Replay this recorded cohort, including retired paths, without newer forecasts.
+  const groups = planBrowserGroups(recordedFiles, 8, { fileWeight });
+  assert.deepEqual(groups.flat().toSorted(), recordedFiles.toSorted());
   const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
     tailSeconds: ciBrowserShardTailSeconds,
     concurrency: 2,
+    fileWeight,
   });
-  const seconds = groups.map((group) =>
-    group.reduce((sum, file) => sum + (observed.files[file] ?? browserGroupWeight([file])), 0),
-  );
+  const seconds = groups.map((group) => browserGroupWeight(group, fileWeight));
   const projected = Array.from({ length: 4 }, (_, shard) => {
     const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
     const lanes = [0, 0];
-    for (const position of browserGroupRunOrder(groups, selected, 2)) {
+    for (const position of browserGroupRunOrder(groups, selected, 2, { fileWeight })) {
       const index = selected[position];
       if (browserGroupRequiresExclusiveRunner(groups[index])) {
         lanes.fill(Math.max(...lanes) + seconds[index]);
@@ -1348,6 +1384,76 @@ test('completed Browser cohort retains serial-tail headroom in all four jobs', (
   );
 });
 
+test('matching core Browser groups use complete child costs without changing group membership', () => {
+  const receipt = JSON.parse(
+    readFileSync('scripts/ci/browser-timing-snapshots/44136739089.json', 'utf8'),
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync('scripts/ci/browser-timing-snapshots/44136739089.json'))
+      .digest('hex'),
+    '76653dd3ba00a731f0f6d6b5d0fe3633872bf6bd67ce8a5181821cd5fd1e1939',
+  );
+  assert.equal(receipt.head, '705b99991c12a90481d073c5a36bb3ca9ba364d0');
+  assert.equal(receipt.completeChildren, 149);
+  assert.equal(receipt.fileCount, 408);
+  const names = receipt.groups.flatMap((group) => group.files);
+  assert.equal(new Set(names).size, 408);
+  const core = {
+    FORGEAX_CI_CORE_VALIDATION: '1',
+    FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1',
+    FORGEAX_BROWSER_FIXED_SMOKE: '1',
+  };
+  const full = { FORGEAX_CI_CORE_VALIDATION: '0' };
+  for (const group of receipt.groups) {
+    assert.ok(group.processSeconds >= group.reportedTestSeconds);
+    assert.equal(browserGroupWeight(group.files, undefined, core), group.processSeconds);
+    assert.equal(
+      browserGroupWeight(group.files, undefined, full),
+      group.files.reduce((sum, file) => sum + browserGroupWeight([file], undefined, full), 0),
+    );
+    assert.equal(
+      browserGroupWeight(group.files, () => 3, core),
+      group.files.length * 3,
+    );
+  }
+  const changed = [...receipt.groups[0].files, 'new-owner.browser.test.ts'];
+  assert.equal(
+    browserGroupWeight(changed, undefined, core),
+    browserGroupWeight(changed, undefined, full),
+  );
+  // Reprice the same complete children. Every original process retains its
+  // measured startup/import/cleanup and its serial/exclusive admission policy.
+  const groups = receipt.groups.map((group) => group.files);
+  const shares = new Map(
+    receipt.groups.flatMap((group) =>
+      group.files.map((file) => [file, group.processSeconds / group.files.length]),
+    ),
+  );
+  const fileWeight = (file) => shares.get(file);
+  const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
+    tailSeconds: ciBrowserShardTailSeconds,
+    concurrency: 2,
+    fileWeight,
+  });
+  const loads = Array.from({ length: 4 }, (_, shard) => {
+    const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
+    const slots = [0, 0];
+    for (const position of browserGroupRunOrder(groups, selected, 2, { fileWeight })) {
+      const index = selected[position];
+      const seconds = receipt.groups[index].processSeconds;
+      if (browserGroupRequiresExclusiveRunner(groups[index]))
+        slots.fill(Math.max(...slots) + seconds);
+      else slots[slots[0] <= slots[1] ? 0 : 1] += seconds;
+    }
+    return Math.max(...slots) + ciBrowserShardTailSeconds[shard];
+  });
+  assert.ok(
+    loads.every((seconds) => seconds <= 1680),
+    `complete cohort exceeds 28-minute dispatch target: ${loads}`,
+  );
+});
+
 test('measured file seconds cover the current browser roster and drive group weights', () => {
   const table = JSON.parse(readFileSync('scripts/ci/browser-file-seconds.json', 'utf8'));
   assert.ok(table.sourceRuns.length > 0, 'measured seconds name their source runs');
@@ -1361,7 +1467,33 @@ test('measured file seconds cover the current browser roster and drive group wei
   assert.ok(measured.length >= roster.size * 0.85, 'most of the roster is measured');
   for (const [file, seconds] of Object.entries(table.files)) {
     assert.ok(Number.isFinite(seconds) && seconds > 0, `${file}: ${seconds}`);
-    assert.equal(browserGroupWeight([file]), seconds, `${file} includes startup exactly once`);
+    assert.equal(
+      browserGroupWeight([file], undefined, { FORGEAX_CI_CORE_VALIDATION: '0' }),
+      seconds,
+      `${file} includes startup exactly once`,
+    );
+  }
+});
+
+test('unmeasured Three native journeys cannot fill an eight-file browser process', () => {
+  const measured = JSON.parse(readFileSync('scripts/ci/browser-file-seconds.json', 'utf8')).files;
+  const unmeasured = new Set(
+    browserTestFiles().filter(
+      (file) => file.startsWith('packages/three/src/__tests__/') && !Object.hasOwn(measured, file),
+    ),
+  );
+  for (const size of [1, 8, 24]) {
+    const groups = dryRunGroups(size);
+    assert.deepEqual(
+      groups
+        .flat()
+        .filter((file) => unmeasured.has(file))
+        .toSorted(),
+      [...unmeasured].toSorted(),
+      'every complete owner remains scheduled exactly once',
+    );
+    for (const group of groups)
+      assert.ok(group.filter((file) => unmeasured.has(file)).length <= 2, group.join(','));
   }
 });
 
@@ -1604,4 +1736,57 @@ test('short direct-light bootstrap and native GPU observer own exclusive browser
       [[file]],
     );
   }
+});
+
+test('rendering batches rebalance a trailing singleton within existing size and cost bounds', () => {
+  const files = ['a', 'b', 'c', 'd'].map(
+    (name) => `packages/runtime/src/__tests__/${name}.browser.test.ts`,
+  );
+  const weights = new Map(files.map((file, index) => [file, [20, 55, 62, 20][index]]));
+  const fileWeight = (file) => weights.get(file);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  assert.deepEqual(planBrowserGroups(files, 2, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  weights.set(files[3], 88);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 2),
+    files.slice(2),
+  ]);
+  weights.set(files[3], 89);
+  assert.deepEqual(planBrowserGroups(files, 8, { fileWeight }), [
+    files.slice(0, 3),
+    files.slice(3),
+  ]);
+  assert.deepEqual(
+    planBrowserGroups(files, 1, { fileWeight }),
+    files.map((file) => [file]),
+  );
+  assert.deepEqual(
+    planBrowserGroups(files, 8, { fileWeight: () => 80 }),
+    files.map((file) => [file]),
+  );
+});
+
+test('kernel qualification and deliberate context loss drain neighbors without another process', () => {
+  for (const file of [
+    'packages/render/src/__tests__/portable-kernel-expansion.browser.test.ts',
+    'packages/runtime/src/__tests__/webgl-context-loss.browser.test.ts',
+  ]) {
+    const groups = dryRunGroups(8).filter((group) => group.includes(file));
+    assert.equal(groups.length, 1);
+    assert.ok(groups[0].length > 1, 'retain the existing batch rather than another cold process');
+    assert.equal(browserGroupRequiresExclusiveRunner(groups[0]), true);
+  }
+});
+
+test('Morph cold SSR admission keeps its original process and drains neighboring GPU work', () => {
+  const file = 'packages/runtime/src/__tests__/morph-surface.browser.test.ts';
+  const groups = dryRunGroups(8).filter((group) => group.includes(file));
+  assert.deepEqual(groups, [[file]]);
+  assert.equal(browserGroupRequiresExclusiveRunner(groups[0]), true);
 });

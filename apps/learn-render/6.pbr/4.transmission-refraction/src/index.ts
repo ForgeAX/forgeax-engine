@@ -166,11 +166,7 @@ function installCaptureHook(target: HTMLCanvasElement, app: App, world: World): 
 
   window.__captureTransmission = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     const capture = await captureCanvasPixels(target);
     if (!capture.ok) throw new Error(`[transmission-refraction] ${capture.error.hint}`);

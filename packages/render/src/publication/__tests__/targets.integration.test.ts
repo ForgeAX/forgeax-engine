@@ -125,7 +125,7 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
   expect(initial.frame.cubeCameras).toHaveLength(1);
   const bindings = initial.frame.renderables.map((row) => {
     const source = row.material.snapshot.textureSources?.get('baseColorTexture');
-    if (source === undefined || isCanvasTextureSource(source) || isExternalTextureSource(source))
+    if (source === undefined || source.source !== 'target')
       throw new Error('Missing published target source');
     return resolveRenderTargetMaterialSource(source);
   });
@@ -340,7 +340,7 @@ it('keeps a render-target slot override bound when its row is published again', 
   };
   const overrideTarget = (row: RenderableSnapshot | undefined) => {
     const bound = row?.materialOverrides?.[0]?.snapshot.textureSources?.get('baseColorTexture');
-    if (bound === undefined || isCanvasTextureSource(bound) || isExternalTextureSource(bound))
+    if (bound === undefined || bound.source !== 'target')
       throw new Error('Missing published target source');
     return resolveRenderTargetMaterialSource(bound)?.target;
   };

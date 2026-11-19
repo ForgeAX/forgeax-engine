@@ -27,6 +27,7 @@ import {
   RecorderState,
   reconcileSwapchainViewFormats,
   recorderDeviceIdentity,
+  retainsCaptureBootstrap,
   SNAPSHOT_RESOURCE_BATCH_SIZE,
   SNAPSHOT_STAGING_BYTES,
   SNAPSHOT_TIMEOUT_MS,
@@ -92,6 +93,7 @@ export function createRecorderLifecycle(
     }
 
     flushDeferredAccelerationStructureBuilds(s);
+    s.bootstrapCreates.releaseCapture();
     s.state = RecorderState.Armed;
     // A previous bounded snapshot may still be unwinding after its timeout.
     // Its generation fence prevents stale cleanup from touching this capture;
@@ -249,7 +251,7 @@ export function createRecorderLifecycle(
         }),
         ...s.canvasConfiguration,
       },
-      events: [...dedupedPrefx, ...s.events],
+      events: structuredClone([...dedupedPrefx, ...s.events]),
       blobPool: s.blobPool,
     };
   }
@@ -281,6 +283,7 @@ export function createRecorderLifecycle(
     if (s.state !== RecorderState.Idle) return;
     s.events = [];
     s.blobPool = new Map();
+    s.bootstrapCreates.releaseCapture();
   }
 
   function disposeError(): void {
@@ -290,6 +293,7 @@ export function createRecorderLifecycle(
       s._skipRecord = false;
       s.events = [];
       s.blobPool = new Map();
+      s.bootstrapCreates.releaseCapture();
       s.valid = true;
       s.snapshotProgress = undefined;
     }
@@ -340,6 +344,7 @@ export function createRecorderLifecycle(
         `no live resource registered for handleId '${handleId}'; it may have been destroyed or never created through the recorder proxy`,
       );
     }
+    if (retainsCaptureBootstrap(s)) s.bootstrapCreates.retainHandle(handleId);
 
     const device = s.capturedDevice;
     if (device === undefined) {
@@ -465,9 +470,12 @@ export function createRecorderLifecycle(
       // let the stale generation restore its old suppression bit over the new
       // capture's active snapshot; only the generation that acquired it may
       // release it.
-      if (snapshotGeneration === undefined || s.snapshotGeneration === snapshotGeneration) {
-        s._skipRecord = prevSkip;
-      }
+      const restoreSnapshotRecordingSuppression = () => {
+        if (snapshotGeneration === undefined || s.snapshotGeneration === snapshotGeneration) {
+          s._skipRecord = prevSkip;
+        }
+      };
+      restoreSnapshotRecordingSuppression();
     }
 
     if (!snapshotIsActive()) return cancelled();
@@ -608,33 +616,38 @@ export function createRecorderLifecycle(
       ...NO_CURRENT_RESOURCE,
     };
 
-    const liveEntries = [...s.descriptorTable.entries()];
-    const candidates = liveEntries.filter(([handleId, entry]) => {
-      // Mappable buffers are staging scratch, not seedable authored resources.
-      if (entry.kind === 'buffer' && isMappableBuffer(entry.usage)) {
-        skipProgressResource();
-        return false;
-      }
-      // Only formats with an exact snapshot and restore path may be seeded.
-      if (
-        entry.kind === 'texture' &&
-        !isSnapshottableTexture(entry.format, entry.size, entry.sampleCount)
-      ) {
-        skipProgressResource();
-        return false;
-      }
-      if (snapshotResourceBytes(entry).payload > maxResourceBytes) {
-        s.omittedSeeds.add(handleId);
-        if (s.snapshotProgress !== undefined) {
-          s.snapshotProgress = {
-            ...s.snapshotProgress,
-            skippedResources: s.snapshotProgress.skippedResources + 1,
-          };
+    const captureSnapshotCandidates = () => {
+      const liveEntries = [...s.descriptorTable.entries()];
+      const candidates = liveEntries.filter(([handleId, entry]) => {
+        // Mappable buffers are staging scratch, not seedable authored resources.
+        if (entry.kind === 'buffer' && isMappableBuffer(entry.usage)) {
+          skipProgressResource();
+          return false;
         }
-        return false;
-      }
-      return true;
-    });
+        // Only formats with an exact snapshot and restore path may be seeded.
+        if (
+          entry.kind === 'texture' &&
+          !isSnapshottableTexture(entry.format, entry.size, entry.sampleCount)
+        ) {
+          skipProgressResource();
+          return false;
+        }
+        if (snapshotResourceBytes(entry).payload > maxResourceBytes) {
+          s.omittedSeeds.add(handleId);
+          if (s.snapshotProgress !== undefined) {
+            s.snapshotProgress = {
+              ...s.snapshotProgress,
+              skippedResources: s.snapshotProgress.skippedResources + 1,
+            };
+          }
+          return false;
+        }
+        return true;
+      });
+      return candidates;
+    };
+    const candidates = captureSnapshotCandidates();
+    for (const [handleId] of candidates) s.bootstrapCreates.retainHandle(handleId);
 
     // A capture that explicitly omits every live seed has no historical GPU
     // bytes to synchronize. Avoid waiting on an unrelated queue drain before
@@ -690,29 +703,33 @@ export function createRecorderLifecycle(
         const first = candidates[offset];
         if (first === undefined) break;
         const kind = first[1].kind;
-        const batchEntries: typeof candidates = [];
-        let stagingBytes = 0;
-        while (
-          offset < candidates.length &&
-          batchEntries.length < SNAPSHOT_RESOURCE_BATCH_SIZE &&
-          candidates[offset]?.[1].kind === kind
-        ) {
-          const candidate = candidates[offset];
-          // Earlier batches await GPU work, allowing graph retirement to
-          // remove later candidates. Recheck at the synchronous copy-admission
-          // boundary so the recorder never submits a destroyed resource.
-          if (candidate !== undefined) {
-            if (s.descriptorTable.has(candidate[0])) {
-              const bytes = snapshotResourceBytes(candidate[1]).staging;
-              if (batchEntries.length > 0 && stagingBytes + bytes > SNAPSHOT_STAGING_BYTES) break;
-              batchEntries.push(candidate);
-              stagingBytes += bytes;
-            } else {
-              skipProgressResource();
+        const collectSnapshotReadbackBatch = () => {
+          const batchEntries: typeof candidates = [];
+          let stagingBytes = 0;
+          while (
+            offset < candidates.length &&
+            batchEntries.length < SNAPSHOT_RESOURCE_BATCH_SIZE &&
+            candidates[offset]?.[1].kind === kind
+          ) {
+            const candidate = candidates[offset];
+            // Earlier batches await GPU work, allowing graph retirement to
+            // remove later candidates. Recheck at the synchronous copy-admission
+            // boundary so the recorder never submits a destroyed resource.
+            if (candidate !== undefined) {
+              if (s.descriptorTable.has(candidate[0])) {
+                const bytes = snapshotResourceBytes(candidate[1]).staging;
+                if (batchEntries.length > 0 && stagingBytes + bytes > SNAPSHOT_STAGING_BYTES) break;
+                batchEntries.push(candidate);
+                stagingBytes += bytes;
+              } else {
+                skipProgressResource();
+              }
             }
+            offset += 1;
           }
-          offset += 1;
-        }
+          return batchEntries;
+        };
+        const batchEntries = collectSnapshotReadbackBatch();
         if (batchEntries.length === 0) continue;
 
         advanceProgress(() => ({
@@ -878,18 +895,21 @@ export function createRecorderLifecycle(
       }
     }
 
-    advanceProgress(() => NO_CURRENT_RESOURCE);
+    const completeLiveSnapshotState = () => {
+      advanceProgress(() => NO_CURRENT_RESOURCE);
 
-    if (s.state !== RecorderState.Snapshotting || s.snapshotGeneration !== snapshotGeneration) {
-      return makeErr(
-        createRhiDebugError('capture-snapshot-failed', {
-          stage: 'snapshot',
-          cause: 'snapshot was cancelled before the full live-resource table was seeded',
-        }),
-      );
-    }
-    s.state = RecorderState.Recording;
-    return makeOk(undefined);
+      if (s.state !== RecorderState.Snapshotting || s.snapshotGeneration !== snapshotGeneration) {
+        return makeErr(
+          createRhiDebugError('capture-snapshot-failed', {
+            stage: 'snapshot',
+            cause: 'snapshot was cancelled before the full live-resource table was seeded',
+          }),
+        );
+      }
+      s.state = RecorderState.Recording;
+      return makeOk(undefined);
+    };
+    return completeLiveSnapshotState();
   }
 
   // --------------------------------------------------

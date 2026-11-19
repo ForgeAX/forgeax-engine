@@ -20,7 +20,7 @@ const record = {
   build: { command: 'pnpm --filter @forgeax/bevy-fog build', sha256: sha256(packageJson) },
   backend: 'browser-webgpu', runner: 'playwright', frames: 60,
   captures: [{ id: 'environment-atmosphere-fog', png: 'artifacts/bevy-fog/fog-visual.png', observed: 'Read PNG shows a lit fogged ground plane and central structure with preserved alpha', verdict: 'pass', confidence: 'high' }],
-  falsify: ['uniform', 'height', 'owner-switch', 'recovery'].map((id) => ({ id, result: 'pass' })), status: 'pass',
+  falsify: ['uniform', 'height', 'environment-replace', 'recovery'].map((id) => ({ id, result: 'pass' })), status: 'pass',
 };
 await writeFile(evidencePath, `${JSON.stringify(record, null, 2)}\n`);
 console.log(`[bevy-fog] visual evidence status=pass; path=${evidencePath}`);

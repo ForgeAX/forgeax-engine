@@ -32,7 +32,6 @@ function range(source: MeshAsset) {
 function expand(source: MeshAsset) {
   return new PointsLinesExpansionCache().getOrCreate(
     createPointsLinesSnapshot({
-      worldId: 1,
       entityKey: 1,
       component: 'Lines',
       meshHandle: 1,

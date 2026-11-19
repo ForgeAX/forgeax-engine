@@ -10,6 +10,12 @@ import { constructRuntimeRendererHost } from '../../../runtime/src/renderer-host
 
 const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
 
+function capturedRecord(value: unknown): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Missing captured pipeline record');
+  return value as Readonly<Record<string, unknown>>;
+}
+
 it.each([
   { renderPath: 'forward', msaa: false },
   { renderPath: 'forward', msaa: true },
@@ -61,16 +67,43 @@ it.each([
             return {
               label: event?.kind === 'beginRenderPass' ? event.desc.label : undefined,
               works: pass.workIndices.length,
+              blendedWorks: pass.workIndices.filter((index) => {
+                const pipeline = model.works[index]?.pipeline;
+                expect(pipeline?.status).toBe('available');
+                if (pipeline?.status !== 'available' || pipeline.kind !== 'render') return false;
+                const fragment = capturedRecord(capturedRecord(pipeline.descriptor).desc).fragment;
+                if (fragment === undefined) return false;
+                const targets = capturedRecord(fragment).targets;
+                expect(Array.isArray(targets)).toBe(true);
+                return (
+                  Array.isArray(targets) &&
+                  targets.some(
+                    (target) => target !== null && capturedRecord(target).blend !== undefined,
+                  )
+                );
+              }).length,
               resolves: pass.colorAttachmentResolveViewHandleIds,
             };
           });
-          const selected = passes.filter((pass) => pass.label === 'transparent');
+          const captureDirectory = 'artifacts/empty-transparency';
+          mkdirSync(captureDirectory, { recursive: true });
+          const captureName = `${captureDirectory}/${options.renderPath}-msaa${options.msaa ? 4 : 1}-${transparent ? 'members' : 'empty'}`;
+          writeFileSync(`${captureName}.rhitape`, encoded.bytes);
+          writeFileSync(`${captureName}.json`, JSON.stringify(passes, null, 2));
+          const selected = passes.filter((pass) =>
+            pass.label?.split(' + ').includes('transparent'),
+          );
           expect(selected).toHaveLength(transparent || options.msaa ? 1 : 0);
-          if (transparent) expect(selected[0]?.works).toBeGreaterThan(0);
+          if (transparent) expect(selected[0]?.blendedWorks).toBe(1);
           else if (options.msaa) {
-            expect(selected[0]?.works).toBe(0);
+            // A physical scene pass can also own opaque work; empty transparency adds no blend draws.
+            expect(selected[0]?.blendedWorks).toBe(0);
             expect(selected[0]?.resolves.some((view) => view !== null)).toBe(true);
           }
+          if (options.msaa)
+            expect(
+              passes.flatMap((pass) => pass.resolves).filter((view) => view !== null),
+            ).toHaveLength(1);
           evidence.push({ transparent, digest: encoded.digest, passes });
         },
       });

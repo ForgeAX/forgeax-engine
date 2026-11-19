@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  materialProgramContextKey,
   serializeCookedMaterialRecord,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
@@ -57,6 +58,65 @@ function cookedPayload(value: { readonly payload: unknown }): unknown {
 }
 
 describe('cookMaterialAsset', () => {
+  it('keeps distinct certified Standard Surface contracts on distinct program identities', {
+    timeout: 30_000,
+  }, async () => {
+    const source: MaterialAsset = {
+      kind: 'material',
+      colorSpace: 'linear',
+      parameters: standardSurfaceParameters([]),
+      values: { baseColor: [0.12, 0.42, 0.31, 1], roughness: 0.22, metallic: 0 },
+      passes: [
+        {
+          name: 'forward',
+          program: { module: 'forgeax_material::standard' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+    };
+    const cooker = createMaterialPackCooker();
+    const implicit = packRecord(
+      cookedPayload(await cooker.cook({ guid: 'implicit-standard-surface', source })),
+    );
+    const explicit = packRecord(
+      cookedPayload(
+        await cooker.cook({
+          guid: 'explicit-standard-surface',
+          source: {
+            ...source,
+            surface: { model: 'standard', module: 'forgeax_material::default_standard_surface' },
+          },
+        }),
+      ),
+    );
+    expect(
+      explicit.programs.some((program) =>
+        program.selections.some((selection) => selection.abi?.surface?.model === 'standard'),
+      ),
+    ).toBe(true);
+    expect(
+      explicit.programs.some((program) =>
+        implicit.programs.some((previous) => previous.artifact.digest === program.artifact.digest),
+      ),
+    ).toBe(true);
+    const conflicting = explicit.programs.flatMap((program) => {
+      const previous = implicit.programs.find(
+        (candidate) => candidate.specializationKey === program.specializationKey,
+      );
+      return previous === undefined ||
+        JSON.stringify(previous.selections[0]?.abi) === JSON.stringify(program.selections[0]?.abi)
+        ? []
+        : [
+            {
+              key: program.specializationKey,
+              previous: previous.selections[0]?.abi?.surface,
+              current: program.selections[0]?.abi?.surface,
+            },
+          ];
+    });
+    expect(conflicting).toEqual([]);
+  });
+
   it('cooks the public Unlit factory through the ordinary native material producer', {
     timeout: 30_000,
   }, async () => {
@@ -67,6 +127,40 @@ describe('cookMaterialAsset', () => {
     });
     const record = packRecord(cookedPayload(draft));
     expect(record.resolved.values?.baseColor).toEqual([1, 1, 1, 1]);
+    for (const geometry of ['mesh', 'skinned'])
+      for (const backend of ['webgpu', 'webgl2']) {
+        const ordinary = record.programs
+          .flatMap((program) => program.selections)
+          .filter(
+            (selection) =>
+              selection.context.pipeline !== 'ray' &&
+              selection.context.geometry === geometry &&
+              selection.context.backend === backend &&
+              selection.context.viewClipping !== true,
+          );
+        expect(ordinary.length).toBeGreaterThan(0);
+        for (const base of ordinary) {
+          const { viewClipping: _unused, ...plain } =
+            base.context as import('@forgeax/engine-pack/material-cook').MaterialCookRasterContext;
+          const family = record.programs
+            .flatMap((program) => program.selections)
+            .filter(
+              (selection) =>
+                selection.pass === base.pass &&
+                selection.address === base.address &&
+                selection.context.pipeline !== 'ray' &&
+                selection.context.viewClipping === true,
+            );
+          expect(
+            family.some((selection) => {
+              const { viewClipping: _enabled, ...other } =
+                selection.context as import('@forgeax/engine-pack/material-cook').MaterialCookRasterContext;
+              return materialProgramContextKey(other) === materialProgramContextKey(plain);
+            }),
+            JSON.stringify({ base, clipped: family.map((selection) => selection.context) }),
+          ).toBe(true);
+        }
+      }
     expect(
       record.programs.some((program) =>
         program.selections.some((selection) => selection.context.geometry === 'mesh'),
@@ -96,6 +190,44 @@ describe('cookMaterialAsset', () => {
       code: 'material-derived-interface-mismatch',
       detail: { parameter: 'baseColorSampler' },
     });
+  });
+
+  it('cooks Unlit static coverage choices without retaining omitted alpha fields', async () => {
+    const engineRoot = fileURLToPath(new URL('../../../shader/src', import.meta.url));
+    const catalog = buildMaterialSourceCatalog(
+      await collectMaterialSources([engineRoot], [engineRoot]),
+    ).unwrap();
+    const seen: Array<Readonly<Record<string, boolean>>> = [];
+    const result = await cookMaterialAsset(
+      {
+        material: 'unlit',
+        table: {
+          unlit: {
+            ...createBuiltinMaterialAsset('unlit'),
+            staticSwitches: { alphaClipping: false, alphaHash: false },
+          },
+        },
+        sources: catalog,
+      },
+      (source, options) => {
+        seen.push(options?.defines ?? {});
+        return compileShader(source, options);
+      },
+    );
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
+    const cooked = result.unwrap();
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((defines) => defines.ALPHA_MASK === false)).toBe(true);
+    // The ordinary context has no receiving-view planes; material-local
+    // clipping remains independently declared by its parameter contract.
+    expect(seen.every((defines) => defines.CLIPPING_PLANES === false)).toBe(true);
+    for (const pass of cooked.passes) {
+      expect(pass.compile.manifestEntry.wgsl).not.toMatch(/material\.alpha(?:Cutoff|Hash)\b/);
+      const entry = pass.compile.reflection.entryPoints?.find(
+        (entry) => entry.name === 'fs_main' && entry.stage === 'fragment',
+      );
+      expect(entry?.effects?.mayDiscard).toBe(false);
+    }
   });
 
   it('publishes a shared ray-hit derivative of the ordinary Standard material', {
@@ -387,7 +519,7 @@ fn fs_main() -> @location(0) vec4<f32> {
       expect(draft.payload).toMatchObject({
         passes: [{ renderState: { tags: { LightMode: 'Forward' } } }],
         cooked: {
-          schemaVersion: 'material-cook/4',
+          schemaVersion: 'material-cook/5',
           authored: { passes: [{ renderState: { tags: { LightMode: 'Forward' } } }] },
           resolved: { passes: [{ renderState: { tags: { LightMode: 'Forward' } } }] },
           receipt: { identity: { sourceClosureDigest: expect.any(String) } },

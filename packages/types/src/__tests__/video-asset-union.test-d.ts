@@ -31,7 +31,20 @@ describe('VideoAsset POD shape (M1 baseline)', () => {
     function describeKind(a: Asset): string {
       switch (a.kind) {
         case 'plugin':
-          return 'plugin';
+          return 'PluginAsset';
+        case 'gpu-texture':
+          return 'GpuTextureAsset';
+        case 'texture-generator':
+          return 'TextureGeneratorAsset';
+        default:
+          return describeOrdinaryAsset(a);
+      }
+    }
+    function describeOrdinaryAsset(
+      a: Exclude<Asset, { kind: 'plugin' | 'gpu-texture' | 'texture-generator' }>,
+    ): string {
+      const ordinaryAssetKind = a.kind;
+      switch (ordinaryAssetKind) {
         case 'mesh':
           return 'mesh';
         case 'texture':
@@ -44,31 +57,48 @@ describe('VideoAsset POD shape (M1 baseline)', () => {
           return 'material';
         case 'scene':
           return 'scene';
-        case 'skeleton':
-          return 'skeleton';
-        case 'skin':
-          return 'skin';
-        case 'animation-clip':
-          return 'animation-clip';
-        case 'animation-graph':
-          return 'animation-graph';
-        case 'audio':
-          return 'audio';
-        case 'ies-profile':
-          return 'ies-profile';
-        case 'font':
-          return 'font';
-        case 'render-pipeline':
-          return 'render-pipeline';
-        case 'tileset':
-          return 'tileset';
-        case 'video':
-          return 'video';
-        case 'navigation-mesh':
-        case 'terrain':
-          return 'TerrainAsset';
-        case 'particle-effect':
-          return 'particle-effect';
+        default: {
+          const describeRemainingOrdinaryAsset = () => {
+            switch (ordinaryAssetKind) {
+              case 'skeleton':
+                return 'skeleton';
+              case 'skin':
+                return 'skin';
+              case 'animation-clip':
+                return 'animation-clip';
+              case 'animation-graph':
+                return 'animation-graph';
+              case 'audio':
+                return 'audio';
+              case 'ies-profile':
+                return 'ies-profile';
+              case 'font':
+                return 'font';
+              case 'render-pipeline':
+                return 'render-pipeline';
+              case 'tileset':
+                return 'tileset';
+              case 'video':
+                return 'video';
+              case 'navigation-mesh':
+              case 'terrain':
+                return 'TerrainAsset';
+              case 'particle-effect':
+                return 'particle-effect';
+              case 'water-body':
+                return 'water-body';
+              case 'water-zone':
+                return 'water-zone';
+              case 'water-wave-set':
+                return 'water-wave-set';
+              case 'water-brush-recipe':
+                return 'water-brush-recipe';
+              case 'water-simulation-recipe':
+                return 'water-simulation-recipe';
+            }
+          };
+          return describeRemainingOrdinaryAsset();
+        }
       }
       // No default branch -- TS guards completeness.
     }

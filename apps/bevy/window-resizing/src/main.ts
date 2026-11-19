@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildWindowResizingWorld, stepResize } from './window-resizing.js';
 
@@ -14,11 +15,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   buildWindowResizingWorld(app.world);
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'window-resize',
     queries: [],
     fn: (world) => {
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const res = stepResize(snapshot);
       if (res) {
         target.width = res.w;
@@ -27,6 +28,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

@@ -70,6 +70,38 @@ describe('prepared graphics transaction admission', () => {
     expect(tx.validateGraphicsPass(pass(refs), true, otherAttachments).ok).toBe(false);
   });
 
+  it('accepts draws without declared bindings and still requires every declared binding', () => {
+    const tx = createPreparedGraphicsStore().beginFrame('feature', 1);
+    const pipeline = tx.prepare('pipeline', 'pipeline', { signature: 'pipeline' }).unwrap();
+    const unbound: RenderFeatureGraphicsPassDescriptor = {
+      attachments: {
+        colors: [{ resource: 'color', format: 'rgba8unorm', loadOp: 'load', storeOp: 'store' }],
+      },
+      draws: [
+        {
+          kind: 'draw',
+          pipeline,
+          bindings: [],
+          vertexData: [],
+          vertexLayout: 'none',
+          command: { vertexCount: 3, instanceCount: 1 },
+        },
+      ],
+    };
+
+    expect(owner(tx, unbound).ok).toBe(true);
+    expect(
+      validateRenderFeatureGraphicsPass('feature', unbound, tx.graphicsState(true, attachments)).ok,
+    ).toBe(true);
+
+    const missingBinding = { kind: 'bindings' as const, generation: 1 };
+    const declared = {
+      ...unbound,
+      draws: unbound.draws.map((draw) => ({ ...draw, bindings: [missingBinding] })),
+    };
+    expect(owner(tx, declared).ok).toBe(false);
+  });
+
   it('invalidates for new resources, first committed touches, retain closure and abort, without rewriting prior states', () => {
     const store = createPreparedGraphicsStore();
     const seed = store.beginFrame('feature', 1);
@@ -312,7 +344,7 @@ describe('prepared graphics transaction admission', () => {
           vertexLayout: 'none' as const,
           vertexData: [],
           pipeline,
-          bindings: [],
+          bindings: [{ kind: 'bindings' as const, generation: 1 }],
           command: { vertexCount: 3, instanceCount: 1 },
         },
       ],

@@ -30,6 +30,7 @@ export {
 } from './on-enter-on-exit';
 export { statePlugin } from './plugin-factory';
 export { registerStatesPlugin, StateSet } from './register-plugin';
+export { stateResource } from './resources';
 export {
   despawnOnEnter,
   despawnOnExit,

@@ -31,7 +31,6 @@ const triangleDraw: GpuDrivenDrawSnapshot = {
 };
 function snapshot(entityKey: number, generations?: readonly number[]): RenderableSnapshot {
   return {
-    worldId: 0,
     entityKey,
     assetHandle: 91,
     transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
@@ -59,7 +58,6 @@ function snapshot(entityKey: number, generations?: readonly number[]): Renderabl
 function update(source: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: source.worldId,
     entityKey: source.entityKey,
     snapshot: source,
   };
@@ -100,7 +98,7 @@ it('keeps submitted rows detached across instance reorder, deletion and RenderSc
   const reordered = projectVisibleSurfaces(scene.slotsSnapshot(), 6).unwrap();
   expect(resolveVisibleSurface(first, 1, 0).unwrap()?.instanceGeneration).toBe(501);
   expect(resolveVisibleSurface(reordered, 1, 0).unwrap()?.instanceGeneration).toBe(902);
-  scene.apply([{ kind: 'remove', worldId: 0, entityKey: 17 }]);
+  scene.apply([{ kind: 'remove', entityKey: 17 }]);
   expect(projectVisibleSurfaces(scene.slotsSnapshot(), 0).unwrap().records.byteLength).toBe(0);
   scene.apply([update(snapshot(18, [501, 902]))]);
   const replaced = projectVisibleSurfaces(scene.slotsSnapshot(), 6).unwrap();
@@ -236,7 +234,7 @@ it('publishes no released tail records while live rows keep their stable address
   expect(reduced.entityBases.get(2)).toBe(second);
   expect(reduced.records.length).toBe(9 * 16);
   // The trailing entity leaves; records end with the last live row.
-  scene.apply([{ kind: 'remove', worldId: 0, entityKey: 2 }]);
+  scene.apply([{ kind: 'remove', entityKey: 2 }]);
   const trimmed = surfaces.update(rows(), 64).unwrap();
   const first = (trimmed.entityBases.get(1) ?? 0) - 1;
   expect(trimmed.records.length).toBe((first + 3) * 16);

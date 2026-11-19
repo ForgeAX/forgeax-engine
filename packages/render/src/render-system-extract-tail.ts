@@ -1,13 +1,10 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+﻿import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
   readArrayRangesChangedSince,
   readMutationEpoch,
   readRenderArrayView,
-  SpriteInstancesCountMismatchError,
-  SpriteInstancesMutuallyExclusiveWithInstancesError,
-  SpriteInstancesRequiresSpriteShaderError,
 } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
@@ -20,12 +17,14 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
+  ChildOf,
   GlobalTransform,
   Mobility,
   MobilityKindValue,
   MorphWeights,
   readPresentationWorldMatrix,
   Transform,
+  WaterBodyInstance,
 } from '@forgeax/engine-scene';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
@@ -42,6 +41,13 @@ import type {
   SkeletonAsset,
 } from '@forgeax/engine-types';
 import { ASSET_ERROR_HINTS, AssetError, materialProgramUsesSkin, ok } from '@forgeax/engine-types';
+import type { WaterMeshViewInput, WaterSystem } from '@forgeax/engine-water';
+import { WATER_SYSTEM_RESOURCE } from '@forgeax/engine-water';
+import {
+  buildWaterZoneMeshViewForRenderer,
+  createWaterMeshLayoutReceipt,
+  waterZoneMeshViewForRenderer,
+} from '@forgeax/engine-water/internal';
 import { buildCameraFrusta } from './camera-frusta';
 import { setPlanarCaptureDemand } from './capture/planar-material';
 import {
@@ -60,10 +66,19 @@ import {
   SpriteInstances,
   SpriteRegionOverride,
 } from './components';
+import { CAMERA_VIEW_DEFAULTS, cameraViewExtent } from './components/camera-view';
+import { GpuMeshVertexSource } from './components/gpu-mesh-vertex-source';
 import { validateChannelMask } from './components/lighting-channels';
+import { type StereoEye, stereoEyeCameras, stereoEyeViewport } from './components/stereo-camera';
 import { ProjectedDecalInvalidError } from './decals/component';
 import { extractProjectedDecals } from './decals/extract';
 import { meshSlotBindingDeps } from './entity-materials';
+import {
+  SpriteInstancesCountMismatchError,
+  SpriteInstancesMutuallyExclusiveWithInstancesError,
+  SpriteInstancesRequiresSpriteShaderError,
+} from './errors/component-validation';
+import { GpuDrivenPreparationError } from './errors/gpu-driven';
 import {
   createLightResourceUnavailable,
   MaterialSkinAttrMissingError,
@@ -71,22 +86,15 @@ import {
 } from './errors/render';
 import { createEnvironmentQuery } from './extract/environment-gate';
 import { buildGpuDrivenDraws } from './extract/gpu-driven';
-import type { VisibilitySnapshot } from './extract/visibility';
 import { extractWorldEnvironment } from './extract/world-environment';
-import {
-  captureHiddenEntities,
-  captureHiddenEntityReports,
-  isOwnedHiddenEntityReports,
-} from './features/hidden-entity-reports';
+import { captureHiddenEntities } from './features/hidden-entity-reports';
 import { MotionBlurValidationError } from './features/motion-blur/motion-blur-params';
-import type {
-  RenderFeatureHiddenEntityReport,
-  RenderFeatureWorldVisibilitySnapshot,
-} from './features/types';
+import { renderFeatureViewIdentity } from './features/view';
 import { extractGlyphSources } from './glyph-source';
 import { type InstanceProjectionStore, validateInstanceTransforms } from './instances';
 import { deriveInstancesUnionBounds } from './instances-derived-bounds';
 import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
+import { captureMaterialSource, materialSourceMatchesCurrent } from './material-source';
 import {
   type MeshMaterialBindingDiagnostic,
   type MeshMaterialBindingSource,
@@ -101,33 +109,33 @@ import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
 import { renderAsset, worldRenderResources } from './publication/resource-scope';
 import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
-  DirectionalLightSnapshot,
   DispatchEntry,
   EnvironmentFrameGate,
   ExtractedFrame,
-  ExtractFramesOwner,
   InstancesSnapshot,
   LightRoster,
   MaterialProgramSelection,
   MaterialSnapshot,
   MaterialSnapshotCache,
   MaterialSnapshotCacheEntry,
-  MaterialSnapshotCachesByWorld,
   MaterialSnapshotContexts,
   MaterialTextureSourceStats,
   MorphSnapshot,
   PointLightSnapshot,
-  PointShadowSnapshot,
   PreparedExtractContext,
   RectAreaDirectLightSnapshot,
   RenderableSnapshot,
   SpotLightSnapshot,
   SpriteInstancesSnapshot,
   TransformSnapshot,
+  WaterMeshOwnerSource,
+  WaterMeshSourceState,
+  WaterMeshViewFacts,
   WorldInternalView,
 } from './render-system-extract';
 import {
   appendMaterialDispatchEntries,
+  cameraForView,
   createWorldInternalView,
   DEFAULT_FORWARD_PASS,
   defaultMaterialSnapshot,
@@ -138,6 +146,7 @@ import {
   prepareMaterialSnapshot,
   readPersistentMaterialSnapshot,
   resolveMaterialSnapshot,
+  resolveRuntimeAssetReference,
   Severity,
   selectFogFrame,
   sortDispatchByQueue,
@@ -157,6 +166,18 @@ import {
 import { getActiveCamera } from './systems/active-camera';
 import { extractTerrainSources } from './terrain/source.js';
 import { extractTilemapSources } from './tilemap-source';
+import {
+  buildWaterGpuMeshZone,
+  type WaterGpuMeshDraw,
+  type WaterGpuMeshZone,
+} from './water/gpu-mesh-source';
+import { requireWaterBodyBakedSources } from './water/material-admission';
+import {
+  offsetWaterMeshAdmissionDraw,
+  ownWaterMaterialAdmissionSource,
+  ownWaterMaterialOwner,
+  retainWaterMeshCandidateAdmissionDraw,
+} from './water/mesh-source-admission';
 
 const collectPostProcessParamsQuery = createEnvironmentQuery({ with: [PostProcessParams] });
 
@@ -168,23 +189,25 @@ function isMissingMaterialProgram(error: unknown): boolean {
   );
 }
 
-export function extractFrames(
-  worlds: readonly World[],
-  owner: number | ExtractFramesOwner,
+export function extractSource(
+  world: World,
   assets?: AssetRegistry | null,
-  materialSnapshotCachesByWorld?: MaterialSnapshotCachesByWorld,
+  materialSnapshotContexts?: MaterialSnapshotContexts,
   options: {
     readonly materialContext?: MaterialCookRasterContext;
     readonly cull?: 'normal' | 'none';
+    readonly cameraEntityKey?: number;
     readonly view?: import('./render-contract').ResolvedViewCamera;
     readonly renderables?:
       | 'full'
       | 'none'
       | {
           readonly kind: 'partial';
-          readonly entitiesByWorld: readonly (ReadonlySet<number> | undefined)[];
+          readonly entities: ReadonlySet<number>;
         };
     readonly retainHidden?: boolean;
+    readonly waterMeshSourceState?: WaterMeshSourceState;
+    readonly waterMeshViewFacts?: WaterMeshViewFacts;
     /** Private preparation overlay; never mutates the entity's accepted MeshFilter. */
     readonly preparationMesh?: {
       readonly world: World;
@@ -207,427 +230,160 @@ export function extractFrames(
     readonly environmentGate?: EnvironmentFrameGate;
   } = {},
 ): ExtractedFrame {
-  // w4: normalize the owner argument. A bare number is the legacy single-owner
-  // form (cameraOwner === resourceOwner); an object carries the two split
-  // indices. When they coincide the code path is byte-identical to the pre-w4
-  // single-owner behaviour (w1 contract combination 2).
-  const owners: ExtractFramesOwner =
-    typeof owner === 'number' ? { cameraOwner: owner, resourceOwner: owner } : owner;
-  const framesByWorld = extractWorldFrames(
-    worlds,
-    owners,
-    assets,
-    materialSnapshotCachesByWorld,
-    options,
-  );
-  // Restore the caller's world order after the camera-owner-first extraction.
-  const succeededFrames: ExtractedFrame[] = [];
-  const succeededIndices: number[] = [];
-  for (let wi = 0; wi < worlds.length; wi++) {
-    const frame = framesByWorld.get(wi);
-    if (frame === undefined) continue;
-    succeededFrames.push(frame);
-    succeededIndices.push(wi);
+  const request = options.renderables ?? 'full';
+  let frame: ExtractedFrame;
+  try {
+    type ExtractRequest = NonNullable<Parameters<typeof prepareExtractContext>[1]>;
+    const input: {
+      -readonly [K in keyof ExtractRequest]: ExtractRequest[K];
+    } = {
+      cull: options.cull === 'none' ? 'none' : 'self',
+      renderables: typeof request === 'object' ? 'full' : request,
+      retainHidden: options.retainHidden ?? typeof request === 'object',
+    };
+    const applyExtractInputs = () => {
+      if (assets !== undefined) input.assets = assets;
+      if (materialSnapshotContexts !== undefined)
+        input.materialSnapshotContexts = materialSnapshotContexts;
+      if (options.materialContext !== undefined) input.materialContext = options.materialContext;
+      if (options.preparationMesh?.world === world) input.preparationMesh = options.preparationMesh;
+      if (options.getMaterialShaderArtifact !== undefined)
+        input.getMaterialShaderArtifact = options.getMaterialShaderArtifact;
+      if (options.instanceCollections !== undefined)
+        input.instanceCollections = options.instanceCollections;
+      if (options.environmentGate !== undefined) input.environmentGate = options.environmentGate;
+      if (typeof request === 'object') input.renderableEntities = request.entities;
+      if (options.cameraEntityKey !== undefined) input.cameraEntityKey = options.cameraEntityKey;
+      if (options.view !== undefined) input.view = options.view;
+      if (options.waterMeshSourceState !== undefined)
+        input.waterMeshSourceState = options.waterMeshSourceState;
+      if (options.waterMeshViewFacts !== undefined)
+        input.waterMeshViewFacts = options.waterMeshViewFacts;
+    };
+    applyExtractInputs();
+    const context = prepareExtractContext(world, input);
+    frame = extractFrame(world, context);
+  } catch (error) {
+    if (error instanceof MotionBlurValidationError || error instanceof ProjectedDecalInvalidError)
+      throw error;
+    try {
+      createWorldInternalView(world)._routeError(error, {
+        severity: Severity.Error,
+        systemName: 'RenderSystem.extractSource',
+      });
+    } catch {
+      /* Already routed by the source owner. */
+    }
+    return emptyExtractedFrame();
   }
-  const merged = mergeRenderables(worlds, succeededFrames, succeededIndices);
   const gate = options.environmentGate;
   const environment =
     gate === undefined
-      ? mergeEnvironment(worlds, owners, framesByWorld, succeededFrames, succeededIndices)
-      : gate.merge(
-          succeededIndices.map((wi) => worlds[wi] as World),
-          `${owners.cameraOwner}:${owners.resourceOwner}:${succeededIndices.join(',')}`,
-          (routedError) =>
-            mergeEnvironment(
-              worlds,
-              owners,
-              framesByWorld,
-              succeededFrames,
-              succeededIndices,
-              routedError,
-            ),
+      ? sourceEnvironment(world, frame)
+      : gate.finalize(world, 'environment', (routedError) =>
+          sourceEnvironment(world, frame, routedError),
         );
+  return { ...frame, ...environment };
+}
+/** Retain each unchanged environment entry even when another entry changes. */
+export function sourceEnvironment(world: World, frame: ExtractedFrame, routedError?: () => void) {
   return {
-    ...environment,
-    renderables: merged.renderables,
-    dispatch: merged.dispatch,
-    // D-3: frustumStats — culled/total summed across worlds.
-    frustumStats: {
-      culled: succeededFrames.reduce((s, f) => s + f.frustumStats.culled, 0),
-      total: succeededFrames.reduce((s, f) => s + f.frustumStats.total, 0),
-    },
-    visibilityStats: {
-      explicitlyHidden: succeededFrames.reduce((s, f) => s + f.visibilityStats.explicitlyHidden, 0),
-    },
-    materialTextureSources: mergeMaterialTextureSources(succeededFrames),
-    visibilitySnapshots: merged.visibilitySnapshots,
-    featureVisibilitySnapshots: merged.featureVisibilitySnapshots,
-    hiddenEntityReports: merged.hiddenEntityReports,
+    ...(frame.projectedDecals === undefined ? {} : { projectedDecals: frame.projectedDecals }),
+    cameras: frame.cameras,
+    auxiliaryCameras: frame.auxiliaryCameras,
+    cubeCameras: frame.cubeCameras,
+    ...(frame.reflectionProbes === undefined ? {} : { reflectionProbes: frame.reflectionProbes }),
+    lights: finalizeLights(world, frame.lights, routedError),
+    ...(frame.volumetricFog === undefined ? {} : { volumetricFog: frame.volumetricFog }),
+    ...(frame.cloudLayer === undefined ? {} : { cloudLayer: frame.cloudLayer }),
+    skylight: frame.skylight,
+    skylightCount: frame.skylightCount,
+    ...(frame.lightProbes === undefined ? {} : { lightProbes: frame.lightProbes }),
+    skybox: frame.skybox,
+    skyboxCount: frame.skyboxCount,
+    fog: frame.fog,
+    ...(frame.fogFailure === undefined ? {} : { fogFailure: frame.fogFailure }),
+    environment: frame.environment,
+    environmentReady: frame.environmentReady,
+    postProcessParams: frame.postProcessParams,
   };
 }
-
-/**
- * The frame's camera, light, probe, sky, fog, decal and post-process entries:
- * cameras from the camera owner, singleton resources from the resource owner,
- * lights, probes and decals concatenated in World order.
- */
-export function mergeEnvironment(
-  worlds: readonly World[],
-  owners: ExtractFramesOwner,
-  framesByWorld: ReadonlyMap<number, ExtractedFrame>,
-  succeededFrames: readonly ExtractedFrame[],
-  succeededIndices: readonly number[],
-  routedError?: () => void,
-) {
-  // AC-05/06 + w4 owner split (D-3 / R-6): cameras come from the cameraOwner
-  // world; skylight / skybox / postProcessParams come from the resourceOwner
-  // world (holistic snapshot selection). When cameraOwner === resourceOwner
-  // both resolve to the same frame — byte-identical to the single-owner path.
-  const cameraOwnerFrame = framesByWorld.get(owners.cameraOwner);
-  const resourceOwnerFrame = framesByWorld.get(owners.resourceOwner);
-  const projectedDecals = succeededFrames
-    .flatMap((frame, index) =>
-      (frame.projectedDecals ?? []).map((decal) => ({
-        ...decal,
-        worldId: succeededIndices[index] ?? 0,
-      })),
-    )
-    .sort((a, b) => a.order - b.order || a.worldId - b.worldId || a.entityKey - b.entityKey);
-  const cameras =
-    cameraOwnerFrame?.cameras.map((camera) => ({
-      ...camera,
-      worldId: owners.cameraOwner,
-      projectedDecals,
-    })) ?? [];
-  const auxiliaryCameras =
-    cameraOwnerFrame?.auxiliaryCameras.map((camera) => ({
-      ...camera,
-      worldId: owners.cameraOwner,
-    })) ?? [];
-  const cubeCameras = cameraOwnerFrame !== undefined ? [...cameraOwnerFrame.cubeCameras] : [];
-  const lights = mergeLights(worlds, succeededFrames, succeededIndices, routedError);
-  const volumetricFog = resourceOwnerFrame?.volumetricFog;
-  const cloudLayer = resourceOwnerFrame?.cloudLayer;
-  const fogFailure = resourceOwnerFrame?.fogFailure;
-  const environment = resourceOwnerFrame?.environment;
+/** A failed source contributes no drawable or environment facts. */
+function emptyExtractedFrame(): ExtractedFrame {
   return {
-    projectedDecals,
-    cameras,
-    auxiliaryCameras,
-    cubeCameras,
-    reflectionProbes: succeededFrames.flatMap((f, index) => {
-      const worldId = succeededIndices[index] ?? 0;
-      return (f.reflectionProbes ?? []).map((probe) => ({ ...probe, worldId }));
-    }),
-    lights,
-    ...(volumetricFog === undefined
-      ? {}
-      : { volumetricFog: { ...volumetricFog, worldId: owners.resourceOwner } }),
-    ...(cloudLayer === undefined ? {} : { cloudLayer }),
-    skylight: resourceOwnerFrame?.skylight,
-    skylightCount: resourceOwnerFrame?.skylightCount ?? 0,
-    lightProbes: succeededFrames.flatMap((frame, index) => {
-      const worldId = succeededIndices[index] ?? 0;
-      return (frame.lightProbes ?? []).map((probe) => ({ ...probe, worldId }));
-    }),
-    skybox: resourceOwnerFrame?.skybox,
-    skyboxCount: resourceOwnerFrame?.skyboxCount ?? 0,
-    fog: resourceOwnerFrame?.fog,
-    ...(fogFailure === undefined ? {} : { fogFailure }),
-    environment,
-    environmentReady: resourceOwnerFrame !== undefined && environment !== undefined,
-    postProcessParams: ownerPostProcessParams(cameraOwnerFrame, resourceOwnerFrame),
+    cameras: [],
+    auxiliaryCameras: [],
+    cubeCameras: [],
+    reflectionProbes: [],
+    projectedDecals: [],
+    lights: {
+      directional: undefined,
+      directionalCount: 0,
+      additionalDirectional: [],
+      point: [],
+      spot: [],
+      rect: [],
+      pointShadow: [],
+      depthBias: undefined,
+      normalBias: undefined,
+      directionalShadowError: undefined,
+      directionalCsmConfig: undefined,
+      directionalCsmDirection: undefined,
+    },
+    environment: undefined,
+    environmentReady: false,
+    renderables: [],
+    dispatch: [],
+    skylight: undefined,
+    skylightCount: 0,
+    lightProbes: [],
+    skybox: undefined,
+    skyboxCount: 0,
+    fog: undefined,
+    frustumStats: { culled: 0, total: 0 },
+    visibilityStats: { explicitlyHidden: 0 },
+    materialTextureSources: { sourceFieldsVisited: 0, producerRoutes: {} },
+    postProcessParams: new Map(),
+    visibilitySnapshot: undefined,
+    hiddenEntityReports: [],
   };
 }
-
-type ExtractFramesOptions = NonNullable<Parameters<typeof extractFrames>[4]>;
-type WorldExtractRequest = NonNullable<Parameters<typeof prepareExtractContext>[1]>;
-type MutableWorldExtractRequest = {
-  -readonly [K in keyof WorldExtractRequest]: WorldExtractRequest[K];
-};
-
-/**
- * D-2: per-world extract with error isolation. Each world runs extractFrame
- * over the final state published by world.update(); a failed world routes to
- * its own error handler and its contribution is skipped (AC-09). The
- * camera-owner frame is extracted first because non-owner worlds cull against
- * its surfaced camera.
- */
-function extractWorldFrames(
-  worlds: readonly World[],
-  owners: ExtractFramesOwner,
-  assets: AssetRegistry | null | undefined,
-  materialSnapshotCachesByWorld: MaterialSnapshotCachesByWorld | undefined,
-  options: ExtractFramesOptions,
-): Map<number, ExtractedFrame> {
-  const { cameraOwner, resourceOwner } = owners;
-  // Resource-owner selection is a frame-level concern. Select Fog once before
-  // per-world extraction so non-owner worlds do not scan their ECS tables for
-  // a value that the merge layer will discard.
-  const resourceOwnerWorld = worlds[resourceOwner];
-  // A gated extraction selects the owner's Fog inside its own retained entries.
-  const resourceOwnerFog =
-    resourceOwnerWorld === undefined
-      ? null
-      : options.environmentGate === undefined
-        ? (selectFogFrame(resourceOwnerWorld) ?? null)
-        : undefined;
-  const extractionOrder = Array.from({ length: worlds.length }, (_, wi) => wi).sort((a, b) => {
-    if (a === cameraOwner) return -1;
-    if (b === cameraOwner) return 1;
-    return a - b;
-  });
-  const framesByWorld = new Map<number, ExtractedFrame>();
-  for (const wi of extractionOrder) {
-    const world = worlds[wi];
-    if (world === undefined) continue;
-    try {
-      const request = worldResourceRequest(world, assets, materialSnapshotCachesByWorld, options);
-      if (wi !== resourceOwner) request.resourceOwnerFog = null;
-      else if (resourceOwnerFog !== undefined) request.resourceOwnerFog = resourceOwnerFog;
-      worldViewRequest(wi, owners, options, framesByWorld.get(cameraOwner), request);
-      const prepared = prepareExtractContext(world, request);
-      framesByWorld.set(wi, extractFrame(world, prepared));
-    } catch (err) {
-      routeWorldExtractFailure(world, wi, err);
-    }
-  }
-  return framesByWorld;
-}
-
-/** Asset, material and preparation inputs owned by one World. */
-function worldResourceRequest(
-  world: World,
-  assets: AssetRegistry | null | undefined,
-  materialSnapshotCachesByWorld: MaterialSnapshotCachesByWorld | undefined,
-  request: ExtractFramesOptions,
-): MutableWorldExtractRequest {
-  const output: MutableWorldExtractRequest = {};
-  if (assets !== undefined) output.assets = assets;
-  if (materialSnapshotCachesByWorld !== undefined)
-    output.materialSnapshotContexts = materialSnapshotContextsFor(
-      materialSnapshotCachesByWorld,
-      world,
-    );
-  if (request.materialContext !== undefined) output.materialContext = request.materialContext;
-  if (request.preparationMesh?.world === world) output.preparationMesh = request.preparationMesh;
-  if (request.getMaterialShaderArtifact !== undefined)
-    output.getMaterialShaderArtifact = request.getMaterialShaderArtifact;
-  if (request.instanceCollections !== undefined)
-    output.instanceCollections = request.instanceCollections;
-  if (request.environmentGate !== undefined) output.environmentGate = request.environmentGate;
-  return output;
-}
-
-function materialSnapshotContextsFor(
-  cachesByWorld: MaterialSnapshotCachesByWorld,
-  world: World,
-): MaterialSnapshotContexts {
-  const existing = cachesByWorld.get(worldRenderResources(world));
-  if (existing !== undefined) return existing;
-  const cache: MaterialSnapshotContexts = new Map();
-  cachesByWorld.set(worldRenderResources(world), cache);
-  return cache;
-}
-
-/** Culling, camera selection and renderable membership of one World's view. */
-function worldViewRequest(
-  wi: number,
-  owners: ExtractFramesOwner,
-  request: ExtractFramesOptions,
-  cameraOwnerFrame: ExtractedFrame | undefined,
-  output: MutableWorldExtractRequest,
-): void {
-  const isCameraOwner = wi === owners.cameraOwner;
-  const renderableRequest = request.renderables ?? 'full';
-  const partialEntities =
-    typeof renderableRequest === 'object' ? renderableRequest.entitiesByWorld[wi] : undefined;
-  output.cull = request.cull === 'none' ? 'none' : isCameraOwner ? 'self' : 'external';
-  output.renderables = typeof renderableRequest === 'object' ? 'full' : renderableRequest;
-  if (isCameraOwner && owners.cameraEntityKey !== undefined)
-    output.cameraEntityKey = owners.cameraEntityKey;
-  if (isCameraOwner && request.view !== undefined) output.view = request.view;
-  if (partialEntities !== undefined) output.renderableEntities = partialEntities;
-  output.retainHidden = request.retainHidden ?? typeof renderableRequest === 'object';
-  output.worldId = wi;
-  if (cameraOwnerFrame !== undefined) {
-    output.cullCameras = cameraOwnerFrame.cameras;
-    output.ownerPlanarCapture = publishesPlanarCapture(cameraOwnerFrame.auxiliaryCameras);
-  }
-}
-
 function publishesPlanarCapture(
   auxiliaryCameras: readonly { readonly planarReflection?: unknown }[] | undefined,
 ): boolean {
   return auxiliaryCameras?.some((camera) => camera.planarReflection !== undefined) ?? false;
 }
-
-function routeWorldExtractFailure(world: World, wi: number, err: unknown): void {
-  // Camera effect parameters are part of the public render contract. Keep
-  // their typed validation error on the renderer path so draw() can return
-  // a RenderError and publish the invalid inspection state; ordinary
-  // per-world extraction failures retain the existing world-local route.
-  if (err instanceof MotionBlurValidationError || err instanceof ProjectedDecalInvalidError)
-    throw err;
-  try {
-    createWorldInternalView(world)._routeError(err, {
-      severity: Severity.Error,
-      systemName: `RenderSystem.extractFrames(world[${wi}])`,
-    });
-  } catch {
-    // If _routeError itself throws, the world already failed — skip silently.
-  }
-}
-
-/**
- * AC-04: renderables concat by worlds[] order with their worldId stamped; D-3:
- * per-world dispatch renderableIndex is rebased by the base offset, then
- * stable-sorted by queue value.
- */
-function mergeRenderables(
-  worlds: readonly World[],
-  frames: readonly ExtractedFrame[],
-  worldIds: readonly number[],
-) {
-  const only = frames.length === 1 ? frames[0] : undefined;
-  if (only !== undefined)
-    return {
-      renderables: only.renderables,
-      dispatch: only.dispatch,
-      visibilitySnapshots: only.visibilitySnapshots,
-      featureVisibilitySnapshots: only.featureVisibilitySnapshots,
-      hiddenEntityReports: only.hiddenEntityReports,
-    };
-  const renderables: RenderableSnapshot[] = [];
-  const dispatch: DispatchEntry[] = [];
-  const visibilitySnapshots: VisibilitySnapshot[] = [];
-  const featureVisibilitySnapshots: RenderFeatureWorldVisibilitySnapshot[] = [];
-  const hiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
-  for (let fi = 0; fi < frames.length; fi++) {
-    const f = frames[fi];
-    const wId = worldIds[fi];
-    if (f === undefined || wId === undefined) continue;
-    const base = renderables.length;
-    const visibilitySnapshot = f.visibilitySnapshots[0];
-    const world = worlds[wId];
-    if (visibilitySnapshot !== undefined) {
-      visibilitySnapshots.push(visibilitySnapshot);
-      if (world !== undefined)
-        featureVisibilitySnapshots.push({ world, snapshot: visibilitySnapshot });
-    }
-    for (const report of f.hiddenEntityReports) hiddenEntityReports.push(report);
-    // The extraction producer already stamps its actual World index, including
-    // Points/Lines. Composition adds dispatch offsets, not another row envelope.
-    for (const r of f.renderables) renderables.push(r);
-    for (const d of f.dispatch) {
-      dispatch.push({ ...d, renderableIndex: (d.renderableIndex ?? 0) + base });
-    }
-  }
-  dispatch.sort((a, b) => (a.queue ?? 0) - (b.queue ?? 0));
-  return {
-    renderables,
-    dispatch,
-    visibilitySnapshots,
-    featureVisibilitySnapshots,
-    hiddenEntityReports: frames.every((frame) =>
-      isOwnedHiddenEntityReports(frame.hiddenEntityReports),
-    )
-      ? captureHiddenEntityReports(hiddenEntityReports)
-      : hiddenEntityReports,
-  };
-}
-
-/** True when the world's sun-lane owner requests a shadow (a CSM config or its validation error). */
-function requestsDirectionalShadow(lights: LightRoster): boolean {
-  return lights.directionalCsmConfig !== undefined || lights.directionalShadowError !== undefined;
-}
-
-/**
- * AC-04: point/spot/rect/pointShadow concat; the directional light and its
- * shadow configuration come from the first world (in worlds[] order) whose
- * directional light requests a shadow, else the first world that has one;
- * every other directional light joins additionalDirectional unshadowed and a
- * demoted castShadow one is reported as ignored; directionalCount sums. Each
- * view fits the cascades against its own camera.
- */
-function mergeLights(
-  worlds: readonly World[],
-  frames: readonly ExtractedFrame[],
-  worldIds: readonly number[],
-  routedError?: () => void,
-): LightRoster {
-  const point: PointLightSnapshot[] = [];
-  const spot: SpotLightSnapshot[] = [];
-  const rect: RectAreaDirectLightSnapshot[] = [];
-  const pointShadow: PointShadowSnapshot[] = [];
-  const additionalDirectional: DirectionalLightSnapshot[] = [];
-  let nextIesSlice = 0;
-  const ignoredDirectionalShadowCasters: EntityHandle[] = [];
-  const carry =
-    frames.find((f) => f !== undefined && requestsDirectionalShadow(f.lights))?.lights ??
-    frames.find((f) => f?.lights.directional !== undefined)?.lights;
-  let directionalCount = 0;
-  for (let fi = 0; fi < frames.length; fi += 1) {
-    const f = frames[fi];
-    const wId = worldIds[fi] ?? 0;
-    if (f === undefined) continue;
-    // Handles belong to their World. Allocate the shared GPU array only here,
-    // after composition, so two Worlds' handle 1 cannot alias a texture layer.
-    const iesSlices = new Map<number, number | undefined>();
-    const withIesSlice = <
-      T extends PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot,
-    >(
-      light: T,
-    ): T => {
-      const handle = light.iesProfileHandle;
-      if (handle === undefined || light.iesProfileData === undefined) return light;
-      if (!iesSlices.has(handle)) {
-        const slice = nextIesSlice < IES_SLICE_CAPACITY ? nextIesSlice++ : undefined;
-        iesSlices.set(handle, slice);
-        const world = worlds[wId];
-        if (slice === undefined && world !== undefined) {
-          routeIesCapacity(world, wId, light, handle);
-          routedError?.();
-        }
+/** IES slots belong to this Renderer source; handles cannot alias another source. */
+function finalizeLights(world: World, lights: LightRoster, routedError?: () => void): LightRoster {
+  const slices = new Map<number, number | undefined>();
+  let nextSlice = 0;
+  const withSlice = <
+    T extends PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot,
+  >(
+    light: T,
+  ): T => {
+    const handle = light.iesProfileHandle;
+    if (handle === undefined || light.iesProfileData === undefined) return light;
+    if (!slices.has(handle)) {
+      const slice = nextSlice < IES_SLICE_CAPACITY ? nextSlice++ : undefined;
+      slices.set(handle, slice);
+      if (slice === undefined) {
+        routeIesCapacity(world, light, handle);
+        routedError?.();
       }
-      const slice = iesSlices.get(handle);
-      return { ...light, iesProfileSlice: slice };
-    };
-    for (const p of f.lights.point) point.push({ ...withIesSlice(p), worldId: wId });
-    for (const s of f.lights.spot) spot.push({ ...withIesSlice(s), worldId: wId });
-    for (const r of f.lights.rect) rect.push({ ...withIesSlice(r), worldId: wId });
-    for (const ps of f.lights.pointShadow) pointShadow.push({ ...ps, worldId: wId });
-    const directional = f.lights.directional;
-    if (f.lights !== carry && directional !== undefined) {
-      additionalDirectional.push(directional);
-      if (requestsDirectionalShadow(f.lights) && directional.entity !== undefined)
-        ignoredDirectionalShadowCasters.push(directional.entity);
     }
-    for (const d of f.lights.additionalDirectional ?? []) additionalDirectional.push(d);
-    for (const e of f.lights.ignoredDirectionalShadowCasters ?? [])
-      ignoredDirectionalShadowCasters.push(e);
-    directionalCount += f.lights.directionalCount;
-  }
+    return { ...light, iesProfileSlice: slices.get(handle) };
+  };
   return {
-    directional: carry?.directional,
-    directionalCount,
-    additionalDirectional,
-    ignoredDirectionalShadowCasters,
-    point,
-    spot,
-    rect,
-    depthBias: carry?.depthBias,
-    normalBias: carry?.normalBias,
-    directionalShadowError: carry?.directionalShadowError,
-    pointShadow,
-    directionalCsmConfig: carry?.directionalCsmConfig,
-    directionalCsmDirection: carry?.directionalCsmDirection,
+    ...lights,
+    point: lights.point.map(withSlice),
+    spot: lights.spot.map(withSlice),
+    rect: lights.rect.map(withSlice),
   };
 }
 
 function routeIesCapacity(
   world: World,
-  worldId: number,
   light: PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot,
   handle: number,
 ): void {
@@ -636,53 +392,14 @@ function routeIesCapacity(
       entity: 'entity' in light ? (light.entity ?? 0) : 0,
       feature: 'ies',
       generation: 0,
-      sourceKey: `${worldId}:${handle}`,
+      sourceKey: `${handle}`,
       reason: 'capacity',
-      expected: `at most ${IES_SLICE_CAPACITY} distinct IES profiles per composition`,
+      expected: `at most ${IES_SLICE_CAPACITY} distinct IES profiles per source`,
       actual: 'IES array capacity exhausted',
       hint: 'share profiles or reduce distinct profiles; excess modifiers are identity',
     }),
     { severity: Severity.Error, systemName: 'RenderSystem.extract (ies-profile)' },
   );
-}
-
-/**
- * User-authored PostProcessParams are singleton scene resources from the
- * resourceOwner world. The engine Standard tonemap param is not a scene
- * resource: extractFrame bridges it from that world's own camera, so it lives
- * on the camera-owner frame (feat-20260709-editor-world-partition defect 1).
- * Overlay it so the surfaced camera's exposure reaches the tonemap pass, and
- * drop a stale resource-owner entry when no camera surfaced this frame.
- */
-function ownerPostProcessParams(
-  cameraOwnerFrame: ExtractedFrame | undefined,
-  resourceOwnerFrame: ExtractedFrame | undefined,
-): Map<string, Uint8Array> {
-  const postProcessParams = new Map(resourceOwnerFrame?.postProcessParams);
-  const cameraTonemapParam = cameraOwnerFrame?.postProcessParams.get(
-    STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
-  );
-  if (cameraTonemapParam !== undefined) {
-    postProcessParams.set(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, cameraTonemapParam);
-  } else {
-    postProcessParams.delete(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
-  }
-  return postProcessParams;
-}
-
-function mergeMaterialTextureSources(
-  frames: readonly ExtractedFrame[],
-): MaterialTextureSourceStats {
-  const merged: MaterialTextureSourceStats = { sourceFieldsVisited: 0, producerRoutes: {} };
-  for (const frame of frames) {
-    const stats = frame.materialTextureSources;
-    if (stats === undefined) continue;
-    merged.sourceFieldsVisited += stats.sourceFieldsVisited;
-    for (const [route, count] of Object.entries(stats.producerRoutes)) {
-      merged.producerRoutes[route] = (merged.producerRoutes[route] ?? 0) + count;
-    }
-  }
-  return merged;
 }
 
 export function morphSnapshotFor(
@@ -777,10 +494,7 @@ function extractEnvironmentPart(
   context: PreparedExtractContext,
   worldInternal: WorldInternalView,
 ) {
-  const fog =
-    context.resourceOwnerFog === undefined
-      ? selectFogFrame(world)
-      : (context.resourceOwnerFog ?? undefined);
+  const fog = selectFogFrame(world);
   const fogFailure = fogState(world).failure;
   const environment = extractWorldEnvironment(world, context, worldInternal, fog);
   const projectedDecals = extractProjectedDecals(world, context);
@@ -791,10 +505,6 @@ function extractEnvironmentPart(
 }
 
 export function extractFrame(world: World, context: PreparedExtractContext): ExtractedFrame {
-  // feat-20260708-composited-multi-world-rendering M2 / D-2: resetForFrame
-  // has been lifted to extractFrames (the frame-level entry point).
-  // extractFrame is now a pure world->snapshot function with no frame-level
-  // side effects. See plan-decisions PD2 for the reviewer ruling.
   // Environment reads are owned by the retained resource projection and are
   // established at the frame boundary; record never revisits World state.
   const worldInternal = createWorldInternalView(world);
@@ -804,7 +514,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       ? extractEnvironmentPart(world, context, worldInternal)
       : gate.read(
           world,
-          `${context.worldId}:${context.cameraEntityKey}:${getActiveCamera(world)?.entity}:${context.view?.extent.width}x${context.view?.extent.height}:${context.view?.extent.eye}:${context.resourceOwnerFog === null}`,
+          `${context.cameraEntityKey}:${getActiveCamera(world)?.entity}:${context.view?.extent.width}x${context.view?.extent.height}:${context.view?.extent.eye}`,
           (routedError) => {
             const part = extractEnvironmentPart(world, context, {
               ...worldInternal,
@@ -824,19 +534,14 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           },
         );
   const cameras = environment.cameras;
-  // Planar receivers shade forward only where a PlanarReflection capture is
-  // published; a composite non-owner world follows its camera owner.
-  setPlanarCaptureDemand(
-    world,
-    context.cull === 'external'
-      ? context.ownerPlanarCapture === true
-      : publishesPlanarCapture(environment.auxiliaryCameras),
-  );
+  // Planar receivers shade forward only while this source publishes a capture.
+  setPlanarCaptureDemand(world, publishesPlanarCapture(environment.auxiliaryCameras));
   const scope = createWorldExtraction(world, context, worldInternal, environment.lights, cameras);
   if (context.renderables !== 'none') {
     extractMeshRenderers(scope);
     extractDerivedRenderSources(scope);
   }
+  extractWaterMeshSources(scope);
   // M3 / w26: sort dispatch entries by queue (ascending, stable sort)
   // per plan-strategy D-3.
   const dispatch = sortDispatchByQueue(scope.dispatch);
@@ -854,6 +559,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       : { volumetricFog: environment.volumetricFog }),
     ...(environment.cloudLayer === undefined ? {} : { cloudLayer: environment.cloudLayer }),
     renderables: scope.renderables,
+    ...(scope.waterMeshOwnerRefresh === undefined
+      ? {}
+      : { waterMeshOwnerRefreshes: [scope.waterMeshOwnerRefresh] }),
     dispatch,
     skylight: environment.skylight,
     skylightCount: environment.skylightCount,
@@ -866,9 +574,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     visibilityStats: { explicitlyHidden: scope.explicitlyHidden.size },
     materialTextureSources: scope.materialTextureSources,
     postProcessParams,
-    visibilitySnapshots: [context.visibility],
-    featureVisibilitySnapshots: [{ world, snapshot: context.visibility }],
-    hiddenEntityReports: captureHiddenEntities(world, scope.explicitlyHidden),
+    visibilitySnapshot: context.visibility,
+    hiddenEntityReports: captureHiddenEntities(scope.explicitlyHidden),
   };
 }
 
@@ -897,23 +604,23 @@ function createWorldExtraction(
     sourceFieldsVisited: 0,
     producerRoutes: {},
   };
-  // feat-20260708-composited-multi-world-rendering M2 / D-4: a composite
-  // non-owner world uses the camera-owner snapshots, not its own cameras.
-  // This keeps culling correct when the surfaced camera and renderables live
-  // in different worlds. The explicit 'none' mode remains the always-visible
-  // escape hatch for callers that genuinely need it. Cameras with degenerate
-  // projection parameters produce empty planes and keep entities visible.
+  // A resolved view can supply its own culling camera snapshots. Explicit
+  // 'none' bypasses culling; degenerate projection planes retain visibility.
   const cullingCameras = context.cull === 'external' ? (context.cullCameras ?? []) : cameras;
   return {
     world,
     context,
     worldInternal,
+    cameras,
     assets: world.assets === undefined ? context.assets : runtimeAssetRegistry(world.assets),
     visibility: context.visibility.hasAnyHiddenIntent ? context.visibility : undefined,
     materialLanes,
     materialTextureSources,
     renderables,
     dispatch,
+    waterMeshOwnerRefresh: undefined as
+      | NonNullable<ExtractedFrame['waterMeshOwnerRefreshes']>[number]
+      | undefined,
     explicitlyHidden: new Set<EntityHandle>(),
     shadowFrusta: context.cull === 'none' ? [] : buildShadowFrusta(lights, cameras[0]),
     frustumPlanes: context.cull === 'none' ? [] : buildCameraFrusta(cullingCameras),
@@ -975,7 +682,6 @@ function extractDerivedRenderSources(scope: WorldExtraction): void {
       world,
       scope.assets,
       context.materialContext,
-      context.worldId,
       renderables,
       scope.dispatch,
       context.renderableEntities,
@@ -985,7 +691,6 @@ function extractDerivedRenderSources(scope: WorldExtraction): void {
     );
   extractGlyphSources(
     world,
-    context.worldId,
     renderables,
     context.renderableEntities,
     visibility,
@@ -994,13 +699,1081 @@ function extractDerivedRenderSources(scope: WorldExtraction): void {
   );
   extractTilemapSources(
     world,
-    context.worldId,
     renderables,
     context.renderableEntities,
     visibility,
     context.retainHidden,
     explicitlyHidden,
   );
+}
+
+type WaterOwnerMeshDraw =
+  | {
+      readonly materialKey: string;
+      readonly draw: import('@forgeax/engine-water').WaterMeshOwnerDraw;
+    }
+  | {
+      readonly materialKey: string;
+      readonly gpu: WaterGpuMeshDraw;
+      readonly source: WaterGpuMeshZone;
+    };
+
+function waterMeshSourceAtMaterialOffset(
+  source: WaterMeshOwnerSource['source'],
+  materialOffset: number,
+): WaterMeshOwnerSource['source'] {
+  if (materialOffset === 0) return source;
+  return Object.freeze({
+    ...source,
+    materialStartIndex: source.materialStartIndex + materialOffset,
+    views: Object.freeze(
+      source.views.map((view) =>
+        Object.freeze({
+          viewIdentity: view.viewIdentity,
+          draws: Object.freeze(
+            view.draws.map((draw) => offsetWaterMeshAdmissionDraw(draw, materialOffset)),
+          ),
+        }),
+      ),
+    ),
+  });
+}
+
+function composeWaterMeshOwnerRow(
+  scope: WorldExtraction,
+  owner: WaterMeshOwnerSource,
+  ordinary: RenderableSnapshot | undefined,
+): RenderableSnapshot {
+  const waterMaterials = owner.materials;
+  const waterMeshSource = waterMeshSourceAtMaterialOffset(
+    owner.source,
+    ordinary?.materials.length ?? 0,
+  );
+  const defaultMaterial = MaterialResource.from(defaultMaterialSnapshot(0));
+  const material = ordinary?.material ?? waterMaterials[0] ?? defaultMaterial;
+  const materials = [...(ordinary?.materials ?? []), ...waterMaterials];
+  if (materials.length === 0) materials.push(material);
+  const materialBindingSources = [
+    ...(ordinary?.materialBindingSources ?? []),
+    ...waterMaterials.map(() => 'mesh-default' as const),
+  ];
+  if (materialBindingSources.length === 0) materialBindingSources.push('mesh-default');
+  const {
+    waterMeshSource: _waterMeshSource,
+    waterOwner: _waterOwner,
+    waterMeshTiles: _waterMeshTiles,
+    ...ordinaryFacts
+  } = ordinary ?? {};
+  return {
+    ...ordinaryFacts,
+    waterMeshSource,
+    layer: ordinary?.layer ?? 0,
+    ...(ordinary?.shadowCaster === undefined
+      ? { shadowCaster: false as const }
+      : { shadowCaster: ordinary.shadowCaster }),
+    authorVisible: ordinary?.authorVisible ?? true,
+    transform: ordinary?.transform ?? {
+      world: new Float32Array(
+        readPresentationWorldMatrix(scope.world, owner.entityKey as EntityHandle) ?? [
+          1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+        ],
+      ),
+    },
+    material,
+    materials,
+    materialOverrides: ordinary?.materialOverrides ?? [],
+    materialBindingSources,
+    materialBindingDiagnostics: ordinary?.materialBindingDiagnostics ?? [],
+    entityKey: owner.entityKey,
+    lightingChannels: ordinary?.lightingChannels ?? 0xffff_ffff,
+  };
+}
+
+function replaceWaterMeshOwnerRow(scope: WorldExtraction, renderable: RenderableSnapshot): void {
+  const index = scope.renderables.findIndex((row) => row.entityKey === renderable.entityKey);
+  if (index >= 0) scope.renderables[index] = renderable;
+  else scope.renderables.push(renderable);
+}
+
+function extractMissingWaterOwnerMeshRows(
+  scope: WorldExtraction,
+  entities: Iterable<number>,
+): void {
+  const missing = [...new Set(entities)].filter(
+    (entity) => !scope.renderables.some((row) => row.entityKey === entity),
+  );
+  if (missing.length === 0) return;
+  extractDerivedRenderSources({
+    ...scope,
+    context: {
+      ...scope.context,
+      renderables: 'full',
+      renderableEntities: new Set(missing),
+    },
+  });
+  const skinComponent =
+    (scope.world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  const query = queryMeshRenderers(scope.world, skinComponent);
+  for (const entity of missing) {
+    const row = query.at(entity as EntityHandle);
+    if (row !== undefined) extractMeshRendererRow(scope, row.entity, skinComponent);
+  }
+}
+
+function validWaterMeshViewFacts(
+  facts: WaterMeshViewFacts | undefined,
+): WaterMeshViewFacts | undefined {
+  return facts?.version === 1 &&
+    Number.isSafeInteger(facts.canvasExtent.width) &&
+    facts.canvasExtent.width > 0 &&
+    Number.isSafeInteger(facts.canvasExtent.height) &&
+    facts.canvasExtent.height > 0 &&
+    Number.isSafeInteger(facts.maxRenderShortSide) &&
+    facts.maxRenderShortSide >= 0
+    ? facts
+    : undefined;
+}
+
+function waterMeshCameraViews(
+  sourceCamera: CameraSnapshot,
+  context: PreparedExtractContext,
+): readonly { readonly camera: CameraSnapshot; readonly frustumResolved: boolean }[] {
+  if (
+    context.view !== undefined ||
+    context.waterMeshCameraRosterResolved === true ||
+    sourceCamera.eye !== undefined
+  )
+    return [{ camera: sourceCamera, frustumResolved: true }];
+
+  const eyes: readonly (StereoEye | undefined)[] =
+    sourceCamera.stereo === undefined ? [undefined] : ['left', 'right'];
+  const facts = validWaterMeshViewFacts(context.waterMeshViewFacts);
+  const authoredView = sourceCamera.view ?? CAMERA_VIEW_DEFAULTS;
+  return eyes.flatMap((eye) => {
+    if (facts !== undefined) {
+      const maxRenderShortSide =
+        facts.maxRenderShortSide === 0
+          ? authoredView.maxRenderShortSide
+          : authoredView.maxRenderShortSide === 0
+            ? facts.maxRenderShortSide
+            : Math.min(authoredView.maxRenderShortSide, facts.maxRenderShortSide);
+      const cappedView = { ...authoredView, maxRenderShortSide };
+      const view =
+        eye === undefined || sourceCamera.stereo === undefined
+          ? cappedView
+          : {
+              ...cappedView,
+              viewport: stereoEyeViewport(
+                cappedView.viewport,
+                sourceCamera.stereo,
+                eye,
+                new Float32Array(4),
+              ),
+            };
+      const extent = cameraViewExtent(view, facts.canvasExtent.width, facts.canvasExtent.height);
+      const camera = cameraForView([sourceCamera], sourceCamera.entityKey, {
+        width: extent.renderWidth,
+        height: extent.renderHeight,
+        ...(eye === undefined ? {} : { eye }),
+      });
+      if (camera !== undefined) return [{ camera, frustumResolved: true }];
+    }
+
+    const camera =
+      eye === undefined
+        ? sourceCamera
+        : stereoEyeCameras(sourceCamera).find((candidate) => candidate.eye?.side === eye);
+    if (camera === undefined) return [];
+    return [
+      {
+        camera,
+        frustumResolved: sourceCamera.autoAspect === false,
+      },
+    ];
+  });
+}
+
+function extractWaterMeshSources(scope: WorldExtraction): void {
+  const { world, context } = scope;
+  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
+    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
+    : undefined;
+  const bodySnapshots = water?.snapshots() ?? [];
+  const resolveWaterMeshCameraRoster = () => {
+    const cameraRoster =
+      context.view !== undefined
+        ? context.view.camera === undefined
+          ? []
+          : [context.view.camera]
+        : context.cull === 'external'
+          ? (context.cullCameras ?? [])
+          : scope.cameras;
+    return cameraRoster;
+  };
+  const cameraRoster = resolveWaterMeshCameraRoster();
+  const camerasByView = new Map<
+    string,
+    { readonly camera: CameraSnapshot; readonly frustumResolved: boolean }
+  >();
+  const captureWaterMeshCameras = () => {
+    for (const sourceCamera of cameraRoster) {
+      if (sourceCamera.target !== undefined || sourceCamera.view?.enabled === false) continue;
+      for (const { camera, frustumResolved } of waterMeshCameraViews(sourceCamera, context)) {
+        if (camera.target !== undefined || camera.view?.enabled === false) continue;
+        camerasByView.set(renderFeatureViewIdentity(camera), { camera, frustumResolved });
+      }
+    }
+  };
+  captureWaterMeshCameras();
+  const displayViews = [...camerasByView.entries()]
+    .map(([viewIdentity, facts]) => ({ viewIdentity, ...facts }))
+    .sort((left, right) =>
+      left.viewIdentity < right.viewIdentity ? -1 : left.viewIdentity > right.viewIdentity ? 1 : 0,
+    );
+  const views = displayViews.map((view) => {
+    const packedFrustum = view.frustumResolved ? buildCameraFrusta([view.camera])[0] : undefined;
+    const frustumPlanes =
+      packedFrustum === undefined
+        ? undefined
+        : Array.from({ length: 6 }, (_, planeIndex) => ({
+            normal: [
+              packedFrustum[planeIndex * 4] ?? 0,
+              packedFrustum[planeIndex * 4 + 1] ?? 0,
+              packedFrustum[planeIndex * 4 + 2] ?? 0,
+            ] as const,
+            distance: packedFrustum[planeIndex * 4 + 3] ?? 0,
+          }));
+    return { ...view, packedFrustum, frustumPlanes };
+  });
+  if (context.view === undefined)
+    water?.retireWaterMeshViewsExcept(views.map((view) => view.viewIdentity));
+  const bodyFacts = bodySnapshots.map((body) => {
+    const match = /^scene-entity:(\d+)$/.exec(body.guid);
+    const entity = match === null ? undefined : (Number(match[1]) as EntityHandle);
+    const entityLive =
+      entity !== undefined &&
+      Number.isSafeInteger(entity) &&
+      world.hasComponent(entity, WaterBodyInstance);
+    const visibility = entityLive ? (scope.visibility?.effective(entity) ?? 'visible') : 'missing';
+    const receipt = (kind: 'geometry' | 'waterInfo') => {
+      const value = body.outputReceipts[kind];
+      return value === undefined ? null : [value.outputGeneration, value.digest];
+    };
+    return [
+      body.guid,
+      body.sourceVersion,
+      body.sceneGeneration,
+      body.binding.kind,
+      body.binding.kind === 'bound' ? body.binding.zoneGuid : (body.binding.requestedGuid ?? null),
+      body.binding.kind === 'bound' ? body.binding.zoneGeneration : 0,
+      body.asset.flags.affectsWaterMesh,
+      body.asset.renderOptions?.visible !== false,
+      entityLive,
+      visibility,
+      body.outputs.geometry,
+      body.outputGenerations.geometry,
+      body.dirty.has('geometry'),
+      receipt('geometry'),
+      body.outputs.waterInfo,
+      body.outputGenerations.waterInfo,
+      body.dirty.has('waterInfo'),
+      receipt('waterInfo'),
+    ];
+  });
+  const waterBodiesPresent = bodySnapshots.some((body) => body.asset.flags.affectsWaterMesh);
+  const viewFacts = views.map((view) => [
+    view.viewIdentity,
+    ...view.camera.position,
+    view.packedFrustum === undefined ? null : Array.from(view.packedFrustum),
+  ]);
+  const captureWaterMeshZones = () => {
+    const zones =
+      water !== undefined && waterBodiesPresent && views.length > 0 ? water.zoneSnapshots() : [];
+    return zones;
+  };
+  const zones = captureWaterMeshZones();
+  const zoneFacts = zones.map((zone) => [
+    zone.guid,
+    zone.generation,
+    ...zone.worldMatrixM,
+    zone.asset.extentM.spanXM,
+    zone.asset.extentM.spanZM,
+    zone.asset.tileSizeM,
+    zone.asset.tessellationFactor,
+    zone.asset.lodScale,
+    zone.asset.waterInfo.format,
+    zone.asset.farExtentM ?? null,
+    zone.asset.farMaterialGuid ?? null,
+    zone.asset.gpuMesh ?? null,
+  ]);
+  const ownerRostersByView = new Map<string, ReadonlySet<string>>();
+  const ownerRosterFacts =
+    water !== undefined && waterBodiesPresent
+      ? views.map((view) => {
+          const ownerKeys = water
+            .waterMeshOwnerRoster(view.viewIdentity)
+            .map((owner) =>
+              JSON.stringify([
+                owner.bodyGuid,
+                owner.bodyGeneration,
+                owner.zoneGuid,
+                owner.zoneGeneration,
+                owner.waterInfoFormat,
+              ]),
+            )
+            .sort();
+          ownerRostersByView.set(view.viewIdentity, new Set(ownerKeys));
+          return [view.viewIdentity, ownerKeys];
+        })
+      : null;
+  const captureWaterMeshMaterialContext = () => {
+    const materialWorld = worldRenderResources(world);
+    const waterMaterialCache = materialSnapshotContext(
+      context.materialSnapshotContexts,
+      'mesh',
+      false,
+    );
+    const materialKeys = new Set<string>();
+    const captureWaterMeshMaterialKeys = () => {
+      for (const body of bodySnapshots) {
+        if (!body.asset.flags.affectsWaterMesh) continue;
+        for (const key of [
+          body.asset.surfaceMaterialGuid,
+          body.asset.riverToLakeTransitionMaterialGuid,
+          body.asset.riverToOceanTransitionMaterialGuid,
+        ])
+          if (key !== undefined) materialKeys.add(key);
+      }
+      for (const zone of zones)
+        if (zone.asset.farMaterialGuid !== undefined) materialKeys.add(zone.asset.farMaterialGuid);
+    };
+    captureWaterMeshMaterialKeys();
+    return { materialWorld, waterMaterialCache, materialKeys };
+  };
+  const { materialWorld, waterMaterialCache, materialKeys } = captureWaterMeshMaterialContext();
+  const materialRecords = world.assets === undefined ? undefined : runtimeAssets(world.assets);
+  const materialFacts = [...materialKeys].sort().map((key) => {
+    const handle = materialWorld.handleForGuid(key);
+    if (handle === undefined) return [key, null];
+    const asset = materialWorld.resolveAsset(handle);
+    // The runtime graph already flattens material parents into actual resource dependencies.
+    const revisions: Array<readonly [number, number | null]> = [];
+    const pending = [handle];
+    const visited = new Set<number>();
+    while (pending.length > 0) {
+      const dependency = pending.pop();
+      if (dependency === undefined || visited.has(dependency)) continue;
+      visited.add(dependency);
+      revisions.push([dependency, materialWorld.assetRevision(dependency) ?? null]);
+      const dependencies = materialRecords?.dependencies(dependency);
+      if (dependencies?.ok) pending.push(...dependencies.value);
+    }
+    return [key, handle, asset.ok ? asset.value.kind : null, revisions];
+  });
+  const inputKey = JSON.stringify([
+    waterBodiesPresent ? viewFacts : null,
+    bodyFacts,
+    zoneFacts,
+    ownerRosterFacts,
+    materialFacts,
+    water?.bakedQueryRevision,
+  ]);
+  const acceptedInput = context.waterMeshSourceState;
+  if (
+    acceptedInput !== undefined &&
+    acceptedInput.system === water &&
+    acceptedInput.inputKey === inputKey &&
+    acceptedInput.ownerSources !== undefined
+  ) {
+    const restoreAcceptedWaterMeshRows = (ownerSources: readonly WaterMeshOwnerSource[]) => {
+      const requested = (entity: number) =>
+        context.renderables !== 'none' &&
+        (context.renderableEntities === undefined || context.renderableEntities.has(entity));
+      for (const owner of ownerSources) {
+        if (
+          !requested(owner.entityKey) ||
+          !world.hasComponent(owner.entityKey as EntityHandle, WaterBodyInstance) ||
+          scope.visibility?.effective(owner.entityKey as EntityHandle) === 'hidden'
+        )
+          continue;
+        const ordinary = scope.renderables.find((row) => row.entityKey === owner.entityKey);
+        replaceWaterMeshOwnerRow(scope, composeWaterMeshOwnerRow(scope, owner, ordinary));
+      }
+    };
+    restoreAcceptedWaterMeshRows(acceptedInput.ownerSources);
+    return;
+  }
+  scope.waterMeshOwnerRefresh = Object.freeze({
+    worldId: 0,
+    system: water,
+    inputKey,
+    ownerEntityKeys: Object.freeze([]),
+    ownerSources: Object.freeze([]),
+  });
+  extractMissingWaterOwnerMeshRows(scope, acceptedInput?.ownerEntityKeys ?? []);
+  if (water === undefined || !waterBodiesPresent || views.length === 0) return;
+  const waterMeshEntities = new Set<EntityHandle>();
+  const captureWaterMeshEntities = () => {
+    for (const body of bodySnapshots) {
+      if (!body.asset.flags.affectsWaterMesh || body.binding.kind !== 'bound') continue;
+      const match = /^scene-entity:(\d+)$/.exec(body.guid);
+      if (!match) continue;
+      const entity = Number(match[1]) as EntityHandle;
+      if (
+        Number.isSafeInteger(entity) &&
+        world.hasComponent(entity, WaterBodyInstance) &&
+        scope.visibility?.effective(entity) !== 'hidden'
+      )
+        waterMeshEntities.add(entity);
+    }
+  };
+  captureWaterMeshEntities();
+  if (waterMeshEntities.size === 0) return;
+  extractMissingWaterOwnerMeshRows(scope, waterMeshEntities);
+  type SelectedOwnerDraws = {
+    bodyGuid: string;
+    bodyGeneration: number;
+    zoneGuid: string;
+    zoneGeneration: number;
+    targetFormat: 'rgba16float' | 'rgba32float';
+    draws: WaterOwnerMeshDraw[];
+  };
+  type SelectedOwnerViews = Omit<SelectedOwnerDraws, 'draws'> & {
+    readonly views: Map<string, readonly WaterOwnerMeshDraw[]>;
+  };
+  const selectedOwners = new Map<string, SelectedOwnerViews>();
+  const groupPublication = (
+    publication: import('@forgeax/engine-water').WaterZoneMeshPublication,
+    roster: ReadonlySet<string>,
+  ) => {
+    const groups = new Map<string, SelectedOwnerDraws>();
+    for (const bucket of publication.receipt.buckets)
+      for (const draw of bucket.ownerDraws) {
+        if (publication.sourceGenerations[draw.ownerGuid] !== draw.ownerGeneration) continue;
+        const rosterKey = JSON.stringify([
+          draw.ownerGuid,
+          draw.ownerGeneration,
+          publication.zoneGuid,
+          publication.zoneGeneration,
+          publication.waterInfoFormat,
+        ]);
+        if (!roster.has(rosterKey)) continue;
+        const owner = groups.get(rosterKey) ?? {
+          bodyGuid: draw.ownerGuid,
+          bodyGeneration: draw.ownerGeneration,
+          zoneGuid: publication.zoneGuid,
+          zoneGeneration: publication.zoneGeneration,
+          targetFormat: publication.waterInfoFormat,
+          draws: [],
+        };
+        if (
+          owner.bodyGeneration !== draw.ownerGeneration ||
+          owner.zoneGuid !== publication.zoneGuid ||
+          owner.zoneGeneration !== publication.zoneGeneration ||
+          owner.targetFormat !== publication.waterInfoFormat
+        )
+          continue;
+        owner.draws.push({ materialKey: bucket.materialKey, draw });
+        groups.set(rosterKey, owner);
+      }
+    return groups;
+  };
+  const selectWaterMeshViewOwners = (water: WaterSystem) => {
+    for (const view of views) {
+      const committedPublications: import('@forgeax/engine-water').WaterZoneMeshPublication[] = [];
+      const candidatePublications: import('@forgeax/engine-water').WaterZoneMeshPublication[] = [];
+      const failedZones: Array<{ readonly guid: string; readonly generation: number }> = [];
+      const roster = ownerRostersByView.get(view.viewIdentity) ?? new Set<string>();
+      const captureViewZonePublications = (water: WaterSystem) => {
+        for (const zone of zones) {
+          const input: WaterMeshViewInput = {
+            viewId: view.viewIdentity,
+            observerM: [
+              view.camera.position[0] ?? 0,
+              view.camera.position[1] ?? 0,
+              view.camera.position[2] ?? 0,
+            ],
+            ...(view.frustumPlanes === undefined ? {} : { frustumPlanes: view.frustumPlanes }),
+          };
+          const built = buildWaterZoneMeshViewForRenderer(
+            water,
+            zone.guid,
+            zone.generation,
+            zone.asset,
+            input,
+          );
+          const committed = waterZoneMeshViewForRenderer(water, zone.guid, view.viewIdentity);
+          if (committed !== undefined) committedPublications.push(committed);
+          if (built.ok) candidatePublications.push(built.value);
+          else failedZones.push({ guid: zone.guid, generation: zone.generation });
+        }
+      };
+      captureViewZonePublications(water);
+      const selectedForView = new Map<string, SelectedOwnerDraws>();
+      const committedOwnerKeys = new Set<string>();
+      const committedBodyGuids = new Set<string>();
+      const selectViewPublishedOwners = () => {
+        for (const publication of committedPublications)
+          for (const [ownerKey, owner] of groupPublication(publication, roster)) {
+            if (selectedForView.has(ownerKey)) continue;
+            selectedForView.set(ownerKey, owner);
+            committedOwnerKeys.add(ownerKey);
+            committedBodyGuids.add(owner.bodyGuid);
+          }
+        for (const publication of candidatePublications)
+          for (const [ownerKey, owner] of groupPublication(publication, roster)) {
+            if (committedBodyGuids.has(owner.bodyGuid) && !committedOwnerKeys.has(ownerKey))
+              continue;
+            selectedForView.set(ownerKey, owner);
+          }
+      };
+      selectViewPublishedOwners();
+      const selectViewGpuMeshOwners = () => {
+        for (const zone of zones) {
+          if (!zone.asset.gpuMesh) continue;
+          const admittedBodies = bodySnapshots.filter((body) => {
+            const entity =
+              body.instanceEntity ?? Number(/^scene-entity:(\d+)$/.exec(body.guid)?.[1]);
+            return (
+              waterMeshEntities.has(entity as EntityHandle) &&
+              roster.has(
+                JSON.stringify([
+                  body.guid,
+                  body.sceneGeneration,
+                  zone.guid,
+                  zone.generation,
+                  zone.asset.waterInfo.format === 'rgba32f' ? 'rgba32float' : 'rgba16float',
+                ]),
+              )
+            );
+          });
+          const built = buildWaterGpuMeshZone(world.identity, zone, admittedBodies, {
+            identity: view.viewIdentity,
+            position: view.camera.position,
+            farTiles:
+              (
+                candidatePublications.find((publication) => publication.zoneGuid === zone.guid) ??
+                committedPublications.find((publication) => publication.zoneGuid === zone.guid)
+              )?.receipt.instances ?? [],
+          });
+          if (!built.ok) {
+            scope.worldInternal._routeError(
+              new GpuDrivenPreparationError('resource-not-ready', {
+                reason: 'water-mesh-publication-missing',
+                owner: 'geometry',
+                expected: built.error.expected,
+              }),
+              {
+                severity: Severity.Error,
+                systemName: 'RenderSystem.extract (water-gpu-mesh-source)',
+              },
+            );
+            continue;
+          }
+          if (built.value === undefined) continue;
+          const source = built.value;
+          const anchor = source.bodies[0];
+          if (anchor === undefined) {
+            scope.worldInternal._routeError(
+              new GpuDrivenPreparationError('resource-not-ready', {
+                reason: 'water-mesh-publication-missing',
+                owner: 'geometry',
+                expected: 'a non-empty Water GPU mesh source body roster',
+                actual: 'empty body roster',
+              }),
+              {
+                severity: Severity.Error,
+                systemName: 'RenderSystem.extract (water-gpu-mesh-source)',
+              },
+            );
+            continue;
+          }
+          const targetFormat =
+            zone.asset.waterInfo.format === 'rgba32f' ? 'rgba32float' : 'rgba16float';
+          const key = JSON.stringify([
+            anchor.guid,
+            anchor.generation,
+            zone.guid,
+            zone.generation,
+            targetFormat,
+          ]);
+          const farDraws = selectedForView.get(key)?.draws ?? [];
+          selectedForView.set(key, {
+            bodyGuid: anchor.guid,
+            bodyGeneration: anchor.generation,
+            zoneGuid: zone.guid,
+            zoneGeneration: zone.generation,
+            targetFormat,
+            draws: [
+              ...farDraws,
+              ...source.materials.map((materialKey, materialBucket) => ({
+                materialKey,
+                source,
+                gpu: {
+                  zoneKey: source.key,
+                  materialBucket,
+                  viewIndex: 0,
+                  viewCount: 1,
+                  materialCount: source.materials.length,
+                  tileCapacity: source.tileCapacity,
+                  sourceBodies: source.bodies.map((body) => ({
+                    guid: body.guid,
+                    generation: body.generation,
+                  })),
+                },
+              })),
+            ],
+          });
+        }
+      };
+      selectViewGpuMeshOwners();
+      const selectedOwnerGuids = new Set(
+        [...selectedForView.values()].map((owner) => owner.bodyGuid),
+      );
+      const reportMissingViewMeshOwners = () => {
+        for (const zone of failedZones)
+          for (const body of bodySnapshots) {
+            if (
+              body.asset.zoneGuid !== zone.guid ||
+              !body.asset.flags.affectsWaterMesh ||
+              body.binding.kind !== 'bound' ||
+              body.binding.zoneGeneration !== zone.generation ||
+              selectedOwnerGuids.has(body.guid)
+            )
+              continue;
+            scope.worldInternal._routeError(
+              new GpuDrivenPreparationError('resource-not-ready', {
+                reason: 'water-mesh-publication-missing',
+                owner: 'geometry',
+                expected:
+                  'a current or retained generation-qualified WaterMesh publication and matching WaterInfo/wave closure',
+              }),
+              {
+                severity: Severity.Error,
+                systemName: 'RenderSystem.extract (water-mesh-not-ready)',
+              },
+            );
+          }
+      };
+      reportMissingViewMeshOwners();
+      for (const [ownerKey, owner] of selectedForView) {
+        const selected = selectedOwners.get(ownerKey) ?? {
+          bodyGuid: owner.bodyGuid,
+          bodyGeneration: owner.bodyGeneration,
+          zoneGuid: owner.zoneGuid,
+          zoneGeneration: owner.zoneGeneration,
+          targetFormat: owner.targetFormat,
+          views: new Map<string, readonly WaterOwnerMeshDraw[]>(),
+        };
+        selected.views.set(view.viewIdentity, owner.draws);
+        selectedOwners.set(ownerKey, selected);
+      }
+    }
+  };
+  selectWaterMeshViewOwners(water);
+  const replacedEntities = new Set<EntityHandle>();
+  const ownerSources = new Map<number, WaterMeshOwnerSource>();
+  let retryMaterials = false;
+  const publishSelectedWaterMeshOwners = (water: WaterSystem) => {
+    for (const owner of selectedOwners.values()) {
+      const ownerGuid = owner.bodyGuid;
+      const entityMatch = /^scene-entity:(\d+)$/.exec(ownerGuid);
+      if (!entityMatch) continue;
+      const entity = Number(entityMatch[1]) as EntityHandle;
+      if (
+        !Number.isSafeInteger(entity) ||
+        !world.hasComponent(entity, WaterBodyInstance) ||
+        scope.visibility?.effective(entity) === 'hidden'
+      )
+        continue;
+      const worldIdentity = world.identity;
+      const existingIndex = replacedEntities.has(entity)
+        ? -1
+        : scope.renderables.findIndex((renderable) => renderable.entityKey === entity);
+      const previousRenderable = existingIndex >= 0 ? scope.renderables[existingIndex] : undefined;
+      const waterMaterialResources: MaterialResource[] = [];
+      const materialIndices = new Map<number, number>();
+      const pendingMaterialSources = new Map<number, number>();
+      const sourceViews: NonNullable<RenderableSnapshot['waterMeshSource']>['views'][number][] = [];
+      let materialFailure:
+        | { readonly kind: 'pending'; readonly key: string }
+        | { readonly kind: 'missing'; readonly key: string }
+        | { readonly kind: 'invalid'; readonly key: string; readonly cause: unknown }
+        | undefined;
+      const orderedOwnerViews = [...owner.views].sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0,
+      );
+      for (const [viewIdentity, viewDraws] of orderedOwnerViews) {
+        const captureWaterMeshSourceViews = () => {
+          const sourceDraws: NonNullable<
+            RenderableSnapshot['waterMeshSource']
+          >['views'][number]['draws'][number][] = [];
+          for (const selection of viewDraws) {
+            const { materialKey } = selection;
+            const draw = 'draw' in selection ? selection.draw : undefined;
+            const waterMaterialHandle = resolveRuntimeAssetReference(
+              materialWorld,
+              materialKey,
+              'material',
+            );
+            if (waterMaterialHandle === undefined || scope.assets == null) {
+              const body = water.snapshot(ownerGuid);
+              const dependency =
+                body?.sceneGeneration === owner.bodyGeneration
+                  ? body.dependencies.find(
+                      (item) => item.guid === materialKey && item.kind === 'material',
+                    )
+                  : undefined;
+              const handle = materialWorld.handleForGuid(materialKey);
+              const resolved =
+                handle === undefined ? undefined : materialWorld.resolveAsset(handle);
+              materialFailure = {
+                kind:
+                  dependency?.status === 'pending' && (resolved === undefined || !resolved.ok)
+                    ? 'pending'
+                    : 'missing',
+                key: materialKey,
+              };
+              break;
+            }
+            let materialIndex = materialIndices.get(waterMaterialHandle);
+            if (materialIndex === undefined) {
+              try {
+                const createWaterMeshDrawMaterial = (
+                  waterMaterialHandle: number,
+                  assets: NonNullable<typeof scope.assets>,
+                ) => {
+                  const retainedMaterial = [
+                    ...ownerSources.values(),
+                    ...(acceptedInput !== undefined && acceptedInput.system === water
+                      ? (acceptedInput.ownerSources ?? [])
+                      : []),
+                  ]
+                    .flatMap((candidate) => candidate.materials)
+                    .find(
+                      (candidate) =>
+                        candidate.snapshot.sourceAssets !== undefined &&
+                        candidate.snapshot.sourceAssets.root === waterMaterialHandle &&
+                        materialSourceMatchesCurrent(
+                          materialWorld,
+                          candidate.snapshot.sourceAssets,
+                        ),
+                    );
+                  const materialSnapshot =
+                    retainedMaterial?.snapshot ??
+                    resolveMaterialSnapshot(
+                      waterMaterialHandle,
+                      materialWorld,
+                      assets,
+                      undefined,
+                      waterMaterialCache,
+                      context.materialContext,
+                      scope.materialTextureSources,
+                      false,
+                      'mesh',
+                    );
+                  const rejected = waterMaterialCache.get(waterMaterialHandle)?.retry;
+                  if (retainedMaterial === undefined && rejected !== undefined)
+                    throw rejected.cause;
+                  const createdIndex = waterMaterialResources.length;
+                  materialIndices.set(waterMaterialHandle, createdIndex);
+                  waterMaterialResources.push(
+                    retainedMaterial ?? MaterialResource.from(materialSnapshot),
+                  );
+                  if (materialSnapshot.sourceAssets === undefined)
+                    pendingMaterialSources.set(createdIndex, waterMaterialHandle);
+                  return createdIndex;
+                };
+                materialIndex = createWaterMeshDrawMaterial(waterMaterialHandle, scope.assets);
+              } catch (cause) {
+                materialFailure = { kind: 'invalid', key: materialKey, cause };
+                break;
+              }
+            }
+            const validateWaterMeshBakedSources = () => {
+              try {
+                const candidate = waterMaterialResources[materialIndex]?.snapshot;
+                if (candidate === undefined)
+                  throw new Error('Water material source is unavailable');
+                const transitionBodySources =
+                  'gpu' in selection
+                    ? selection.gpu.sourceBodies
+                    : selection.draw.instances.flatMap((instance) =>
+                        instance.transitionRenderIndex === 0 ||
+                        instance.transitionBodyGuid === undefined ||
+                        instance.transitionBodyGeneration === undefined
+                          ? []
+                          : [
+                              {
+                                guid: instance.transitionBodyGuid,
+                                generation: instance.transitionBodyGeneration,
+                              },
+                            ],
+                      );
+                requireWaterBodyBakedSources(
+                  water,
+                  [{ guid: ownerGuid, generation: owner.bodyGeneration }, ...transitionBodySources],
+                  Object.values(candidate.materialProgramInputs ?? {}),
+                );
+              } catch (cause) {
+                materialFailure = { kind: 'invalid', key: materialKey, cause };
+                return true;
+              }
+              return false;
+            };
+            if (validateWaterMeshBakedSources()) break;
+            const scopedDrawKey = JSON.stringify([
+              worldIdentity,
+              ownerGuid,
+              owner.bodyGeneration,
+              owner.zoneGuid,
+              owner.zoneGeneration,
+              viewIdentity,
+              draw?.drawKey ??
+                ('gpu' in selection
+                  ? [selection.gpu.zoneKey, selection.gpu.materialBucket]
+                  : undefined),
+            ]);
+            if ('gpu' in selection) {
+              const source = selection.source,
+                bytes = new Uint8Array(0);
+              sourceDraws.push(
+                Object.freeze({
+                  drawKey: scopedDrawKey,
+                  materialIndex,
+                  mesh: source.mesh,
+                  localAabb: new Float32Array([
+                    source.originXZ[0],
+                    source.yMin,
+                    source.originXZ[1],
+                    source.originXZ[0] + source.extentXZ[0],
+                    source.yMax,
+                    source.originXZ[1] + source.extentXZ[1],
+                  ]),
+                  instanceCount: 1,
+                  gpu: selection.gpu,
+                  bytes,
+                  coverageBytes: bytes,
+                  layout: createWaterMeshLayoutReceipt(bytes, bytes),
+                  transitionTargets: Object.freeze([]),
+                }),
+              );
+              continue;
+            }
+            if (draw === undefined) continue;
+            let minX = Infinity,
+              minY = Infinity,
+              minZ = Infinity,
+              maxX = -Infinity,
+              maxY = -Infinity,
+              maxZ = -Infinity;
+            for (const instance of draw.instances) {
+              minX = Math.min(minX, instance.originXZ[0]);
+              minY = Math.min(minY, instance.yMinM);
+              minZ = Math.min(minZ, instance.originXZ[1]);
+              maxX = Math.max(maxX, instance.originXZ[0] + instance.extentXZ[0]);
+              maxY = Math.max(maxY, instance.yMaxM);
+              maxZ = Math.max(maxZ, instance.originXZ[1] + instance.extentXZ[1]);
+            }
+            const drawAabb = new Float32Array([minX, minY, minZ, maxX, maxY, maxZ]);
+            sourceDraws.push(
+              retainWaterMeshCandidateAdmissionDraw(
+                {
+                  guid: ownerGuid,
+                  generation: owner.bodyGeneration,
+                  worldIdentity,
+                  zoneGeneration: owner.zoneGeneration,
+                },
+                viewIdentity,
+                {
+                  drawKey: scopedDrawKey,
+                  materialIndex,
+                  mesh: draw.mesh,
+                  localAabb: drawAabb,
+                  instanceCount: draw.instances.length,
+                  bytes: draw.instanceBytes,
+                  coverageBytes: draw.coverageBytes,
+                  layout: draw.layout,
+                  transitionTargets: Object.freeze(
+                    draw.instances.flatMap((instance, instanceIndex) =>
+                      instance.transitionRenderIndex === 0 ||
+                      instance.transitionBodyGuid === undefined ||
+                      instance.transitionBodyGeneration === undefined
+                        ? []
+                        : [
+                            Object.freeze({
+                              instanceIndex,
+                              bodyGuid: instance.transitionBodyGuid,
+                              bodyGeneration: instance.transitionBodyGeneration,
+                            }),
+                          ],
+                    ),
+                  ),
+                },
+              ),
+            );
+          }
+          if (materialFailure !== undefined) return;
+          sourceViews.push(Object.freeze({ viewIdentity, draws: Object.freeze(sourceDraws) }));
+        };
+        captureWaterMeshSourceViews();
+        if (materialFailure !== undefined) break;
+      }
+      const capturePendingWaterMaterials = () => {
+        if (materialFailure === undefined) {
+          for (const [materialIndex, handle] of pendingMaterialSources) {
+            try {
+              const sourceAssets = captureMaterialSource(materialWorld, handle);
+              if (sourceAssets === undefined)
+                throw new Error('Accepted Water material source payload is unavailable');
+              const material = waterMaterialResources[materialIndex];
+              if (material === undefined) throw new Error('Water material source is unavailable');
+              const accepted = storeMaterialSnapshot(
+                waterMaterialCache,
+                handle,
+                {
+                  ...material.snapshot,
+                  sourceAssets,
+                },
+                materialWorld,
+                waterMaterialCache.get(handle)?.programSelections,
+              );
+              if (accepted.retry !== undefined) throw accepted.retry.cause;
+              waterMaterialResources[materialIndex] = MaterialResource.from(accepted.snapshot);
+            } catch (cause) {
+              materialFailure = { kind: 'invalid', key: String(handle), cause };
+              break;
+            }
+          }
+        }
+      };
+      capturePendingWaterMaterials();
+      if (materialFailure !== undefined) {
+        retryMaterials = true;
+        if (materialFailure.kind !== 'pending')
+          scope.worldInternal._routeError(
+            new GpuDrivenPreparationError(
+              materialFailure.kind === 'missing'
+                ? 'resource-not-ready'
+                : 'material-resolution-failed',
+              {
+                reason:
+                  materialFailure.kind === 'missing'
+                    ? 'material-resource-missing'
+                    : 'material-resolution-failed',
+                owner: 'material',
+                expected:
+                  materialFailure.kind === 'missing'
+                    ? 'every WaterMesh draw material resolves as a material asset'
+                    : 'the WaterMesh material produces a valid renderer snapshot',
+                actual: materialFailure.key,
+                ...(materialFailure.kind === 'invalid' ? { cause: materialFailure.cause } : {}),
+              },
+            ),
+            { severity: Severity.Error, systemName: 'RenderSystem.extract (water-mesh-material)' },
+          );
+        const retained =
+          acceptedInput !== undefined && acceptedInput.system === water
+            ? acceptedInput.ownerSources?.find(
+                (candidate) =>
+                  candidate.entityKey === entity &&
+                  candidate.source.generation === owner.bodyGeneration &&
+                  candidate.source.zoneGuid === owner.zoneGuid &&
+                  candidate.source.zoneGeneration === owner.zoneGeneration,
+              )
+            : undefined;
+        if (retained !== undefined) {
+          const liveViewIds = new Set(owner.views.keys());
+          const retainedSource: WaterMeshOwnerSource = {
+            ...retained,
+            source: {
+              ...retained.source,
+              views: retained.source.views.filter((view) => liveViewIds.has(view.viewIdentity)),
+            },
+          };
+          ownerSources.set(entity, retainedSource);
+          replaceWaterMeshOwnerRow(
+            scope,
+            composeWaterMeshOwnerRow(scope, retainedSource, previousRenderable),
+          );
+          replacedEntities.add(entity);
+        }
+        continue;
+      }
+      if (sourceViews.every((view) => view.draws.length === 0)) continue;
+      const ownerSource: WaterMeshOwnerSource = Object.freeze({
+        entityKey: entity,
+        source: Object.freeze({
+          guid: ownerGuid,
+          generation: owner.bodyGeneration,
+          worldIdentity,
+          zoneGuid: owner.zoneGuid,
+          zoneGeneration: owner.zoneGeneration,
+          targetFormat: owner.targetFormat,
+          materialStartIndex: 0,
+          views: Object.freeze(sourceViews),
+        }),
+        materials: Object.freeze([...waterMaterialResources]),
+      });
+      ownerSources.set(entity, ownerSource);
+      replaceWaterMeshOwnerRow(
+        scope,
+        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
+      );
+      replacedEntities.add(entity);
+    }
+  };
+  publishSelectedWaterMeshOwners(water);
+  const restoreUnreplacedWaterMeshOwners = () => {
+    for (const entity of waterMeshEntities) {
+      if (replacedEntities.has(entity)) continue;
+      const bodyGuid = `scene-entity:${entity}`;
+      const body = bodySnapshots.find(
+        (snapshot) => snapshot.guid === bodyGuid && snapshot.binding.kind === 'bound',
+      );
+      const binding = body?.binding;
+      if (body === undefined || binding?.kind !== 'bound') continue;
+      const zone = zones.find(
+        (snapshot) =>
+          snapshot.guid === binding.zoneGuid && snapshot.generation === binding.zoneGeneration,
+      );
+      if (zone === undefined) continue;
+      const previousRenderable = scope.renderables.find(
+        (renderable) => renderable.entityKey === entity,
+      );
+      const targetFormat =
+        zone.asset.waterInfo.format === 'rgba32f' ? 'rgba32float' : 'rgba16float';
+      const ownerSource: WaterMeshOwnerSource = Object.freeze({
+        entityKey: entity,
+        source: Object.freeze({
+          guid: body.guid,
+          generation: body.sceneGeneration,
+          worldIdentity: world.identity,
+          zoneGuid: binding.zoneGuid,
+          zoneGeneration: binding.zoneGeneration,
+          targetFormat,
+          materialStartIndex: 0,
+          views: Object.freeze([]),
+        }),
+        materials: Object.freeze([]),
+      });
+      ownerSources.set(entity, ownerSource);
+      replaceWaterMeshOwnerRow(
+        scope,
+        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
+      );
+      replacedEntities.add(entity);
+    }
+  };
+  restoreUnreplacedWaterMeshOwners();
+  const acceptedOwnerSources = Object.freeze([...ownerSources.values()]);
+  scope.waterMeshOwnerRefresh = Object.freeze({
+    worldId: 0,
+    system: water,
+    inputKey: retryMaterials ? (acceptedInput?.inputKey ?? '') : inputKey,
+    ownerEntityKeys: Object.freeze(acceptedOwnerSources.map((owner) => owner.entityKey)),
+    ownerSources: acceptedOwnerSources,
+  });
 }
 
 /**
@@ -1050,6 +1823,13 @@ function extractMeshRendererRow(
     'lightingChannels',
   ) as number;
   if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels')) return;
+  const renderLayers = scope.world[worldRead].getFieldValue(
+    entity,
+    MeshRenderer,
+    'renderLayers',
+  ) as number;
+  if (!admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers'))
+    return;
   const participation = readShadowParticipation(scope.world, entity);
   if (
     participation !== undefined &&
@@ -1060,7 +1840,14 @@ function extractMeshRendererRow(
     )
   )
     return;
-  const read = readMeshRendererRow(scope, entity, skinComponent, lightingChannels, participation);
+  const read = readMeshRendererRow(
+    scope,
+    entity,
+    skinComponent,
+    lightingChannels,
+    renderLayers,
+    participation,
+  );
   if (!read.authorVisible) scope.explicitlyHidden.add(entity);
   if (!read.authorVisible && !scope.context.retainHidden) return;
   // A scalar shared<T> field uses slot 0 as the schema-level unbound
@@ -1087,7 +1874,7 @@ function extractMeshRendererRow(
 function admitChannelMask(
   scope: WorldExtraction,
   error: ReturnType<typeof validateChannelMask>,
-  source: 'lighting-channels' | 'shadow-channels',
+  source: 'lighting-channels' | 'shadow-channels' | 'render-layers',
 ): boolean {
   if (error === null) return true;
   scope.worldInternal._routeError(error, {
@@ -1122,8 +1909,26 @@ function withBlendedShadowDefault(
   return { ...read, shadowCastDisabled: true };
 }
 
+/** Ancestors one Mobility lookup climbs before treating the entity as movable. */
+const MOBILITY_INHERIT_DEPTH = 64;
+
+/**
+ * An entity without its own Mobility takes its nearest ancestor's: declaring a
+ * placed scene root static declares its whole subtree, and a descendant that
+ * moves on its own opts out with `Mobility 'movable'`. Absence everywhere on
+ * the path is movable.
+ */
 function readMobilityStatic(world: World, entity: EntityHandle): boolean {
-  return world[worldRead].getFieldValue(entity, Mobility, 'kind') === MobilityKindValue.static;
+  const read = world[worldRead];
+  let current = entity;
+  for (let depth = 0; depth <= MOBILITY_INHERIT_DEPTH; depth += 1) {
+    const kind = read.getFieldValue(current, Mobility, 'kind');
+    if (kind !== undefined) return kind === MobilityKindValue.static;
+    const parent = read.getFieldValue(current, ChildOf, 'parent');
+    if (parent === undefined || parent === ENTITY_NULL_RAW) return false;
+    current = parent as EntityHandle;
+  }
+  return false;
 }
 
 /**
@@ -1136,6 +1941,7 @@ function readMeshRendererRow(
   entity: EntityHandle,
   skinComponent: typeof Skin,
   lightingChannels: number,
+  renderLayers: number,
   participation: ReturnType<typeof readShadowParticipation>,
 ) {
   const preparationMesh =
@@ -1156,6 +1962,7 @@ function readMeshRendererRow(
     entity,
     authorVisible: !(isRenderable && scope.visibility?.effective(entity) === 'hidden'),
     lightingChannels,
+    renderLayers,
     preparationMesh,
     preparePipelines:
       preparationMesh !== undefined ||
@@ -1925,6 +2732,7 @@ function pointsLinesStyleOf(
       : {
           kind: 'points',
           size: scalar.getFieldValue(entity, Points, 'size') as number,
+          minPixelSize: scalar.getFieldValue(entity, Points, 'minPixelSize') as number,
           sizeUnits,
           shape,
         };
@@ -2053,7 +2861,17 @@ function composeRenderable(
   transform: TransformSnapshot,
   skinBinding: SkinBindingInput | undefined,
 ): RenderableSnapshot {
+  // Ordinary meshes do not own a GPU producer. Probe membership before the
+  // full component read so absence does not allocate an ECS error per draw.
+  const gpuVertex = scope.world.hasComponent(read.entity, GpuMeshVertexSource)
+    ? scope.world.get(read.entity, GpuMeshVertexSource)
+    : undefined;
   return {
+    ...(gpuVertex?.ok
+      ? {
+          gpuVertexSource: { feature: gpuVertex.value.feature, resource: gpuVertex.value.resource },
+        }
+      : {}),
     ...(read.hasSpriteRegionOverride
       ? {
           spriteRegion: spriteUvRegion(
@@ -2069,6 +2887,7 @@ function composeRenderable(
       ? { shadowCaster: false as const }
       : {}),
     lightingChannels: read.lightingChannels,
+    renderLayers: read.renderLayers,
     assetHandle: Math.round(read.meshHandle ?? 0),
     transform,
     ...(geometry.lods === undefined ? {} : { lods: geometry.lods }),
@@ -2079,7 +2898,6 @@ function composeRenderable(
     materialBindingSources: materials.bindings.sources,
     materialOverrides: captureEntityMaterialOverrides(scope, materials),
     materialBindingDiagnostics: materials.bindings.diagnostics,
-    worldId: scope.context.worldId,
     entityKey: read.entity,
     ...renderableAttachments(scope, read, materials, submeshMaterials, geometry, skinBinding),
   };
@@ -2129,9 +2947,44 @@ function renderableAttachments(
   | 'spriteInstances'
   | 'pointsLines'
   | 'gpuDrivenDraws'
+  | 'waterOwner'
 > {
-  const pointsLines = pointsLinesSnapshotOf(scope, read, materials, geometry);
+  const pointsLines = pointsLinesSnapshotOf(read, materials, geometry);
+  const water = scope.world.hasResource(WATER_SYSTEM_RESOURCE)
+    ? scope.world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
+    : undefined;
+  const body = scope.world.hasComponent(read.entity, WaterBodyInstance)
+    ? water?.snapshot(`scene-entity:${read.entity}`)
+    : undefined;
+  const binding = body?.binding;
+  const zone =
+    binding?.kind === 'bound'
+      ? water
+          ?.zoneSnapshots()
+          .find(
+            (zone) => zone.guid === binding.zoneGuid && zone.generation === binding.zoneGeneration,
+          )
+      : undefined;
   return {
+    ...(body === undefined || body.asset.flags.affectsWaterMesh
+      ? {}
+      : {
+          waterOwner: ownWaterMaterialOwner({
+            guid: body.guid,
+            generation: body.sceneGeneration,
+            worldIdentity: scope.world.identity,
+            zoneGeneration: binding?.kind === 'bound' ? binding.zoneGeneration : 0,
+            ...(zone === undefined
+              ? {}
+              : {
+                  zoneGuid: zone.guid,
+                  targetFormat:
+                    zone.asset.waterInfo.format === 'rgba32f'
+                      ? ('rgba32float' as const)
+                      : ('rgba16float' as const),
+                }),
+          }),
+        }),
     ...(read.authorVisible ? {} : { authorVisible: false }),
     ...(skinBinding === undefined ? {} : { skinBinding }),
     ...(read.capsuleShadowRequested ? { capsuleShadowRequested: true as const } : {}),
@@ -2153,14 +3006,12 @@ function renderableAttachments(
 }
 
 function pointsLinesSnapshotOf(
-  scope: WorldExtraction,
   read: MeshRendererRowRead,
   materials: EntityMaterials,
   geometry: RenderableGeometry,
 ): PointsLinesRetainedSnapshot | undefined {
   if (read.pointsLinesComponent === undefined) return undefined;
   return {
-    worldId: scope.context.worldId,
     entityKey: read.entity,
     component: read.pointsLinesComponent,
     meshHandle: Math.round(read.meshHandle ?? 0),
@@ -2326,7 +3177,9 @@ function withMobilityAndPreparation(
           ...(read.mobilityStatic ? { mobility: 'static' as const } : {}),
           ...(read.shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
         };
-  return pipelinePreparation === undefined ? authored : { ...authored, pipelinePreparation };
+  return ownWaterMaterialAdmissionSource(
+    pipelinePreparation === undefined ? authored : { ...authored, pipelinePreparation },
+  );
 }
 
 function identityProjection(): Float32Array {

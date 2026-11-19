@@ -10,9 +10,9 @@ import {
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
 import type { RaySurfaceProgram } from '@forgeax/engine-shader';
-import type { MaterialAsset } from '@forgeax/engine-types';
+import { type MaterialAsset, projectMaterialParameterSchema } from '@forgeax/engine-types';
 import type { MaterialCookedPass } from './cook.js';
-import { lowerMaterialVariantContext } from './variant-context.js';
+import { lowerMaterialProgramVariantContext } from './variant-context.js';
 
 const MATERIAL_COOK_PROFILE = 'webgpu/v1';
 const MATERIAL_COOK_COMPILER_VERSION = 'forgeax-material-cooker/2';
@@ -32,12 +32,31 @@ function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
 }
 
+function selectionAbi(
+  abi: MaterialCookedPass['abi'],
+  compile: MaterialCookedPass['compile'],
+): MaterialCookedPass['abi'] {
+  const entryPoints = compile.reflection.entryPoints;
+  return { ...abi, ...(entryPoints === undefined ? {} : { entryPoints }) };
+}
+
 export function materialPrograms(
   passes: readonly MaterialCookedPass[],
   input: MaterialPublicationInput,
 ): readonly MaterialCookProgram[] {
   const programs = new Map<string, MaterialCookProgram>();
+  const artifactDigests = new Map<string, string>();
   for (const pass of passes) {
+    // Runtime compares the complete projected schema for each immutable key.
+    // Defaults belong to the material root, while color-space policy remains
+    // program metadata even when it does not change the physical layout.
+    const parameterSchema = projectMaterialParameterSchema(pass.parameters, input.guid, 'runtime')
+      .unwrap()
+      .map((entry) => {
+        if (!('default' in entry)) return entry;
+        const { default: _default, ...parameter } = entry;
+        return parameter;
+      });
     const variants = [
       { compile: pass.compile, address: 'direct' as const },
       ...(pass.sceneCompile === undefined
@@ -48,8 +67,15 @@ export function materialPrograms(
       const entry = variant.address === 'direct' ? pass.abi.directEntry : pass.abi.sceneIndexEntry;
       if (entry === undefined)
         throw new TypeError('compiled scene-index program requires its reflected entry');
-      const bytes = new TextEncoder().encode(variant.compile.wgsl);
-      const digest = createMaterialArtifactDigest(bytes);
+      const wgsl = variant.compile.wgsl;
+      const bytes = new TextEncoder().encode(wgsl);
+      // Several selectors can publish the same WGSL. Hash its content once
+      // within this publication while retaining independently owned bytes.
+      let digest = artifactDigests.get(wgsl);
+      if (digest === undefined) {
+        digest = createMaterialArtifactDigest(bytes);
+        artifactDigests.set(wgsl, digest);
+      }
       // Entry/ABI facts belong to each selection. Shared module bytes remain
       // one program even when color and shadow select different entries.
       const specializationKey = createMaterialArtifactDigest(
@@ -58,9 +84,14 @@ export function materialPrograms(
             module: pass.module,
             sourceClosure: pass.sourceClosureDigest,
             layout: pass.layoutIdentity,
+            parameters: parameterSchema,
+            surface: pass.abi.surface,
             bindings: pass.abi.bindings ?? 'render-material',
+            systemInputs: pass.abi.systemInputs,
+            forwardFog: pass.abi.forwardFog,
+            gbuffer: pass.abi.gbuffer,
             sceneDepth: pass.abi.sceneDepth,
-            defines: lowerMaterialVariantContext(pass.context),
+            defines: lowerMaterialProgramVariantContext(pass.context, pass.abi.bindings),
             artifact: digest,
             profile: pass.context.profile,
             toolchain: pass.context.toolchain,
@@ -77,12 +108,7 @@ export function materialPrograms(
           context: pass.context,
           address: variant.address,
           entry,
-          abi: {
-            ...pass.abi,
-            ...(variant.compile.reflection.entryPoints === undefined
-              ? {}
-              : { entryPoints: variant.compile.reflection.entryPoints }),
-          },
+          abi: selectionAbi(pass.abi, variant.compile),
         },
       ];
       programs.set(specializationKey, {
@@ -203,7 +229,7 @@ export function cookedRecord(
     cookGeneration: input.cookGeneration ?? 1,
   });
   const receipt: MaterialCookReceipt = {
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     sourceClosure,
     profile: input.profile ?? MATERIAL_COOK_PROFILE,
     compilerVersion: input.compilerVersion ?? MATERIAL_COOK_COMPILER_VERSION,
@@ -219,7 +245,7 @@ export function cookedRecord(
     modules: resolvedRefs.modules,
   };
   return validateCookedMaterialRecord({
-    schemaVersion: 'material-cook/4',
+    schemaVersion: 'material-cook/5',
     guid: input.guid,
     materialGuid: input.guid,
     publicationGeneration: input.cookGeneration ?? 1,

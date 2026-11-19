@@ -1,0 +1,249 @@
+@import "../../suite.css";
+#scene {
+  cursor: grab;
+}
+#scene.looking {
+  cursor: grabbing;
+}
+#scene:focus-visible {
+  outline: 2px solid #aad6cb;
+  outline-offset: -3px;
+}
+:root {
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #e2eef1;
+  background: #102833;
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  outline: none;
+}
+#controls-panel {
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  bottom: 18px;
+  width: 350px;
+  overflow: auto;
+  padding: 20px;
+  background: linear-gradient(160deg, rgba(13, 37, 49, 0.97), rgba(13, 29, 38, 0.95));
+  border: 1px solid #547482;
+  border-radius: 18px;
+  box-shadow: 0 18px 55px #061b2545;
+  scrollbar-width: thin;
+}
+header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #294956;
+}
+.eyebrow {
+  letter-spacing: 0.18em;
+  font-size: 10px;
+  color: #9ebdcc;
+}
+h1 {
+  font-size: 27px;
+  margin: 10px 0 4px;
+  font-weight: 650;
+}
+#render-state {
+  font-size: 11px;
+  color: #9bd9ce;
+}
+.views {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 16px 0;
+}
+button,
+select,
+input {
+  font: inherit;
+}
+button {
+  border: 1px solid #41616e;
+  background: #1c3d4b;
+  color: #dcebee;
+  border-radius: 8px;
+  padding: 9px 8px;
+  cursor: pointer;
+}
+button:hover {
+  background: #2d5361;
+}
+button[aria-pressed="true"] {
+  background: #b7dcd4;
+  color: #10363e;
+  border-color: #b7dcd4;
+}
+.body-picker {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  align-items: center;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+select {
+  background: #112d3a;
+  border: 1px solid #4b6b77;
+  border-radius: 7px;
+  color: #e6eef1;
+  padding: 8px;
+}
+details {
+  margin: 9px 0;
+  padding: 11px 12px;
+  border: 1px solid #2d4c59;
+  border-radius: 10px;
+  background: #15344080;
+}
+summary {
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+summary:after {
+  content: "+";
+  float: right;
+  color: #85aea9;
+}
+details[open] > summary:after {
+  content: "−";
+}
+details[open] > summary {
+  margin-bottom: 13px;
+}
+label {
+  font-size: 12px;
+  color: #d3e4e9;
+}
+.toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+}
+.actions {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 15px;
+}
+p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #abc2cc;
+}
+header p {
+  font-size: 12px;
+  color: #a9c1cb;
+}
+input[type="number"],
+input[type="text"],
+textarea {
+  width: 100%;
+  color: #dcebee;
+  background: #102b37;
+  border: 1px solid #3a5b69;
+  border-radius: 6px;
+  padding: 7px;
+}
+input[type="range"] {
+  width: 100%;
+  accent-color: #aad6cb;
+}
+input[type="checkbox"] {
+  accent-color: #aad6cb;
+}
+#dimension-lifecycle > label {
+  display: block;
+  margin-top: 12px;
+}
+pre {
+  font-size: 10px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+footer {
+  font-size: 10px;
+  line-height: 1.7;
+  color: #789aa9;
+  margin-top: 16px;
+}
+#status {
+  font-size: 11px;
+  color: #8fd1c7;
+}
+#panel-toggle {
+  position: fixed;
+  left: 20px;
+  top: 20px;
+  z-index: 2;
+  background: #102e3ddd;
+  border-color: #7faaa9;
+}
+.panel-hidden #controls-panel {
+  display: none;
+}
+.water-runtime-panel {
+  margin-top: 12px;
+}
+.water-runtime-panel h2 {
+  font-size: 13px;
+}
+.water-runtime-panel details {
+  background: transparent;
+}
+.runtime-field {
+  margin: 12px 0;
+}
+#navigation-hint {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  max-width: 340px;
+  padding: 12px 16px;
+  border: 1px solid #547482;
+  border-radius: 12px;
+  background: #102e3de8;
+  pointer-events: none;
+}
+#navigation-hint strong {
+  font-size: 12px;
+  color: #b7dcd4;
+}
+#navigation-hint p {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.65;
+}
+@media (max-width: 600px) {
+  #controls-panel {
+    right: 8px;
+    top: 64px;
+    bottom: 8px;
+    width: min(340px, calc(100vw - 16px));
+    padding: 16px;
+  }
+  #panel-toggle {
+    top: 12px;
+    left: 12px;
+  }
+  h1 {
+    font-size: 23px;
+  }
+}

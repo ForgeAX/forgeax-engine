@@ -64,6 +64,7 @@ export {
   MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
   materialArtifactConflict,
+  retainMaterialRuntimeArtifact,
 } from './material/artifact-registry.js';
 export {
   createMaterialProgramArtifactReceipt,
@@ -104,6 +105,8 @@ export {
   STANDARD_TRIPLANAR_PROJECTION_BIT,
   type StandardPhysicalTextureField,
   type StandardSharedTransmissionHost,
+  standardLeanInputDefines,
+  standardLeanInputMaskCompatible,
   standardMaskHasBit,
   standardParallaxSelectable,
   standardPhysicalTextureFields,
@@ -118,6 +121,7 @@ export {
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderByteEntry,
   type MaterialShaderEntry,
+  type MaterialShaderVariantReference,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,
   ShaderRegistry as ShaderCatalog,
@@ -129,6 +133,7 @@ export {
 } from './ShaderRegistry.js';
 export {
   type ExpandedShaderManifest,
+  findVariantByDefines,
   findVariantByKey,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
@@ -139,6 +144,7 @@ export {
   VARIANT_PERMUTATION_RULES,
   type VariantPermutationRule,
   violatedVariantPermutationRules,
+  withSupportedLeanInputs,
 } from './variant-permutation-rules.js';
 
 export const BUILTIN_MATERIAL_MODULES = {
@@ -292,7 +298,6 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
  */
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
-export * from './cloud-programs';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
 export {
@@ -312,8 +317,32 @@ export {
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
+export {
+  type AdmittedShaderProgramTemplate,
+  admitShaderProgramTemplate,
+  publishShaderProgramTemplates,
+  readShaderProgramTemplates,
+  type ShaderProgramCompilation,
+  type ShaderProgramCompiler,
+  type ShaderProgramOptions,
+  type ShaderProgramTemplate,
+  type ShaderTemplateLibrary,
+  selectShaderProgramDefines,
+} from './program-template.js';
+export {
+  admitShaderTemplateManifest,
+  isShaderTemplateManifestRow,
+  materialShaderPreparedSourceRows,
+  SHADER_TEMPLATE_MANIFEST_VERSION,
+  type ShaderTemplateManifest,
+  shaderTemplateVariantEntry,
+} from './program-template-manifest.js';
+export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
+export {
+  TEXTURE_GENERATOR_VERTEX_ENTRY,
+  TEXTURE_GENERATOR_VERTEX_SOURCE,
+} from './texture-generator-source.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
-
 /** Renderer-owned TSR analysis and reconstruction programs. */
 export {
   TSR_ANALYZE_FRAGMENT_WGSL,
@@ -323,3 +352,4 @@ export {
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';
+export { materialShaderAxes } from './types.js';

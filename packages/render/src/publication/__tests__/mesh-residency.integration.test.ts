@@ -223,7 +223,7 @@ it('admits ordered uploads without their completion and reads only an exact curr
     const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
     const entity = required(accepted.frame.renderables.at(0)).entityKey;
     const entry = { source: required(accepted.frame.renderables.at(0)) };
-    f.bindings.onRenderableDraw([accepted.resources])(entry, 'gpu');
+    f.bindings.onRenderableDraw(accepted.resources)(entry, 'gpu');
     expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBeUndefined();
     f.bindings.commit();
     expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBe('gpu');

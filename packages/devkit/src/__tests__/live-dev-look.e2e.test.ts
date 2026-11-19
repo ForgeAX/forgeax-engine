@@ -1,10 +1,14 @@
 // @perf-budget-skip: real generated game, detached live owner, Vite dev runtime and sandboxed Chromium.
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { withoutEngineContentLibrary } from '../../../../scripts/test/reduce-test-project.mjs';
+import {
+  createLiveSyncProjectDirectory,
+  prepareLiveSyncSharedInputs,
+} from '../../scripts/live-sync-inputs.mjs';
 
 // The detached owner runs the built CLI next to the library it is loaded from.
 const { liveDevControl, startLiveDev } = (await import(
@@ -79,12 +83,13 @@ interface LookValue {
   readonly views: readonly {
     readonly name: string;
     readonly screenshot: string;
-    readonly metrics: { readonly luma: number; readonly width: number; readonly flat: boolean };
+    readonly metrics: { readonly width: number; readonly flat: boolean };
     readonly findings: readonly string[];
   }[];
 }
 
 let root = '';
+let temporaryRoot = '';
 
 async function look(args: Record<string, unknown> = {}): Promise<LookValue> {
   const result = (await liveDevControl(root, 'look', args)) as {
@@ -116,11 +121,24 @@ async function devDependencyHash(): Promise<unknown> {
 }
 
 beforeAll(async () => {
-  root = await mkdtemp(resolve(tmpdir(), 'forgeax-dev-look-'));
+  const directory = await createLiveSyncProjectDirectory(
+    'forgeax-dev-look-',
+    resolve(import.meta.dirname, '../../../..'),
+    process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+  );
+  root = directory.root;
+  temporaryRoot = directory.temporaryRoot;
   await cp(resolve(import.meta.dirname, '../../../../templates/empty'), root, {
     recursive: true,
-    filter: (source) => !/(^|\/)(node_modules|dist|\.forgeax)(\/|$)/.test(source),
+    filter: (source) => !/(^|[\\/])(node_modules|dist|\.forgeax)([\\/]|$)/.test(source),
   });
+  if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+    await prepareLiveSyncSharedInputs({
+      sourceRoot: resolve(import.meta.dirname, '../../../..'),
+      projectRoot: root,
+      temporaryRoot,
+      manifestPath: process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    });
   await mkdir(resolve(root, 'assets/look'), { recursive: true });
   // A game resolves its installed Engine, so Vite crawls the Engine runtime
   // dependencies before the first page. Without it, a cold dependency cache
@@ -137,7 +155,13 @@ beforeAll(async () => {
     writeFile(resolve(root, 'assets/look/game.ts'), game(DARK_SKY)),
     writeFile(
       resolve(root, 'forge.json'),
-      `${JSON.stringify({ ...manifest, roots: { engine: guid('plugin/game') } })}\n`,
+      `${JSON.stringify({
+        // This fixture declares its box and all its materials in PACK.
+        ...(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
+          ? withoutEngineContentLibrary(manifest)
+          : manifest),
+        roots: { engine: guid('plugin/game') },
+      })}\n`,
     ),
   ]);
 });
@@ -145,7 +169,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (root === '') return;
   await liveDevControl(root, 'stop').catch(() => undefined);
-  await rm(root, { recursive: true, force: true });
+  await rm(temporaryRoot, { recursive: true, force: true });
 });
 
 const LOOK_E2E_TIMEOUT_MS = Number(process.env.FORGEAX_LOOK_E2E_TIMEOUT_MS ?? 600_000);
@@ -166,8 +190,10 @@ it(
     expect(dark.views).toHaveLength(1);
     expect(dark.views[0]?.name).toBe('01-current-game');
     expect(dark.views[0]?.metrics.flat).toBe(false);
-    expect(dark.views[0]?.metrics.luma).toBeLessThan(60);
-    expect(dark.views[0]?.findings.some((finding) => finding.startsWith('dark:'))).toBe(true);
+    expect(dark.views[0]?.findings.some((finding) => finding.startsWith('flat frame:'))).toBe(
+      false,
+    );
+    const darkPng = await readFile(dark.views[0]?.screenshot ?? '');
     const dependencyHash = await devDependencyHash();
 
     // No status polling: the look itself waits for the edited revision.
@@ -175,7 +201,7 @@ it(
     const bright = await look();
     expect(bright.revision).not.toBe(dark.revision);
     expect(bright.waitedMs).toBeGreaterThan(0);
-    expect(bright.views[0]?.metrics.luma).toBeGreaterThan(150);
+    expect((await readFile(bright.views[0]?.screenshot ?? '')).equals(darkPng)).toBe(false);
     // The replacement page opened in the same browser, and Vite kept the
     // dependency cache identity, so module URLs stayed stable.
     expect(ownerBrowsers(ownerPid)).toEqual(browsers);

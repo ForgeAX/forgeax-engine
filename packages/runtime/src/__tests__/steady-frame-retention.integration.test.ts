@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import type { RenderReadLease } from '@forgeax/engine-render';
 import {
   Camera,
   DirectionalLight,
   Materials,
   MeshFilter,
   MeshRenderer,
-  type Renderer,
 } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
@@ -34,8 +34,8 @@ const contents =
       })()
     : Uint8Array.from(readFileSync(manifestPath)).buffer;
 
-function frameRequest(lease: Parameters<Renderer['draw']>[0]['leases'][number]) {
-  return { leases: [lease], camera: { lease }, environment: { lease } };
+function frameRequest(lease: RenderReadLease) {
+  return { source: lease };
 }
 
 // D=0 frames through the ordinary local World path: every retained owner keeps

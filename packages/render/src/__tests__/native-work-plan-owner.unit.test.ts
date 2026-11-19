@@ -42,7 +42,9 @@ describe('Host-bound native work plan owner', () => {
     const replacement = { ...frame, resources: [...frame.resources] };
     const work = [replacement, view];
     const feedback = { accepted: [1] };
-    const planned = builder.finish(work, feedback);
+    const readbacks = [{ resource: 'state', tag: { kind: 'probe' } }];
+    const planned = builder.finish(work, feedback, { readbacks });
+    expect(planned.readbacks).toBe(readbacks);
     expect(createAdmission).not.toHaveBeenCalled();
     expect(planned.work).toEqual([]);
     expect(planned.sourceFeedback).toBe(feedback);

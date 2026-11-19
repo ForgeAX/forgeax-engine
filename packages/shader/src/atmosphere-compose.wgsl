@@ -1,8 +1,7 @@
 #define_import_path forgeax_atmosphere::compose
 #import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle, clampLinearHdr}
 #import forgeax_view::fog::{FogSample, height_fog_with_source}
-#import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_interval, atmosphere_solar_transmittance, atmosphere_sun_luminance}
-#import forgeax_atmosphere::coordinates::{atmosphere_view_ray, atmosphere_observer}
+#import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_solar_transmittance, atmosphere_sun_luminance}
 #import forgeax_atmosphere::sampling::{atmosphere_aerial_sample, atmosphere_aerial_sample_packed_tables}
 @group(0) @binding(0) var<uniform> v:View;
 @group(0) @binding(1) var depth:texture_depth_2d;
@@ -17,17 +16,12 @@
 struct AtmosphereSurface {world:vec3<f32>, depth:f32,}
 fn atmosphere_surface(input:FullscreenOutput)->AtmosphereSurface{
   let z=textureLoad(depth,vec2<i32>(input.position.xy),0);
-  // Background pixels (reverse-Z depth 0) take height fog at the view ray's
-  // atmosphere exit, as distant fog. Their aerial transport stays the
-  // identity: the sky already carries its own atmosphere radiance.
-  let ray=atmosphere_view_ray(v,input.uv);
-  let origin=atmosphere_observer(v.atmosphere,ray.origin);
-  var world=ray.origin+ray.direction*atmosphere_interval(v.atmosphere,origin,ray.direction,1e7).y*1000.0;
-  if z>0.0 {
-    let projected=v.inverseViewProj*vec4<f32>(input.uv*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0),z,1.0);
-    world=projected.xyz/projected.w;
-  }
-  return AtmosphereSurface(world,z);
+  // Reverse-Z depth 0 reconstructs the camera far plane. The independent
+  // height medium must not stop at the optical planet intersection. Finite
+  // surfaces use their actual depth; background aerial transport stays the
+  // identity because the sky already carries its atmosphere radiance.
+  let projected=v.inverseViewProj*vec4<f32>(input.uv*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0),z,1.0);
+  return AtmosphereSurface(projected.xyz/projected.w,z);
 }
 fn atmosphere_combine(world:vec3<f32>,depth:f32,air:AtmosphereTransport)->AtmosphereTransport {
   if v.fogHeightOpacity.y==0.0 {return air;}

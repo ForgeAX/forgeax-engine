@@ -7,7 +7,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { importRuntimeContent, openRuntimeContent } from './runtime-content-import.mjs';
+import { importRuntimeContent, openRuntimeContent, saveRuntimeContent } from './runtime-content-import.mjs';
+import { browserProofWorkload } from './browser-proof-workload.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const output = resolve(process.env.FORGEAX_EVIDENCE_DIR ?? '/tmp/runtime-content-ui');
@@ -17,7 +18,7 @@ let server;
 try {
   await mkdir(output, { recursive: true });
   await build({ absWorkingDir: root, entryPoints: ['test/fixtures/runtime-content-ui.ts'], outfile: resolve(temporary, 'ui.js'), bundle: true, format: 'esm', platform: 'browser', jsx: 'automatic' });
-  const html = '<!doctype html><html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/ui.css"><style>body{margin:0}#app{height:800px}</style><div id="app"></div><script type="module" src="/ui.js"></script></html>';
+  const html = '<!doctype html><html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/ui.css"><style>body{margin:0}#app{height:100vh}</style><div id="app"></div><script type="module" src="/ui.js"></script></html>';
   server = createServer(async (request, response) => {
     if (request.url === '/' || request.url === '/?defer-inspection=1' || request.url === '/?thumbnail-revision=1') { response.setHeader('content-type', 'text/html'); response.end(html); return; }
     if (!['/ui.js', '/ui.css'].includes(request.url)) { response.writeHead(404).end(); return; }
@@ -26,7 +27,18 @@ try {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   browser = await chromium.launch({ headless: true, ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}), args: ['--disable-gpu'], chromiumSandbox: true});
-  const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, acceptDownloads: true });
+  const page = await browser.newPage({ viewport: browserProofWorkload().runtimeViewport, acceptDownloads: true });
+  await page.addInitScript(() => {
+    const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+    const exports = new Set();
+    URL.createObjectURL = blob => {
+      const url = create(blob);
+      if (blob.type === 'application/json') exports.add(url);
+      return url;
+    };
+    URL.revokeObjectURL = url => { exports.delete(url); revoke(url); };
+    globalThis.__runtimeContentExports = exports;
+  });
   const errors = [];
   page.on('pageerror', error => { errors.push(error.message); console.error(error); });
   page.on('console', message => { if (message.type() === 'error') console.error(message.text()); });
@@ -47,11 +59,22 @@ try {
   await page.getByText('#21 · active', { exact: true }).waitFor();
   await page.locator('.cb-source-name').filter({ hasText: /^content$/ }).click();
   await page.screenshot({ path: resolve(output, 'generated.png') });
-  const downloadEvent = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save content', exact: true }).click();
+  await page.evaluate(() => globalThis.runtimeContentFixture.deferSnapshot());
+  const downloadEvent = saveRuntimeContent(page, page.getByTestId('runtime-content'));
+  // The real snapshot crosses a process boundary and may outlive transient activation.
+  await page.waitForTimeout(5100);
+  await page.evaluate(() => globalThis.runtimeContentFixture.completeSnapshot());
   const download = await downloadEvent;
   const saved = JSON.parse(await readFile(await download.path(), 'utf8'));
   assert.equal(saved.instances[0].values.width, 3);
+  assert.equal(await page.evaluate(() => globalThis.__runtimeContentExports.size), 1,
+    'the asynchronous native download retains its bytes for the panel lifetime');
+  const previousExport = await page.evaluate(() => [...globalThis.__runtimeContentExports][0]);
+  const nextDownload = saveRuntimeContent(page, page.getByTestId('runtime-content'));
+  assert.deepEqual(JSON.parse(await readFile(await (await nextDownload).path(), 'utf8')), saved);
+  assert.equal(await page.evaluate(previous => globalThis.__runtimeContentExports.size === 1
+    && !globalThis.__runtimeContentExports.has(previous), previousExport), true,
+  'repeated saves retain only the latest export');
   await importRuntimeContent(page, page.getByTestId('runtime-content'), { name: 'saved.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) });
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.some(call => call.operation === 'runtime-pack.restore'));
   await page.getByLabel('width', { exact: true }).fill('8');
@@ -66,6 +89,7 @@ try {
   await page.getByRole('button', { name: 'Generate', exact: true }).click();
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.filter(call => call.operation === 'runtime-pack.generate').length === 4);
   await page.evaluate(() => globalThis.runtimeContentFixture.replaceTarget());
+  await page.waitForFunction(() => globalThis.__runtimeContentExports.size === 0);
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.filter(call => call.operation === 'runtime-pack.generate').at(-1).aborted);
   await page.evaluate(() => globalThis.runtimeContentFixture.completeGeneration());
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.filter(call => call.operation === 'runtime-pack.generate').at(-1).completed);
@@ -80,6 +104,19 @@ try {
   await page.getByRole('alert').filter({ hasText: 'Snapshot storage unavailable' }).waitFor();
   const calls = await page.evaluate(() => globalThis.runtimeContentFixture.calls);
   assert(calls.filter(call => call.operation === 'runtime-pack.generate').every(call => call.args.targetId === 'project-target' && call.args.worldId === 'project-world'));
+  // Readiness may exceed the download budget; no export starts while disabled.
+  await page.goto(`http://127.0.0.1:${server.address().port}/?defer-inspection=1`);
+  await openRuntimeContent(page);
+  const pendingSave = page.getByTestId('runtime-content');
+  assert.equal(await pendingSave.getByRole('button', { name: 'Save content', exact: true }).isDisabled(), true);
+  const [coldDownload] = await Promise.all([
+    saveRuntimeContent(page, pendingSave, { timeout: 200 }),
+    (async () => {
+      await page.waitForTimeout(400);
+      await page.evaluate(() => globalThis.runtimeContentFixture.completeInspection());
+    })(),
+  ]);
+  assert.equal(JSON.parse(await readFile(await coldDownload.path(), 'utf8')).schemaVersion, 'runtime-pack-source/2');
   // A fresh panel deliberately holds its initial Engine inspection. Import
   // must use the same enabled button as a user before delivering saved bytes.
   await page.goto(`http://127.0.0.1:${server.address().port}/?defer-inspection=1`);

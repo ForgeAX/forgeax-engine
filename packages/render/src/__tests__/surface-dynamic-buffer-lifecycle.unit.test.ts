@@ -423,7 +423,7 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
     const directMember = [
       {
         frameIndex: 0,
-        directMember: { worldId: 7, entityKey: 8, drawItemIndex: 9, instanceOrdinal: 0 },
+        directMember: { entityKey: 8, drawItemIndex: 9, instanceOrdinal: 0 },
       },
     ] as const;
     expect(
@@ -442,7 +442,6 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
       .unwrap();
     const bindGroupsBeforeDraw = device.bindGroupDescriptors.length;
     const resolved = adapter.directSurfaceInstances({
-      worldId: 7,
       entityKey: 8,
       drawItemIndex: 9,
       instanceCount: 1,
@@ -482,7 +481,6 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
     expect(noProbeAdapter.commitSurfaceDynamicInput()).toMatchObject({ ok: true });
     const bindGroupsBeforeMissing = device.bindGroupDescriptors.length;
     const missingProbe = noProbeAdapter.directSurfaceInstances({
-      worldId: 7,
       entityKey: 8,
       drawItemIndex: 9,
       instanceCount: 1,

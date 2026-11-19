@@ -1,4 +1,4 @@
-import { FixedTime, FixedUpdate, Time, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, Time, World } from '@forgeax/engine-ecs';
 import type { FrameReceipt, Renderer, RenderFrameInput } from '@forgeax/engine-render';
 import { RendererOperationError } from '@forgeax/engine-render';
 import { err, ok } from '@forgeax/engine-types';
@@ -101,30 +101,85 @@ function receiptRenderer(draw: () => { ok: true; value: FrameReceipt }): Rendere
 }
 
 describe('frame-loop Time forwarding', () => {
-  it('starts a new temporal baseline when a scene returns after UI-only frames', async () => {
+  it('excludes only scheduling snapshot waits and preserves genuine host gaps', async () => {
+    const world = new World();
     const clock = scheduler();
+    let timestamp = 1000;
     const requests: RenderFrameInput[] = [];
     const draw = (input: RenderFrameInput) => {
       requests.push(input);
       return ok({
         frameId: requests.length,
         deviceGeneration: 0,
-        presentation: input.camera === null ? ('pending' as const) : ('ready' as const),
+        completed: Promise.resolve(ok(undefined)),
+      });
+    };
+    const loop = createFrameLoop({
+      world,
+      renderer: receiptRenderer(draw as unknown as () => { ok: true; value: FrameReceipt }),
+      platform: testPlatform({ now: () => timestamp, raf: clock.raf, caf: clock.caf }),
+    });
+    const tick = (at: number) => {
+      timestamp = at;
+      clock.tick(at);
+    };
+    loop.start().unwrap();
+    tick(1016);
+    await loop.drainFrameReceipts();
+    timestamp = 1024;
+    const release = loop.suspendScheduling().unwrap();
+    expect(loop.getState()).toBe('running');
+    expect(loop.suspendScheduling().ok).toBe(false);
+    tick(2024);
+    expect(requests).toHaveLength(1);
+    timestamp = 6024;
+    release().unwrap();
+    release().unwrap();
+    tick(6040);
+    await loop.drainFrameReceipts();
+    expect(requests[1]?.sampleTimeSeconds).toBeCloseTo(1.04);
+    expect(world.getResource(Time).elapsed).toBeCloseTo(0.04);
+    tick(6240);
+    await loop.drainFrameReceipts();
+    expect(requests[2]?.sampleTimeSeconds).toBeCloseTo(1.24);
+    expect(requests.every((input) => input.temporalReset !== true)).toBe(true);
+    const staleRelease = loop.suspendScheduling().unwrap();
+    loop.pause().unwrap();
+    timestamp = 16240;
+    loop.resume().unwrap();
+    staleRelease().unwrap();
+    tick(16256);
+    expect(requests[3]?.temporalReset).toBe(true);
+    expect(requests[3]?.sampleTimeSeconds).toBeCloseTo(16.256);
+    loop.stop().unwrap();
+  });
+
+  it('starts a new temporal baseline when a scene returns after UI-only frames', async () => {
+    const clock = scheduler();
+    const requests: RenderFrameInput[] = [];
+    let admission: 'scene' | 'ui-only' = 'scene';
+    const draw = (input: RenderFrameInput) => {
+      requests.push(input);
+      return ok({
+        frameId: requests.length,
+        deviceGeneration: 0,
+        presentation: input.source === null ? ('pending' as const) : ('ready' as const),
         completed: Promise.resolve(ok(undefined)),
       });
     };
     const loop = createFrameLoop({
       world: new World(),
+      sceneAdmission: () => admission,
       renderer: receiptRenderer(draw as unknown as () => { ok: true; value: FrameReceipt }),
       platform: testPlatform({ now: () => 1000, raf: clock.raf, caf: clock.caf }),
     });
     loop.start().unwrap();
     clock.tick(1000);
     await loop.drainFrameReceipts();
-    loop.setDrawSource(() => null);
+    admission = 'ui-only';
     clock.tick(1016);
     await loop.drainFrameReceipts();
-    loop.setDrawSource(undefined);
+    admission = 'scene';
     clock.tick(1032);
     await loop.drainFrameReceipts();
     clock.tick(1048);
@@ -135,7 +190,7 @@ describe('frame-loop Time forwarding', () => {
       true,
       false,
     ]);
-    expect(requests[1]?.camera).toBeNull();
+    expect(requests[1]?.source).toBeNull();
     loop.stop().unwrap();
   });
 
@@ -218,8 +273,8 @@ describe('frame-loop Time forwarding', () => {
   ])('preserves simulated time at %i Hz with receipts settling every %i ticks', async (hz, cadence) => {
     // ai-weapon-spirit: slow GPU receipts must not slow the game clock.
     const world = new World();
-    const injected = new World();
-    world.addSystem(FixedUpdate, { name: 'clock-probe', queries: [], fn: () => {} }).unwrap();
+    const systemToken1 = defineSystem({ name: 'clock-probe', queries: [], fn: () => {} });
+    world.addSystem(FixedUpdate, systemToken1).unwrap();
     const clock = scheduler();
     const pending: ReturnType<typeof deferredReceipt>[] = [];
     let timestamp = 0;
@@ -232,7 +287,6 @@ describe('frame-loop Time forwarding', () => {
         pending.push(frame);
         return { ok: true, value: frame.receipt };
       }),
-      drawSource: () => ({ worlds: [world, injected], cameraOwner: 0, resourceOwner: 0 }),
       onError,
       platform: testPlatform({ now: () => timestamp, raf: clock.raf, caf: clock.caf }),
     });
@@ -254,7 +308,6 @@ describe('frame-loop Time forwarding', () => {
     expect(loop.inspect().highWater).toBeLessThanOrEqual(2);
     expect(loop.inspect().throttledTicks > 0).toBe(cadence > 1);
     expect(world.getResource(Time).elapsed).toBeCloseTo(10, 8);
-    expect(injected.getResource(Time).elapsed).toBeCloseTo(10, 8);
     expect(world.getResource(FixedTime).tick).toBeGreaterThanOrEqual(599);
     expect(world.getResource(FixedTime).droppedSeconds).toBe(0);
   });
@@ -285,14 +338,12 @@ describe('frame-loop Time forwarding', () => {
     loop.stop().unwrap();
   });
 
-  it('forwards one measured delta to own and injected Worlds', () => {
+  it('forwards the measured delta to the source World', () => {
     const own = new World();
-    const injected = new World();
     const clock = scheduler();
     const loop = createFrameLoop({
       world: own,
       renderer: renderer(),
-      drawSource: () => ({ worlds: [own, injected], cameraOwner: 0, resourceOwner: 0 }),
       platform: testPlatform({
         now: (() => {
           const values = [1000, 1016];
@@ -307,7 +358,6 @@ describe('frame-loop Time forwarding', () => {
     clock.tick(1016);
 
     expect(own.getResource(Time).delta).toBeCloseTo(0.016);
-    expect(injected.getResource(Time).delta).toBeCloseTo(0.016);
   });
 
   it('limits ordinary frames to two in-flight receipts and reports throttle/settle counts', async () => {

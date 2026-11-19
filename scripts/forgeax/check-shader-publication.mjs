@@ -5,12 +5,12 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { writeHeapSnapshot } from 'node:v8';
 
-// Run in a fresh, --expose-gc --max-old-space-size=512 process. This exercises
+// Run in a fresh --expose-gc process with the runner-derived SDK heap. This exercises
 // JSON/fetch admission of the real complete fleet without constructing a GPU.
 const [containerPath, profile] = process.argv.slice(2);
 if (!containerPath || !profile || typeof globalThis.gc !== 'function') {
   throw new Error(
-    'usage: node --expose-gc --max-old-space-size=512 scripts/forgeax/check-shader-publication.mjs <profiles.json.gz> <profile>',
+    'usage: node --expose-gc scripts/forgeax/check-shader-publication.mjs <profiles.json.gz> <profile>',
   );
 }
 const { ShaderRegistry, SHADER_MANIFEST_PUBLICATION_VERSION } = await import(
@@ -64,7 +64,7 @@ async function loadRegistryFromOracle(containerPath, profile) {
   // Each checker-side copy (container, rebuilt publication, wire text, oracle
   // parse tree) is released before the registry parses, so the transient peak
   // measures admission rather than the checker's own scaffolding. The checks and
-  // the heap budget are unchanged.
+  // the retained-heap limit are unchanged.
   let container = decodePackagedProfiles(containerBytes);
   assert.ok(container, `obsolete packaged profile container: ${containerPath}`);
   let rebuilt = packagedProfilePublication(container, profile);

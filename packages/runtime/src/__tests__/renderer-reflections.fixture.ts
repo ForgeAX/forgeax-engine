@@ -29,6 +29,7 @@ import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { completeFixturePicture } from './renderer-ready-draw.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -63,7 +64,11 @@ type FrameModel = ReturnType<typeof buildFrameModel>;
 type FrameWork = FrameModel['works'][number];
 
 /** Scene-color writers before the composite: the deferred lighting work and the last one. */
-function sceneProducers(model: FrameModel, composite: FrameWork, sceneHandle: number) {
+function sceneProducers(
+  model: FrameModel,
+  composite: FrameWork,
+  sceneHandle: NonNullable<NonNullable<FrameWork['attachments']>['colorViewHandleIds'][number]>,
+) {
   const writers = model.works.filter(
     (work) =>
       work.workIndex < composite.workIndex &&
@@ -233,24 +238,19 @@ export async function verifyRendererReflections(
     environment: [0, 0, 0] as const,
   };
   const reflections = { maxRoughnessToTrace: 0.4, roughnessFadeLength: 0.1 };
-  const request = {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-    geometryLane: 'direct' as const,
-  };
-  const submit = () => renderer.draw(request);
+  const request = { source: lease, geometryLane: 'direct' as const };
   const advanceWorld = () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
   };
-  const draw = async () => {
+  const submit = () => {
+    const submitted = renderer.draw(request);
+    if (!submitted.ok) throw submitted.error;
+    return submitted.value;
+  };
+  const draw = () => {
     advanceWorld();
-    const submitted = submit();
-    if (!submitted.ok) throw new Error(JSON.stringify(submitted.error, null, 1));
-    const receipt = submitted.value;
-    renderValue(await receipt.completed);
-    return receipt;
+    return completeFixturePicture(submit, submit);
   };
   const inspectGi = () => {
     const state = renderer.inspect().diffuseGi;

@@ -18,8 +18,10 @@ afterEach(async () => {
 
 function workspaceEngine() {
   return assetOperationsFixture({
-    async openProject({ root }) {
-      return { project: { id: `project:${root}`, root, name: 'CLI fixture' }, handle: { root } };
+    async openProject({ root, generation }) {
+      return { project: { id: `project:${root}`, root, name: 'CLI fixture' }, handle: { root },
+        status: { phase: 'preparing', sessionId: `project-session:${root}`, generation },
+        subscribeStatus() { return () => {}; } };
     },
     async closeProject() {},
     async listAssets() {
@@ -164,9 +166,9 @@ describe('View workspace CLI client', () => {
     assert.equal(opened.value.project.root, '/spawned-cli');
 
     const frontend = view.frontendHost.context.get('viewOperationClient');
-    const intent = await frontend.getState();
-    assert.equal(intent.project, null);
-    assert.deepEqual(intent.projectIntent, { root: '/spawned-cli' });
+    const attached = await frontend.getState();
+    assert.equal(attached.project.root, '/spawned-cli');
+    assert.equal(attached.projectIntent, undefined);
 
     const listed = await callCli(view, 'assets.list', {
       projectId: 'project:/spawned-cli',

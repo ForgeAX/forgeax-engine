@@ -18,7 +18,7 @@ import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain
 // Counter bytes are supplied by this structural test, not claimed as GPU execution.
 const texelWord = 2 + GPU_DRIVEN_LOD_LEVEL_CAPACITY + 2;
 const cameraWord = texelWord + 1 + 2 * GPU_DRIVEN_LOD_LEVEL_CAPACITY + 1;
-const stride = (cameraWord + 1) * 4;
+const stride = (cameraWord + 2) * 4;
 const receipt = (): GpuDrivenCullingProducerReceipt => ({
   frameId: 17,
   deviceGeneration: 3,
@@ -46,7 +46,6 @@ async function fixture(cullingCountsOnly = false) {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -69,7 +68,6 @@ async function fixture(cullingCountsOnly = false) {
   const delta = source.apply(
     [1, 2].map((entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: snapshot(entityKey),
     })),

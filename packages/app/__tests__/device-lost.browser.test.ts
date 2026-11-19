@@ -27,7 +27,7 @@ import { testPlatform } from '../src/__tests__/platform-fixture';
 
 import { Update, World } from '@forgeax/engine-ecs';
 import {
-  FRAME_START_SCAN_SYSTEM_NAME,
+  InputFrameStartScan,
   type InputBackend,
   inputBackendPlugin,
 } from '@forgeax/engine-input';
@@ -376,7 +376,7 @@ describe('device-lost path 4 -- explicit dispose owns cleanup (R-4)', () => {
         expect(disposeResult.ok).toBe(true);
         expect(disposeSpy).toHaveBeenCalledTimes(1);
         const scanRemovals = removeSpy.mock.calls.filter(
-          ([schedule, name]) => schedule === Update && name === FRAME_START_SCAN_SYSTEM_NAME,
+          ([schedule, name]) => schedule === Update && name === InputFrameStartScan,
         );
         expect(scanRemovals).toHaveLength(1);
         disposeSpy.mockRestore();

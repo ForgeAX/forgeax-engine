@@ -3,9 +3,10 @@ import { encodePng } from '@forgeax/engine-image/png';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const frames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -65,7 +66,7 @@ const { propagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildMesh2dArcsWorld, makeTextureAsset, makeTexturePixels, TEXTURE_SIZE } = await import(resolve(here, '..', 'src', 'mesh2d-arcs.ts'));
 const manifest = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifest);
 
 let renderer;
 try {

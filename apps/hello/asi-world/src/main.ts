@@ -1,8 +1,11 @@
+import { Time } from '@forgeax/engine-ecs';
 // Runtime assets are owned by this World; each Tilemap is one ordinary scene layer.
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { encodeTileBits } from '@forgeax/engine-graphics-extras';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
@@ -262,12 +265,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   let lastIsMoving = false;
   let frameAccum = 0;
   let frameIndex = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'asi-world-player-move',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const dt = readDeltaSeconds(world);
 
       let dx = 0;
@@ -339,6 +342,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       );
     },
   });
+world.addSystem(Update, systemToken1);
 
   if(new URL(location.href).searchParams.has('smoke')) {
     let completedFrames=0;
@@ -588,7 +592,7 @@ function isPassableAt(built: BuiltWorld, worldX: number, worldY: number): boolea
 }
 
 function readDeltaSeconds(world: App['world']): number {
-  const t = world.getResource<{ dt: number }>('Time');
-  const dt = t?.dt ?? 1 / 60;
+  const t = world.getResource(Time);
+  const dt = t.delta ?? 1 / 60;
   return Math.min(dt, 0.05);
 }

@@ -1,9 +1,51 @@
+import { sha256 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import {
   bindRuntimePackScope,
   createRuntimePackPublication,
   stripRuntimePackLifecycle,
 } from '../runtime-publication.js';
+
+it('streams repeated material content while preserving the original canonical publication identity', () => {
+  const shared = { source: 'source-line\n'.repeat(1024), reflection: [0, 'value', null] };
+  const legacyBytes: unknown[] = Array.from({ length: 1032 }, (_, index) => index % 256);
+  legacyBytes[0] = -0;
+  legacyBytes[1] = Number.NaN;
+  delete legacyBytes[1026];
+  legacyBytes.push(undefined, { z: [1, false], a: 'nested' }, 4, 5);
+  const assets = Array.from({ length: 128 }, (_, index) => ({
+    guid: `material-${String(index).padStart(4, '0')}`,
+    kind: 'material',
+    payload: { kind: 'material', programs: [index === 0 ? { ...shared, legacyBytes } : shared] },
+    refs: [],
+    artifacts: {},
+  }));
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+    if (value !== null && typeof value === 'object')
+      return `{${Object.keys(value)
+        .sort()
+        .map(
+          (key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+        )
+        .join(',')}}`;
+    return JSON.stringify(value) ?? 'null';
+  };
+  const publication = createRuntimePackPublication({
+    pack: { assets },
+    scopeId: 'large-fixture',
+    sourcePath: 'materials.pack.ts',
+    sourceRevision: 'source',
+    packageUrl: '/materials.pack.json',
+  });
+  expect(publication.pack.digest).toBe(
+    `sha256:${sha256(canonical({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets }))}`,
+  );
+  expect(publication.publication.outputs).toHaveLength(128);
+  expect(publication.publication.outputs[0]?.digest).toBe(
+    `sha256:${sha256(canonical({ ...assets[0], name: undefined }))}`,
+  );
+});
 
 it('preserves existing publication digests and generations in a realm-neutral producer', () => {
   const { pack } = createRuntimePackPublication({

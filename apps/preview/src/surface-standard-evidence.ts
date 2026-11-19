@@ -461,12 +461,7 @@ async function renderEvidenceFrames(
     world.update(1 / 60).unwrap();
     const finalWebGpuFrame = isWebGpuCapture && frame === COMPLETED_FRAME_TARGET - 1;
     if (finalWebGpuFrame) armFinalDisplayObservation(app.renderer);
-    const draw = app.renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    });
+    const draw = app.renderer.draw({ source: lease, geometryLane: 'direct' });
     if (!draw.ok) return drawFailureEvidence(draw.error, renderErrors);
     if (finalWebGpuFrame) await readSwapchainEvidence(app.renderer);
     const completion = await draw.value.completed;

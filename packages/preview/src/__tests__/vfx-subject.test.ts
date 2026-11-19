@@ -7,7 +7,7 @@ const asset = {
   programFingerprint: 'sha256:program',
   emitters: [{ id: 'sparks', capacity: 32 }],
   program: {
-    format: 'forgeax-vfx-program-4',
+    format: 'forgeax-vfx-program-5',
     fingerprint: 'sha256:program',
     emitters: [
       {

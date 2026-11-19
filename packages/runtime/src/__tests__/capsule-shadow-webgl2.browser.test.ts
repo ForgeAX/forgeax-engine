@@ -65,11 +65,7 @@ it('replaces Forward skinned cascades with posed capsule visibility on WebGL2', 
   const draw = async (capture = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
-      capture ? ['linear-hdr'] : undefined,
-    );
+    return drawReadyFrame(renderer, { source: lease }, capture ? ['linear-hdr'] : undefined);
   };
   const sample = async (name: string, variant: CapsuleShadowVariant, frames = 60) => {
     setVariant(world, scene, variant);

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
+  globSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -41,10 +42,11 @@ function fixture(appNames) {
   return root;
 }
 
-function runPlanner(root, args = []) {
+function runPlanner(root, args = [], env = { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' }) {
   try {
     const stdout = execFileSync(process.execPath, [plannerPath, '--root', root, ...args], {
       encoding: 'utf8',
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return { exitCode: 0, stdout: stdout.trim(), stderr: '' };
@@ -1025,7 +1027,7 @@ test('t14: merges snapshots, reports cold-path state, and skips an exact cache h
   }
 });
 
-test('App and Bevy build owners form a disjoint complete source roster', async () => {
+test('existing app producers own the complete source roster including Bevy', async () => {
   const { appPackages } = await import('../../build-task-cache.mjs');
   const { bevySmokeApps } = await import('../../bevy-demo.mjs');
   const { appShardRoster } = await import('../app-build-roster.mjs');
@@ -1039,11 +1041,8 @@ test('App and Bevy build owners form a disjoint complete source roster', async (
     relative(appRoot, app.dir).replaceAll('\\', '/'),
   );
   assert.ok(bevy.length > 0);
-  assert.deepEqual(
-    shards.filter((app) => bevy.includes(app)),
-    [],
-  );
-  assert.deepEqual([...shards, ...bevy].sort(), expected);
+  assert.ok(bevy.every((app) => shards.includes(app)));
+  assert.deepEqual(shards, expected);
   for (const app of appPackages(repoRoot).filter(
     (app) => app.manifest.forgeax?.bevyExample?.status === 'partial',
   )) {
@@ -1059,7 +1058,7 @@ test('shared material transport retains the declared artifact closure and reject
     const path = join(root, 'apps/pbr/dist/assets', `${guid}.pack-fixture.json`);
     const pack = JSON.parse(readFileSync(path, 'utf8'));
     pack.assets[0].kind = 'material';
-    pack.assets[0].payload = { schemaVersion: 'material-cook/4', programs: [0, 0] };
+    pack.assets[0].payload = { schemaVersion: 'material-cook/5', programs: [0, 0] };
     if (scenario === 'invalid-reference') pack.assets[0].payload.programs[0] = 1;
     if (scenario === 'escaping-body') pack.assets[0].artifacts.body.path = '../escape.bin';
     if (scenario === 'missing-guid') pack.assets[0].guid = 'not-the-roster-guid';
@@ -1090,5 +1089,189 @@ test('shared material transport retains the declared artifact closure and reject
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test('package-owned native Pack requirements use the strict transfer closure without a canonical roster entry', () => {
+  const root = fixture([]);
+  writePackFixture(root);
+  try {
+    rmSync(join(root, 'scripts/ci/dawn-smoke-roster.json'));
+    const path = join(root, 'apps/pbr/package.json');
+    const pkg = JSON.parse(readFileSync(path, 'utf8'));
+    pkg.forgeax = { smokeArtifacts: { packGuids: ['019e4a26-3c29-7420-af5d-20f2724a16b0'] } };
+    writeFileSync(path, JSON.stringify(pkg));
+    const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const paths = JSON.parse(result.stdout).artifactInventory;
+    assert.ok(paths.includes('apps/pbr/dist/pack-index.json'));
+    assert.ok(paths.includes('apps/pbr/dist/assets/019e4a26-3c29-7420-af5d-20f2724a16b0-body.bin'));
+    rmSync(join(root, 'apps/pbr/dist/assets/019e4a26-3c29-7420-af5d-20f2724a16b0-body.bin'));
+    const missing = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);
+    assert.notEqual(missing.exitCode, 0);
+    assert.match(missing.stdout, /ci-app-shard-pack-unsafe-path/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('core defers only forty-eight duplicate Bevy bundles and retains eighty percent of all app builds', async () => {
+  const { appShardRoster } = await import('../app-build-roster.mjs');
+  const deferred = JSON.parse(
+    readFileSync(new URL('../core-app-build-deferred.json', import.meta.url), 'utf8'),
+  );
+  const all = appShardRoster(repoRoot);
+  assert.equal(deferred.length, 48);
+  assert.equal(new Set(deferred).size, deferred.length);
+  const ratio = (all.length - deferred.length) / all.length;
+  assert.ok(ratio >= 0.78 && ratio <= 0.82, String(ratio));
+  for (const app of deferred) {
+    assert.ok(all.includes(app));
+    assert.ok(app.startsWith('bevy/'));
+    const root = join(repoRoot, 'apps', app);
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    assert.equal(pkg.forgeax.bevyExample.status, 'implemented');
+    assert.equal(pkg.forgeax.smokeArtifacts, undefined);
+    assert.equal(pkg.scripts.prebuild, undefined);
+    assert.ok(!existsSync(join(root, 'assets')));
+    assert.ok(
+      !globSync('**/*.wgsl', { cwd: root, exclude: ['**/node_modules/**', '**/dist/**'] }).length >
+        0,
+    );
+    assert.ok(pkg.scripts.smoke, 'native behavior remains mandatory');
+  }
+  const root = fixture(['bevy/time-elapsed', 'retained']);
+  try {
+    const args = ['--shard-count', '1', '--shard-index', '0', '--dry-run'];
+    const full = runPlanner(root, args, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' });
+    const core = runPlanner(root, args, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '1' });
+    assert.equal(full.exitCode, 0, full.stdout || full.stderr);
+    assert.equal(core.exitCode, 0, core.stdout || core.stderr);
+    const fullPlan = JSON.parse(full.stdout);
+    const corePlan = JSON.parse(core.stdout);
+    assert.deepEqual(fullPlan.buildApps, ['bevy/time-elapsed', 'retained']);
+    assert.deepEqual(corePlan.apps, fullPlan.apps);
+    assert.deepEqual(corePlan.buildApps, ['retained']);
+    assert.deepEqual(corePlan.omittedTransferApps, ['bevy/time-elapsed']);
+    assert.deepEqual(corePlan.skippedBuildApps, ['bevy/time-elapsed']);
+    assert.ok(corePlan.artifactInventory.every((path) => !path.includes('bevy/time-elapsed')));
+    assert.equal(corePlan.profile, 'core');
+    assert.equal(fullPlan.profile, 'full');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('source recovery retires stale outputs for apps deliberately omitted from core transfer', () => {
+  const root = fixture(['alpha']);
+  try {
+    assert.ok(existsSync(join(root, 'apps/alpha/dist/shaders/manifest.json')));
+    const result = runPlanner(root, [
+      '--shard-count',
+      '1',
+      '--shard-index',
+      '0',
+      '--output-dir',
+      join(root, 'output'),
+      '--skip-build-app',
+      'alpha',
+      '--omit-transfer-app',
+      'alpha',
+      '--retain-artifact-only',
+    ]);
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    assert.ok(
+      !existsSync(join(root, 'apps/alpha/dist')),
+      'old full-profile bytes cannot enter core source recovery',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('clearcoat native transfer retains the authored material loaded by its shared scene', async () => {
+  const { CLEARCOAT_MATERIAL_GUID } = await import(
+    '../../../apps/bevy/clearcoat/src/material-identity.ts'
+  );
+  const { AssetGuid } = await import('@forgeax/engine-pack/guid');
+  const manifest = JSON.parse(
+    readFileSync(join(repoRoot, 'apps/bevy/clearcoat/package.json'), 'utf8'),
+  );
+  assert.ok(
+    manifest.forgeax.smokeArtifacts.packGuids.includes(AssetGuid.format(CLEARCOAT_MATERIAL_GUID)),
+  );
+});
+
+test('canonical roster roots cannot erase package-declared native Pack roots', () => {
+  const root = fixture([]);
+  writePackFixture(root);
+  try {
+    const path = join(root, 'apps/pbr/package.json');
+    const pkg = JSON.parse(readFileSync(path, 'utf8'));
+    const additional = '9cb5f54f-776d-5fde-9c24-8823279b7916';
+    pkg.forgeax.smokeArtifacts = { packGuids: [additional] };
+    writeFileSync(path, JSON.stringify(pkg));
+    const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);
+    assert.notEqual(
+      result.exitCode,
+      0,
+      'A roster must not hide a missing package-declared dependency',
+    );
+    assert.match(result.stdout, /ci-app-shard-pack-guid-missing/);
+    assert.match(result.stdout, new RegExp(additional));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('preview consumers retain the Vite output graph and reject missing emitted inputs', () => {
+  const root = fixture(['preview']);
+  try {
+    const path = join(root, 'apps/preview/package.json');
+    const pkg = JSON.parse(readFileSync(path, 'utf8'));
+    pkg.forgeax = { smokeArtifacts: { preview: true } };
+    writeFileSync(path, JSON.stringify(pkg));
+    const dist = join(root, 'apps/preview/dist');
+    mkdirSync(join(dist, '.vite'), { recursive: true });
+    mkdirSync(join(dist, 'assets'), { recursive: true });
+    writeFileSync(
+      join(dist, 'index.html'),
+      '<script type="module" src="/assets/main.js"></script>',
+    );
+    writeFileSync(join(dist, 'assets/main.js'), 'import("./lazy.js")');
+    writeFileSync(join(dist, 'assets/lazy.js'), 'export default 1');
+    writeFileSync(join(dist, 'assets/main.css'), 'body{}');
+    writeFileSync(join(dist, 'assets/decoder.wasm'), 'wasm');
+    writeFileSync(
+      join(dist, '.vite/manifest.json'),
+      JSON.stringify({
+        'index.html': {
+          file: 'assets/main.js',
+          css: ['assets/main.css'],
+          assets: ['assets/decoder.wasm'],
+          dynamicImports: ['lazy'],
+        },
+        lazy: { file: 'assets/lazy.js' },
+      }),
+    );
+    const args = ['--shard-count', '1', '--shard-index', '0', '--dry-run'];
+    const result = runPlanner(root, args);
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    const paths = JSON.parse(result.stdout).artifactInventory;
+    for (const file of [
+      'index.html',
+      '.vite/manifest.json',
+      'assets/main.js',
+      'assets/lazy.js',
+      'assets/main.css',
+      'assets/decoder.wasm',
+    ])
+      assert.ok(paths.includes(`apps/preview/dist/${file}`), file);
+    rmSync(join(dist, 'assets/lazy.js'));
+    const missing = runPlanner(root, args);
+    assert.notEqual(missing.exitCode, 0);
+    assert.match(missing.stdout, /ci-app-shard-preview/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

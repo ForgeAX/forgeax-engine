@@ -1,9 +1,74 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
-import type { TextureAsset } from '@forgeax/engine-types';
+import { deriveTextureLayout, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { readbackTexture } from './ktx2-gpu-readback.fixture';
+
+/** Real GPU allocation and pixels; CPU source storage remains unchanged. */
+export async function verifyPackedMipSkip() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const raw = _internal_getRawDevice(device);
+  assert(raw);
+  raw.pushErrorScope('validation');
+  const shape = { viewDimension: '2d' as const, extent: { width: 64, height: 64 } };
+  const mips = { kind: 'packed' as const, levelCount: 7 };
+  const layout = deriveTextureLayout({ shape, format: 'rgba8unorm', mips }).unwrap();
+  const data = new Uint8Array(layout.byteLength);
+  for (const level of layout.levels)
+    for (let byte = level.byteOffset; byte < level.byteOffset + level.byteLength; byte += 4)
+      data.set([20 + 30 * level.level, 80, 160, 255], byte);
+  const texture: TextureAsset = {
+    kind: 'texture',
+    shape,
+    mips,
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    data,
+    skippableMips: true,
+  };
+  const assets = new AssetRegistry();
+  const handle = assets.create(texture).unwrap();
+  const stores: GpuResidencyCache[] = [];
+  try {
+    for (const skip of [undefined, 0, 2, 2]) {
+      const store = new GpuResidencyCache(undefined, { textureMipSkip: skip });
+      stores.push(store);
+      store.configureGpuDevice(device, undefined, device.caps);
+      const entry = store.ensureResident(handle, texture).unwrap();
+      const retained = store.retainTextureResidency(handle);
+      assert(retained);
+      try {
+        const start = skip ?? 0;
+        const native = store.prepareTextureData(handle, texture).unwrap();
+        expect(entry.receipt).toMatchObject({
+          shape: { viewDimension: '2d', extent: { width: 64 >> start, height: 64 >> start } },
+          mipLevelCount: 7 - start,
+          bytes: start === 0 ? 21_844 : 1_364,
+        });
+        expect(store.ensureResident(handle, texture).unwrap().texture).toBe(entry.texture);
+        const gpu = store._getTextureGpuTexture(handle);
+        assert(gpu);
+        for (const mip of [0, 6 - start]) {
+          const pixels = await readbackTexture(device, native, gpu, rhi.createShaderModule, mip);
+          const expected = [20 + 30 * (start + mip), 80, 160, 255];
+          for (let byte = 0; byte < pixels.length; byte++)
+            expect(pixels[byte]).toBe(expected[byte % 4]);
+        }
+        expect(data.byteLength).toBe(21_844);
+      } finally {
+        await retained.release(false);
+        store.destroyAll();
+      }
+    }
+    expect(await raw.popErrorScope()).toBeNull();
+  } finally {
+    for (const store of stores) store.destroyAll();
+    assets.dispose();
+    await device.queue.onSubmittedWorkDone();
+  }
+}
 
 export async function verifyManagedTextureRange(mips: 'none' | 'generate') {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

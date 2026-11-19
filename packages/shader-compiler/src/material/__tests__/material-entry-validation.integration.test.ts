@@ -60,7 +60,17 @@ it('publishes an empty custom root beside the Engine shadow with complete direct
       ['webgpu', 'storage-buffer-projector'],
       ['webgpu', 'storage-buffer-atmosphere'],
     ] as const;
-    expect(record.programs).toHaveLength(contexts.length * 2);
+    expect(record.programs).toHaveLength(contexts.length * 3);
+    expect(
+      record.programs.filter((program) =>
+        program.selections.some(
+          (selection) =>
+            selection.context.pipeline !== 'ray' &&
+            selection.context.lodCoverage !== true &&
+            selection.context.viewClipping === true,
+        ),
+      ),
+    ).toHaveLength(contexts.length);
     const selections = record.programs.flatMap((program) => program.selections);
     for (const selection of selections) {
       expect(selection.address).toBe('direct');
@@ -72,7 +82,11 @@ it('publishes an empty custom root beside the Engine shadow with complete direct
         selections
           .filter(
             (selection) =>
-              selection.context.backend === backend && selection.context.capability === capability,
+              selection.context.pipeline !== 'ray' &&
+              selection.context.lodCoverage !== true &&
+              selection.context.backend === backend &&
+              selection.context.capability === capability &&
+              selection.context.viewClipping !== true,
           )
           .map((selection) => selection.pass),
       ).toEqual(['Forward', 'ShadowCaster']);
@@ -525,7 +539,25 @@ describe('selected material graphics entries', () => {
         (cooked.payload as { cooked: unknown }).cooked,
       ).unwrap();
       expect(record.resolved.parameters).toEqual(source.parameters);
-      expect(record.programs.flatMap((program) => program.selections)).toHaveLength(20);
+      const allSelections = record.programs.flatMap((program) => program.selections);
+      expect(
+        allSelections.filter(
+          (selection) =>
+            selection.context.pipeline !== 'ray' &&
+            selection.context.lodCoverage !== true &&
+            selection.context.viewClipping !== true,
+        ),
+      ).toHaveLength(20);
+      const clippedSelections = allSelections.filter(
+        (selection) =>
+          selection.context.pipeline !== 'ray' &&
+          selection.context.lodCoverage !== true &&
+          selection.context.viewClipping === true,
+      );
+      expect(clippedSelections).toHaveLength(10);
+      expect(new Set(clippedSelections.map((selection) => selection.pass))).toEqual(
+        new Set(['ShadowCaster']),
+      );
       for (const capability of [
         'storage-buffer-minimum',
         'storage-buffer-projector',
@@ -533,29 +565,41 @@ describe('selected material graphics entries', () => {
         'storage-buffer-atmosphere',
       ]) {
         for (const pass of ['Forward', 'ShadowCaster']) {
-          const selections = record.programs
-            .flatMap((program) => program.selections)
-            .filter(
-              (selection) => selection.pass === pass && selection.context.capability === capability,
-            );
-          expect(selections.map((selection) => selection.address)).toEqual([
-            'direct',
-            'scene-index',
-          ]);
-          for (const selection of selections) {
-            expect(selection.abi?.materialRow.fields).toEqual(['tint']);
-            expect(selection.abi?.vertexInputs).toEqual([
-              { semantic: 'position', location: 0, format: 'float32x3' },
-              ...(pass === 'ShadowCaster'
-                ? [{ semantic: 'normal', location: 1, format: 'float32x3' }]
-                : []),
+          for (const viewClipping of pass === 'ShadowCaster' ? [false, true] : [false]) {
+            const selections = record.programs
+              .flatMap((program) => program.selections)
+              .filter(
+                (selection) =>
+                  selection.pass === pass &&
+                  selection.context.capability === capability &&
+                  selection.context.pipeline !== 'ray' &&
+                  selection.context.lodCoverage !== true &&
+                  (selection.context.viewClipping === true) === viewClipping,
+              );
+            expect(selections.map((selection) => selection.address)).toEqual([
+              'direct',
+              'scene-index',
             ]);
+            for (const selection of selections) {
+              expect(selection.abi?.materialRow.fields).toEqual(['tint']);
+              expect(selection.abi?.vertexInputs).toEqual([
+                { semantic: 'position', location: 0, format: 'float32x3' },
+                ...(pass === 'ShadowCaster'
+                  ? [{ semantic: 'normal', location: 1, format: 'float32x3' }]
+                  : []),
+              ]);
+            }
           }
         }
       }
       const shadowScene = record.programs.find((program) =>
         program.selections.some(
-          (selection) => selection.pass === 'ShadowCaster' && selection.address === 'scene-index',
+          (selection) =>
+            selection.pass === 'ShadowCaster' &&
+            selection.address === 'scene-index' &&
+            selection.context.pipeline !== 'ray' &&
+            selection.context.lodCoverage !== true &&
+            selection.context.viewClipping === true,
         ),
       );
       expect(shadowScene).toBeDefined();
@@ -563,8 +607,8 @@ describe('selected material graphics entries', () => {
       expect(wgsl).toContain('sceneTransforms');
       expect(wgsl).toContain('shadowCasterCascade');
       expect(wgsl).toContain('applyViewClipping');
-      // The shadow pass is not on the discard-free lane: its LOD coverage stays unconditional.
-      expect(wgsl).toContain('applyLodCoverage');
+      // A non-fading shadow context retains clipping without LOD coverage.
+      expect(wgsl).not.toContain('applyLodCoverage');
       expect(wgsl).not.toContain('material.metallic');
     } finally {
       await rm(root, { recursive: true, force: true });

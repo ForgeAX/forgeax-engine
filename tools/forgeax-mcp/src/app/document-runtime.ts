@@ -49,11 +49,14 @@ export function createMcpDocumentRuntime(
       dispose() {
         return retiring ??= (async () => {
           controller.abort();
-          await ready;
-          try { await invoke({ action: 'document-cancel', url }); }
-          finally {
-            try { await retireViewResources([{ bridge, frame: element }], [], () => {}); }
-            finally { if (documents.get(url)?.handle === handle) documents.delete(url); }
+          try {
+            await ready;
+          } finally {
+            try { await invoke({ action: 'document-cancel', url }); }
+            finally {
+              try { await retireViewResources([{ bridge, frame: element }], [], () => {}); }
+              finally { if (documents.get(url)?.handle === handle) documents.delete(url); }
+            }
           }
         })();
       },

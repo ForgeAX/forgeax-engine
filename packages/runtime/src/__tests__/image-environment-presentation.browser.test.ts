@@ -58,6 +58,12 @@ function redMeshPixels(pixels: readonly number[]): number {
   return count;
 }
 
+async function assertCompleted(
+  completions: readonly Promise<{ readonly ok: boolean; readonly error?: unknown }>[],
+): Promise<void> {
+  for (const completed of await Promise.all(completions)) if (!completed.ok) throw completed.error;
+}
+
 it.each([
   'shared',
   'skybox',
@@ -98,7 +104,7 @@ it.each([
         const labels: string[] = [];
         const begin = encoder.beginRenderPass.bind(encoder);
         encoder.beginRenderPass = (descriptor) => {
-          if (descriptor.label) labels.push(descriptor.label);
+          if (descriptor.label) labels.push(...descriptor.label.split(' + '));
           if (descriptor.label === 'ibl-brdf-lut') finalStage = true;
           return begin(descriptor);
         };
@@ -138,6 +144,8 @@ it.each([
     };
     return adapter;
   };
+  let released = false;
+  const pendingCompletions: Promise<{ readonly ok: boolean; readonly error?: unknown }>[] = [];
   let renderer: Renderer | undefined;
   let loseDevice: (() => void) | undefined;
   const lifecycleErrors: unknown[] = [];
@@ -278,15 +286,17 @@ it.each([
     const draw = async () => {
       world.update(1 / 60).unwrap();
       if (!renderer) throw new Error('Renderer missing');
-      const drawn = renderer.draw({
-        leases: [lease],
-        camera: { lease, entityKey: camera },
-        environment: { lease },
-      });
+      const drawn = renderer.draw({ source: lease, camera: { entityKey: camera } });
       if (!drawn.ok) throw drawn.error;
       const receipt = drawn.value;
-      const completed = await receipt.completed;
-      if (!completed.ok) throw completed.error;
+      if (!released && receipt.presentation === 'pending') {
+        // The test holds the real IBL queue fence. RHI can share that native
+        // fence with a no-work picture; drain it after releasing this gate.
+        pendingCompletions.push(receipt.completed);
+      } else {
+        const completed = await receipt.completed;
+        if (!completed.ok) throw completed.error;
+      }
       return receipt.presentation;
     };
     const drawUntilPass = async (label: string) => {
@@ -462,8 +472,8 @@ it.each([
         expect(await draw()).toBe('pending');
         expect(
           submissions.slice(stableResizeStart).flat(),
-          'the accepted resized picture only needs composition while the image is pending',
-        ).toEqual(mode === 'shared-view-first' ? ['camera-view-composite'] : []);
+          'a retained full-surface picture needs no composite while the image is pending',
+        ).toEqual([]);
         expect(await presentedPixels(canvas)).toEqual(resizedPixels);
         expect(renderer.inspect().temporal.epoch).toBe(resizedEpoch);
         expect(renderer.inspect().output).toEqual(resizedOutput);
@@ -495,7 +505,9 @@ it.each([
       }
     }
     const readyStart = submissions.length;
+    released = true;
     release();
+    await assertCompleted(pendingCompletions);
     let readyFrames = 0;
     while (readyFrames < 60 && performance.now() < deadline) {
       if ((await draw()) === 'ready') {

@@ -183,6 +183,13 @@ it.each([
     });
     const container = server.environments.client?.pluginContainer;
     if (!container) throw new Error('missing client container');
+    const transitive = await container.resolveId(
+      '@forgeax/engine-scene',
+      resolve(umbrella, 'index.js'),
+    );
+    expect(transitive?.meta?.['forgeax.engineCapability']).toEqual({
+      specifier: '@forgeax/engine-scene',
+    });
     const before = await container.resolveId(
       '@forgeax/engine-scene',
       resolve(root, 'bootstrap.js'),
@@ -190,6 +197,7 @@ it.each([
     query = second;
     const after = await container.resolveId('@forgeax/engine-scene', resolve(root, 'game.pack.js'));
     expect(before?.id).toBe(entry.replaceAll('\\', '/') + first);
+    expect(transitive?.id).toBe(before?.id);
     expect(after?.id).toBe(before?.id);
     for (const semantic of ['?forgeax-program-session=other', '?raw=changed', '?worker=other']) {
       query = semantic;

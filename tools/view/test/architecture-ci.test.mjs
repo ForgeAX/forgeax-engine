@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { it } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const workflow = readFileSync(
   new URL('../.github/workflows/ci.yml', import.meta.url),
@@ -18,6 +19,23 @@ it('GPU game probes retain the Engine browser lane unrounded adapter limits', ()
     'verify-runtime-content-engine',
   ]) {
     const source = readFileSync(new URL(`../scripts/${name}.mjs`, import.meta.url), 'utf8');
+    if (name === 'verify-game3d-workspace') {
+      assert.match(source, /const browserLaunch = JSON\.parse\(await readFile\(join\(checkout, 'scripts\/ci\/browser-launch\.json'\), 'utf8'\)\)/);
+      const options = source.match(/browser = await chromium\.launch\((\{[\s\S]*?\n  \})\);/)?.[1];
+      assert.ok(options, 'the actual game launch must expose its inherited options');
+      const policy = [
+        '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
+        '--disable-gpu-watchdog',
+        '--future-engine-launch-policy',
+      ];
+      const launch = runInNewContext(`(${options})`, {
+        browserLaunch: { args: policy }, process: { env: {} },
+      });
+      for (const flag of policy) assert.ok(launch.args.includes(flag), flag);
+      assert.ok(launch.args.includes('--use-angle=swiftshader'));
+      assert.equal(launch.chromiumSandbox, true);
+      continue;
+    }
     assert.ok(
       source.includes('--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'),
       name,
@@ -35,8 +53,13 @@ it('runs independent architecture and build lanes with every consumer required',
   const build = workflow.slice(workflow.indexOf('  build:'), workflow.indexOf('  browser:'));
   const browser = workflow.slice(workflow.indexOf('  browser:'), workflow.indexOf('  bootstrap:'));
   for (const lane of [architecture, build]) {
-    assert.doesNotMatch(lane, /^ {4}(?:needs|if):/m);
+    assert.match(lane, /^ {4}needs: context$/m);
+    assert.doesNotMatch(lane, /^ {4}if:/m);
+    assert.match(lane, /ref: \$\{\{ needs\.context\.outputs\.engine_ref \}\}/);
   }
+  assert.match(architecture, /Reuse architecture: \$\{\{ needs\.context\.outputs\.architecture_origin \}\}/);
+  assert.match(architecture, /if: needs\.context\.outputs\.architecture_reused != 'true'/);
+  assert.doesNotMatch(build, /architecture_reused/);
   for (const lane of [build, browser]) {
     const preparation = lane.indexOf('uses: ./.github/actions/prepare-wgpu-wasm');
     assert.ok(preparation >= 0, 'native builds must retain the Engine source-build fallback');
@@ -46,7 +69,7 @@ it('runs independent architecture and build lanes with every consumer required',
   assert.match(build, /run: pnpm build:engine && pnpm build:tools/);
   assert.match(build, /shards\.length !== 4/);
   assert.match(build, /new Set\(shards\)\.size !== shards\.length/);
-  assert.match(browser, /^ {2}browser:\n {4}needs: build/m);
+  assert.match(browser, /^ {2}browser:\n {4}needs: \[context, build\]/m);
   assert.match(browser, /fail-fast: false/);
   assert.match(browser, /shard: \$\{\{ fromJSON\(needs\.build\.outputs\.view_shards\) \}\}/);
   assert.match(browser, /--candidate --shard \$\{\{ matrix\.shard \}\}/);
@@ -57,6 +80,33 @@ it('runs independent architecture and build lanes with every consumer required',
   for (const name of ['architecture', 'build', 'browser']) {
     assert.ok(workflow.includes(`${name.toUpperCase()}_RESULT: \${{ needs.${name}.result }}`));
   }
+});
+
+it('hydrates both Rapier payloads with Engine release access before the verified fallback', () => {
+  const release = 'uses: ./tools/view/.github/actions/prepare-engine-wasm';
+  const fallback = 'uses: ./.github/actions/prepare-rapier-wasm';
+  const buildStart = workflow.indexOf('  build:');
+  const browserStart = workflow.indexOf('  browser:');
+  const build = workflow.slice(buildStart, browserStart);
+  const browser = workflow.slice(browserStart, workflow.indexOf('  bootstrap:'));
+  for (const dimension of ['2d', '3d']) {
+    assert.ok(build.includes(`packages/physics-rapier${dimension}/pkg`));
+  }
+  const restoreStart = browser.indexOf('uses: actions/download-artifact@v4');
+  assert.ok(restoreStart >= 0 && restoreStart < browser.indexOf(release));
+  for (const lane of [build, browser]) {
+    const releaseStart = lane.indexOf(release);
+    const fallbackStart = lane.indexOf(fallback);
+    assert.ok(releaseStart >= 0 && releaseStart < fallbackStart);
+    assert.match(lane.slice(releaseStart, fallbackStart),
+      /GITHUB_TOKEN: \$\{\{ secrets\.GHA \}\}/);
+  }
+  const action = readFileSync(
+    new URL('../.github/actions/prepare-engine-wasm/action.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(action, /for dimension in 2d 3d; do/);
+  assert.match(action, /if ! node scripts\/ci\/rapier-release-payload\.mjs --hydrate "\$dimension"; then/);
 });
 
 it('the actual aggregate command rejects every failed, skipped, cancelled or absent lane', () => {

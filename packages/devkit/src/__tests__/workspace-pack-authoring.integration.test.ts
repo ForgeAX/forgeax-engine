@@ -7,12 +7,82 @@ import type { RuntimePackContent } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId, type PackDraftReply } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createWorkspacePackAuthoring } from '../workspace-pack-authoring';
+import { workspacePackCookPlugin } from '../workspace-pack-cook';
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+it('generates an unsaved build-only candidate through the serving cooker before preview adoption', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-draft-cooked-')));
+  roots.push(root);
+  await mkdir(resolve(root, 'assets'));
+  await symlink(
+    resolve(import.meta.dirname, '../../../..', 'node_modules'),
+    resolve(root, 'node_modules'),
+    'dir',
+  );
+  const sourcePath = 'assets/clouds.pack.ts';
+  const source = `import { definePack, definePackageId } from '@forgeax/engine/pack/source';
+import { ok } from '@forgeax/engine/types';
+export default definePack({ schemaVersion:'2.0.0',packageId:definePackageId('01900000-0000-7000-8000-000000000052'),
+parameters:[{name:'density',type:'f32',default:1}],
+build({values}){return ok({'material/cloud':{kind:'cloud-material',execution:'cooked',source:{density:values.density}}});}});`;
+  await writeFile(resolve(root, sourcePath), source);
+  let adopted: RuntimePackContent | undefined;
+  let commits = 0;
+  const cooker = workspacePackCookPlugin([
+    {
+      key: 'cloud-material',
+      cook(input: { guid: string; source: { density: number } }) {
+        return {
+          guid: input.guid,
+          payload: { kind: 'cloud-material', density: input.source.density },
+          refs: [],
+          artifacts: {},
+          inputFingerprint: String(input.source.density),
+        };
+      },
+    },
+  ]);
+  const preview = {
+    target: { targetId: 'preview' },
+    asset: { path: sourcePath },
+    prepareAssetContent: async (content: RuntimePackContent) => {
+      adopted = content;
+      return 1;
+    },
+    commitAssetContent: async () => {
+      commits++;
+    },
+  } as unknown as EngineWorkspacePreview;
+  const owner = createWorkspacePackAuthoring({
+    root,
+    sourceRoots: ['assets'],
+    preview: () => preview,
+    prepareContent: (input) => cooker.prepareContent(input),
+  });
+  const execute = (request: Parameters<typeof owner.execute>[0]['request']) =>
+    owner.execute({ project: { id: 'cooked', root }, previewTargetId: 'preview', request });
+  try {
+    const opened = await execute({ action: 'open', sourcePath });
+    if (!('id' in opened)) throw new Error('Missing draft');
+    await execute({ action: 'edit', draftId: opened.id, field: 'density', value: 2 });
+    const generated = await execute({ action: 'generate', draftId: opened.id });
+    expect('error' in generated ? generated.error : undefined).toBeUndefined();
+    expect(generated).toMatchObject({ needsGeneration: false, preview: 'ready', unsaved: true });
+    expect(adopted?.source).toMatchObject({
+      assets: { 'material/cloud': { payload: { density: 2 } } },
+    });
+    expect(commits).toBeGreaterThan(0);
+    expect(await readFile(resolve(root, sourcePath), 'utf8')).toBe(source);
+  } finally {
+    owner.dispose();
+  }
 });
 
 it('waits for saved source publication before completing Save', async () => {
@@ -389,6 +459,15 @@ async build({ readByGuid }) { const parsed = AssetGuid.parse('${guid}'); if (!pa
   try {
     const opened = await execute({ action: 'open', sourcePath: 'assets/generator.pack.ts' });
     if (!('id' in opened)) throw new Error('Missing draft');
+    // The host policy must reach the real generation call, then recover normally.
+    vi.stubEnv('FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS', 'NaN');
+    const refused = await execute({ action: 'generate', draftId: opened.id });
+    expect(refused).toMatchObject({
+      error: {
+        detail: { reason: expect.stringContaining('FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS') },
+      },
+    });
+    vi.unstubAllEnvs();
     const generated = await execute({ action: 'generate', draftId: opened.id });
     expect('error' in generated ? generated.error : undefined).toBeUndefined();
     expect(generated).toMatchObject({

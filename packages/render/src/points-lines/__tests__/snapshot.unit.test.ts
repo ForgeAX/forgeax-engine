@@ -3,7 +3,6 @@ import { createPointsLinesSnapshot, type PointsLinesRetainedSnapshot } from '../
 
 function snapshotInput(): Parameters<typeof createPointsLinesSnapshot>[0] {
   return {
-    worldId: 3,
     entityKey: 17,
     component: 'Points',
     meshHandle: 11,
@@ -24,7 +23,6 @@ describe('Points/Lines retained snapshot', () => {
     const snapshot = createPointsLinesSnapshot(source);
 
     expect(snapshot).toEqual<PointsLinesRetainedSnapshot>({
-      worldId: 3,
       entityKey: 17,
       component: 'Points',
       meshHandle: 11,

@@ -111,10 +111,6 @@ function exhaustiveSwitchOnRenderCode(code: RenderErrorCode): string {
       return code;
     case 'equirect-projection-failed':
       return code;
-    case 'standard-light-budget-exceeded':
-      return code;
-    case 'standard-cluster-index-overflow':
-      return code;
     case 'standard-cluster-transport-unavailable':
       return code;
     case 'render-target-descriptor-invalid':
@@ -333,6 +329,7 @@ function narrowRenderError(err: RenderError): void {
       break;
     case 'scene-sdf-unavailable':
       void err.detail.reason;
+      // @ts-expect-error source routing indices are absent from single-source diagnostics.
       void err.detail.world;
       void err.detail.entity;
       void err.detail.cause;
@@ -379,14 +376,6 @@ function narrowRenderError(err: RenderError): void {
       break;
     case 'equirect-projection-failed':
       void err.detail.handle; // number
-      break;
-    case 'standard-light-budget-exceeded':
-      void err.detail.actual; // number
-      void err.detail.budget; // number
-      break;
-    case 'standard-cluster-index-overflow':
-      void err.detail.actual; // number
-      void err.detail.capacity; // number
       break;
     case 'standard-cluster-transport-unavailable':
       void err.detail.requested; // number
@@ -464,7 +453,6 @@ function narrowRenderError(err: RenderError): void {
       void err.detail.actualShader;
       break;
     case 'skin-demand-missing':
-      void err.detail.worldId;
       void err.detail.entityKey;
       void err.detail.pass;
       break;

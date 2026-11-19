@@ -14,9 +14,7 @@ it('keeps entity tables stable while distinct material versions are held by old 
   const scene = new RenderScene();
   const source = receiptRow().source;
   gpu
-    .sync(
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-    )
+    .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   const buffers = [gpu.primitiveBuffer, gpu.instanceBuffer, gpu.transformBuffer];
   const capacity = gpu.rowCapacity;
@@ -57,7 +55,6 @@ it('balances repeated and reordered material bindings while a frame retains an o
         scene.apply([
           {
             kind: 'update',
-            worldId: 0,
             entityKey: source.entityKey,
             snapshot: {
               ...source,
@@ -80,7 +77,7 @@ it('balances repeated and reordered material bindings while a frame retains an o
         expect(gpu.materialIndexForResource(resource)).toBeDefined();
       expect(frame.indexForResource(a, a.snapshot)).toBe(old);
     }
-    gpu.sync(scene.apply([{ kind: 'remove', worldId: 0, entityKey: source.entityKey }])).unwrap();
+    gpu.sync(scene.apply([{ kind: 'remove', entityKey: source.entityKey }])).unwrap();
     expect(gpu.materialIndexForResource(a)).toBeUndefined();
     expect(gpu.materialIndexForResource(b)).toBeUndefined();
     expect(frame.indexForResource(a, a.snapshot)).toBe(old);
@@ -103,7 +100,6 @@ it('closes known resource demands before submission and refuses late latest-vers
       scene.apply(
         [a, b].map((snapshot) => ({
           kind: 'update',
-          worldId: 0,
           entityKey: snapshot.entityKey,
           snapshot,
         })),
@@ -121,7 +117,7 @@ it('closes known resource demands before submission and refuses late latest-vers
     expect(gpu.materialIndexForResource(a.material)).not.toBe(old);
     expect(frame.indexForResource(a.material)).toBeUndefined();
     expect(frame.indexForResource(b.material)).toBeUndefined();
-    expect(frame.indexForGeometry(0, 9)).toBeUndefined();
+    expect(frame.indexForGeometry(9)).toBeUndefined();
     frame.release();
     frame.release();
     expect(() => frame.seal()).toThrow('must be live');
@@ -138,9 +134,7 @@ it('pins one material version across edits and reuses released storage after com
   const gpu = created.scene;
   const scene = new RenderScene();
   const row = receiptRow().source;
-  gpu
-    .sync(scene.apply([{ kind: 'update', worldId: 0, entityKey: row.entityKey, snapshot: row }]))
-    .unwrap();
+  gpu.sync(scene.apply([{ kind: 'update', entityKey: row.entityKey, snapshot: row }])).unwrap();
   const material = row.material;
   const edit = (roughness: number) => {
     material.adopt({ ...material.snapshot, roughness });
@@ -197,9 +191,7 @@ it('holds replaced buffers until every prepared frame releases them and rejects 
   const source = receiptRow().source;
   const destroy = vi.spyOn(device, 'destroyBuffer');
   gpu
-    .sync(
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-    )
+    .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   const frames = Array.from({ length: 128 }, () => gpu.captureResources().unwrap());
   expect(gpu.captureResources().ok).toBe(false);
@@ -237,9 +229,7 @@ it('recovers from failed material growth when the next edit has a different layo
   const scene = new RenderScene();
   const source = receiptRow().source;
   gpu
-    .sync(
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-    )
+    .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   const held = gpu.captureResources().unwrap();
   const previous = held.indexForResource(source.material, source.material.snapshot);
@@ -290,9 +280,7 @@ it('rejects late first demands and pins a fresh accepted buffer generation', asy
   const scene = new RenderScene();
   const source = receiptRow().source;
   gpu
-    .sync(
-      scene.apply([{ kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source }]),
-    )
+    .sync(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   let frame = gpu.captureResources().unwrap();
   const destroy = vi.spyOn(device, 'destroyBuffer');

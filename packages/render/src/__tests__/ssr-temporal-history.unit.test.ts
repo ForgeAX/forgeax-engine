@@ -1,7 +1,11 @@
 import { RhiNullAdapter, RhiNullQueue } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
-import { createSsrHistoryOwner, type SsrHistoryResetReason } from '../ssr/history';
+import {
+  createSsrHistoryOwner,
+  SSR_HISTORY_SLOT_COUNT,
+  type SsrHistoryResetReason,
+} from '../ssr/history';
 import { createSsrTemporalConsumer } from '../ssr/temporal';
 import { TemporalFrameCoordinator, type TemporalFrameStage } from '../temporal/frame-coordinator';
 
@@ -126,7 +130,12 @@ describe('SSR temporal history owner', () => {
     });
     expect(owner.resources.slots).toHaveLength(5);
     expect(
-      new Set(owner.resources.slots.flatMap((slot) => [slot.texture, slot.surfaceTexture])).size,
+      new Set(
+        owner.resources.slots.flatMap((slot) => {
+          expect(slot.profile).toBe('opaque');
+          return slot.profile === 'opaque' ? [slot.texture, slot.surfaceTexture] : [slot.texture];
+        }),
+      ).size,
     ).toBe(10);
     expect(owner.inspect()).toMatchObject({
       state: 'first-frame',
@@ -134,6 +143,37 @@ describe('SSR temporal history owner', () => {
       activeBytes: 900,
       candidateBytes: 0,
       retiringBytes: 0,
+      historyValid: false,
+    });
+  });
+
+  it('allocates only independent RGB-opacity history slots for single-layer water', async () => {
+    const device = await createDevice();
+    const scope = DeviceScope.create(41, 'water-renderer');
+    const owner = createSsrHistoryOwner({
+      device,
+      scope,
+      width: 5,
+      height: 3,
+      profile: 'single-layer-water',
+    }).unwrap();
+
+    expect(owner.resources).toMatchObject({
+      profile: 'single-layer-water',
+      bytes: 5 * 3 * 8 * SSR_HISTORY_SLOT_COUNT,
+    });
+    expect(owner.resources.slots).toHaveLength(SSR_HISTORY_SLOT_COUNT);
+    expect(new Set(owner.resources.slots.map((slot) => slot.texture)).size).toBe(
+      SSR_HISTORY_SLOT_COUNT,
+    );
+    for (const slot of owner.resources.slots) {
+      expect(slot).toHaveProperty('profile', 'single-layer-water');
+      expect(slot).not.toHaveProperty('surfaceTexture');
+      expect(slot).not.toHaveProperty('surfaceView');
+    }
+    expect(owner.inspect()).toMatchObject({
+      profile: 'single-layer-water',
+      activeBytes: 5 * 3 * 8 * SSR_HISTORY_SLOT_COUNT,
       historyValid: false,
     });
   });
@@ -260,13 +300,13 @@ describe('SSR temporal history owner', () => {
       activeBytes: 2700,
       retiringBytes: 900,
     });
-    owner.retireAfterFence(queue, (cause) => failures.push(cause));
+    owner.retireReplacedAfterFence(queue, (cause) => failures.push(cause));
     expect(owner.inspect().retiringBytes).toBe(900);
     queue.complete();
     await Promise.resolve();
     await Promise.resolve();
     expect(failures).toEqual([]);
-    expect(owner.inspect().retiringBytes).toBe(0);
+    expect(owner.inspect()).toMatchObject({ activeBytes: 2700, retiringBytes: 0 });
 
     owner.retireAfterFence(queue, (cause) => failures.push(cause));
     expect(owner.inspect().activeBytes).toBe(2700);

@@ -188,7 +188,7 @@ export function resolveRenderTargetMipExtent(
   };
 }
 
-function estimatedBytes(descriptor: RenderTargetDescriptor): number {
+export function renderTargetAllocationBytes(descriptor: RenderTargetDescriptor): number {
   const layers = renderTargetLayerCount(descriptor);
   const basePixels = descriptor.width * descriptor.height;
   let colorPixels = 0;
@@ -324,7 +324,7 @@ export function admitRenderTargetDescriptor(
       }),
     };
   }
-  const bytes = estimatedBytes(descriptor);
+  const bytes = renderTargetAllocationBytes(descriptor);
   if (bytes > limits.maxBytesPerTarget) {
     return invalid('bytes', bytes, `estimated allocation <= ${limits.maxBytesPerTarget}`);
   }

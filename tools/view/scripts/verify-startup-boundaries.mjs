@@ -9,12 +9,13 @@ import { connectViewWorkspace } from '../packages/view-workspace-core/src/reside
 import { VIEW_PACK_SOURCES_SERVICE } from '../packages/view-workspace-core/src/contract.ts';
 
 const root = await mkdtemp(join(tmpdir(), 'view-startup-browser-'));
-const viewStartInput = JSON.stringify({ root, frontendConfig: { layout: { responsiveAutoTuck: false } } });
+const backendRoot = await mkdtemp(join(tmpdir(), 'view-startup-backend-'));
+const viewStartInput = JSON.stringify({ frontendConfig: { layout: { responsiveAutoTuck: false } } });
 const brokenRoot = await mkdtemp(join(tmpdir(), 'view-startup-broken-'));
 const view = resolve(import.meta.dirname, '..');
 const engine = dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/package.json')));
 const command = async (...args) => {
-  const result = await runUnifiedCli([...args, '--root', root, '--json']);
+  const result = await runUnifiedCli([...args, '--root', backendRoot, '--json']);
   assert.equal(result.ok, true, JSON.stringify(result));
   return result.value;
 };
@@ -49,7 +50,7 @@ try {
     id: 'startup-proof', name: 'Startup proof', schemaVersion: '3.0.0',
     roots: {},
   }));
-  const absent = await runUnifiedCli(['view', 'start', '--root', root, '--json']);
+  const absent = await runUnifiedCli(['view', 'start', '--root', backendRoot, '--json']);
   assert.equal(absent.ok, false, 'View must not start its backend implicitly');
   assert.equal((await command('backend', 'status')).phase, 'stopped');
   const previousBrowserPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
@@ -123,7 +124,7 @@ try {
   await page.goto(state.url);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 30_000 });
   await page.locator('[role="tab"][data-page-id="page-scene"]').click();
-  await page.getByRole('button', { name: 'Open project', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Next', exact: true }).waitFor();
   assert.equal(await page.locator('canvas').count(), 0);
   const openDialog = page.getByRole('dialog', { name: 'Open project', exact: true });
   await openDialog.waitFor();
@@ -136,18 +137,17 @@ try {
   assert.deepEqual(errors, [], 'empty Shell must not produce page errors');
   await page.getByLabel('Project path', { exact: true }).fill(root);
   stage = 'renderer-failure';
-  await page.getByRole('button', { name: 'Open project', exact: true }).click();
-  await page.waitForURL(url => url.searchParams.has('forgeaxWorkspaceTarget'), { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  assert.equal(page.url(), new URL(state.url).href, 'Project admission retains the Shell URL');
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 60_000 });
-  // A page-scoped workspace reports a failed renderer through its guarded
-  // recovery surface; older pages may still use Engine's terminal overlay.
-  await page.waitForFunction(() => {
-    if (document.querySelector('#forgeax-fatal')?.style.display === 'grid') return true;
-    const text = document.body.textContent ?? '';
-    return text.includes('Workspace needs reconnect') &&
-      text.includes('view-workspace-bootstrap-failed') &&
-      text.includes('startup-proof: graphics unavailable');
-  }, undefined, { timeout: 60_000 });
+  // The retained Shell stays live while its Engine document reports the fault.
+  const documentElement = await page.locator('iframe[data-forgeax-project-document]').elementHandle({ timeout: 60_000 });
+  const project = await documentElement.contentFrame();
+  await documentElement.dispose();
+  assert.ok(project);
+  await project.waitForFunction(() =>
+    document.querySelector('#forgeax-fatal-details')?.textContent?.includes('startup-proof: graphics unavailable'),
+  undefined, { timeout: 60_000 });
   await page.locator('[data-page-id="page-display"]').click();
   await page.getByLabel('Capture source').selectOption('run');
   assert.equal(await page.locator('.fx-view-run-observer input').count(), 0);
@@ -167,7 +167,11 @@ try {
   assert.equal(await openDialog.count(), 0, 'the project dialog closes after opening a project');
   const snapshot = await client.getState();
   assert.equal(snapshot.project.root, await realpath(root));
-  await assert.rejects(client.listAssets(snapshot.project.id, { targetId: snapshot.projectTarget.targetId }), error => {
+  assert.equal(snapshot.projectPhase, 'failed');
+  assert.equal(snapshot.projectTarget, null, 'a failed renderer cannot advertise a live target');
+  const failedTargetId = snapshot.projectStatus.document.targetId;
+  assert.equal(new URL(project.url()).searchParams.get('forgeaxWorkspaceTarget'), failedTargetId);
+  await assert.rejects(client.listAssets(snapshot.project.id, { targetId: failedTargetId }), error => {
     assert.doesNotMatch(error.message, /timeout/i, 'renderer failures must retain their cause');
     assert.match(error.message, /graphics|renderer|backend|adapter/i);
     return true;
@@ -184,7 +188,24 @@ try {
   assert.equal(restarted.phase, 'ready');
   await page.goto(restarted.url);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted);
-  await page.getByRole('button', { name: 'Reconnect', exact: true }).waitFor();
+  const retainedDocument = await page.locator('iframe[data-forgeax-project-document]').elementHandle({ timeout: 30_000 });
+  const retainedProject = await retainedDocument.contentFrame();
+  await retainedDocument.dispose();
+  assert.ok(retainedProject);
+  await retainedProject.waitForFunction(() =>
+    document.querySelector('#forgeax-fatal-details')?.textContent?.includes('startup-proof: graphics unavailable'),
+  undefined, { timeout: 30_000, polling: 100 });
+  client.close('View transport restarted');
+  const restartedBootstrap = await fetch(`${restarted.url}/__forgeax/view/bootstrap`).then(response => response.json());
+  client = await connectViewWorkspace({ endpoint: restartedBootstrap.endpoint, token: restartedBootstrap.token, clientId: 'startup-proof-restarted' });
+  const retained = await client.getState();
+  assert.equal(retained.projectPhase, 'failed');
+  assert.equal(retained.projectTarget, null);
+  assert.equal(retained.projectStatus.sessionId, snapshot.projectStatus.sessionId);
+  assert.equal(retained.projectStatus.generation, snapshot.projectStatus.generation);
+  assert.equal(retained.projectStatus.document.targetId, failedTargetId);
+  assert.equal(await page.getByRole('button', { name: 'Reconnect', exact: true }).count(), 0,
+    'renderer failure must retain its diagnostic rather than offer lost-session recovery');
   console.error('PASS: empty UI, exact observation binding, renderer failure isolation, independent View stop/restart');
 } catch (error) {
   console.error('STARTUP-FAILURE', JSON.stringify({ stage,
@@ -193,7 +214,7 @@ try {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: '/tmp/view-startup-failure.png' }).catch(() => {});
     console.error('URL', page.url());
-    console.error('ENGINE-FATAL', await page.locator('#forgeax-fatal-details').textContent().catch(() => 'unavailable'));
+    console.error('ENGINE-FATAL', await page.evaluate(() => document.querySelector('#forgeax-fatal-details')?.textContent ?? 'unavailable').catch(() => 'unavailable'));
     console.error('UI', await page.locator('body').innerText().catch(() => 'unavailable'));
     console.error('READY', await page.evaluate(() => ({ error: globalThis.__forgeaxViewReady?.error, mounted: !!globalThis.__forgeaxViewReady?.mounted })).catch(() => ({})));
   }
@@ -203,5 +224,6 @@ try {
   await browser?.close();
   await command('backend', 'stop').catch(error => console.error('CLEANUP', error.message));
   await rm(root, { recursive: true, force: true });
+  await rm(backendRoot, { recursive: true, force: true });
   await rm(brokenRoot, { recursive: true, force: true });
 }

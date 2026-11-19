@@ -8,10 +8,12 @@ export default defineConfig({
   environments: { client: { consumer: 'server' } },
   test: {
     name: '@forgeax/engine-devkit',
+    setupFiles: ['src/__tests__/fixtures/catalogue-store.ts'],
     environment: 'node',
     include: ['src/**/__tests__/**/*.test.ts'],
-    // `*.dawn.test.ts` belongs to the root `dawn` project, which injects the GPU.
-    exclude: ['**/node_modules/**', '**/dist/**', '**/*.dawn.test.ts'],
+    // `*.dawn.test.ts` belongs to the root `dawn` project, which injects the GPU,
+    // and `*.browser.test.ts` to the root `browser` project.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/*.dawn.test.ts', '**/*.browser.test.ts'],
     // The canonical template inspection starts a Vite-backed module graph.
     // Keep its test budget explicit so a loaded CI runner does not turn a
     // correct integration test into a default-5s timeout failure.

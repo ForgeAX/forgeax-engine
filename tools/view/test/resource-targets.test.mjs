@@ -11,6 +11,17 @@ test('Play before opening a scene never lends the game document to the Scene', (
   assert.equal(selectWorkspaceSceneSurfaceTarget({ targetBinding: 'scene', preview: scene }), scene.target);
 });
 
+test('a running base project document anchors the Scene without creating a WorkspacePreview', () => {
+  const projectTarget = { targetId: 'project-world', generation: 3, sessionId: 'project-session', worldId: 'project-world' };
+  assert.equal(selectWorkspaceSceneSurfaceTarget({
+    project: { id: 'project', root: '/project' },
+    projectPhase: 'running',
+    projectTarget,
+    preview: null,
+    scenePreview: null,
+  }), null, 'the project document is a layout anchor, not a WorkspacePreview or hierarchy binding');
+});
+
 test('consumer binding facts survive broker serialization and selection of an older live preview', () => {
   const asset = { guid: 'same-mesh', kind: 'mesh' };
   const old = { asset, target: { targetId: 'old', generation: 1 },

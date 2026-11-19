@@ -21,7 +21,6 @@ it('does not read any override group while adopting changed shared Mesh defaults
   const owner = new MaterialDispatch();
   for (let entityKey = 0; entityKey < 1000; entityKey++) {
     const source: RenderableSnapshot = {
-      worldId: 0,
       entityKey,
       assetHandle: 1,
       material: first,
@@ -32,7 +31,7 @@ it('does not read any override group while adopting changed shared Mesh defaults
     };
     owner.bind(entityKey, source);
   }
-  const initial = new MeshFrame().with(0, 1, mesh, [first]);
+  const initial = new MeshFrame().with(1, mesh, [first]);
   owner.prepare(initial);
   const groups = (owner as unknown as { groups: Map<string, { source: object }> }).groups;
   expect(groups.size).toBe(1000);
@@ -50,7 +49,7 @@ it('does not read any override group while adopting changed shared Mesh defaults
   }
   try {
     owner.adopt(second);
-    expect(() => owner.prepare(initial.with(0, 1, mesh, [second]))).not.toThrow();
+    expect(() => owner.prepare(initial.with(1, mesh, [second]))).not.toThrow();
   } finally {
     for (const callback of restore) callback();
   }

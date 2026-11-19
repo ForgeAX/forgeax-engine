@@ -445,7 +445,8 @@ it('preserves raw adjacent artifact getter failures by identity', async () => {
     }
     expect(thrown).toBe(failure);
     expect(reads).toBe(2);
-    expect(f.lookup).toHaveBeenCalledTimes(1);
+    // Coverage admission reads the artifact before requesting any GPU pipeline.
+    expect(f.lookup).not.toHaveBeenCalled();
     expect(f.draws).toHaveLength(0);
   } finally {
     f.dispose();

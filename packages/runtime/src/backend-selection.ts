@@ -37,8 +37,16 @@ export async function loadBackendPack(
       value: loadRhiPack({ rhi: explicit, ...(explicit as object) }, options?.rhiInstrumentation),
     };
   }
+  const preference = options?.renderBackend ?? 'auto';
   const nav = (globalThis as { navigator?: { gpu?: unknown } }).navigator;
-  if (requested === undefined && nav?.gpu !== undefined && nav.gpu !== null) {
+  const nativeAvailable = nav?.gpu !== undefined && nav.gpu !== null;
+  // 'webgpu' keeps the native backend even without navigator.gpu, so the
+  // adapter failure is reported instead of silently assembling WebGL2.
+  if (
+    requested === undefined &&
+    preference !== 'webgl2' &&
+    (nativeAvailable || preference === 'webgpu')
+  ) {
     return {
       ok: true,
       kind: 'webgpu',

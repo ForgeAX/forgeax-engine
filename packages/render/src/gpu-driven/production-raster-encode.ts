@@ -93,6 +93,7 @@ export class IndirectPassBindings {
     private readonly viewBindGroup: BindGroup,
     private readonly descriptor: RenderBundleEncoderDescriptor | undefined,
     private readonly bundlePass: PreparedRasterPass | undefined,
+    private readonly viewOffset: number,
   ) {}
 
   /** No descriptor: commands go straight to the pass. */
@@ -280,6 +281,7 @@ export class IndirectPassBindings {
       throw new Error('Missing prepared material or mesh binding');
     observed.pipeline = this.pipeline;
     observed.view = this.viewBindGroup;
+    observed.viewOffset = this.viewOffset;
     observed.material = material;
     observed.materialOffset = this.materialOffset;
     observed.mesh = mesh;

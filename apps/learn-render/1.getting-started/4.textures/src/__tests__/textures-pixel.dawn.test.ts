@@ -259,11 +259,7 @@ describe('learn-render section 1.4 textures pixel-readback (AC-08f / AC-08g / AC
     world.update().unwrap();
     // GPU-lane PSO preparation may hold early submissions pending; read the
     // first ready picture of this exact World snapshot.
-    const drawn = await drawReadyFrame(renderer, {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    });
+    const drawn = await drawReadyFrame(renderer, { source: worldAttachment1.value });
     expect(drawn.presentation).toBe('ready');
 
     const device = sharedDevice;

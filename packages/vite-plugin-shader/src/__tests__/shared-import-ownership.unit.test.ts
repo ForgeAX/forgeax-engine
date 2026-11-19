@@ -68,6 +68,7 @@ it('uses current source imports with explicit shared rows instead of mixing a pa
       engineShaderRoots: [sources],
       materialPackages: [material],
     });
+    plugin.configResolved({ root });
     await expect(
       plugin.buildStart.call({
         error: (error: unknown) => {

@@ -9,7 +9,7 @@ import { MeshRenderer } from '../components/mesh-renderer';
 import { ShadowParticipation } from '../components/shadow-participation';
 import { Materials } from '../materials';
 import { meshSurfaceFlags } from '../record/mesh-ssbo';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { RENDERABLE_SOURCE_COMPONENTS } from '../scene/render-source';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -39,7 +39,7 @@ describe('ShadowParticipation extraction', () => {
     cube(world, assets);
     cube(world, assets, { cast: false, receive: true });
     cube(world, assets, { cast: true, receive: false });
-    const frame = extractFrames([world], 0, assets);
+    const frame = extractSource(world, assets);
     const casters = (renderableIndex: number) =>
       frame.dispatch.filter(
         (entry) =>
@@ -97,7 +97,7 @@ describe('ShadowParticipation extraction', () => {
     cube(world, assets, undefined, [additive]);
     cube(world, assets, { cast: true, receive: true }, [additive]);
     cube(world, assets, undefined, [opaque, alpha]);
-    const frame = extractFrames([world], 0, assets);
+    const frame = extractSource(world, assets);
     const casters = frame.renderables.map(
       (_renderable, renderableIndex) =>
         frame.dispatch.filter(
@@ -121,7 +121,7 @@ describe('ShadowParticipation extraction', () => {
     cube(world, assets);
     cube(world, assets, { cast: false, receive: true });
     cube(world, assets, { cast: true, receive: false });
-    const frame = extractFrames([world], 0, assets);
+    const frame = extractSource(world, assets);
     expect(frame.renderables.map((renderable) => renderable.shadowReceiver)).toEqual([
       undefined,
       undefined,

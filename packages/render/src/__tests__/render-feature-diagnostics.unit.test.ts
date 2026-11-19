@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -81,8 +82,7 @@ describe('render feature diagnostics and capability gate', () => {
     });
     expect(
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 1,
         caps: caps(true),
       }).stageEvents,
@@ -92,8 +92,7 @@ describe('render feature diagnostics and capability gate', () => {
   it('disables without a capability and re-enables only after recover re-evaluation', () => {
     const host = createRenderFeatureHost([gatedFeature()]).unwrap();
     const first = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(false),
     });
@@ -107,8 +106,7 @@ describe('render feature diagnostics and capability gate', () => {
     expect(host.diagnostics()[0]?.status).toBe('disabled');
 
     const stillDisabled = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       caps: caps(true),
     });
@@ -118,8 +116,7 @@ describe('render feature diagnostics and capability gate', () => {
     expect(host.diagnostics()[0]?.status).toBe('active');
     expect(
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 3,
         caps: caps(true),
       }).stageEvents,
@@ -143,8 +140,7 @@ describe('render feature diagnostics and capability gate', () => {
     const host = createRenderFeatureHost([feature]).unwrap();
 
     runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(true),
     });
@@ -157,8 +153,7 @@ describe('render feature diagnostics and capability gate', () => {
 
     shouldFail = false;
     runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       caps: caps(true),
     });

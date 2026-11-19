@@ -39,16 +39,17 @@
     }
   },
   "dependencies": {
-    "@forgeax/engine-pack": "workspace:*",
-    "@forgeax/engine-types": "workspace:*",
-    "@forgeax/engine-vfx": "workspace:*",
+    "@forgeax/engine": "workspace:*",
     "@forgeax/engine-app": "workspace:*",
     "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-vfx": "workspace:*",
     "@forgeax/engine-vfx-render": "workspace:*"
   },
   "devDependencies": {
@@ -63,6 +64,7 @@
     "vite": "8.3.5",
     "vitest": "4.1.12",
     "typescript": "^5.8.3",
-    "@forgeax/engine-dawn-node": "workspace:*"
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*"
   }
 }

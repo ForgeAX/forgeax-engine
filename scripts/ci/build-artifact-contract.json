@@ -109,11 +109,11 @@
       "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
     },
     "shared-inputs-browser": {
-      "description": "Preview/HMR, DevKit lifecycle, templates and multithread capability/Worker/raw-kernel browser probes",
+      "description": "Preview/HMR, DevKit lifecycle, templates and multithread browser probes",
       "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
     },
     "smoke-fleet": {
-      "description": "Dawn-node headless smoke tests (~50 demos), including app pack carriers and the consumer-built Sponza smoke app",
+      "description": "Canonical and Bevy Dawn smokes consume verified app shader and Pack closures; only the omitted Sponza carrier builds in its owning smoke.",
       "sourceAppRoots": [
         "apps/hello",
         "apps/learn-render",
@@ -121,7 +121,8 @@
         "apps/collectathon",
         "apps/hello-multi-uv",
         "apps/perf/10k-cubes-lights",
-        "apps/perf/shadow-stress"
+        "apps/perf/shadow-stress",
+        "apps/bevy"
       ],
       "requiredArtifactClasses": [
         "engine-dist",
@@ -146,7 +147,7 @@
       ]
     },
     "webkit-fallback": {
-      "description": "Chromium WebGL2 fallback verify gate (protected context compatibility key)",
+      "description": "Chromium WebGL2 fallback plus Mesh interchange and FXAA WebGPU journeys on the same prepared browser worker",
       "requiredArtifactClasses": ["engine-dist", "wasm-runtime", "shared-engine-shaders"]
     },
     "deferred-membership-corpus": {
@@ -182,7 +183,7 @@
       "requiredArtifactClasses": ["wasm-codec"]
     },
     "view-integration-shards": {
-      "description": "Pinned View consumer of the exact Engine core build.",
+      "description": "Pinned View consumer of the exact Engine core build; shards zero/one also own complete Runtime Pack and Project Play browser acceptance.",
       "requiredArtifactClasses": [
         "engine-dist",
         "wasm-runtime",

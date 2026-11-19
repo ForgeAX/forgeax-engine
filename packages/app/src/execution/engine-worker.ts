@@ -3,15 +3,18 @@ import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/e
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
 import { forwardGpuStub } from './gpu-stub';
-import type {
-  EngineToHostMessage,
-  ExecutionFaultMessage,
-  ExecutionHostControlMessage,
-  ExecutionInitMessage,
-  ExecutionReadyMessage,
-  ExecutionRenderErrorMessage,
-  HostToEngineMessage,
+import {
+  type EngineToHostMessage,
+  type ExecutionFaultMessage,
+  type ExecutionHostControlMessage,
+  type ExecutionInitMessage,
+  type ExecutionReadyMessage,
+  type ExecutionRenderErrorMessage,
+  forwardPipelineLibraries,
+  forwardResourceBudgets,
+  type HostToEngineMessage,
 } from './protocol';
+import { forwardRenderBackend } from './render-backend';
 import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
 
@@ -113,12 +116,12 @@ export async function startEngineWorker(
       type: 'module',
       name: 'forgeax-engine',
     });
-  const kernelCleanups = new Map<number, () => void>();
+  const taskCleanups = new Map<number, () => void>();
   let retired = false;
-  const retireKernels = (): void => {
+  const retirePoolWorkers = (): void => {
     retired = true;
     frameSource.connect(undefined);
-    for (const cleanup of kernelCleanups.values()) cleanup();
+    for (const cleanup of taskCleanups.values()) cleanup();
   };
   // Render notices arrive on a per-session port; a replacement session closes the old one.
   const frameSource = new WorkerFrameSource();
@@ -132,7 +135,7 @@ export async function startEngineWorker(
   };
   const video = openVideoBridge();
   const terminate = (): void => {
-    retireKernels();
+    retirePoolWorkers();
     closeRenderHostPort();
     video.dispose();
     worker.terminate();
@@ -167,37 +170,52 @@ export async function startEngineWorker(
           terminate();
           resolveReady(err(deadlineError(options.timeoutMs as number)));
         }, options.timeoutMs);
-  const adoptKernelWorker = (message: EngineMessage<'kernel-worker'>): void => {
+  // Pool Workers are page-owned; the Engine Worker dispatches
+  // to them. A pool Worker failure is not an Engine fault: the dispatcher
+  // rejects its running task and replaces it.
+  const adoptTaskWorker = (message: EngineMessage<'task-worker'>): void => {
     const port = message.port;
-    if (retired || !options.workers.kernels.enabled || kernelCleanups.has(message.workerId)) {
+    if (retired || taskCleanups.has(message.workerId)) {
       port.close();
       return;
     }
-    let kernel: Worker | undefined;
+    let task: Worker | undefined;
     let portOwnedByHost = true;
     const cleanup = (): void => {
-      if (!kernelCleanups.delete(message.workerId)) return;
+      if (!taskCleanups.delete(message.workerId)) return;
       if (portOwnedByHost) port.close();
-      if (kernel !== undefined) {
-        kernel.onerror = null;
-        kernel.terminate();
+      if (task !== undefined) {
+        task.onerror = null;
+        task.terminate();
       }
     };
-    kernelCleanups.set(message.workerId, cleanup);
+    const report = (cause: string): void => {
+      cleanup();
+      if (retired) return;
+      try {
+        worker.postMessage({
+          kind: 'task-worker-error',
+          workerId: message.workerId,
+          message: cause,
+        });
+      } catch {
+        // The Engine Worker is gone; it no longer dispatches.
+      }
+    };
+    taskCleanups.set(message.workerId, cleanup);
     try {
-      kernel = new Worker(new URL('./kernel-worker-runtime.mjs', import.meta.url), {
+      task = new Worker(new URL('./task-worker-runtime.mjs', import.meta.url), {
         type: 'module',
-        name: 'forgeax-kernel',
+        name: 'forgeax-task',
       });
-      kernel.onerror = (event): void => {
-        cleanup();
-        worker.onerror?.(event);
+      task.onerror = (event): void => {
+        event.preventDefault?.();
+        report(event.message ?? 'task worker error');
       };
-      kernel.postMessage({ kind: 'kernel-connect', port }, [port]);
+      task.postMessage({ kind: 'task-connect', port }, [port]);
       portOwnedByHost = false;
     } catch (cause) {
-      cleanup();
-      worker.onerror?.({ message: String(cause) } as ErrorEvent);
+      report(String(cause));
     }
   };
   const adoptRenderHostPort = (message: EngineMessage<'render-host-port'>): void => {
@@ -240,12 +258,12 @@ export async function startEngineWorker(
       frameSource.receive(worker, message);
       return;
     }
-    if (message.kind === 'kernel-worker') {
-      adoptKernelWorker(message);
+    if (message.kind === 'task-worker') {
+      adoptTaskWorker(message);
       return;
     }
-    if (message.kind === 'kernel-retire') {
-      kernelCleanups.get(message.workerId)?.();
+    if (message.kind === 'task-retire') {
+      taskCleanups.get(message.workerId)?.();
       return;
     }
     if (message.kind === 'render-host-port') {
@@ -262,7 +280,7 @@ export async function startEngineWorker(
     for (const listener of listeners) listener(message);
   };
   worker.onerror = (event) => {
-    retireKernels();
+    retirePoolWorkers();
     if (settled) {
       const crash: ExecutionFaultMessage = {
         kind: 'fault',
@@ -320,19 +338,16 @@ export async function startEngineWorker(
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
     ...forwardGpuStub(options),
-    ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
-    ...(options.backgroundPipelineLibrary === undefined
-      ? {}
-      : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
+    ...forwardPipelineLibraries(options),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),
-    ...(options.dynamicGeometryMeshBudgetBytes === undefined
+    ...forwardRenderBackend(options),
+    ...forwardResourceBudgets(options),
+    ...(options.startup === undefined ? {} : { startup: options.startup }),
+    ...(options.featureTextureReadbackBudgetBytes === undefined
       ? {}
-      : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
-    ...(options.assetBudgetBytes === undefined
-      ? {}
-      : { assetBudgetBytes: options.assetBudgetBytes }),
+      : { featureTextureReadbackBudgetBytes: options.featureTextureReadbackBudgetBytes }),
     ...loadProgressInit(),
     workers: options.workers,
   };
@@ -382,7 +397,7 @@ export async function startEngineWorker(
       pendingHostControl = undefined;
       omittedRenderErrors = 0;
       disposal ??= shutdownWorker(worker, 10_000).finally(() => {
-        retireKernels();
+        retirePoolWorkers();
         closeRenderHostPort();
         video.dispose();
       });

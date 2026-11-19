@@ -69,7 +69,7 @@ export function vfxTestEmitter(
     schemaVersion: 3,
     programFingerprint: fingerprint,
     emitters: [{ id: emitter.id, capacity: emitter.capacity }],
-    program: { format: 'forgeax-vfx-program-4', fingerprint, emitters: [emitter] },
+    program: { format: 'forgeax-vfx-program-5', fingerprint, emitters: [emitter] },
   };
   const handle =
     reference === undefined
@@ -100,7 +100,7 @@ export function vfxTestIntent(
       programFingerprint: intent.programFingerprint,
       emitters: [{ id: intent.emitter.id, capacity: intent.emitter.capacity }],
       program: {
-        format: 'forgeax-vfx-program-4' as const,
+        format: 'forgeax-vfx-program-5' as const,
         fingerprint: intent.programFingerprint,
         emitters: [intent.emitter],
       },
@@ -135,7 +135,7 @@ export function withVfxFrameSubmission(
   feature: ReturnType<typeof createFeature>,
   cameras = new Map<
     World,
-    Parameters<ReturnType<typeof createFeature>['plan']>[0]['worlds'][number]['camera']
+    NonNullable<Parameters<ReturnType<typeof createFeature>['plan']>[0]['source']>['camera']
   >(),
 ): ReturnType<typeof createFeature> {
   type Feature = ReturnType<typeof createFeature>;
@@ -143,15 +143,15 @@ export function withVfxFrameSubmission(
   type Source = {
     world: World;
     runtime: object;
-    camera: Frame['worlds'][number]['camera'];
+    camera: NonNullable<Frame['source']>['camera'];
     intents: unknown[];
   };
   const sources = new WeakMap<object, { current: Source; runtime: object }>();
   const frames = new Map<number, { data: Frame; feedback: unknown }>();
   const extract = feature.extract.bind(feature);
-  let sourceWorlds: readonly World[] = [];
+  let sourceWorld: World | undefined;
   feature.extract = (context) => {
-    sourceWorlds = context.worlds;
+    sourceWorld = context.world;
     return extract({ ...context, views: context.views ?? [{ identity: 'main', render: true }] });
   };
   const plan = feature.plan.bind(feature);
@@ -159,10 +159,11 @@ export function withVfxFrameSubmission(
   const aborted = feature.onFrameAborted?.bind(feature);
   feature.plan = (input, context) => {
     let data = input;
-    if (input.worlds.some((row) => 'world' in row)) {
-      const legacy = input as unknown as { frameNumber: number; worlds: Source[] };
+    if (input.source !== undefined && 'world' in input.source) {
+      const legacy = input as unknown as { frameNumber: number; source: Source };
       cameras.clear();
-      for (const row of legacy.worlds) {
+      {
+        const row = legacy.source;
         let source = sources.get(row.runtime);
         if (source === undefined) {
           source = { current: row, runtime: {} };
@@ -181,6 +182,7 @@ export function withVfxFrameSubmission(
               if (key === 'effectVersion')
                 return (effect: VfxGpuEffectAsset) => fixtureVersion(state.current.world, effect);
               if (key === 'forEachEmitterSource') return () => {};
+              if (key === 'recoveryCaptureRequirements') return () => undefined;
               if (key === 'lastCommittedEmitter') return () => undefined;
               return value;
             },
@@ -193,8 +195,7 @@ export function withVfxFrameSubmission(
       }
       data = feature
         .extract({
-          worlds: legacy.worlds.map((row) => row.world),
-          owner: 0,
+          world: legacy.source.world,
           frameNumber: legacy.frameNumber,
           views: [{ identity: 'main', render: true }],
         })
@@ -206,9 +207,9 @@ export function withVfxFrameSubmission(
         ...context,
         resolveAsset:
           context.resolveAsset ??
-          ((index, handle, revision) => {
-            const world = sourceWorlds[index];
-            if (world === undefined) throw new Error(`Missing fixture source World ${index}`);
+          ((handle, revision) => {
+            const world = sourceWorld;
+            if (world === undefined) throw new Error(`Missing fixture source World`);
             return runtimeAssets(world.assets).resolveAsset(handle, revision);
           }),
       }),

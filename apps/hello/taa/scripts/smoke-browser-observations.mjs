@@ -42,6 +42,10 @@ export function validateFeatureVisualEvidence(record) {
   return { ok: joined, complete, targetCount: cards.length, missing: FEATURE_VISUAL_TARGETS.filter((id) => !ids.has(id)) };
 }
 
+// Native V2 Grade owns display encoding; V1 uses its combined or split writer.
+export const hasOutputEncoding = (passes) => passes.includes('standard-grade') ||
+  passes.includes('output-transform') || passes.includes('standard-output-encoding');
+
 export const validateMotionBlurTrace = (state, mode) => {
   const passes = Array.isArray(state?.passes) ? state.passes : [];
   const on = mode === 'on';
@@ -60,10 +64,7 @@ export const validateMotionBlurTrace = (state, mode) => {
         }
       : undefined;
   const hasMotionBlurPass = passes.includes('motion-blur');
-  // The LUT-enabled Standard chain splits tone/LUT from the final OETF and
-  // names its single encoding writer `standard-output-encoding`; the
-  // combined no-LUT path keeps the historical `output-transform` name.
-  const outputTransformPresent = passes.includes('output-transform') || passes.includes('standard-output-encoding');
+  const outputTransformPresent = hasOutputEncoding(passes);
   return {
     ok:
       expected !== undefined &&

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { buildManifest, scanDemos } from '../scripts/scan-demos.mjs';
 
 async function writeDemo(appsDir, route, manifest = {}) {
@@ -57,7 +58,10 @@ test('excludes infrastructure and directories that do not satisfy the demo contr
   await writeDemo(appsDir, 'hello/valid');
   await writeDemo(appsDir, 'hello/no-dev', { scripts: {} });
   await mkdir(join(appsDir, 'hello', 'no-package'), { recursive: true });
-  await writeFile(join(appsDir, 'hello', 'no-package', 'index.html'), '<main>missing package</main>\n');
+  await writeFile(
+    join(appsDir, 'hello', 'no-package', 'index.html'),
+    '<main>missing package</main>\n',
+  );
 
   assert.deepEqual(
     scanDemos(appsDir).map(({ route }) => route),
@@ -80,7 +84,26 @@ test('stops recursion at a demo root and scans its material packages', async (t)
   assert.equal(demos.length, 1);
   assert.equal(demos[0].route, 'hello/material-demo');
   assert.deepEqual(
-    demos[0].materialPackages.map((path) => path.slice(demoDir.length + 1)),
+    demos[0].materialPackages.map((path) => path.slice(demoDir.length + 1).replaceAll('\\', '/')),
     ['assets/nested/generated.pack.ts', 'assets/nested/surface.pack.json'],
+  );
+});
+
+test('discovers the merged R0–R2 world, R3–R8 and the independent showcase', () => {
+  const apps = new URL('../../', import.meta.url);
+  const routes = scanDemos(fileURLToPath(apps))
+    .filter((demo) => demo.category === 'water')
+    .map((demo) => demo.route);
+  assert.deepEqual(
+    routes.sort(),
+    [
+      'water/water-mesh',
+      'water/r3-slw-reflection-underwater',
+      'water/r5-gpu-mesh-async-pontoons',
+      'water/r6-legacy-rt-fluid',
+      'water/r7-advanced-shallow-bake-fft',
+      'water/r8-entry-experiment',
+      'water/r8-integration-acceptance',
+    ].sort(),
   );
 });

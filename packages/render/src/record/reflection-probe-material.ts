@@ -2,19 +2,30 @@ import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import { resolveReflectionProbeBinding } from './frame-lighting';
 import type { ReflectionProbeRecordState } from './render-context';
 
+/** Conservative frame demand: resident probes without a selected receiver need no lighting coverage. */
+export function referencedReflectionProbeIndices(
+  probes: Pick<ReflectionProbeRecordState, 'table' | 'selections'>,
+): ReadonlySet<number> {
+  const indices = new Set<number>();
+  for (const selection of probes.selections.values()) {
+    const binding = resolveReflectionProbeBinding(selection, probes.table);
+    if (!binding.useSkylight && binding.probeIndex !== undefined) indices.add(binding.probeIndex);
+  }
+  return indices;
+}
+
 /** GPU resource classes and actual CPU draws resolve the same reflection resources. */
 export function reflectionProbeMaterial(
   probes: Pick<ReflectionProbeRecordState, 'table' | 'selections'>,
   skylight: SkylightBindGroupResources,
   resourceClass: string | undefined,
-  worldId?: number,
   entityKey?: number,
 ): { readonly resources: SkylightBindGroupResources; readonly probeIndex: number } | undefined {
   let index: number | undefined;
   if (resourceClass?.startsWith('probe:')) {
     index = Number(resourceClass.slice(6));
-  } else if (entityKey !== undefined && worldId !== undefined) {
-    const selection = probes.selections.get(`${worldId}:${entityKey}`);
+  } else if (entityKey !== undefined) {
+    const selection = probes.selections.get(`${entityKey}`);
     if (selection === undefined) return undefined;
     const binding = resolveReflectionProbeBinding(selection, probes.table);
     if (binding.useSkylight) return undefined;

@@ -7,6 +7,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer, exposeRenderer } from '../../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../../components';
@@ -72,7 +73,7 @@ it.each([
     propagateTransforms(world).unwrap();
     composition.mockClear();
     stamp.mockClear();
-    const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+    const frame = renderer.draw({ source: lease });
     if (!frame.ok) return false;
     return (await frame.value.completed).ok;
   };
@@ -100,7 +101,12 @@ it.each([
     expect(stamp).toHaveBeenCalledTimes(1);
 
     // Without the system the accepted frame no longer advances the GPU Scene stamp.
-    renderWorld.removeSystem(RenderCommit, RENDER_SCENE_COMMIT_SYSTEM).unwrap();
+    renderWorld
+      .removeSystem(
+        RenderCommit,
+        registeredSystem(renderWorld, RenderCommit, 'render-scene-commit'),
+      )
+      .unwrap();
     expect(await draw(6)).toBe(true);
     expect(composition).not.toHaveBeenCalled();
     expect(stamp).not.toHaveBeenCalled();

@@ -199,7 +199,10 @@ export function checkArchitecture(root) {
         }
       } else {
         const name = packageName(specifier);
-        const reason = dependencyError(owner.name, name, reference.typeOnly && specifier === '@forgeax/engine/app');
+        // Only these public owner contracts admit erased domain types in core.
+        // Runtime imports and other Engine subpaths retain their rejection.
+        const reason = dependencyError(owner.name, name, reference.typeOnly &&
+          ['@forgeax/engine/app', '@forgeax/engine/devkit'].includes(specifier));
         if (reason) report(file, 'dependency-direction', `${specifier}: ${reason}`, line);
         if (/^(?:[/.#]|file:|https?:|data:)/.test(specifier)) report(file, 'import-alias', `${specifier}: use relative source or canonical package imports`, line);
         if (!internal(name) && !isBuiltin(specifier) &&

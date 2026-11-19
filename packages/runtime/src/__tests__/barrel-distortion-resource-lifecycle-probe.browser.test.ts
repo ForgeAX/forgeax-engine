@@ -373,7 +373,7 @@ describe('barrel distortion resource lifecycle probe', () => {
         if (!attached.ok) throw attached.error;
         const lease = attached.value;
         expect(world.update(1 / 60).ok).toBe(true);
-        const first = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const first = renderer.draw({ source: lease });
         expect(first.ok).toBe(true);
         if (!first.ok || first.value === undefined)
           throw new Error('resource probe did not receive first receipt');
@@ -390,11 +390,7 @@ describe('barrel distortion resource lifecycle probe', () => {
         const unsubscribe = renderer.subscribe((event) => {
           if (shutdownComplete) postShutdownEvents.push(event.kind);
         });
-        const second = renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        });
+        const second = renderer.draw({ source: lease });
         expect(second.ok).toBe(true);
         if (!second.ok || second.value === undefined)
           throw new Error('resource probe did not receive late receipt');

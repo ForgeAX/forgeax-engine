@@ -1,6 +1,6 @@
 // Entity index table as struct-of-arrays: one typed column per record field,
-// so a million entities cost three typed-array cells each, not one heap
-// object each.
+// so each reserved entity slot uses one 16-bit generation and three
+// 32-bit location words.
 //
 // Liveness: a despawn unconditionally bumps `generation` (so a stale handle's
 // generation no longer matches), and a retired generation is never pushed
@@ -10,6 +10,9 @@
 // prevents command abort from reclaiming a reservation that may already have
 // touched table storage. The single liveness predicate is therefore
 // "generation matches AND archetypeId !== -1 AND archetypeRow !== -1".
+//
+// The current archetype identifies the physical table. `tableRow` caches the
+// row for direct access and is repaired on each table swap-remove.
 
 const INITIAL_CAPACITY = 64;
 
@@ -21,6 +24,8 @@ export class EntityRecords {
   archetypeId: Int32Array = new Int32Array(INITIAL_CAPACITY).fill(-1);
   /** Row inside the archetype, or -1 while pending / despawned. */
   archetypeRow: Int32Array = new Int32Array(INITIAL_CAPACITY).fill(-1);
+  /** Row inside that table, or -1 while pending / despawned. */
+  tableRow: Int32Array = new Int32Array(INITIAL_CAPACITY).fill(-1);
   /** Allocated slot count; cells at or past it are not records. */
   length = 0;
 
@@ -55,8 +60,11 @@ export class EntityRecords {
     archetypeId.set(this.archetypeId);
     const archetypeRow = new Int32Array(capacity).fill(-1);
     archetypeRow.set(this.archetypeRow);
+    const tableRow = new Int32Array(capacity).fill(-1);
+    tableRow.set(this.tableRow);
     this.generation = generation;
     this.archetypeId = archetypeId;
     this.archetypeRow = archetypeRow;
+    this.tableRow = tableRow;
   }
 }

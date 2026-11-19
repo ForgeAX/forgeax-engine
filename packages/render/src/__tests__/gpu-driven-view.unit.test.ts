@@ -50,7 +50,6 @@ function snapshot(entityKey: number, x: number, resourceClass = 'plain'): Render
     material: binding,
     materials: [binding],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
     gpuDrivenDraws: [
       {
@@ -75,7 +74,6 @@ function snapshot(entityKey: number, x: number, resourceClass = 'plain'): Render
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };
@@ -116,7 +114,6 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const transformOnly = projection.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 1,
         world: snapshot(1, 0.25).transform.world,
       },
@@ -220,7 +217,6 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const transformOnly = projection.apply([
       {
         kind: 'update',
-        worldId: 0,
         entityKey: 1,
         world: snapshot(1, 0.25).transform.world,
       },
@@ -231,7 +227,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     );
     expect(topology.inspect().patches).toBe(0);
 
-    const removed = projection.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
+    const removed = projection.apply([{ kind: 'remove', entityKey: 3 }]);
     expect(topology.apply(removed)).toBe(true);
     expect(topology.inspect()).toMatchObject({ batchCount: 1, candidateCount: 2, patches: 1 });
   });
@@ -482,7 +478,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     topology.rebuild(projection.apply([updateSnapshot(withoutBounds)]).createdSlots);
     expect(topology.inspect().ineligible).toBe(1);
 
-    const removed = projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
+    const removed = projection.apply([{ kind: 'remove', entityKey: 1 }]);
     topology.apply(removed);
     expect(topology.inspect().ineligible).toBe(0);
   });
@@ -535,7 +531,7 @@ it('captures native batch keys without admitting borrowed mutable or frozen copi
   scene.apply([updateSnapshot(snapshot(1, 0))]);
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
-  const meshes = new MeshFrame().with(0, 7, createBoxGeometry(0.5, 0.5, 0.5).unwrap(), [material]);
+  const meshes = new MeshFrame().with(7, createBoxGeometry(0.5, 0.5, 0.5).unwrap(), [material]);
   const batch = topology.query(topology.sourcePlan(), meshes).batches.at(0);
   const key = batch?.key;
   expect(key).toBeDefined();

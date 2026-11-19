@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createServer } from 'node:http';
 import { resolveViewerFile, viewerContentType } from '../packages/view-workspace-core/src/viewer-static.ts';
 import { installedEngineRoot } from '../src/engine-root.ts';
 import { startViewerStaticServer } from '../src/viewer-static-server.ts';
@@ -50,6 +51,31 @@ test('the static viewer server serves the installed Engine binary for the built 
     assert.deepEqual([...bytes.subarray(0, 4)], [0x00, 0x61, 0x73, 0x6d]);
   } finally {
     await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the early viewer shell reports preparation then proxies the Host bootstrap', async () => {
+  const { root, staticRoot } = await fixture();
+  const host = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ configured: true, token: 'host-token' }));
+  });
+  await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+  const hostAddress = host.address();
+  const server = await startViewerStaticServer({ staticRoot, waitForBootstrap: true });
+  try {
+    const early = await fetch(server.bootstrapUrl);
+    assert.equal(early.status, 503);
+    assert.equal((await early.json()).phase, 'preparing');
+
+    server.setBootstrapSource(`http://127.0.0.1:${hostAddress.port}/__forgeax/view/bootstrap`);
+    const ready = await fetch(server.bootstrapUrl);
+    assert.equal(ready.status, 200);
+    assert.deepEqual(await ready.json(), { configured: true, token: 'host-token' });
+  } finally {
+    await server.close();
+    await new Promise(resolve => host.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
 });

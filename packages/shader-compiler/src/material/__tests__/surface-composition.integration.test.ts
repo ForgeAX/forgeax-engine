@@ -3,6 +3,7 @@ import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { compileShader } from '../../index.js';
 import { composeSurfaceSource } from '../compose.js';
+import { generateParameterModule } from '../cook.js';
 import { buildMaterialSourceCatalog } from '../source-catalog.js';
 import { validateSurfaceDependency, validateSurfaceSource } from '../surface-contract.js';
 
@@ -48,6 +49,203 @@ const material: MaterialAsset = {
 };
 
 describe('Surface composition owner-cut', () => {
+  it.each([
+    'unreachable',
+    'engine',
+    'project',
+  ] as const)('admits a resource helper only from the actual template Engine closure (authority=%s)', async (authority) => {
+    const sharedView = {
+      path: 'shared-view.wgsl',
+      source: `#define_import_path game::shared_view
+struct TemplateView { tint: vec4<f32> }
+@group(0) @binding(0) var<uniform> templateView: TemplateView;
+fn sharedTint() -> vec3<f32> { return templateView.tint.rgb; }`,
+    };
+    const sources = buildMaterialSourceCatalog({
+      engine: [
+        {
+          path: 'standard.wgsl',
+          source:
+            authority !== 'unreachable'
+              ? template.replace(
+                  '#pragma material_slot surface',
+                  '#import game::shared_view::{sharedTint}\n#pragma material_slot surface',
+                )
+              : template,
+        },
+        { path: 'surface_v1.wgsl', source: surfaceV1 },
+        ...(authority === 'project' ? [] : [sharedView]),
+      ],
+      project: [
+        {
+          path: 'surface.wgsl',
+          source: customSurface
+            .replace(
+              'fn evaluate_surface',
+              '#import game::shared_view::{sharedTint}\nfn evaluate_surface',
+            )
+            .replace('vec3<f32>(0.6)', 'sharedTint()'),
+        },
+        ...(authority === 'project' ? [sharedView] : []),
+      ],
+    }).unwrap();
+    const composed = composeSurfaceSource({
+      material: 'shared-template-resource',
+      pass: 'forward',
+      templateModule: 'forgeax_material::standard',
+      surfaceModule: 'game::rusted_surface',
+      sources,
+    });
+    if (authority !== 'engine') {
+      expect(composed).toMatchObject({
+        ok: false,
+        error: {
+          code: 'material-surface-forbidden-interface',
+          detail: { source: 'shared-view.wgsl', interface: 'resource-binding' },
+        },
+      });
+      return;
+    }
+    expect(composed.ok, composed.ok ? '' : composed.error.message).toBe(true);
+    if (!composed.ok) return;
+    const compiled = await compileShader(composed.value.source, {
+      id: 'shared-template-resource',
+      imports: composed.value.imports,
+    });
+    expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+    if (!compiled.ok) return;
+    expect(compiled.value.reflection.boundGlobals).toMatchObject([{ group: 0, binding: 0 }]);
+  });
+
+  it('imports generated type-only references while retaining local and member resource names', async () => {
+    const sources = buildMaterialSourceCatalog({
+      engine: [
+        {
+          path: 'standard.wgsl',
+          source: `${template}
+fn localTint() -> vec3<f32> {
+  var value: MaterialParameters;
+  return value.tint.rgb;
+}`,
+        },
+        { path: 'surface_v1.wgsl', source: surfaceV1 },
+      ],
+      project: [
+        {
+          path: 'surface.wgsl',
+          source: customSurface
+            .replace(
+              'fn evaluate_surface',
+              '#import game::tint::{surfaceTint}\nstruct LocalNames { paletteTexture: vec3<f32> }\nfn evaluate_surface',
+            )
+            .replace(
+              '{ return SurfaceData(vec3<f32>(0.6)',
+              '{ let paletteTexture = vec3<f32>(0.25); let names = LocalNames(vec3<f32>(0.5)); return SurfaceData(paletteTexture + names.paletteTexture + surfaceTint() + localTint()',
+            ),
+        },
+        {
+          path: 'tint.wgsl',
+          source: `#define_import_path game::tint
+#import forgeax_material::parameters::{MaterialParameters}
+fn surfaceTint() -> vec3<f32> {
+  var value: MaterialParameters;
+  return value.tint.rgb;
+}`,
+        },
+      ],
+    }).unwrap();
+    const composed = composeSurfaceSource({
+      material: 'type-only-resource-shadow',
+      pass: 'forward',
+      templateModule: 'forgeax_material::standard',
+      surfaceModule: 'game::rusted_surface',
+      generatedParameters: generateParameterModule([
+        { name: 'tint', type: 'vec4' },
+        { name: 'paletteTexture', type: 'texture2d' },
+      ]),
+      sources,
+    }).unwrap();
+    const canonicalImport = composed.source.split('\n')[0];
+    expect(canonicalImport).toContain('MaterialParameters');
+    expect(canonicalImport).not.toContain('paletteTexture');
+    const compiled = await compileShader(composed.source, {
+      id: 'type-only-resource-shadow',
+      imports: composed.imports,
+    });
+    expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+    if (!compiled.ok) return;
+    expect(compiled.value.reflection.boundGlobals).toEqual([]);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('shares generated implicit Surface resources with a composable material helper (scene=%s)', async (scene) => {
+    const helperSurface = customSurface
+      .replace('fn evaluate_surface', '#import game::tint::{surfaceTint}\nfn evaluate_surface')
+      .replace(
+        'vec3<f32>(0.6)',
+        'textureSample(paletteTexture, paletteTexture_sampler, input.uv0).rgb * surfaceTint()',
+      );
+    const sources = buildMaterialSourceCatalog({
+      engine: [
+        {
+          path: 'standard.wgsl',
+          source: scene
+            ? template.replace('  let input =', '  material.tint = vec4<f32>(0.5);\n  let input =')
+            : template,
+        },
+        { path: 'surface_v1.wgsl', source: surfaceV1 },
+      ],
+      project: [
+        { path: 'surface.wgsl', source: helperSurface },
+        {
+          path: 'tint.wgsl',
+          source: `#define_import_path game::tint
+#import forgeax_material::parameters::{material}
+fn surfaceTint() -> vec3<f32> { return material.tint.rgb; }`,
+        },
+      ],
+    }).unwrap();
+    const composed = composeSurfaceSource({
+      material: 'implicit-resource',
+      pass: 'forward',
+      templateModule: 'forgeax_material::standard',
+      surfaceModule: 'game::rusted_surface',
+      generatedParameters: generateParameterModule(
+        [
+          { name: 'tint', type: 'vec4' },
+          { name: 'paletteTexture', type: 'texture2d' },
+        ],
+        scene
+          ? { sceneIndex: true, sceneIndexDeclarations: false, sceneMaterialPrivate: true }
+          : {},
+      ),
+      sources,
+    }).unwrap();
+    const compiled = await compileShader(composed.source, {
+      id: `implicit-surface-resources-${scene}`,
+      imports: composed.imports,
+    });
+    expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+    if (!compiled.ok) return;
+    const bindings = compiled.value.reflection.boundGlobals.map(
+      (binding) => `${binding.group}:${binding.binding}`,
+    );
+    expect(new Set(bindings).size).toBe(bindings.length);
+    expect(bindings).toEqual(scene ? ['1:1', '1:2'] : ['1:0', '1:1', '1:2']);
+    if (scene) {
+      const privateProviders = [
+        ...compiled.value.wgsl.matchAll(/var<private>\s+(\w+)\s*:\s*MaterialParameters\w*/g),
+      ];
+      expect(privateProviders).toHaveLength(1);
+      const provider = privateProviders[0]?.[1];
+      const helperBody = /fn surfaceTint\w*\([\s\S]*?\n\}/.exec(compiled.value.wgsl)?.[0];
+      expect(helperBody).toContain(`${provider}.tint`);
+      expect(compiled.value.wgsl).toContain(`${provider}.tint =`);
+    }
+  });
+
   it('compiles a time-animated authored Surface against the actual Engine ABI', async () => {
     const sources = buildMaterialSourceCatalog({
       engine: [

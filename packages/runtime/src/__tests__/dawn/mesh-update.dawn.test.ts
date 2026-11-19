@@ -1,5 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
@@ -79,7 +80,7 @@ it.each([
       expect(after.indexBuffer).toBe(indexBuffer);
     }
     expect(after.indexCount).toBe(replacement.indices.length);
-    const positions = assets.read(handle).unwrap().attributes.position;
+    const positions = copyMeshAttribute(assets.read(handle).unwrap(), 'position');
     assert(positions instanceof Float32Array);
     expect(positions[0]).toBe(mode === 'repeated' ? 60 : 1);
     expect(await raw.popErrorScope()).toBeNull();

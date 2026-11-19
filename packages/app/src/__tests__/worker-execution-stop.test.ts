@@ -4,6 +4,8 @@ import { platformError as nativePlatformError } from '@forgeax/engine-platform';
 import { createBrowserPlatform } from '@forgeax/engine-platform-browser';
 import { err, ok } from '@forgeax/engine-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
+import type { ConfiguredExecutionControl } from '../configuration-apply';
 import { AppError } from '../errors';
 import type { EngineToHostMessage } from '../execution/protocol';
 import { workerSelection } from './execution-fixtures';
@@ -321,6 +323,54 @@ describe('Worker ExecutionApp terminal stop', () => {
     }
   });
 
+  it('keeps configuration requests alive across a surface replacement and closes them with the App', async () => {
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const replacement = { transferControlToOffscreen: () => ({}) } as unknown as HTMLCanvasElement;
+    const canvas = {
+      cloneNode: () => replacement,
+      replaceWith: vi.fn(),
+    } as unknown as HTMLCanvasElement;
+    const plan = resolveEngineStartup({}, { platform: 'unknown' }).unwrap();
+    const next = resolveEngineStartup(
+      {},
+      { platform: 'unknown' },
+      { base: { kind: 'device-default' }, groups: { ambientOcclusion: 'low' } },
+      2,
+    ).unwrap();
+    const result = await createWorkerExecutionApp({
+      canvas,
+      appOptions: { startup: plan, execution: { bootstrap: 'https://example.test/game.js' } },
+      capabilities,
+      selection: workerSelection({ render: true, kernels: false }),
+    });
+    const app = result.unwrap();
+    const execution = app.execution as ConfiguredExecutionControl;
+    probes.sessionPost.mockImplementation((message) => {
+      if (message.kind === 'configuration-apply')
+        queueMicrotask(() =>
+          probes.sessionListeners[0]?.({
+            kind: 'configuration-result',
+            requestId: message.requestId,
+            worldIdentity: message.worldIdentity,
+            revision: message.plan.revision,
+            result: { ok: true, value: undefined },
+          }),
+        );
+    });
+    try {
+      probes.sessionListeners[0]?.({
+        kind: 'render-lost',
+        epoch: 2,
+        detail: 'replacement fixture',
+      });
+      expect((await execution.applyConfiguration(next, 1)).ok).toBe(true);
+    } finally {
+      await app.dispose();
+    }
+    const closed = await execution.applyConfiguration(next, 1);
+    expect(!closed.ok && closed.error.code).toBe('configuration-stale');
+  });
+
   it('resupplies both Host pipeline libraries when replacing a lost Render Worker', async () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     const offscreen = {} as OffscreenCanvas;
@@ -562,12 +612,25 @@ describe('Worker ExecutionApp terminal stop', () => {
     if (result.ok) await result.value.dispose();
   });
 
-  it('recreates the supplied Host audio owner on rebuild and disposes the old generation', async () => {
+  it.each([
+    'adapter',
+    'legacy',
+  ] as const)('recreates the %s Host audio owner on rebuild and disposes the old generation', async (binding) => {
+    const budget = { maxCachedBytes: 4096, maxCachedSources: 2, maxPendingPlays: 3 };
+    const startup = resolveEngineStartup(
+      {
+        deviceProfile: 'AudioDevice',
+        deviceProfiles: [
+          { id: 'AudioDevice', extends: 'Default', settings: { audio: { host: budget } } },
+        ],
+      },
+      { platform: 'unknown' },
+    ).unwrap();
     const owners = Array.from({ length: 2 }, () => ({
       ...createHostAudioConsumer(),
       dispose: vi.fn(),
     }));
-    const factory = vi.fn(() => {
+    const factory = vi.fn((_options?: unknown) => {
       const owner = owners[factory.mock.calls.length - 1];
       if (!owner) throw new Error('unexpected Host generation');
       return owner;
@@ -575,8 +638,13 @@ describe('Worker ExecutionApp terminal stop', () => {
     const result = await createWorkerExecutionApp({
       canvas: {} as HTMLCanvasElement,
       appOptions: {
-        execution: { bootstrap: 'https://example.test/game.js', createHostAudio: factory },
+        startup,
+        execution: {
+          bootstrap: 'https://example.test/game.js',
+          ...(binding === 'legacy' ? { createHostAudio: factory } : {}),
+        },
       },
+      ...(binding === 'adapter' ? { bundler: { createHostAudio: factory } } : {}),
       capabilities,
       selection: workerSelection({ render: false, kernels: false }),
     });
@@ -588,6 +656,8 @@ describe('Worker ExecutionApp terminal stop', () => {
       worldIdentity: 'fresh-world',
     });
     expect(factory).toHaveBeenCalledTimes(2);
+    expect(factory).toHaveBeenNthCalledWith(1, budget);
+    expect(factory).toHaveBeenNthCalledWith(2, budget);
     expect(owners[0]?.dispose).toHaveBeenCalledTimes(1);
     expect(result.value.execution.report().world.identity).toBe('fresh-world');
     await result.value.dispose();

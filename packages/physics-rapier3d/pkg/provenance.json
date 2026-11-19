@@ -1,20 +1,21 @@
 {
-  "contentKey": "71f6e7b68f077c26fbe030ef6ca00cd3c4d943a9d59225612720ec0860a86af4",
+  "contentKey": "ccd9e53a8fe3a9260877e6c38f46f3a711672d0bcce05becba557839d0f6f6a1",
   "inputHashes": {
-    "package.json": "700850b623824d780468fc8760141efc3519549012d3958edddfcd8b1e65a3fd",
+    "package.json": "0679c83cfa573475e56f85a3bd07b71b7cbadc3247d5f05894a39e2c997605c6",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
-    "scripts/build-wasm.mjs": "8a79252c466421d69d2e3d3e89c13a9c8b051ac2b1c58d32a887297c7a584cd6",
+    "scripts/build-wasm.mjs": "8b202931c1e2b2ddacc2968cc1ed5f0dcc983fdba72d87dd3451eeb0aa109e56",
     "scripts/native-init.js": "4b48c2123433d6fe079607b7527a12b5b3791be653fd76779ab4c5c814d6c732",
     "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
     "scripts/build-simd-payload.mjs": "168a520bc489b8b5950f86a24dbbb867e6fc0f805208cfd939f12da2d6657371",
-    "scripts/native-tests.Cargo.toml": "6d44ca6401ca1fc5292ebe3058b3efaee529636c84c0c641bd86518c4455b2d3",
+    "scripts/native-tests.Cargo.toml": "8559bc7db872eacad675b4799675a929923815f5d71d13eddd22ed440611df17",
     "scripts/native-tests.Cargo.lock": "5275c0a3cdc4b22ad2e90dad56930c0c6450d0a7c848e5aea61ea521fe243aff",
+    "src/__tests__/contact-point-velocity.native.rs": "9d7c8d07ff530cb0009d905749cec67de2312ed04360d45ac9e96338c0bfdb72",
     "scripts/bindings.Cargo.toml": "d3b9e1a1b306e0d9b5c5c347d741faa164668c7075df04e4b38bb2ce326c24a3",
     "scripts/Cargo.lock": "a3a02072320304550bc1945500aca38f5171feb39b353d89fa2b1daaf60dba8e",
     "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
-    "../../scripts/lib/git-http-environment.mjs": "b15a973b8718776c164a3a880f92d06b6dfc7faee1cfc8e616cf029ab1347758",
+    "../../scripts/lib/git-http-environment.mjs": "4d0ab9df35c176c16a8aa669c027026f17414ca27f1ff503994eeb5166cea768",
     "patches/parry.patch": "ae85f4478702a4b8d6359f9b67f1dce7dcbc023170158b06db5e3b004a56181b",
-    "patches/rapier.patch": "07d922f0d65ee0c4af58b4880002fccb65a1f84909ad7a2c5bd438bf3d4dd94a"
+    "patches/rapier.patch": "73676cbcd555af97ef962338aa80c866f558d45b3296ee1fcd003ad0e7f8fcf6"
   },
   "source": {
     "rapier": {
@@ -37,11 +38,11 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "ff47356b53db5cc9661935427bdd3ba92886edf78fa4947204b3da7cab7bb60f",
+    "rapier-native.mjs": "6890b8064f30de12b773936b5eb00490bed75a0f5395b9ee602d7e8b9f6334d0",
     "rapier-simd.d.mts": "39c971b29a1204ea466e1d0f27de2ef26f2e12f25ffc4e09db8ab2428d817348",
-    "rapier-simd.mjs": "27cdb5e4f7c2de7d86781051ee81498ac2fc44d17229170cff6cf99122f26354",
-    "rapier.d.mts": "2179facb53bf435e7f34ac97deaeafb27f60f7781b4df6cc693a1c0b9af77b46",
-    "rapier.mjs": "dfe07bd915f7413c3f666e33e568d94f265df8928fec19e105f7410cf0316d6f",
-    "rapier.wasm": "1962787040484df2e9d7bc2b6924406a08656a5dac6f95e5acb1c8f8438e43ff"
+    "rapier-simd.mjs": "0fe044bed08605dd8082463ce0b7540ccaa185c96b401916b723c5f7e89df99a",
+    "rapier.d.mts": "891ab1bf30df793b18a8067d6da33686274a3d0dd3b59698085495daaa48e478",
+    "rapier.mjs": "b74b89a378f0afc68112bc7676813564ee0d619a2edc285ac36d629fcb1728c1",
+    "rapier.wasm": "e8bd35a5caca0e59033eb28333841c6ba9f03c4c2cef59f93dfecfc88497421f"
   }
 }

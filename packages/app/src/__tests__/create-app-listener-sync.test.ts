@@ -9,7 +9,7 @@
 // Approach: vi.mock constructRuntimeRendererHost (only construction overridden) so the canvas
 // form does not attempt real WebGPU init; all other exports from
 // @forgeax/engine-runtime remain real (Transform, registerPropagateTransforms,
-// PROPAGATE_TRANSFORMS_SYSTEM, etc.).  globalThis.AudioContext is stubbed
+// PropagateTransforms, etc.).  globalThis.AudioContext is stubbed
 // with a mock whose .listener carries nine { value } AudioParam objects
 // that syncListenerFromWorldMatrix writes to — the same nine fields the
 // production code accesses.  requestAnimationFrame is stubbed (same pattern

@@ -43,13 +43,7 @@ it.skipIf(process.env.TAA_MATURITY !== 'resources')(
         const submit = async () => {
           current.world.update(1 / 60).unwrap();
           propagateTransforms(current.world).unwrap();
-          const receipt = renderValue(
-            current.renderer.draw({
-              leases: [current.lease],
-              camera: { lease: current.lease },
-              environment: { lease: current.lease },
-            }),
-          );
+          const receipt = renderValue(current.renderer.draw({ source: current.lease }));
           sample('after-submit');
           renderValue(await receipt.completed);
           await Promise.resolve();

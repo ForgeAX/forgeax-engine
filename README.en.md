@@ -2,7 +2,7 @@
 **Language**: **English** · [简体中文](README.md)
 
 <p align="center">
-  <img src="https://forgeax.github.io/logo.svg" width="96" alt="Tiangong ForgeAX Engine" />
+  <img src="packages/devkit/src/host/forgeax-logo.svg" width="96" alt="Tiangong ForgeAX Engine" />
 </p>
 
 <h1 align="center">ForgeAX Engine</h1>
@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
-  <a href="https://github.com/ForgeAX/forgeax-engine/actions/workflows/public-source.yml"><img src="https://github.com/ForgeAX/forgeax-engine/actions/workflows/public-source.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/ForgeAX/forgeax-engine/actions/workflows/ci.yml"><img src="https://github.com/ForgeAX/forgeax-engine/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://forgeax.github.io/"><img src="https://img.shields.io/badge/docs-forgeax.github.io-brightgreen.svg" alt="Docs" /></a>
   <img src="https://img.shields.io/badge/TypeScript-ESM-3178c6.svg" alt="TypeScript ESM" />
   <img src="https://img.shields.io/badge/rendering-WebGPU-ff6a00.svg" alt="WebGPU" />
@@ -44,12 +44,12 @@ Games built on the engine, authored through the `forgeax` CLI and an AI-first wo
 <table>
   <tr>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/games/hellforge/"><img src="https://forgeax.github.io/assets/readme/games/hellforge.jpg" alt="Hellforge" width="100%" /></a><br/>
-      <strong>Hellforge</strong> · ARPG / 3D
+      <a href="https://forgeax.github.io/games/tiangong-warframe/"><img src="https://forgeax.github.io/assets/games/covers/tiangong-warframe.jpg" alt="Tiangong Warframe" width="100%" /></a><br/>
+      <strong>Tiangong Warframe</strong> · Mecha action / 3D
     </td>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/games/planet-snake/"><img src="https://forgeax.github.io/assets/readme/games/planet-snake.jpg" alt="Planet Snake" width="100%" /></a><br/>
-      <strong>Planet Snake</strong> · 3D Survival
+      <a href="https://forgeax.github.io/games/ai-weapon-spirit/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="My AI Companion Can't Be an Ancient Weapon Spirit!" width="100%" /></a><br/>
+      <strong>My AI Companion Can't Be an Ancient Weapon Spirit!</strong> · ARPG / 3D
     </td>
   </tr>
   <tr>
@@ -58,8 +58,8 @@ Games built on the engine, authored through the `forgeax` CLI and an AI-first wo
       <strong>Pet Go-Karts</strong> · Racing / 3D
     </td>
     <td width="50%" align="center">
-      <a href="https://forgeax.github.io/showcase/"><img src="https://forgeax.github.io/assets/readme/games/ai-weapon-spirit.jpg" alt="AI Weapon Spirit" width="100%" /></a><br/>
-      <strong>AI Weapon Spirit</strong> · ARPG / 3D
+      <a href="https://forgeax.github.io/games/brotato-v2/"><img src="https://forgeax.github.io/assets/readme/games/brotato-v2.jpg" alt="Rotten Farm" width="100%" /></a><br/>
+      <strong>Rotten Farm</strong>
     </td>
   </tr>
 </table>

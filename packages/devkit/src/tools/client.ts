@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
+import { HostAssemblyError } from '@forgeax/engine-host';
 import { Context, createToolApiPlugin, registerTools } from '@forgeax/engine-plugin';
 import {
   createToolCommandRegistry,
   defineCommand,
+  domainFailureError,
   type JsonValue,
   operationCommandPath,
   TOOL_REALMS,
@@ -83,6 +85,29 @@ function missingTool(id: string): ToolTerminal<never> {
     },
     artifacts: [],
   };
+}
+
+function hostToolFailure(
+  id: string,
+  error: unknown,
+  signal: AbortSignal | undefined,
+): ToolTerminal<never> {
+  const failure = signal?.aborted
+    ? {
+        code: 'tool-run-cancelled' as const,
+        expected: `host tool ${id} to finish before cancellation`,
+        hint: 'Start a fresh request if the operation is still needed.',
+        detail: { reason: 'caller aborted' },
+      }
+    : error instanceof HostAssemblyError
+      ? domainFailureError(error.code, error.expected, error.hint, error.detail)
+      : {
+          code: 'tool-capability-unavailable' as const,
+          expected: `an active backend provider for ${id}`,
+          hint: error instanceof Error ? error.message : String(error),
+          detail: { capability: `tool:${id}`, realm: 'host' as const },
+        };
+  return { outcome: 'failed', artifacts: [], failure };
 }
 
 function uniqueContributions(
@@ -361,23 +386,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
             runOptions.signal,
           )) as ToolTerminal<TResult>;
         } catch (error) {
-          return {
-            outcome: 'failed',
-            artifacts: [],
-            failure: runOptions.signal?.aborted
-              ? {
-                  code: 'tool-run-cancelled',
-                  expected: `host tool ${id} to finish before cancellation`,
-                  hint: 'Start a fresh request if the operation is still needed.',
-                  detail: { reason: 'caller aborted' },
-                }
-              : {
-                  code: 'tool-capability-unavailable',
-                  expected: `an active backend provider for ${id}`,
-                  hint: error instanceof Error ? error.message : String(error),
-                  detail: { capability: `tool:${id}`, realm: 'host' },
-                },
-          } as ToolTerminal<TResult>;
+          return hostToolFailure(id, error, runOptions.signal);
         }
       }
       if (project.some((binding) => binding.realm === 'build' && binding.declaration.id === id)) {

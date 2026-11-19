@@ -40,19 +40,22 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
     const record = validateCookedMaterialRecord(
       (result.payload as { cooked: unknown }).cooked,
     ).unwrap();
-    for (const address of ['direct', 'scene-index']) {
-      expect(
-        record.programs.filter((program) =>
-          program.selections.some(
-            (selection) =>
-              selection.context.pipeline !== 'ray' &&
-              selection.context.capability === 'storage-buffer' &&
-              selection.context.visibleSurface !== true &&
-              selection.address === address,
+    for (const viewClipping of [false, true])
+      for (const address of ['direct', 'scene-index']) {
+        expect(
+          record.programs.filter((program) =>
+            program.selections.some(
+              (selection) =>
+                selection.context.pipeline !== 'ray' &&
+                selection.context.lodCoverage !== true &&
+                selection.context.capability === 'storage-buffer' &&
+                selection.context.visibleSurface !== true &&
+                (selection.context.viewClipping === true) === viewClipping &&
+                selection.address === address,
+            ),
           ),
-        ),
-      ).toHaveLength(1); // Surface never reads vertexColor: colorless program only
-    }
+        ).toHaveLength(1); // Surface never reads vertexColor: colorless program only
+      }
     const wgsl = Object.values(result.artifacts)
       .map((a) => new TextDecoder().decode(a.bytes))
       .join('\n');

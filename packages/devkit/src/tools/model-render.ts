@@ -60,8 +60,8 @@ import {
   type MeshAsset,
   type TextureAsset,
 } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { nodeGpu } from '../node-gpu.js';
+import { offscreenTarget } from './model-render-target.js';
 import {
   drawGrid,
   drawScaleBar,
@@ -555,80 +555,6 @@ function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-/** Offscreen canvas whose swap texture is readable; `configure` hands over the device. */
-function offscreenTarget(width: number, height: number) {
-  let device: GPUDevice | undefined;
-  let texture: GPUTexture | undefined;
-  const errors: string[] = [];
-  return {
-    errors,
-    canvas: {
-      width,
-      height,
-      getContext: () => ({
-        configure(options: GPUCanvasConfiguration) {
-          if (device !== options.device)
-            options.device.addEventListener('uncapturederror', (event) => {
-              if (errors.length < 8)
-                errors.push((event as GPUUncapturedErrorEvent).error.message.split('\n')[0] ?? '');
-            });
-          device = options.device;
-          texture?.destroy();
-          texture = options.device.createTexture({
-            size: [width, height],
-            format: options.format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-            viewFormats: [options.format === 'bgra8unorm' ? 'bgra8unorm-srgb' : 'rgba8unorm-srgb'],
-          });
-        },
-        unconfigure() {},
-        getCurrentTexture: () => texture,
-      }),
-      addEventListener() {},
-      removeEventListener() {},
-    },
-    async read(): Promise<Uint8Array> {
-      if (device === undefined || texture === undefined)
-        throw new Error('render target was never configured');
-      const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-      const buffer = device.createBuffer({
-        size: bytesPerRow * height,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      });
-      const encoder = device.createCommandEncoder();
-      encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow, rowsPerImage: height }, [
-        width,
-        height,
-        1,
-      ]);
-      device.queue.submit([encoder.finish()]);
-      await buffer.mapAsync(GPUMapMode.READ);
-      const padded = new Uint8Array(buffer.getMappedRange().slice(0));
-      buffer.unmap();
-      buffer.destroy();
-      const bgra = texture.format.startsWith('bgra');
-      const rgba = new Uint8Array(width * height * 4);
-      for (let y = 0; y < height; y++)
-        for (let x = 0; x < width; x++) {
-          const s = y * bytesPerRow + x * 4;
-          const o = (y * width + x) * 4;
-          rgba[o] = padded[s + (bgra ? 2 : 0)] as number;
-          rgba[o + 1] = padded[s + 1] as number;
-          rgba[o + 2] = padded[s + (bgra ? 0 : 2)] as number;
-          rgba[o + 3] = 255;
-        }
-      return rgba;
-    },
-    /** Retire the target and its device; Dawn keeps the process alive while a device lives. */
-    async destroy() {
-      texture?.destroy();
-      if (device === undefined) return;
-      device.destroy();
-      await device.queue.onSubmittedWorkDone().catch(() => undefined);
-    },
-  };
-}
-
 /** Share of pixels that differ from the clear color: the per-view falsifier. */
 function coverage(rgba: Uint8Array, background: Uint8Array): number {
   const free = freeMask(rgba, background);
@@ -945,8 +871,7 @@ async function renderStates(
   const { width, height } = set;
   const target = offscreenTarget(width, height);
   const { requestAdapterFrom, rhi } = await import('@forgeax/engine-rhi-webgpu');
-  const manifest = await buildEngineShaderManifest();
-  const manifestText = JSON.stringify(manifest);
+  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   // The Renderer asks the explicit GPU for its adapter; keep the info of that very request.
   let adapterInfo: Partial<GPUAdapterInfo> | undefined;
   const host = await constructRuntimeRendererHost(
@@ -969,24 +894,32 @@ async function renderStates(
     } as never,
     {
       shaderManifestUrl: 'forgeax-model-render:/shaders/manifest.json',
-      readShaderManifest: async () => manifestText,
+      readShaderManifest: async () => JSON.stringify(await buildEngineShaderManifest()),
     },
   );
-  if (!host.ok)
+  if (!host.ok) {
+    await target.destroy();
     return fail(
       'model-render-backend-unavailable',
       'the Engine Renderer starts on the Node GPU',
       'inspect detail',
       { cause: String(host.error) },
     );
+  }
   const initialized = await host.value.initialization;
-  if (!initialized.ok)
+  if (!initialized.ok) {
+    try {
+      await host.value.renderer.dispose();
+    } finally {
+      await target.destroy();
+    }
     return fail(
       'model-render-backend-unavailable',
       'the Engine Renderer initializes',
       'inspect detail',
       { cause: String(initialized.error) },
     );
+  }
   const { renderer, assets } = host.value;
   const adapter: RendererAdapter = {
     vendor: adapterInfo?.vendor ?? '',
@@ -995,7 +928,7 @@ async function renderStates(
     description: adapterInfo?.description ?? '',
   };
   const facts: RendererFacts = {
-    backend: renderer.inspect().capabilities.backendKind,
+    backend: renderer.inspect({ fields: ['capabilities'] }).capabilities.backendKind,
     adapter,
     software: isSoftwareAdapter(adapter),
   };
@@ -1035,12 +968,7 @@ async function renderStates(
         .unwrap();
       const draw = async () => {
         world.update(1 / 60).unwrap();
-        for (let i = 0; i < 2; i++)
-          await drawReady(renderer, {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          } as never);
+        for (let i = 0; i < 2; i++) await drawReady(renderer, { source: lease } as never);
         return target.read();
       };
       const background = await draw();
@@ -1199,8 +1127,11 @@ async function renderStates(
     throw cause;
   } finally {
     stopErrors();
-    await renderer.dispose();
-    await target.destroy();
+    try {
+      await renderer.dispose();
+    } finally {
+      await target.destroy();
+    }
   }
 }
 

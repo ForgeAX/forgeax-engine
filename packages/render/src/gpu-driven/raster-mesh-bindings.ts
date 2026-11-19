@@ -13,10 +13,11 @@ export class RasterMeshBindings {
   /** Advances whenever a capture observes a different physical vertex or index buffer. */
   revision = 0;
 
-  forMesh(mesh: MeshGpuHandles): RasterMeshBinding {
+  /** The publication's row for `mesh`, continuing `previous`'s row so retained owners still adopt it. */
+  forMesh(mesh: MeshGpuHandles, previous?: RasterMeshBindings): RasterMeshBinding {
     let row = this.rows.get(mesh);
     if (row === undefined) {
-      row = { mesh, vertex: undefined, index: undefined };
+      row = previous?.rows.get(mesh) ?? { mesh, vertex: undefined, index: undefined };
       this.rows.set(mesh, row);
     }
     return row;

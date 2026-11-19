@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineResource } from '@forgeax/engine-ecs';
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { createUiCompositor } from '../assembly/ui-compositor';
 import type { OutputColorSpace } from '../output-color-space';
@@ -50,10 +51,10 @@ export interface SurfaceUiInput {
   readonly colorSpace: OutputColorSpace;
   readonly captureEncodedOutput: boolean;
 }
-export const RenderSurfaceUiInput = Object.freeze({ name: 'RenderSurfaceUiInput' });
+export const RenderSurfaceUiInput = defineResource<SurfaceUiInput>('RenderSurfaceUiInput');
 
 /** World resource key of the renderer-wide {@link SurfaceUiState}. */
-export const RenderSurfaceUi = Object.freeze({ name: 'RenderSurfaceUi' });
+export const RenderSurfaceUi = defineResource<SurfaceUiState>('RenderSurfaceUi');
 
 export function installSurfaceUi(
   world: World,
@@ -67,7 +68,5 @@ export function installSurfaceUi(
 
 /** The installed screen UI, or `undefined` when the Renderer has none. */
 export function surfaceUi(world: World): SurfaceUiState | undefined {
-  return world.hasResource(RenderSurfaceUi)
-    ? world.getResource<SurfaceUiState>(RenderSurfaceUi)
-    : undefined;
+  return world.hasResource(RenderSurfaceUi) ? world.getResource(RenderSurfaceUi) : undefined;
 }

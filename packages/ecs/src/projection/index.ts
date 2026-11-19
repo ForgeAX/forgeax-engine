@@ -1,7 +1,13 @@
-import type { Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import type { Component } from '../component';
 import { componentId } from '../component';
 import type { EntityHandle } from '../entity-handle';
+import {
+  ComponentNotPresentError,
+  createRelationshipTargetReadonlyError,
+  worldPoisonedError,
+} from '../errors';
+import { isRelationshipTarget } from '../relationship-index';
 import type { ArrayRangesChange } from '../storage/array-range-log';
 import type { EcsError, World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -9,39 +15,13 @@ import { worldInternal } from '../world-internal';
 // Owner packages that need ECS validation/default semantics consume these
 // helpers through the explicit projection surface. They are intentionally not
 // part of the token-first root barrel.
-export { fillComponentDefaults } from '../component-default-fallback';
+export { fillComponentDefaults } from '../component-input';
 export {
   ComponentNotDefinedError,
-  InstanceTransformsStrideMismatchError,
   ManagedBufferOutOfBoundsError,
-  ResourceInvalidValueError,
-  SpawnLightInvalidBoundsError,
-  SpriteAnimationInvalidError,
-  SpriteInstancesCountMismatchError,
-  SpriteInstancesMutuallyExclusiveWithInstancesError,
-  SpriteInstancesRequiresSpriteShaderError,
   StaleEntityError,
 } from '../errors';
 export type { ArrayRange, ArrayRangesChange } from '../storage/array-range-log';
-
-export interface RenderProjectionComponentRequest {
-  readonly component: Component;
-  readonly fields: readonly string[];
-}
-
-export interface RenderProjectionRequest {
-  readonly components: readonly RenderProjectionComponentRequest[];
-}
-
-export interface RenderProjectionSpan {
-  readonly length: number;
-  readonly fields: Readonly<Record<string, ArrayLike<number>>>;
-}
-
-export interface RenderProjectionSpans {
-  readonly generation: number;
-  readonly spans: readonly RenderProjectionSpan[];
-}
 
 export interface RenderChangeBatch {
   readonly version: RenderReadVersion;
@@ -56,7 +36,6 @@ export interface RenderReadLease {
   readonly worldIdentity: string;
   readonly generation: number;
   readChanges(version: RenderReadVersion): RenderChangeBatch;
-  querySpans(request: RenderProjectionRequest): RenderProjectionSpans;
   captureVersion(): RenderReadVersion;
   dispose(): void;
 }
@@ -99,12 +78,12 @@ export function readMutationEpoch(world: World): number {
 
 /** Current mutation epoch for one World-owned component token. */
 export function readComponentMutationEpoch(world: World, component: Component): number {
-  return world[worldInternal].getComponentMutationEpochs()[componentId(component)] ?? 0;
+  return world[worldInternal].componentMutationEpochs[componentId(component)] ?? 0;
 }
 
 /** Latest mutation epoch of any component token outside `except`. */
 export function readMutationEpochExcept(world: World, except: readonly Component[]): number {
-  const epochs = world[worldInternal].getComponentMutationEpochs();
+  const epochs = world[worldInternal].componentMutationEpochs;
   let latest = 0;
   for (let id = 0; id < epochs.length; id += 1) {
     const epoch = epochs[id] ?? 0;
@@ -134,39 +113,6 @@ export interface RenderReadVersion {
   readonly structureEpoch: number;
 }
 
-function readProjectionSpans(
-  world: World,
-  generation: number,
-  request: RenderProjectionRequest,
-): RenderProjectionSpans {
-  const queryResult = world.query({ read: request.components.map((entry) => entry.component) });
-  if (!queryResult.ok) throw new Error(queryResult.error.message);
-  const spansResult = queryResult.value.spans();
-  if (!spansResult.ok) throw new Error(spansResult.error.message);
-  const spans: RenderProjectionSpan[] = [];
-  for (const span of spansResult.value) {
-    const fields: Record<string, ArrayLike<number>> = {};
-    for (const entry of request.components) {
-      const shape = span.get(entry.component) as unknown as Record<string, ArrayLike<number>>;
-      for (const fieldName of entry.fields) {
-        const field = shape[fieldName];
-        if (field === undefined) {
-          throw new Error(
-            `Render projection field '${entry.component.name}.${fieldName}' is unavailable.`,
-          );
-        }
-        fields[`${entry.component.name}.${fieldName}`] = field;
-        if (request.components.length === 1) fields[fieldName] = field;
-      }
-    }
-    spans.push({ length: span.length, fields: Object.freeze(fields) });
-  }
-  return {
-    generation,
-    spans: Object.freeze(spans),
-  };
-}
-
 /** Create the render-owned lease from the ECS projection boundary. */
 export function createRenderReadLease(world: World): RenderReadLease {
   let disposed = false;
@@ -194,9 +140,7 @@ export function createRenderReadLease(world: World): RenderReadLease {
     readChanges(start: RenderReadVersion): RenderChangeBatch {
       assertLive();
       const version = captureVersion();
-      const componentEpochs = world[
-        worldInternal
-      ].getComponentMutationEpochs() as readonly number[];
+      const componentEpochs = world[worldInternal].componentMutationEpochs;
       const changedComponentIds: number[] = [];
       for (let componentId = 0; componentId < componentEpochs.length; componentId += 1) {
         const epoch = componentEpochs[componentId] ?? 0;
@@ -205,40 +149,30 @@ export function createRenderReadLease(world: World): RenderReadLease {
       }
       return { version, world: { changedComponentIds } };
     },
-    querySpans(request: RenderProjectionRequest): RenderProjectionSpans {
-      assertLive();
-      return readProjectionSpans(
-        world,
-        Math.max(1, world[worldInternal].getStructureEpoch()),
-        request,
-      );
-    },
     dispose(): void {
       disposed = true;
     },
   };
 }
 
-/**
- * Publish one owner-derived component value through the component's ordinary
- * version. Numeric consumers observe the same identity epoch regardless of which
- * owner computed the value; there is no parallel derived-change vocabulary.
- */
-export function setDerivedComponent(
+/** Publish the change to a component whose payload is managed by its producer. */
+export function markDerivedComponentChanged(
   world: World,
   entity: EntityHandle,
   component: Component,
-  value: Record<string, unknown>,
 ): Result<void, EcsError> {
-  const result = world[worldInternal].setQueryRow(entity, component, value);
-  if (!result.ok) return result;
+  const poisoned = worldPoisonedError(world.execution);
+  if (poisoned !== undefined) return err(poisoned);
+  if (isRelationshipTarget(component))
+    return err(
+      createRelationshipTargetReadonlyError(component.name, 'markDerivedComponentChanged'),
+    );
+  const owner = world[worldInternal];
   try {
-    world[worldInternal].markComponentChanged(entity, componentId(component));
+    if (owner.markComponentChanged(entity, componentId(component))) return ok(undefined);
   } catch (cause) {
-    // Empty sparse tags have no payload write before this publication. An
-    // index write failure still retires itself at the World publication owner.
     if (component.storage !== 'sparse')
-      world[worldInternal].poisonExecution({
+      owner.poisonExecution({
         code: 'shared-kernel-failed',
         kernelName: `derived-component:${component.name}:publish`,
         cause,
@@ -247,7 +181,8 @@ export function setDerivedComponent(
       });
     throw cause;
   }
-  return result;
+  const live = owner.lookupAlive(entity, 'markDerivedComponentChanged', component.name);
+  return live.ok ? err(new ComponentNotPresentError(entity as number, component.name)) : live;
 }
 
 /** Route an owner-domain error through the World without exposing raw internals. */

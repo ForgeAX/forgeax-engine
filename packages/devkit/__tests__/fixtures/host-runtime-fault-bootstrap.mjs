@@ -1,4 +1,4 @@
-import { Update } from '@forgeax/engine/ecs';
+import { Update, defineSystem } from '@forgeax/engine/ecs';
 import { createBoxGeometry } from '@forgeax/engine/geometry';
 import { Camera, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
@@ -37,17 +37,17 @@ export default function bootstrap() {
           };
           port.addEventListener('message', receive);
           port.start();
-          const system = {
+          const system = defineSystem({
             name: 'host-runtime-fault-update',
             queries: [],
             fn() {
               if (fail) throw new Error('Host runtime fault fixture Update failure');
             },
-          };
+          });
           world.addSystem(Update, system).unwrap();
           return () => {
             port.removeEventListener('message', receive);
-            world.removeSystem(Update, system.name).unwrap();
+            world.removeSystem(Update, system).unwrap();
           };
         },
       },

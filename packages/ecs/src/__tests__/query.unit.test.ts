@@ -2,12 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { componentId, defineComponent } from '../component';
 import { Disabled } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import {
-  QueryDataRequiresFieldsError,
-  QueryDescriptorConflictError,
-  QueryIterationActiveError,
-  QueryIterationInvalidatedError,
-} from '../errors';
+import { isEcsFault, QueryIterationActiveError } from '../errors';
 import type { QueryRow } from '../query/query';
 import type { Table } from '../storage/table';
 import { World } from '../world';
@@ -37,7 +32,7 @@ describe('executable Query', () => {
     const conflict = world.query({ read: [Position], write: [Position] });
     expect(conflict.ok).toBe(false);
     if (!conflict.ok) {
-      expect(conflict.error).toBeInstanceOf(QueryDescriptorConflictError);
+      expect(isEcsFault(conflict.error, 'query-descriptor-conflict')).toBe(true);
       expect(conflict.error.detail).toEqual({
         componentName: Position.name,
         roles: ['read', 'write'],
@@ -46,7 +41,7 @@ describe('executable Query', () => {
 
     const tagData = world.query({ read: [Selected] });
     expect(tagData.ok).toBe(false);
-    if (!tagData.ok) expect(tagData.error).toBeInstanceOf(QueryDataRequiresFieldsError);
+    if (!tagData.ok) expect(isEcsFault(tagData.error, 'query-data-requires-fields')).toBe(true);
   });
 
   it('reports all duplicate roles for the first conflicting component before tag errors', () => {
@@ -60,7 +55,7 @@ describe('executable Query', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBeInstanceOf(QueryDescriptorConflictError);
+      expect(isEcsFault(result.error, 'query-descriptor-conflict')).toBe(true);
       expect(result.error.detail).toEqual({
         componentName: Position.name,
         roles: ['read', 'write', 'optional', 'with', 'without'],
@@ -159,7 +154,7 @@ describe('executable Query', () => {
     const spans = query.spans().unwrap();
     const before = world[worldInternal].getMutationEpoch();
     const buffers = new Set(
-      world[worldInternal].getGraph().tables.flatMap((table: Table) => {
+      world[worldInternal].graph.tables.flatMap((table: Table) => {
         const buffer = table.storage.get(componentId(Position))?.fields.get('x')?.view.buffer;
         return buffer === undefined ? [] : [buffer];
       }),
@@ -307,7 +302,9 @@ describe('executable Query', () => {
     const invalidated = query[Symbol.iterator]();
     expect(invalidated.next().done).toBe(false);
     world.spawn({ component: Position, data: { x: 0, y: 0 } }).unwrap();
-    expect(() => invalidated.next()).toThrow(QueryIterationInvalidatedError);
+    expect(() => invalidated.next()).toThrow(
+      expect.objectContaining({ code: 'query-iteration-invalidated' }),
+    );
   });
 
   it('infers row access without casts', () => {

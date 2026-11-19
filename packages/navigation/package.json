@@ -24,11 +24,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
-    "bench": "node bench/navigation.mjs",
-    "bench:physical": "node bench/performance.mjs",
-    "verify:geometry": "node bench/geometry.mjs",
-    "verify:effects": "node bench/crowd.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@forgeax/engine-assets-runtime": "workspace:*",

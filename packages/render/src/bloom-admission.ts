@@ -5,8 +5,13 @@ import type { CameraSnapshot } from './render-contract';
  * record owners. Authoring remains Camera-owned; this is only the derived
  * zero/non-zero topology decision.
  */
-type BloomAdmissionCamera = Pick<CameraSnapshot, 'bloom' | 'bloomIntensity'>;
+type BloomAdmissionCamera = Pick<CameraSnapshot, 'postProcessing' | 'bloom' | 'bloomIntensity'>;
 
 export function standardBloomAdmitted(camera: BloomAdmissionCamera | undefined): boolean {
-  return camera !== undefined && camera.bloom === 'on' && camera.bloomIntensity > 0;
+  return (
+    camera !== undefined &&
+    camera.postProcessing !== false &&
+    camera.bloom === 'on' &&
+    camera.bloomIntensity > 0
+  );
 }

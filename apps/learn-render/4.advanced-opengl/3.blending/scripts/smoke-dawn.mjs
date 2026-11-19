@@ -20,14 +20,14 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 //   - `[learn-render-3-blending] backend=<backend>`
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] pixelSamples=<json>`
-
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText, processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -270,8 +270,8 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing at ${DEMO_MANIFEST_PATH}`);
   process.exit(1);
 }
-const demoManifest = JSON.parse(readFileSync(DEMO_MANIFEST_PATH, 'utf8'));
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(JSON.stringify(demoManifest))}`;
+const demoManifest = JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH));
+const MANIFEST_URL = processShaderManifestUrl(DEMO_MANIFEST_PATH);
 
 let renderer;
 try {
@@ -549,7 +549,7 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  await drawReadyFrame(renderer, { source: lease });
   framesObserved++;
 }
 const device = sharedDevice;

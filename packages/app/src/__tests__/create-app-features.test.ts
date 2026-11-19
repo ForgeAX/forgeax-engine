@@ -58,6 +58,8 @@ describe('createApp features passthrough', () => {
       features,
       dynamicGeometryMeshBudgetBytes,
       assetBudgetBytes,
+      textureMipSkip: 2,
+      backgroundPipelineLibraryConcurrency: 4,
     });
 
     expect(result.ok).toBe(true);
@@ -66,6 +68,8 @@ describe('createApp features passthrough', () => {
       features,
       dynamicGeometryMeshBudgetBytes,
       assetBudgetBytes,
+      textureMipSkip: 2,
+      backgroundPipelineLibraryConcurrency: 4,
     });
     expect(constructRuntimeRendererHost.mock.calls[0]?.[1].features).toBe(features);
   });
@@ -77,6 +81,14 @@ describe('createApp features passthrough', () => {
       await expect(createApp(canvas, { assetBudgetBytes })).rejects.toThrow(
         'assetBudgetBytes must be a positive safe integer',
       );
+    expect(constructRuntimeRendererHost).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid texture mip skip before any renderer realm is constructed', async () => {
+    constructRuntimeRendererHost.mockClear();
+    const canvas = { tagName: 'canvas', isConnected: true } as HTMLCanvasElement;
+    for (const textureMipSkip of [-1, 0.5, Number.NaN, 64])
+      await expect(createApp(canvas, { textureMipSkip })).rejects.toThrow(RangeError);
     expect(constructRuntimeRendererHost).not.toHaveBeenCalled();
   });
 });

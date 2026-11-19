@@ -54,7 +54,7 @@ authored files and delegates to the same cooker; discovery does not enter runtim
 share one cook implementation and preserve the same optional material catalog.
 There are no version-suffixed compatibility entry points. The compiler accepts
 only `schemaVersion: 3`, emits
-`forgeax-vfx-program-4`, and can receive a material particle-input catalog for
+`forgeax-vfx-program-5`, and can receive a material particle-input catalog for
 typed cross-asset matching. The generated binding layout uses one shared typed
 event buffer for the retained channel/sub-emitter path, then reserves
 Parameters and Custom and allocates only the declared camera, single-sample
@@ -164,7 +164,7 @@ source rather than emitter ID, and distinct source is compiled independently.
 | Fact | Value |
 |:--|:--|
 | Key | `particle-effect/program.json` |
-| Format | `forgeax-vfx-program-4` for the schema-driven slice |
+| Format | `forgeax-vfx-program-5` for the schema-driven slice |
 | MIME | `application/vnd.forgeax.vfx-program+json` |
 | Fingerprint | SHA-256 of canonical program bytes |
 | Reflection | hooks, composed imports, resources, entry points, bind-group layouts |

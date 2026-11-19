@@ -4,7 +4,13 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createRenderer } from '../assembly/factory';
-import { ANTIALIAS_NONE, ANTIALIAS_TAA, Camera } from '../components/camera';
+import {
+  ANTIALIAS_MSAA,
+  ANTIALIAS_MSAA_FXAA,
+  ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
+  Camera,
+} from '../components/camera';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -44,16 +50,35 @@ describe('automatic Standard path at the Renderer boundary', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
       const lease = attached.value;
-      for (const antialias of [ANTIALIAS_NONE, ANTIALIAS_TAA, ANTIALIAS_NONE]) {
+      for (const antialias of [
+        ANTIALIAS_NONE,
+        ANTIALIAS_MSAA,
+        ANTIALIAS_MSAA_FXAA,
+        ANTIALIAS_TAA,
+        ANTIALIAS_NONE,
+      ]) {
         world.set(camera, Camera, { antialias }).unwrap();
         world.update().unwrap();
-        const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+        const drawn = renderer.draw({ source: lease });
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) throw drawn.error;
         const frame = drawn.value;
         expect(frame).toBeDefined();
         if (frame !== undefined) expect((await frame.completed).ok).toBe(true);
         expect(renderer.inspect().profile.renderPath).toBe(path);
+        const requestedAa = ['none', 'fxaa', 'msaa', 'taa', 'smaa', 'tsr', 'msaa-fxaa'][antialias];
+        expect(renderer.inspect({ fields: ['viewConfiguration'] }).viewConfiguration).toMatchObject(
+          {
+            requested: { renderPath: 'auto', antialias: requestedAa },
+            effective: {
+              renderPath:
+                antialias === ANTIALIAS_MSAA || antialias === ANTIALIAS_MSAA_FXAA
+                  ? 'forward'
+                  : path,
+              antialias: requestedAa,
+            },
+          },
+        );
       }
       expect(renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' }).ok).toBe(
         true,

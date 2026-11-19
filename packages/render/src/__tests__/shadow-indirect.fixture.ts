@@ -6,6 +6,7 @@ import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext, PipelineState } from '../record/render-context';
 import type { GpuDrivenShadowBatch } from '../record/shadow-pass';
+import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import { shadowViewBindingKeys } from '../record/shadow-view-resources';
 import { captureShadowBundles, preparedShadowView } from './shadow-bundle.fixture';
 
@@ -25,7 +26,7 @@ export function preparedShadowFixture({
   readonly view: BindGroup;
   readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
 }) {
-  const pipelineLookup = vi.fn(() => shared.pipeline);
+  const pipelineLookup = vi.fn((_shader: string) => shared.pipeline);
   const counts = { createBindGroup: 0, keys: [] as string[] };
   const materialBuffer = { buffer };
   const pipelineState = {
@@ -114,6 +115,7 @@ export function preparedShadowFixture({
     flags: 1,
   });
   const context = {
+    camera: {},
     validatedOrdered: [],
     runtime: {
       device,
@@ -121,9 +123,13 @@ export function preparedShadowFixture({
       immediateShaderModuleFactory: shaderModuleFactory,
     },
     pipelineState,
-    frameState: { viewBindGroupCache, shadowMaterialBindGroups },
+    frameState: {
+      viewBindGroupCache,
+      shadowMaterialBindGroups,
+      shadowRaster: new ShadowRasterLedger(),
+    },
     gpuDrivenShadowViews: {
-      submission: () => ({ view: shadowView, plan: { batches } }),
+      submission: () => ({ view: shadowView, plan: { batches }, generation: 1, cache: 'hit' }),
     },
     gpuDrivenShadowBatchProjections: new Map([
       ['directional:0:', projections],

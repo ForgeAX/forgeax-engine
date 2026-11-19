@@ -98,7 +98,9 @@ try {
       const x = ids.reduce((sum, id) => sum + result[id * 4], 0) / 3;
       const y = ids.reduce((sum, id) => sum + result[id * 4 + 1], 0) / 3;
       const z = ids.reduce((sum, id) => sum + result[id * 4 + 2], 0) / 3;
-      const answer = (await querySubmittedTerrainHeight(receipt, { worldId: 0, entity: h.subjects.terrain, x, z, expectedAsset: Number(rootHandle) })).unwrap();
+      const answer = (await querySubmittedTerrainHeight(receipt, {
+          entity: h.subjects.terrain, x, z, expectedAsset: Number(rootHandle),
+        })).unwrap();
       assert.equal(typeof answer, 'number');
       const delta = Math.abs(answer - y); peak = Math.max(peak, delta); tested++;
       assert(delta <= 1e-5, `work ${work.workIndex}, triangle ${t}: ${delta} > 1e-5m`);

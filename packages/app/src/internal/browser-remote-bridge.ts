@@ -24,10 +24,9 @@
 // specifier from the consumer document root and yield a 500.
 
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, Update, type World } from '@forgeax/engine-ecs';
 import type { ExecuteContext } from '@forgeax/engine-remote/execute';
 import type { ExecutionRemoteEval } from '../types';
-import { createCanonicalEcsImportModule } from './ecs-import';
 
 type ExecuteResult = { ok: true; value: unknown } | { ok: false; error: unknown };
 
@@ -412,18 +411,15 @@ export async function installBrowserRemoteBridge(
   // Vite config to resolve the focused package through its SDK alias.
   const mod = await import('@forgeax/engine-remote/execute');
   const executeScript = mod.executeScript;
-  const importModule = createCanonicalEcsImportModule(
-    world,
-    (specifier: string): Promise<unknown> => {
-      // The host app and the bridge must share the same component-token objects.
-      // Vite can otherwise serve `/@id/@forgeax/engine-runtime` as a second
-      // module graph entry, so `world.get(entity, Transform)` sees a different
-      // Component id even though the token has the same name and schema.
-      if (specifier === '@forgeax/engine-runtime') return Promise.resolve(deps.runtimeModule);
-      const browserSpecifier = specifier.startsWith('@') ? `/@id/${specifier}` : specifier;
-      return import(/* @vite-ignore */ browserSpecifier);
-    },
-  );
+  const importModule = (specifier: string): Promise<unknown> => {
+    // The host app and the bridge must share the same component-token objects.
+    // Vite can otherwise serve `/@id/@forgeax/engine-runtime` as a second
+    // module graph entry, so `world.get(entity, Transform)` sees a different
+    // Component id even though the token has the same name and schema.
+    if (specifier === '@forgeax/engine-runtime') return Promise.resolve(deps.runtimeModule);
+    const browserSpecifier = specifier.startsWith('@') ? `/@id/${specifier}` : specifier;
+    return import(/* @vite-ignore */ browserSpecifier);
+  };
 
   const url = bridgeUrl(port);
   let ws: WebSocket | null = null;
@@ -523,13 +519,12 @@ export async function installBrowserRemoteBridge(
       })();
     }
   };
-  world
-    .addSystem(Update, {
-      name: 'browser-remote-bridge-drain-eval-queue',
-      queries: [],
-      fn: drainEvalQueue,
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'browser-remote-bridge-drain-eval-queue',
+    queries: [],
+    fn: drainEvalQueue,
+  });
+  world.addSystem(Update, systemToken1).unwrap();
 
   const connect = (): void => {
     if (stopped) return;
@@ -687,7 +682,7 @@ export async function installBrowserRemoteBridge(
     clearSyntheticInput();
     evalQueue.length = 0;
     cancelledEvalIds.clear();
-    world.removeSystem(Update, 'browser-remote-bridge-drain-eval-queue');
+    world.removeSystem(Update, systemToken1);
     const s = ws;
     ws = null;
     if (s) {

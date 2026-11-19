@@ -1,7 +1,7 @@
 #define_import_path forgeax_material::standard_surface
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::common::{view, sampleMaterialTexture}
-#import forgeax_view::fog::{translucent_fog_transmission}
+#import forgeax_view::fog::{forward_fog_transmission}
 #import forgeax_pbr::brdf::{f_schlick}
 #import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
 #import forgeax_pbr::specular_aa::{geometricNormalSpread, shadingNormalSpread, specularAntiAliasedRoughness}
@@ -183,7 +183,7 @@ fn materialTextureFilteringWitness() {
 struct VsOut {
   @builtin(position) clip : vec4<f32>,
   @location(0) worldPos : vec3<f32>,
-  @location(1) worldNormal : vec3<f32>,
+  @location(1) worldNormal : vec4<f32>,
   @location(2) uv : vec2<f32>,
   @location(3) worldTangent : vec4<f32>,
 #ifdef TRANSMISSION_AVAILABLE
@@ -336,7 +336,7 @@ fn evaluateUnlitStandardSurface(in : VsOut, baseColor : vec4<f32>, emissive : ve
   let emissiveSample = sampleMaterialTexture(emissiveTexture, emissiveTexture_sampler, emissiveUv, material.emissiveTextureCoordinatesMetadata.zw).rgb;
   let color = albedo + emissive * emissiveIntensity * emissiveSample;
   var output : StandardPbrOutput;
-  output.color = vec4<f32>(translucent_fog_transmission(view, in.worldPos, color, alpha, vec3<f32>(0.0), vec3<f32>(0.0)), alpha);
+  output.color = vec4<f32>(forward_fog_transmission(view, in.worldPos, in.worldNormal.w, color, alpha, vec3<f32>(0.0), vec3<f32>(0.0)), alpha);
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = vec4<f32>(vec3<f32>(0.0), 1.0);
 #endif
@@ -344,10 +344,32 @@ fn evaluateUnlitStandardSurface(in : VsOut, baseColor : vec4<f32>, emissive : ve
 }
 
 fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> StandardPbrOutput {
+  return evaluateStandardSurfaceWithNormalMode(in, factors, in.worldNormal.xyz, false);
+}
+
+// A geometry adapter that already owns its complete world-space normal can
+// use the shared material/light evaluator without sampling the normal texture
+// a second time. Ordinary material callers keep the established tangent-space
+// normal path through the wrapper above.
+fn evaluateStandardSurfaceWithWorldNormal(
+  in : VsOut,
+  factors : StandardSurfaceFactors,
+  worldNormal : vec3<f32>,
+) -> StandardPbrOutput {
+  return evaluateStandardSurfaceWithNormalMode(in, factors, worldNormal, true);
+}
+
+fn evaluateStandardSurfaceWithNormalMode(
+  in : VsOut,
+  factors : StandardSurfaceFactors,
+  worldNormal : vec3<f32>,
+  useWorldNormal : bool,
+) -> StandardPbrOutput {
   var useDirectDfgLut = false;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
+  let geometricNormal = select(in.worldNormal.xyz, worldNormal, useWorldNormal);
   // TBN basis composed via forgeax_pbr::tbn helpers; default fallback
   // (defaultNormalTextureView) RG=(128,128) -> tangent (0,0,1) -> world n
   // unchanged.
@@ -356,10 +378,10 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let normTangent = scaleTangentSpaceNormal(
     decodeTangentSpaceNormalRg(normSampleRg), material.normalScale,
   );
-  let n = applyTBN(in.worldNormal, in.worldTangent, normTangent);
+  let n = select(applyTBN(in.worldNormal.xyz, in.worldTangent, normTangent), normalize(geometricNormal), useWorldNormal);
 
   // Both spreads are taken before alpha test, while control flow is uniform.
-  let normalSpread = max(geometricNormalSpread(in.worldNormal), shadingNormalSpread(n));
+  let normalSpread = max(geometricNormalSpread(geometricNormal), shadingNormalSpread(n));
   let baseUv = transformedMaterialUv(material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesMetadata, material.baseColorTextureCoordinatesRotation, in);
   let baseSample = sampleMaterialTexture(baseColorTexture, baseColorTexture_sampler, baseUv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = materialVertexColor(in);
@@ -711,7 +733,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   transmittedContribution=select(vec3<f32>(0.0),transmittedContribution,factors.lighting);
   transmittedCoefficient=select(vec3<f32>(0.0),transmittedCoefficient,factors.lighting);
   var output : StandardPbrOutput;
-  output.color = vec4<f32>(translucent_fog_transmission(view, in.worldPos, color, alpha, transmittedContribution, transmittedCoefficient), alpha);
+  output.color = vec4<f32>(forward_fog_transmission(view, in.worldPos, in.worldNormal.w, color, alpha, transmittedContribution, transmittedCoefficient), alpha);
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = vec4<f32>(select(vec3<f32>(0.0), reflectionFallback, factors.lighting), 1.0);
 #endif

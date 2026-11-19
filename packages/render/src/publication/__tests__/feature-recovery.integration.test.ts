@@ -13,7 +13,11 @@ import { Transform } from '@forgeax/engine-scene';
 import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '@forgeax/engine-shader';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { standardPbrManifestRow } from '../../__tests__/shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from '../../__tests__/shader-manifest-fixture';
 import { Camera, perspective } from '../../components/camera';
 import { constructRendererHost } from '../../construct-renderer';
 import type { RenderFeature } from '../../features/types';
@@ -92,7 +96,7 @@ it('recovers without replaying submitted feature data and plans the next publica
     },
     plan: (data, context) => {
       plannedGenerations.push(context.generation);
-      const resolved = context.resolveAsset?.(0, data.handle);
+      const resolved = context.resolveAsset?.(data.handle);
       if (resolved === undefined || !resolved.ok) throw new Error('Missing exact published asset');
       expect(resolved.value).toEqual(asset);
       seen.push(data);
@@ -140,8 +144,14 @@ it('recovers without replaying submitted feature data and plans the next publica
         { hash: 'pbr', wgsl: 'f_schlick', glsl: '', bindings: '' },
         { hash: 'unlit', wgsl: 'unlit', glsl: '', bindings: '' },
         { hash: 'tonemap', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
+        ...waterInfoShaderFixture.entries,
+        ...nativeOutputShaderFixture.entries,
       ],
-      materialShaders: [standardPbrManifestRow('f_schlick')],
+      materialShaders: [
+        standardPbrManifestRow('f_schlick'),
+        ...waterInfoShaderFixture.materialShaders,
+        ...nativeOutputShaderFixture.materialShaders,
+      ],
     }),
   )}`;
   const created = await constructRendererHost(

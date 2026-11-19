@@ -2,6 +2,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import { equirectContribution } from '@forgeax/engine-image';
+import { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import {
   type RenderPipelineDescriptor,
   type RhiDevice,
@@ -68,6 +69,12 @@ import { COLOR_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
+
+// Load the cross-package Worker transport with the fixture, before measuring
+// the lifecycle case's unchanged runtime deadline.
+const { RenderMeshResidency } = await import(
+  new URL('../../../app/src/execution/render-mesh-residency.ts', import.meta.url).href
+);
 
 type HeldPass = 'color' | 'shadow' | 'transmission';
 
@@ -364,12 +371,12 @@ async function fixture(
         ? { publication: encodeRenderPublication(packet) }
         : lease === undefined
           ? undefined
-          : { leases: [lease], camera: { lease }, environment: { lease } };
+          : { source: lease };
     if (request === undefined) throw new Error('missing frame owner');
     const drawn = renderer.draw(pointShadow ? { ...request, geometryLane: 'direct' } : request);
     if (!drawn.ok)
       throw new Error(
-        `renderer draw failed: ${String(drawn.error)}; errors=${JSON.stringify(errors)}`,
+        `renderer draw failed: ${JSON.stringify(drawn.error)}; errors=${JSON.stringify(errors)}`,
       );
     const receipt = drawn.value;
     return {
@@ -758,6 +765,7 @@ it('retains the accepted picture while a real equirect producer is pending', asy
 
 it('keeps preparation-barrier production state identical with Cluster conformance off or on', async () => {
   const run = async (conformanceEnabled: boolean) => {
+    const compilationStart = renderGraphCompileCount();
     const f = await fixture('color', false, false, false, false, [], standardPipeline);
     let releaseFence: (() => void) | undefined;
     try {
@@ -817,7 +825,14 @@ it('keeps preparation-barrier production state identical with Cluster conformanc
       if (conformanceEnabled) expect(f.host.clusterWorkObservationForConformance()).toBeDefined();
       else expect(f.host.clusterWorkObservationForConformance()).toBeUndefined();
       ready.recycle();
-      return after;
+      // Graph generations are realm-wide compile identities. Independent Renderer
+      // runs must advance by the same amount, while the barrier above compares
+      // each run's unchanged absolute generation and complete production state.
+      return {
+        ...after,
+        graph: { ...after.graph, generation: after.graph.generation - compilationStart },
+        compiledGraphs: renderGraphCompileCount() - compilationStart,
+      };
     } finally {
       releaseFence?.();
       f.release();
@@ -875,6 +890,45 @@ it.each([
     expect((await f.draw()).presentation).toBe('ready');
     expect(f.asyncPipelines).not.toHaveBeenCalled();
   } finally {
+    await f.dispose();
+  }
+});
+
+it('requests the installed scene preparation before recording its first raster pass', async () => {
+  const original = scenePipelinePreparation.scenePipelinePreparations;
+  const phases: string[] = [];
+  let phase = 'initialization';
+  const declarations = vi
+    .spyOn(scenePipelinePreparation, 'scenePipelinePreparations')
+    .mockImplementation((graph) =>
+      original(graph).map((prepare) => {
+        if (prepare.kind === 'utility') return prepare;
+        const observed: typeof prepare = (...args) => {
+          phases.push(phase);
+          return prepare(...args);
+        };
+        Object.defineProperties(observed, Object.getOwnPropertyDescriptors(prepare));
+        return observed;
+      }),
+    );
+  const setPipeline = RhiNullRenderPassEncoder.prototype.setPipeline;
+  const raster = vi
+    .spyOn(RhiNullRenderPassEncoder.prototype, 'setPipeline')
+    .mockImplementation(function (...args) {
+      phase = 'raster';
+      return setPipeline.apply(this, args);
+    });
+  const f = await fixture('color');
+  try {
+    f.release();
+    f.world.set(f.entity, MeshRenderer, { preparePipelines: true }).unwrap();
+    phases.length = 0;
+    phase = 'preflight';
+    await f.draw();
+    expect(phases[0]).toBe('preflight');
+  } finally {
+    declarations.mockRestore();
+    raster.mockRestore();
     await f.dispose();
   }
 });
@@ -1092,9 +1146,6 @@ it.each([
   'before',
   'after',
 ] as const)('transfers candidate proof to normal drawing when Worker preparation is %s publication', async (ordering) => {
-  const { RenderMeshResidency } = await import(
-    new URL('../../../app/src/execution/render-mesh-residency.ts', import.meta.url).href
-  );
   const f = await fixture('color', true);
   const demand = vi.spyOn(candidateViewDemand, 'readCandidateViewDemand');
   const post = vi.fn();
@@ -1147,7 +1198,13 @@ it.each([
     f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
     const changedView = await f.draw();
     expect(changedView.presentation).toBe('ready');
-    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(f.renderer.inspect().temporal.mode).toBe('fxaa');
+    expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
+    expect(f.renderer.inspect().output).toMatchObject({
+      displayEncoded: true,
+      intermediateFormat: 'rgba16float',
+      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+    });
     expect(
       Array.from(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings),
     ).toContain(1);
@@ -1173,12 +1230,12 @@ it.each([
   'global-sky-gpu',
   'global-sky-outline-idle-gpu',
   'global-sky-outline-selected-gpu',
+  'global-sky-outline-distance-gpu',
   'point-shadow-direct',
 ] as const)('prepares a new mesh from the installed graph and warm PSOs without another record frame (%s)', async (lane) => {
   const f = await fixture('color', true, lane === 'point-shadow-direct');
   const controller = new AbortController();
-  const outline =
-    lane === 'global-sky-outline-idle-gpu' || lane === 'global-sky-outline-selected-gpu';
+  const outline = isOutlineCandidateLane(lane);
   const globalSky = lane === 'global-sky-gpu' || outline;
   const declarations =
     lane === 'global-sky-outline-idle-gpu'
@@ -1235,6 +1292,14 @@ it.each([
           data: {
             entities: [lane === 'global-sky-outline-idle-gpu' ? f.camera : f.entity],
             width: 1,
+            ...(lane === 'global-sky-outline-distance-gpu'
+              ? {
+                  distanceField: true,
+                  focusedEntities: [f.entity],
+                  accentEntities: [f.entity],
+                  largeEntities: [f.entity],
+                }
+              : {}),
           },
         })
         .unwrap();
@@ -1405,7 +1470,7 @@ it.each([
           selector: COLOR_PASS_SELECTOR,
           selection: 'camera-outline',
           // An arbitrary callback still takes precedence over the declared recipe.
-          selectEntities: (frame) => ({ worldId: frame.camera.worldId ?? 0, entities: [] }),
+          selectEntities: () => ({ entities: [] }),
         }).unwrap();
       }
       if (result.ok && kind === 'capture')
@@ -2300,7 +2365,13 @@ it('invalidates prepared candidate raster credentials when the actual graph is r
     expect(prepared.isCurrent()).toBe(true);
     f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
     for (let frame = 0; frame < 30 && prepared.isCurrent(); frame++) await f.draw();
-    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(f.renderer.inspect().temporal.mode).toBe('fxaa');
+    expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
+    expect(f.renderer.inspect().output).toMatchObject({
+      displayEncoded: true,
+      intermediateFormat: 'rgba16float',
+      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+    });
     expect(prepared.isCurrent()).toBe(false);
     await prepared.release();
   } finally {
@@ -2393,9 +2464,11 @@ it('does not acknowledge view Feature work when a native PSO submits only a prep
 });
 
 it.each([
-  'forward',
-  'deferred',
-] as const)('keeps the complete composed surface untouched while %s view pipelines are pending', async (renderPath) => {
+  ['forward', 1],
+  ['forward', 2],
+  ['deferred', 1],
+  ['deferred', 2],
+] as const)('keeps the complete %s surface untouched while %s view pipelines are pending', async (renderPath, viewCount) => {
   const f = await fixture(renderPath === 'forward' ? 'transmission' : 'color');
   expect(f.renderer.setProfile({ ...f.renderer.inspect().profile, renderPath }).ok).toBe(true);
   const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
@@ -2439,26 +2512,27 @@ it.each([
     f.world
       .addComponent(f.camera, {
         component: CameraView,
-        data: { viewport: [0, 0, 0.5, 1], order: 0 },
+        data: { viewport: [0, 0, 1 / viewCount, 1], order: 0 },
       })
       .unwrap();
-    f.world
-      .spawn(
-        { component: Transform, data: { pos: [0, 0, 8] } },
-        {
-          component: Camera,
-          data: {
-            fov: Math.PI / 3,
-            aspect: 1,
-            near: 0.1,
-            far: 100,
-            antialias: ANTIALIAS_NONE,
-            bloom: BLOOM_DISABLED,
+    if (viewCount === 2)
+      f.world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 8] } },
+          {
+            component: Camera,
+            data: {
+              fov: Math.PI / 3,
+              aspect: 1,
+              near: 0.1,
+              far: 100,
+              antialias: ANTIALIAS_NONE,
+              bloom: BLOOM_DISABLED,
+            },
           },
-        },
-        { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], order: 1 } },
-      )
-      .unwrap();
+          { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], order: 1 } },
+        )
+        .unwrap();
     f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
     const pending = await f.draw();
     expect(f.held.length).toBeGreaterThan(0);
@@ -2482,3 +2556,11 @@ it.each([
     await f.dispose();
   }
 });
+
+function isOutlineCandidateLane(lane: string): boolean {
+  return (
+    lane === 'global-sky-outline-idle-gpu' ||
+    lane === 'global-sky-outline-selected-gpu' ||
+    lane === 'global-sky-outline-distance-gpu'
+  );
+}

@@ -21,7 +21,7 @@ import {
 } from './record/frame';
 import { resolveFrameMaterials } from './record/frame-admission';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
-import { makeZeroCameraFallbackSnapshot, worldEntityKey } from './record/frame-snapshot';
+import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from './record/frame-snapshot';
 import type { RenderableDrawReceipt } from './record/gpu-draw-receipts';
 import {
   type PipelineState,
@@ -113,15 +113,14 @@ export function recordProfileSkip(
  * mesh asset; a publication reports its source-realm World identity.
  */
 export function beginGeometryObservation(owner: ViewSettlementOwner, attempt: RecordAttempt): void {
-  const { composition, scopes, opts, publication } = attempt;
+  const { sourceScope, opts, publication } = attempt;
   owner.gpuDriven.beginGeometryObservation(
     opts.geometryObservation === true && attempt.mode === true
       ? (slot) => {
-          const scope = scopes[slot.snapshot.worldId];
+          const scope = sourceScope;
           const worldIdentity =
             publication === undefined
-              ? (composition.leases?.[slot.snapshot.worldId]?.worldIdentity ??
-                composition.worlds[slot.snapshot.worldId]?.identity)
+              ? (attempt.readLease?.worldIdentity ?? attempt.sourceWorld?.identity)
               : opts.geometryObservationSourceWorldIdentity;
           if (!worldIdentity || scope === undefined) throw Error('geometry-source-unavailable');
           const handle = slot.snapshot.assetHandle as AssetHandle<'mesh'>;
@@ -142,7 +141,10 @@ export function beginGeometryObservation(owner: ViewSettlementOwner, attempt: Re
 }
 
 /** Reset per-attempt publication facts; returns whether this call owns the profiler frame. */
-export function beginRecordAttempt(owner: ViewSettlementOwner, attempt: RecordAttempt): boolean {
+export function beginRecordAttempt(
+  owner: Pick<ViewSettlementOwner, 'internals'>,
+  attempt: RecordAttempt,
+): boolean {
   // A failed draw cannot publish a startup completion fact. Reset the
   // projection before extraction so a later receipt never reuses an old
   // scene's readiness.
@@ -152,14 +154,10 @@ export function beginRecordAttempt(owner: ViewSettlementOwner, attempt: RecordAt
       owner.internals.viewEntity,
     )?.resetPresentation();
   }
-  // A prior failed record/submit may have staged a temporal capture. A
-  // capture belongs only to the draw call that created it; discard it
-  // before this call can prepare or commit a new candidate.
-  owner.scene.discardTemporalFrame();
   const profileSession = attempt.profileSession;
   if (profileSession === undefined || attempt.opts.profileFrame !== undefined) return false;
   try {
-    return profileSession.beginFrame(++owner.recording.directFrameId).ok;
+    return profileSession.beginFrame().ok;
   } catch {
     return false;
   }
@@ -173,12 +171,8 @@ export function beginRecordAttempt(owner: ViewSettlementOwner, attempt: RecordAt
 
 /** Pending assets submit the preparation barrier; invalid motion blur rejects the frame. */
 
-export function cameraScope(attempt: RecordAttempt): RenderResourceScope {
-  return attempt.scopes[attempt.composition.owners.cameraOwner] as RenderResourceScope;
-}
-
 export function resourceScope(attempt: RecordAttempt): RenderResourceScope {
-  return attempt.scopes[attempt.composition.owners.resourceOwner] as RenderResourceScope;
+  return attempt.sourceScope as RenderResourceScope;
 }
 
 /** The selected display camera, its fitted lights and the Standard configuration it implies. */
@@ -224,7 +218,7 @@ export function prepareRecordScene(
     owner.internals.viewEntity,
   );
   owner.recorded.camera = cameras[0];
-  const visibility = projectRecordVisibility(owner, attempt.scopes, frame, cameras.length);
+  const visibility = projectRecordVisibility(owner, attempt.sourceScope, frame, cameras.length);
   owner.frameState.pipelinePreparationPending = false;
   delete owner.frameState.pipelinePreparationPendingReason;
   const presentation = initialFramePresentation(
@@ -236,8 +230,7 @@ export function prepareRecordScene(
     owner.recorded.camera,
     frame,
     visibility,
-    attempt.scopes,
-    attempt.composition.owners.cameraOwner,
+    attempt.sourceScope,
     lodFrameId,
   );
   owner.scene.prepareTemporalFrame(visibility.projection.renderables, frame.gpuOwned?.slots);
@@ -276,13 +269,12 @@ export function stagedViewScopes(owner: ViewSettlementOwner) {
 
 export function projectRecordVisibility(
   owner: ViewSettlementOwner,
-  scopes: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   frame: ExtractedFrame,
   cameraCount: number,
 ) {
-  const worldKeys = owner.scene.visibilityWorldKeysFor(scopes);
   const projection = owner.scene.projectVisibility(
-    scopes,
+    sourceScope,
     frame.renderables,
     frame.dispatch,
     frame.gpuOwned?.slots,
@@ -293,7 +285,7 @@ export function projectRecordVisibility(
     cameraCount === 0 || frame.gpuOwned !== undefined
       ? []
       : projectDisplayRenderables(projection.renderables, projection.dispatch);
-  return { worldKeys, projection, presentationRenderables };
+  return { projection, presentationRenderables };
 }
 
 /**
@@ -508,7 +500,7 @@ export function admitViewFeaturePlan(
     owner.recording.pendingFeatureErrors,
     owner.internals.errorRegistry,
   );
-  return outcome.plan;
+  return featureFrame.preparationPending ? undefined : outcome.plan;
 }
 
 /**
@@ -544,7 +536,6 @@ export function stageRecordQueue(
       rows: new FrameProjection(projection.renderables, (source) => ({
         transform: source.transform,
         material: source.material.snapshot,
-        worldId: source.worldId,
       })),
       profile: attempt.profileSession,
     });
@@ -566,7 +557,7 @@ export function stageRecordQueue(
     stageViewGpuDrivenPrepareInput(world, entity, {
       internals: owner.internals,
       frameState: owner.frameState,
-      worlds: attempt.scopes,
+      sourceScope: attempt.sourceScope,
       camera,
       lights: view.lights,
       renderables: projection.renderables,
@@ -657,9 +648,11 @@ export function recordingGpuDrivenInput(
   const frustumStats = frame.frustumStats;
   const captureOnly = attempt.mode === 'capture';
   const surfaceDynamicInput = surfaceDynamicInputOf(renderWorldFor(owner.internals));
+  const sceneTextureTables = owner.scene.compositionSceneTextureTables();
   return {
     owner: owner.gpuDriven,
     scene: gpuDrivenScene,
+    ...(sceneTextureTables === undefined ? {} : { sceneTextureTables }),
     activeEntityKeys: projection.activeEntityKeys,
     activeEntityRevision: projection.activeEntityRevision,
     visibleRasterRows: () => Math.max(0, frustumStats.total - frustumStats.culled),
@@ -682,7 +675,7 @@ export function recordingGpuDrivenInput(
 }
 
 export function cameraFrameTime(attempt: RecordAttempt): number {
-  const elapsed = renderTime(cameraScope(attempt)).elapsed;
+  const elapsed = renderTime(resourceScope(attempt)).elapsed;
   return Number.isFinite(elapsed) ? elapsed : 0;
 }
 
@@ -690,13 +683,12 @@ export function cameraFrameTime(attempt: RecordAttempt): number {
 export function presentedRenderableRecorder(
   owner: ViewSettlementOwner,
   attempt: RecordAttempt,
-  worldKeys: readonly number[],
   gpuOwnedFrame: GpuOwnedFrame | undefined,
 ) {
   const presentedDraws = createPresentationDraws();
   const drawObservation = createDrawObservation(owner.internals);
   const viewReceipt = viewDrawReceipt(renderWorldFor(owner.internals), owner.internals.viewEntity);
-  const consumeDynamicGeometry = viewReceipt?.dynamicGeometry.onRenderableDraw(attempt.scopes);
+  const consumeDynamicGeometry = viewReceipt?.dynamicGeometry.onRenderableDraw(attempt.sourceScope);
   let gpuSelection = EMPTY_GPU_DRAW_SELECTION;
   // Rows the submitted selection draws get no per-row receipt; their
   // consumers ask the frozen frame and selection on demand.
@@ -708,37 +700,78 @@ export function presentedRenderableRecorder(
           submitted: (selection: GpuDrawSelection): void => {
             gpuSelection = selection;
             if (!selection.empty) drawObservation.recordGpuLane();
-            viewReceipt?.dynamicGeometry.onGpuOwnedDraws(
-              attempt.scopes,
-              (worldId, entity, mesh) => {
-                const row = gpuOwnedFrame.row(worldId, entity);
-                return (
-                  row?.assetHandle === mesh &&
-                  row.gpuDrivenDraws?.some((draw, index) => selection.owns(row, draw, index)) ===
-                    true
-                );
-              },
-            );
+            viewReceipt?.dynamicGeometry.onGpuOwnedDraws(attempt.sourceScope, (entity, mesh) => {
+              const row = gpuOwnedFrame.row(entity);
+              return (
+                row?.assetHandle === mesh &&
+                row.gpuDrivenDraws?.some((draw, index) => selection.owns(row, draw, index)) === true
+              );
+            });
           },
         };
-  const sourceWorlds = attempt.composition.worlds;
+  const sourceWorld = attempt.sourceWorld;
   const markPresentedRenderable = (
-    entry: Parameters<typeof drawObservation.record>[0],
+    entry: Pick<ValidatedRenderable, 'source'> & Partial<Pick<ValidatedRenderable, 'mesh'>>,
     submeshIndex?: number,
     receipt?: RenderableDrawReceipt,
   ): void => {
-    const entityKey = worldEntityKey(
-      worldKeys[entry.source.worldId] ?? entry.source.worldId,
-      entry.source.entityKey,
-    );
+    const entityKey = entry.source.entityKey;
     if (receipt?.ready !== false) {
       presentedDraws.record(
         entityKey,
         submeshIndex,
         submeshIndex === undefined ? undefined : entry.source.terrainSection?.index,
       );
+      if (receipt?.waterBaked !== undefined) {
+        const materialWorldIdentity = sourceWorld?.identity;
+        const viewIdentity =
+          entry.source.waterOwner?.viewIdentity ?? entry.source.waterMeshTiles?.viewIdentity;
+        const deviceGeneration = owner.internals.deviceGeneration;
+        const graphGeneration = owner.internals.observationGraphGeneration;
+        viewReceipt?.stageWaterBakedDraw(
+          observationFrameId(owner),
+          {
+            ...receipt.waterBaked,
+            ...(materialWorldIdentity === undefined ? {} : { materialWorldIdentity }),
+          },
+          {
+            ...(viewIdentity === undefined ? {} : { viewIdentity }),
+            ...(deviceGeneration === undefined ? {} : { deviceGeneration }),
+            ...(graphGeneration === undefined ? {} : { graphGeneration }),
+          },
+        );
+      }
+      const material = receipt?.material,
+        materialSlot =
+          submeshIndex === undefined
+            ? undefined
+            : entry.mesh?.submeshes[submeshIndex]?.materialSlot,
+        sourceRevision = material?.sourceAssets?.revision,
+        worldIdentity = sourceWorld?.identity,
+        deviceGeneration = owner.internals.deviceGeneration,
+        graphGeneration = owner.internals.observationGraphGeneration;
+      if (
+        submeshIndex !== undefined &&
+        materialSlot !== undefined &&
+        material?.materialHandle !== undefined &&
+        sourceRevision !== undefined &&
+        worldIdentity !== undefined &&
+        deviceGeneration !== undefined &&
+        graphGeneration !== undefined
+      )
+        viewReceipt?.stageMaterialDraw(observationFrameId(owner), {
+          worldIdentity,
+          entityKey: entry.source.entityKey,
+          submeshIndex,
+          materialSlot,
+          materialHandle: material.materialHandle,
+          sourceRevision,
+          frameId: observationFrameId(owner),
+          deviceGeneration,
+          graphGeneration,
+        });
     }
-    drawObservation.record(entry, submeshIndex, receipt, sourceWorlds[entry.source.worldId]);
+    drawObservation.record(entry, submeshIndex, receipt, sourceWorld);
     consumeDynamicGeometry?.(entry, receipt?.lane ?? 'cpu');
   };
   return {
@@ -749,12 +782,8 @@ export function presentedRenderableRecorder(
     readGpuSelection: () => gpuSelection,
   };
 }
-
 /**
- * Record and submit the frame. The record stage resolves each renderable's
- * mesh and material textures against the World it was extracted from
- * (`worlds[renderable.worldId]`); `resourceWorld` stays the singleton
- * resource owner (skybox equirect, transparent-sort config, video provider).
+ * Record the accepted scene using its single captured resource domain.
  */
 export function prepareViewFrameInput(
   owner: ViewSettlementOwner,
@@ -795,12 +824,7 @@ export function prepareViewFrameInput(
     })(),
   });
   owner.frameState.surfaceSubmissionObservation = surfaceSubmissionCandidate;
-  const draws = presentedRenderableRecorder(
-    owner,
-    attempt,
-    scene.visibility.worldKeys,
-    frame.gpuOwned,
-  );
+  const draws = presentedRenderableRecorder(owner, attempt, frame.gpuOwned);
   const input: FrameRecordingInput = {
     internals: owner.internals,
     world: resourceScope(attempt),
@@ -815,13 +839,13 @@ export function prepareViewFrameInput(
     skylightCount: frame.skylightCount,
     skybox: frame.skybox,
     postProcessParams: frame.postProcessParams,
-    worlds: attempt.scopes,
+    sourceScope: attempt.sourceScope,
     profilePhase: recordProfileRunner(attempt.profileSession),
     gpuDriven: {
       ...queued.gpuDriven,
       ...(draws.gpuOwned === undefined ? {} : { gpuOwned: draws.gpuOwned }),
     },
-    renderReadLeases: attempt.composition.leases,
+    renderReadLease: attempt.readLease,
     cubeCapture: cubeCaptureFrameInput(owner, attempt, scene, features),
     environmentSignature: environment?.environmentSignature ?? '',
     fogSignature: environment?.fogSignature ?? '',
@@ -829,7 +853,6 @@ export function prepareViewFrameInput(
     volumetricFog: displayMedia ? frame.volumetricFog : undefined,
     timingCapture: attempt.timingCapture,
     shadowCasterProjection: scene.shadowCasterProjection,
-    shadowCasterWorldKeys: scene.visibility.worldKeys,
     onRenderableDraw: draws.markPresentedRenderable,
     analyticFog: environment?.fog,
     sampleTimeSeconds: attempt.opts.sampleTimeSeconds,

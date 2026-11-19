@@ -1,6 +1,11 @@
 import type { RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-rhi';
-import type { ShaderCatalog } from '@forgeax/engine-shader';
+import {
+  publishShaderProgramTemplates,
+  type ShaderCatalog,
+  type ShaderProgramCompiler,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareLowLimitMaterialShaderEntry } from '../assembly/material-shader-policy';
 import { prewarmRequiredMaterialShaders } from '../assembly/material-shader-prewarm';
@@ -18,6 +23,7 @@ describe('material module prewarm and lazy pipeline agreement', () => {
     const variantSource = `${source}\n// published variant`;
     const registry = {
       findMaterialArtifact: () => ok(entry),
+      materialShaderManifestEntry: () => undefined,
       materialShaderManifestEntries: () =>
         [
           {
@@ -82,4 +88,73 @@ describe('material module prewarm and lazy pipeline agreement', () => {
     ]);
     expect(entry.source).toBe(source);
   });
+});
+
+it('admits a native feature declaration without compiling an unused family', async () => {
+  const profile = {
+    id: 'test',
+    language: 'wgsl',
+    profileVersion: '1',
+    adapterVersion: '1',
+    compilerVersion: '1',
+    nagaVersion: '1',
+  } as const;
+  const compile = vi.fn<ShaderProgramCompiler['compile']>(() =>
+    ok({
+      manifestEntry: {
+        hash: 'abcdef01',
+        wgsl: '@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }',
+        glsl: '',
+        bindings: '[]',
+      },
+      uvSetCount: 0,
+    }),
+  );
+  const library = publishShaderProgramTemplates(
+    new Map([
+      [
+        'game::feature',
+        {
+          schemaVersion: 'shader-program-template/1',
+          compilerProfile: profile,
+          source: '@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }',
+          imports: {},
+          axes: [],
+        },
+      ],
+    ]),
+  ).unwrap();
+  const registry = new ShaderRegistry({
+    manifestUrl: '/native',
+    programCompiler: { profile, compile },
+    readText: async () =>
+      JSON.stringify({
+        schemaVersion: '7.0.0',
+        library,
+        entries: [],
+        materialShaders: [
+          {
+            identifier: 'game::feature',
+            sourcePath: 'game::feature',
+            paramSchema: '[]',
+            program: 'game::feature',
+            selection: {},
+          },
+        ],
+      }),
+  });
+  (await registry.loadManifest()).unwrap();
+  registry.installMaterialManifestTemplate('game::feature', '').unwrap();
+  const create = vi.fn();
+  await prewarmRequiredMaterialShaders({
+    rhiDevice: {} as RhiDevice,
+    registry,
+    requiredMaterialShaders: ['game::feature'],
+    asyncCreateShaderModule: create,
+    seedShaderModule: vi.fn(),
+  });
+  expect(compile).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  expect(registry.findMaterialArtifact('game::feature').unwrap().source).toContain('fn fs');
+  expect(compile).toHaveBeenCalledTimes(1);
 });

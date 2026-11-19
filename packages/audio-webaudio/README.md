@@ -17,27 +17,33 @@ Audio import produces the source declaration, cook receipt, and Pack v2 clip art
 ### Canvas form (auto-attach)
 
 ```ts
-import { createApp } from '@forgeax/engine-app';
+import { createApp } from '@forgeax/engine-app/browser';
 import { audioPlugin } from '@forgeax/engine-audio';
-import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
+import { createHostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 
-const app = await createApp(canvas, { plugins: [webAudioPlugin(), audioPlugin()] });
+const result = await createApp(canvas, { plugins: [audioPlugin()] }, {
+  createHostAudio: options => createHostAudioConsumer(undefined, options),
+});
+const app = result.unwrap();
 ```
 
 ### Assemble form (host-managed)
 
 ```ts
 import { AUDIO_ENGINE_RESOURCE_KEY, audioPlugin } from '@forgeax/engine-audio';
+import { createApp } from '@forgeax/engine-app';
 import { createWebAudioBackend } from '@forgeax/engine-audio-webaudio';
 
 // Host pre-injects the backend resource, then passes audioPlugin() to wire the tick system.
 world.insertResource(AUDIO_ENGINE_RESOURCE_KEY, createWebAudioBackend());
 
-const app = await createApp({
+const result = await createApp({
+  platform,
   renderer,
   world,
   plugins: [audioPlugin()],
 });
+const app = result.unwrap();
 ```
 
 ## Asset loading
@@ -117,7 +123,9 @@ When an entity is despawned, `audioTickSystem` detects its removal on the next f
 ## Health check
 
 ```ts
-const backend = world.getResource('AudioEngine');
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine/audio';
+
+const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 const { contextState, activeSourceCount } = backend.getState();
 // contextState: 'running' | 'suspended' | 'closed'
 // activeSourceCount: number of currently active AudioBufferSourceNode instances
@@ -262,9 +270,6 @@ The caller resumes/closes borrowed live contexts and controls offline rendering;
 destroy disconnects this engine's graph without closing the borrowed context.
 Default contexts remain lazy, gesture-resumed and engine-owned.
 
-Source references, measurements and reproduction commands:
-[control validation](./bench/README.md).
-
 ## Clip start and seek (G17)
 
 `AudioPlayOptions.fromPosition` defaults to zero. `AudioSource.fromPosition`
@@ -273,7 +278,7 @@ Host does not write playback progress into ECS. For repeated seeks to the same
 position, call the realm-neutral backend explicitly:
 
 ```ts
-const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+const backend = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 backend.seek(entityId, 12.5);
 ```
 
@@ -320,21 +325,25 @@ The ten-second window timeout, corrupt/oversized body, unsupported Range and byt
 
 ## App Host effect assembly
 
-For execution bootstrap apps, `execution.createHostAudio` returns a fresh `HostAudioConsumer` in the Host realm. Main, Engine Worker and shared tiers use it; rebuild calls it again and disposes the old consumer. Configure one `WebAudioEngine` and its shared bus effects inside that factory, then return `createHostAudioConsumer(engine)`. The bootstrap still installs `audioPlugin()` and publishes ordinary POD graph/source controls. Factory/native objects never enter bootstrap data or Worker messages. A thrown factory reports App plugin activation failure and releases the started owners.
+`AppHostAdapter.createHostAudio` returns a fresh `HostAudioConsumer` in the Host realm. Local Apps without a bootstrap, main execution, Engine Worker and shared tiers use it; rebuild calls it again and disposes the old consumer. App passes the resolved device/project audio budget to the factory. Configure one `WebAudioEngine` and its shared bus effects, then return `createHostAudioConsumer(engine, options)`. Gameplay still installs `audioPlugin()` and publishes ordinary POD graph/source controls. Factory/native objects never enter bootstrap data or Worker messages. A thrown factory reports App plugin activation failure and releases the started owners.
 
 ```ts
-execution: {
-  bootstrap: new URL('./game-bootstrap.ts', import.meta.url),
-  createHostAudio() {
+import { createApp } from '@forgeax/engine-app/browser';
+import { createHostAudioConsumer, WebAudioEngine } from '@forgeax/engine-audio-webaudio';
+
+const created = await createApp(canvas, {
+  execution: { bootstrap: new URL('./game-bootstrap.ts', import.meta.url) },
+}, {
+  createHostAudio(options) {
     const engine = new WebAudioEngine();
     engine.configureBuses([{ id: 'master', parent: null }, { id: 'room', parent: 'master' }]).unwrap();
     engine.setBusEffects('room', context => [context.createBiquadFilter()], 0.5).unwrap();
-    return createHostAudioConsumer(engine);
+    return createHostAudioConsumer(engine, options);
   },
-}
+});
 ```
 
-Use this single provider for execution audio; the main bootstrap must not also install another `webAudioPlugin` provider. For a local app without an execution bootstrap, retain `webAudioPlugin(engine)` in its native Cordis plugins.
+Use this single provider for App-managed audio; do not also install another `webAudioPlugin` provider. Manual local Cordis assembly can still own `webAudioPlugin(engine)` when no App audio policy/factory is supplied. The legacy `execution.createHostAudio` field remains available until 0.7; defining both fields is rejected before construction.
 
 ## Native musical transport
 
@@ -371,22 +380,7 @@ queue/node high water; `AudioState.cache` reports retained sources, encoded/deco
 bytes, byte high water and pending entity plays. Native platform working memory is
 outside the explicit cache budget.
 
-For reproducible native PCM, public App tiers and cost measurements, prepare outside
-the physical lease, then execute the prepared native owner:
-
-```sh
-node packages/audio-webaudio/bench/music/prepare.mjs
-FORGEAX_MUSIC_RUN=final node packages/audio-webaudio/bench/music/run.mjs --prepare-only
-FORGEAX_LOCAL_GPU_LEASE=1 FORGEAX_MUSIC_RUN=final \
-  node scripts/ci/local-gpu-lease.mjs --timeout-ms 2700000 -- \
-  node packages/audio-webaudio/bench/music/run.mjs --native-only
-```
-
-The complete native owner uses the maintained bounded lease; its 45-minute
-process ceiling is a cleanup backstop, not a larger stage budget. Preparation
-records the exact source/site workload before admission. The native phase rejects
-changed inputs and saves each completed workload before continuing. Clean cost
-measurements also require the frozen quiet admission.
+Clean cost measurements require the frozen quiet admission.
 Final acceptance additionally runs the full
 Browser/Dawn/Smoke and SDK gates; these probes do not substitute for those gates.
 
@@ -426,7 +420,10 @@ failures. Native node/accounting probes measure Engine-owned connections; they
 cannot certify immediate browser audio-thread garbage collection.
 
 See [regional semantics and saved authoring](../audio/README.md#acoustic-regions),
-fixed source mechanisms and acceptance, and the
-[public Pack/native evidence probe](bench/acoustic/run.mjs).
+and fixed source mechanisms and acceptance.
 
 If the caller closes a supplied native Context, the next state read or admitted playback/listener/acoustic control retires the old source taps, pending playback controls and bus graph through the existing destroy path. Closed listener access returns `undefined`; playback cannot create another Context. A rebuilt App creates its fresh Host owner explicitly. Native regressions cover both an active regional source at close and disposal while real clip decode is pending.
+
+## Owned global playback speed
+
+`acquireAudioPlaybackRate(backend, scale)` returns an owned lease with `active`, `scale`, `set(scale)` and idempotent `release()`. Finite positive scales are accepted. The minimum active contribution wins; releasing the last contribution restores 1. This composes independent slowdown owners without overwriting per-source pitch. Use an unscaled game clock for recovery. The realm-neutral intent reaches the Host, which applies the multiplier to active and future buffered/streaming voices and synchronized music. Music beat and pending fade timing follow the same speed. Release leases before destroying the audio backend.

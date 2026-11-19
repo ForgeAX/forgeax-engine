@@ -1,0 +1,15 @@
+{
+  "referenceCommit": "59772742a40f3c3543c142e620002f8b2a644408",
+  "referenceArchiveSha256": "a9f411094af7afcb1443137ed7296576401226724da54275125ecaf2c42de35b",
+  "engineSourceCommit": "dfd526059af300fb9aecad0e3c1a5998815e02d1",
+  "sourceModules": {
+    "data.js": "8e07e3bed21f2525c4e3671d1c230ceb42c7ac2b7642753b96569e1f7266f242",
+    "world.js": "4d9ee91906e00e7c2463ae4b3a17e4c356ff13a1267779d71e5adfa298622d99",
+    "materials.js": "a96988848f7bf17ae8b1c67dffaa7b57b4472a8bda5a0fdc0174009e3255b276",
+    "collision.js": "21240a47b98470a7d9b145c2d4a362689eba091ef48218771fbb685f1ccdd19a",
+    "main.js": "d960c941a571c14442f3221318b75d61a4665ccf82b7569eebd05ff83f230460",
+    "markers.js": "e36374bd0c9ddb369707cfdc14a281cccd3975ed222aebbc56fff0155c8b520d",
+    "overlay.js": "3f1c1d9298f37f75a701fa586baae5fc312fd16feee42f65f7bf9010c8ee4d4e"
+  },
+  "assetPolicy": "External read-only local snapshot; no content assets copied into this workspace."
+}

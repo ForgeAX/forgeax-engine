@@ -208,11 +208,7 @@ export async function verifyRuntimeMaterial(
   const read = async () => {
     for (let frame = 0; frame < (structural ? 15 : 3); frame++) {
       world.update().unwrap();
-      await drawReadyFrame(publicRenderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(publicRenderer, { source: lease });
     }
     if (device === undefined || target === undefined)
       throw new Error('Missing configured GPU target');

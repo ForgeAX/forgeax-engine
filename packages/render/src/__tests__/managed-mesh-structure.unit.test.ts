@@ -18,7 +18,7 @@ import { RenderScene } from '../scene/render-scene';
 import { observeCandidateReads } from './gpu-driven-candidate-read-observer';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
 
-function setup(count = 10_000) {
+function setup(count = 10000) {
   const a = new MaterialResource({
     passes: [],
     baseColor: vec3.create(1, 0, 0),
@@ -39,7 +39,6 @@ function setup(count = 10_000) {
   });
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const first: RenderableSnapshot = {
-    worldId: 0,
     entityKey: 0,
     assetHandle: 7,
     material: a,
@@ -59,14 +58,13 @@ function setup(count = 10_000) {
   const delta = scene.apply(
     Array.from({ length: count }, (_, entityKey) => ({
       kind: 'update' as const,
-      worldId: 0,
       entityKey,
       snapshot: { ...first, entityKey },
     })),
   );
   const topology = new BatchTopology();
   topology.apply(delta);
-  const initial = new MeshFrame().with(0, 7, mesh, [a]);
+  const initial = new MeshFrame().with(7, mesh, [a]);
   const section = mesh.submeshes[0];
   assert(section);
   const changed: MeshAsset = {
@@ -88,7 +86,7 @@ it('expands changed submeshes, topology and LOD from one fixed root without touc
     membership = f.topology.inspect();
   const old = before.batches.at(0);
   assert(old);
-  const edited = f.initial.with(0, 7, f.changed, [f.b, f.b]);
+  const edited = f.initial.with(7, f.changed, [f.b, f.b]);
   const after = f.topology.query(f.topology.sourcePlan(), edited);
   expect(after.batches).toHaveLength(2);
   for (const batch of after.batches) {
@@ -110,7 +108,6 @@ it('expands changed submeshes, topology and LOD from one fixed root without touc
   assert(changedSection);
   const { indices: _indices, ...nonIndexed } = f.mesh;
   const points = f.initial.with(
-    0,
     7,
     {
       ...nonIndexed,
@@ -164,7 +161,7 @@ it('adds a GPU execution without reading, copying, reallocating or uploading sha
     reads = 0;
     updateGpuView(
       view,
-      f.topology.query(f.topology.sourcePlan(), f.initial.with(0, 7, f.changed, [f.b, f.b])),
+      f.topology.query(f.topology.sourcePlan(), f.initial.with(7, f.changed, [f.b, f.b])),
       gpu,
       planes,
     ).unwrap();
@@ -204,9 +201,9 @@ it('resides switched Mesh defaults once without upserting consumers and retains 
   const before = gpu.captureResources().unwrap();
   const oldAddress = before.indexForResource(f.a, f.a.snapshot);
   assert(oldAddress !== undefined);
-  const oldGeometry = before.indexForGeometry(0, 7, f.initial.get(0, 7));
+  const oldGeometry = before.indexForGeometry(7, f.initial.get(7));
   assert(oldGeometry !== undefined);
-  const edited = f.initial.with(0, 7, f.changed, [f.b, f.b]);
+  const edited = f.initial.with(7, f.changed, [f.b, f.b]);
   const empty = f.scene.apply([]);
   const visited = gpu.inspect().instanceRowsVisited;
   const materials = initial.materials.without(f.a).with(f.b);
@@ -218,8 +215,8 @@ it('resides switched Mesh defaults once without upserting consumers and retains 
   assert(newAddress !== undefined);
   expect(newAddress).not.toBe(oldAddress);
   expect(before.indexForResource(f.a, f.a.snapshot)).toBe(oldAddress);
-  expect(before.indexForGeometry(0, 7, f.initial.get(0, 7))).toBe(oldGeometry);
-  const bounds = edited.with(0, 7, { ...f.changed, aabb: Float32Array.of(-2, -2, -2, 2, 2, 2) }, [
+  expect(before.indexForGeometry(7, f.initial.get(7))).toBe(oldGeometry);
+  const bounds = edited.with(7, { ...f.changed, aabb: Float32Array.of(-2, -2, -2, 2, 2, 2) }, [
     f.b,
     f.b,
   ]);
@@ -234,7 +231,7 @@ it('resides switched Mesh defaults once without upserting consumers and retains 
       ...f.scene.apply(
         f.scene
           .slotsSnapshot()
-          .map((slot) => ({ kind: 'remove' as const, worldId: 0, entityKey: slot.entityKey })),
+          .map((slot) => ({ kind: 'remove' as const, entityKey: slot.entityKey })),
       ),
       materials: new MaterialFrame(undefined),
     })

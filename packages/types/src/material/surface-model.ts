@@ -1,12 +1,37 @@
-import { err, ok, type Result } from '../result.js';
+﻿import { err, ok, type Result } from '../result.js';
 import { WGSL_NUMERIC_LAYOUT } from '../wgsl-numeric-layout.js';
+import {
+  isMaterialDeformationDeclaration,
+  type MaterialDeformationDeclaration,
+} from './deformation.js';
 
 /** Built-in Surface model templates. Content still owns the imported Surface. */
-export const MATERIAL_SURFACE_MODELS = ['standard', 'single-layer-medium'] as const;
+export const MATERIAL_SURFACE_MODELS = [
+  'standard',
+  'single-layer-medium',
+  'single-layer-water',
+] as const;
 export type MaterialSurfaceModel = (typeof MATERIAL_SURFACE_MODELS)[number];
 
 export function isMaterialSurfaceModel(value: unknown): value is MaterialSurfaceModel {
   return (MATERIAL_SURFACE_MODELS as readonly unknown[]).includes(value);
+}
+
+/** Only the medium template publishes the extended v2 optical contract. */
+export function isMaterialSurfaceAbiVersion(
+  model: MaterialSurfaceModel,
+  version: unknown,
+): boolean {
+  return (
+    version === undefined || version === 1 || (version === 2 && model === 'single-layer-medium')
+  );
+}
+
+/** Both optical models consume the renderer-owned paired scene/depth resources. */
+export function isOpticalSurfaceModel(
+  value: unknown,
+): value is 'single-layer-medium' | 'single-layer-water' {
+  return value === 'single-layer-medium' || value === 'single-layer-water';
 }
 
 /** POD scalar/vector shapes accepted by a read-only dynamic record. */
@@ -264,9 +289,12 @@ export function deriveMaterialDynamicInputLayout(
 
 /** Root-owned model selection and imported Surface module. */
 export interface MaterialSurfaceDeclaration {
+  /** Versioned Engine Surface contract; v2 is single-layer-medium optical facts. */
+  readonly abiVersion?: 1 | 2;
   readonly model: MaterialSurfaceModel;
   readonly module: string;
   readonly dynamicInput?: MaterialDynamicInputSchema;
+  readonly deformation?: MaterialDeformationDeclaration;
 }
 
 /** Runtime shape guard used by pack and catalog boundaries before projection. */
@@ -275,11 +303,17 @@ export function isMaterialSurfaceDeclaration(value: unknown): value is MaterialS
   const declaration = value as Record<string, unknown>;
   if (
     !isMaterialSurfaceModel(declaration.model) ||
+    !isMaterialSurfaceAbiVersion(declaration.model, declaration.abiVersion) ||
     typeof declaration.module !== 'string' ||
     declaration.module.length === 0
   ) {
     return false;
   }
+  if (
+    declaration.deformation !== undefined &&
+    !isMaterialDeformationDeclaration(declaration.deformation)
+  )
+    return false;
   if (declaration.dynamicInput === undefined) return true;
   if (declaration.dynamicInput === null || typeof declaration.dynamicInput !== 'object') {
     return false;

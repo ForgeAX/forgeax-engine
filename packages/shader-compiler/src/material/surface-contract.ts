@@ -13,6 +13,10 @@ export const SINGLE_LAYER_MEDIUM_SURFACE_ABI =
   'fn evaluate_surface(input: SingleLayerMediumSurfaceInput) -> SingleLayerMediumSurfaceData' as const;
 export const SINGLE_LAYER_MEDIUM_SURFACE_MODULE =
   'forgeax_material::single_layer_medium_surface_v1' as const;
+export const SINGLE_LAYER_WATER_SURFACE_MODULE =
+  'forgeax_material::single_layer_water_surface_v1' as const;
+export const SINGLE_LAYER_WATER_SURFACE_ABI =
+  'fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurfaceData' as const;
 
 export interface SurfaceContractRequest {
   readonly material: string;
@@ -43,7 +47,11 @@ function abiMismatch(
     source: request.sourcePath,
     slot: SURFACE_SLOT,
     expected:
-      request.model === 'single-layer-medium' ? SINGLE_LAYER_MEDIUM_SURFACE_ABI : SURFACE_ABI,
+      request.model === 'single-layer-water'
+        ? SINGLE_LAYER_WATER_SURFACE_ABI
+        : request.model === 'single-layer-medium'
+          ? SINGLE_LAYER_MEDIUM_SURFACE_ABI
+          : SURFACE_ABI,
     actual,
     action: 'repair-surface-export',
   });
@@ -116,9 +124,11 @@ export function validateSurfaceSource(
     return err(abiMismatch(request, `evaluate_surface declarations: ${exportMatches.length}`));
   }
   const exportPattern =
-    request.model === 'single-layer-medium'
-      ? /fn\s+evaluate_surface\s*\(\s*input\s*:\s*SingleLayerMediumSurfaceInput\s*\)\s*->\s*SingleLayerMediumSurfaceData\s*\{/u
-      : /fn\s+evaluate_surface\s*\(\s*input\s*:\s*SurfaceInput\s*\)\s*->\s*SurfaceData\s*\{/u;
+    request.model === 'single-layer-water'
+      ? /fn\s+evaluate_surface\s*\(\s*input\s*:\s*SingleLayerWaterSurfaceInput\s*\)\s*->\s*SingleLayerWaterSurfaceData\s*\{/u
+      : request.model === 'single-layer-medium'
+        ? /fn\s+evaluate_surface\s*\(\s*input\s*:\s*SingleLayerMediumSurfaceInput\s*\)\s*->\s*SingleLayerMediumSurfaceData\s*\{/u
+        : /fn\s+evaluate_surface\s*\(\s*input\s*:\s*SurfaceInput\s*\)\s*->\s*SurfaceData\s*\{/u;
   if (!exportPattern.test(source)) return err(abiMismatch(request, 'evaluate_surface signature'));
 
   const interfaces = validateForbiddenInterfaces(request, source);

@@ -1,4 +1,7 @@
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
+
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import { beginRenderFrame, createRenderWorld, endRenderFrame, RenderCommit } from '../render-world';
 import {
@@ -45,7 +48,7 @@ function fixture() {
 it('schedules the commit after the fog commit and one abort in cleanup', () => {
   const data = createRenderWorld().scheduleData();
   const commit = data.find((schedule) => schedule.name === 'RenderCommit');
-  expect(commit?.dependencies).toContainEqual([
+  expect(dependencyNames(commit)).toContainEqual([
     'render-fog-commit',
     RENDER_GPU_DRIVEN_COMMIT_SYSTEM,
   ]);
@@ -82,7 +85,9 @@ it.each([
 
 it('without the commit system an accepted scene submission leaves the replacement uncommitted', () => {
   const { world, prepared, frame } = fixture();
-  world.removeSystem(RenderCommit, RENDER_GPU_DRIVEN_COMMIT_SYSTEM).unwrap();
+  world
+    .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-gpu-driven-commit'))
+    .unwrap();
   frame({ accepted: true, scene: true });
   expect(prepared._commitResourceReplacement).not.toHaveBeenCalled();
 });

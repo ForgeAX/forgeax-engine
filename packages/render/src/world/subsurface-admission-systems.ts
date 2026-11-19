@@ -1,5 +1,6 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { err, ok, type Result, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
+import { isMultisampleAntialias } from '../components/camera';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { CubeCaptureFrameInput } from '../record/frame';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -8,6 +9,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import { subsurfaceTopology } from '../subsurface/demand';
 import type { SubsurfaceDemand, SubsurfaceSelection } from '../subsurface/selection';
+import { RenderSubsurfaceAdmissionOrder } from '../system-order';
 import { type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { readViewField, requireViewField } from './view-field';
@@ -86,7 +88,7 @@ export function subsurfaceAdmissionInput(
     projection: projection?.content.subsurface,
     manualDemand: manual?.demand,
     profile: frameState.cameraStandardProfile ?? internals.standardProfile,
-    msaa: camera.antialias === 'msaa',
+    msaa: isMultisampleAntialias(camera.antialias),
     captureOnly,
     device: internals.device,
   };
@@ -182,47 +184,48 @@ export function consumeViewSubsurface(
  * outcome. A rejection is stored as data, never thrown.
  */
 export function registerSubsurfaceAdmissionSystem(world: World): void {
-  world
-    .addSystem(RenderQueue, {
-      commands: 'none',
-      name: RENDER_SUBSURFACE_ADMISSION_SYSTEM,
-      queries: [{ read: [ViewPassPlans], optional: [ViewSubsurfaceAdmission] }],
-      fn: (world, [views]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewSubsurfaceAdmissionState }[] = [];
+  if (world.hasSystem(RenderQueue, RenderSubsurfaceAdmissionOrder)) return;
+  const system = defineSystem({
+    commands: 'none',
+    name: RENDER_SUBSURFACE_ADMISSION_SYSTEM,
+    sets: [RenderSubsurfaceAdmissionOrder],
+    queries: [{ read: [ViewPassPlans], optional: [ViewSubsurfaceAdmission] }],
+    fn: (world, [views]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewSubsurfaceAdmissionState }[] = [];
 
-        views.forEach((row) => {
-          const entity = row.entity;
+      views.forEach((row) => {
+        const entity = row.entity;
 
-          const input = world
-            .resolveUniqueRef<ViewPassPlanQueue>(
-              requireViewField(world, entity, ViewPassPlans, 'state'),
-            )
-            .unwrap().staged;
-          if (input === undefined) return;
-          const stored = readViewField(world, entity, ViewSubsurfaceAdmission, 'state');
-          const previous =
-            stored === undefined
-              ? undefined
-              : world.resolveUniqueRef<ViewSubsurfaceAdmissionState>(stored).unwrap();
-          if (previous?.frame === frame) return;
-          const outcome = admitViewSubsurface(input.subsurface);
-          if (previous === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          previous.frame = frame;
-          previous.outcome = outcome;
-        });
-        // A view's first admission attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewSubsurfaceAdmission,
-              data: { state: world.allocUniqueRef('ViewSubsurfaceAdmission', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const input = world
+          .resolveUniqueRef<ViewPassPlanQueue>(
+            requireViewField(world, entity, ViewPassPlans, 'state'),
+          )
+          .unwrap().staged;
+        if (input === undefined) return;
+        const stored = readViewField(world, entity, ViewSubsurfaceAdmission, 'state');
+        const previous =
+          stored === undefined
+            ? undefined
+            : world.resolveUniqueRef<ViewSubsurfaceAdmissionState>(stored).unwrap();
+        if (previous?.frame === frame) return;
+        const outcome = admitViewSubsurface(input.subsurface);
+        if (previous === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        previous.frame = frame;
+        previous.outcome = outcome;
+      });
+      // A view's first admission attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewSubsurfaceAdmission,
+            data: { state: world.allocUniqueRef('ViewSubsurfaceAdmission', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderQueue, system).unwrap();
 }

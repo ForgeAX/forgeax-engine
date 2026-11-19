@@ -20,6 +20,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { standardPbrSkinMaterial } from './helpers/standard-pbr-skin-subject';
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
   if (result === undefined) throw new Error('required Renderer operation is unavailable');
@@ -66,21 +67,7 @@ export async function verifyStandardDeferredParity(
     emissive: [0.08, 0.02, 0.01],
     emissiveIntensity: 1,
   });
-  const materialAsset = options.skinned
-    ? {
-        ...baseMaterial,
-        passes: (baseMaterial.passes ?? []).map((pass) => ({
-          ...pass,
-          program: {
-            ...pass.program,
-            module:
-              pass.program.module === 'forgeax_material::standard'
-                ? 'forgeax::pbr-skin'
-                : pass.program.module,
-          },
-        })),
-      }
-    : baseMaterial;
+  const materialAsset = options.skinned ? standardPbrSkinMaterial(baseMaterial) : baseMaterial;
   const material = testAssets(world).create(materialAsset).unwrap();
   const receiver = world
     .spawn(
@@ -213,12 +200,7 @@ export async function verifyStandardDeferredParity(
         (await options.recorder.frameBoundary()).unwrap();
       const frame = await drawReadyFrame(
         renderer,
-        {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          ...(direct ? { geometryLane: 'direct' as const } : {}),
-        },
+        { source: lease, ...(direct ? { geometryLane: 'direct' as const } : {}) },
         index === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
       );
       if (capture !== undefined && options.recorder !== undefined) {

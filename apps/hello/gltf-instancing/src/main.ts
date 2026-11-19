@@ -60,11 +60,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
+  const frameRequest = { source: worldAttachment1.value };
 
   const sceneEntry = metaJson.subAssets.find((row) => row.kind === 'scene');
   if (sceneEntry === undefined) throw new Error('gltf-instancing: scene source missing');

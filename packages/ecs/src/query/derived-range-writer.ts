@@ -4,11 +4,11 @@ import * as componentOwner from '../component';
 import { Entity } from '../entity';
 import type { EntityHandle } from '../entity-handle';
 import {
-  DerivedRangeOutOfBoundsError,
+  createDerivedRangeOutOfBoundsError,
+  createSharedKernelFailureError,
   DerivedWriteActiveError,
-  SharedKernelFailureError,
+  worldPoisonedError,
 } from '../errors';
-import { worldPoisonedError } from '../errors/shared-kernel-errors';
 import type { Table } from '../storage/table';
 import type { EcsError, World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -18,7 +18,7 @@ import type { MutableColumnShape, ReadonlyColumnShape } from './query';
 export interface DerivedColumnBinding<R extends Component, C extends Component> {
   /** Physical table identity for package-internal projection consumers. */
   readonly tableId: number;
-  /** Whole entity column; every dense table carries the essential Entity row. */
+  /** Whole entity column; every dense table carries the Entity row. */
   readonly entities: Readonly<Uint32Array>;
   readonly read: ReadonlyColumnShape<R>;
   readonly write: MutableColumnShape<C>;
@@ -36,20 +36,6 @@ export type DerivedRangeKernel<R extends Component, C extends Component> = (
   base: number,
   start: number,
   count: number,
-  context: unknown,
-) => void;
-
-/** Package-internal row probe used when the probe already has the derived value in scratch storage. */
-export type DerivedRangeRowProbe<R extends Component, C extends Component> = (
-  binding: DerivedColumnBinding<R, C>,
-  row: number,
-  context: unknown,
-) => boolean;
-
-/** Package-internal commit for a value prepared by a preceding row probe. */
-export type DerivedRangeRowCommit<R extends Component, C extends Component> = (
-  binding: DerivedColumnBinding<R, C>,
-  row: number,
   context: unknown,
 ) => void;
 
@@ -112,6 +98,11 @@ export interface DerivedRangeWriter<R extends Component, C extends Component> {
   /** Locate a live entity in its bound table and return its physical row. */
   locateEntity(entity: EntityHandle, cursor: DerivedRangeCursor): boolean;
   /**
+   * Binding index of a matched table, or -1. Rosters are current after
+   * reading `bindings` and stay fixed for the duration of `writeRows`.
+   */
+  bindingOfTable(tableId: number): number;
+  /**
    * Publish distinct producer-known (bindingIndex, row) pairs and return the
    * emitted range count. The producer owns uniqueness; no clean mask is read.
    */
@@ -122,21 +113,6 @@ export interface DerivedRangeWriter<R extends Component, C extends Component> {
     start: number,
     count: number,
     kernel: DerivedRangeKernel<R, C>,
-    context: unknown,
-  ): Result<void, EcsError>;
-  /**
-   * Probe and commit rows in one pass. The probe must only inspect the derived
-   * value prepared in reusable scratch storage; the commit copies that value.
-   * The writer publishes only contiguous changed runs and does not allocate in
-   * the hot loop.
-   */
-  probeAndCommitRange(
-    bindingIndex: number,
-    base: number,
-    start: number,
-    count: number,
-    probe: DerivedRangeRowProbe<R, C>,
-    commit: DerivedRangeRowCommit<R, C>,
     context: unknown,
   ): Result<void, EcsError>;
 }
@@ -160,7 +136,7 @@ class ColumnBinding<R extends Component, C extends Component>
   private identities!: Uint32Array;
 
   constructor(
-    private readonly table: Table,
+    readonly table: Table,
     private readonly reads: readonly Component[],
     private readonly writes: readonly Component[],
   ) {
@@ -202,18 +178,14 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
   component: C,
   source: DerivedRangeBindingSource,
 ): DerivedRangeWriter<R, C> {
-  const bindingTables: Table[] = [];
-  const bindings: DerivedColumnBinding<R, C>[] = [];
-  const bindingByTable = new Map<number, number>();
-  const runStartBuffers: Int32Array[] = [];
-  const runCountBuffers: Int32Array[] = [];
+  const owner = world[worldInternal];
+  const bindings: ColumnBinding<R, C>[] = [];
+  const bindingByTableId: number[] = [];
   const changedCounts: number[] = [];
   const touchedBindings: number[] = [];
+  const outputId = componentOwner.componentId(component);
   const assertEpoch = (epoch: number, structure: number): void => {
-    if (
-      world[worldInternal].getMutationEpoch() !== epoch ||
-      world[worldInternal].getStructureEpoch() !== structure
-    )
+    if (owner.getMutationEpoch() !== epoch || owner.getStructureEpoch() !== structure)
       throw new Error('Derived numeric producer mutated the World outside its declared columns');
   };
 
@@ -225,16 +197,68 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
       const table = tables[index];
       if (table === undefined) continue;
       const binding = new ColumnBinding<R, C>(table, source.readComponents, source.writeComponents);
-      bindingTables.push(table);
       bindings.push(binding);
-      bindingByTable.set(table.id, index);
+      bindingByTableId[table.id] = index;
     }
   };
-  const prepareRunBuffers = (index: number, rows: number): void => {
-    const needed = Math.max(1, Math.ceil(rows / 2));
-    if ((runStartBuffers[index]?.length ?? 0) >= needed) return;
-    runStartBuffers[index] = new Int32Array(needed);
-    runCountBuffers[index] = new Int32Array(needed);
+  const beginWrite = (): EcsError | undefined => {
+    if (!owner.beginDerivedWrite()) return new DerivedWriteActiveError();
+    let ready = false;
+    try {
+      const poisoned = worldPoisonedError(world.execution);
+      ready = poisoned === undefined;
+      return poisoned;
+    } finally {
+      if (!ready) owner.endDerivedWrite();
+    }
+  };
+
+  const bindRange = (
+    index: number,
+    base: number,
+    start: number,
+    count: number,
+  ): ColumnBinding<R, C> | EcsError => {
+    syncTables();
+    const binding = bindings[index];
+    return binding !== undefined &&
+      Number.isSafeInteger(index) &&
+      index >= 0 &&
+      Number.isSafeInteger(base) &&
+      base >= 0 &&
+      Number.isSafeInteger(start) &&
+      start >= 0 &&
+      Number.isSafeInteger(count) &&
+      count >= 0 &&
+      base + start + count <= binding.rowCapacity &&
+      binding.table.storage.has(outputId)
+      ? binding
+      : createDerivedRangeOutOfBoundsError(start, count, binding?.rowCapacity ?? 0);
+  };
+
+  const publish = (
+    binding: ColumnBinding<R, C>,
+    start: number,
+    count: number,
+    epoch: number,
+  ): void => owner.publishDerivedRange(binding.table, outputId, start, count, epoch);
+
+  const failPublication = (
+    cause: unknown,
+    previousEpoch: number,
+    epoch: number,
+    phase: '' | ':publish',
+  ) => {
+    if (epoch !== 0 && owner.getMutationEpoch() === epoch)
+      owner.restoreMutationEpoch(previousEpoch);
+    owner.poisonExecution({
+      code: 'shared-kernel-failed',
+      kernelName: `derived-range:${component.name}${phase}`,
+      cause,
+      partialWrite: true,
+      retryable: false,
+    });
+    return err(createSharedKernelFailureError(component.name, world.identity, cause, true));
   };
 
   syncTables();
@@ -247,29 +271,31 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
     locateEntity(entity, cursor) {
       if (world.execution.health === 'poisoned') return false;
       syncTables();
-      const archetype = world[worldInternal].getEntityArchetype(entity);
+      const archetype = owner.getEntityArchetype(entity);
       if (archetype === undefined) return false;
-      const bindingIndex = bindingByTable.get(archetype.tableId);
+      const bindingIndex = bindingByTableId[archetype.table.id];
       if (bindingIndex === undefined) return false;
-      const records = world[worldInternal].getRecords();
+      const records = owner.records;
       const slot = (entity as unknown as number) & 0x00ffffff;
       if (records.archetypeId[slot] !== archetype.id) return false;
-      const row = archetype.rows[records.archetypeRow[slot] as number];
+      const row = records.tableRow[slot] as number;
       const binding = bindings[bindingIndex];
-      if (binding === undefined || row === undefined || row < 0 || row >= binding.rowCapacity) {
+      if (binding === undefined || row < 0 || row >= binding.rowCapacity) {
         return false;
       }
       cursor.bindingIndex = bindingIndex;
       cursor.row = row;
       return true;
     },
+    bindingOfTable(tableId) {
+      return bindingByTableId[tableId] ?? -1;
+    },
     writeRows(rows, produce) {
-      if (!world[worldInternal].beginDerivedWrite()) return err(new DerivedWriteActiveError());
+      const failure = beginWrite();
+      if (failure !== undefined) return err(failure);
       try {
-        const poisoned = worldPoisonedError(world.execution);
-        if (poisoned !== undefined) return err(poisoned);
-        const previousEpoch = world[worldInternal].getMutationEpoch();
-        const structure = world[worldInternal].getStructureEpoch();
+        const previousEpoch = owner.getMutationEpoch();
+        const structure = owner.getStructureEpoch();
         let reservedEpoch = 0;
         try {
           syncTables();
@@ -283,28 +309,28 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
             const bindingIndex = rows[index] ?? -1;
             const row = rows[index + 1] ?? -1;
             const binding = bindings[bindingIndex];
-            const table = bindingTables[bindingIndex];
             if (
-              !Number.isSafeInteger(bindingIndex) ||
-              !Number.isSafeInteger(row) ||
-              bindingIndex < 0 ||
-              row < 0 ||
               binding === undefined ||
-              table === undefined ||
-              row >= binding.rowCapacity ||
-              !table.storage.has(componentOwner.componentId(component))
+              !Number.isSafeInteger(row) ||
+              row < 0 ||
+              row >= binding.rowCapacity
             )
-              throw new DerivedRangeOutOfBoundsError(row, 1, binding?.rowCapacity ?? 0);
+              throw createDerivedRangeOutOfBoundsError(row, 1, binding?.rowCapacity ?? 0);
             const count = changedCounts[bindingIndex] ?? 0;
-            if (count === 0) touchedBindings.push(bindingIndex);
+            if (count === 0) {
+              // Membership is a property of the table, so one check per binding.
+              if (!binding.table.storage.has(outputId))
+                throw createDerivedRangeOutOfBoundsError(row, 1, binding.rowCapacity);
+              touchedBindings.push(bindingIndex);
+            }
             changedCounts[bindingIndex] = count + 1;
           }
-          const epoch = world[worldInternal].nextMutationEpoch();
+          const epoch = owner.nextMutationEpoch();
           reservedEpoch = epoch;
           let ranges = 0;
           for (let index = 0; index < rows.length; ) {
             const bindingIndex = rows[index] as number;
-            const binding = bindings[bindingIndex] as DerivedColumnBinding<R, C>;
+            const binding = bindings[bindingIndex] as ColumnBinding<R, C>;
             if (changedCounts[bindingIndex] === -1) {
               index += 2;
               continue;
@@ -326,197 +352,46 @@ export function createDerivedRangeWriter<R extends Component, C extends Componen
                 index += 2;
               }
             }
-            world[worldInternal].publishDerivedRange(
-              bindingTables[bindingIndex] as Table,
-              componentOwner.componentId(component),
-              start,
-              count,
-              epoch,
-            );
+            publish(binding, start, count, epoch);
             ranges++;
           }
           return ok(ranges);
         } catch (cause) {
-          if (reservedEpoch !== 0 && world[worldInternal].getMutationEpoch() === reservedEpoch)
-            world[worldInternal].restoreMutationEpoch(previousEpoch);
-          world[worldInternal].poisonExecution({
-            code: 'shared-kernel-failed',
-            kernelName: `derived-range:${component.name}:publish`,
-            cause,
-            partialWrite: true,
-            retryable: false,
-          });
-          return err(new SharedKernelFailureError(component.name, world.identity, cause, true));
+          return failPublication(cause, previousEpoch, reservedEpoch, ':publish');
         } finally {
           for (const bindingIndex of touchedBindings) changedCounts[bindingIndex] = 0;
           touchedBindings.length = 0;
         }
       } finally {
-        world[worldInternal].endDerivedWrite();
+        owner.endDerivedWrite();
       }
     },
     writeRange(bindingIndex, base, start, count, kernel, context) {
-      if (!world[worldInternal].beginDerivedWrite()) return err(new DerivedWriteActiveError());
+      const failure = beginWrite();
+      if (failure !== undefined) return err(failure);
       try {
-        const poisoned = worldPoisonedError(world.execution);
-        if (poisoned !== undefined) return err(poisoned);
-        syncTables();
-        const binding = bindings[bindingIndex];
-        const table = bindingTables[bindingIndex];
-        if (
-          binding === undefined ||
-          table === undefined ||
-          !Number.isSafeInteger(bindingIndex) ||
-          !Number.isSafeInteger(base) ||
-          !Number.isSafeInteger(start) ||
-          !Number.isSafeInteger(count) ||
-          bindingIndex < 0 ||
-          base < 0 ||
-          start < 0 ||
-          count < 0 ||
-          base + start + count > binding.rowCapacity ||
-          table.storage.get(componentOwner.componentId(component)) === undefined
-        ) {
-          return err(new DerivedRangeOutOfBoundsError(start, count, binding?.rowCapacity ?? 0));
-        }
+        const binding = bindRange(bindingIndex, base, start, count);
+        if (!(binding instanceof ColumnBinding)) return err(binding);
         if (count === 0) return ok(undefined);
 
-        const structure = world[worldInternal].getStructureEpoch();
-        const previousEpoch = world[worldInternal].getMutationEpoch();
+        const structure = owner.getStructureEpoch();
+        const previousEpoch = owner.getMutationEpoch();
         let epoch: number;
         try {
-          epoch = world[worldInternal].nextMutationEpoch();
+          epoch = owner.nextMutationEpoch();
         } catch (cause) {
           return err(cause as EcsError);
         }
         try {
           assertSynchronous(kernel(binding, base, start, count, context));
           assertEpoch(epoch, structure);
-          world[worldInternal].publishDerivedRange(
-            table,
-            componentOwner.componentId(component),
-            base + start,
-            count,
-            epoch,
-          );
+          publish(binding, base + start, count, epoch);
           return ok(undefined);
         } catch (cause) {
-          if (world[worldInternal].getMutationEpoch() === epoch)
-            world[worldInternal].restoreMutationEpoch(previousEpoch);
-          world[worldInternal].poisonExecution({
-            code: 'shared-kernel-failed',
-            kernelName: `derived-range:${component.name}`,
-            cause,
-            partialWrite: true,
-            retryable: false,
-          });
-          return err(new SharedKernelFailureError(component.name, world.identity, cause, true));
+          return failPublication(cause, previousEpoch, epoch, '');
         }
       } finally {
-        world[worldInternal].endDerivedWrite();
-      }
-    },
-    probeAndCommitRange(bindingIndex, base, start, count, probe, commit, context) {
-      if (!world[worldInternal].beginDerivedWrite()) return err(new DerivedWriteActiveError());
-      try {
-        const poisoned = worldPoisonedError(world.execution);
-        if (poisoned !== undefined) return err(poisoned);
-        syncTables();
-        const binding = bindings[bindingIndex];
-        const table = bindingTables[bindingIndex];
-        if (
-          binding === undefined ||
-          table === undefined ||
-          !Number.isSafeInteger(bindingIndex) ||
-          !Number.isSafeInteger(base) ||
-          !Number.isSafeInteger(start) ||
-          !Number.isSafeInteger(count) ||
-          bindingIndex < 0 ||
-          base < 0 ||
-          start < 0 ||
-          count < 0 ||
-          base + start + count > binding.rowCapacity ||
-          table.storage.get(componentOwner.componentId(component)) === undefined
-        ) {
-          return err(new DerivedRangeOutOfBoundsError(start, count, binding?.rowCapacity ?? 0));
-        }
-        if (count === 0) return ok(undefined);
-
-        prepareRunBuffers(bindingIndex, count);
-        const runStarts = runStartBuffers[bindingIndex] as Int32Array;
-        const runCounts = runCountBuffers[bindingIndex] as Int32Array;
-        const structure = world[worldInternal].getStructureEpoch();
-        const previousEpoch = world[worldInternal].getMutationEpoch();
-        let runCount = 0;
-        let epoch = 0;
-        let epochReserved = false;
-        let runStart = -1;
-        try {
-          for (let offset = 0; offset < count; offset += 1) {
-            const row = base + start + offset;
-            const changed = probe(binding, row, context);
-            if (typeof changed !== 'boolean')
-              throw new Error('Derived row probe must return a synchronous boolean');
-            assertEpoch(epochReserved ? epoch : previousEpoch, structure);
-            if (changed) {
-              if (!epochReserved) {
-                try {
-                  epoch = world[worldInternal].nextMutationEpoch();
-                  epochReserved = true;
-                } catch (cause) {
-                  // Nothing has been committed yet. Keep the World healthy and
-                  // preserve the source error so the caller can retry unchanged.
-                  return err(cause as EcsError);
-                }
-              }
-              if (runStart < 0) runStart = row;
-              assertSynchronous(commit(binding, row, context));
-            } else if (runStart >= 0) {
-              runStarts[runCount] = runStart;
-              runCounts[runCount] = row - runStart;
-              runCount += 1;
-              runStart = -1;
-            }
-          }
-          if (runStart >= 0) {
-            runStarts[runCount] = runStart;
-            runCounts[runCount] = base + start + count - runStart;
-            runCount += 1;
-          }
-
-          assertEpoch(epochReserved ? epoch : previousEpoch, structure);
-          // Every changed run in this call shares the epoch reserved immediately
-          // before the first commit. Publication remains deferred until the
-          // complete probe/commit pass has succeeded.
-          if (runCount > 0) {
-            const componentIdentifier = componentOwner.componentId(component);
-            for (let index = 0; index < runCount; index += 1) {
-              const runStartValue = runStarts[index] ?? 0;
-              const runLength = runCounts[index] ?? 0;
-              world[worldInternal].publishDerivedRange(
-                table,
-                componentIdentifier,
-                runStartValue,
-                runLength,
-                epoch,
-              );
-            }
-          }
-          return ok(undefined);
-        } catch (cause) {
-          if (epochReserved && world[worldInternal].getMutationEpoch() === epoch)
-            world[worldInternal].restoreMutationEpoch(previousEpoch);
-          world[worldInternal].poisonExecution({
-            code: 'shared-kernel-failed',
-            kernelName: `derived-range:${component.name}:probe`,
-            cause,
-            partialWrite: true,
-            retryable: false,
-          });
-          return err(new SharedKernelFailureError(component.name, world.identity, cause, true));
-        }
-      } finally {
-        world[worldInternal].endDerivedWrite();
+        owner.endDerivedWrite();
       }
     },
   };

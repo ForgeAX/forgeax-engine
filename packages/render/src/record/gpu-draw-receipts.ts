@@ -11,6 +11,8 @@ export interface RenderableDrawReceipt {
   readonly material?: MaterialSnapshot;
   readonly passIndex?: number;
   readonly unsupportedLineage?: boolean;
+  /** Exact Baked source closure selected by this actual Water geometry draw. */
+  readonly waterBaked?: import('../world/view-draw-receipt').WaterBakedDrawReceiptFact;
   readonly lane: 'cpu' | 'gpu';
   readonly ready: boolean;
 }

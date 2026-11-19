@@ -3,7 +3,8 @@ import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { PointLight, PointLightShadow } from '../components';
-import { extractFrames } from '../render-system-extract-tail';
+import { EnvironmentFrameGate } from '../extract/environment-frame-gate';
+import { extractSource } from '../render-system-extract-tail';
 
 it('reuses packed point shadow matrices until position, near or far change', () => {
   const world = new World();
@@ -16,7 +17,11 @@ it('reuses packed point shadow matrices until position, near or far change', () 
     .unwrap();
   propagateTransforms(world).unwrap();
   const assets = new AssetRegistry({} as never);
-  const pull = () => extractFrames([world], 0, assets).lights.pointShadow?.[0]?.shadowMatrices;
+  const environmentGate = new EnvironmentFrameGate();
+  environmentGate.assetsChanged = false;
+  const pull = () =>
+    extractSource(world, assets, undefined, { environmentGate }).lights.pointShadow?.[0]
+      ?.shadowMatrices;
   const a = pull();
   const b = pull();
   expect(a).toBeDefined();

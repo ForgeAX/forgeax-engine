@@ -343,12 +343,7 @@ export async function verifyStandardGBufferReplay(
         propagateTransforms(world).unwrap();
         return drawReadyFrame(
           renderer,
-          {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-            ...(mode === 'direct' ? { geometryLane: 'direct' as const } : {}),
-          },
+          { source: lease, ...(mode === 'direct' ? { geometryLane: 'direct' as const } : {}) },
           observe ? ['linear-hdr'] : undefined,
         );
       };
@@ -489,27 +484,31 @@ export async function verifyStandardGBufferReplay(
         expect(lightingPixels.filter((_, i) => i % 4 === 3)).toEqual(
           geometryPixels.filter((_, i) => i % 4 === 3),
         );
-        const packed: number[] = [];
-        let dielectricWord: number | undefined;
-        const packedAttachments = geometry.attachments.colorViewHandleIds.slice(1, 5);
-        const packedReads = stageReads.packedReads;
-        for (const [index, resourceId] of packedAttachments.entries()) {
-          const result = packedReads[index];
-          assert(result, 'missing packed GBuffer readback');
-          const read = result.unwrap();
-          const channels = index === 1 ? 2 : 1;
-          expect(read.format).toBe(channels === 2 ? 'rg32uint' : 'r32uint');
-          expect(read.bytes.byteLength).toBe(64 * 64 * 4 * channels);
-          const words = new Uint32Array(
-            read.bytes.buffer,
-            read.bytes.byteOffset,
-            read.bytes.byteLength / 4,
-          );
-          const offset = (32 * 64 + 32) * channels;
-          packed.push(words[offset] ?? NaN);
-          if (channels === 2) dielectricWord = words[offset + 1];
-          await save(`${mode}-${resourceId.replace(':', '-')}.${read.format}`, read.bytes);
-        }
+        const readPackedMaterial = async () => {
+          const packed: number[] = [];
+          let normalScalars: number | undefined;
+          const packedAttachments = geometry.attachments.colorViewHandleIds.slice(1, 5);
+          const packedReads = stageReads.packedReads;
+          for (const [index, resourceId] of packedAttachments.entries()) {
+            const result = packedReads[index];
+            assert(result, 'missing packed GBuffer readback');
+            const read = result.unwrap();
+            const channels = index === 0 ? 2 : 1;
+            expect(read.format).toBe(channels === 2 ? 'rg32uint' : 'r32uint');
+            expect(read.bytes.byteLength).toBe(64 * 64 * 4 * channels);
+            const words = new Uint32Array(
+              read.bytes.buffer,
+              read.bytes.byteOffset,
+              read.bytes.byteLength / 4,
+            );
+            const offset = (32 * 64 + 32) * channels;
+            packed.push(words[offset] ?? NaN);
+            if (channels === 2) normalScalars = words[offset + 1];
+            await save(`${mode}-${resourceId.replace(':', '-')}.${read.format}`, read.bytes);
+          }
+          return { packed, normalScalars };
+        };
+        const { packed, normalScalars } = await readPackedMaterial();
         const [normalWord, f0Word, colorWord, contextWord] = packed;
         if (
           normalWord === undefined ||
@@ -518,16 +517,15 @@ export async function verifyStandardGBufferReplay(
           contextWord === undefined
         )
           throw new Error('missing packed GBuffer attachment');
-        expect((normalWord >>> 24) / 255).toBeCloseTo(0.13, 2);
-        // This nonmetallic material has identical mixed and dielectric F0;
-        // both occlusion and dielectric F90 are one.
-        expect(dielectricWord).toBe(f0Word);
+        expect(normalWord & 0x40000000).not.toBe(0);
+        expect(normalScalars).toBeDefined();
+        expect(((normalScalars ?? 0) & 255) / 255).toBeCloseTo(0.13, 2);
+        // Independent AO and dielectric F90 are both one.
+        expect(((normalScalars ?? 0) >>> 8) & 255).toBe(255);
         expect(f0Word >>> 24).toBe(255);
         expect(colorWord >>> 24).toBe(0);
         expect(contextWord & 0xffffff).toBeGreaterThan(0);
-        const octX = (normalWord & 4095) * (2 / 4095) - 1;
-        const octY = ((normalWord >>> 12) & 4095) * (2 / 4095) - 1;
-        const normal = [octX, octY, 1 - Math.abs(octX) - Math.abs(octY)];
+        const normal = [0, 10, 20].map((shift) => ((normalWord >>> shift) & 1023) * (2 / 1023) - 1);
         const length = Math.hypot(...normal);
         const expectedNormal = [Math.SQRT1_2, 0, Math.SQRT1_2];
         const cosine = normal.reduce(

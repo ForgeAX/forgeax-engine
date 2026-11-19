@@ -3,10 +3,11 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import {
   type MaterialAsset,
   type SamplerAsset,
-  type TextureAsset,
+  type SampledTextureAsset as TextureAsset,
   validateTextureLayout,
 } from '@forgeax/engine-types';
 import { ownedMaterialValues } from './material-resource';
+import { materialSourceScope } from './material-source';
 import {
   type MeshMaterialBindingPreparationFailure,
   type MeshMaterialBindingResidency,
@@ -24,12 +25,12 @@ import type { MaterialSnapshot } from './render-system-extract';
  * result.
  */
 export function materialTextureHandlesForResidency(
-  candidates: Iterable<AssetHandle<'texture'> | undefined>,
-): readonly AssetHandle<'texture'>[] {
+  candidates: Iterable<AssetHandle<'texture' | 'gpu-texture'> | undefined>,
+): readonly AssetHandle<'texture' | 'gpu-texture'>[] {
   let occupied = false;
   let firstKey = 0;
-  let firstValue = 0 as AssetHandle<'texture'>;
-  let overflow: Map<number, AssetHandle<'texture'>> | undefined;
+  let firstValue = 0 as AssetHandle<'texture' | 'gpu-texture'>;
+  let overflow: Map<number, AssetHandle<'texture' | 'gpu-texture'>> | undefined;
   for (const handle of candidates) {
     if (handle === undefined || Number(handle) === 0) continue;
     const key = Number(handle);
@@ -48,12 +49,12 @@ export function materialTextureHandlesForResidency(
   return overflow === undefined ? (occupied ? [firstValue] : []) : [...overflow.values()];
 }
 
-const EMPTY_TEXTURE_HANDLES: readonly AssetHandle<'texture'>[] = Object.freeze([]);
+const EMPTY_TEXTURE_HANDLES: readonly AssetHandle<'texture' | 'gpu-texture'>[] = Object.freeze([]);
 const EMPTY_SAMPLER_HANDLES: readonly AssetHandle<'sampler'>[] = Object.freeze([]);
 
 export function materialTextureHandles(
   material: MaterialSnapshot,
-): readonly AssetHandle<'texture'>[] {
+): readonly AssetHandle<'texture' | 'gpu-texture'>[] {
   const textureHandles = material.textureHandles;
   if (textureHandles === undefined || textureHandles.size === 0) {
     const baseColor = material.baseColorTexture;
@@ -110,7 +111,9 @@ const NO_BLUE_FORMATS: ReadonlySet<GPUTextureFormat> = new Set<GPUTextureFormat>
   'eac-rg11unorm',
 ]);
 
-function objectSpaceNormalHandle(material: MaterialSnapshot): AssetHandle<'texture'> | undefined {
+function objectSpaceNormalHandle(
+  material: MaterialSnapshot,
+): AssetHandle<'texture' | 'gpu-texture'> | undefined {
   const mask = material.standardTextureMask ?? 0;
   if (!standardMaskHasBit(mask, STANDARD_OBJECT_SPACE_NORMAL_BIT)) return undefined;
   return material.textureHandles?.get('normalTexture') ?? material.normalTexture;
@@ -170,6 +173,7 @@ export function observeMaterialResidency(
   includeDetails = true,
   textureLayouts?: WeakMap<TextureAsset, ReturnType<typeof validateTextureLayout>>,
 ): MeshMaterialBindingResidency {
+  if (world !== undefined) world = materialSourceScope(world, material.sourceAssets);
   let textures: Array<{ readonly handle: number; readonly mipLevelCount: number }> | undefined;
   let samplers: Array<{ readonly handle: number; readonly resident: boolean }> | undefined;
   let pending = false;
@@ -190,96 +194,101 @@ export function observeMaterialResidency(
       }
     }
 
-    const textureHandles = materialTextureHandles(material);
-    for (let index = 0; index < textureHandles.length; index += 1) {
-      const handle = textureHandles[index] as AssetHandle<'texture'>;
-      const pod = world.resolveAsset<TextureAsset>(handle);
-      if (!pod.ok) {
-        const error = pod.error;
-        failure ??= preparationFailureFrom(error);
-        continue;
-      }
-      const prepared = internals.gpuStore.ensureResident(handle, pod.value, world);
-      if (!prepared.ok) {
-        if (prepared.error.code === 'asset-not-ready') {
-          pending = true;
+    const observeMaterialTextureResidency = (world: RenderResourceScope) => {
+      const textureHandles = materialTextureHandles(material);
+      for (let index = 0; index < textureHandles.length; index += 1) {
+        const handle = textureHandles[index] as AssetHandle<'texture' | 'gpu-texture'>;
+        const pod = world.resolveAsset<TextureAsset>(handle);
+        if (!pod.ok) {
+          const error = pod.error;
+          failure ??= preparationFailureFrom(error);
           continue;
         }
-        const error = prepared.error;
-        failure ??= preparationFailureFrom(error);
-        continue;
-      }
-      // Live author data remains observable after GPU admission. Validate it
-      // without rebuilding mip records; allocation details belong to the store.
-      let valid = textureLayouts?.get(pod.value);
-      if (valid === undefined) {
-        valid = validateTextureLayout({
-          shape: pod.value.shape,
-          format: pod.value.format,
-          mips: pod.value.mips,
-        });
-        textureLayouts?.set(pod.value, valid);
-      }
-      if (!valid.ok) {
-        const error = valid.error;
-        failure ??= preparationFailureFrom(error);
-        continue;
-      }
-      const format = prepared.value.receipt.format;
-      if (
-        NO_BLUE_FORMATS.has(format) &&
-        Number(objectSpaceNormalHandle(material)) === Number(handle)
-      ) {
-        failure ??= {
-          code: 'asset-invalid-value',
-          expected: `an object-space normal texture with a blue channel; ${format} carries no Z`,
-          hint: "use normalMapSpace 'tangent' for RG normal maps (Z is reconstructed), or supply an RGB/RGBA object-space normal texture",
-          detail: { field: 'normalMapSpace', value: format, reason: 'normal-texture-lacks-blue' },
-        };
-        continue;
-      }
-      resident = true;
-      if (includeDetails) {
-        textures ??= [];
-        textures.push({
-          handle: Number(handle),
-          mipLevelCount: prepared.value.receipt.mipLevelCount,
-        });
-      }
-    }
-
-    const samplerHandles = materialSamplerHandles(material);
-    for (let index = 0; index < samplerHandles.length; index += 1) {
-      const handle = samplerHandles[index] as AssetHandle<'sampler'>;
-      const pod = world.resolveAsset<SamplerAsset>(handle);
-      if (!pod.ok) {
-        const error = pod.error;
-        failure ??= preparationFailureFrom(error);
-        const samplerId = Number(handle);
-        if (includeDetails) {
-          samplers ??= [];
-          samplers.push({ handle: samplerId, resident: false });
+        const prepared = internals.gpuStore.ensureResident(handle, pod.value, world);
+        if (!prepared.ok) {
+          if (prepared.error.code === 'asset-not-ready') {
+            pending = true;
+            continue;
+          }
+          const error = prepared.error;
+          failure ??= preparationFailureFrom(error);
+          continue;
         }
-        continue;
-      }
-      const prepared = internals.gpuStore.ensureSamplerResident(handle, pod.value, world);
-      if (!prepared.ok) {
-        const error = prepared.error;
-        failure ??= preparationFailureFrom(error);
-        const samplerId = Number(handle);
-        if (includeDetails) {
-          samplers ??= [];
-          samplers.push({ handle: samplerId, resident: false });
+        // Live author data remains observable after GPU admission. Validate it
+        // without rebuilding mip records; allocation details belong to the store.
+        let valid = textureLayouts?.get(pod.value);
+        if (valid === undefined) {
+          valid = validateTextureLayout({
+            shape: pod.value.shape,
+            format: pod.value.format,
+            mips: pod.value.mips,
+          });
+          textureLayouts?.set(pod.value, valid);
         }
-      } else {
+        if (!valid.ok) {
+          const error = valid.error;
+          failure ??= preparationFailureFrom(error);
+          continue;
+        }
+        const format = prepared.value.receipt.format;
+        if (
+          NO_BLUE_FORMATS.has(format) &&
+          Number(objectSpaceNormalHandle(material)) === Number(handle)
+        ) {
+          failure ??= {
+            code: 'asset-invalid-value',
+            expected: `an object-space normal texture with a blue channel; ${format} carries no Z`,
+            hint: "use normalMapSpace 'tangent' for RG normal maps (Z is reconstructed), or supply an RGB/RGBA object-space normal texture",
+            detail: { field: 'normalMapSpace', value: format, reason: 'normal-texture-lacks-blue' },
+          };
+          continue;
+        }
         resident = true;
-        const samplerId = Number(handle);
         if (includeDetails) {
-          samplers ??= [];
-          samplers.push({ handle: samplerId, resident: true });
+          textures ??= [];
+          textures.push({
+            handle: Number(handle),
+            mipLevelCount: prepared.value.receipt.mipLevelCount,
+          });
         }
       }
-    }
+    };
+    observeMaterialTextureResidency(world);
+    const observeMaterialSamplerResidency = (world: RenderResourceScope) => {
+      const samplerHandles = materialSamplerHandles(material);
+      for (let index = 0; index < samplerHandles.length; index += 1) {
+        const handle = samplerHandles[index] as AssetHandle<'sampler'>;
+        const pod = world.resolveAsset<SamplerAsset>(handle);
+        if (!pod.ok) {
+          const error = pod.error;
+          failure ??= preparationFailureFrom(error);
+          const samplerId = Number(handle);
+          if (includeDetails) {
+            samplers ??= [];
+            samplers.push({ handle: samplerId, resident: false });
+          }
+          continue;
+        }
+        const prepared = internals.gpuStore.ensureSamplerResident(handle, pod.value, world);
+        if (!prepared.ok) {
+          const error = prepared.error;
+          failure ??= preparationFailureFrom(error);
+          const samplerId = Number(handle);
+          if (includeDetails) {
+            samplers ??= [];
+            samplers.push({ handle: samplerId, resident: false });
+          }
+        } else {
+          resident = true;
+          const samplerId = Number(handle);
+          if (includeDetails) {
+            samplers ??= [];
+            samplers.push({ handle: samplerId, resident: true });
+          }
+        }
+      }
+    };
+    observeMaterialSamplerResidency(world);
     // Video views are supplied by the renderer-owned dynamic store at record
     // time. A previously uploaded view is a producer-owned last-known-good
     // fact; absence means the visible workset still needs a decodable frame.
@@ -338,10 +347,12 @@ export function createMaterialResidencyObserver(
   // of value clones. Pure layout validation belongs to that payload once;
   // GPU admission and mutable producer readiness remain per observation.
   const textureLayouts = new WeakMap<TextureAsset, ReturnType<typeof validateTextureLayout>>();
-  const scopes = new Map<
-    RenderResourceScope | undefined,
-    Map<MaterialSnapshot | number, MeshMaterialBindingResidency>
-  >();
+  let scope:
+    | {
+        source: RenderResourceScope | undefined;
+        materials: Map<MaterialSnapshot | number, MeshMaterialBindingResidency>;
+      }
+    | undefined;
   let latestWorld: RenderResourceScope | undefined;
   let latestMaterial: MaterialSnapshot | undefined;
   let latestOwned = false;
@@ -380,8 +391,10 @@ export function createMaterialResidencyObserver(
     // Value-only clones share the same MaterialAsset readiness. Texture,
     // sampler and video overrides retain their exact snapshot observation.
     const key = materialResidencyKey(material);
-    let materials = scopes.get(world);
-    const cached = materials?.get(key);
+    if (scope?.source !== world || scope === undefined)
+      scope = { source: world, materials: new Map() };
+    const materials = scope.materials;
+    const cached = materials.get(key);
     if (cached !== undefined) return retainLatest(world, material, cached, fixedValues);
     const observation = observeMaterialResidency(
       world,
@@ -390,10 +403,6 @@ export function createMaterialResidencyObserver(
       includeDetails,
       textureLayouts,
     );
-    if (materials === undefined) {
-      materials = new Map();
-      scopes.set(world, materials);
-    }
     materials.set(key, observation);
     return retainLatest(world, material, observation, fixedValues);
   };

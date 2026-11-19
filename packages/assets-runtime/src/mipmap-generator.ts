@@ -17,7 +17,18 @@ import {
   type Texture,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { mipDimension, numMipLevels } from '@forgeax/engine-types';
+import {
+  type GpuTextureMipFilter,
+  mipDimension,
+  numMipLevels,
+  textureFormatBlock,
+} from '@forgeax/engine-types';
+
+import {
+  encodeNormalRoughnessMipmaps,
+  type NormalRoughnessMipmapPipelines,
+  prepareNormalRoughnessMipmapPipelines,
+} from './normal-roughness-mips.js';
 
 /** Inject the backend's async shader compiler without importing its implementation. */
 export type MipmapShaderModuleFactory = (
@@ -34,6 +45,8 @@ interface MipmapPipelineCache {
   readonly module: ShaderModule;
   readonly layout: BindGroupLayout;
   readonly pipelines: Map<GPUTextureFormat, RenderPipeline>;
+  normalRoughness?: NormalRoughnessMipmapPipelines;
+  normalRoughnessPreparation?: Promise<Result<NormalRoughnessMipmapPipelines, RhiError>>;
 }
 
 // Module-private cache (greggman 36-44 SSOT). WeakMap so that destroying a
@@ -91,7 +104,7 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
  */
 export function mipmapCacheSize(device: RhiDevice): number {
   const cache = deviceCache.get(device);
-  return cache?.pipelines.size ?? 0;
+  return (cache?.pipelines.size ?? 0) + (cache?.normalRoughness === undefined ? 0 : 2);
 }
 
 /**
@@ -106,9 +119,36 @@ export async function getOrCreateMipmapPipeline(
   device: RhiDevice,
   format: GPUTextureFormat,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
+  filter: GpuTextureMipFilter = 'box',
 ): Promise<Result<RenderPipeline, RhiError>> {
   const cache = await ensureDeviceCache(device, asyncCreateShaderModule);
   if (!cache.ok) return cache;
+  if (filter === 'normal-roughness') {
+    if (format !== 'rgba8unorm')
+      return err(
+        new RhiError({
+          code: 'webgpu-runtime-error',
+          expected: 'linear RGBA8 normal-roughness mips',
+          hint: 'declare a generated rgba8unorm normal output',
+        }),
+      );
+    const state = cache.value;
+    if (state.normalRoughness !== undefined) return ok(state.normalRoughness.base);
+    state.normalRoughnessPreparation ??= prepareNormalRoughnessMipmapPipelines(
+      device,
+      state.layout,
+      asyncCreateShaderModule,
+    )
+      .then((result) => {
+        if (result.ok) state.normalRoughness = result.value;
+        return result;
+      })
+      .finally(() => {
+        delete state.normalRoughnessPreparation;
+      });
+    const prepared = await state.normalRoughnessPreparation;
+    return prepared.ok ? ok(prepared.value.base) : prepared;
+  }
   const existing = cache.value.pipelines.get(format);
   if (existing !== undefined) {
     return ok(existing);
@@ -205,12 +245,41 @@ export interface MipmapTextureDescriptor {
   /** Layers of a 2D array or cube texture; ordinary 2D textures default to one. */
   readonly arrayLayerCount?: number;
   readonly levels?: number;
+  readonly filter?: GpuTextureMipFilter;
 }
 
-// Each layer renders from mip i-1 into a shared transient scratch level, then
-// copies into that layer's mip i. No draw samples its own render attachment:
-// some WebGL2 implementations reject even disjoint mips as a feedback loop.
-// One scratch chain serves every layer and retains the target's sRGB format.
+/** Peak setup storage, shared across array layers and released at the submit fence. */
+export function mipmapTemporaryByteLength(
+  descriptor: MipmapTextureDescriptor,
+  backend: RhiDevice['caps']['backendKind'],
+): number {
+  const levels = descriptor.levels ?? numMipLevels(descriptor);
+  if (levels <= 1) return 0;
+  const physical = backend === 'wgpu-webgl2';
+  const pixels = (level: number) =>
+    mipDimension(descriptor.width, level) * mipDimension(descriptor.height, level);
+  if (descriptor.filter === 'normal-roughness') {
+    let bytes = 0;
+    for (let level = 1; level < levels; level++) bytes += pixels(level) * 8;
+    return (
+      bytes +
+      (physical ? pixels(1) * 4 + ((descriptor.arrayLayerCount ?? 1) > 1 ? pixels(0) * 4 : 0) : 0)
+    );
+  }
+  if (!physical) return 0;
+  const block = textureFormatBlock(descriptor.format);
+  let bytes = 0;
+  for (let level = 0; level < levels; level++)
+    bytes +=
+      Math.ceil(mipDimension(descriptor.width, level) / block.blockWidth) *
+      Math.ceil(mipDimension(descriptor.height, level) / block.blockHeight) *
+      block.bytesPerBlock;
+  return bytes;
+}
+
+// Native subresource views read mip i-1 and write disjoint mip i of the
+// same array layer directly. WebGL2 retains its separate physical chain:
+// mip/layer views alias texture state and cannot share this direct path.
 function encodeMipmapBlit(
   device: RhiDevice,
   encoder: RhiCommandEncoder,
@@ -231,59 +300,25 @@ function encodeMipmapBlit(
     );
   if (device.caps.backendKind === 'wgpu-webgl2')
     return encodePhysicalMipmapChain(device, encoder, texture, descriptor, levels, pipeline, cache);
-  const scratchRes = device.createTexture({
-    label: 'mipmap-scratch',
-    size: [mipDimension(descriptor.width, 1), mipDimension(descriptor.height, 1)],
-    mipLevelCount: levels - 1,
-    format: descriptor.format,
-    usage: MIPMAP_SCRATCH_USAGE,
-  });
-  if (!scratchRes.ok) return scratchRes;
-  const scratch = scratchRes.value;
-  const transient = [scratch];
-  const fail = (error: RhiError): Result<never, RhiError> => {
-    for (const resource of transient) device.destroyTexture(resource);
-    return err(error);
-  };
-  // WebGL2 cannot reinterpret an array layer as a sampler2D texture. Keep
-  // the blit shader's 2D input physical: copy one layer/mip into a reusable
-  // 2D staging chain before sampling it. This also serves cube faces.
-  let source = texture;
-  if (arrayLayerCount > 1) {
-    const staging = device.createTexture({
-      label: 'mipmap-array-source',
-      size: [descriptor.width, descriptor.height],
-      mipLevelCount: levels - 1,
-      format: descriptor.format,
-      usage: 0x02 | 0x04,
-    });
-    if (!staging.ok) return fail(staging.error);
-    source = staging.value;
-    transient.push(source);
-  }
   for (let layer = 0; layer < arrayLayerCount; layer++) {
     for (let i = 1; i < levels; i++) {
-      if (source !== texture)
-        encoder.copyTextureToTexture(
-          { texture, mipLevel: i - 1, origin: { x: 0, y: 0, z: layer } },
-          { texture: source, mipLevel: i - 1 },
-          [mipDimension(descriptor.width, i - 1), mipDimension(descriptor.height, i - 1), 1],
-        );
-      const srcViewRes = device.createTextureView(source, {
+      const srcViewRes = device.createTextureView(texture, {
         baseMipLevel: i - 1,
         mipLevelCount: 1,
-        baseArrayLayer: 0,
+        baseArrayLayer: layer,
         arrayLayerCount: 1,
         dimension: '2d',
       });
-      if (!srcViewRes.ok) return fail(srcViewRes.error);
+      if (!srcViewRes.ok) return srcViewRes;
 
-      const dstViewRes = device.createTextureView(scratch, {
-        baseMipLevel: i - 1,
+      const dstViewRes = device.createTextureView(texture, {
+        baseMipLevel: i,
         mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
         dimension: '2d',
       });
-      if (!dstViewRes.ok) return fail(dstViewRes.error);
+      if (!dstViewRes.ok) return dstViewRes;
 
       const bindGroupRes = device.createBindGroup({
         label: `mipmap-bg-${i}`,
@@ -293,7 +328,7 @@ function encodeMipmapBlit(
           { binding: 1, resource: { kind: 'textureView', value: srcViewRes.value } },
         ],
       });
-      if (!bindGroupRes.ok) return fail(bindGroupRes.error);
+      if (!bindGroupRes.ok) return bindGroupRes;
 
       const pass = encoder.beginRenderPass({
         label: `mipmap-pass-${i}`,
@@ -310,15 +345,10 @@ function encodeMipmapBlit(
       pass.setBindGroup(0, bindGroupRes.value);
       pass.draw(3, 1, 0, 0);
       pass.end();
-      encoder.copyTextureToTexture(
-        { texture: scratch, mipLevel: i - 1 },
-        { texture, mipLevel: i, origin: { x: 0, y: 0, z: layer } },
-        [mipDimension(descriptor.width, i), mipDimension(descriptor.height, i), 1],
-      );
     }
   }
 
-  return ok(transient);
+  return ok([]);
 }
 
 /** GLES mip views share mutable base/max levels with the physical texture.
@@ -412,13 +442,13 @@ function encodePhysicalMipmapChain(
 export interface MipmapEncoderWork {
   readonly finish: () => Result<CommandBuffer | undefined, RhiError>;
   /**
-   * Close unsubmitted encoder work and release its transient scratch texture.
+   * Close unsubmitted encoder work and release its backend-owned temporary textures.
    * Call once after the finished buffer is submitted or the transaction aborts.
    */
   readonly discard: () => void;
 }
 
-/** Record into the submission owner's encoder; release scratch after submission or abort. */
+/** Record into the submission owner's encoder; release backend temporaries after submission or abort. */
 export function encodeMipmaps(
   device: RhiDevice,
   encoder: RhiCommandEncoder,
@@ -428,7 +458,16 @@ export function encodeMipmaps(
   const levels = descriptor.levels ?? numMipLevels(descriptor);
   if (levels <= 1) return ok(() => {});
   const cache = deviceCache.get(device);
-  const pipeline = cache?.pipelines.get(descriptor.format);
+  const normal = descriptor.filter === 'normal-roughness';
+  const pipeline = normal ? cache?.normalRoughness?.base : cache?.pipelines.get(descriptor.format);
+  if (normal && descriptor.format !== 'rgba8unorm')
+    return err(
+      new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'linear RGBA8 normal-roughness mips',
+        hint: 'use rgba8unorm for normal-roughness output',
+      }),
+    );
   if (cache === undefined || pipeline === undefined)
     return err(
       new RhiError({
@@ -437,7 +476,18 @@ export function encodeMipmaps(
         hint: 'prewarm the texture format before recording its mip chain',
       }),
     );
-  const encoded = encodeMipmapBlit(device, encoder, texture, descriptor, levels, pipeline, cache);
+  const encoded =
+    normal && cache.normalRoughness !== undefined
+      ? encodeNormalRoughnessMipmaps(
+          device,
+          encoder,
+          texture,
+          descriptor,
+          levels,
+          cache,
+          cache.normalRoughness,
+        )
+      : encodeMipmapBlit(device, encoder, texture, descriptor, levels, pipeline, cache);
   if (!encoded.ok) return encoded;
   let released = false;
   return ok(() => {
@@ -535,6 +585,7 @@ export async function generateMipmaps(
     device,
     descriptor.format,
     asyncCreateShaderModule,
+    descriptor.filter,
   );
   if (!pipelineRes.ok) return pipelineRes;
   return blitMipmapsSync(device, texture, descriptor);

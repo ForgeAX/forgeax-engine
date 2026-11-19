@@ -1,8 +1,10 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { type RendererOperationCause, RendererOperationError } from '../errors/render';
 import type { GpuTimingCapture } from '../record/gpu-timing';
 import type { RenderSystemInternals } from '../record/render-context';
+import { RenderEncoderOpenOrder } from '../system-order';
 import { RenderRecord } from './render-world';
 
 /*
@@ -34,7 +36,7 @@ export interface RenderRecordInputState {
 }
 
 /** World resource key of the submission's {@link RenderRecordInputState}. */
-export const RenderRecordInput = Object.freeze({ name: 'RenderRecordInput' });
+export const RenderRecordInput = defineResource<RenderRecordInputState>('RenderRecordInput');
 
 /**
  * The submission's command encoder. `open` is the one encoder every recording
@@ -47,15 +49,13 @@ export type RenderFrameEncoderState =
   | { readonly kind: 'failed'; readonly error: RendererOperationError<'device-operation-failed'> };
 
 /** World resource key of the submission's {@link RenderFrameEncoderState}. */
-export const RenderFrameEncoder = Object.freeze({ name: 'RenderFrameEncoder' });
+export const RenderFrameEncoder = defineResource<RenderFrameEncoderState>('RenderFrameEncoder');
 
 const CLOSED: RenderFrameEncoderState = Object.freeze({ kind: 'closed' });
 
 /** The submission's encoder state; `closed` before any submission opened one. */
 export function renderFrameEncoder(world: World): RenderFrameEncoderState {
-  return world.hasResource(RenderFrameEncoder)
-    ? world.getResource<RenderFrameEncoderState>(RenderFrameEncoder)
-    : CLOSED;
+  return world.hasResource(RenderFrameEncoder) ? world.getResource(RenderFrameEncoder) : CLOSED;
 }
 
 /**
@@ -114,25 +114,25 @@ function openFrameEncoder(input: RenderRecordInputState): RenderFrameEncoderStat
 }
 
 export function registerRecordSystems(world: World): void {
-  world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_ENCODER_OPEN_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        const input = world.hasResource(RenderRecordInput)
-          ? world.getResource<RenderRecordInputState>(RenderRecordInput)
-          : undefined;
-        world.insertResource<RenderFrameEncoderState>(
-          RenderFrameEncoder,
-          input === undefined
-            ? {
-                kind: 'failed',
-                error: encoderFailure(new Error('RenderRecord ran without a RenderRecordInput')),
-              }
-            : openFrameEncoder(input),
-        );
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderEncoderOpenOrder],
+    commands: 'none',
+    name: RENDER_ENCODER_OPEN_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      const input = world.hasResource(RenderRecordInput)
+        ? world.getResource(RenderRecordInput)
+        : undefined;
+      world.insertResource<RenderFrameEncoderState>(
+        RenderFrameEncoder,
+        input === undefined
+          ? {
+              kind: 'failed',
+              error: encoderFailure(new Error('RenderRecord ran without a RenderRecordInput')),
+            }
+          : openFrameEncoder(input),
+      );
+    },
+  });
+  world.addSystem(RenderRecord, systemToken1).unwrap();
 }

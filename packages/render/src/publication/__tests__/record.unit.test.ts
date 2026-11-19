@@ -133,7 +133,17 @@ describe('render publication record protocol', () => {
     const s = session(1);
     try {
       const candidate = s.publisher.prepare(0).unwrap();
-      const packet = candidate.packet;
+      const packet = {
+        ...candidate.packet,
+        time: {
+          delta: 0,
+          elapsed: 3,
+          maxDeltaSeconds: 0.1,
+          unscaledDelta: 0.025,
+          unscaledElapsed: 12,
+          scale: 0,
+        },
+      };
       const message = encodeRenderPublication(packet);
       expect(header(message)[0]).toBe(RENDER_PUBLICATION_PROTOCOL);
       const decoded = decodeRenderPublication(message, undefined).unwrap();
@@ -213,6 +223,8 @@ describe('render publication record protocol', () => {
       expect(reason({ ...good, record: new ArrayBuffer(64) })).toBe('publication record');
       const wrongProtocol = good.record.slice(0);
       new Float64Array(wrongProtocol)[0] = 3;
+      expect(reason({ ...good, record: wrongProtocol })).toBe('publication protocol');
+      new Float64Array(wrongProtocol)[0] = 5;
       expect(reason({ ...good, record: wrongProtocol })).toBe('publication protocol');
       const truncated = good.record.slice(0, HEADER_BYTES);
       new Float64Array(truncated)[11] = 1000;

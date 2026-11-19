@@ -7,15 +7,20 @@ import {
 } from '../gpu-driven/production-raster-classes';
 
 it.each([
-  false,
-  true,
-])('preserves lean=%s while the simple scene-index receiver builds', (leanLighting) => {
+  { simpleReceiver: true, leanLighting: false },
+  { simpleReceiver: true, leanLighting: true },
+  { simpleReceiver: false, leanLighting: true },
+])('preserves receiver=$simpleReceiver and lean=$leanLighting while the native PSO builds', ({
+  simpleReceiver,
+  leanLighting,
+}) => {
   const general = { label: 'general' };
   const simple = { label: 'simple' };
   let simpleReady = false;
   const pipeline = vi.fn((...args: unknown[]) => {
     const artifact = args[7] as MaterialShaderArtifact;
-    if (!artifact.variantSet?.includes('DIRECTIONAL_SHADOW_SIMPLE=true')) return ok(general);
+    if (artifact.variantSet === 'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false')
+      return ok(general);
     return simpleReady
       ? ok(simple)
       : err(new RhiError({ code: 'rhi-not-available', expected: 'built', hint: 'retry' }));
@@ -26,6 +31,7 @@ it.each([
     prepared: { mesh: { layoutProjection: {} }, batch: { key: { topology: 'triangle-list' } } },
     artifact: {
       material: 'forgeax::default-standard-pbr',
+      program: { entryPoints: [] },
       variantSet: 'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false',
     },
     deformation: 'rigid',
@@ -41,7 +47,7 @@ it.each([
     standardTextureMask: undefined,
     preparationFactory: undefined,
     visibleSurface: false,
-    directionalShadowSimple: true,
+    directionalShadowSimple: simpleReceiver,
     leanLighting,
   } as unknown as RasterPipelineShape;
   const { pipelineFor } = createRasterPipelines(shape);
@@ -52,7 +58,7 @@ it.each([
     (call) => (call[7] as MaterialShaderArtifact).variantSet,
   );
   expect(selected).toEqual([
-    `DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=${leanLighting}`,
+    `DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}+LEAN_LIGHTING=${leanLighting}`,
     'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false',
   ]);
   // The fallback is not retained; the simple receiver takes over once built.

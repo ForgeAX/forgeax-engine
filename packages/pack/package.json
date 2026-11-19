@@ -150,7 +150,7 @@
     "@forgeax/engine-types": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "acorn": "8.16.0",
-    "fast-glob": "^3.3.3",
+    "glob": "^14.0.2",
     "typescript": "6.0.3",
     "upng-js": "^2.1.0",
     "uuidv7": "^1.2.1",

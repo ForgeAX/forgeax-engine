@@ -126,7 +126,13 @@ it.each([
                 const buffer =
                   resourceBuffers.get(`${groupIndex}:${entry.binding}`) ??
                   makeBuffer(
-                    32768,
+                    Math.max(
+                      32768,
+                      entry.buffer.minBindingSize ?? 0,
+                      compiled.reflection.boundGlobals.find(
+                        (value) => value.group === groupIndex && value.binding === entry.binding,
+                      )?.typeDescriptor?.byteSize ?? 0,
+                    ),
                     GPUBufferUsage.UNIFORM | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
                   );
                 resourceBuffers.set(`${groupIndex}:${entry.binding}`, buffer);
@@ -338,7 +344,7 @@ it.each([
             ? ['rgba32float']
             : [
                 'rgba16float',
-                'r32uint',
+                'rg32uint',
                 'r32uint',
                 'r32uint',
                 'rg32uint',
@@ -394,7 +400,7 @@ it.each([
           raster.setVertexBuffer(0, vertices);
           raster.draw(3, 2);
           raster.end();
-          const target = targets[fragment === 'fs_gbuffer' ? 5 : 0];
+          const target = targets[fragment === 'fs_gbuffer' ? 1 : 0];
           if (!target) throw new Error('Missing readback target');
           const bytesPerRow = fragment === 'fs_gbuffer' ? width * 8 : width * 16;
           const readback = makeBuffer(
@@ -419,7 +425,7 @@ it.each([
           results[`${fragment}/${swap}`] = pair;
           if (fragment === 'fs_gbuffer')
             expect
-              .soft(pair.map((pixel) => ((pixel[0] ?? 0) >>> 23) & 1))
+              .soft(pair.map((pixel) => ((pixel[0] ?? 0) >>> 31) & 1))
               .toEqual(swap ? [0, 1] : [1, 0]);
           if (fragment === 'fs_temporal') {
             for (const [index, motion] of [0.1, -0.15].entries()) {
@@ -506,6 +512,8 @@ it.each([
         readback.unmap();
         results.shadowDepth = [samples as number[]];
       }
+      const validationError = await device.popErrorScope();
+      expect(validationError, validationError?.message).toBeNull();
       const original = results['fs_opaque/false'];
       const swapped = results['fs_opaque/true'];
       if (!original || !swapped) throw new Error('Missing Forward readback');
@@ -517,7 +525,6 @@ it.each([
       expect
         .soft(Math.abs((original[0]?.[0] ?? NaN) - (original[1]?.[0] ?? NaN)))
         .toBeGreaterThan(0.001);
-      expect(await device.popErrorScope()).toBeNull();
       process.stdout.write(`${JSON.stringify({ geometry, transmission, results })}\n`);
     } finally {
       for (const buffer of buffers) buffer.destroy();

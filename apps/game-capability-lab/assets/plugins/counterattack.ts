@@ -1,3 +1,6 @@
+import { GamePlayerMovementOrder, GameCounterattackOrder } from "../../src/system-order";
+import { PhysicsCollisionSync } from "@forgeax/engine-physics-rapier3d";
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Disabled,
   FixedTime,
@@ -246,10 +249,10 @@ export function createCounterattack(
 
   const installSystem = (ctx: CounterattackSystemContext): void => {
     consequenceContext = ctx;
-    world.addSystem(FixedUpdate, {
+    const systemToken1 = defineSystem({ sets: [GameCounterattackOrder],
       name: 'game-counterattack',
       runIf: inState(GameState, 'Play'),
-      after: ['physicsCollisionSync', 'game-player-movement'],
+      after: [PhysicsCollisionSync, GamePlayerMovementOrder],
       queries: [],
       fn: () => {
         // Counterattack pressure is proven against FixedTime. A long host
@@ -301,7 +304,8 @@ export function createCounterattack(
           admitDamage({ hazardEntity: attacker, feedbackEntity: attacker });
         }
       },
-    }).unwrap();
+    });
+world.addSystem(FixedUpdate, systemToken1).unwrap();
   };
 
   reset();

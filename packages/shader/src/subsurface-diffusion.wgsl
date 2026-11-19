@@ -1,5 +1,5 @@
 #define_import_path forgeax_standard::subsurface_diffusion
-#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, STANDARD_GBUFFER_VALID_BIT}
 
 @group(0) @binding(0) var diffuse : texture_2d<f32>;
 @group(0) @binding(1) var profiles : texture_2d<u32>;
@@ -34,9 +34,9 @@ fn accepted(centre : u32, neighbour : u32) -> bool {
   let sampleProfile = profileRows[neighbour];
   let distance = distances[centre];
   let sampleDistance = distances[neighbour];
-  if (sampleDistance > 0.0 && sampleProfile >> 24u > 0u && (sampleProfile & 0xffffffu) == (profile & 0xffffffu)) {
-    let normal = decodeStandardNormalRoughness(normalRows[centre]).xyz;
-    let sampleNormal = decodeStandardNormalRoughness(normalRows[neighbour]).xyz;
+  if ((normalRows[centre] & normalRows[neighbour] & STANDARD_GBUFFER_VALID_BIT) != 0u && sampleDistance > 0.0 && sampleProfile >> 24u > 0u && (sampleProfile & 0xffffffu) == (profile & 0xffffffu)) {
+    let normal = decodeStandardGBufferNormal(vec2<u32>(normalRows[centre], 0u)).xyz;
+    let sampleNormal = decodeStandardGBufferNormal(vec2<u32>(normalRows[neighbour], 0u)).xyz;
     if (dot(normal, sampleNormal) >= 0.8 && abs(sampleDistance - distance) <= max(0.001, 0.01 * distance)) {
       return true;
     }

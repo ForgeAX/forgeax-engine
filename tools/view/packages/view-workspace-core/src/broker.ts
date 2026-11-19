@@ -34,7 +34,7 @@ import {
 export type WorkspaceAuthorization = (input: { clientId: string; operation: string; request: Pick<WorkspaceRequest, 'operation' | 'args' | 'clientId'> & Partial<WorkspaceRequest>; caller?: ToolCallerIdentity; signal?: AbortSignal }) => boolean | Promise<boolean>;
 export type WorkspaceCallContext = { signal?: AbortSignal; caller?: ToolCallerIdentity; clientId?: string; token?: string; requestId?: string };
 export type PackSourceListing = { sources: readonly { sourcePath: string; revision?: string; packageId?: string; outputs: readonly { guid: string; kind: string; sourceKey?: string }[]; diagnostic?: { code: string; hint: string } }[]; hasMore: boolean };
-export type BrokerOptions = { engine?: EngineWorkspaceRuntime; projectIntent?: () => string | undefined; engineForCaller?: (caller?: ToolCallerIdentity, targetId?: string) => EngineWorkspaceRuntime | undefined; toolApi?: ToolApi; display?: (caller?: ToolCallerIdentity) => { state?: string; occupancy?: Pick<WorkspaceTab, 'run' | 'target' | 'targetId'> | null } | undefined; accessToken?: string; authorize?: WorkspaceAuthorization; packSources?: (projectRoot: string, assetRoots: readonly string[]) => Promise<PackSourceListing> };
+export type BrokerOptions = { engine?: EngineWorkspaceRuntime; engineForCaller?: (caller?: ToolCallerIdentity, targetId?: string) => EngineWorkspaceRuntime | undefined; projectDocumentOwner?: () => string | undefined; toolApi?: ToolApi; display?: (caller?: ToolCallerIdentity) => { state?: string; occupancy?: Pick<WorkspaceTab, 'run' | 'target' | 'targetId'> | null } | undefined; accessToken?: string; authorize?: WorkspaceAuthorization; packSources?: (projectRoot: string, assetRoots: readonly string[]) => Promise<PackSourceListing> };
 type Args = Record<string, unknown>;
 type WorkspaceDomainResult = Partial<EngineWorkspaceCameraResult> & { assets?: WorkspaceAsset[]; inspection?: WorkspaceInspection; preview?: WorkspacePreview; asset?: WorkspaceAsset; target?: WorkspacePreview['target']; entityId?: string | null };
 
@@ -47,7 +47,9 @@ const UI_OPERATIONS = Object.freeze<Record<string, (workspace: ViewWorkspaceBrok
     sourcePath: requireWorkspaceString(args.sourcePath, 'sourcePath'),
     revision: requireWorkspaceString(args.revision, 'revision'),
     ...(args.packageId === undefined ? {} : { packageId: requireWorkspaceString(args.packageId, 'packageId') }),
-    ...(args.connectionId === undefined ? {} : { connectionId: requireWorkspaceString(args.connectionId, 'connectionId') }),
+    ...(context.caller?.kind === 'frontend'
+      ? { connectionId: workspace.resolvePageConnection(context.caller, args.connectionId) }
+      : args.connectionId === undefined ? {} : { connectionId: requireWorkspaceString(args.connectionId, 'connectionId') }),
   }, context.signal),
   'target.select': (workspace, args) => workspace.selectTarget(args),
   'tabs.get': (workspace) => workspace.snapshot(),
@@ -63,6 +65,7 @@ const PAGE_OPERATIONS = new Set([
 
 /** View bindings and display snapshots. Engine owns all project and target resources. */
 export class ViewWorkspaceBroker {
+  private presentationTransfer: Promise<unknown> = Promise.resolve();
   private readonly resourceFlights = createRequestSharing();
   private resourceLifetime = new AbortController();
   private resourceBrowserGeneration = -1;
@@ -71,7 +74,7 @@ export class ViewWorkspaceBroker {
   private readonly closingPreviews = new Set<string>();
   declare readonly engine: EngineWorkspaceRuntime | undefined;
   declare readonly engineForCaller: BrokerOptions['engineForCaller'];
-  declare readonly projectIntent: BrokerOptions['projectIntent'];
+  declare readonly projectDocumentOwner: BrokerOptions['projectDocumentOwner'];
   declare readonly caller: ToolCallerIdentity | undefined;
   declare readonly toolApi: ToolApi | undefined;
   declare readonly display: NonNullable<BrokerOptions['display']>;
@@ -100,14 +103,15 @@ export class ViewWorkspaceBroker {
   declare thumbnailEpoch: number;
   declare disposing: boolean;
   declare publishFingerprint: string;
-  declare readonly pageSessions: Map<string, { broker: ViewWorkspaceBroker; unsubscribe: () => void }>;
+  declare readonly pageSessions: Map<string, { broker: ViewWorkspaceBroker; unsubscribe: () => void; unsubscribeProjectStatus: () => void }>;
+  declare projectDocumentOwnerId: string | undefined;
   declare transport?: HostTransportServer;
   declare presentation?: ReturnType<typeof createPresentationRelay>;
   declare readonly pendingReveals: Map<string, { connectionId: string; projectId: string; sourcePath: string; revision: string; settle: (value: unknown) => void }>;
-  constructor({ engine, engineForCaller, projectIntent, toolApi, display = () => undefined, accessToken = randomUUID(), authorize, packSources }: BrokerOptions = {}, caller?: ToolCallerIdentity) {
+  constructor({ engine, engineForCaller, projectDocumentOwner, toolApi, display = () => undefined, accessToken = randomUUID(), authorize, packSources }: BrokerOptions = {}, caller?: ToolCallerIdentity) {
     this.engine = engine;
     this.engineForCaller = engineForCaller;
-    this.projectIntent = projectIntent;
+    this.projectDocumentOwner = projectDocumentOwner;
     this.caller = caller;
     this.toolApi = toolApi;
     this.display = display;
@@ -136,11 +140,16 @@ export class ViewWorkspaceBroker {
     this.disposing = false;
     this.publishFingerprint = '';
     this.pageSessions = new Map();
+    this.projectDocumentOwnerId = undefined;
     this.pendingReveals = new Map();
   }
 
   get project() { return this.engine?.project?.project ?? null; }
-  get projectTarget() { return this.engine?.project?.target ?? null; }
+  get projectStatus() { return this.engine?.projectStatus; }
+  get projectTarget() {
+    const status = this.projectStatus;
+    return status?.phase === 'running' ? status.target : null;
+  }
   get preview() { this.syncBindings(); return this.previewProjection; }
 
   previews() { return this.engine?.previews ?? (this.engine?.preview ? [this.engine.preview] : []); }
@@ -185,7 +194,8 @@ export class ViewWorkspaceBroker {
     return this.snapshot();
   }
   syncBindings() {
-    const browserGeneration = this.engine?.project?.browserGeneration ?? 0;
+    const status = this.projectStatus;
+    const browserGeneration = status && status.phase !== 'preparing' ? status.browserGeneration ?? 0 : 0;
     const replaced = this.projectOwner !== this.engine?.project || this.resourceBrowserGeneration !== browserGeneration;
     if (replaced || this.resourceCatalogEpoch !== this.catalogEpoch) {
       if (replaced && this.resourceBrowserGeneration !== -1) { this.resourceOpens.clear(); this.openRequest = null; }
@@ -238,8 +248,9 @@ export class ViewWorkspaceBroker {
     return {
       revision: this.revision,
       project: project ? { id: project.id, root: project.root, name: project.name } : null,
-      projectPhase: this.engine?.project?.phase ?? null,
-      browserGeneration: this.engine?.project?.browserGeneration ?? null,
+      projectPhase: this.projectStatus?.phase ?? null,
+      browserGeneration: this.projectStatus && this.projectStatus.phase !== 'preparing'
+        ? this.projectStatus.browserGeneration ?? null : null,
       targets: targets.map(({ target, role }) => ({
         targetId: target.targetId, ...(target.generation === undefined ? {} : { generation: target.generation }), role,
       })),
@@ -260,6 +271,9 @@ export class ViewWorkspaceBroker {
   snapshot(): WorkspaceState {
     this.syncBindings();
     const display = this.display?.();
+    const status = this.projectStatus;
+    const ownerConnectionId = this.projectDocumentOwner?.();
+    const mayPresentProjectDocument = ownerConnectionId === undefined || this.caller?.connectionId === ownerConnectionId;
     return serializeWorkspaceState({
       revision: this.revision, selectedTabId: this.selectedTabId,
       tabs: [
@@ -271,9 +285,13 @@ export class ViewWorkspaceBroker {
           ...(this.previewProjection?.target ?? this.projectTarget ? { target: this.previewProjection?.target ?? this.projectTarget } : {}) },
       ],
       project: this.project, projectTarget: this.projectTarget,
-      ...(!this.project && this.projectIntent?.() ? { projectIntent: { root: this.projectIntent()! } } : {}),
-      ...(this.engine?.project?.phase === undefined ? {} : { projectPhase: this.engine.project.phase }),
-      ...(this.engine?.project?.browserGeneration === undefined ? {} : { browserGeneration: this.engine.project.browserGeneration }),
+      projectDocumentPresentation: mayPresentProjectDocument ? 'presenter' : 'observer',
+      projectStatus: status ?? null,
+      projectDocument: status && status.phase !== 'preparing' ? status.document ?? null : null,
+      ...(status === undefined ? {} : { projectPhase: status.phase }),
+      ...(status === undefined || status.phase === 'preparing' ||
+        status.phase === 'failed' && status.browserGeneration === undefined
+        ? {} : { browserGeneration: status.browserGeneration }),
       assets: this.assets,
       ...(this.catalogEpoch < 0 ? {} : { catalogEpoch: this.catalogEpoch }),
       ...(this.thumbnailEpoch < 0 ? {} : { thumbnailEpoch: this.thumbnailEpoch }),
@@ -294,9 +312,8 @@ export class ViewWorkspaceBroker {
     const current = this.snapshot();
     const fingerprint = workspaceUiFingerprint(current);
     if (fingerprint === this.publishFingerprint) return;
-    this.revision += 1;
-    const state = this.snapshot();
-    this.publishFingerprint = workspaceUiFingerprint(state);
+    const state = { ...current, revision: ++this.revision };
+    this.publishFingerprint = fingerprint;
     for (const listener of this.listeners) { try { listener(state); } catch { /* UI observers do not own operations. */ } }
   }
   subscribe(listener: (state: WorkspaceState) => void) {
@@ -322,6 +339,27 @@ export class ViewWorkspaceBroker {
   }
   async call(rawRequest: unknown, { signal, caller }: WorkspaceCallContext = {}): Promise<unknown> {
     const request = assertWorkspaceRequest(rawRequest);
+    if (request.operation === 'project.present' && this.transport) {
+      await this.authorizeRequest(request, caller);
+      const connectionId = this.resolvePageConnection(caller, request.args.connectionId);
+      const transfer = this.presentationTransfer.catch(() => {}).then(async () => {
+        const previous = this.projectDocumentOwnerId;
+        if (previous !== connectionId && previous && this.pageSessions.has(previous)) {
+          if (!this.presentation) throw workspaceError('view-presentation-unavailable', 'a live presentation provider', 'Reconnect View.');
+          try { await this.presentation.call('presentation.document.release', { connectionId: previous }, undefined, signal); }
+          catch (error) { if (this.pageSessions.has(previous)) throw error; }
+        }
+        if (signal?.aborted) throw signal.reason;
+        const page = this.pageSessions.get(connectionId);
+        if (!page || page.broker.caller?.sourceId !== 'view-frontend')
+          throw workspaceError('view-page-gone', 'a live top-level View document', 'Reconnect View.');
+        this.projectDocumentOwnerId = connectionId;
+        for (const candidate of new Set([...this.pageSessions.values()].map(item => item.broker))) candidate.changed();
+        return page.broker.snapshot();
+      });
+      this.presentationTransfer = transfer;
+      return transfer;
+    }
     if (isPresentationOperation(request.operation)) {
       await this.authorizeRequest(request, caller);
       if (!this.presentation) throw workspaceError('view-presentation-unavailable', 'an installed presentation transport', 'Connect the View frontend.');
@@ -383,8 +421,8 @@ export class ViewWorkspaceBroker {
   }
   private openResourceAsset(asset: WorkspaceAsset, args: Args, context: WorkspaceCallContext) {
     const project = this.engine?.project;
-    const projectTarget = project?.target;
-    if (!project || args.projectId !== project.project.id || this.workspaceTargetLost || project.failure || project.phase === 'failed')
+    const projectTarget = this.projectTarget ?? undefined;
+    if (!project || args.projectId !== project.project.id || this.workspaceTargetLost || project.status.phase !== 'running')
       return Promise.reject(workspaceError('view-workspace-project-stale', 'The current project', 'Refresh tabs.get.'));
     if (args.targetId !== undefined && args.targetId !== projectTarget?.targetId)
       return Promise.reject(workspaceError('view-workspace-target-mismatch', 'The current project target', 'Refresh tabs.get.'));
@@ -468,7 +506,7 @@ export class ViewWorkspaceBroker {
   private async invokeDomain(operation: string, args: Args = {}, { signal, caller, clientId = 'view-owner', token, requestId }: WorkspaceCallContext = {}, publishOpen = true): Promise<unknown> {
     const requestedAsset = operation === 'asset.open' ? this.assets?.find(asset => asset.guid === args.guid) : undefined;
     if (operation === 'asset.open' && (args.detailsOnly === true || requestedAsset?.previewable === false
-      || (requestedAsset && !['scene', 'mesh', 'material', 'texture', 'equirect'].includes(requestedAsset.kind)))) {
+      || (requestedAsset && !isSceneWorkspaceAsset(requestedAsset) && !isTypePreviewAsset(requestedAsset)))) {
       const result = await this.invoke('asset.inspect', args, { signal, caller, clientId, token, requestId });
       this.recordOpenRequest({ requestId, result: result as WorkspaceDomainResult, guid: args.guid, detailsOnly: true });
       this.changed();
@@ -486,9 +524,10 @@ export class ViewWorkspaceBroker {
       delete input.targetId;
       delete input.targetGeneration;
     }
+    const catalogue = ['project.list', 'project.register', 'project.browse'].includes(operation);
     const id = inspector ? operation : `${presentation ? 'view' : 'engine'}.${operation}`;
     const sourceId = inspector || presentation ? 'view-backend' : ENGINE_SOURCE;
-    if (this.caller && !inspector && !presentation && !history && !operation.startsWith('run.') && input.targetId === undefined && this.projectTarget)
+    if (this.caller && !catalogue && !inspector && !presentation && !history && !operation.startsWith('run.') && input.targetId === undefined && this.projectTarget)
       input.targetId = this.projectTarget.targetId;
     const owner = this.toolApi?.describe(id, sourceId).find(record => record.callable)?.owner;
     if (!owner) throw workspaceError('view-workspace-operation-unavailable', `Engine operation ${operation} to be installed`, 'Enable the Engine capability; UI plugins do not provide domain APIs.', { operation });
@@ -530,6 +569,7 @@ export class ViewWorkspaceBroker {
     }
     signal?.throwIfAborted();
     const result = terminal.result;
+    if (catalogue) return cloneWorkspaceValue(result);
     // Draft deltas have their own event stream; dragging must not copy the Catalog or workspace.
     if (operation === 'asset.source.draft') {
       const reply = result as unknown as PackDraftReply;
@@ -753,11 +793,19 @@ export class ViewWorkspaceBroker {
       pending.settle({ ok: false, code: 'view-page-gone', requestId });
     }
     const page = this.pageSessions.get(connectionId);
+    const relinquishesDocument = this.projectDocumentOwnerId === connectionId;
     if (page) {
       this.pageSessions.delete(connectionId);
       page.unsubscribe();
+      page.unsubscribeProjectStatus();
       if (![...this.pageSessions.values()].some(other => other.broker === page.broker))
         await page.broker.dispose();
+    }
+    if (relinquishesDocument && this.projectDocumentOwnerId === connectionId) {
+      this.projectDocumentOwnerId = this.pageConnections().find(([, candidate]) =>
+        candidate.broker.caller?.sourceId === 'view-frontend')?.[0];
+      for (const broker of new Set([...this.pageSessions.values()].map(candidate => candidate.broker)))
+        broker.changed();
     }
     for (const preview of [this.engine?.preview, this.engine?.play]) {
     if (!preview) continue;
@@ -779,40 +827,48 @@ export class ViewWorkspaceBroker {
   /** One accepted View frontend owns one presentation projection and event stream. */
   attachPageSession(caller: HostCallerIdentity, transport: HostTransportServer) {
     const engine = this.engineForCaller ? this.engineForCaller(caller) : this.engine;
-    const projectTarget = engine?.project?.target;
-    const projectCaller = projectTarget && caller.sourceId === `forgeax-workspace:${projectTarget.sessionId}:${projectTarget.targetId}`;
+    const projectStatus = engine?.project?.status;
+    const projectTargetId = projectStatus?.phase === 'starting' || projectStatus?.phase === 'running' || projectStatus?.phase === 'failed'
+      ? projectStatus.document?.targetId ?? projectStatus.target?.targetId
+      : undefined;
+    const projectCaller = projectStatus && projectTargetId && caller.sourceId === `forgeax-workspace:${projectStatus.sessionId}:${projectTargetId}`;
     if (caller.kind !== 'frontend' || (caller.sourceId !== 'view-frontend' && !projectCaller) || this.pageSessions.has(caller.connectionId)) return;
+    if (caller.sourceId === 'view-frontend' && this.projectDocumentOwnerId === undefined)
+      this.projectDocumentOwnerId = caller.connectionId;
     // An embedded canvas is the admitted target of its retained entry Shell,
     // not a second View page. Engine's resolver supplies the exact shared owner.
     const shell = this.engineForCaller && projectCaller
-      ? this.pageConnections().find(([, page]) => page.broker.caller?.sourceId === 'view-frontend'
+      ? this.pageConnections().find(([connectionId, page]) => connectionId === this.projectDocumentOwnerId && page.broker.caller?.sourceId === 'view-frontend'
         && page.broker.engine === engine)?.[1]
       : undefined;
     const broker = shell?.broker ?? new ViewWorkspaceBroker({
-      engine, toolApi: this.toolApi, display: () => this.display(caller),
-      ...(this.engineForCaller && caller.sourceId === 'view-frontend'
-        ? { projectIntent: () => this.project?.root } : {}),
+      engine, projectDocumentOwner: () => this.projectDocumentOwnerId,
+      toolApi: this.toolApi, display: () => this.display(caller),
       accessToken: this.accessToken, authorize: this.authorize, packSources: this.packSources,
     }, caller);
-    broker.snapshot();
+    broker.syncBindings();
     if (engine === this.engine) broker.assets = this.assets;
     broker.catalogEpoch = this.catalogEpoch;
     broker.thumbnailEpoch = this.thumbnailEpoch;
     const unsubscribe = broker.subscribe(state => transport.publish(VIEW_WORKSPACE_STATE_TOPIC, state, { connectionId: caller.connectionId }));
-    this.pageSessions.set(caller.connectionId, { broker, unsubscribe });
+    const unsubscribeProjectStatus = engine?.subscribeProjectStatus(() => broker.changed()) ?? (() => {});
+    this.pageSessions.set(caller.connectionId, { broker, unsubscribe, unsubscribeProjectStatus });
   }
   publishPageSessions() {
-    for (const { broker } of this.pageSessions.values()) {
-      broker.snapshot();
+    for (const broker of this.pageBrokers()) {
+      broker.syncBindings();
       if (broker.engine === this.engine && this.assets !== null) broker.assets = this.assets;
       broker.changed();
     }
+  }
+  private pageBrokers() {
+    return new Set(Array.from(this.pageSessions.values(), ({ broker }) => broker));
   }
   async revealPack(input: WorkspacePackReveal, signal?: AbortSignal) {
     const transport = this.transport;
     if (!transport) return { ok: false, code: 'view-page-unavailable' };
     if (signal?.aborted) return { ok: false, code: 'view-reveal-cancelled' };
-    const candidates = [...this.pageSessions.keys()];
+    const candidates = this.pageConnections().map(([connectionId]) => connectionId);
     if (!input.connectionId && candidates.length !== 1)
       return { ok: false, code: candidates.length ? 'view-page-ambiguous' : 'view-page-unavailable', candidates };
     const connectionId = input.connectionId ?? candidates[0];
@@ -944,7 +1000,7 @@ export class ViewWorkspaceBroker {
     const engineSubscription = observer.subscribe<{ catalogEpoch?: number; thumbnailEpoch?: number }>('engine.workspace.state', (snapshot) => {
       const epoch = snapshot && typeof snapshot.catalogEpoch === 'number' ? snapshot.catalogEpoch : undefined;
       const thumbnailEpoch = snapshot && typeof snapshot.thumbnailEpoch === 'number' ? snapshot.thumbnailEpoch : undefined;
-      const brokers = [this, ...[...this.pageSessions.values()].map(page => page.broker)];
+      const brokers = [this, ...this.pageBrokers()];
       if (thumbnailEpoch !== undefined && thumbnailEpoch > this.thumbnailEpoch) {
         this.thumbnailEpoch = thumbnailEpoch;
         for (const broker of brokers) broker.thumbnailEpoch = thumbnailEpoch;
@@ -958,7 +1014,7 @@ export class ViewWorkspaceBroker {
       for (const broker of brokers) {
         broker.catalogEpoch = epoch;
         const project = broker.project;
-        if (!project || (broker.engine?.project?.phase !== undefined && broker.engine.project.phase !== 'running')) continue;
+        if (!project || broker.engine?.project?.status.phase !== 'running') continue;
         const lost = broker.workspaceTargetLost;
         void broker.invoke('assets.list', { projectId: project.id }).catch(() => {
           broker.workspaceTargetLost = lost;
@@ -979,6 +1035,7 @@ export class ViewWorkspaceBroker {
     for (const [connectionId, page] of this.pageSessions) {
       this.pageSessions.delete(connectionId);
       page.unsubscribe();
+      page.unsubscribeProjectStatus();
       await page.broker.dispose();
     }
   }

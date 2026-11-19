@@ -147,7 +147,16 @@ export function copyDerivedShapeInputs(body: DerivedBodyRecord) {
               regions: new Int32Array(shape.input.regions),
               voxelSize: [...shape.input.voxelSize] as PhysicsVector,
             }
-          : { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }),
+          : shape.input.kind === 'trimesh'
+            ? {
+                vertices: new Float32Array(shape.input.vertices),
+                indices: new Uint32Array(shape.input.indices),
+              }
+            : shape.input.kind === 'convex-compound'
+              ? { pieces: shape.input.pieces.map((piece) => new Float32Array(piece)) }
+              : shape.input.kind === 'cuboid'
+                ? { halfExtents: [...shape.input.halfExtents] as PhysicsVector }
+                : {}),
       origin: [...shape.input.origin] as PhysicsVector,
       rotation: [...shape.input.rotation] as PhysicsQuaternion,
     })),
@@ -189,6 +198,7 @@ export function describeDerivedShapes(
     origin: [...shape.input.origin] as PhysicsVector,
     rotation: [...shape.input.rotation] as PhysicsQuaternion,
     generation: body.generation,
+    ...(body.sourceTransform === undefined ? {} : { sourceTransform: body.sourceTransform }),
   }));
 }
 

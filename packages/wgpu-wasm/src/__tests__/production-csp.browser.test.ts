@@ -1,12 +1,10 @@
 import { expect, it } from 'vitest';
-import { commands } from 'vitest/browser';
+import { type BrowserCommands, commands as browserCommands } from 'vitest/browser';
 
-declare module 'vitest/browser' {
-  interface BrowserCommands {
-    prepareWgpuProductionFixture(inline: boolean): Promise<{ url: string; fingerprint: string }>;
-    releaseWgpuProductionFixture(): Promise<void>;
-  }
-}
+const commands = browserCommands as BrowserCommands & {
+  prepareWgpuProductionFixture(inline: boolean): Promise<{ url: string; fingerprint: string }>;
+  releaseWgpuProductionFixture(): Promise<void>;
+};
 
 it.each([
   true,

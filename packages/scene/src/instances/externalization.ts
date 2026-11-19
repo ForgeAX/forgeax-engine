@@ -54,17 +54,6 @@ function externalizeFields(
   )) {
     if (value === undefined) continue;
     const type = schema?.[fieldName];
-    if (type === 'buffer' || type?.startsWith('buffer<')) {
-      // Buffer storage is bytes, even when authored through a wider TypedArray.
-      const bytes = ArrayBuffer.isView(value)
-        ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-        : value instanceof ArrayBuffer ||
-            (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
-          ? new Uint8Array(value)
-          : undefined;
-      fields[fieldName] = bytes === undefined ? value : Array.from(bytes);
-      continue;
-    }
     const asset = type?.startsWith('asset<');
     const array = type === undefined ? null : parseManagedArraySchema(type);
     const elements =

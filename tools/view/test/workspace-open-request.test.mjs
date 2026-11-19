@@ -33,12 +33,16 @@ function engineWithAssets(assets, { omitPreviewKind = false } = {}) {
   const previews = [];
   return {
     project: null,
+    get projectStatus() { return this.project?.status; },
+    subscribeProjectStatus() { return () => {}; },
     get preview() { return previews[0]; },
     get previews() { return previews; },
     async openProject({ root }) {
       this.project = {
         project: { id: `project:${root}`, root, name: 'Fixture' },
         handle: { root },
+        status: projectStatus(root),
+        subscribeStatus() { return () => {}; },
       };
       return this.project;
     },
@@ -48,6 +52,14 @@ function engineWithAssets(assets, { omitPreviewKind = false } = {}) {
       previews.unshift(preview);
       return preview;
     },
+  };
+}
+
+function projectStatus(root) {
+  const sessionId = `project-session:${root}`;
+  return { phase: 'running', sessionId, generation: 1, browserGeneration: 1,
+    target: { targetId: 'project-target', sessionId, worldId: 'project-world', generation: 1, width: 1280, height: 720, headed: true },
+    document: { sessionId, targetId: 'project-target', url: 'http://fixture/project', browserGeneration: 1 },
   };
 }
 
@@ -221,12 +233,16 @@ describe('workspace openRequest', () => {
     const previews = [previewFor(assets[0])];
     const engine = {
       project: null,
+      get projectStatus() { return this.project?.status; },
+      subscribeProjectStatus() { return () => {}; },
       get preview() { return previews.at(-1); },
       get previews() { return previews; },
       async openProject({ root }) {
         this.project = {
           project: { id: `project:${root}`, root, name: 'Fixture' },
           handle: { root },
+          status: projectStatus(root),
+          subscribeStatus() { return () => {}; },
         };
         return this.project;
       },

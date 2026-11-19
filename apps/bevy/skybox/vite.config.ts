@@ -22,5 +22,5 @@ export default defineConfig({
     ),
   ],
   server: { fs: { allow: [monorepoRoot] } },
-  build: { target: 'esnext', rollupOptions: { input: { main: resolve(here, 'index.html') } } },
+  build: { manifest: true, target: 'esnext', rollupOptions: { input: { main: resolve(here, 'index.html') } } },
 });

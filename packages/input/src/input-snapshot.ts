@@ -162,6 +162,12 @@ export interface Capabilities {
  * previous Resource value.
  */
 export interface InputSnapshot {
+  /** Host focus at acquisition. False before a producer is attached. */
+  readonly focused: boolean;
+  /** Acquisition was reset since the previous scan (blur, hidden or ownership
+   * transfer). Retained even if focus returned before this scan. Consumers
+   * cancel held gestures on this fact; it is not a player release edge. */
+  readonly focusReset: boolean;
   /** Keyboard view (held state plus frame edges). */
   readonly keyboard: {
     /**
@@ -663,6 +669,8 @@ export function snapshotFromSample(
   const actionMap = snapshotActionIndex(frozenActions);
 
   const snapshot: InputSnapshot = {
+    focused: sample.focused,
+    focusReset: sample.focusReset === true,
     keyboard: {
       down(key) {
         return heldKeys.has(key);
@@ -756,13 +764,10 @@ export function snapshotFromSample(
  * (`engine.run()` has not yet attached a backend). Returns the full
  * multi-device shape as `snapshotFromSample`, with every accessor
  * returning `false` / `0` / zero-vector. AI users can put this into the
- * Resource store to satisfy `world.getResource('InputSnapshot')` calls
+ * Resource store to satisfy `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)` calls
  * in fixtures or unit tests (charter P3: empty signal is the signal).
  * The underlying 7-field POD sample contract is unchanged (D-9).
  */
 export function createInputSnapshot(): InputSnapshot {
-  return snapshotFromSample(createEmptyInputBackendSample());
+  return snapshotFromSample({ ...createEmptyInputBackendSample(), focused: false });
 }
-
-/** Stable Resource key for `world.insertResource` / `world.getResource`. */
-export const INPUT_SNAPSHOT_RESOURCE_KEY = 'InputSnapshot';

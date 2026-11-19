@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { derive } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { composeShader } from '../../../naga/src/index';
+import { compileShader } from '../../../shader-compiler/src/compile';
 import { DEFAULT_UNLIT_PARAM_SCHEMA } from '../material-schemas';
 
 const root = new URL('../', import.meta.url);
@@ -45,7 +45,7 @@ async function program(extra = ''): Promise<string> {
     }
   };
   visit(source('unlit.wgsl'));
-  return composeShader(
+  const compiled = await compileShader(
     `${countedSource()}
 @vertex fn testVertex(@builtin(vertex_index) index: u32) -> VsOut {
   var input: VsIn;
@@ -58,24 +58,34 @@ async function program(extra = ''): Promise<string> {
 }
 struct TestOutput { @location(0) color: vec4<f32>, @location(1) calls: vec4<f32> }
 @fragment fn testFragment(input: VsOut) -> TestOutput {
-  let color = unlitColor(input, true);
-  return TestOutput(color, vec4(vec3<f32>(modeCalls), 1.0));
+  let shaded = unlitColor(input, true);
+  if (shaded.rejected) { discard; }
+  applyUnlitClipping(input.worldPos, input.clip.xy, false);
+  return TestOutput(shaded.color, vec4(vec3<f32>(modeCalls), 1.0));
 }
 @fragment fn testBackFragment(input: VsOut) -> TestOutput {
-  let color = unlitColor(input, false);
-  return TestOutput(color, vec4(vec3<f32>(modeCalls), 1.0));
+  let shaded = unlitColor(input, false);
+  if (shaded.rejected) { discard; }
+  applyUnlitClipping(input.worldPos, input.clip.xy, false);
+  return TestOutput(shaded.color, vec4(vec3<f32>(modeCalls), 1.0));
 }
 ${extra}`,
-    modules,
     {
-      STORAGE_BUFFER_AVAILABLE: true,
-      SKINNING_DISABLED: true,
-      VERTEX_COLOR_AVAILABLE: true,
-      LOD_DITHER: false,
-      EXTENDED_LIGHTING_AVAILABLE: false,
-      PER_INSTANCE_REGION: false,
+      imports: modules,
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        SKINNING_DISABLED: true,
+        VERTEX_COLOR_AVAILABLE: true,
+        LOD_DITHER: false,
+        GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
+        ALPHA_MASK: true,
+        CLIPPING_PLANES: true,
+        EXTENDED_LIGHTING_AVAILABLE: false,
+        PER_INSTANCE_REGION: false,
+      },
     },
   );
+  return compiled.unwrap().wgsl;
 }
 
 it('Unlit consumes the native per-slot UV set and TRS on the real shader', async () => {
@@ -207,7 +217,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
       { entry: 'fs_oit', facing: true, oit: 'straight' },
       { entry: 'fs_oit_premultiplied', facing: true, oit: 'premultiplied' },
     ] as const;
-    const view = buffer(1296, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    const view = buffer(1312, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     const materialLayout = derive(DEFAULT_UNLIT_PARAM_SCHEMA);
     const coordinates = materialLayout.coordinateRecords.find(
       (record) => record.parameter === 'baseColorTexture',
@@ -280,7 +290,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
     for (const mode of [0, 1, 2, 0]) {
       for (const composition of [0, 1, 2, 3]) {
         for (const cutoff of [0, 0.35, 0.45]) {
-          const values = new Float32Array(324);
+          const values = new Float32Array(328);
           values.set(identity, 0);
           values.set(identity, 44);
           values.set([0, 0, 3], 24);

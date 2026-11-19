@@ -1,7 +1,7 @@
 import type { App } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine/ecs';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -85,7 +85,7 @@ async function probe(app: App, c: CheckList): Promise<void> {
   });
   let updates = 0;
   let lastDelta = 0;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fl-lifecycle-count',
     queries: [],
     fn: (world) => {
@@ -93,6 +93,7 @@ async function probe(app: App, c: CheckList): Promise<void> {
       lastDelta = world.getResource(Time).delta;
     },
   });
+  world.addSystem(Update, systemToken1);
   const code = (r: { ok: boolean; error?: { code: string } }) =>
     r.ok ? 'ok' : (r.error?.code ?? '?');
   await until(() => updates > 0);

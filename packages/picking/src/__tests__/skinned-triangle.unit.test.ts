@@ -58,7 +58,9 @@ describe('posed skin geometry', () => {
       delete scene.mesh.attributes.skinWeight;
     }
     if (kind === 'joint') scene.world.despawn(scene.upper).unwrap();
-    if (kind === 'skeleton') scene.world.set(scene.entity, Skin, { skeleton: 0 }).unwrap();
+    if (kind === 'skeleton')
+      // @ts-expect-error Exercise the runtime boundary with an invalid asset identity.
+      scene.world.set(scene.entity, Skin, { skeleton: 0 }).unwrap();
     if (kind === 'count')
       scene.world.set(scene.entity, Skin, { joints: new Uint32Array([scene.root]) }).unwrap();
     if (kind === 'index') (scene.mesh.attributes.skinIndex as Uint16Array)[0] = 99;

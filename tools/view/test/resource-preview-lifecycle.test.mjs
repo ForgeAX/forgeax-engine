@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { WorkspaceFixture, transactionPreview } from './support/workspace-owner.mjs';
 
+function runningProject(generation, browserGeneration = () => 1) {
+  const target = { targetId: 'editor', sessionId: 'session', worldId: 'world', width: 100, height: 100, headed: true };
+  return { project: { id: 'project', root: '/project', name: 'Test' },
+    get status() {
+      const browser = browserGeneration();
+      return { phase: 'running', sessionId: target.sessionId, generation, target, browserGeneration: browser,
+        document: { sessionId: target.sessionId, targetId: target.targetId, url: 'http://fixture/project', browserGeneration: browser } };
+    },
+    subscribeStatus() { return () => {}; },
+  };
+}
+
 function fixture() {
   let count = 0;
   let browser = 1;
@@ -9,7 +21,7 @@ function fixture() {
   let fail = false;
   const assets = ['a', 'b'].map(guid => ({ guid, kind: 'mesh', previewable: true }));
   const broker = new WorkspaceFixture({ engine: {
-    openProject: async () => ({ get browserGeneration() { return browser; }, project: { id: 'project', root: '/project', name: 'Test' }, target: { targetId: 'editor', sessionId: 'session', worldId: 'world', width: 100, height: 100, headed: true } }),
+    openProject: async ({ generation }) => runningProject(generation, () => browser),
     closeProject: async () => {}, listAssets: async () => assets,
     openPreview: async ({ asset }) => {
       const id = ++count;
@@ -44,7 +56,7 @@ it('reuses one live preview and its binding for repeated and concurrent opens', 
 
 it('accepts the exact Scene generation when its target ID also identifies the project', async () => {
   const broker = new WorkspaceFixture({ engine: {
-    openProject: async () => ({ project: { id: 'project', root: '/project' }, target: { targetId: 'editor', sessionId: 'session', worldId: 'world', width: 100, height: 100, headed: true } }),
+    openProject: async ({ generation }) => runningProject(generation),
     closeProject: async () => {},
     listAssets: async () => [{guid:'scene',kind:'scene'},{guid:'mesh',kind:'mesh'}],
     openPreview: async ({asset}) => transactionPreview({asset, target:{targetId:asset.kind === 'scene' ? 'editor' : 'resource',sessionId:'session',worldId:'world',width:100,height:100,headed:true}}),
@@ -83,7 +95,7 @@ it('checks current Engine publication before reusing a live preview without a ca
     generation,digest:`digest-${generation}`,outputSetDigest:`outputs-${generation}`});
   const runtimePublication=publication();
   const broker=new WorkspaceFixture({engine:{
-    openProject:async()=>({project:{id:'project',root:'/project'},target:{targetId:'editor',sessionId:'session',worldId:'world',width:100,height:100,headed:true}}),
+    openProject:async({generation})=>runningProject(generation),
     closeProject:async()=>{},listAssets:async()=>[asset],
     inspectAsset:async()=>{inspections++;return{guid:asset.guid,asset,
       publication:runtimePublication,source:{publication:publication()}};},

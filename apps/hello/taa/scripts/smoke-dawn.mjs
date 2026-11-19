@@ -32,6 +32,7 @@ import {
 } from './host-adapter-facts.mjs';
 import { createFeatureEvidence } from './required-evidence.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const temporalMode = process.argv.includes('--tsr') ? 'tsr' : (process.env.SMOKE_TEMPORAL_MODE ?? 'taa');
 if (!['taa', 'tsr'].includes(temporalMode)) throw new Error('SMOKE_TEMPORAL_MODE must be taa or tsr');
@@ -149,8 +150,8 @@ const nonBlackSampleCount = (samples) =>
   motionSampleNames.filter((name) => sampleEnergy(samples[name]) > 0.01).length;
 
 const shaderManifestPath = resolve(appRoot, 'dist', 'shaders', 'manifest.json');
-const shaderManifest = readFileSync(shaderManifestPath, 'utf8');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(shaderManifest)}`;
+
+const shaderManifestUrl = processShaderManifestUrl(shaderManifestPath);
 
 // Dawn's adapter.info is intentionally small on several platforms. Native
 // performance admission therefore records an independent host GPU fact and
@@ -177,10 +178,10 @@ const physicalAdapterFacts = performanceAdmissionMode
           metalFacts.reason = error instanceof Error ? error.message : String(error);
         }
 
-        // Keep the inventory providers as diagnostics for headless sessions,
-        // but never promote them when the direct Metal command failed. A
-        // provider label without a live MTLDevice registry ID remains false.
-        let fallbackFacts;
+          // Keep the inventory providers as diagnostics for headless sessions,
+          // but never promote them when the direct Metal command failed. A
+          // provider label without a live MTLDevice registry ID remains false.
+          let fallbackFacts;
         try {
           const payload = JSON.parse(
             execFileSync('system_profiler', ['SPDisplaysDataType', '-json'], {
@@ -549,9 +550,7 @@ async function observeFrameTiming(renderer, receipt) {
 
 function featureDrawRequest(lease, kind, index) {
   return {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
+    source: lease,
     ...(timingCaptureEnabled
       ? { profileFrame: { captureId: `auto-exposure-${kind}-${timingResolution.id}`, frameId: index + 1 } }
       : {}),
@@ -990,11 +989,7 @@ const drawFrame = () => {
   if (!updated.ok) throw updated.error;
   frame += 1;
   const startedAt = collectTiming ? performance.now() : 0;
-  const drawn = renderer.draw({
-    leases: [attachment.value],
-    camera: { lease: attachment.value },
-    environment: { lease: attachment.value },
-  });
+  const drawn = renderer.draw({ source: attachment.value });
   if (collectTiming) {
     (captureMode === 'on' ? onWallSamples : offWallSamples).push(performance.now() - startedAt);
   }
@@ -1324,7 +1319,7 @@ const stableCreation = {
   pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
 };
 const temporal = inspection.temporal;
-const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'output-transform'];
+const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'standard-grade'];
 const missingPasses = requiredPasses.filter((pass) => !inspection.perFramePassNames.includes(pass));
 const requiresRoiDifference = ['moving-rigid', 'camera-pan'].includes(visualCase);
 const centerEnergy = onRoiEnergy;

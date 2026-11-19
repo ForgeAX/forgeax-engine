@@ -48,6 +48,7 @@ import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Ajv2020 from 'ajv/dist/2020.js';
 import pixelmatch from 'pixelmatch';
+import { pnpmCommand } from '../lib/pnpm-command.mjs';
 
 // Heavy deps (playwright + wait-on) are deferred to main() so importing
 // this module for its evaluator / validator helpers (e.g. unit tests
@@ -314,17 +315,25 @@ function hintFor(arg) {
 
 // ─── runner orchestration ─────────────────────────────────────────────
 
-async function ensureBuild(targetConfig) {
-  const appRoot = resolve(REPO_ROOT, targetConfig.root);
-  const viteBin = resolve(appRoot, 'node_modules/.bin/vite');
-  const command = existsSync(viteBin) ? viteBin : 'pnpm';
-  const args = existsSync(viteBin) ? ['build'] : ['--filter', targetConfig.filter, 'build'];
+export async function ensureBuild(targetConfig, repoRoot = REPO_ROOT) {
+  const appRoot = resolve(repoRoot, targetConfig.root);
+  const viteEntry = resolve(appRoot, 'node_modules/vite/bin/vite.js');
+  const localVite = existsSync(viteEntry);
+  const [command, ...entryArgs] = localVite ? [process.execPath, viteEntry] : pnpmCommand();
+  const args = [
+    ...entryArgs,
+    ...(localVite ? ['build'] : ['--filter', targetConfig.filter, 'build']),
+  ];
   await new Promise((resolveFn, rejectFn) => {
     const child = spawn(command, args, {
-      cwd: existsSync(viteBin) ? appRoot : REPO_ROOT,
+      cwd: localVite ? appRoot : repoRoot,
       stdio: 'inherit',
+      shell: false,
     });
-    child.on('exit', (code) =>
+    child.once('error', (cause) =>
+      rejectFn(new Error(`build ${targetConfig.filter} failed to start`, { cause })),
+    );
+    child.once('exit', (code) =>
       code === 0
         ? resolveFn(undefined)
         : rejectFn(new Error(`build ${targetConfig.filter} exit ${code ?? 'null'}`)),

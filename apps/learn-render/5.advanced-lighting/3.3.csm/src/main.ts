@@ -62,8 +62,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 export type CsmMvdProfile = 'off' | 'pcf3' | 'pcf5' | 'pcssMedium' | 'pcssHigh';
 
 /** Scene variables used by the MVD visual oracle matrix. */
-export type CsmMvdScene =
-  | 'near'
+export type CsmMvdScene = 'near'
   | 'far'
   | 'seam'
   | 'motion'
@@ -301,8 +300,6 @@ export function applyCsmMvdFalsifier(
 }
 
 // 2. scene constants
-
-
 
 // Wood texture GUID from forgeax-engine-assets/learn-opengl/textures/wood.png.meta.json.
 const WOOD_GUID_STR = '019e3969-1d48-7c3b-ac24-6d68f457065f';
@@ -723,11 +720,7 @@ function installCaptureHook(
   const renderer = app.renderer;
   const drawCsmFrame = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    }, undefined, { timeoutMs: 90_000 });
+    await drawReadyFrame(renderer, { source: lease }, undefined, { timeoutMs: 90_000 });
   };
   win.__prepareCsmCapture = async (): Promise<void> => {
     // Stable frames intentionally reuse the populated directional atlas. The

@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn authored_accent_colors_native_checkables_and_range_and_repaints() {
+    let mut doc = UiDocument::new(
+        "<style>body{margin:0;background:white}#host{accent-color:rgb(210,163,71)}input{position:absolute;top:8px;left:8px;width:24px;height:24px;margin:0}#radio{left:48px}#range{top:48px;width:160px;height:16px}</style><div id=host><input type=checkbox checked><input id=radio type=radio checked><input id=range type=range value=50></div>",
+        200, 80, 1.0, vec![],
+    ).unwrap();
+    let count = |pixels: &[u8], color: [u8; 3], rect: [usize; 4]| {
+        let mut total = 0;
+        for y in rect[1]..rect[3] {
+            for x in rect[0]..rect[2] {
+                if pixels[(y * 200 + x) * 4..(y * 200 + x) * 4 + 3] == color {
+                    total += 1;
+                }
+            }
+        }
+        total
+    };
+    let gold = [210, 163, 71];
+    let first = doc.paint().unwrap();
+    for rect in [[8, 8, 32, 32], [48, 8, 72, 32], [8, 48, 168, 64]] {
+        assert!(count(&first, gold, rect) > 30, "native accent at {rect:?}");
+    }
+    for rect in [[8, 8, 32, 32], [48, 8, 72, 32], [8, 48, 168, 64]] {
+        assert!(
+            count(&first, [59, 59, 59], rect) > 5,
+            "dark contrast at {rect:?}"
+        );
+    }
+    let host = doc.query(doc.root(), "#host").unwrap()[0];
+    doc.set_attribute(host, "style", Some("accent-color:rgb(255,0,0)".into()))
+        .unwrap();
+    let after = doc.paint().unwrap();
+    assert_eq!(count(&after, gold, [0, 0, 200, 80]), 0);
+    assert!(count(&after, [255, 0, 0], [0, 0, 200, 80]) > 100);
+    for id in doc.query(doc.root(), "input").unwrap() {
+        doc.set_attribute(id, "style", Some("color:rgb(20,180,80)".into()))
+            .unwrap();
+    }
+    doc.set_attribute(
+        host,
+        "style",
+        Some("accent-color:currentColor;color:rgb(20,180,80)".into()),
+    )
+    .unwrap();
+    assert!(count(&doc.paint().unwrap(), [20, 180, 80], [0, 0, 200, 80]) > 100);
+    doc.set_attribute(host, "style", Some("accent-color:auto".into()))
+        .unwrap();
+    assert!(count(&doc.paint().unwrap(), [0, 117, 255], [0, 0, 200, 80]) > 100);
+    doc.set_attribute(host, "style", Some("accent-color:rgb(255,0,0)".into()))
+        .unwrap();
+    for id in doc.query(doc.root(), "input").unwrap() {
+        doc.set_attribute(id, "disabled", Some(String::new()))
+            .unwrap();
+    }
+    let disabled = doc.paint().unwrap();
+    assert_eq!(count(&disabled, [255, 0, 0], [0, 0, 200, 80]), 0);
+}
+
+#[test]
 fn checkable_auto_dimensions_retain_native_intrinsic_size() {
     let mut doc = UiDocument::new(
         "<style>input{box-sizing:border-box;min-width:0;width:100%}.choice input{width:auto}</style>

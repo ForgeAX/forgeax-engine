@@ -86,7 +86,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
       [0, buffer(particles)],
       [1, runtimeBuffer],
       [2, alive],
-      [3, buffer(new Uint32Array([3, 0, 0, 0, 0, 0]))],
+      [3, buffer(new Uint32Array([3, 0, 0, 0, 0, 0, 0]))],
       [11, buffer(new Float32Array([2, 3, 1]))],
     ] as const;
     const group = device.createBindGroup({

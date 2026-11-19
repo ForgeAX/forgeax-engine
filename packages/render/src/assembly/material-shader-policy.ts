@@ -1,5 +1,6 @@
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
+import { declaredMaterialVariantKey } from './material/variant-selection';
 
 // Material shader policy and async adapter.
 // Variant selection, module caching, and manifest material preparation stay
@@ -9,10 +10,13 @@ import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
+  findVariantByDefines,
   findVariantByKey,
+  isShaderTemplateManifestRow,
   isSupportedVariantDefines,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
+  materialShaderAxes,
   materialShaderSource,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
@@ -21,7 +25,6 @@ import {
   type ShaderCatalogDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
-  violatedVariantPermutationRules,
 } from '@forgeax/engine-shader';
 import type {
   ParamSchemaEntry,
@@ -394,6 +397,117 @@ function makeRhiNotAvailableError(key: string): RhiError {
   });
 }
 
+function bootMaterialVariantKey(
+  msEntry: MaterialShaderManifestEntry,
+  declaredAxes: ReadonlySet<string>,
+  rhiDevice: RhiDevice,
+  storageBufferCapable: boolean,
+  webgl2Downlevel: boolean,
+  extendedLightingShaderAvailable: boolean,
+  projectorAvailable: boolean,
+): string {
+  const variantDefines: Record<string, boolean> = {};
+  if (declaredAxes.has('STORAGE_BUFFER_AVAILABLE')) {
+    variantDefines.STORAGE_BUFFER_AVAILABLE = storageBufferCapable;
+  }
+  if (declaredAxes.has('WEBGL2_COMPAT')) {
+    variantDefines.WEBGL2_COMPAT = webgl2Downlevel;
+  }
+  if (declaredAxes.has('CLUSTER_FORWARD_AVAILABLE')) {
+    variantDefines.CLUSTER_FORWARD_AVAILABLE = false;
+  }
+  if (declaredAxes.has('GPU_DRIVEN_SCENE_INDEX_AVAILABLE')) {
+    variantDefines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE = false;
+  }
+  bootRecordTimeAxesOff(msEntry, variantDefines);
+  if (declaredAxes.has('VERTEX_COLOR_AVAILABLE')) {
+    variantDefines.VERTEX_COLOR_AVAILABLE = false;
+  }
+  if (declaredAxes.has('COVERAGE_ONLY')) {
+    // Coverage-only is a producer-owned opt-in for sprite/temporal paths.
+    // Keep the ordinary boot material on the opaque variant; record-time
+    // coverage batches request the true variant explicitly.
+    variantDefines.COVERAGE_ONLY = false;
+  }
+  if (declaredAxes.has('VISIBLE_SURFACE_AVAILABLE')) {
+    variantDefines.VISIBLE_SURFACE_AVAILABLE = false;
+  }
+  if (declaredAxes.has('PROBE_BLEND_AVAILABLE')) {
+    variantDefines.PROBE_BLEND_AVAILABLE = false;
+  }
+  completeBootCapabilityAxes(
+    variantDefines,
+    declaredAxes,
+    rhiDevice,
+    storageBufferCapable,
+    extendedLightingShaderAvailable,
+    projectorAvailable,
+  );
+  // Authored axes keep the manifest's all-true default, as in
+  // resolveMaterialShaderVariantSet; only Engine admission axes are listed above.
+  for (const axis of declaredAxes) variantDefines[axis] ??= true;
+  const sortedEntries = Object.entries(variantDefines).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return sortedEntries.every(([, v]) => v === true)
+    ? ''
+    : sortedEntries.map(([k, v]) => `${k}=${v}`).join('+');
+}
+
+function completeBootCapabilityAxes(
+  variantDefines: Record<string, boolean>,
+  declaredAxes: ReadonlySet<string>,
+  rhiDevice: RhiDevice,
+  storageBufferCapable: boolean,
+  extendedLightingShaderAvailable: boolean,
+  projectorAvailable: boolean,
+): void {
+  if (declaredAxes.has('ATMOSPHERE_AVAILABLE')) {
+    variantDefines.ATMOSPHERE_AVAILABLE = atmosphereAvailable(
+      storageBufferCapable,
+      rhiDevice.limits.maxSampledTexturesPerShaderStage,
+    );
+  }
+  if (declaredAxes.has('EXTENDED_LIGHTING_AVAILABLE')) {
+    variantDefines.EXTENDED_LIGHTING_AVAILABLE = extendedLightingShaderAvailable;
+  }
+  // A material shader that declares the projector axis owns the same
+  // capability-selected resource pair, regardless of whether it is the
+  // engine Standard entry or a VFX particle entry. Omitting this value for
+  // particle variants asks the manifest for a partial key and fails before
+  // the first frame when the shader does not use the Standard root.
+  if (declaredAxes.has('PROJECTOR_AVAILABLE')) {
+    variantDefines.PROJECTOR_AVAILABLE = projectorAvailable;
+  }
+  if (declaredAxes.has('TRANSMISSION_AVAILABLE')) {
+    variantDefines.TRANSMISSION_AVAILABLE = false;
+  }
+  // Record-time fallback MRT is opt-in; boot the ordinary single-target
+  // Standard artifact even when the manifest declares this axis.
+  if (declaredAxes.has('REFLECTION_FALLBACK_AVAILABLE')) {
+    variantDefines.REFLECTION_FALLBACK_AVAILABLE = false;
+  }
+  // bug-20260708 M2 (a): PER_INSTANCE_REGION axis default = false at boot.
+  // Per-entity spritePH path (`main-pass-sprite-draws.ts:511-513`) expects
+  // `variantSet=undefined` to resolve to the PIR=false shader source (64B
+  // InstanceData) via `lookup.value.source` fallback in
+  // `getMaterialShaderPipeline`. The PIR=true canonical variant (80B) is
+  // reserved for SpriteInstances batches which explicitly request it via
+  // `SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET === ''` (canonical all-
+  // true) — resolved through `findVariantByKey(msEntry, '')` in the same
+  // `getMaterialShaderPipeline` substitution branch. Mirrors the
+  // CLUSTER_FORWARD_AVAILABLE pattern above: axis default false unless
+  // explicitly requested by a caller variantSet.
+  if (declaredAxes.has('PER_INSTANCE_REGION')) {
+    variantDefines.PER_INSTANCE_REGION = false;
+  }
+  if (declaredAxes.has('SKINNING_DISABLED')) {
+    variantDefines.SKINNING_DISABLED = true;
+  }
+  if (declaredAxes.has('WATER_WAVES_AVAILABLE')) variantDefines.WATER_WAVES_AVAILABLE = false;
+  if (declaredAxes.has('WATER_INFO_RGBA16')) variantDefines.WATER_INFO_RGBA16 = false;
+}
+
 /**
  * bug-20260601-hello-tonemap-material-register M1: prepare engine-shipped
  * material shaders (cap gate + manifest load + registration) before the
@@ -451,95 +565,28 @@ export async function prepareMaterialShaders(
     // Record-time callers use resolveMaterialShaderVariantSet below; keeping
     // the same axes here prevents a physical-material variant from being
     // registered under a key that cannot be selected by the renderer.
-    const variantDefines: Record<string, boolean> = {};
-    if (msEntry.variants.some((v) => 'STORAGE_BUFFER_AVAILABLE' in v.defines)) {
-      variantDefines.STORAGE_BUFFER_AVAILABLE = storageBufferCapable;
-    }
-    if (msEntry.variants.some((v) => 'WEBGL2_COMPAT' in v.defines)) {
-      variantDefines.WEBGL2_COMPAT = webgl2Downlevel;
-    }
-    if (msEntry.variants.some((v) => 'CLUSTER_FORWARD_AVAILABLE' in v.defines)) {
-      variantDefines.CLUSTER_FORWARD_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' in v.defines)) {
-      variantDefines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE = false;
-    }
-    bootRecordTimeAxesOff(msEntry, variantDefines);
-    if (msEntry.variants.some((v) => 'VERTEX_COLOR_AVAILABLE' in v.defines)) {
-      variantDefines.VERTEX_COLOR_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'COVERAGE_ONLY' in v.defines)) {
-      // Coverage-only is a producer-owned opt-in for sprite/temporal paths.
-      // Keep the ordinary boot material on the opaque variant; record-time
-      // coverage batches request the true variant explicitly.
-      variantDefines.COVERAGE_ONLY = false;
-    }
-    if (msEntry.variants.some((v) => 'VISIBLE_SURFACE_AVAILABLE' in v.defines)) {
-      variantDefines.VISIBLE_SURFACE_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'PROBE_BLEND_AVAILABLE' in v.defines)) {
-      variantDefines.PROBE_BLEND_AVAILABLE = false;
-    }
-    if (msEntry.variants.some((v) => 'ATMOSPHERE_AVAILABLE' in v.defines)) {
-      variantDefines.ATMOSPHERE_AVAILABLE = atmosphereAvailable(
-        storageBufferCapable,
-        rhiDevice.limits.maxSampledTexturesPerShaderStage,
-      );
-    }
-    if (msEntry.variants.some((v) => 'EXTENDED_LIGHTING_AVAILABLE' in v.defines)) {
-      variantDefines.EXTENDED_LIGHTING_AVAILABLE = extendedLightingShaderAvailable;
-    }
-    // A material shader that declares the projector axis owns the same
-    // capability-selected resource pair, regardless of whether it is the
-    // engine Standard entry or a VFX particle entry. Omitting this value for
-    // particle variants asks the manifest for a partial key and fails before
-    // the first frame when the shader does not use the Standard root.
-    if (msEntry.variants.some((v) => 'PROJECTOR_AVAILABLE' in v.defines)) {
-      variantDefines.PROJECTOR_AVAILABLE = projectorAvailable;
-    }
-    if (msEntry.variants.some((v) => 'TRANSMISSION_AVAILABLE' in v.defines)) {
-      variantDefines.TRANSMISSION_AVAILABLE = false;
-    }
-    // Record-time fallback MRT is opt-in; boot the ordinary single-target
-    // Standard artifact even when the manifest declares this axis.
-    if (msEntry.variants.some((v) => 'REFLECTION_FALLBACK_AVAILABLE' in v.defines)) {
-      variantDefines.REFLECTION_FALLBACK_AVAILABLE = false;
-    }
-    // bug-20260708 M2 (a): PER_INSTANCE_REGION axis default = false at boot.
-    // Per-entity spritePH path (`main-pass-sprite-draws.ts:511-513`) expects
-    // `variantSet=undefined` to resolve to the PIR=false shader source (64B
-    // InstanceData) via `lookup.value.source` fallback in
-    // `getMaterialShaderPipeline`. The PIR=true canonical variant (80B) is
-    // reserved for SpriteInstances batches which explicitly request it via
-    // `SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET === ''` (canonical all-
-    // true) — resolved through `findVariantByKey(msEntry, '')` in the same
-    // `getMaterialShaderPipeline` substitution branch. Mirrors the
-    // CLUSTER_FORWARD_AVAILABLE pattern above: axis default false unless
-    // explicitly requested by a caller variantSet.
-    if (msEntry.variants.some((v) => 'PER_INSTANCE_REGION' in v.defines)) {
-      variantDefines.PER_INSTANCE_REGION = false;
-    }
-    if (msEntry.variants.some((v) => 'SKINNING_DISABLED' in v.defines)) {
-      variantDefines.SKINNING_DISABLED = true;
-    }
-    // Authored axes keep the manifest's all-true default, as in
-    // resolveMaterialShaderVariantSet; only Engine admission axes are listed above.
-    for (const variant of msEntry.variants) {
-      for (const axis of Object.keys(variant.defines)) variantDefines[axis] ??= true;
-    }
-    const sortedEntries = Object.entries(variantDefines).sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0,
+    const declaredAxes = new Set(materialShaderAxes(msEntry));
+    const definesKey = bootMaterialVariantKey(
+      msEntry,
+      declaredAxes,
+      rhiDevice,
+      storageBufferCapable,
+      webgl2Downlevel,
+      extendedLightingShaderAvailable,
+      projectorAvailable,
     );
-    const definesKey = sortedEntries.every(([, v]) => v === true)
-      ? ''
-      : sortedEntries.map(([k, v]) => `${k}=${v}`).join('+');
     const chosen = findVariantByKey(msEntry, definesKey);
-    if (msEntry.variants.length > 0 && chosen === undefined) {
+    if (declaredAxes.size > 0 && chosen === undefined) {
       throw new RhiError({
         code: 'shader-compile-failed',
         expected: `material shader '${msEntry.identifier}' declares the exact boot variant '${definesKey}'`,
         hint: 'regenerate the shader manifest with the complete variant Cartesian product',
       });
+    }
+    if (isShaderTemplateManifestRow(msEntry)) {
+      if (registry.materialArtifactDeclaration(msEntry.identifier) === undefined)
+        registry.installMaterialManifestTemplate(msEntry.identifier, definesKey).unwrap();
+      continue;
     }
     const selected = chosen ?? msEntry;
     const wgsl = selected.composedWgsl;
@@ -561,6 +608,7 @@ export async function prepareMaterialShaders(
         msEntry.entryPoints ??
         msEntry.receipt?.entryPoints;
       registry.installMaterialArtifact(msEntry.identifier, {
+        forwardFog: selected.forwardFog ?? selected.receipt?.forwardFog,
         source: wgsl,
         sourceReference: materialShaderSource(selected),
         ...(entryPoints === undefined ? {} : { entryPoints }),
@@ -571,9 +619,8 @@ export async function prepareMaterialShaders(
       });
       // feat-20260629 M4: store uvSetCount from naga reflection for
       // auto-fill in getMaterialShaderPipeline clamp-to-last alias.
-      if (msEntry.uvSetCount !== undefined) {
-        materialShaderUvSetCounts.set(msEntry.identifier, msEntry.uvSetCount);
-      }
+      const uvSetCount = chosen?.uvSetCount ?? msEntry.uvSetCount;
+      if (uvSetCount !== undefined) materialShaderUvSetCounts.set(msEntry.identifier, uvSetCount);
       // Sanity check the schema parses through derive — a malformed sidecar
       // schema (e.g. unknown type literal) should fail loud at register time
       // (charter P3 explicit failure). The derived output is discarded; the
@@ -665,7 +712,9 @@ export type LayoutKind =
   | 'hdrp-pbr'
   | 'hdrp-skin'
   | 'sprite-urp'
-  | 'unlit-urp';
+  | 'unlit-urp'
+  | 'scene-direct-unlit'
+  | 'scene-direct-cluster-unlit';
 
 // Prepared material and view-only depth programs share this View ABI.
 export function viewAndSceneDepthLayoutEntries(hasAtmosphere: boolean): GPUBindGroupLayoutEntry[] {
@@ -747,18 +796,23 @@ export function isSharedMaterialUserRegionCompatible(
  * - DIRECTIONAL_SHADOW_SIMPLE: a per-frame shadow-config fact; the boot
  *   artifact keeps the general receiver and record time requests the simple
  *   one when the frame qualifies.
+ * - GPU_SCENE_DIRECT: a direct draw selects it when its rows are already in
+ *   the GPU Scene; the boot artifact keeps the packed instance path.
  * - LOD_DITHER / CLIPPING_PLANES: discard sources boot absent, so the
  *   discard-free program is the ordinary one; a draw whose surface discards
  *   are reachable selects them.
  */
 const BOOT_OFF_RECORD_TIME_AXES = [
   'GPU_DRIVEN_SCENE_INDEX_EXPLICIT',
+  'GPU_SCENE_DIRECT',
   'ALPHA_MASK',
   'DIRECTIONAL_SHADOW_SIMPLE',
   // Bound 1:1 to DIRECTIONAL_SHADOW_SIMPLE by the permutation rules.
   'LEAN_LIGHTING',
   'LOD_DITHER',
   'CLIPPING_PLANES',
+  // A GPU-driven batch whose authored values read only UV0 selects it.
+  'STANDARD_LEAN_INPUTS',
 ] as const;
 
 function bootRecordTimeAxesOff(
@@ -766,7 +820,7 @@ function bootRecordTimeAxesOff(
   variantDefines: Record<string, boolean>,
 ): void {
   for (const axis of BOOT_OFF_RECORD_TIME_AXES) {
-    if (msEntry.variants.some((v) => axis in v.defines)) variantDefines[axis] = false;
+    if (materialShaderAxes(msEntry).includes(axis)) variantDefines[axis] = false;
   }
 }
 
@@ -783,30 +837,54 @@ export function selectNoColorPbrVariant(
   directionalPcssAvailable = true,
   projectorAvailable: boolean = true,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
-  const hdrpRequested = variantSet === '' || requestsClusterVariant(variantSet);
-  const probeBlendRequested = requestsProbeBlendVariant(variantSet);
-  const coverageOnlyRequested = variantSet?.includes('COVERAGE_ONLY=true') === true;
-  const visibleSurfaceRequested = variantSet?.includes('VISIBLE_SURFACE_AVAILABLE=true') === true;
-  const alphaMaskRequested = variantSet?.includes('ALPHA_MASK=true') === true;
-  const atmosphereRequested = variantSet?.includes('ATMOSPHERE_AVAILABLE=true') === true;
-  const directionalSimpleRequested =
-    variantSet?.includes('DIRECTIONAL_SHADOW_SIMPLE=true') === true;
-  const leanLightingRequested = variantSet?.includes('LEAN_LIGHTING=true') === true;
-  return manifestEntry?.variants.find(
+  if (manifestEntry === undefined) return undefined;
+  const optional = {
+    GPU_DRIVEN_SCENE_INDEX_AVAILABLE:
+      variantSet?.includes('GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true') === true,
+    LOD_DITHER: variantSet?.includes('LOD_DITHER=true') === true,
+    CLIPPING_PLANES: variantSet?.includes('CLIPPING_PLANES=true') === true,
+    WATER_WAVES_AVAILABLE: variantSet?.includes('WATER_WAVES_AVAILABLE=true') === true,
+    WATER_INFO_RGBA16: variantSet?.includes('WATER_INFO_RGBA16=true') === true,
+    ALPHA_MASK: variantSet?.includes('ALPHA_MASK=true') === true,
+    ATMOSPHERE_AVAILABLE: variantSet?.includes('ATMOSPHERE_AVAILABLE=true') === true,
+    VISIBLE_SURFACE_AVAILABLE: variantSet?.includes('VISIBLE_SURFACE_AVAILABLE=true') === true,
+    COVERAGE_ONLY: variantSet?.includes('COVERAGE_ONLY=true') === true,
+    DIRECTIONAL_SHADOW_SIMPLE: variantSet?.includes('DIRECTIONAL_SHADOW_SIMPLE=true') === true,
+    LEAN_LIGHTING: variantSet?.includes('LEAN_LIGHTING=true') === true,
+    STANDARD_LEAN_INPUTS: variantSet?.includes('STANDARD_LEAN_INPUTS=true') === true,
+    EXTENDED_LIGHTING_AVAILABLE: extendedLightingShaderAvailable,
+    DIRECTIONAL_PCSS_AVAILABLE: directionalPcssAvailable,
+    PROJECTOR_AVAILABLE: projectorAvailable,
+    PROBE_BLEND_AVAILABLE: requestsProbeBlendVariant(variantSet),
+    CLUSTER_FORWARD_AVAILABLE: variantSet === '' || requestsClusterVariant(variantSet),
+  };
+  return matchNoColorPbrVariant(manifestEntry, storageBufferCapable, optional);
+}
+
+function matchNoColorPbrVariant(
+  entry: MaterialShaderManifestEntry,
+  storageBufferCapable: boolean,
+  optional: Readonly<Record<string, boolean>>,
+): MaterialShaderManifestEntry['variants'][number] | undefined {
+  const requests = Object.entries(optional);
+  if (isShaderTemplateManifestRow(entry)) {
+    const axes = new Set(materialShaderAxes(entry));
+    if (!axes.has('STORAGE_BUFFER_AVAILABLE') || !axes.has('VERTEX_COLOR_AVAILABLE'))
+      return undefined;
+    // Source families select one legal declaration without materializing the
+    // Cartesian feature matrix. Undeclared optional axes remain unconstrained.
+    return findVariantByDefines(entry, {
+      ...Object.fromEntries(requests.filter(([axis]) => axes.has(axis))),
+      STORAGE_BUFFER_AVAILABLE: storageBufferCapable,
+      VERTEX_COLOR_AVAILABLE: false,
+    });
+  }
+  // Compiled publications can omit different optional axes on individual rows.
+  return entry.variants.find(
     ({ defines }) =>
       defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
       defines.VERTEX_COLOR_AVAILABLE === false &&
-      declaredAxisIs(defines, 'ALPHA_MASK', alphaMaskRequested) &&
-      declaredAxisIs(defines, 'ATMOSPHERE_AVAILABLE', atmosphereRequested) &&
-      declaredAxisIs(defines, 'VISIBLE_SURFACE_AVAILABLE', visibleSurfaceRequested) &&
-      declaredAxisIs(defines, 'COVERAGE_ONLY', coverageOnlyRequested) &&
-      declaredAxisIs(defines, 'DIRECTIONAL_SHADOW_SIMPLE', directionalSimpleRequested) &&
-      declaredAxisIs(defines, 'LEAN_LIGHTING', leanLightingRequested) &&
-      declaredAxisIs(defines, 'EXTENDED_LIGHTING_AVAILABLE', extendedLightingShaderAvailable) &&
-      declaredAxisIs(defines, 'DIRECTIONAL_PCSS_AVAILABLE', directionalPcssAvailable) &&
-      declaredAxisIs(defines, 'PROJECTOR_AVAILABLE', projectorAvailable) &&
-      declaredAxisIs(defines, 'PROBE_BLEND_AVAILABLE', probeBlendRequested) &&
-      declaredAxisIs(defines, 'CLUSTER_FORWARD_AVAILABLE', hdrpRequested),
+      requests.every(([axis, value]) => declaredAxisIs(defines, axis, value)),
   );
 }
 
@@ -833,12 +911,18 @@ export type MaterialShaderVertexInputContract = 'none' | 'render-material';
 
 export function resolveMaterialShaderBindingContract(
   receipt:
-    | Pick<import('@forgeax/engine-types').MaterialProgramAbi, 'bindings' | 'sceneDepth'>
+    | Pick<
+        import('@forgeax/engine-types').MaterialProgramAbi,
+        'bindings' | 'sceneDepth' | 'systemInputs' | 'entryPoints' | 'forwardFog'
+      >
     | undefined,
 ): MaterialShaderBindingContract {
   return {
     bindings: receipt?.bindings ?? 'render-material',
+    ...(receipt?.forwardFog === undefined ? {} : { forwardFog: receipt.forwardFog }),
     ...(receipt?.sceneDepth === undefined ? {} : { sceneDepth: receipt.sceneDepth }),
+    ...(receipt?.systemInputs === undefined ? {} : { systemInputs: receipt.systemInputs }),
+    ...(receipt?.entryPoints === undefined ? {} : { entryPoints: receipt.entryPoints }),
   };
 }
 
@@ -968,8 +1052,41 @@ export function requiresPreparedMaterialShader(vertexLayout: string | undefined)
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.topologySegmentInstance ||
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.topologySegmentMaterialInputInstance ||
     vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInstance ||
-    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInputInstance
+    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInputInstance ||
+    vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.waterInfoPositionFlow
   );
+}
+
+/** Layouts whose slot 3 binds GPU Scene tables; undefined for every other kind. */
+function sceneTablePipelineLayout(
+  state: SceneTablePipelineLayouts,
+  layoutKind: LayoutKind | undefined,
+): PipelineLayout | null | undefined {
+  switch (layoutKind) {
+    case 'gpu-driven-pbr':
+      return state.gpuDrivenPbrPipelineLayout ?? null;
+    case 'gpu-driven-skin':
+      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
+    case 'gpu-driven-cluster-pbr':
+      return state.gpuDrivenClusterPbrPipelineLayout ?? null;
+    case 'gpu-driven-cluster-skin':
+      return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
+    case 'scene-direct-unlit':
+      return state.sceneDirectPipelineLayout ?? null;
+    case 'scene-direct-cluster-unlit':
+      return state.sceneDirectClusterPipelineLayout ?? null;
+    default:
+      return undefined;
+  }
+}
+
+interface SceneTablePipelineLayouts {
+  readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
+  readonly sceneDirectPipelineLayout?: PipelineLayout | null;
+  readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
+  readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
 }
 
 export function selectPipelineLayoutForVariant(
@@ -981,6 +1098,8 @@ export function selectPipelineLayoutForVariant(
     readonly pbrSkinPipelineLayout: PipelineLayout | null;
     readonly pbrSkinProbePipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
+    readonly sceneDirectPipelineLayout?: PipelineLayout | null;
+    readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
@@ -992,18 +1111,8 @@ export function selectPipelineLayoutForVariant(
 ): PipelineLayout | null {
   if (state === null) return null;
   const probeBlendVariant = variantSet?.includes('PROBE_BLEND_AVAILABLE=true') === true;
-  if (layoutKind === 'gpu-driven-pbr') {
-    return state.gpuDrivenPbrPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-skin') {
-    return state.gpuDrivenPbrSkinPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-cluster-pbr') {
-    return state.gpuDrivenClusterPbrPipelineLayout ?? null;
-  }
-  if (layoutKind === 'gpu-driven-cluster-skin') {
-    return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
-  }
+  const sceneLayout = sceneTablePipelineLayout(state, layoutKind);
+  if (sceneLayout !== undefined) return sceneLayout;
   // Deformation and probe bindings are independent layout dimensions.
   if (layoutKind === 'pbr-skin') {
     return probeBlendVariant
@@ -1066,17 +1175,16 @@ export function resolveCachedMaterialShaderVariant(
 ): string | undefined {
   const sampledTextureLimit = device.limits.maxSampledTexturesPerShaderStage;
   if (manifestEntry === undefined) return requestedVariantSet;
-  const variants = manifestEntry.variants;
-  let byRequest = cache.get(variants);
+  let byRequest = cache.get(manifestEntry);
   if (byRequest === undefined) {
     byRequest = new Map();
-    cache.set(variants, byRequest);
+    cache.set(manifestEntry, byRequest);
   }
   const cacheKey = `${requestedVariantSet ?? '\u0000'}|${device.caps.backendKind}|${device.caps.storageBuffer ? '1' : '0'}|${sampledTextureLimit ?? '\u0000'}`;
   if (byRequest.has(cacheKey)) return byRequest.get(cacheKey);
   const resolved = resolveMaterialShaderVariantSet(
     requestedVariantSet,
-    variants,
+    manifestEntry,
     device.caps.backendKind,
     device.caps.storageBuffer,
     sampledTextureLimit,
@@ -1092,7 +1200,7 @@ export function resolveCachedMaterialShaderVariant(
  * missing its manifest row. Shaders declaring them also declare a capability
  * axis, so the capability gate above already admits them.
  */
-// Lean lighting stays opt-in within the simple receiver domain. Each requested
+// Receiver shape and lean lighting are independent opt-ins. Each requested
 // row is checked independently against the publication rules below.
 const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
 
@@ -1108,15 +1216,49 @@ function isProducerOptInAxis(axis: string): boolean {
     axis === 'CLIPPING_PLANES' ||
     axis === 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' ||
     axis === 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT' ||
+    axis === 'GPU_SCENE_DIRECT' ||
     axis === 'COVERAGE_ONLY' ||
-    axis === 'VISIBLE_SURFACE_AVAILABLE'
+    axis === 'VISIBLE_SURFACE_AVAILABLE' ||
+    axis === 'WATER_WAVES_AVAILABLE' ||
+    axis === 'WATER_INFO_RGBA16' ||
+    axis === 'STANDARD_LEAN_INPUTS'
+  );
+}
+
+type MaterialVariantDomain =
+  | MaterialShaderManifestEntry
+  | ReadonlyArray<{
+      readonly defines: Readonly<Record<string, boolean>>;
+    }>;
+
+function domainAxes(domain: MaterialVariantDomain): readonly string[] {
+  return 'identifier' in domain
+    ? materialShaderAxes(domain)
+    : [...new Set(domain.flatMap((variant) => Object.keys(variant.defines)))];
+}
+
+function domainAdmits(
+  domain: MaterialVariantDomain,
+  defines: Readonly<Record<string, boolean>>,
+): boolean {
+  if ('identifier' in domain) {
+    const sorted = Object.entries(defines).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    );
+    const key = sorted.every(([, value]) => value)
+      ? ''
+      : sorted.map(([key, value]) => `${key}=${value}`).join('+');
+    return findVariantByKey(domain, key) !== undefined;
+  }
+  return domain.some((variant) =>
+    Object.entries(defines).every(([name, value]) => variant.defines[name] === value),
   );
 }
 
 function resolveRuleGatedOptIns(
   defines: Record<string, boolean>,
   requested: Readonly<Record<string, boolean>>,
-  variants: readonly { readonly defines: Readonly<Record<string, boolean>> }[],
+  variants: MaterialVariantDomain,
 ): void {
   for (const axis of RULE_GATED_OPT_IN_AXES) {
     if (!(axis in defines)) continue;
@@ -1124,37 +1266,20 @@ function resolveRuleGatedOptIns(
   }
   for (const axis of RULE_GATED_OPT_IN_AXES) {
     if (defines[axis] !== true) continue;
-    if (
-      isSupportedVariantDefines(defines) &&
-      variants.some((variant) =>
-        Object.entries(defines).every(([name, value]) => variant.defines[name] === value),
-      )
-    )
-      return;
+    if (isSupportedVariantDefines(defines) && domainAdmits(variants, defines)) return;
     defines[axis] = false;
   }
 }
 
-/** Surface discard sources a draw may need even when its request leaves them off. */
-const SURFACE_DISCARD_AXES = new Set(['LOD_DITHER', 'CLIPPING_PLANES']);
-
-/**
- * Programs that already hold a discard (alpha mask, temporal coverage, visible
- * surface) are published with their discard sources folded in rather than as
- * extra rows. Turn on every source the permutation rules require for the
- * selected row, so a draw that left them off still finds its published program.
- * LOD_DITHER implies CLIPPING_PLANES, so repeat until nothing changes.
- */
-function selectRequiredDiscardSources(defines: Record<string, boolean>): void {
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const rule of violatedVariantPermutationRules(defines)) {
-      if (!SURFACE_DISCARD_AXES.has(rule.axis) || !rule.value) continue;
-      defines[rule.axis] = true;
-      changed = true;
-    }
+function parseMaterialVariantSelection(
+  requestedVariantSet: string | undefined,
+): Record<string, boolean> {
+  const requested: Record<string, boolean> = {};
+  for (const part of requestedVariantSet?.split('+') ?? []) {
+    const separator = part.indexOf('=');
+    if (separator > 0) requested[part.slice(0, separator)] = part.slice(separator + 1) === 'true';
   }
+  return requested;
 }
 
 /**
@@ -1165,14 +1290,12 @@ function selectRequiredDiscardSources(defines: Record<string, boolean>): void {
  */
 export function resolveMaterialShaderVariantSet(
   requestedVariantSet: string | undefined,
-  variants: ReadonlyArray<{
-    readonly defines: Readonly<Record<string, boolean>>;
-  }>,
+  variants: MaterialVariantDomain,
   backendKind: RhiDevice['caps']['backendKind'],
   storageBuffer: boolean,
   maxSampledTexturesPerShaderStageOrProjectorAvailable?: number | boolean,
 ): string | undefined {
-  const declaredAxes = new Set(variants.flatMap((variant) => Object.keys(variant.defines)));
+  const declaredAxes = new Set(domainAxes(variants));
   const declaresCapabilityVariants =
     declaredAxes.has('ATMOSPHERE_AVAILABLE') ||
     declaredAxes.has('COVERAGE_ONLY') ||
@@ -1180,13 +1303,13 @@ export function resolveMaterialShaderVariantSet(
     declaredAxes.has('STORAGE_BUFFER_AVAILABLE') ||
     declaredAxes.has('EXTENDED_LIGHTING_AVAILABLE') ||
     declaredAxes.has('PROJECTOR_AVAILABLE');
-  if (!declaresCapabilityVariants) return requestedVariantSet;
+  const declaresSurfaceCoverage =
+    declaredAxes.has('LOD_DITHER') || declaredAxes.has('CLIPPING_PLANES');
+  // Cooked families may contain only these two axes. Completing a partial
+  // record request is still required before the PSO's exact-key source lookup.
+  if (!declaresCapabilityVariants && !declaresSurfaceCoverage) return requestedVariantSet;
 
-  const requested: Record<string, boolean> = {};
-  for (const part of requestedVariantSet?.split('+') ?? []) {
-    const separator = part.indexOf('=');
-    if (separator > 0) requested[part.slice(0, separator)] = part.slice(separator + 1) === 'true';
-  }
+  const requested = parseMaterialVariantSelection(requestedVariantSet);
   const sampledTextureLimit =
     typeof maxSampledTexturesPerShaderStageOrProjectorAvailable === 'number'
       ? maxSampledTexturesPerShaderStageOrProjectorAvailable
@@ -1235,7 +1358,6 @@ export function resolveMaterialShaderVariantSet(
                                 // Only Engine-owned admission axes default to disabled.
                                 (requested[axis] ?? true);
   }
-  selectRequiredDiscardSources(filtered);
   resolveRuleGatedOptIns(filtered, requested, variants);
   const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return sorted.every(([, value]) => value)
@@ -1255,7 +1377,7 @@ export function normalizeMaterialShaderVariantSet(
   requestedVariantSet: string | undefined,
   manifestEntry: MaterialShaderManifestEntry | undefined,
 ): string | undefined {
-  return manifestEntry !== undefined && manifestEntry.variants.length === 0
+  return manifestEntry !== undefined && materialShaderAxes(manifestEntry).length === 0
     ? undefined
     : requestedVariantSet;
 }
@@ -1276,12 +1398,12 @@ export function resolveMaterialPipelineVariantSet(
   let variantSet = normalizeMaterialShaderVariantSet(requestedVariantSet, manifestEntry);
   if (
     !vertexLayoutProjected &&
-    manifestEntry.variants.some((variant) => 'VERTEX_COLOR_AVAILABLE' in variant.defines)
+    materialShaderAxes(manifestEntry).includes('VERTEX_COLOR_AVAILABLE')
   ) {
     variantSet = withoutVertexColorAxis(variantSet, manifestEntry);
   }
   if (pipelineShaderId.startsWith('forgeax::')) return variantSet;
-  return declaredVariantAxesOnly(variantSet, manifestEntry);
+  return declaredMaterialVariantKey(variantSet, manifestEntry);
 }
 
 function withoutVertexColorAxis(
@@ -1291,30 +1413,17 @@ function withoutVertexColorAxis(
   if (variantSet !== '') {
     return variantSet?.replace('VERTEX_COLOR_AVAILABLE=true', 'VERTEX_COLOR_AVAILABLE=false');
   }
-  const noColorVariant = manifestEntry.variants.find(
-    (variant) =>
-      variant.defines.VERTEX_COLOR_AVAILABLE === false &&
-      Object.entries(variant.defines).every(
-        ([axis, value]) => axis === 'VERTEX_COLOR_AVAILABLE' || value === true,
-      ),
-  );
-  return noColorVariant?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
-}
-
-function declaredVariantAxesOnly(
-  variantSet: string | undefined,
-  manifestEntry: MaterialShaderManifestEntry,
-): string | undefined {
-  if (variantSet === undefined || variantSet === '') return variantSet;
-  const declaredAxes = new Set<string>();
-  for (const variant of manifestEntry.variants) {
-    for (const axis of Object.keys(variant.defines)) declaredAxes.add(axis);
-  }
-  const filteredVariantParts = variantSet
-    .split('+')
-    .filter((part) => declaredAxes.has(part.slice(0, part.indexOf('='))))
-    .sort();
-  return filteredVariantParts.length === 0 ? undefined : filteredVariantParts.join('+');
+  // Lean inputs narrow the vertex stage only for a material that admits them;
+  // the general-input row stays the default (UE emits extra interpolants unless
+  // the material proves it does not read them, HLSLMaterialTranslator.cpp:15709-15716).
+  const defines = materialShaderAxes(manifestEntry)
+    .map(
+      (axis) =>
+        [axis, axis !== 'VERTEX_COLOR_AVAILABLE' && axis !== 'STANDARD_LEAN_INPUTS'] as const,
+    )
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const key = defines.map(([axis, value]) => `${axis}=${value}`).join('+');
+  return findVariantByKey(manifestEntry, key)?.definesKey ?? 'VERTEX_COLOR_AVAILABLE=false';
 }
 
 /**
@@ -1340,9 +1449,11 @@ export function manifestVariantShaderEntry(
       program: registry.materialProgram(
         materialShaderSource(variant),
         variant.entryPoints ?? variant.receipt?.entryPoints,
+        variant.forwardFog ?? variant.receipt?.forwardFog,
       ),
       paramSchema: entry.paramSchema,
       paramSchemaProjection: entry.paramSchemaProjection,
+      ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
     };
   }
   return entry;
@@ -1385,7 +1496,7 @@ export function materialPipelineCacheKey(
 /** Attachment axis: declared extra outputs follow the primary color format. */
 export function materialPipelineAttachments(
   passKind: PassKind,
-  colorFormat: GPUTextureFormat,
+  colorFormat: GPUTextureFormat | null,
   additionalColorFormats: readonly GPUTextureFormat[] | undefined,
   depthFormatOverride: GPUTextureFormat | null | undefined,
   sampleCount: number,
@@ -1393,11 +1504,12 @@ export function materialPipelineAttachments(
   colorless = false,
 ): PipelineSpec['attachments'] {
   return {
-    colorFormats: colorless
-      ? []
-      : additionalColorFormats === undefined
-        ? colorFormatsForPassKind(passKind, colorFormat)
-        : [colorFormat, ...additionalColorFormats],
+    colorFormats:
+      colorless || colorFormat === null
+        ? []
+        : additionalColorFormats === undefined
+          ? colorFormatsForPassKind(passKind, colorFormat)
+          : [colorFormat, ...additionalColorFormats],
     depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
     sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
   };
@@ -1418,11 +1530,10 @@ function materialPipelineDepthFormat(
   passKind: PassKind,
   depthFormatOverride: GPUTextureFormat | null | undefined,
 ): GPUTextureFormat | undefined {
+  if (depthFormatOverride === null) return undefined;
   if (passKindPolicyTable[passKind]?.shape === 'depth-only')
     return depthFormatOverride ?? 'depth32float';
-  return depthFormatOverride === null
-    ? undefined
-    : (depthFormatOverride ?? 'depth32float-stencil8');
+  return depthFormatOverride ?? 'depth32float-stencil8';
 }
 
 /**
@@ -1460,12 +1571,12 @@ export function resolveFeatureShaderSource(
   if (entry === undefined) return undefined;
   const variantSet = resolveMaterialShaderVariantSet(
     undefined,
-    entry.variants,
+    entry,
     device.caps.backendKind,
     device.caps.storageBuffer,
     device.limits.maxSampledTexturesPerShaderStage,
   );
   return variantSet === undefined
     ? entry.composedWgsl
-    : entry.variants.find((variant) => variant.definesKey === variantSet)?.composedWgsl;
+    : findVariantByKey(entry, variantSet)?.composedWgsl;
 }

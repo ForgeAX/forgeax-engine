@@ -110,6 +110,70 @@ const submitted = (events: readonly RendererEvent[]) =>
   events.filter((event) => event.kind === 'frame-submitted');
 
 describe('Renderer scheduled preparation lifetime', () => {
+  it('submits a complete cube round before waiting for the filtered environment', async () => {
+    const test = fixture(async () => cancelled());
+    const gpu = deferred<RenderResult<void, RenderError>>();
+    const preparation = deferred<RenderResult<void, RenderError>>();
+    const filtering = deferred<void>();
+    const target = {} as Parameters<Renderer['captureRenderTargetEnvironment']>[0];
+    const environment = {
+      source: { kind: 'render-target-environment' } as const,
+      release: () => ok(undefined),
+    };
+    const pending: FrameReceipt = {
+      ...receipt(0),
+      presentation: 'pending',
+      completed: gpu.promise,
+      preparationCompleted: preparation.promise,
+    };
+    const faces = Array.from({ length: 6 }, (_, i) => ({
+      ...receipt(i + 1),
+      completed: gpu.promise,
+    }));
+    test.host.drawFrame.mockReturnValueOnce(ok(pending));
+    for (const face of faces) test.host.drawFrame.mockReturnValueOnce(ok(face));
+    const filter = vi.fn(async () => {
+      await filtering.promise;
+      return ok(environment);
+    });
+    Object.assign(test.host, { prepareRenderTargetEnvironment: filter });
+    const onFaceSubmitted = vi.fn();
+    const prepareFace = vi.fn((layer: number) => ({
+      source: {} as import('../render-contract').RenderWorldLease,
+      camera: { entityKey: layer },
+      clearColor: true,
+      clearDepth: true,
+      clearStencil: false,
+    }));
+    const capture = test.renderer.captureRenderTargetEnvironment(target, {
+      prepareFace,
+      onFaceSubmitted,
+    });
+    const published = vi.fn();
+    void capture.then(published);
+    try {
+      await vi.waitFor(() => expect(test.host.drawFrame).toHaveBeenCalledOnce());
+      expect(onFaceSubmitted).not.toHaveBeenCalled();
+      expect(filter).not.toHaveBeenCalled();
+      preparation.resolve(ok(undefined));
+      await vi.waitFor(() => expect(filter).toHaveBeenCalledOnce());
+      expect(filter).toHaveBeenCalledWith(target, faces);
+      expect(prepareFace.mock.calls.flat()).toEqual([0, 1, 2, 3, 4, 5]);
+      expect(onFaceSubmitted.mock.calls).toEqual(faces.map((face, layer) => [layer, face]));
+      const layers = test.host.drawFrame.mock.calls.map(([frame]) =>
+        'targetWrite' in frame ? frame.targetWrite?.layer : undefined,
+      );
+      expect(layers).toEqual([0, 0, 1, 2, 3, 4, 5]);
+      expect(published).not.toHaveBeenCalled();
+    } finally {
+      preparation.resolve(ok(undefined));
+      gpu.resolve(ok(undefined));
+      filtering.resolve(undefined);
+    }
+    expect(await capture).toEqual(ok(environment));
+    expect(published).toHaveBeenCalledOnce();
+  });
+
   it('passes a live cancellation/current owner and publishes only the exact successful receipt', async () => {
     const prepared = deferred<void>();
     const completion = deferred<RenderResult<void, RenderError>>();

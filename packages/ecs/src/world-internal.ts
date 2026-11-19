@@ -3,7 +3,7 @@
  *
  * This module is intentionally not re-exported by the package entry points.
  * It keeps implementation access out of World's discoverable API while
- * retaining direct bound calls for the hot query and structural paths.
+ * retaining stable owner references and bound mutation calls.
  */
 // Bundled ECS entry points (`index` and `projection`) each include this module
 // in their own closure. A plain Symbol() therefore gives World and projection
@@ -12,24 +12,22 @@
 // exposes this key, while Symbol.for keeps source/dist and split bundles on
 // one identity.
 import type { Result } from '@forgeax/engine-types';
-import type { BufferPool } from './buffer-pool';
-import type { Component, ComponentSchema, ShapeOf } from './component';
+import type { Component, ComponentData, ComponentSchema, ShapeOf } from './component';
 import type { EntityHandle } from './entity-handle';
+import type { EcsError, RelationshipSelfCycleError } from './errors';
 import type { WorldExecutionFault } from './execution/shared-kernel';
-import type { WorldFrameArena } from './frame-arena';
-import type { ResourceStore } from './resource';
+import type { RelationshipOverlay, RelationshipRole } from './relationship-index';
 import type { Schedule } from './schedule';
 import type { ScheduleToken } from './schedule-token';
-import type { SharedRefStore } from './shared-ref-store';
 import type { Archetype } from './storage/archetype';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ArrayRangesChange } from './storage/array-range-log';
+import type { ArrayStore } from './storage/array-store';
 import type { ChangeTicks } from './storage/change-detection';
 import type { ChangeIndex } from './storage/change-index';
 import type { EntityRecords } from './storage/entity-records';
 import type { Table } from './storage/table';
 import type { ClockWriter } from './time';
-import type { ComponentData, EcsError } from './world';
 
 /** @internal Package-private identity; absent from the public export map. */
 export const worldInternal: unique symbol = Symbol.for(
@@ -61,53 +59,57 @@ export interface WorldInternal {
     component: Component,
     fieldName: string,
   ) => ArrayLike<number> | undefined;
-  readonly getBufferPool: () => BufferPool;
-  readonly getFrameArena: () => WorldFrameArena;
-  readonly maintainMemory: () => void;
-  readonly getClockWriter: () => ClockWriter;
+  readonly arrayStore: ArrayStore;
+  readonly openScheduleArena: () => boolean;
+  readonly closeScheduleArena: () => void;
+  readonly resumeFixedStep: () => void;
+  /** Rotate removed-component event buffers; called once per `World.update()`. */
+  readonly updateRemovedComponents: () => void;
+  readonly clockWriter: ClockWriter;
   readonly getComponentChange: (
     entity: EntityHandle,
     componentId: number,
   ) => ChangeTicks | undefined;
-  readonly getComponentChangeIndex: (id: number) => ChangeIndex | undefined;
-  readonly getStructuralChangeIndex: () => ChangeIndex;
-  readonly getComponentMutationEpochs: () => readonly number[];
+  /** Visit slots whose component was written in `(since, upper]`; returns rows examined. */
+  readonly visitComponentChanged: (
+    componentId: number,
+    since: number,
+    upper: number,
+    visit: (slot: number) => void,
+  ) => number;
+  readonly structuralChangeIndex: ChangeIndex;
+  readonly componentMutationEpochs: readonly number[];
   readonly getEntityArchetype: (entity: EntityHandle) => Archetype | undefined;
   readonly getFixedAccumulator: () => number;
-  readonly getGraph: () => ArchetypeGraph;
+  readonly graph: ArchetypeGraph;
   readonly getMutationEpoch: () => number;
   readonly getQueryRow: (
     entity: EntityHandle,
     component: Component,
   ) => Result<Record<string, unknown>, EcsError>;
-  readonly getRecords: () => EntityRecords;
-  readonly getRelationshipEpoch: (component: Component) => number;
-  readonly getRelationshipTargetEntities: (
-    component: Component,
-    target: EntityHandle,
-  ) => readonly EntityHandle[];
-  readonly getResources: () => ResourceStore;
+  readonly records: EntityRecords;
   readonly getSchedule: (token: ScheduleToken) => Schedule | undefined;
-  readonly getSchedules: () => ReadonlyMap<ScheduleToken, Schedule>;
-  readonly getSharedRefs: () => SharedRefStore;
+  readonly schedules: ReadonlyMap<ScheduleToken, Schedule>;
   readonly getStructureEpoch: () => number;
   readonly lookupAlive: (
     entity: EntityHandle,
     operation: string,
     component?: string,
   ) => Result<number, EcsError>;
-  readonly markComponentChanged: (entity: EntityHandle, componentId: number) => void;
+  readonly markComponentChanged: (entity: EntityHandle, componentId: number) => boolean;
+  /**
+   * Index a change the caller already wrote to the entity's `changed` column,
+   * at an epoch it reserved with `nextMutationEpoch`.
+   */
+  readonly publishLocatedChange: (slot: number, componentId: number, epoch: number) => void;
   readonly markComponentRangeChanged: (
     table: Table,
     componentId: number,
     rowStart: number,
     rowCount: number,
   ) => void;
+  /** Materialize a reserved slot from the payloads returned by preflight. */
   readonly materializeEntity: (
-    entity: EntityHandle,
-    componentDatas: ComponentData[],
-  ) => Result<void, EcsError>;
-  readonly materializePendingEntity: (
     entity: EntityHandle,
     componentDatas: ComponentData[],
   ) => Result<void, EcsError>;
@@ -121,11 +123,20 @@ export interface WorldInternal {
     epoch: number,
   ) => void;
   readonly preflightComponentData: (
+    operation: 'spawn' | 'addComponent' | 'command',
     holder: EntityHandle | null,
     componentData: ComponentData,
     pendingEntities?: ReadonlySet<number>,
     unavailableEntities?: ReadonlySet<number>,
-  ) => Result<void, EcsError>;
+    relationshipOverlay?: RelationshipOverlay,
+  ) => Result<Readonly<ComponentData>, EcsError>;
+  readonly relationshipCycleError: (
+    component: Component,
+    role: Extract<RelationshipRole, { kind: 'source' }>,
+    start: EntityHandle | null,
+    holder: EntityHandle,
+    overlay?: RelationshipOverlay,
+  ) => RelationshipSelfCycleError | null;
   readonly readRow: <S extends ComponentSchema>(
     archetype: Archetype,
     component: Component<string, S>,

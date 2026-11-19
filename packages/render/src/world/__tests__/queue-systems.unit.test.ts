@@ -1,12 +1,14 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { RenderQueue as DrawQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type FrameRecording, submitFrameRecordings } from '../../__tests__/frame-recording-driver';
-
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract';
 import type { DispatchEntry } from '../../render-system-extract';
+import { RenderPhaseSortOrder } from '../../system-order';
 import type { TransparentSortSource } from '../../systems/transparent-dispatch';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
 import { RENDER_PHASE_SORT_SYSTEM, registerQueueSystems, viewPhaseQueue } from '../queue-systems';
@@ -73,7 +75,9 @@ describe('render-phase-sort', () => {
   it('leaves the staged dispatch unordered once the system is removed', () => {
     const world = createRenderWorld();
     registerQueueSystems(world);
-    expect(world.removeSystem(RenderQueue, RENDER_PHASE_SORT_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(RenderQueue, registeredSystem(world, RenderQueue, 'render-phase-sort')).ok,
+    ).toBe(true);
     const view = world.spawn().unwrap();
     stage(world, view);
     expect(world.run(RenderQueue).ok).toBe(true);
@@ -85,14 +89,13 @@ describe('render-phase-sort', () => {
     const world = createRenderWorld();
     registerQueueSystems(world);
     const events: string[] = [];
-    world
-      .addSystem(RenderQueue, {
-        name: 'trace-queue',
-        queries: [],
-        after: [RENDER_PHASE_SORT_SYSTEM],
-        fn: () => events.push('queue'),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'trace-queue',
+      queries: [],
+      after: [RenderPhaseSortOrder],
+      fn: () => events.push('queue'),
+    });
+    world.addSystem(RenderQueue, systemToken1).unwrap();
     function* view(name: string): FrameRecording {
       const entity = world.spawn().unwrap();
       stage(world, entity);

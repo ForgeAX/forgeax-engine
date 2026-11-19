@@ -15,7 +15,7 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 //   5. console.error fires 0 times.
 //   6. frames >= SMOKE_MIN_FRAMES.
 //   7. The per-frame render graph contains the 10 declarative Bloom
-//      passes (five horizontal / five vertical / bloom-composite)
+//      filter passes (five horizontal / five vertical; Grade composites them)
 //      — proves the bloom chain is wired in the compiled graph.
 //   8. Camera bloom off -> on -> off transitions prove exact-zero roster
 //      removal and re-admission without a second Standard post topology.
@@ -57,7 +57,6 @@ const EXPECTED_BLOOM_TIMING_PASSES = Object.freeze([
   ...Array.from({ length: 5 }, (_, level) => [
     `bloom-horizontal-${level}`, `bloom-vertical-${level}`,
   ]).flat(),
-  'bloom-composite',
 ]);
 
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
@@ -330,6 +329,7 @@ const { Transform } = scenePkg;
 
 
 const here = dirname(fileURLToPath(import.meta.url));
+const evidenceDir = resolve(process.env.SMOKE_EVIDENCE_DIR ?? resolve(here, '..', 'evidence'));
 const repoRoot = resolve(here, '..', '..', '..', '..');
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = URL.createObjectURL(new Blob([readFileSync(MANIFEST_PATH)], { type: 'application/json' }));
@@ -549,6 +549,9 @@ function assertBloomRoster(label, expected) {
   if (JSON.stringify(actual) !== JSON.stringify(expectedNames)) {
     transitionFailures.push(`${label}: expected ${JSON.stringify(expectedNames)}, got ${JSON.stringify(actual)}`);
   }
+  if (expected && !app.renderer.inspect().perFramePassNames.includes('standard-grade')) {
+    transitionFailures.push(`${label}: native Grade must consume the five filtered Bloom levels`);
+  }
   console.log(`[smoke] bloom=${label} roster=${JSON.stringify(actual)}`);
 }
 
@@ -632,6 +635,7 @@ async function captureStage(label, width, height, extra = {}) {
     submittedFrames: submittedFrameEvents.length,
     roster: [...bloomPassNames()],
     bloom: inspection.bloom,
+    outputPasses: [...inspection.perFramePassNames],
     readback,
     structuredErrors: [...onErrorEvents],
     ...(readbackError === undefined ? {} : { readbackError }),
@@ -644,7 +648,9 @@ async function captureStage(label, width, height, extra = {}) {
 
 // Run frames at the original size and verify the exact on -> off ->
 // intensity-zero-with-enum-on -> on roster.
-let totalFrames = await driveFrames(CAPTURE_GPU_TIMINGS ? SMOKE_MIN_FRAMES : REQUESTED_FRAMES);
+let totalFrames = await driveFrames(
+  CAPTURE_GPU_TIMINGS ? Math.max(SMOKE_MIN_FRAMES, REQUESTED_FRAMES) : REQUESTED_FRAMES,
+);
 assertBloomRoster('on', true);
 await captureStage('on', WIDTH, HEIGHT);
 
@@ -941,8 +947,8 @@ const performanceEvidence = CAPTURE_GPU_TIMINGS
   : undefined;
 let timingFailure;
 if (performanceEvidence !== undefined) {
-  const performancePath = resolve(here, '..', 'evidence', 'performance-dawn-result.json');
-  mkdirSync(resolve(here, '..', 'evidence'), { recursive: true });
+  const performancePath = resolve(evidenceDir, 'performance-dawn-result.json');
+  mkdirSync(evidenceDir, { recursive: true });
   writeFileSync(performancePath, `${JSON.stringify(performanceEvidence, null, 2)}\n`);
   console.log(`[smoke] performance evidence=${performancePath}`);
   if (performanceEvidence.measurement.status !== 'pass') {
@@ -1014,8 +1020,8 @@ if (onStage?.readback === undefined || offStage?.readback === undefined) {
     '(g) Bloom contribution oracle: on/off numeric RGB readback is identical; scene contribution did not reach the Bloom graph',
   );
 }
-if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 11) {
-  failures.push(`(h) Bloom inspection did not report a valid eleven-pass graph: ${JSON.stringify(onStage?.bloom)}`);
+if (onStage?.bloom?.graphStatus !== 'valid' || onStage?.bloom?.passCount !== 10 || !onStage?.outputPasses?.includes('standard-grade')) {
+  failures.push(`(h) Bloom inspection did not report a valid ten-filter graph with native Grade composition: ${JSON.stringify(onStage?.bloom)}`);
 }
 if (onStage?.bloom?.residentChildBytes !== onStage?.bloom?.targetBytes || onStage?.bloom?.residentChildBytes <= 0) {
   failures.push(`(h0) Bloom inspection did not report descriptor-derived resident bytes: ${JSON.stringify(onStage?.bloom)}`);
@@ -1032,8 +1038,8 @@ const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
 const evidenceFileName = FALSIFY_BLOOM ? 'falsify-dawn-result.json' : 'dawn-result.json';
-const evidencePath = resolve(here, '..', 'evidence', evidenceFileName);
-mkdirSync(resolve(here, '..', 'evidence'), { recursive: true });
+const evidencePath = resolve(evidenceDir, evidenceFileName);
+mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(
   evidencePath,
   `${JSON.stringify(
@@ -1072,9 +1078,9 @@ if (failures.length > 0) {
 
 console.log(`[smoke] PASS - frames=${totalFrames}, app.onError=0, resize=${WIDTH}x${HEIGHT}->${RESIZE_W}x${RESIZE_H} (${resizeFrames}f, 0 new onError), backend=${app.renderer.inspect().capabilities.backendKind}`);
 
-// smoke:all invokes this file again for timing and falsification. Only the
-// correctness lifecycle emits the gate receipt; the outer command must also pass.
-if (!CAPTURE_GPU_TIMINGS && !FALSIFY_BLOOM)
+// The timed smoke also checks the lifecycle. Its falsifier runs separately
+// and must not emit a success receipt.
+if (!FALSIFY_BLOOM)
   emitSmokeReceipt('hello-bloom/smoke:all', submittedFrameEvents.length, 'smoke:all');
 
 if (sharedDevice) sharedDevice.destroy?.();

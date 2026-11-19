@@ -5,12 +5,14 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer as constructRenderer } from '../../assembly/factory';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { ANTIALIAS_NONE, Camera, TONEMAP_ACES_FILMIC } from '../../components/camera';
 import type { RenderFeaturePlanContext, RenderFeatureWork } from '../../features/plan';
 import type { RenderFeature } from '../../features/types';
+
 import {
   RENDER_FEATURE_PLAN_RELEASE_SYSTEM,
   RENDER_FEATURE_PLAN_SYSTEM,
@@ -136,13 +138,18 @@ it('compiles the Feature composite plan only from the render-feature-plan Render
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frame = { leases: [lease], camera: { lease }, environment: { lease } };
+    const frame = { source: lease };
 
     expect(renderer.draw(frame).ok).toBe(true);
     expect(errors).toEqual([]);
     expect(renderer.perFramePassNames.some((name) => name.includes(PASS))).toBe(true);
     // Compile has no other Feature plan authority: the frame fails naming the system.
-    expect(renderWorld.removeSystem(RenderQueue, RENDER_FEATURE_PLAN_SYSTEM).ok).toBe(true);
+    expect(
+      renderWorld.removeSystem(
+        RenderQueue,
+        registeredSystem(renderWorld, RenderQueue, 'render-feature-plan'),
+      ).ok,
+    ).toBe(true);
     const submitted = vi.spyOn(renderer.device.queue, 'submit');
     renderer.draw(frame);
     expect(submitted).not.toHaveBeenCalled();

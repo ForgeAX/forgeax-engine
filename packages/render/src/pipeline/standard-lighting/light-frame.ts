@@ -47,6 +47,8 @@ export interface StandardLightFrame {
   readonly far: number;
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
   readonly lightCount: StandardLightCount;
+  /** Point/spot/rect lights the view's Cluster dropped before `local` was built. */
+  readonly droppedLocalLights?: number;
   /** Graph path carried into inspection from the active Standard profile. */
   readonly renderPath: 'forward' | 'deferred';
 }

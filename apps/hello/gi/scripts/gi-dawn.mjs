@@ -1,3 +1,4 @@
+import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
 import { useBuiltAssetSource, useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -163,6 +164,7 @@ export function createCanvas(width, height, onDevice = () => {}) {
 let manifestUrl;
 export async function engineManifestUrl() {
   if (manifestUrl) return manifestUrl;
+  await ensureShaderManifestProfile('point-ssao');
   const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
   manifestUrl = URL.createObjectURL(
     new Blob([JSON.stringify(await buildEngineShaderManifest({ pointShadows: true }))], {
@@ -392,12 +394,8 @@ export async function createFrameDriver({ renderer, world, lease }) {
   const draw = async (domains) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    return drawReadyFrame(renderer, {
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    }, domains);
+    return drawReadyFrame(renderer, { source: lease,
+      geometryLane: 'direct' }, domains);
   };
   const observe = async (domains, include = domains) => {
     const receipt = await draw(domains);

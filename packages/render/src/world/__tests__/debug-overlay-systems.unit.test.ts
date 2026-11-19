@@ -1,9 +1,12 @@
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
+
 import { mat4 } from '@forgeax/engine-math';
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { DeviceScope } from '../../device/device-scope';
+import type { GpuBuffer } from '../../gpu-resource';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { DebugOverlayBatch, RenderDebugOverlay } from '../../render-contract';
 import type { ExtractedFrame } from '../../render-system-extract';
@@ -15,6 +18,7 @@ import {
   RENDER_DEBUG_OVERLAY_DISCARD_SYSTEM,
   RENDER_DEBUG_OVERLAY_PREPARE_SYSTEM,
   registerDebugOverlaySystems,
+  ViewDebugOverlay,
   viewDebugOverlayOf,
 } from '../debug-overlay-systems';
 import {
@@ -38,7 +42,7 @@ import {
 } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const IDENTITY = mat4.identity(mat4.create());
 
 interface Source extends RenderDebugOverlay {
@@ -126,15 +130,14 @@ async function setup(viewCount = 2) {
     );
     world.addComponent(view, { component: ViewRecorder, data: { state } }).unwrap();
   }
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => {
-        for (const view of views) stageViewFrame(world, view, opts, true);
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => {
+      for (const view of views) stageViewFrame(world, view, opts, true);
+    },
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
   const pass = () => {
     const calls: string[] = [];
     const encoder = {
@@ -145,7 +148,7 @@ async function setup(viewCount = 2) {
     } as unknown as RhiRenderPassEncoder;
     return { calls, encoder };
   };
-  return { world, device, source, errors, views, runtimes, pass };
+  return { world, device, scope: base.deviceScope, source, errors, views, runtimes, pass };
 }
 
 describe('debug overlay systems', () => {
@@ -167,7 +170,8 @@ describe('debug overlay systems', () => {
   });
 
   it('takes the source once per frame and draws it in both views', async () => {
-    const { world, source, views, runtimes, pass } = await setup();
+    const { world, device, source, views, runtimes, pass } = await setup();
+    const writeBuffer = vi.spyOn(device.queue, 'writeBuffer');
     source.pending = batch(4);
     beginRenderFrame(world, 1);
     expect(source.takes).toBe(1);
@@ -179,8 +183,66 @@ describe('debug overlay systems', () => {
       return target.calls;
     });
     expect(drawn).toEqual(Array(2).fill(['pipeline', 'bindGroup', 'vertexBuffer', 'draw:4']));
+    const viewProjectionWrite = writeBuffer.mock.calls.find(
+      (call) => call[2] instanceof Float32Array,
+    );
+    expect(viewProjectionWrite).toHaveLength(3);
+    expect((viewProjectionWrite?.[2] as Float32Array).byteLength).toBe(64);
     expect(inspectDebugOverlay(world)).toMatchObject({ kind: 'staged', vertexCount: 4 });
     endRenderFrame(world);
+  });
+
+  it('invalidates retired view bindings without retiring shared overlay residency', async () => {
+    const { world, device, scope, source, views, runtimes, pass } = await setup(1);
+    const view = views[0] as EntityHandle;
+    const runtime = runtimes.get(view) as RenderSystemInternals;
+    const firstScope = scope.createChild('overlay-view');
+    const context = { deviceScope: firstScope };
+    Object.assign(runtime, { viewContext: context });
+    source.pending = batch(4);
+    beginRenderFrame(world, 1);
+    const state = world
+      .resolveUniqueRef<{ binding: { readonly uniform: GpuBuffer } | undefined }>(
+        world.get(view, ViewDebugOverlay).unwrap().state,
+      )
+      .unwrap();
+    const first = state.binding;
+    const vertexBuffer = debugOverlayHolderOf(world)?.residency.vertexBuffer;
+    expect(first).toBeDefined();
+    expect(vertexBuffer).toBeDefined();
+    endRenderFrame(world);
+
+    firstScope.beginRetire();
+    const secondScope = scope.createChild('overlay-view');
+    context.deviceScope = secondScope;
+    source.pending = batch(4);
+    beginRenderFrame(world, 2);
+    const second = state.binding;
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    expect(first?.uniform.isDestroyed).toBe(false);
+    expect(debugOverlayHolderOf(world)?.residency.vertexBuffer).toBe(vertexBuffer);
+    endRenderFrame(world);
+
+    firstScope.retire();
+    expect(first?.uniform.isDestroyed).toBe(true);
+    expect(state.binding).toBe(second);
+    expect(second?.uniform.isDestroyed).toBe(false);
+    secondScope.retire();
+    expect(state.binding).toBeUndefined();
+    expect(second?.uniform.isDestroyed).toBe(true);
+    expect(device.bookkeeper.isDestroyed(vertexBuffer)).toBe(false);
+
+    context.deviceScope = scope.createChild('overlay-view');
+    source.pending = batch(4);
+    beginRenderFrame(world, 3);
+    const target = pass();
+    encodeDebugOverlay(runtime, target.encoder, IDENTITY, 'rgba8unorm');
+    expect(state.binding).toBeDefined();
+    expect(state.binding).not.toBe(second);
+    expect(target.calls).toEqual(['pipeline', 'bindGroup', 'vertexBuffer', 'draw:4']);
+    endRenderFrame(world);
+    scope.dispose();
   });
 
   it('does not accumulate geometry across frames that never draw', async () => {
@@ -243,7 +305,12 @@ describe('debug overlay systems', () => {
 
   it('fails naming the prepare system once it is removed', async () => {
     const { world, source, views, runtimes } = await setup(1);
-    world.removeSystem(RenderPrepare, RENDER_DEBUG_OVERLAY_PREPARE_SYSTEM).unwrap();
+    world
+      .removeSystem(
+        RenderPrepare,
+        registeredSystem(world, RenderPrepare, 'render-debug-overlay-prepare'),
+      )
+      .unwrap();
     source.pending = batch(2);
     beginRenderFrame(world, 1);
     const runtime = runtimes.get(views[0] as EntityHandle) as RenderSystemInternals;
@@ -254,7 +321,12 @@ describe('debug overlay systems', () => {
 
   it('keeps a staged outcome after a blocked frame once the discard system is removed', async () => {
     const { world, source, views } = await setup(1);
-    world.removeSystem(RenderCleanup, RENDER_DEBUG_OVERLAY_DISCARD_SYSTEM).unwrap();
+    world
+      .removeSystem(
+        RenderCleanup,
+        registeredSystem(world, RenderCleanup, 'render-debug-overlay-discard'),
+      )
+      .unwrap();
     const view = views[0] as EntityHandle;
     source.pending = batch(2);
     beginRenderFrame(world, 1);

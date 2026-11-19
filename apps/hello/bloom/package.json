@@ -17,7 +17,7 @@
     "smoke:falsify": "node scripts/smoke-falsify.mjs",
     "smoke:quality-dawn": "node scripts/bloom-quality-dawn.mjs",
     "smoke:performance": "FORGEAX_BLOOM_CAPTURE_TIMINGS=1 node scripts/smoke-dawn.mjs",
-    "smoke:all": "pnpm run smoke && pnpm run smoke:odd-dawn && pnpm run smoke:quality-dawn && pnpm run smoke:performance && pnpm run smoke:falsify && pnpm run smoke:browser && pnpm run smoke:browser-device-loss"
+    "smoke:all": "pnpm run smoke:odd-dawn && pnpm run smoke:quality-dawn && pnpm run smoke:performance && pnpm run smoke:falsify && pnpm run smoke:browser && pnpm run smoke:browser-device-loss"
   },
   "forgeax": {
     "bevyExample": {

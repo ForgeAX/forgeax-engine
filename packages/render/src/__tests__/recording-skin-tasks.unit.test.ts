@@ -1,7 +1,6 @@
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { worldEntityKey } from '../record/frame-snapshot';
 import { RecordingSkinTasks } from '../record/recording-skin-tasks';
 import { skinTaskFixture } from './skin-task-fixture';
 
@@ -22,8 +21,7 @@ it('keeps one device per open recording and retires the old owner only after com
   };
   const tasks = new RecordingSkinTasks({ device: () => current, roots, reportError: vi.fn() });
   const destroyA = vi.spyOn(a, 'destroyBuffer');
-  const demand = (row: typeof f.first) =>
-    tasks.prepareDemand([row]).get(worldEntityKey(row.worldId, row.entityKey));
+  const demand = (row: typeof f.first) => tasks.prepareDemand([row]).get(row.entityKey);
   try {
     tasks.beginRecording();
     const first = demand(f.first);
@@ -62,11 +60,11 @@ it('composes each Skin row once per view and marks a row without a Scene slot', 
     tasks.beginRecording();
     expect(tasks.prepareDemand([]).size).toBe(0);
     expect(tasks.paletteUploadBytes).toBe(0);
-    const demand = tasks.prepareDemand([f.first, f.first, { worldId: 0, entityKey: 99 }]);
-    expect([...demand.keys()]).toEqual([worldEntityKey(0, 17), worldEntityKey(0, 99)]);
-    expect(demand.get(worldEntityKey(0, 17))).toBeDefined();
-    expect(demand.has(worldEntityKey(0, 99))).toBe(true);
-    expect(demand.get(worldEntityKey(0, 99))).toBeUndefined();
+    const demand = tasks.prepareDemand([f.first, f.first, { entityKey: 99 }]);
+    expect([...demand.keys()]).toEqual([17, 99]);
+    expect(demand.get(17)).toBeDefined();
+    expect(demand.has(99)).toBe(true);
+    expect(demand.get(99)).toBeUndefined();
     expect(tasks.complete(false)).toEqual([]);
   } finally {
     tasks.dispose();
@@ -91,15 +89,15 @@ it('composes and uploads every demanded row in RenderQueue, before any draw read
     expect('task' in tasks).toBe(false);
     const demand = tasks.prepareDemand([f.first, f.second]);
     expect(demand.size).toBe(2);
-    const first = demand.get(worldEntityKey(f.first.worldId, f.first.entityKey));
-    const second = demand.get(worldEntityKey(f.second.worldId, f.second.entityKey));
+    const first = demand.get(f.first.entityKey);
+    const second = demand.get(f.second.entityKey);
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(writeBuffer).toHaveBeenCalled();
     expect(tasks.paletteUploadBytes).toBe(2 * 2 * 64);
     // A second demand in the same recording reuses the composed binding.
     const writes = writeBuffer.mock.calls.length;
-    expect(tasks.prepareDemand([f.first]).get(worldEntityKey(0, 17))).toBe(first);
+    expect(tasks.prepareDemand([f.first]).get(17)).toBe(first);
     expect(writeBuffer.mock.calls.length).toBe(writes);
     expect(tasks.paletteUploadBytes).toBe(2 * 2 * 64);
     expect(tasks.complete(false)).toEqual([]);

@@ -1,0 +1,1 @@
+{ "id": "water-r6-legacy-rt-fluid", "name": "Water R6 Local Fluid", "schemaVersion": "3.0.0", "roots": {}, "assetRoots": ["assets"], "assetLibraries": ["@forgeax/engine/content"] }

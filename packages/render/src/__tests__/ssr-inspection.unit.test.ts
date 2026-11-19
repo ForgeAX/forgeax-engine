@@ -10,7 +10,7 @@ const camera = {
   projection: 'perspective' as const,
   near: 0.1,
   far: 100,
-  screenSpaceReflection: { maxDistance: 40, thickness: 0.2, maxRoughness: 0.6 },
+  screenSpaceReflection: { waterTemporal: 0, maxDistance: 40, thickness: 0.2, maxRoughness: 0.6 },
 };
 
 const environment: SsrSpatialEnvironment = {

@@ -30,7 +30,6 @@ function cloud(attributes: MeshAsset['attributes']): MeshAsset {
 
 function snapshot(meshGeneration: number) {
   return createPreparedPointsLinesSnapshot({
-    worldId: 0,
     entityKey: 1,
     component: 'Points',
     meshHandle: 5,

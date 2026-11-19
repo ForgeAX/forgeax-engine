@@ -38,7 +38,9 @@ function seededDepthIsReverse(works: readonly DepthWork[], color: DepthWork): bo
   const writer =
     works.find((work) =>
       work.pipeline.shaders.some(
-        (shader) => shader.stage === 'fragment' && shader.entryPoint === 'fs_ao_input',
+        (shader) =>
+          shader.stage === 'fragment' &&
+          (shader.entryPoint === 'fs_ao_input' || shader.entryPoint === 'fs_depth_masked'),
       ),
     ) ?? color;
   return JSON.stringify(writer.pipeline.descriptor).includes('greater');

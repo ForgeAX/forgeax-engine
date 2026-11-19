@@ -63,6 +63,19 @@ fn fs_main(in : FullscreenOutput) -> @location(0) vec4<f32> {
   return encodeFinal(mapTonemap(source.rgb), source.a, in.position);
 }
 
+// Premultiplied linear HDR -> premultiplied display output (Three r187).
+// Keep the straight-alpha/native entries and their hot paths independent.
+@fragment
+fn fs_premultiplied(in : FullscreenOutput) -> @location(0) vec4<f32> {
+  let source = sampleOutputSource(in.position.xy);
+  let alpha = clamp(source.a, 0.0, 1.0);
+  if (alpha == 0.0) {
+    return vec4<f32>(0.0);
+  }
+  let encoded = encodeFinal(mapTonemap(source.rgb / alpha), alpha, in.position);
+  return vec4<f32>(encoded.rgb * alpha, alpha);
+}
+
 @fragment
 fn fs_tone_only(in : FullscreenOutput) -> @location(0) vec4<f32> {
   // LUT-enabled path stops at linear LDR so the LUT never samples encoded data.

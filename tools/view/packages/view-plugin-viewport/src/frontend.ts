@@ -1,9 +1,9 @@
 import type { Context } from '@forgeax/engine-plugin';
 import type { EngineWorkspacePresentation, EngineWorkspaceTarget } from '@forgeax/engine/app';
-import type { FrontendConfig, PanelHost } from '@forgeax/view-workspace-core/frontend-contract';
+import type { FrontendConfig, PanelHost, ViewFrontendRole } from '@forgeax/view-workspace-core/frontend-contract';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { WorkspaceInputOptions } from './workspace-shell.ts';
-export type ViewportFrontendConfig = FrontendConfig & { presentation?: EngineWorkspacePresentation; targetPresentation?: EngineWorkspacePresentation; viewportSurface?: HTMLElement; workspace?: { mountId?: string } };
+export type ViewportFrontendConfig = FrontendConfig & { role?: ViewFrontendRole; presentation?: EngineWorkspacePresentation; targetPresentation?: EngineWorkspacePresentation; viewportSurface?: HTMLElement; workspace?: { mountId?: string } };
 declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
     viewWorkspaceShell: ViewWorkspaceShell;
@@ -63,6 +63,7 @@ function liveWorkspacePresentation(ctx: Context, config: ViewportFrontendConfig,
           };
         };
       }
+      if (prop === 'attachProjectDocument') return workspace?.attachProjectDocument;
       if (prop === 'createSurface') {
         if (typeof workspace?.createSurface === 'function') return workspace.createSurface;
         return (input: { document?: Document }) => (input?.document ?? document)?.getElementById?.('app-shell') ?? null;

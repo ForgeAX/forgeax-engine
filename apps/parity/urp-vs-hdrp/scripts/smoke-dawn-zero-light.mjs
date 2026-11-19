@@ -12,10 +12,10 @@ import { encodePng } from '@forgeax/engine-image/png';
 // This is a separate script from the 4-light bench (driven by
 // scripts/bench/pixel-parity.mjs via browser + preview) because dawn-node
 // needs no browser / vite preview / chromium launch.
-
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = 60;
@@ -158,7 +158,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
 const { renderer: forwardRenderer, assets: forwardAssets } = await createStandardRenderer('forward', 'standard-forward-0l');
 const { renderer: deferredRenderer, assets: deferredAssets } = await createStandardRenderer('deferred', 'standard-deferred-0l');
 
@@ -230,16 +230,8 @@ let totalFrames = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   forwardWorld.update().unwrap();
   deferredWorld.update().unwrap();
-  const directDraw = forwardRenderer.draw({
-    leases: [forwardAttachment.value],
-    camera: { lease: forwardAttachment.value },
-    environment: { lease: forwardAttachment.value },
-  });
-  const clusteredDraw = deferredRenderer.draw({
-    leases: [deferredAttachment.value],
-    camera: { lease: deferredAttachment.value },
-    environment: { lease: deferredAttachment.value },
-  });
+  const directDraw = forwardRenderer.draw({ source: forwardAttachment.value });
+  const clusteredDraw = deferredRenderer.draw({ source: deferredAttachment.value });
   if (!directDraw.ok || !clusteredDraw.ok) {
     console.error('[smoke-0l] FAIL - Standard receipt-bound draw failed');
     if (!directDraw.ok) console.error(`[smoke-0l] direct draw error=${JSON.stringify(directDraw.error)}`);

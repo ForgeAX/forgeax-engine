@@ -1,18 +1,21 @@
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
 import { applyTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 import type { ExecutionReport } from '@forgeax/engine-app';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { devCommand } from '../src/commands.js';
 import { disposeDevKitHosts } from '../src/host.js';
 import { createBrowserCapture, type BrowserCaptureSession } from '../src/browser-capture.js';
 // @ts-expect-error The template's shared browser probe is native JavaScript.
-import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
 // @ts-expect-error The template's shared browser probe is native JavaScript.
-import { probeMobileControls } from '../../../templates/game-3d/scripts/mobile-controls-probe.mjs';
+import { probeMobileControls } from '../../../scripts/template-probes/game-3d/mobile-controls-probe.mjs';
+// @ts-expect-error The engine-owned runtime vase overlay is native JavaScript.
+import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 
 declare const __forgeaxGameInspection: {
   list(): Promise<{ reads: string[] }>;
@@ -42,7 +45,8 @@ afterAll(async () => {
 
 it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', { timeout: 420000 }, async (worker, { signal, onTestFinished }) => {
   const repository = resolve(import.meta.dirname, '../../..');
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-game3d-vase-')));
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory('forgeax-game3d-vase-', repository, manifestPath);
   const evidence = resolve(repository, 'artifacts/runtime-pack-worker', `game-3d-${worker ? 'worker' : 'main'}`);
   const previousWorkers = process.env.FORGEAX_EXECUTION_WORKERS;
   let browser: BrowserCaptureSession | undefined;
@@ -63,13 +67,15 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     }
   };
   try {
+    if (manifestPath) await prepareLiveSyncSharedInputs({sourceRoot: repository, projectRoot: root, temporaryRoot, manifestPath});
     await rm(evidence, { recursive: true, force: true });
     await mkdir(evidence, { recursive: true });
     await cp(resolve(repository, 'templates/game-3d/assets'), resolve(root, 'assets'), { recursive: true });
-    if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
-      await reduceTestProject(root);
-    }
+    await installRuntimeVase(root);
     await cp(resolve(repository, 'templates/game-3d/forge.json'), resolve(root, 'forge.json'));
+    if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
+      await reduceTestProject(root, { omitEngineContent: true });
+    }
     await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'game-3d-runtime-vase', type: 'module', dependencies: { '@forgeax/engine': '*' } }));
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await symlink(resolve(repository, 'packages/engine'), resolve(root, 'node_modules/@forgeax/engine'), 'dir');
@@ -209,6 +215,6 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     await disposeDevKitHosts();
     if (previousWorkers === undefined) delete process.env.FORGEAX_EXECUTION_WORKERS;
     else process.env.FORGEAX_EXECUTION_WORKERS = previousWorkers;
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

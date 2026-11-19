@@ -6,6 +6,7 @@ export { CameraView, type CameraViewData } from './components/camera-view';
 export {
   Outline,
   type OutlineData,
+  type OutlineDistanceStyle,
   OutlineOcclusionValue,
   type OutlineSnapshot,
   resolveOutline,
@@ -19,6 +20,10 @@ export {
   StereoLayoutValue,
   stereoLayoutFromU32,
 } from './components/stereo-camera';
+export {
+  VolumetricCloudLayer,
+  type VolumetricCloudLayerData,
+} from './components/volumetric-cloud-layer';
 export {
   CameraViewInvalidError,
   OutlineInvalidParameterError,
@@ -57,6 +62,7 @@ export {
   normalizeClippingPlanes,
   withClipping,
 } from '@forgeax/engine-types';
+export type { RhiBackendInstrumentation } from './assembly/backend-contract';
 export { validateRenderProfile } from './assembly/renderer-facade.js';
 export {
   materialContribution,
@@ -103,99 +109,38 @@ export {
   type RenderFeatureCapturePolicy,
 } from './capture/feature-policy.js';
 export { buildPlanarReflectionView, type PlanarReflectionViewInput } from './capture/planar-view';
+export { CLOUD_LAYER_FEATURE_IDENTITY } from './cloud/contracts.js';
+export { type ExtractedCloudLayer, extractStandardCloudLayer } from './cloud/extract.js';
 export {
-  buildCloudDensityCache,
-  type CloudDensityCache,
-  type CloudDensityCacheSnapshot,
-  type CloudDensitySample,
-  evaluateCloudDensity,
-  reconstructCloudDensityCache,
-  sampleCloudDensity,
-  snapshotCloudDensityCache,
-} from './cloud/density.js';
-export {
-  type CloudLayerCandidate,
-  type ExtractedCloudLayer,
-  extractCloudLayer,
-  selectCloudLayerFrame,
-} from './cloud/extract.js';
-export {
-  CLOUD_DENSITY_COMPUTE_WGSL,
-  CLOUD_HISTORY_FULLSCREEN_WGSL,
-  CLOUD_LAYER_FEATURE_IDENTITY,
-  CLOUD_VIEW_FULLSCREEN_WGSL,
-  CLOUD_VIEW_PARAMS_BYTES,
-  type CloudLayerFeatureFrame,
-  type CloudLayerFeatureOptions,
-  createCloudLayerFeature,
-} from './cloud/feature.js';
-export {
+  type CloudCompletedAdoption,
+  type CloudGpuResourceEvidence,
   type CloudLayerBudgetObservation,
   type CloudLayerInspection,
   type CloudLayerInspectionInput,
   type CloudLayerInspectionStatus,
+  type CloudLayerResourceFacts,
   type CloudLayerResourceStage,
   type CloudPhysicalGpuEvidence,
+  type CloudTemporalResetReason,
   cloudCapabilitiesFromRhi,
   inspectCloudLayer,
 } from './cloud/inspection.js';
 export {
-  applyCloudSolarTransmittance,
-  type CloudInteriorLighting,
-  type CloudOpticalPath,
-  type CloudOpticalResult,
-  type CloudOpticsInput,
-  type CloudRay,
-  integrateCloudCameraPath,
-  integrateCloudInterior,
-  integrateCloudPath,
-  integrateCloudSolarColumn,
-} from './cloud/optics.js';
-export {
-  CLOUD_QUALITY_PROFILES,
-  type CloudLayerAuthoring,
-  type CloudQualityProfile,
-  cloudLayerSourceKey,
-  DEFAULT_CLOUD_LAYER,
-  type ValidatedCloudLayer,
-  validateCloudLayer,
-} from './cloud/parameters.js';
-export {
-  CLOUD_HISTORY_SURFACE_COUNT,
-  CLOUD_RGBA16FLOAT_BYTES_PER_TEXEL,
-  type CloudGpuResourceEvidence,
-  type CloudLayerResourceFacts,
-  type CloudLayerResourceInputs,
-  inspectCloudLayerResources,
-} from './cloud/resources.js';
-export {
   type CloudShadowProjection,
-  type CloudShadowSample,
   createCloudShadowProjection,
   projectCloudShadowUv,
-  sampleCloudShadow,
-} from './cloud/shadow.js';
-export {
-  type CloudHistory,
-  type CloudHistoryReprojection,
-  type CloudHistoryReprojectionInput,
-  CloudHistoryStore,
-  type CloudTemporalDecision,
-  type CloudTemporalFrame,
-  type CloudTemporalResetReason,
-  type CloudTemporalSignature,
-  cloudTemporalResetReasons,
-  cloudTemporalSignature,
-  createCloudHistory,
-  reprojectCloudHistory,
-} from './cloud/temporal.js';
+} from './cloud/lighting/shadow.js';
 export {
   AMBIENT_OCCLUSION_ALGORITHMS,
+  AMBIENT_OCCLUSION_APPLICATIONS,
   AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_LIGHTING,
   AMBIENT_OCCLUSION_QUALITIES,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
+  AMBIENT_OCCLUSION_SCENE_COLOR,
+  AMBIENT_OCCLUSION_SPIRAL_SSAO,
   AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
@@ -222,6 +167,7 @@ export type {
 export {
   ANTIALIAS_FXAA,
   ANTIALIAS_MSAA,
+  ANTIALIAS_MSAA_FXAA,
   ANTIALIAS_NONE,
   ANTIALIAS_SMAA,
   ANTIALIAS_TAA,
@@ -272,13 +218,6 @@ export {
   clippingPlanesData,
 } from './components/clipping-planes';
 export {
-  CloudLayer,
-  type CloudLayerData,
-  type CloudQuality,
-  CloudQualityValue,
-  cloudQualityFromF32,
-} from './components/cloud-layer.js';
-export {
   CUBE_CAMERA_FACE_ORDER,
   CUBE_CAMERA_UPDATE_CONTINUOUS,
   CUBE_CAMERA_UPDATE_ON_DEMAND,
@@ -307,6 +246,7 @@ export {
   validateDynamicResolutionParameters,
 } from './components/dynamic-resolution.js';
 export { Fog, type FogMode, FogModeValue } from './components/fog.js';
+export * from './components/gpu-mesh-vertex-source.js';
 export { Instances, type InstancesData } from './components/instances.js';
 export { Layer } from './components/layer.js';
 export {
@@ -364,10 +304,20 @@ export {
   type ReflectionProbeUpdateIntent,
   reflectionProbeUpdateIntentFromF32,
 } from './components/reflection-probe.js';
+export {
+  RenderFeatureEnvironment,
+  type RenderFeatureEnvironmentSource,
+} from './components/render-feature-environment';
+export {
+  RenderTargetEnvironment,
+  type RenderTargetEnvironmentSource,
+} from './components/render-target-environment';
 export { SceneInstance } from './components/scene-instance.js';
 export {
   ScreenSpaceReflection,
   type ScreenSpaceReflectionData,
+  type WaterSsrTemporal,
+  WaterSsrTemporalValue,
 } from './components/screen-space-reflection';
 export { ShadowParticipation } from './components/shadow-participation.js';
 export {
@@ -443,6 +393,14 @@ export {
   CloudLayerOwnerConflictError,
   CloudLayerResourceFailureError,
 } from './errors/cloud.js';
+export {
+  InstanceTransformsStrideMismatchError,
+  ResourceInvalidValueError,
+  SpawnLightInvalidBoundsError,
+  SpriteInstancesCountMismatchError,
+  SpriteInstancesMutuallyExclusiveWithInstancesError,
+  SpriteInstancesRequiresSpriteShaderError,
+} from './errors/component-validation';
 // Public structured operation failure union. Concrete error classes stay
 // behind the Renderer Result/event boundary.
 export type {
@@ -535,6 +493,36 @@ export {
   validateDepthOfFieldFrameParams,
   validateDepthOfFieldParams,
 } from './features/depth-of-field/depth-of-field-params.js';
+export {
+  type EditorAssistancePick,
+  type EditorAssistancePickRequest,
+  freezeSubmittedEditorAssistanceFrame,
+  pickSubmittedEditorAssistance,
+  type SubmittedEditorAssistanceFrame,
+} from './features/editor-assistance/picking';
+export {
+  EDITOR_ASSISTANCE_LIMITS,
+  type EditorAssistanceAction,
+  type EditorAssistanceColor,
+  type EditorAssistanceDepth,
+  EditorAssistanceError,
+  type EditorAssistanceErrorCode,
+  type EditorAssistanceOptions,
+  type EditorAssistancePrimitive,
+  EditorAssistanceState,
+  type EditorAssistanceVector,
+  editorAssistance,
+  readEditorAssistance,
+} from './features/editor-assistance/state';
+export type {
+  RenderFeatureSamplerDescriptor,
+  RenderFeatureTextureDescriptor,
+} from './features/feature-texture';
+export {
+  createRenderFeatureTextureSource,
+  isRenderFeatureTextureSource,
+  type RenderFeatureTextureSource,
+} from './features/feature-texture-source';
 export type {
   MotionBlurInvalidParamsDetail,
   MotionBlurParams,
@@ -564,24 +552,31 @@ export type {
   RenderFeatureWorkPlan,
   RenderFeatureWorkScope,
 } from './features/plan.js';
+export type { RenderFeatureTemporalStage } from './features/temporal-stage';
+export {
+  isRenderFeatureTextureReference,
+  type RenderFeatureTextureReference,
+  renderFeatureTextureSource,
+} from './features/texture-source.js';
 // Minimal declarative extension contract. Implementations use relative
 // imports; the root does not expose prepared state, graph projectors, target
 // handles, or builtin feature factories.
 export type {
   RenderFeature,
   RenderFeatureCapabilityKey,
+  RenderFeatureCompletion,
   RenderFeatureDiagnostics,
   RenderFeatureErrorDescriptor,
   RenderFeatureExtractContext,
   RenderFeatureExtractView,
   RenderFeatureFrameContext,
+  RenderFeatureGraphResourceState,
   RenderFeatureHiddenEntityReport,
   RenderFeaturePlacement,
   RenderFeatureShaderModuleMode,
   RenderFeatureStatus,
   RenderFeatureSubmission,
   RenderFeatureViewContext,
-  RenderFeatureWorldVisibilitySnapshot,
 } from './features/types.js';
 export { glyphTextGeometry } from './glyph-geometry';
 export {
@@ -594,7 +589,6 @@ export {
   publishProbeIblOutput,
   REFLECTION_PROBE_IBL_STAGES,
   type ReflectionProbeIblStage,
-  resetIblKernelCaches,
 } from './ibl/kernel-cache.js';
 export type {
   BarrelDistortionInspection,
@@ -785,6 +779,21 @@ export {
 } from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
 export {
+  applyAmbientOcclusionQuality,
+  RENDERING_REQUIREMENT_KEYS,
+  type RenderingRequirements,
+  type RenderQualityBudgets,
+  type RenderQualityGroups,
+  type RenderQualityLevel,
+  type RenderQualityLimits,
+  renderingRequirementsOf,
+  renderProfileForQuality,
+  renderProfileForRequirements,
+  resolveRenderQualityBudgets,
+  textureMipSkipForQuality,
+  validateRenderQualityLimits,
+} from './quality.js';
+export {
   DIFFUSE_GI_TIER_BUDGETS,
   DIFFUSE_GI_TIERS,
   type DiffuseGiTier,
@@ -815,8 +824,7 @@ export { resolveVisibleSurface, type VisibleSurfaceIdentity } from './raytracing
  * `failed`; each reason/error exposes `code`, `expected`, `hint`, and `detail`.
  * `latestKnownGood` is separate from current status and completeness. These
  * facts describe pass durations, never frame latency. The bounded contract is
- * in `record/gpu-pass-timing/contract.ts`; benchmark acceptance is fail-closed
- * in `bench/gpu-pass-timing/validator.ts`, and recovery follows the producer's
+ * in `record/gpu-pass-timing/contract.ts`; recovery follows the producer's
  * structured hint rather than a second timing API.
  */
 export type {
@@ -833,6 +841,11 @@ export type {
   GpuPassTimingRef,
   GpuPassTimingUnmeasuredEntry,
 } from './record/gpu-pass-timing/index.js';
+export {
+  type SkyGpuPassTimingGroup,
+  type SkyGpuPassTimingSummary,
+  summarizeSkyGpuPassTiming,
+} from './record/gpu-pass-timing/sky-summary.js';
 // Runtime contract: leases, frame receipts, detached inspection, profile,
 // lifecycle state, and the single renderer event stream.
 export {
@@ -869,11 +882,18 @@ export {
   validateReflectionProbeInput,
 } from './reflection/projection.js';
 export type {
+  RenderTargetEnvironmentCapture,
+  RenderTargetEnvironmentFace,
+  RenderTargetWrite,
+} from './render-contract';
+export type {
   CameraOutputSnapshot,
   CubeCameraSnapshot,
   DrawObservation,
+  FeatureTextureObservation,
+  FeatureTextureReadbackResult,
   FrameCamera,
-  FrameEnvironment,
+  FrameDomainObservation,
   FrameObservationRequest,
   FramePresentation,
   FramePresentationPendingReason,
@@ -894,16 +914,16 @@ export type {
   RenderWorldLease,
 } from './render-contract.js';
 export { RENDER_PHASE_CATALOG } from './render-contract.js';
+export { extractCameraSnapshots } from './render-system-extract';
 export type { TemporalInspectionStatus } from './renderer-inspect.js';
 export type { RenderSceneBounds } from './scene/render-scene-types.js';
 export type {
+  LodOcclusionAttribution,
+  LodOcclusionGpuSelection,
   LodOcclusionInspectionInput,
   LodOcclusionInspectionRow,
   LodOcclusionInspectionSample,
   LodOcclusionInspectionSubmit,
-  LodOcclusionWorldAttribution,
-  LodOcclusionWorldInspection,
-  LodOcclusionWorldInspectionInput,
 } from './scene/visibility/inspection.js';
 export {
   inspectLodOcclusion,
@@ -974,7 +994,9 @@ export {
   DynamicInputError,
   type DynamicInputErrorCode,
   type DynamicInputErrorDetail,
+  type DynamicInputPageSnapshot,
   type DynamicInputRange,
+  type DynamicInputRangeSnapshot,
   type DynamicInputResult,
   type DynamicInputUploadReceipt,
   type DynamicInputValue,
@@ -982,6 +1004,7 @@ export {
   type SurfaceDynamicInputFrame,
   type SurfaceDynamicInputMemberIdentity,
 } from './surface/dynamic-input.js';
+export { publishSurfaceDynamicInput, surfaceDynamicInputOf } from './surface/frame-source';
 export {
   admitSingleLayerMediumSubmission,
   type SurfaceGpuCapability,
@@ -1016,8 +1039,11 @@ export type {
   RenderTargetTextureSourceOptions,
 } from './targets/contracts.js';
 export { renderTargetLayerCount } from './targets/contracts.js';
+export type { RenderTargetEnvironmentLease } from './targets/environment';
 export type { TemporalInspection, TemporalResourceInspection } from './temporal/inspection.js';
 export {
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_DESCRIPTOR,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
@@ -1026,6 +1052,7 @@ export {
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataLane,
   type SceneDataSchemaId,
+  type SceneDataStandardGBufferNormalV2Descriptor,
   type SceneDataStandardSurfaceDepthV1Descriptor,
   type SceneDataStandardSurfaceNormalV1Descriptor,
   type SceneDataTarget,
@@ -1043,6 +1070,7 @@ export {
   querySubmittedTerrainHeight,
   type SubmittedTerrainHeightRequest,
 } from './terrain/submitted.js';
+export { TextureResidencyError, type TextureResidencyFailure } from './texture-residency';
 export { CanvasTexture, type CanvasTextureSource } from './textures/canvas-texture';
 export {
   type ExternalTexture,
@@ -1093,3 +1121,21 @@ export {
   type VolumetricFogInspectionStatus,
   type VolumetricFogResourceStage,
 } from './volume/inspection.js';
+export {
+  inspectWaterRenderCapabilities,
+  type WaterRenderCapabilities,
+  type WaterRenderGraphInspection,
+} from './water/capabilities.js';
+export {
+  createWaterFluidFeature,
+  WATER_ADVANCED_FEATURE_IDENTITY,
+  type WaterFluidFeatureOptions,
+} from './water/fluid-feature';
+export type { WaterFluidFoamOptions } from './water/fluid-foam';
+export {
+  createWaterInfoFeature,
+  type WaterInfoDescriptorRow,
+  type WaterInfoFramePublication,
+  waterInfoDescriptorRow,
+  waterInfoFramePublication,
+} from './water/water-info-feature.js';

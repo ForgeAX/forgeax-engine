@@ -2,13 +2,8 @@ import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 
 const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
-const functionSource = (file: string, name: string) => {
-  const body = source(file).match(new RegExp(`fn ${name}\\([\\s\\S]*?\\n\\}`))?.[0];
-  if (!body) throw new Error(`Missing shader function ${name}`);
-  return body;
-};
 
-// Execute the shared punctual body on the real backend: the KHR diffuse
+// Execute the production point-light path on the real backend: the KHR diffuse
 // transmission lobe is (1/pi) * tint * max(-N.L, 0) with the light's own
 // attenuation, and it must leave the front-lit reflection response untouched.
 it('punctual body adds a normalized back-face Lambert lobe only for transmissive albedo', async () => {
@@ -30,9 +25,8 @@ it('punctual body adds a normalized back-face Lambert lobe only for transmissive
   try {
     const compiled = await compiler.compileShader(
       `
-        #import forgeax_pbr::brdf::{standardOpaqueBrdfFromView, DirectMultiScatterView, prepareDirectMultiScatterView, halfVectorTerms, directLightingAlpha}
-        ${functionSource('lighting-attenuation.wgsl', 'evalDistanceAttenuation')}
-        ${functionSource('lighting-punctual.wgsl', 'evalPunctualBody')}
+        #import forgeax_pbr::brdf::{prepareDirectMultiScatterView}
+        #import forgeax_pbr::lighting_punctual::{evalPointLobes}
         @group(0) @binding(0) var<storage, read_write> result: array<vec4<f32>, 5>;
         @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
           let normal = vec3<f32>(0.0, 1.0, 0.0);
@@ -42,15 +36,23 @@ it('punctual body adds a normalized back-face Lambert lobe only for transmissive
           var transmission = vec3<f32>(0.0);
           if (id.x == 0u || id.x == 3u) { transmission = vec3<f32>(1.0); }
           if (id.x == 4u) { transmission = vec3<f32>(0.2, 0.5, 1.0); }
-          let value = evalPunctualBody(lightPos, vec3<f32>(1.0), 0.0, 2.0, vec3<f32>(0.0), normal,
+          let value = evalPointLobes(lightPos, vec3<f32>(1.0), 0.0, 2.0, vec3<f32>(0.0), normal,
             viewDir, vec3<f32>(0.5), 0.0, 0.25, vec3<f32>(0.04), transmission,
             prepareDirectMultiScatterView(0.25, 1.0, vec3<f32>(0.04), false), false);
-          result[id.x] = vec4<f32>(value, 1.0);
+          result[id.x] = vec4<f32>(value.radiance, 1.0);
         }`,
       {
         id: 'forgeax::diffuse-transmission-lobe-regression',
         defines: { DIFFUSE_TRANSMISSION_AVAILABLE: true },
-        imports: { 'forgeax_pbr::brdf': source('brdf.wgsl') },
+        imports: {
+          'forgeax_pbr::brdf': source('brdf.wgsl'),
+          'forgeax_pbr::lighting_attenuation': source('lighting-attenuation.wgsl'),
+          'forgeax_pbr::lighting_ies_profile': source('lighting-ies-profile.wgsl'),
+          'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
+          'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),
+          'forgeax_pbr::shadow_pcf': source('shadow-pcf.wgsl'),
+          'forgeax_view::common': source('common.wgsl'),
+        },
       },
     );
     if (!compiled.ok) throw compiled.error;

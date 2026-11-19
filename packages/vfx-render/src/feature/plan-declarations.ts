@@ -1,9 +1,20 @@
+import { isRenderFeatureTextureSource } from '@forgeax/engine-render';
 // Pure sizing, naming and declaration helpers of the GPU particle feature plan.
 
 import type { RenderFeatureWorkPlan } from '@forgeax/engine-render';
 import type { MeshAsset } from '@forgeax/engine-types';
-import type { ParticleRendererSourceV3, VfxDataInterfaceResource } from '@forgeax/engine-vfx';
-import { isParticleTopologyRenderer, VFX_PARTICLE_CORE_STRIDE } from '@forgeax/engine-vfx';
+import { ok } from '@forgeax/engine-types';
+import type {
+  ParticleRendererSourceV3,
+  VfxDataInterfaceResource,
+  VfxWaterSurfaceIdentity,
+} from '@forgeax/engine-vfx';
+import {
+  isParticleTopologyRenderer,
+  VFX_GPU_OUTPUT_HEADER_BYTES,
+  VFX_PARTICLE_CORE_STRIDE,
+} from '@forgeax/engine-vfx';
+
 import { RENDER_FEATURE_VERTEX_LAYOUTS } from '../../../render/src/features/prepared-graphics';
 import { coalesceVfxComputePasses, coalesceVfxCopyPasses } from './compute-passes.js';
 import { WORKGROUP_SIZE } from './emitter-program.js';
@@ -15,7 +26,7 @@ import { rendererSortingMode } from './runtime-uniform.js';
 type ParticleRenderer = ParticleRendererSourceV3;
 export const BILLBOARD_INSTANCE_BYTES = 31 * 4;
 export const MESH_INSTANCE_BYTES = 18 * 4;
-export const COUNTERS_BYTES = 24;
+export const COUNTERS_BYTES = 28;
 
 export function maxRendererInputBytes(renderers: readonly ParticleRenderer[]): number {
   return Math.max(0, ...renderers.map((renderer) => (renderer.materialInputs?.length ?? 0) * 16));
@@ -32,11 +43,26 @@ export function batchStorageSizes(
     [capacity * VFX_PARTICLE_CORE_STRIDE, VFX_PARTICLE_CORE_STRIDE],
     [capacity * customStride, customStride],
     [capacity * 4, 4],
-    [COUNTERS_BYTES, 24],
+    [COUNTERS_BYTES, COUNTERS_BYTES],
     [Math.max(1, emitter.renderers.length) * 20, 20],
-    [(capacity * 2 + Math.ceil(capacity / WORKGROUP_SIZE)) * 4, 4],
+    [particleScratchBytes(emitter), 4],
     [capacity * (Math.max(BILLBOARD_INSTANCE_BYTES, MESH_INSTANCE_BYTES) + inputBytes), 4],
   ];
+}
+
+export function particleScratchBytes(emitter: VfxGpuTickIntent['emitter']): number {
+  const capacity = emitter.capacity;
+  const baseWords = capacity * 2 + Math.ceil(capacity / WORKGROUP_SIZE);
+  const emission = emitter.waterGridEmission;
+  if (emission === undefined) return baseWords * 4;
+  const scanCells = emission.scanCellCapacity;
+  return (
+    (baseWords +
+      scanCells * 2 +
+      Math.ceil(scanCells / WORKGROUP_SIZE) +
+      emission.maxParticlesPerFrame * 12) *
+    4
+  );
 }
 
 /** Initial indirect draw arguments per renderer; undefined when a renderer's geometry is invalid. */
@@ -67,7 +93,10 @@ export function rendererIndirectWords(
 export type DataInterfaceRequirement = NonNullable<
   VfxGpuTickIntent['emitter']['reflection']['dataInterfaces']
 >[number];
-export type RendererOwnedDataInterface = Exclude<DataInterfaceRequirement['kind'], 'force-fields'>;
+export type RendererOwnedDataInterface = Exclude<
+  DataInterfaceRequirement['kind'],
+  'force-fields' | 'water-surface'
+>;
 
 /** Renderer-owned producer of a data interface without a resident provider payload. */
 export function sharedDataInterfaceResource(
@@ -76,6 +105,22 @@ export function sharedDataInterfaceResource(
   kind: RendererOwnedDataInterface,
 ): PlanResource | undefined {
   switch (kind) {
+    case 'gpu-events': {
+      if (!entry.eventOutput) return undefined;
+      const size = VFX_GPU_OUTPUT_HEADER_BYTES + entry.eventOutput.capacity * 32,
+        data = new Uint8Array(size),
+        view = new DataView(data.buffer);
+      view.setUint32(4, entry.eventOutput.capacity, true);
+      view.setUint32(8, entry.eventOutput.epoch, true);
+      view.setUint32(12, entry.eventOutput.channels.length, true);
+      entry.eventOutput.channels.forEach((channel, index) => {
+        const offset = 16 + index * 16;
+        view.setUint32(offset + 4, channel.channel, true);
+        view.setUint32(offset + 8, channel.offset, true);
+        view.setUint32(offset + 12, channel.capacity, true);
+      });
+      return { kind: 'buffer', name, size, usage: ['storage', 'copy-src'], data };
+    }
     case 'camera':
       return {
         kind: 'buffer',
@@ -97,10 +142,14 @@ export function sharedDataInterfaceResource(
       };
     case 'noise':
       return { kind: 'scene-noise', name };
+    case 'water-displacement':
+    case 'water-hull':
+    case 'water-config':
+      return undefined;
     case 'scene-sdf': {
       const descriptor = entry.sceneSdf;
       if (descriptor === undefined) return undefined;
-      return { kind: 'scene-sdf', name, world: entry.sourceWorldIndex, descriptor };
+      return { kind: 'scene-sdf', name, descriptor };
     }
   }
 }
@@ -110,6 +159,21 @@ export function preparedDataInterfaceResource(
   name: string,
   prepared: NonNullable<VfxDataInterfaceResource['resource']>,
 ): PlanResource | undefined {
+  if (prepared.kind === 'feature-texture-reference') {
+    if (!isRenderFeatureTextureSource(prepared.value)) return undefined;
+    return { kind: 'feature-texture-reference', name, source: prepared.value };
+  }
+  if (prepared.kind === 'uniform-data') {
+    if (!(prepared.value instanceof Float32Array) || prepared.value.byteLength === 0)
+      return undefined;
+    return {
+      kind: 'buffer',
+      name,
+      size: prepared.value.byteLength,
+      usage: ['uniform'],
+      data: prepared.value,
+    };
+  }
   if (prepared.kind === 'buffer') {
     if (prepared.size === undefined || prepared.size <= 0) return undefined;
     return {
@@ -128,6 +192,62 @@ export function preparedDataInterfaceResource(
       ? { kind: 'texture-view' as const, value: prepared.value }
       : { kind: 'sampler' as const, value: prepared.value };
   return { kind: 'prepared-gpu-resource', name, resource: external };
+}
+
+/** Water's grid and solver-normal are one provider lease but occupy two reflected slots. */
+export function preparedWaterSurfaceResources(
+  name: string,
+  pair: NonNullable<VfxDataInterfaceResource['textureViewPair']> | undefined,
+  identity: VfxWaterSurfaceIdentity | undefined,
+): readonly PlanResource[] | undefined {
+  if (pair === undefined || identity === undefined) return undefined;
+  const view = (suffix: 'grid' | 'solver-normal', source: (typeof pair)['grid']): PlanResource => ({
+    kind: 'prepared-gpu-resource',
+    name: `${name}.${suffix}`,
+    resource: { kind: 'texture-view', value: source.value },
+    ...(source.retainResidency === undefined
+      ? {}
+      : {
+          acquireResidencyLease: () => {
+            const retainResidency = source.retainResidency;
+            if (retainResidency === undefined)
+              throw new Error('Prepared resource residency owner disappeared');
+            const lease = retainResidency.call(source);
+            return {
+              release: (evict = false) => {
+                lease.release(evict);
+                return ok(undefined);
+              },
+            };
+          },
+        }),
+    ...(source.logicalTarget === undefined ? {} : { logicalTarget: source.logicalTarget as never }),
+  });
+  const { domain } = identity;
+  const [originX, originZ] = domain.originXZ;
+  const [spacingX, spacingZ] = domain.spacingXZ;
+  const [width, height] = domain.resolution;
+  const cosine = Math.cos(domain.yawRadians);
+  const sine = Math.sin(domain.yawRadians);
+  const data = new Float32Array([
+    originX,
+    domain.originY,
+    originZ,
+    0,
+    spacingX,
+    spacingZ,
+    width,
+    height,
+    domain.yawRadians,
+    cosine,
+    sine,
+    0,
+  ]);
+  return [
+    view('grid', pair.grid),
+    view('solver-normal', pair.solverNormal),
+    { kind: 'buffer', name: `${name}.domain`, size: data.byteLength, usage: ['uniform'], data },
+  ];
 }
 
 export function fieldBufferName(prefix: string, revision: number): string {

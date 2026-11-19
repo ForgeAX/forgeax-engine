@@ -43,8 +43,11 @@ export const Fog = defineComponent(
      * the whole fog color; set it as for Three.js `Fog(color)`.
      */
     color: { type: 'array<f32, 3>', default: new Float32Array([0, 0, 0]) },
-    density: { type: 'f32', default: 0.01 },
-    heightFalloff: { type: 'f32', default: 0 },
+    // UE defaults: density 0.02 / 1000 and falloff 0.2 / 1000 per cm.
+    // Its height integral and final transmittance both use exp2. Convert to
+    // this component's natural-exponential law and metres without changing it.
+    density: { type: 'f32', default: 0.002 * Math.LN2 * Math.LN2 },
+    heightFalloff: { type: 'f32', default: 0.02 * Math.LN2 },
     maxOpacity: { type: 'f32', default: 1 },
     mode: { type: 'enum', default: FogModeValue.exp, labels: FogModeValue },
     near: { type: 'f32', default: 0 },
@@ -55,6 +58,8 @@ export const Fog = defineComponent(
      * unfogged. Surfaces are unaffected; without an Atmosphere it has no effect.
      */
     skyOpacity: { type: 'f32', default: 1 },
+    /** Forward solar lobe added to analytic fog radiance (pow(cos,8)). */
+    sunScatter: { type: 'f32', default: 0 },
   },
   {
     meta: {
@@ -65,7 +70,7 @@ export const Fog = defineComponent(
       recovery:
         'Use finite color channels >= 0 (scene-linear, HDR allowed), density >= 0, maxOpacity and skyOpacity in [0, 1]; linear needs 0 <= near < far; heightFalloff applies to exp only.',
       boundaries:
-        'Without Atmosphere, Fog tints rendered surfaces and leaves the authored background unfogged. With Atmosphere, Fog also covers the sky as distant fog at the atmosphere boundary, so dense fog greys the sky; the fog source is color (default black, as in Unreal) plus the atmosphere distant sky light and in-scattered sunlight. skyOpacity scales that sky fog (1 physical, 0 sky unfogged) and has no effect without Atmosphere. VolumetricFog owns local lit media.',
+        'Without Atmosphere, Fog tints rendered surfaces and leaves the authored background unfogged. With Atmosphere, Fog also covers the sky at the camera far depth, independent of the optical planet. Positive heightFalloff fills the lower hemisphere while preserving the upper sky. The fog source is color (default black, as in Unreal) plus atmosphere distant sky light and in-scattered sunlight. skyOpacity scales sky fog (1 physical, 0 unfogged) and has no effect without Atmosphere. heightFalloff is ignored by exp2 and linear. VolumetricFog owns local lit media.',
     },
   },
 );

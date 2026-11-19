@@ -33,7 +33,29 @@ export function createEmitterVisibility() {
     emitter: VfxGpuTickIntent['emitter'],
     camera: ParticleRenderCamera,
     localToWorld: Float32Array,
+    worldBounds?: { readonly min: ArrayLike<number>; readonly max: ArrayLike<number> },
   ): boolean {
+    if (worldBounds) {
+      let radiusSquared = 0;
+      for (let axis = 0; axis < 3; axis++) {
+        const min = worldBounds.min[axis],
+          max = worldBounds.max[axis];
+        if (
+          min === undefined ||
+          max === undefined ||
+          !Number.isFinite(min) ||
+          !Number.isFinite(max) ||
+          min > max
+        )
+          throw new RangeError(
+            'ParticleEffectWorldBounds requires finite ordered world coordinates',
+          );
+        worldCenter[axis] = (min + max) * 0.5;
+        radiusSquared += ((max - min) * 0.5) ** 2;
+      }
+      const radius = Math.sqrt(radiusSquared);
+      return frustum.intersectsSphere(planesFor(camera.viewProjection), worldCenter, radius);
+    }
     const bounds = emitter.bounds;
     let cx: number;
     let cy: number;

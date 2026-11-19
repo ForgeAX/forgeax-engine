@@ -323,9 +323,7 @@ async function submitFrame(
 ): Promise<FrameSample> {
   propagateTransforms(world).unwrap();
   const receipt = await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
+    source: lease,
     fixedStep: world.getResource(FixedTime).tick,
   });
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -563,9 +561,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       // change on the new device.
       propagateTransforms(world).unwrap();
       const lateDraw = renderer.draw({
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
+        source: lease,
         fixedStep: world.getResource(FixedTime).tick,
       });
       expect(lateDraw.ok).toBe(true);

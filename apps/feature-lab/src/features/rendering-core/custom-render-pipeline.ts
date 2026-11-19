@@ -74,11 +74,7 @@ export default defineFeature({
         const lease = renderer.attach(own);
         checks.ok('attach ok', lease.ok, lease.ok ? undefined : lease.error.code);
         if (lease.ok) {
-          const input = {
-            leases: [lease.value],
-            camera: { lease: lease.value },
-            environment: { lease: lease.value },
-          };
+          const input = { source: lease.value };
           own.update(1 / 60);
           renderer.draw(input);
           renderer.requestObservation?.(['final-display']);

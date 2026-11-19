@@ -27,9 +27,15 @@ it('retains reference diffuse allocations on a row refit and fences stale frame 
   });
   vi.spyOn(shaders, 'entries').mockImplementation(
     () =>
-      [{ wgsl: 'fn generateRasterRays() {} fn fs_ray_diffuse() {} fn reconstructDiffuse() {}' }][
-        Symbol.iterator
-      ]() as ReturnType<ShaderRegistry['entries']>,
+      [
+        {
+          wgsl: 'fn generateRasterRays() {} fn fs_ray_diffuse() {} fn reconstructDiffuse() {}',
+          programContract: {
+            schemaVersion: 'shader-program-contract/1',
+            gbuffer: 'standard-gbuffer/2',
+          },
+        },
+      ][Symbol.iterator]() as ReturnType<ShaderRegistry['entries']>,
   );
   vi.spyOn(shaders, 'materialShaderManifestEntries').mockImplementation(
     () =>
@@ -77,7 +83,7 @@ it('retains reference diffuse allocations on a row refit and fences stale frame 
     bindings: 1,
   });
   const surfaces = new VisibleSurfaceRows();
-  const worlds = [worldRenderResources(source.world)];
+  const sourceScope = worldRenderResources(source.world);
   const sampler = device.createSampler({}).unwrap();
   let revision = 0;
   const prepare = () => {
@@ -88,14 +94,14 @@ it('retains reference diffuse allocations on a row refit and fences stale frame 
       slots,
       materials,
       meshes,
-      worlds,
+      sourceScope,
       isCurrent: () => true,
       isSourceCurrent: () => true,
     };
     renderer.prepare({
       runtime,
       scene: { scene, slots, retained } as unknown as PersistentGpuDrivenState,
-      worlds,
+      sourceScope,
       sampler,
       lights: [],
       profile,

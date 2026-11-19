@@ -50,11 +50,7 @@ async function createTimingReceiptFixture() {
   }
   const updated = world.update();
   if (!updated.ok) throw updated.error;
-  const input = {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  };
+  const input = { source: attached.value };
   const draw = async () => {
     const result = renderer.draw(input);
     if (!result.ok) throw result.error;
@@ -97,9 +93,9 @@ async function expectFinalTimingAwait(scenario: FinalTimingAwaitScenario) {
       const reattached = f.renderer.attach(f.world);
       expect(reattached.ok).toBe(true);
       if (!reattached.ok) throw reattached.error;
-      expect(reattached.value).not.toBe(f.input.leases[0]);
+      expect(reattached.value).not.toBe(f.input.source);
     } else if (scenario === 'invalid-draw') {
-      expect(f.renderer.draw({ ...f.input, leases: [] }).ok).toBe(false);
+      expect(f.renderer.draw({ source: null }).ok).toBe(false);
     } else {
       vi.spyOn(RhiNullQueue.prototype, 'submit').mockImplementationOnce(() => {
         throw new Error('controlled queue submit failure');
@@ -168,7 +164,7 @@ describe('camera-view LOD receipt observation', () => {
       // Another live lease cannot keep this receipt's retired lease valid.
       const reattached = f.renderer.attach(f.world);
       if (!reattached.ok) throw reattached.error;
-      const lease = f.input.leases[0];
+      const lease = f.input.source;
       if (lease === undefined) throw new Error('expected attached scene lease');
       lease.dispose();
       const retirement = await f.renderer.observe(receipt, { include: ['draws', 'lod-occlusion'] });
@@ -219,11 +215,7 @@ describe('camera-view LOD receipt observation', () => {
     const second = spawnCamera(9, 1);
     expect(world.update().ok).toBe(true);
 
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     if (!frame.ok) return;
     if (frame.value === undefined) return;
@@ -249,7 +241,7 @@ describe('camera-view LOD receipt observation', () => {
     expect(JSON.parse(JSON.stringify(lod))).toEqual(lod);
     expect(Object.isFrozen(lod)).toBe(true);
     expect(Object.isFrozen(lod?.views)).toBe(true);
-    expect(Object.isFrozen(lod?.views[0]?.lodOcclusion?.worlds)).toBe(true);
+    expect(Object.isFrozen(lod?.views[0]?.lodOcclusion?.attribution)).toBe(true);
 
     await renderer.dispose();
   });
@@ -284,11 +276,7 @@ describe('camera-view LOD receipt observation', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const input = {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    };
+    const input = { source: attached.value };
     const first = renderer.draw(input);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -335,11 +323,7 @@ describe('camera-view LOD receipt observation', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const input = {
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    };
+    const input = { source: attached.value };
     const first = renderer.draw(input);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -390,11 +374,7 @@ describe('camera-view LOD receipt observation', () => {
       )
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const frame = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const frame = renderer.draw({ source: attached.value });
     expect(frame.ok).toBe(true);
     if (!frame.ok) return;
     if (frame.value === undefined) return;
@@ -450,11 +430,7 @@ describe('camera-view LOD receipt observation', () => {
       }
       expect(world.update().ok).toBe(true);
 
-      const frame = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const frame = renderer.draw({ source: attached.value });
       expect(frame.ok).toBe(true);
       if (!frame.ok) return;
       if (frame.value === undefined) return;
@@ -502,13 +478,7 @@ describe('camera-view LOD receipt observation', () => {
       return inspectLodOcclusion({
         ...row,
         submit,
-        worlds: [
-          {
-            attachmentId: 'world-a',
-            rows: [row],
-            attribution: { status: 'same-submit', submit },
-          },
-        ],
+        attribution: { status: 'same-submit', submit },
       });
     };
     const capturedInspection = makeInspection();
@@ -546,7 +516,10 @@ describe('camera-view LOD receipt observation', () => {
       skin: { paletteUploadBytes: 0 },
       surfaceSubmission: {},
     } as unknown as LodObservationCapture['views'][number]['owner'];
-    const lease = {} as LodObservationCapture['leases'][number]['lease'];
+    const lease = {} as Extract<
+      NonNullable<LodObservationCapture['source']>,
+      { kind: 'local' }
+    >['lease'];
     const capture: LodObservationCapture = {
       frameId: submit.frameId,
       deviceGeneration: submit.deviceGeneration,
@@ -566,7 +539,7 @@ describe('camera-view LOD receipt observation', () => {
           inspection: cellOf(capturedInspection),
         },
       ],
-      leases: [{ lease, worldIdentity: 'world-a', generation: 3 }],
+      source: { kind: 'local', lease, worldIdentity: 'world-a', generation: 3 },
     };
 
     const ownerInspection = makeInspection();
@@ -580,7 +553,7 @@ describe('camera-view LOD receipt observation', () => {
       {
         isLatest: () => true,
         isViewCurrent: () => true,
-        isLeaseAttached: () => true,
+        isSourceAttached: () => true,
       },
     );
     expect(accepted.status).toBe('complete');
@@ -598,7 +571,7 @@ describe('camera-view LOD receipt observation', () => {
       {
         isLatest: () => true,
         isViewCurrent: () => true,
-        isLeaseAttached: () => true,
+        isSourceAttached: () => true,
       },
     );
     expect(detachedReplacement).toMatchObject({
@@ -615,7 +588,7 @@ describe('camera-view LOD receipt observation', () => {
       {
         isLatest: () => true,
         isViewCurrent: () => true,
-        isLeaseAttached: () => true,
+        isSourceAttached: () => true,
       },
     );
     expect(replacedGraph).toMatchObject({

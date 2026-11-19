@@ -66,7 +66,9 @@ header, explicitly numbered sections, 16-byte alignment); equal meshes encode to
 bytes regardless of edit history.
 
 Projected knife cuts share immutable scope positions across their curtains and
-preserve the original projection arithmetic and exact FXEM bytes. Surface queries
+sort only the vertices that can meet each curtain. Corner face queries do not
+sort the full scope. Projection arithmetic, event order and exact FXEM bytes stay
+unchanged. Surface queries
 build angle-weighted normals only when a point result needs them; occlusion alone
 uses the captured triangle hierarchy. Both positions and later-derived normals
 remain tied to the captured surface after source mesh edits.

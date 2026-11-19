@@ -6,3 +6,5 @@ export {
   type SplineIKResult,
   type SplineIKSolver,
 } from './spline-ik-solver';
+
+export { SplineIKRestore, SplineIKSolve } from './system-order';

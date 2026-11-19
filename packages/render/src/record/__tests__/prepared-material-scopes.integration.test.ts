@@ -19,6 +19,7 @@ import {
 import { expect, it, vi } from 'vitest';
 import { createPreparedGraphicsStore } from '../../features/prepared-graphics-store';
 import type { SkylightBindGroupResources } from '../../ibl/skylight-bind-group';
+import { buildPbrMaterialUserRegionEntries } from '../../pbr-pipeline';
 import { createPreparedGraphicsResolver } from '../../prepare/prepared-graphics-resolver';
 import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
@@ -105,9 +106,8 @@ function scopedMaterialFixture() {
   const acquire = (rows = scope, owner = world, bindingLayout = layout) => {
     const binding = preparedMaterialBindings(
       runtime,
-      [worldRenderResources(owner)],
+      worldRenderResources(owner),
       'shader',
-      0,
       handle,
       bindingLayout,
       skylight,
@@ -267,9 +267,8 @@ it('compares actual layout, World, device generation and complete physical mater
   const anotherWorldOwner = new World({ assets: anotherAssets });
   const anotherWorld = preparedMaterialBindings(
     f.runtime,
-    [worldRenderResources(anotherWorldOwner)],
+    worldRenderResources(anotherWorldOwner),
     'shader',
-    0,
     anotherHandle,
     f.layout,
     f.skylight,
@@ -305,7 +304,7 @@ it('keeps shared material resources under the resolver completion and abort leas
     transaction
       .prepare('bindings', name, {
         pipeline,
-        values: { group: 1, material: { world: 0, handle: f.handle } },
+        values: { group: 1, material: { handle: f.handle } },
       })
       .unwrap(),
   );
@@ -341,9 +340,8 @@ it('never publishes a failed material creation into the resolver scope', () => {
   expect(
     preparedMaterialBindings(
       f.runtime,
-      [worldRenderResources(f.world)],
+      worldRenderResources(f.world),
       'shader',
-      0,
       f.handle,
       f.layout,
       f.skylight,
@@ -357,9 +355,8 @@ it('never publishes a failed material creation into the resolver scope', () => {
   expect(
     preparedMaterialBindings(
       f.runtime,
-      [worldRenderResources(f.world)],
+      worldRenderResources(f.world),
       'shader',
-      0,
       f.handle,
       f.layout,
       f.skylight,
@@ -380,6 +377,38 @@ function lastUploadedRoughness(fixture: ReturnType<typeof scopedMaterialFixture>
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, true);
 }
 
+it.each([
+  { name: 'empty', schema: [] },
+  { name: 'texture-only', schema: [{ name: 'albedo', type: 'texture2d' }] },
+  { name: 'numeric', schema: [{ name: 'roughness', type: 'f32' }] },
+] satisfies Array<{
+  name: string;
+  schema: ParamSchemaEntry[];
+}>)('keeps the PBR material UBO reservation and IBL offsets for a $name schema', ({ schema }) => {
+  const f = scopedMaterialFixture();
+  f.schema.splice(0, f.schema.length, ...schema);
+  const lease = f.acquire();
+  const entries = f.createBindGroup.mock.lastCall?.[0].entries;
+  expect(entries).toBeDefined();
+  const userRegion = buildPbrMaterialUserRegionEntries(schema);
+  for (const expected of userRegion) {
+    const entry = entries?.find((candidate) => candidate.binding === expected.binding);
+    expect(entry?.resource.kind).toBe(
+      expected.buffer ? 'buffer' : expected.sampler ? 'sampler' : 'textureView',
+    );
+  }
+  expect(entries?.find((entry) => entry.binding === userRegion.length)?.resource).toEqual({
+    kind: 'textureView',
+    value: f.skylight.irradianceView,
+  });
+  expect(f.createBuffer.mock.calls).toHaveLength(1);
+  expect(f.writeBuffer.mock.lastCall?.[2].byteLength).toBeGreaterThanOrEqual(16);
+  expect(lease.dynamicOffsets).toEqual([0]);
+  lease.release().unwrap();
+  expect(f.destroyBuffer).toHaveBeenCalledTimes(1);
+  f.assets.dispose();
+});
+
 it('binds the captured material handle when its GUID alias was retired', () => {
   const f = scopedMaterialFixture();
   const material: MaterialAsset = {
@@ -396,9 +425,8 @@ it('binds the captured material handle when its GUID alias was retired', () => {
   };
   const binding = preparedMaterialBindings(
     f.runtime,
-    [resourceScope as never],
+    resourceScope as never,
     'shader',
-    0,
     handle,
     f.layout,
     f.skylight,
@@ -426,9 +454,8 @@ it('rejects a stale captured material handle instead of selecting a different GU
   };
   const binding = preparedMaterialBindings(
     f.runtime,
-    [resourceScope as never],
+    resourceScope as never,
     'shader',
-    0,
     stale,
     f.layout,
     f.skylight,
@@ -441,10 +468,10 @@ it('rejects a stale captured material handle instead of selecting a different GU
   expect(f.createBindGroup).not.toHaveBeenCalled();
 });
 
-for (const [cause, owner, expected] of [
-  ['world', -1, 'source-world-unavailable'],
-  ['handle', 0, 'asset-handle-invalid'],
-  ['pipeline', 0, 'pipeline-state-unavailable'],
+for (const [cause, expected] of [
+  ['source', 'source-world-unavailable'],
+  ['handle', 'asset-handle-invalid'],
+  ['pipeline', 'pipeline-state-unavailable'],
 ] as const) {
   it(`distinguishes prepared material ${cause} unavailability at the binding owner`, () => {
     const f = scopedMaterialFixture();
@@ -452,16 +479,16 @@ for (const [cause, owner, expected] of [
     const handle = cause === 'handle' ? 0 : f.handle;
     const result = preparedMaterialBindings(
       f.runtime,
-      [worldRenderResources(f.world)],
+      cause === 'source'
+        ? (undefined as unknown as ReturnType<typeof worldRenderResources>)
+        : worldRenderResources(f.world),
       'shader',
-      owner,
       handle,
       f.layout,
     );
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('Expected admission failure');
     expect(result.error.message).toContain(expected);
-    expect(result.error.message).toContain(`world=${owner}`);
     expect(result.error.message).toContain(`handle=${handle}`);
     expect(f.createBuffer).not.toHaveBeenCalled();
     expect(f.createBindGroup).not.toHaveBeenCalled();
@@ -482,9 +509,8 @@ it('distinguishes a managed reference to a non-material payload', () => {
     .unwrap();
   const result = preparedMaterialBindings(
     f.runtime,
-    [worldRenderResources(f.world)],
+    worldRenderResources(f.world),
     'shader',
-    0,
     texture,
     f.layout,
   );
@@ -501,14 +527,7 @@ it('never formats a borrowed invalid-kind value while explaining admission failu
     throw new Error('borrowed toString must not run');
   });
   const scope = { resolveAsset: () => ok({ kind: { toString: stringify } }) };
-  const result = preparedMaterialBindings(
-    f.runtime,
-    [scope as never],
-    'shader',
-    0,
-    f.handle,
-    f.layout,
-  );
+  const result = preparedMaterialBindings(f.runtime, scope as never, 'shader', f.handle, f.layout);
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error('Expected admission failure');
   expect(result.error.message).toContain('asset-kind-mismatch:object');
@@ -550,9 +569,8 @@ it('retains the exact feature material when an independent ordinary root is reti
   const bind = (resources: ReturnType<typeof publish>['resources'], handle: number) => {
     const result = preparedMaterialBindings(
       f.runtime,
-      [resources],
+      resources,
       'shader',
-      0,
       handle,
       f.layout,
       f.skylight,
@@ -591,9 +609,8 @@ it.each([
   const f = scopedMaterialFixture();
   const result = preparedMaterialBindings(
     f.runtime,
-    [worldRenderResources(f.world)],
+    worldRenderResources(f.world),
     'shader',
-    0,
     handle as number,
     f.layout,
     f.skylight,

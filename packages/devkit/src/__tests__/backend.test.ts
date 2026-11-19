@@ -193,11 +193,13 @@ it('removes partial compilation and activation after host startup fails', async 
 
 it('loads a selected external host Pack without adding View assets to the game project', async () => {
   const workspace = await directory();
-  const extension = await directory();
-  await mkdir(join(extension, 'node_modules', '@forgeax'), { recursive: true });
+  const installation = await directory();
+  const extension = join(installation, 'tools/view');
+  await mkdir(extension, { recursive: true });
+  await mkdir(join(installation, 'node_modules', '@forgeax'), { recursive: true });
   await symlink(
     join(import.meta.dirname, '../../../engine'),
-    join(extension, 'node_modules', '@forgeax', 'engine'),
+    join(installation, 'node_modules', '@forgeax', 'engine'),
     'dir',
   );
   const pack = join(extension, 'host.pack.json');

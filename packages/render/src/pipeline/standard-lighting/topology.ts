@@ -107,11 +107,11 @@ export function deriveStandardTopologyInput(
   }
 
   const transport = input.transport;
-  const requested = prepared.local.length;
+  const admitted = prepared.local.length;
   const transportMatchesPrepared =
     transport.layout === prepared.layout &&
-    transport.requestedLightCount === requested &&
-    transport.admittedLightCount === requested &&
+    transport.requestedLightCount === admitted + prepared.droppedLocalLights &&
+    transport.admittedLightCount === admitted &&
     transport.membershipEntryCount === prepared.membershipEntryCount &&
     transport.lightBoundsBytes === prepared.lightBounds.byteLength;
   const producerMatchesKind =

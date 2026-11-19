@@ -173,7 +173,7 @@ fn evaluate_cluster_light(
         light.position.xyz, light.direction.xyz, light.color.xyz,
         // LightSlot packs cosInner in color.w and cosOuter in direction.w;
         // keep the evaluator's named cone order intact at the decode boundary.
-        light.color.w, light.direction.w, light.position.w,
+        light.color.w, light.direction.w, light.position.w, 2.0,
         world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
         view.spotLightViewProj[tile], tile, 0.00001, 0.05,
         vec4<f32>(max(1.0, bitcast<f32>(light.kind_and_shadow.w)), 0.0, 6.0, 1.0),
@@ -188,7 +188,7 @@ fn evaluate_cluster_light(
       let projector = sampleClusterSpotProjector(view.spotLightViewProj[0], world_pos);
       return evalSpot(
         light.position.xyz, light.direction.xyz, light.color.xyz,
-        light.color.w, light.direction.w, light.position.w,
+        light.color.w, light.direction.w, light.position.w, 2.0,
         world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
     ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
@@ -198,7 +198,7 @@ fn evaluate_cluster_light(
     }
     return evalSpot(
       light.position.xyz, light.direction.xyz, light.color.xyz,
-      light.color.w, light.direction.w, light.position.w,
+      light.color.w, light.direction.w, light.position.w, 2.0,
       world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
     ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE

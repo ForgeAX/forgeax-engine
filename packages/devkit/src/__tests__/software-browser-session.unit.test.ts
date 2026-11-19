@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -56,6 +56,7 @@ const browserMocks = vi.hoisted(() => {
   const browser = {
     newPage: vi.fn(async () => page),
     version: vi.fn(() => '153.0.0.0'),
+    once: vi.fn<(event: string, listener: () => void) => void>(),
     close: vi.fn(),
   };
   const server = {
@@ -93,6 +94,7 @@ const browserMocks = vi.hoisted(() => {
         page.evaluate,
         browser.newPage,
         browser.version,
+        browser.once,
         browser.close,
         server.listen,
         server.close,
@@ -118,6 +120,26 @@ const browserMocks = vi.hoisted(() => {
     setRendererError(value: unknown) {
       rendererError = value;
     },
+  };
+});
+
+const linux = vi.hoisted(() => ({
+  accessSetpriv: vi.fn<(path: string) => Promise<void>>(),
+  passwd: vi.fn<() => Promise<string>>(),
+  chown: vi.fn<(path: string, uid: number, gid: number) => Promise<void>>(),
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    access: (path: string, mode?: number) =>
+      path === '/usr/bin/setpriv' || path === '/bin/setpriv'
+        ? linux.accessSetpriv(path)
+        : fs.access(path, mode),
+    readFile: (path: string, options?: BufferEncoding) =>
+      path === '/etc/passwd' ? linux.passwd() : fs.readFile(path, options),
+    chown: linux.chown,
   };
 });
 
@@ -184,6 +206,95 @@ function emitRequest(
 }
 
 describe('software browser session', () => {
+  it.skipIf(process.geteuid === undefined).each([true, false])(
+    'attempts a sandboxed browser child under Linux root (available=%s)',
+    async (available) => {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+      vi.spyOn(process, 'geteuid').mockReturnValue(0);
+      vi.stubEnv('DISPLAY', undefined);
+      vi.stubEnv('WAYLAND_DISPLAY', undefined);
+      vi.stubEnv('SUDO_UID', undefined);
+      vi.stubEnv('FORGEAX_TEST_BROWSER_SECRET', 'fixture');
+      const root = await mkdtemp(resolve(tmpdir(), 'forgeax-root-sandbox-'));
+      const executable = resolve(root, 'chrome');
+      const capture = createBrowserCapture(root);
+      const setpriv = available ? '/bin/setpriv' : '/usr/bin/setpriv';
+      linux.accessSetpriv.mockImplementation(async (path) => {
+        if (path !== setpriv) throw new Error('setpriv fixture not found');
+      });
+      linux.passwd.mockResolvedValue(
+        'root:x:0:0::/root:/bin/sh\npwuser:x:1000:1000::/browser-fixture/pwuser:/bin/sh',
+      );
+      linux.chown.mockResolvedValue(undefined);
+      if (!available) browserMocks.launch.mockRejectedValueOnce(new Error('namespace unavailable'));
+      try {
+        await Promise.all([
+          writeFile(executable, ''),
+          writeFile(
+            resolve(root, 'forge.json'),
+            '{"id":"privileged","name":"Privileged","schemaVersion":"3.0.0","roots":{}}',
+          ),
+          writeFile(resolve(root, 'package.json'), '{"name":"privileged"}'),
+        ]);
+        const opening = capture.open({
+          browser: executable,
+          backend: 'software',
+          serverUrl: 'http://127.0.0.1:43123/',
+        });
+        if (available) {
+          await expect(opening).resolves.toBeDefined();
+        } else {
+          await expect(opening).rejects.toMatchObject({
+            code: 'browser-sandbox-root',
+            detail: {
+              browserStarted: false,
+              reason: expect.stringContaining('namespace unavailable'),
+            },
+          });
+        }
+        expect(browserMocks.launch).toHaveBeenCalledOnce();
+        const [launch] = browserMocks.launch.mock.calls[0] as unknown as [
+          {
+            executablePath: string;
+            env: Record<string, string>;
+            headless: boolean;
+            chromiumSandbox: boolean;
+          },
+        ];
+        expect(launch).toMatchObject({
+          headless: true,
+          chromiumSandbox: true,
+          env: { FORGEAX_BROWSER_PROGRAM: executable, FORGEAX_BROWSER_UID: '1000' },
+        });
+        expect(launch.env.FORGEAX_TEST_BROWSER_SECRET).toBeUndefined();
+        expect(linux.chown).toHaveBeenCalledWith(launch.env.FORGEAX_BROWSER_STATE, 1000, 1000);
+        if (available) {
+          const wrapper = await readFile(launch.executablePath, 'utf8');
+          expect(launch.env.FORGEAX_BROWSER_SETPRIV).toBe(setpriv);
+          expect(wrapper).toContain('exec "$FORGEAX_BROWSER_SETPRIV"');
+          expect(wrapper).toContain('--clear-groups --no-new-privs');
+          const onClose = browserMocks.browser.once.mock.calls[0];
+          expect(onClose?.[0]).toBe('disconnected');
+          await capture.close();
+          onClose?.[1]();
+        }
+        await expect
+          .poll(async () => {
+            return readFile(launch.executablePath).then(
+              () => true,
+              () => false,
+            );
+          })
+          .toBe(false);
+      } finally {
+        await capture.close();
+        await rm(root, { recursive: true, force: true });
+        const chowned = linux.chown.mock.lastCall?.[0];
+        if (chowned !== undefined) await rm(dirname(chowned), { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { message: 'probe-script-failed', elapsedMs: 0 },
     { message: 'Execution context was destroyed', elapsedMs: 120_001 },
@@ -652,7 +763,7 @@ describe('software browser session', () => {
     });
     try {
       await expect(session.capture('ready')).rejects.toMatchObject({
-        code: 'browser-capture-runtime-failed',
+        code: 'browser-capture-ui-missing',
       });
       expect(session.report().captures).toEqual([
         expect.objectContaining({
@@ -778,9 +889,10 @@ describe('software browser session', () => {
     }
   });
 
-  it('attaches an exact borrowed carrier page and releases only that lease', async () => {
+  it('attaches a borrowed carrier without preparing a private browser or display', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    vi.stubEnv('DISPLAY', ':fixture');
+    if (process.geteuid !== undefined) vi.spyOn(process, 'geteuid').mockReturnValue(0);
+    vi.stubEnv('DISPLAY', undefined);
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-borrowed-carrier-'));
     await Promise.all([
       writeFile(

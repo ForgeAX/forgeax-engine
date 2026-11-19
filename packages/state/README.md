@@ -51,7 +51,7 @@ Per-frame, per-token, the `transitionStatesSystem` (registered by `registerState
 7. Dispatch `OnEnter` callbacks for next variant (errors bubble -- see Constraints)
 8. Clear the consumed request by identity (a new request, even with equal fields, survives for the next frame)
 
-Schedule anchors are scoped to `Update`: `after: ['input-frame-start-scan']`, `before: ['propagateTransforms']`.
+Schedule anchors are scoped to `Update`: `after: [InputFrameStartScan]`, `before: [PropagateTransforms]`.
 
 ## Constraints
 

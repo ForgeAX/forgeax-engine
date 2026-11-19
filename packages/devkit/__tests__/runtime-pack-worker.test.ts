@@ -1,6 +1,5 @@
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ExecutionReport } from '@forgeax/engine-app';
 import { parseImage } from '@forgeax/engine-image/parse-image';
@@ -10,6 +9,7 @@ import { chromium, type Page } from 'playwright';
 import { build, createServer, preview, type ViteDevServer } from 'vite';
 import { expect, it } from 'vitest';
 import { runtimeBrowserLaunchOptions } from './browser-launch.js';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 import { executionWorkerEntries } from '../src/build/execution-workers.js';
 import { prepareRuntimePackProgram } from '../src/build/pack-program.js';
 import { runtimePacksSource } from '../src/build/runtime-packs-source.js';
@@ -95,8 +95,10 @@ it.each([
   ['dev', 'js'],
   ['dev', 'ts'],
 ] as const)('%s %s generates assets and a native plugin after Engine Worker startup and renders 60 completed frames', async (mode, language) => {
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-runtime-worker-')));
   const repository = resolve(import.meta.dirname, '../../..');
+  const directory = await createLiveSyncProjectDirectory('forgeax-runtime-worker-', repository, process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST);
+  const root = await realpath(directory.root);
+  const temporaryRoot = await realpath(directory.temporaryRoot);
   const evidence =
     process.env.FORGEAX_RUNTIME_PACK_EVIDENCE ??
     resolve(repository, 'artifacts/runtime-pack-worker');
@@ -106,6 +108,8 @@ it.each([
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   const errors: string[] = [];
   try {
+    if (process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST)
+      await prepareLiveSyncSharedInputs({sourceRoot:repository,projectRoot:root,temporaryRoot,manifestPath:process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST});
     await mkdir(resolve(root, 'node_modules/@forgeax'), { recursive: true });
     await mkdir(evidence, { recursive: true });
     await mkdir(resolve(root, 'public'), { recursive: true });
@@ -454,6 +458,6 @@ it.each([
     await dev?.close();
     const running = server;
     if (running) await new Promise<void>((done) => running.httpServer.close(() => done()));
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

@@ -82,12 +82,7 @@ it('reports a malformed first-use Standard variant through the renderer error ch
       )
       .unwrap();
     world.update().unwrap();
-    const draw = () =>
-      renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+    const draw = () => renderer.draw({ source: attached });
     await expect
       .poll(
         () => {

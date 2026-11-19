@@ -36,12 +36,10 @@ import {
   allocHandleId,
   ensureTextureCreateEvent,
   getHandleId,
-  hasBootstrapDependency,
   isDepthOrStencilFormat,
   promoteBufferUsage,
   pushEvent,
   registerHandle,
-  retainsCaptureBootstrap,
   shouldRecord,
   TEXTURE_USAGE_BINDING,
   TEXTURE_USAGE_COPY_DST,
@@ -166,6 +164,11 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
       : selectRender === undefined && selectCompute === undefined
         ? pipelineLibrary
         : {
+            ...(pipelineLibrary.pendingRuntimeCompilation === undefined
+              ? {}
+              : {
+                  pendingRuntimeCompilation: () => pipelineLibrary.pendingRuntimeCompilation?.(),
+                }),
             ...(findRenderState === undefined
               ? {}
               : {
@@ -174,7 +177,7 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
                 }),
             ...(collect === undefined ? {} : { collect: () => collect() }),
             inspect: (options) => pipelineLibrary.inspect(options),
-            export: (limits) => pipelineLibrary.export(limits),
+            export: (limits, options) => pipelineLibrary.export(limits, options),
             prepare: (manifest, options) => pipelineLibrary.prepare(manifest, options),
             ...(selectRender === undefined
               ? {}
@@ -645,41 +648,8 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
       if (hId !== undefined) {
         s.descriptorTable.delete(hId);
         s.indexBufferShadow.delete(hId);
-        // Bound bootstrapCreates growth: an idle-destroyed resource can never
-        // be referenced by a future frame's events, so drop its create event.
-        // Only when NOT recording — mid-capture, an earlier frame event may
-        // still reference this handle, and the tape prefix needs its create
-        // event to stay self-contained (tape-invalid otherwise).
-        //
-        // Known bounded residual: a resource destroyed DURING a capture keeps
-        // its bootstrapCreates entry forever — the entry is only ever revisited
-        // by another destroy* of the SAME handle, which can't recur after the
-        // resource is gone. This leaks one create event per resource that is
-        // both created and destroyed inside a recording window (a narrow set;
-        // most resources are long-lived). Fixing it needs a defer-delete list
-        // swept at the next arm() — deliberately not added: the extra state
-        // costs more than the leak it plugs (see PR discussion).
-        //
-        // Separate, wider residual: bootstrapCreates entries for
-        // textureView / bindGroup / pipeline / sampler are NEVER pruned,
-        // because RhiDevice exposes destroy only for buffer / texture -- a
-        // faithful mirror of WebGPU, whose spec puts .destroy() solely on
-        // GPUBuffer / GPUTexture (the objects holding large, eagerly-freeable
-        // backing memory); views / bind groups / pipelines / samplers are
-        // lightweight reference objects left to GC. So there is no destroy
-        // signal to hook for them. An app that rebuilds these per frame grows
-        // bootstrapCreates under a long idle run. The GC-aligned fix is a
-        // WeakRef + FinalizationRegistry over the create-event objects (same
-        // spirit as handleMap's WeakMap, but keyed by handleId so it needs the
-        // WeakRef wrapper) -- a finalization-semantics change, out of scope here.
-        if (
-          !retainsCaptureBootstrap(s) &&
-          !s.snapshotSeededHandles.has(hId) &&
-          !hasBootstrapDependency(s, hId)
-        ) {
-          s.bootstrapCreates.delete(hId);
-        }
         pushEvent(s, { kind: 'destroyBuffer', handleId: hId });
+        s.bootstrapCreates.retire(hId);
       }
       return res;
     },
@@ -689,14 +659,8 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
       const res = realDevice.destroyQuerySet(querySet);
       if (!res.ok) return res;
       if (hId !== undefined) {
-        if (
-          !retainsCaptureBootstrap(s) &&
-          !s.snapshotSeededHandles.has(hId) &&
-          !hasBootstrapDependency(s, hId)
-        ) {
-          s.bootstrapCreates.delete(hId);
-        }
         pushEvent(s, { kind: 'destroyQuerySet', handleId: hId });
+        s.bootstrapCreates.retire(hId);
       }
       return res;
     },
@@ -708,15 +672,8 @@ export function createDeviceProxy(s: RecorderInternal, realDevice: RhiDevice): R
       if (hId !== undefined) {
         s.descriptorTable.delete(hId);
         s.tinyTextureShadow.delete(hId);
-        // Same gate + same bounded residual as destroyBuffer above.
-        if (
-          !retainsCaptureBootstrap(s) &&
-          !s.snapshotSeededHandles.has(hId) &&
-          !hasBootstrapDependency(s, hId)
-        ) {
-          s.bootstrapCreates.delete(hId);
-        }
         pushEvent(s, { kind: 'destroyTexture', handleId: hId });
+        s.bootstrapCreates.retire(hId);
       }
       return res;
     },
@@ -766,14 +723,8 @@ function retireBootstrapHandle(
   hId: HandleId,
   kind: 'destroyBlas' | 'destroyTlas',
 ): void {
-  if (
-    !retainsCaptureBootstrap(s) &&
-    !s.snapshotSeededHandles.has(hId) &&
-    !hasBootstrapDependency(s, hId)
-  ) {
-    s.bootstrapCreates.delete(hId);
-  }
   pushEvent(s, { kind, handleId: hId });
+  s.bootstrapCreates.retire(hId);
 }
 
 // --------------------------------------------------

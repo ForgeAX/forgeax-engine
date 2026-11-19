@@ -48,6 +48,7 @@ import type { FrameList } from '../scene/frame-list';
 import { SKIN_INPUT_WGSL } from '../scene/skin-inputs.wgsl';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
 import { writeGpuLodRow } from '../scene/visibility/gpu-lod';
+import type { LodOcclusionGpuSelection } from '../scene/visibility/inspection';
 import type {
   SurfaceGpuIndirectParameters,
   SurfaceGpuIndirectReadbackError,
@@ -63,7 +64,12 @@ import {
   GPU_DRIVEN_LOD_LEVEL_CAPACITY,
 } from './batch-layout';
 import { MemberCandidates } from './batch-members';
-import type { GpuDrivenBatch, GpuDrivenCandidate, SubmissionPlan } from './batch-topology';
+import {
+  type GpuDrivenBatch,
+  type GpuDrivenCandidate,
+  planDrawsSkin,
+  type SubmissionPlan,
+} from './batch-topology';
 import { hasFixedTaskHeaders } from './fixed-task-plan';
 import {
   LOD_PROJECTION_WGSL,
@@ -84,6 +90,7 @@ import {
   GpuResourceAllocationLedger,
   type GpuResourceAllocationToken,
 } from './resource-allocation';
+import { shadowCameraCullWgsl } from './shadow-camera-cull.wgsl';
 import { SKIN_BOUNDS_WGSL } from './skin-bounds.wgsl';
 import { type SkinDemandLayout, skinDemandLayout, writeSkinDemandConstants } from './skin-demand';
 import { SKIN_DEMAND_WGSL } from './skin-demand.wgsl';
@@ -134,7 +141,8 @@ const OCCLUSION_CULLED_COUNTER_OFFSET = EARLY_VISIBLE_COUNTER_OFFSET + LOD_ROW_C
 const SHADOW_CAMERA_CULL_SLABS = 8;
 // Shadow casters whose shadowed receivers the main camera cannot see.
 const CAMERA_CULLED_COUNTER_OFFSET = OCCLUSION_CULLED_COUNTER_OFFSET + 1;
-const COUNTER_WORDS = CAMERA_CULLED_COUNTER_OFFSET + 1;
+const FRUSTUM_CULLED_COUNTER_OFFSET = CAMERA_CULLED_COUNTER_OFFSET + 1;
+const COUNTER_WORDS = FRUSTUM_CULLED_COUNTER_OFFSET + 1;
 const COUNTER_STRIDE = COUNTER_WORDS * 4;
 /** Per 64-candidate tile: level counts, level prefixes and 64 four-word records. */
 const ORDER_TILE_WORDS = 2 * LOD_ROW_CAPACITY + 64 * 4;
@@ -667,7 +675,10 @@ fn admitEarly(candidateIndex: u32, out: ptr<function, EarlyCandidate>) -> bool {
   atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level)], 1u);
   if (lod.paired) { atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level + 1u)], 1u); }
   if (isSuppressed(candidate.sourceSlot)) { return false; }
-  if (!isVisible(primitive, world)) { return false; }
+  if (!isVisible(primitive, world)) {
+    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${FRUSTUM_CULLED_COUNTER_OFFSET}u], 1u);
+    return false;
+  }
   if (belowMinDiameter(primitive, world)) {
     atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${TEXEL_CULLED_COUNTER_OFFSET}u], 1u);
     return false;
@@ -1030,167 +1041,12 @@ fn finalizeViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
  * The main-camera shadow caster cull. Only views that receive a camera cull
  * input compile it, so every other view keeps the smaller module.
  */
-export const GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL = /* wgsl */ `${GPU_DRIVEN_VIEW_WGSL}
-// Shadow maps use reversed Z with a zero clear, and a receiver is shadowed
-// only by a stored depth greater than its own. Every receiver this caster can
-// darken therefore lies in its dilated light-space rectangle between depth 0
-// (the far plane) and the caster's nearest light depth.
-fn shadowReceiversHidden(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
-  let cull = view.shadowCamera;
-  if (cull.enabled == 0u) { return false; }
-  var worldMin = vec3<f32>(3.0e38);
-  var worldMax = vec3<f32>(-3.0e38);
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let point = (world * vec4<f32>(boundsCorner(primitive, corner), 1.0)).xyz;
-    worldMin = min(worldMin, point);
-    worldMax = max(worldMax, point);
-  }
-  // The caster's own box lies inside its receiver prism, so a box the
-  // pyramid cannot hide keeps the caster without the slab walk. Most
-  // casters of an unoccluded view exit here after one 4x4 test.
-  if (casterBoxVisible(cull.camera, worldMin, worldMax)) { return false; }
-  // A receiver samples the map at its position offset along its normal.
-  worldMin -= vec3<f32>(cull.worldDilation);
-  worldMax += vec3<f32>(cull.worldDilation);
-  var lightMin = vec2<f32>(3.0e38);
-  var lightMax = vec2<f32>(-3.0e38);
-  var lightNearest = 0.0;
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let point = vec3<f32>(
-      select(worldMin.x, worldMax.x, (corner & 1u) != 0u),
-      select(worldMin.y, worldMax.y, (corner & 2u) != 0u),
-      select(worldMin.z, worldMax.z, (corner & 4u) != 0u),
-    );
-    let clip = cull.lightViewProjection * vec4<f32>(point, 1.0);
-    if (clip.w <= 1e-6) { return false; }
-    let ndc = clip.xyz / clip.w;
-    lightMin = min(lightMin, ndc.xy);
-    lightMax = max(lightMax, ndc.xy);
-    lightNearest = max(lightNearest, ndc.z);
-  }
-  // Receivers outside this map never sample it.
-  lightMin = max(lightMin - vec2<f32>(cull.ndcDilation), vec2<f32>(-1.0));
-  lightMax = min(lightMax + vec2<f32>(cull.ndcDilation), vec2<f32>(1.0));
-  if (!all(lightMin < lightMax)) { return false; }
-  let lightTop = clamp(lightNearest, 0.0, 1.0);
-  // The prism reaches the light's far plane, usually far below the visible
-  // receivers. One screen rectangle for all of it spans a coarse pyramid
-  // level whose texels include the sky, so each depth slab is tested on its
-  // own and the caster is skipped only when every slab is hidden. A visible
-  // caster usually shades itself, so walking down from its own slab exits at
-  // the first iteration.
-  for (var step = 0u; step < ${SHADOW_CAMERA_CULL_SLABS}u; step += 1u) {
-    let slab = ${SHADOW_CAMERA_CULL_SLABS}u - 1u - step;
-    let slabFar = lightTop * f32(slab) / ${SHADOW_CAMERA_CULL_SLABS}.0;
-    let slabNear = lightTop * f32(slab + 1u) / ${SHADOW_CAMERA_CULL_SLABS}.0;
-    if (!lightSlabHidden(cull, lightMin, lightMax, slabFar, slabNear)) { return false; }
-  }
-  return true;
-}
-
-// True only for a box wholly in front of the camera, overlapping the screen,
-// and not proven hidden; any other box falls through to the slab walk.
-fn casterBoxVisible(camera: PyramidCamera, worldMin: vec3<f32>, worldMax: vec3<f32>) -> bool {
-  var uvMin = vec2<f32>(3.0e38);
-  var uvMax = vec2<f32>(-3.0e38);
-  var nearestDepth = -3.0e38;
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let point = vec3<f32>(
-      select(worldMin.x, worldMax.x, (corner & 1u) != 0u),
-      select(worldMin.y, worldMax.y, (corner & 2u) != 0u),
-      select(worldMin.z, worldMax.z, (corner & 4u) != 0u),
-    );
-    let clip = camera.viewProjection * vec4<f32>(point, 1.0);
-    if (clip.w <= 1e-6) { return false; }
-    let ndc = clip.xyz / clip.w;
-    uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-    uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-    nearestDepth = max(nearestDepth, ndc.z);
-  }
-  if (any(uvMax <= vec2<f32>(0.0)) || any(uvMin >= vec2<f32>(1.0)) || nearestDepth < 0.0) {
-    return false;
-  }
-  return !screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 3u);
-}
-
-fn lightSlabHidden(
-  cull: ShadowCameraCull,
-  lightMin: vec2<f32>,
-  lightMax: vec2<f32>,
-  slabFar: f32,
-  slabNear: f32,
-) -> bool {
-  let camera = cull.camera;
-  // Nothing nearer than the near plane is rasterized, so the slab is clipped
-  // there instead of being rejected when the long prism passes the camera.
-  let nearW = select(camera.near, 1e-6, camera.orthographic != 0u);
-  var clips: array<vec4<f32>, 8>;
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let lightPoint = vec4<f32>(
-      select(lightMin.x, lightMax.x, (corner & 1u) != 0u),
-      select(lightMin.y, lightMax.y, (corner & 2u) != 0u),
-      select(slabFar, slabNear, (corner & 4u) != 0u),
-      1.0,
-    );
-    let worldPoint = cull.lightInverse * lightPoint;
-    if (!(abs(worldPoint.w) > 1e-12)) { return false; }
-    clips[corner] = camera.viewProjection * vec4<f32>(worldPoint.xyz / worldPoint.w, 1.0);
-  }
-  var uvMin = vec2<f32>(3.0e38);
-  var uvMax = vec2<f32>(-3.0e38);
-  var nearestDepth = -3.0e38;
-  var inFront = 0u;
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let clip = clips[corner];
-    if (clip.w < nearW) { continue; }
-    inFront += 1u;
-    let ndc = clip.xyz / clip.w;
-    uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-    uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-    nearestDepth = max(nearestDepth, ndc.z);
-  }
-  if (inFront == 0u) { return true; }
-  if (inFront < 8u) {
-    // The box is convex, so its visible part is bounded by the in-front
-    // corners plus each edge's crossing of the near plane.
-    for (var edge = 0u; edge < 12u; edge += 1u) {
-      // Edge e runs along axis bit 1 << (e / 4); its other two corner bits
-      // are e % 4 spread around that axis.
-      let axis = 1u << (edge / 4u);
-      let rest = edge % 4u;
-      let below = rest & (axis - 1u);
-      let start = below | ((rest - below) << 1u);
-      let end = start | axis;
-      let p = clips[start];
-      let q = clips[end];
-      if ((p.w < nearW) == (q.w < nearW)) { continue; }
-      let clip = mix(p, q, (nearW - p.w) / (q.w - p.w));
-      let ndc = clip.xyz / clip.w;
-      uvMin = min(uvMin, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-      uvMax = max(uvMax, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
-      nearestDepth = max(nearestDepth, ndc.z);
-    }
-  }
-  // No receiver of the slab lies on screen or inside the far plane.
-  let pad = pyramidTexelUv();
-  if (any(uvMax < -pad) || any(uvMin > 1.0 + pad) || nearestDepth < 0.0) { return true; }
-  // A slab seen from a low camera hugs the horizon; the coarse 2x2 level would
-  // reach the sky above the occluders, so the rarer shadow test pays 4x4.
-  return screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 3u);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn cullViewShadowCamera(@builtin(global_invocation_id) id: vec3<u32>) {
-  clearOrderRecord(id.x);
-  var early: EarlyCandidate;
-  if (!admitEarly(id.x, &early)) { return; }
-  if (shadowReceiversHidden(early.primitive, early.world)) {
-    atomicAdd(&counters[counterIndex(early.candidate.batchIndex) + ${CAMERA_CULLED_COUNTER_OFFSET}u], 1u);
-    return;
-  }
-  appendEarly(id.x, early);
-}
-`;
+export const GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL = shadowCameraCullWgsl(
+  GPU_DRIVEN_VIEW_WGSL,
+  WORKGROUP_SIZE,
+  SHADOW_CAMERA_CULL_SLABS,
+  CAMERA_CULLED_COUNTER_OFFSET,
+);
 
 interface ViewBuffers {
   readonly batches: Buffer;
@@ -1198,6 +1054,7 @@ interface ViewBuffers {
   readonly counters: Buffer;
   readonly visible: Buffer;
   readonly indirect: Buffer;
+  readonly skinIndirect?: Buffer;
   readonly lodReadback: Buffer;
   readonly visibleSurfaceRows?: Buffer;
 }
@@ -1417,21 +1274,16 @@ export interface GpuDrivenLodSelectionInspection {
     readonly overflow: boolean;
     readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
   }[];
-  readonly worldSelections?: readonly {
-    readonly worldKey: number;
-    readonly primitiveSlot: number;
-    readonly slotGeneration: number;
-    readonly candidateCount: number;
-    readonly visible: number;
-    readonly occluded: number;
-    readonly lodHistogram: readonly { readonly level: number; readonly count: number }[];
-  }[];
   readonly geometryWork: number;
   readonly rootGeometryWork: number;
   /** In-frustum candidates dropped below the view's minimum caster diameter. */
   readonly texelCulled: number;
   /** Shadow casters whose shadowed receivers the main camera cannot see. */
   readonly cameraCulled: number;
+  /** Actual early selector rejection, after per-view suppression. */
+  readonly frustumCulled: number;
+  /** Native whole-selector scope retained across the World LOD-subset join. */
+  readonly gpuSelection?: LodOcclusionGpuSelection;
   /**
    * Two-phase HZB facts when the submitted graph ran the late phase:
    * candidates the pyramid rejected and visible items drawn only late.
@@ -1724,7 +1576,7 @@ function encodedViewTopology(
       batch.geometryAddress ??
       (batch.binding === undefined
         ? 0
-        : (scene.geometryIndexForResource(batch.binding.worldId, batch.binding.assetHandle) ?? 0));
+        : (scene.geometryIndexForResource(batch.binding.assetHandle) ?? 0));
     batches.setUint32(offset + 44, geometryAddress, true);
 
     for (let level = 0; level < lodCount; level++) {
@@ -1760,6 +1612,7 @@ export class GpuDrivenView {
   private supersededBuffers: Partial<ViewBuffers>[] = [];
   private bindGroup: BindGroup | undefined;
   private skinBindGroup: BindGroup | undefined;
+  private skinFinalizeBindGroup: BindGroup | undefined;
   private skinPipelines: readonly ComputePipeline[] | undefined;
   private skinLayout: SkinDemandLayout | undefined;
   private skinJointCapacity = 0;
@@ -2140,7 +1993,7 @@ export class GpuDrivenView {
     }
     try {
       this.resetUpdateTelemetry();
-      this.skinActive = (skin?.current.jointCapacity ?? 0) > 0;
+      this.skinActive = (skin?.current.jointCapacity ?? 0) > 0 && planDrawsSkin(plan);
       if (this.skinActive) {
         const prepared = this.prepareSkinPipelines();
         if (!prepared.ok) return prepared;
@@ -2243,7 +2096,10 @@ export class GpuDrivenView {
     skin: SkinSceneFrame | undefined,
     lateMirror: boolean,
   ): Result<boolean, RhiError> {
-    const skinJointCapacity = Math.max(this.skinJointCapacity, skin?.current.jointCapacity ?? 0);
+    const skinJointCapacity = Math.max(
+      this.skinJointCapacity,
+      this.skinActive ? (skin?.current.jointCapacity ?? 0) : 0,
+    );
     // A shared membership may execute in several Passes. Task references
     // address actual candidate work, independently of unique member storage.
     const skinCandidates = this.skinLayout?.candidateCapacity ?? 0;
@@ -2465,7 +2321,14 @@ export class GpuDrivenView {
   /** Skin demand constants exist only while this view has an active Skin layout. */
   private writeSkinConstants(skin: SkinSceneFrame | undefined, plan: SubmissionPlan): void {
     const layout = this.skinLayout;
-    if (!this.skinActive || skin === undefined || layout === undefined) return;
+    if (!this.skinActive || skin === undefined || layout === undefined) {
+      // A retained Skin allocation does not make the next rigid view a Skin task.
+      // Clear its candidate count as well as the raster address to prevent the
+      // selector from consulting a previous task's descriptors and bounds.
+      this.viewWords.fill(0, SKIN_CONSTANTS_OFFSET / 4, (SKIN_CONSTANTS_OFFSET + 48) / 4);
+      this.viewWords.fill(0, SKIN_RASTER_OFFSET / 4, (SKIN_RASTER_OFFSET + 16) / 4);
+      return;
+    }
     writeSkinDemandConstants(
       this.viewData,
       SKIN_CONSTANTS_OFFSET,
@@ -2474,11 +2337,18 @@ export class GpuDrivenView {
       skin.previous?.root ?? 0xffffffff,
       plan.candidateCount,
       this.skinCounterBase(),
-      this.skinDispatchBase(),
+      0,
       Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535,
     );
     this.viewWords[SKIN_RASTER_OFFSET / 4] = layout.candidateBase;
     this.viewWords[SKIN_RASTER_OFFSET / 4 + 1] = layout.descriptorBase;
+  }
+
+  private skinBindingsReady(): boolean {
+    return (
+      !this.skinActive ||
+      (this.skinBindGroup !== undefined && this.skinFinalizeBindGroup !== undefined)
+    );
   }
 
   /** Recreate the cull and Skin task bind groups when their scene or view storage changed. */
@@ -2493,19 +2363,12 @@ export class GpuDrivenView {
       this.sceneInstance !== scene.instanceBuffer ||
       this.sceneTransform !== scene.transformBuffer ||
       this.sceneInputs !== inputBuffer;
-    if (
-      this.bindGroup !== undefined &&
-      !sceneChanged &&
-      !buffersRebuilt &&
-      (!this.skinActive || this.skinBindGroup !== undefined)
-    )
+    const skinBindingsReady = this.skinBindingsReady();
+    if (this.bindGroup !== undefined && !sceneChanged && !buffersRebuilt && skinBindingsReady)
       return ok(undefined);
     // Graph passes read the current scene bindings and imports at execute
     // time, so a scene or input buffer swap alone does not recompile them.
-    const graphShapeChanged =
-      this.bindGroup === undefined ||
-      buffersRebuilt ||
-      (this.skinActive && this.skinBindGroup === undefined);
+    const graphShapeChanged = this.bindGroup === undefined || buffersRebuilt || !skinBindingsReady;
     const entries = [
       { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
       { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
@@ -2525,7 +2388,8 @@ export class GpuDrivenView {
     if (!binding.ok) return binding;
     this.bindGroup = binding.value;
     this.skinBindGroup = undefined;
-    if (this.skinPipelineLayout !== undefined) {
+    this.skinFinalizeBindGroup = undefined;
+    if (this.skinLayout !== undefined && this.skinPipelineLayout !== undefined) {
       const taskBinding = this.device.createBindGroup({
         label: `${this.labelPrefix}-skin-bg`,
         layout: this.skinPipelineLayout,
@@ -2536,8 +2400,30 @@ export class GpuDrivenView {
         return taskBinding;
       }
       this.skinBindGroup = taskBinding.value;
+      const args = buffers.skinIndirect;
+      if (args === undefined)
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'dedicated Skin dispatch arguments for an active task',
+            hint: 'rebuild this view from the admitted Skin layout',
+          }),
+        );
+      const finalizeBinding = this.device.createBindGroup({
+        label: `${this.labelPrefix}-skin-finalize-bg`,
+        layout: this.bindGroupLayout,
+        entries: entries.map((entry) =>
+          entry.binding === 8 ? { binding: 8, resource: bufferBinding(args) } : entry,
+        ),
+      });
+      if (!finalizeBinding.ok) {
+        this.bindGroup = undefined;
+        this.skinBindGroup = undefined;
+        return finalizeBinding;
+      }
+      this.skinFinalizeBindGroup = finalizeBinding.value;
     }
-    this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 2;
+    this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 3;
     if (graphShapeChanged) this.resourceGeneration += 1;
     const shape = `${this.skinLayout !== undefined}|${buffers.visibleSurfaceRows !== undefined}`;
     if (shape !== this.graphShape) {
@@ -2551,9 +2437,25 @@ export class GpuDrivenView {
     const previous = this.memberHolds;
     if (this.sceneRef === scene && previous[0]?.topology === topology) return;
     const holds: (typeof previous)[number][] = [];
-    for (const candidates of topology.members)
-      if (MemberCandidates.is(candidates))
-        holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
+    try {
+      for (const candidates of topology.members)
+        if (MemberCandidates.is(candidates))
+          holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
+    } catch (cause) {
+      let failure: AggregateError | undefined;
+      for (const hold of holds) {
+        try {
+          hold.release();
+        } catch (cleanup) {
+          if (failure === undefined)
+            failure = new AggregateError([cause, cleanup], 'Member lease rollback failed', {
+              cause,
+            });
+          else failure.errors.push(cleanup);
+        }
+      }
+      throw failure ?? cause;
+    }
     this.memberHolds = holds;
     for (const hold of previous) hold.release();
   }
@@ -2904,6 +2806,7 @@ export class GpuDrivenView {
       let rootGeometryWork = 0;
       let texelCulled = 0;
       let cameraCulled = 0;
+      let frustumCulled = 0;
       let occlusionCulled = 0;
       let lateVisible = 0;
       const actualMembers: Array<{
@@ -2960,6 +2863,7 @@ export class GpuDrivenView {
         rootGeometryWork += values.getUint32(offset + ROOT_GEOMETRY_WORK_COUNTER_OFFSET * 4, true);
         texelCulled += values.getUint32(offset + TEXEL_CULLED_COUNTER_OFFSET * 4, true);
         cameraCulled += values.getUint32(offset + CAMERA_CULLED_COUNTER_OFFSET * 4, true);
+        frustumCulled += values.getUint32(offset + FRUSTUM_CULLED_COUNTER_OFFSET * 4, true);
         if (copy.occlusion && !batchOverflow && batch !== undefined) {
           occlusionCulled += values.getUint32(offset + OCCLUSION_CULLED_COUNTER_OFFSET * 4, true);
           for (let level = 0; level < batchLodLevelCount(batch); level += 1) {
@@ -3043,6 +2947,7 @@ export class GpuDrivenView {
         rootGeometryWork,
         texelCulled,
         cameraCulled,
+        frustumCulled,
         ...(copy.occlusion
           ? { occlusion: Object.freeze({ culled: occlusionCulled, late: lateVisible }) }
           : {}),
@@ -3057,6 +2962,50 @@ export class GpuDrivenView {
       });
       return this.lodSelection;
     });
+  }
+
+  private preparedSkinTask(): Result<
+    {
+      pipelines: readonly ComputePipeline[];
+      taskBinding: BindGroup;
+      finalizeBinding: BindGroup;
+    },
+    RenderGraphError
+  > {
+    const pipelines = this.skinPipelines;
+    const taskBinding = this.skinBindGroup;
+    const finalizeBinding = this.skinFinalizeBindGroup;
+    if (pipelines === undefined || taskBinding === undefined || finalizeBinding === undefined) {
+      return err(
+        new RenderGraphError({
+          code: 'resource-descriptor-invalid',
+          expected: 'prepared Skin task pipelines and physical buffer bindings',
+          hint: 'update the view with its fixed Skin frame before building task passes',
+        }),
+      );
+    }
+    return ok({ pipelines, taskBinding, finalizeBinding });
+  }
+
+  private importVisibleSurfaceRows<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    labelPrefix: string,
+    buffers: ViewBuffers,
+  ): Result<GraphBuffer | undefined, RenderGraphError> {
+    let visibleSurfaceRows: GraphBuffer | undefined;
+    if (buffers.visibleSurfaceRows !== undefined) {
+      const imported = builder.importBuffer(
+        `${labelPrefix}.visible-surface-rows`,
+        {
+          size: this.visibleBufferCapacity * 4,
+          usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
+        },
+        () => this.buffers?.visibleSurfaceRows ?? (buffers.visibleSurfaceRows as Buffer),
+      );
+      if (!imported.ok) return imported;
+      visibleSurfaceRows = imported.value;
+    }
+    return ok(visibleSurfaceRows);
   }
 
   addPasses<FrameCtx extends RenderGraphFrame>(
@@ -3145,17 +3094,9 @@ export class GpuDrivenView {
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     );
     if (!candidates.ok) return candidates;
-    let visibleSurfaceRows: GraphBuffer | undefined;
-    if (buffers.visibleSurfaceRows !== undefined) {
-      const imported = importBuffer(
-        `${labelPrefix}.visible-surface-rows`,
-        live(() => this.buffers?.visibleSurfaceRows, buffers.visibleSurfaceRows),
-        this.visibleBufferCapacity * 4,
-        GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
-      );
-      if (!imported.ok) return imported;
-      visibleSurfaceRows = imported.value;
-    }
+    const importedSurfaceRows = this.importVisibleSurfaceRows(builder, labelPrefix, buffers);
+    if (!importedSurfaceRows.ok) return importedSurfaceRows;
+    const visibleSurfaceRows = importedSurfaceRows.value;
     const batches = importBuffer(
       `${labelPrefix}.batches`,
       () => currentBuffers().batches,
@@ -3214,27 +3155,43 @@ export class GpuDrivenView {
     // follow the plan uploaded for the submitted frame; the shaders bound
     // every invocation by the counts in the view constants.
     const submitted = (): Pick<SubmissionPlan, 'batches' | 'candidateCount'> => this.plan ?? plan;
+    let resolveSkin: ComputeGraphPass<FrameCtx>['encodeDirect'];
+    let skinArgs: GraphBuffer | undefined;
     if (this.skinLayout !== undefined) {
-      const pipelines = this.skinPipelines;
-      const taskBinding = this.skinBindGroup;
-      if (pipelines === undefined || taskBinding === undefined) {
+      const argumentBuffer = buffers.skinIndirect;
+      if (argumentBuffer === undefined)
         return err(
           new RenderGraphError({
             code: 'resource-descriptor-invalid',
-            expected: 'prepared Skin task pipelines and physical buffer bindings',
-            hint: 'update the view with its fixed Skin frame before building task passes',
+            expected: 'dedicated Skin dispatch arguments',
+            hint: 'update this view from its current Skin layout',
           }),
         );
-      }
+      const importedArgs = importBuffer(
+        `${labelPrefix}.skin-indirect`,
+        live(() => this.buffers?.skinIndirect, argumentBuffer),
+        12,
+        GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_INDIRECT | GPU_BUFFER_USAGE_COPY_SRC,
+      );
+      if (!importedArgs.ok) return importedArgs;
+      skinArgs = importedArgs.value;
+      const task = this.preparedSkinTask();
+      if (!task.ok) return task;
+      const { pipelines, taskBinding, finalizeBinding } = task.value;
       const taskEnabled = (frame: FrameCtx) => this.skinActive && (executeIf?.(frame) ?? true);
       const encodeSkinStage = (
         pass: Parameters<NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']>>[0],
         stage: number,
       ): void => {
         pass.setPipeline(pipelines[stage] as ComputePipeline);
-        pass.setBindGroup(0, stage === 3 ? liveBindGroup() : (this.skinBindGroup ?? taskBinding));
+        pass.setBindGroup(
+          0,
+          stage === 3
+            ? (this.skinFinalizeBindGroup ?? finalizeBinding)
+            : (this.skinBindGroup ?? taskBinding),
+        );
         if (stage === 4) {
-          pass.dispatchWorkgroupsIndirect(currentBuffers().indirect, this.skinDispatchBase() * 4);
+          pass.dispatchWorkgroupsIndirect(currentBuffers().skinIndirect ?? argumentBuffer, 0);
         } else if (stage === 1 || stage === 3) {
           pass.dispatchWorkgroups(1);
         } else {
@@ -3263,7 +3220,7 @@ export class GpuDrivenView {
             { resource: visible.value, usage: 'storage-read-write' },
             ...(indirectUsage === undefined
               ? []
-              : [{ resource: indirect.value, usage: indirectUsage }]),
+              : [{ resource: importedArgs.value, usage: indirectUsage }]),
           ],
           executeIf: taskEnabled,
           encodeDirect: (pass, _graphframe, _graphresources) => {
@@ -3272,11 +3229,13 @@ export class GpuDrivenView {
         });
       const declareSkin = (): Result<void, RenderGraphError> => {
         if (computePassMode === 'combined') {
-          // The indirect-read consumer remains its own graph/usage boundary.
-          // Clear -> reset -> claim -> finalize stay separate ordered dispatches.
+          // Dedicated Skin arguments stay read-only while selection writes its
+          // separate draw arguments, so resolve can share selection's scope.
+          resolveSkin = (pass, frame) => {
+            if (taskEnabled(frame)) encodeSkinStage(pass, 4);
+          };
           const demand = skinPass('demand', 0, 4, 'storage-read-write');
-          if (!demand.ok) return demand;
-          return skinPass('resolve', 4, 5, 'indirect-read');
+          return demand.ok ? ok(undefined) : demand;
         }
         const stages = ['clear', 'reset', 'claim', 'finalize', 'resolve'] as const;
         for (let stage = 0; stage < stages.length; stage++) {
@@ -3362,9 +3321,16 @@ export class GpuDrivenView {
       if (computePassMode === 'combined') {
         const work: GpuDrivenSelectionWork<FrameCtx> = {
           name: `${labelPrefix}.view-selection`,
-          accesses: [...compactAccesses, { resource: indirect.value, usage: 'storage-read-write' }],
+          accesses: [
+            ...compactAccesses,
+            { resource: indirect.value, usage: 'storage-read-write' },
+            ...(skinArgs === undefined
+              ? []
+              : [{ resource: skinArgs, usage: 'indirect-read' as const }]),
+          ],
           executeIf,
           encode: (pass, frame, resources) => {
+            resolveSkin?.(pass, frame, resources);
             resetSelection(pass, frame, resources);
             compactSelection(pass, frame, resources);
             finalizeSelection(pass, frame, resources);
@@ -3615,9 +3581,6 @@ export class GpuDrivenView {
   private skinCounterBase(): number {
     return (this.batchCapacity * COUNTER_STRIDE) / 4 + this.suppressionWordCapacity * 2;
   }
-  private skinDispatchBase(): number {
-    return (this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2) / 4;
-  }
   /** Visible-order scratch follows the Skin counters. */
   private orderBase(): number {
     return this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0);
@@ -3642,7 +3605,7 @@ export class GpuDrivenView {
     return this.lateMirror ? this.visibleBufferCapacity : 0;
   }
   private indirectBytes(): number {
-    return (this.skinDispatchBase() + (this.skinLayout === undefined ? 0 : 3)) * 4;
+    return this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2;
   }
 
   dispose(): void {
@@ -3658,6 +3621,7 @@ export class GpuDrivenView {
     this.buffers = undefined;
     this.surfaceRows = undefined;
     this.skinBindGroup = undefined;
+    this.skinFinalizeBindGroup = undefined;
     this.skinRasterBinding = undefined;
     this.skinLayout = undefined;
     this.skinJointCapacity = 0;
@@ -3923,10 +3887,20 @@ export class GpuDrivenView {
       {
         name: 'indirect',
         // Main region plus the late-phase region of two-phase occlusion.
-        size: nextIndirect * INDIRECT_COMMAND_BYTES * 2 + (skinLayout === undefined ? 0 : 12),
+        size: nextIndirect * INDIRECT_COMMAND_BYTES * 2,
         usage: storage | GPU_BUFFER_USAGE_INDIRECT,
         storage: true,
       },
+      ...(skinLayout === undefined
+        ? []
+        : [
+            {
+              name: 'skinIndirect' as const,
+              size: 12,
+              usage: storage | GPU_BUFFER_USAGE_INDIRECT,
+              storage: true,
+            },
+          ]),
       ...(surfaceRows
         ? [
             {
@@ -3986,6 +3960,7 @@ export class GpuDrivenView {
     this.skinLayout = skinLayout;
     this.skinJointCapacity = skinJointCapacity;
     this.skinBindGroup = undefined;
+    this.skinFinalizeBindGroup = undefined;
     this.skinRasterBinding =
       skinLayout === undefined
         ? undefined

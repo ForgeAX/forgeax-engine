@@ -1,6 +1,6 @@
 import type { MaterialAsset, MaterialValue } from './asset.js';
 
-/** Author choices select compiled Standard features; they never enter uniform values. */
+/** Author choices select compiled material features; they never enter uniform values. */
 export const MATERIAL_STATIC_SWITCH_NAMES = [
   'textures',
   'normalMapping',
@@ -21,6 +21,31 @@ export const MATERIAL_STATIC_SWITCH_NAMES = [
   // preintegrated LUT fetch; true compiles UE EnvBRDFApproxLazarov (ALU only).
   // Selects code only, never the ABI.
   'environmentBrdfApprox',
+  'waterWaves',
+  'waterVertexMapping',
+  'waterDynamicBoundsClip',
+  'waterInfo',
+  'waterBakedSimulation',
+  'waterFluidSimulation',
+  'waterShallowSimulation',
+  'waterShallowAdditive',
+  'waterOceanPatch',
+  'waterVisualNormalDetail',
+  'waterOceanAdvectionThreePhase',
+  'waterOceanDisplacement',
+  'waterFixedVelocity',
+  'waterFixedHeight',
+  'waterFixedDepth',
+  'waterFlowmap',
+  'waterNormalTexture',
+  'waterFoam',
+  'waterRefraction',
+  'waterReflections',
+  'waterSsr',
+  'waterRiver',
+  'waterOceanFoam',
+  'waterTransitionLake',
+  'waterTransitionOcean',
 ] as const;
 
 export type MaterialStaticSwitchName = (typeof MATERIAL_STATIC_SWITCH_NAMES)[number];
@@ -101,7 +126,7 @@ export function standardMaterialParameterEnabled(
   if (switches.triplanarProjection === false && name.startsWith('triplanar')) return false;
   if (switches.objectSpaceNormal === false && name === 'normalMapSpace') return false;
   if (switches.directMultiscattering === false && name === 'directMultiscatteringLut') return false;
-  return true;
+  return standardWaterParameterEnabled(name, switches);
 }
 
 /** Validate the closed author vocabulary at source and publication boundaries. */
@@ -184,4 +209,33 @@ export function selectMaterialStaticContract(
     if (active.has(name)) values[name] = value;
   }
   return { ...asset, staticSwitches: switches, parameters, values };
+}
+
+function standardWaterParameterEnabled(name: string, switches: MaterialStaticSwitches): boolean {
+  if (switches.waterNormalTexture === false && name === 'waterNormalTexture') return false;
+  if (
+    (switches.waterOceanFoam === false || switches.waterFoam === false) &&
+    name === 'waterVolumeNoiseTexture'
+  )
+    return false;
+  if (
+    switches.waterShallowSimulation !== true &&
+    [
+      'waterShallowGridTexture',
+      'waterShallowNormalTexture',
+      'waterShallowFoamTexture',
+      'waterShallowMappingTexture',
+    ].includes(name)
+  )
+    return false;
+  if (switches.waterOceanPatch !== true && name === 'waterOceanPatchTexture') return false;
+  if (switches.waterVisualNormalDetail !== true && name === 'NormalDetailTex') return false;
+  if (
+    switches.waterFlowmap === false &&
+    ['waterFlowTexture', 'waterFlowNormalTexture', 'waterNoiseTexture'].includes(name)
+  )
+    return false;
+  if (switches.waterFoam === false && ['waterFoamTexture', 'waterFoamNormalTexture'].includes(name))
+    return false;
+  return true;
 }

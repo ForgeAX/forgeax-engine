@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
@@ -14,6 +15,7 @@ import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = resolve(import.meta.dirname);
@@ -83,7 +85,7 @@ globalThis.fetch = async (request) => {
 phase('gpu-shim');
 const shim = await setupGpuShim({ width: WIDTH, height: HEIGHT, rerunCmd: 'pnpm --filter @forgeax/hello-cinder-fall smoke' });
 phase('engine-imports');
-const manifest = JSON.parse(readFileSync(resolve(distRoot, 'shaders/manifest.json'), 'utf8'));
+
 const { World } = await import('@forgeax/engine-ecs');
 const { mat4, quat, vec3 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -132,7 +134,7 @@ phase('renderer-construct');
 const constructed = await constructRuntimeRendererHost(
   shim.mockCanvas,
   { features: [host.feature] },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
 );
 if (!constructed.ok) throw constructed.error;
 const { renderer, assets } = constructed.value;
@@ -208,7 +210,7 @@ let lastReceipt;
 phase('frame-loop');
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update(1 / 60).unwrap();
-  const receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+  const receipt = await drawReadyFrame(renderer, { source: lease });
   drawCount += 1;
   lastReceipt = receipt;
   if (frame % 10 === 0) console.log(`[cinder-fall-dawn] frame=${frame + 1}/${FRAMES}`);

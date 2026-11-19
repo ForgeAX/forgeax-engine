@@ -1,6 +1,8 @@
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
+import { isStandardOutputContract } from '../pipeline/standard-output/types';
 import { RenderPublicationError } from '../publication/contract';
+import { validateRenderQualityBudgets } from '../quality';
 import {
   freezeDiffuseGi,
   freezeGlobalSdfGrid,
@@ -9,6 +11,7 @@ import {
   validateGlobalSdfRegion,
 } from '../raytracing/irradiance-field-plan';
 import { RAY_REFERENCE_LIMIT } from '../raytracing/scene';
+import { TextureResidencyError } from '../texture-residency';
 
 // Public renderer facade and profile validation.
 // This module narrows the lifetime-heavy host implementation to the stable
@@ -35,7 +38,8 @@ import {
 } from '../errors/render';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
 import {
-  STANDARD_LIGHT_COUNTS,
+  isStandardLightCount,
+  STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   STANDARD_POST_STAGE_NAMES,
 } from '../pipeline/standard-profile';
@@ -51,6 +55,7 @@ import type {
   RenderResult,
 } from '../render-contract';
 import { resolveSsaoParameters } from '../ssao-config';
+import { captureTargetEnvironment } from '../targets/capture-environment';
 import type { RendererHostImplementation } from './host-contract';
 import { createRendererLifecycle, isRendererStateOperational } from './renderer-lifecycle';
 
@@ -92,8 +97,23 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
   };
   // Projection and texture-budget failures are public, asset-caused RenderErrors
   // that name the source problem; wrapping them would hide it behind a device code.
+  const expiredProjectionError = (
+    cause: unknown,
+  ): RendererOperationError<'scene-projection-failed'> | undefined => {
+    const error = asRecord(cause);
+    const detail = asRecord(error?.detail);
+    const source = asRecord(detail?.error);
+    if (error?.code !== 'webgpu-runtime-error' || source?.code !== 'state-projection-expired')
+      return undefined;
+    const projection = asRecord(source.detail) ?? source;
+    return new RendererOperationError('scene-projection-failed', {
+      operation: 'draw',
+      cause: structuredRendererCause(projection, 'World source projection'),
+    });
+  };
   const eventError = (cause: RendererError): RenderError =>
-    cause instanceof RendererOperationError ||
+    expiredProjectionError(cause) ??
+    (cause instanceof RendererOperationError ||
     cause instanceof EquirectProjectionFailedError ||
     cause instanceof ExternalTextureInvalidError ||
     cause instanceof ExternalTextureStateInvalidError ||
@@ -102,8 +122,10 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       : new RendererOperationError('device-operation-failed', {
           operation: 'renderer-event',
           cause: structuredRendererCause(cause, 'renderer-event'),
-        });
+        }));
   const drawError = (cause: RhiError | RenderError): RenderError => {
+    const projectionFailure = expiredProjectionError(cause);
+    if (projectionFailure !== undefined) return projectionFailure;
     if (
       cause instanceof MotionBlurValidationError ||
       cause instanceof RenderPublicationError ||
@@ -179,7 +201,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
     );
   });
 
-  return {
+  const facade: Renderer = {
     setSurfaceDynamicInput: (frame) => {
       assertPreparationIdle();
       renderer.setSurfaceDynamicInput(frame);
@@ -224,6 +246,12 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         // its extracted references. Recheck every active preparation owner.
         release: (evict) => afterScheduledPreparation(() => lease.release(evict)),
       });
+    },
+    prepareTextureResidency: (world, textureHandle) => {
+      assertPreparationIdle();
+      if (lifecycle.state() !== 'alive')
+        return err(new TextureResidencyError({ reason: 'renderer-not-alive', textureHandle }));
+      return renderer.prepareTextureResidency(world, textureHandle);
     },
     prepareMeshResidency: (world, meshHandle, observePhase) => {
       assertPreparationIdle();
@@ -271,6 +299,16 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         ? renderer.retireSupersededDynamicGeometry(candidate, successor)
         : err(fault);
     },
+    captureRenderTargetEnvironment: (target, options) =>
+      afterScheduledPreparation(() =>
+        captureTargetEnvironment(target, options, {
+          draw: facade.draw,
+          filter: (faces) =>
+            afterScheduledPreparation(() => renderer.prepareRenderTargetEnvironment(target, faces)),
+        }),
+      ),
+    prepareRenderTargetEnvironment: (target) =>
+      afterScheduledPreparation(() => renderer.prepareRenderTargetEnvironment(target)),
     createRenderTarget: (descriptor) => {
       assertPreparationIdle();
       return renderer.createRenderTarget(descriptor);
@@ -538,6 +576,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return disposeInFlight;
     },
   };
+  return facade;
 }
 
 // ─── feat-20260520-directional-light-shadow-mapping M1c / w8 helpers ────────
@@ -575,6 +614,12 @@ export function structuredRendererCause(cause: unknown, operation: string): Rend
     hint: contractFailure.hint,
     detail: contractFailure.detail,
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function projectRecoveryFailureDetail(
@@ -624,6 +669,9 @@ function projectRecoveryFailureDetail(
 }
 
 const RENDER_PROFILE_KEYS = new Set([
+  'quality',
+  'configurationRevision',
+  'outputContract',
   'featureReadOnlyDepthBatching',
   'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
@@ -642,6 +690,17 @@ const RENDER_PROFILE_KEYS = new Set([
   'postStages',
 ]);
 
+function validateConfigurationProfile(profile: RenderProfile): string | undefined {
+  if (
+    profile.configurationRevision !== undefined &&
+    (!Number.isSafeInteger(profile.configurationRevision) || profile.configurationRevision < 1)
+  )
+    return 'configurationRevision must be a positive safe integer';
+  const qualityFailure = validateRenderQualityBudgets(profile.quality);
+  if (qualityFailure !== undefined) return qualityFailure;
+  return undefined;
+}
+
 export function validateRenderProfile(profile: RenderProfile): string | undefined {
   // Validate automatic author intent against the Deferred feature vocabulary;
   // the owner also validates its concrete device selection before applying it.
@@ -650,6 +709,10 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   if (typeof profile !== 'object' || profile === null) return 'RenderProfile must be a POD object';
   const unknownKey = Object.keys(profile).find((key) => !RENDER_PROFILE_KEYS.has(key));
   if (unknownKey !== undefined) return `RenderProfile contains unsupported field '${unknownKey}'`;
+  if (profile.outputContract !== undefined && !isStandardOutputContract(profile.outputContract))
+    return 'RenderProfile.outputContract requires standard-output-v1 or standard-output-v2';
+  const configurationFailure = validateConfigurationProfile(profile);
+  if (configurationFailure !== undefined) return configurationFailure;
   let failure = validateStandardPipelineSelection(profile);
   if (failure !== undefined) return failure;
   failure = validateVolumetricFogProfile(profile.volumetricFog);
@@ -669,6 +732,10 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   }
   failure = validateSsaoProfile(profile);
   if (failure !== undefined) return failure;
+  return validatePostStageOrder(profile);
+}
+
+function validatePostStageOrder(profile: RenderProfile): string | undefined {
   const stages = STANDARD_POST_STAGE_NAMES;
   if (
     !Array.isArray(profile.postStages) ||
@@ -685,8 +752,8 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
   if (profile.pipelineId !== STANDARD_PIPELINE_ID) {
     return `RenderProfile.pipelineId must be '${STANDARD_PIPELINE_ID}'`;
   }
-  if (!STANDARD_LIGHT_COUNTS.some((count) => count === profile.lightCount)) {
-    return 'RenderProfile.lightCount must be 1, 32, or 256';
+  if (!isStandardLightCount(profile.lightCount)) {
+    return `RenderProfile.lightCount must be an integer from 1 to ${STANDARD_MAX_LIGHT_COUNT}`;
   }
   if (profile.renderPath !== 'forward' && profile.renderPath !== 'deferred') {
     return "RenderProfile.renderPath must be 'forward' or 'deferred'";
@@ -839,14 +906,10 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
   )
     return 'RenderProfile.ssao must be boolean or AO parameters';
   if (typeof profile.ssao === 'object') {
-    if (
-      Object.keys(profile.ssao).some(
-        (key) => !['algorithm', 'radius', 'bias', 'intensity', 'quality'].includes(key),
-      )
-    )
-      return 'RenderProfile.ssao contains an unsupported parameter';
     const resolved = resolveSsaoParameters(profile.ssao);
     if (!resolved.ok) return resolved.error.hint;
+    if (Object.keys(profile.ssao).some((key) => !Object.hasOwn(resolved.value, key)))
+      return 'RenderProfile.ssao contains an unsupported parameter';
   }
   return undefined;
 }
@@ -854,6 +917,15 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
 export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
   return Object.freeze({
     ...profile,
+    ...(profile.quality === undefined
+      ? {}
+      : {
+          quality: Object.freeze({
+            ...profile.quality,
+            ambientOcclusion: Object.freeze({ ...profile.quality.ambientOcclusion }),
+            ssr: Object.freeze({ ...profile.quality.ssr }),
+          }),
+        }),
     ...(profile.gbufferBatchOrderDiagnostic === undefined
       ? {}
       : {
@@ -888,9 +960,14 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
                 }),
           }),
         }),
+    // Only the exact gather reads per-pixel visible-surface identity; field,
+    // screen-probe and baked gathers keep the caller's visibleSurface choice.
     ...(profile.diffuseGi === undefined
       ? {}
-      : { visibleSurface: true, diffuseGi: freezeDiffuseGi(profile.diffuseGi) }),
+      : {
+          ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
+          diffuseGi: freezeDiffuseGi(profile.diffuseGi),
+        }),
     ssao: typeof profile.ssao === 'object' ? Object.freeze({ ...profile.ssao }) : profile.ssao,
     ...(profile.volumetricFog === undefined
       ? {}

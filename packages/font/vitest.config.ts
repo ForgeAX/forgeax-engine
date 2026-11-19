@@ -1,4 +1,5 @@
 import { defineProject } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
 
 // Per-package vitest project (K-3 split policy: discovered from root
 // vitest.config.ts via `packages/*` glob, addressable as
@@ -9,6 +10,8 @@ import { defineProject } from 'vitest/config';
 // Typecheck is enabled so `.test-d.ts` (compile-time discriminated-union
 // narrowing fixtures) participate in the unit run.
 export default defineProject({
+  root: fileURLToPath(new URL('.', import.meta.url)),
+  tsconfig: fileURLToPath(new URL('../../tsconfig.base.json', import.meta.url)),
   test: {
     environment: 'node',
     name: '@forgeax/engine-font',

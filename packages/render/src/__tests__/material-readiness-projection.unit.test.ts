@@ -165,7 +165,7 @@ it('keeps borrowed residency key reads and never invokes an ownership getter', (
   expect(ownership).not.toHaveBeenCalled();
 });
 
-it('retains the complete owned observation when ownership inspection reenters another scope', () => {
+it('retains the complete owned observation when ownership inspection reenters another material', () => {
   const first = worldRenderResources(assetWorld());
   const second = worldRenderResources(assetWorld());
   let ready = true;
@@ -182,7 +182,7 @@ it('retains the complete owned observation when ownership inspection reenters an
       getOwnPropertyDescriptor(target, key) {
         if (key === 'immutableValues' && !nested) {
           nested = true;
-          expect(observe(second, other).readiness).toBe('ready');
+          expect(observe(first, other).readiness).toBe('ready');
         }
         return Reflect.getOwnPropertyDescriptor(target, key);
       },
@@ -194,7 +194,11 @@ it('retains the complete owned observation when ownership inspection reenters an
   ready = false;
   expect(observe(first, material)).toBe(captured);
   expect(getView).toHaveBeenCalledTimes(1);
-  expect(observe(second, material).readiness).toBe('pending');
+  const otherRenderer = createMaterialResidencyObserver(
+    { dynamicTextureStore: { getView } } as unknown as RenderSystemInternals,
+    false,
+  );
+  expect(otherRenderer(second, material).readiness).toBe('pending');
   expect(getView).toHaveBeenCalledTimes(2);
   expect(observe(first, material)).toBe(captured);
 });
@@ -301,21 +305,32 @@ it('shares producer-captured residency while recapturing raw and shallow-frozen 
   };
   const source = Object.freeze({ readiness: 'ready' as const, samplers: [sampler], textures: [] });
   const input = {
-    worldId: 0,
     entityKey: 1,
     bindings: [{ handle: 1, source: 'engine-default' as const }],
     diagnostics: [],
   };
   const published = publishMeshMaterialBindingResidency(source);
   const count = reads;
-  const first = projectMeshMaterialBindingObservation({ ...input, residency: [published] });
-  const second = projectMeshMaterialBindingObservation({ ...input, residency: [published] });
+  const first = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [published],
+  });
+  const second = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [published],
+  });
   expect(reads).toBe(count);
   expect(first.residency[0]).toBe(second.residency[0]);
   expect(first.residency[0]?.samplers[0]?.handle).toBe(7);
   handle = 9;
-  const raw = projectMeshMaterialBindingObservation({ ...input, residency: [source] });
-  const rawAgain = projectMeshMaterialBindingObservation({ ...input, residency: [source] });
+  const raw = projectMeshMaterialBindingObservation({ worldId: 0, ...input, residency: [source] });
+  const rawAgain = projectMeshMaterialBindingObservation({
+    worldId: 0,
+    ...input,
+    residency: [source],
+  });
   expect(raw.residency[0]).not.toBe(rawAgain.residency[0]);
   expect(raw.residency[0]?.samplers[0]?.handle).toBe(9);
   expect(first.residency[0]?.samplers[0]?.handle).toBe(7);

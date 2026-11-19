@@ -361,6 +361,7 @@ export function tonemapToU32(mode: Tonemap): number {
  *   `'msaa'` - 4x hardware multi-sample anti-aliasing (geometry-edge coverage).
  *              Active on both HDR and LDR-swap-chain paths, so a default Camera
  *              (`tonemap='none'`) with `antialias='msaa'` is NOT a silent no-op.
+ *   `'msaa-fxaa'` - 4x MSAA followed by the ordinary FXAA output pass.
  *   `'smaa'` - SMAA 1x Medium, spatial three-pass color-edge anti-aliasing.
  *   `'taa'`  - temporal anti-aliasing; renderer temporal projection owns its
  *              jitter and successful-submit history contract.
@@ -369,7 +370,7 @@ export function tonemapToU32(mode: Tonemap): number {
  * resolves shading/high-frequency aliasing. TAA and TSR each select one temporal
  * resolver and are mutually exclusive with the spatial modes.
  */
-export type Antialias = 'none' | 'fxaa' | 'msaa' | 'taa' | 'smaa' | 'tsr';
+export type Antialias = 'none' | 'fxaa' | 'msaa' | 'msaa-fxaa' | 'taa' | 'smaa' | 'tsr';
 
 /** Numeric encoding of anti-alias disabled (schema value for `antialias`). */
 export const ANTIALIAS_NONE = 0;
@@ -383,6 +384,18 @@ export const ANTIALIAS_TAA = 3;
 export const ANTIALIAS_SMAA = 4;
 /** Temporal super resolution; shares view/submit ownership with TAA. */
 export const ANTIALIAS_TSR = 5;
+/** Four-sample geometry coverage followed by FXAA on the resolved output. */
+export const ANTIALIAS_MSAA_FXAA = 6;
+
+/** Both native four-sample coverage modes share attachment and resolve ownership. */
+export function isMultisampleAntialias(value: string | undefined): value is 'msaa' | 'msaa-fxaa' {
+  return value === 'msaa' || value === 'msaa-fxaa';
+}
+
+/** Spatial FXAA output selection, including the native MSAA combination. */
+export function isFxaaAntialias(value: string | undefined): value is 'fxaa' | 'msaa-fxaa' {
+  return value === 'fxaa' || value === 'msaa-fxaa';
+}
 
 /** The shared scene-data and jitter demand of the two temporal resolvers. */
 export function isTemporalAntialias(value: Antialias | undefined): value is 'taa' | 'tsr' {
@@ -397,6 +410,7 @@ export function antialiasFromF32(value: number): Antialias {
   if (value === ANTIALIAS_NONE) return 'none';
   if (value === ANTIALIAS_FXAA) return 'fxaa';
   if (value === ANTIALIAS_MSAA) return 'msaa';
+  if (value === ANTIALIAS_MSAA_FXAA) return 'msaa-fxaa';
   if (value === ANTIALIAS_TAA) return 'taa';
   if (value === ANTIALIAS_SMAA) return 'smaa';
   if (value === ANTIALIAS_TSR) return 'tsr';
@@ -404,7 +418,7 @@ export function antialiasFromF32(value: number): Antialias {
     'camera-antialias-invalid',
     'antialias',
     value,
-    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, ${ANTIALIAS_SMAA}, or ${ANTIALIAS_TSR}`,
+    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, ${ANTIALIAS_SMAA}, ${ANTIALIAS_TSR}, or ${ANTIALIAS_MSAA_FXAA}`,
     'select a supported Camera antialias mode',
   );
 }
@@ -578,7 +592,7 @@ export function validateCameraBloom(
  * CameraView opts cameras into simultaneous, ordered viewport/target output.
  * Without CameraView, ActiveCamera selects the single display view. The orthographic path reuses the
  * same near / far as the perspective path — both variants share the single
- * Camera archetype (32 schema fields, including the Bloom controls, one
+ * Camera archetype, including the Bloom controls, one
  * historyVersion u32 column, the `targetLayer` u32 column, the `clearColor` array<f32,4> column, and the
  * `autoAspect` bool column).
  *
@@ -621,6 +635,8 @@ export function validateCameraBloom(
  *   );
  */
 export const Camera = defineComponent('Camera', {
+  /** Unsigned 32-bit geometry visibility mask; independent of lighting and shadows. */
+  cullMask: { type: 'f64', default: 0xffffffff },
   fov: { type: 'f32' },
   aspect: { type: 'f32' },
   near: { type: 'f32', default: 0.1 },
@@ -632,6 +648,8 @@ export const Camera = defineComponent('Camera', {
   right: { type: 'f32', default: 1 },
   bottom: { type: 'f32', default: -1 },
   top: { type: 'f32', default: 1 },
+  /** Optional view effects; configured tone/output transfer and raster MSAA remain active. */
+  postProcessing: { type: 'bool', default: true },
   tonemap: { type: 'f32', default: 0 },
   exposure: { type: 'f32', default: 1.0 },
   exposureMode: { type: 'f32', default: CAMERA_EXPOSURE_MODE_MANUAL },
@@ -688,7 +706,7 @@ export const Camera = defineComponent('Camera', {
 
 // ─── Camera POD type (derived from Camera token — single source, AC-07) ─────
 //
-// ShapeOf<SchemaOf<typeof Camera>> resolves the 32-field POD from the Camera
+// ShapeOf<SchemaOf<typeof Camera>> resolves the POD from the Camera
 // token's schema, which is itself derived from Camera.fields[k].type (D-A7).
 // This replaces the hand-maintained CameraDataPod interface — the field set
 // lives exclusively in the Camera component definition above.
@@ -843,6 +861,7 @@ interface CameraPerspectiveOpts {
    * receive aspect-sync regardless of this flag.
    */
   autoAspect?: boolean;
+  postProcessing?: boolean;
   exposure?: CameraExposure;
   temperature?: number;
   tint?: number;
@@ -858,6 +877,7 @@ interface CameraOrthographicOpts {
   near?: number;
   far?: number;
   projectionOffset?: readonly [number, number];
+  postProcessing?: boolean;
   exposure?: CameraExposure;
   temperature?: number;
   tint?: number;
@@ -932,6 +952,7 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
     ...(opts.far === undefined ? {} : { far: opts.far }),
     projection: CAMERA_PROJECTION_PERSPECTIVE,
     ...(opts.autoAspect !== undefined ? { autoAspect: opts.autoAspect } : {}),
+    ...(opts.postProcessing === undefined ? {} : { postProcessing: opts.postProcessing }),
     ...(opts.projectionOffset === undefined
       ? {}
       : {
@@ -973,6 +994,7 @@ export function orthographic(opts: CameraOrthographicOpts): CameraPod {
     ...(opts.near === undefined ? {} : { near: opts.near }),
     ...(opts.far === undefined ? {} : { far: opts.far }),
     projection: CAMERA_PROJECTION_ORTHOGRAPHIC,
+    ...(opts.postProcessing === undefined ? {} : { postProcessing: opts.postProcessing }),
     left: opts.left,
     right: opts.right,
     bottom: opts.bottom,

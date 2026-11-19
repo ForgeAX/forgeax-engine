@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -10,9 +11,100 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 import { submoduleGitEnvironment } from '../submodule-git-environment.mjs';
+
+test('an exact exported asset tree preserves the shared dirty checkout', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-assets-export-'));
+  const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
+  const git = (cwd, ...args) => {
+    const result = spawnSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const init = (directory) => {
+    mkdirSync(directory, { recursive: true });
+    git(directory, 'init', '-q');
+    git(directory, 'config', 'user.name', 'Source test');
+    git(directory, 'config', 'user.email', 'source@example.invalid');
+    git(directory, 'config', 'core.autocrlf', 'false');
+  };
+  try {
+    const remote = join(root, 'remote');
+    const parent = join(root, 'parent');
+    const exported = join(root, 'export');
+    init(remote);
+    init(parent);
+    const files = {
+      'README.md': 'Pinned asset library\n',
+      'textures/noise.txt': 'pinned texture source\n',
+      'meshes/cube.txt': 'pinned mesh source\n',
+    };
+    for (const [file, bytes] of Object.entries(files)) {
+      for (const directory of [remote, exported]) {
+        mkdirSync(dirname(resolve(directory, file)), { recursive: true });
+        writeFileSync(join(directory, file), bytes);
+      }
+    }
+    git(remote, 'add', '.');
+    git(remote, 'commit', '-qm', 'original asset tree');
+    const pin = git(remote, 'rev-parse', 'HEAD');
+    git(parent, 'submodule', 'add', remote, 'forgeax-engine-assets');
+    git(parent, 'add', '.');
+    git(parent, 'commit', '-qm', 'pinned asset source');
+    const shared = join(parent, 'forgeax-engine-assets');
+    git(shared, 'rm', '-r', 'textures');
+    git(
+      shared,
+      '-c',
+      'user.name=Source test',
+      '-c',
+      'user.email=source@example.invalid',
+      'commit',
+      '-qm',
+      'different active shared checkout',
+    );
+    writeFileSync(join(shared, 'user-baseline.png'), 'unrelated dirty baseline');
+    git(shared, 'add', 'user-baseline.png');
+    writeFileSync(join(shared, 'user-baseline.png'), 'preserved user working bytes');
+    const head = git(shared, 'rev-parse', 'HEAD');
+    const index = readFileSync(join(git(shared, 'rev-parse', '--absolute-git-dir'), 'index'));
+    // Export admission fetches the pin without changing the active checkout or index.
+    const result = spawnSync(
+      process.execPath,
+      [resolve('scripts/ci/prepare-assets-checkout.mjs'), '--source-root', exported],
+      { cwd: parent, env, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).expected, pin);
+    assert.equal(JSON.parse(result.stdout).actual, pin);
+    assert.equal(git(shared, 'rev-parse', 'HEAD'), head);
+    assert.deepEqual(
+      readFileSync(join(git(shared, 'rev-parse', '--absolute-git-dir'), 'index')),
+      index,
+    );
+    assert.equal(
+      readFileSync(join(shared, 'user-baseline.png'), 'utf8'),
+      'preserved user working bytes',
+    );
+    assert.equal(existsSync(join(parent, 'packages/content')), false);
+    for (const [file, bytes] of Object.entries(files)) {
+      writeFileSync(join(exported, file), 'changed source');
+      const rejected = spawnSync(
+        process.execPath,
+        [resolve('scripts/ci/prepare-assets-checkout.mjs'), '--source-root', exported],
+        { cwd: parent, env, encoding: 'utf8' },
+      );
+      assert.equal(rejected.status, 1, rejected.stdout);
+      assert.match(rejected.stderr, /exported source mismatch/);
+      writeFileSync(join(exported, file), bytes);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('already-forwarded checkout authorization is propagated once to actual Git config', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-assets-authorization-'));
@@ -100,7 +192,112 @@ test('already-forwarded checkout authorization is propagated once to actual Git 
 });
 
 const script = resolve('scripts/ci/prepare-assets-checkout.mjs');
-test('CI asset consumers use recoverable hydration while math benchmarks remain asset-free', () => {
+test('Native GI hydrates the pinned asset sources before every fresh Engine package build', () => {
+  const workflow = parse(readFileSync(resolve('.github/workflows/native-ray-query.yml'), 'utf8'));
+  const job = workflow.jobs['native-node-gi'];
+  const steps = job.steps;
+  const checkout = steps.find((step) => step.uses === 'actions/checkout@v5');
+  assert.equal(checkout.with.submodules, false);
+  const prepare = steps.findIndex(
+    (step) => step.run?.trim() === 'node scripts/ci/prepare-assets-checkout.mjs',
+  );
+  const node = steps.findIndex((step) => step.uses === './.github/actions/setup-node-pnpm');
+  const install = steps.findIndex((step) => step.name === 'Install workspace dependencies');
+  const build = steps.findIndex((step) => step.name === 'Build engine packages');
+  assert.ok(prepare > node && prepare > install && prepare < build);
+  assert.equal(steps[prepare].if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.equal(steps[prepare].if, steps[build].if);
+  assert.equal(
+    steps[build].run,
+    "pnpm --filter './packages/*' --workspace-concurrency=16 run build",
+  );
+  assert.deepEqual(
+    job.strategy.matrix.include.map(({ group }) => group),
+    ['foundation', 'mutation', 'gather'],
+  );
+});
+
+test('Bun rebuild hydrates pinned assets before input recovery and its uncached package build', () => {
+  const workflow = parse(readFileSync(resolve('.github/workflows/ci.yml'), 'utf8'));
+  const steps = workflow.jobs['portability-bun'].steps;
+  const checkout = steps.find((step) => step.uses === 'actions/checkout@v5');
+  assert.equal(checkout.with.submodules, false);
+  const node = steps.findIndex((step) => step.uses === './.github/actions/setup-node-pnpm');
+  const prepare = steps.findIndex(
+    (step) => step.run?.trim() === 'node scripts/ci/prepare-assets-checkout.mjs',
+  );
+  const recover = steps.findIndex((step) => step.uses === './.github/actions/prepare-ci-inputs');
+  const build = steps.findIndex((step) => step.name === 'Bun topological package build');
+  assert.ok(prepare > node, 'fresh Bun builds must prepare the pinned asset source');
+  assert.ok(prepare < recover && prepare < build);
+  assert.equal(steps[prepare].if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.equal(steps[prepare].if, steps[build].if);
+  assert.equal(steps[build].env.FORGEAX_PACKAGE_BUILD_RUNNER, 'bun');
+  assert.equal(steps[build].env.FORGEAX_BUILD_NO_TASK_CACHE, '1');
+  assert.equal(steps[build].run, 'node scripts/build-packages.mjs');
+});
+
+test('ci-core prepares exact asset inputs for a clean checkout without submodules before package build', () => {
+  const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
+  const job = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
+  const preparation = job.indexOf('node scripts/ci/prepare-assets-checkout.mjs');
+  assert.ok(preparation > job.indexOf('./.github/actions/setup-node-pnpm'));
+  assert.ok(
+    preparation <
+      job.indexOf("pnpm --filter './packages/**' -r --workspace-concurrency=4 --if-present build"),
+  );
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'forgeax-core-asset-inputs-')));
+  const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };
+  const git = (cwd, ...args) => {
+    const result = spawnSync('git', ['-C', cwd, ...args], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const init = (path) => {
+    git(root, 'init', '-q', path);
+    git(path, 'config', 'user.name', 'CI test');
+    git(path, 'config', 'user.email', 'ci@example.invalid');
+    git(path, 'config', 'core.autocrlf', 'false');
+  };
+  try {
+    const source = join(root, 'source');
+    const parent = join(root, 'parent');
+    const checkout = join(root, 'checkout');
+    init(source);
+    init(parent);
+    mkdirSync(join(source, 'textures'), { recursive: true });
+    writeFileSync(join(source, '.gitattributes'), '*.txt -text\n');
+    writeFileSync(join(source, 'README.md'), 'Pinned asset library\n');
+    writeFileSync(join(source, 'textures/checker.txt'), 'pinned checker source\n');
+    git(source, 'add', '.');
+    git(source, 'commit', '-qm', 'exact asset source');
+    const expected = git(source, 'rev-parse', 'HEAD');
+    git(parent, 'submodule', 'add', source, 'forgeax-engine-assets');
+    git(parent, 'add', '.');
+    git(parent, 'commit', '-qm', 'source with pinned asset inputs');
+    git(root, '-c', 'core.autocrlf=false', 'clone', '--no-recurse-submodules', parent, checkout);
+    const output = join(checkout, 'forgeax-engine-assets');
+    assert.equal(existsSync(join(output, 'textures/checker.txt')), false);
+    const prepared = spawnSync(process.execPath, [script], {
+      cwd: checkout,
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.equal(JSON.parse(prepared.stdout).actual, expected);
+    assert.equal(git(output, 'rev-parse', 'HEAD'), expected);
+    assert.equal(
+      readFileSync(join(output, 'textures/checker.txt'), 'utf8'),
+      'pinned checker source\n',
+    );
+    assert.equal(existsSync(join(checkout, 'packages/content')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CI asset consumers use recoverable hydration', () => {
   for (const path of ['ci.yml', 'sdk-pr-preflight.yml', 'ci-focus.yml']) {
     const workflow = readFileSync(resolve('.github/workflows', path), 'utf8');
     assert.doesNotMatch(workflow, /^\s+submodules: (?:recursive|true)$/m);
@@ -117,15 +314,11 @@ test('CI asset consumers use recoverable hydration while math benchmarks remain 
       if (install !== -1) assert.ok(preparation < install);
     }
   }
-  const bench = readFileSync(resolve('.github/workflows/bench.yml'), 'utf8');
-  assert.match(bench, /submodules: false/);
-  assert.doesNotMatch(bench, /prepare-assets-checkout/);
-  assert.match(bench, /pnpm -F @forgeax\/engine-math bench:json/);
 });
 
-test('shared producer prepares the pinned submodule after source checkout and before install', () => {
+test('combined Core producer prepares the pinned submodule before install', () => {
   const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
-  const job = workflow.split('\n  shared-app-inputs:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
+  const job = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
   assert.match(
     job,
     /actions\/checkout@v5[\s\S]*?ref: \$\{\{ env.EXPECTED_PRODUCT_SHA \}\}[\s\S]*?submodules: false/,
@@ -133,6 +326,18 @@ test('shared producer prepares the pinned submodule after source checkout and be
   const preparation = job.indexOf('node scripts/ci/prepare-assets-checkout.mjs');
   assert.ok(preparation > job.indexOf('actions/checkout@v5'));
   assert.ok(preparation < job.indexOf('node scripts/ci/prepare-pnpm-workspace.mjs --install'));
+});
+
+test('Bun portability restores the pinned assets before its frozen workspace install', () => {
+  const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
+  const job = workflow.split('\n  portability-bun:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
+  const preparation = job.indexOf('node scripts/ci/prepare-assets-checkout.mjs');
+  assert.ok(preparation > job.indexOf('actions/checkout@v5'));
+  assert.ok(preparation < job.indexOf('bun install --frozen-lockfile'));
+  assert.match(
+    job,
+    /if: steps\.ci-repair\.outputs\.reused != 'true'\s+run: node scripts\/ci\/prepare-assets-checkout\.mjs/,
+  );
 });
 
 test('primary CI prepares every pinned private submodule before reachability checks', () => {
@@ -160,6 +365,7 @@ test('repairs a broken submodule HEAD using the pinned local object and verifies
     git(root, 'init', '-q', path);
     git(path, 'config', 'user.name', 'CI test');
     git(path, 'config', 'user.email', 'ci@example.invalid');
+    git(path, 'config', 'core.autocrlf', 'false');
   };
   try {
     const source = join(root, 'source');
@@ -167,6 +373,7 @@ test('repairs a broken submodule HEAD using the pinned local object and verifies
     init(source);
     init(parent);
     writeFileSync(join(source, 'asset.txt'), 'pinned asset bytes\n');
+    writeFileSync(join(source, '.gitattributes'), 'asset.txt -text\n');
     git(source, 'add', '.');
     git(source, 'commit', '-qm', 'asset');
     const expected = git(source, 'rev-parse', 'HEAD');
@@ -249,6 +456,7 @@ test('repairs a broken submodule HEAD using the pinned local object and verifies
     assert.equal(cold.status, 0, cold.stderr);
     assert.equal(JSON.parse(cold.stdout).actual, expected);
     assert.equal(readFileSync(join(assets, 'asset.txt'), 'utf8'), 'pinned asset bytes\n');
+    rmSync(join(assets, '.git'));
     writeFileSync(join(assets, '.git'), `gitdir: ${join(source, '.git')}\n`);
     const foreign = spawnSync(process.execPath, [script], { cwd: parent, env, encoding: 'utf8' });
     assert.notEqual(foreign.status, 0);

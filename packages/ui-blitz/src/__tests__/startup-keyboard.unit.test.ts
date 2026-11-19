@@ -32,11 +32,14 @@ afterEach(() => {
 it('enters slow Reload, reads fatal diagnostics and restores the ordinary guide after native startup recovery', async () => {
   const authored = (path: string) => readFile(new URL(path, import.meta.url), 'utf8');
   const [html, css, localization, controller] = await Promise.all([
-    authored('../../../../templates/game-3d/assets/guide.ui.html'),
-    authored('../../../../templates/game-3d/assets/guide.ui.css'),
-    authored('../../../../templates/game-3d/assets/guide.ui.i18n.json'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json'),
     import(
-      new URL('../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
+        import.meta.url,
+      ).href
     ) as Promise<{
       createGuideUi(
         asset: UiAsset,

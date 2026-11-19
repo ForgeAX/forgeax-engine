@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { componentId, defineComponent } from '../component';
-import { createRenderReadLease, type RenderProjectionRequest } from '../projection/index';
+import { createRenderReadLease } from '../projection/index';
 import { World } from '../world';
 
 const Position = defineComponent('RenderReadPosition', {
@@ -8,23 +8,14 @@ const Position = defineComponent('RenderReadPosition', {
   y: 'f32',
 });
 
-const request: RenderProjectionRequest = {
-  components: [{ component: Position, fields: ['x', 'y'] }],
-};
-
 describe('RenderReadLease contract', () => {
-  it('attaches, exposes a world generation, and reads continuous spans', () => {
+  it('attaches and exposes a world generation', () => {
     const world = new World();
     world.spawn({ component: Position, data: { x: 1, y: 2 } }).unwrap();
     const lease = createRenderReadLease(world);
 
     expect(lease.worldIdentity).toBe(world.identity);
     expect(lease.generation).toBeGreaterThan(0);
-    const projection = lease.querySpans(request);
-    expect(projection.generation).toBe(lease.generation);
-    expect(projection.spans).toHaveLength(1);
-    expect(projection.spans[0]?.fields.x).toEqual(new Float32Array([1]));
-    expect(projection.spans[0]?.fields.y).toEqual(new Float32Array([2]));
   });
 
   it('publishes component changes from an explicit consumer version', () => {
@@ -55,19 +46,11 @@ describe('RenderReadLease contract', () => {
 
   it('detaches idempotently and rejects reads after dispose', () => {
     const lease = createRenderReadLease(new World());
+    const version = lease.captureVersion();
     lease.dispose();
     lease.dispose();
 
     expect(() => lease.captureVersion()).toThrow(/disposed/i);
-    expect(() => lease.querySpans(request)).toThrow(/disposed/i);
-  });
-
-  it('distinguishes leases from renderer-owned projections', () => {
-    const world = new World();
-    const lease = createRenderReadLease(world);
-    const projection = lease.querySpans(request);
-
-    expect(projection).not.toBe(lease);
-    expect(Object.keys(projection)).toEqual(['generation', 'spans']);
+    expect(() => lease.readChanges(version)).toThrow(/disposed/i);
   });
 });

@@ -78,7 +78,8 @@ function isPendingRenderFeaturePreparation(error: RenderError): boolean {
 function isSilentRenderFeatureWarmup(error: RenderError): boolean {
   return (
     error.code === 'render-feature-preparation-failed' &&
-    error.detail.reason.startsWith('rhi-not-available:')
+    error.detail.operation === 'prepare-gpu-program' &&
+    error.detail.recovery === 'next-frame'
   );
 }
 

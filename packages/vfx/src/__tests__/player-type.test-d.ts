@@ -37,12 +37,19 @@ describe('ParticleEffectPlayer public type shape', () => {
 
   it('contains only the author-intent schema fields', () => {
     expectTypeOf<keyof SchemaOf<typeof ParticleEffectPlayer>>().toEqualTypeOf<
-      'effect' | 'parameters' | 'playing' | 'preparePipelines' | 'seed' | 'timeScale'
+      | 'effect'
+      | 'parameters'
+      | 'playing'
+      | 'preparePipelines'
+      | 'seed'
+      | 'timeScale'
+      | 'renderLayers'
     >();
     expectTypeOf<
       SchemaOf<typeof ParticleEffectPlayer>['effect']
     >().toEqualTypeOf<'asset<particle-effect>'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['playing']>().toEqualTypeOf<'bool'>();
+    expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['renderLayers']>().toEqualTypeOf<'f64'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['seed']>().toEqualTypeOf<'u32'>();
     expectTypeOf<SchemaOf<typeof ParticleEffectPlayer>['timeScale']>().toEqualTypeOf<'f32'>();
   });
@@ -51,6 +58,7 @@ describe('ParticleEffectPlayer public type shape', () => {
     type Data = ShapeOf<SchemaOf<typeof ParticleEffectPlayer>>;
     expectTypeOf<Data['effect']>().toEqualTypeOf<AssetHandle<'particle-effect'>>();
     expectTypeOf<Data['playing']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Data['renderLayers']>().toEqualTypeOf<number>();
     expectTypeOf<Data['seed']>().toEqualTypeOf<number>();
     expectTypeOf<Data['timeScale']>().toEqualTypeOf<number>();
   });

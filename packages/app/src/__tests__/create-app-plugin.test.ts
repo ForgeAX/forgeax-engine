@@ -1,3 +1,4 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 import { testPlatform } from './platform-fixture';
 // create-app-plugin.test.ts -- createApp + Cordis integration.
 //
@@ -23,7 +24,6 @@ import { testPlatform } from './platform-fixture';
 import { animationPlugin } from '@forgeax/engine-animation';
 import {
   AUDIO_ENGINE_RESOURCE_KEY,
-  AUDIO_TICK_SYSTEM_NAME,
   audioBackendPlugin,
   audioPlugin,
   createAudioIntentBackend,
@@ -130,9 +130,9 @@ describe('createApp plugin runner -- physics + audio system set (AC-02)', () => 
       audioBackendPlugin(createAudioIntentBackend({ emit: () => undefined })),
       audioPlugin(),
     ]);
-    expect(systemNames(world)).toContain(AUDIO_TICK_SYSTEM_NAME);
+    expect(systemNames(world)).toContain('audio-tick');
     await ctx.fiber.dispose();
-    expect(systemNames(world)).not.toContain(AUDIO_TICK_SYSTEM_NAME);
+    expect(systemNames(world)).not.toContain('audio-tick');
     expect(world.hasResource(AUDIO_ENGINE_RESOURCE_KEY)).toBe(false);
   });
 
@@ -141,7 +141,7 @@ describe('createApp plugin runner -- physics + audio system set (AC-02)', () => 
   }, async () => {
     const world = new World();
     const ctx = await createWorldContext(world, [physics3d]);
-    expect(world.hasResource('PhysicsWorld')).toBe(true);
+    expect(world.hasResource(PhysicsWorldResource)).toBe(true);
     // AC-02: physics registers its three-phase tick systems. Assert the
     // expected system names are present (plan-strategy section 5.2
     // enumeration vs. old opts path system set).
@@ -150,7 +150,7 @@ describe('createApp plugin runner -- physics + audio system set (AC-02)', () => 
     expect(names).toContain('physicsStepSimulation');
     expect(names).toContain('physicsWriteback');
     await ctx.fiber.dispose();
-    expect(world.hasResource('PhysicsWorld')).toBe(false);
+    expect(world.hasResource(PhysicsWorldResource)).toBe(false);
     expect(systemNames(world)).not.toContain('physicsSyncBackend');
     expect(systemNames(world)).not.toContain('physicsStepSimulation');
     expect(systemNames(world)).not.toContain('physicsWriteback');
@@ -257,7 +257,7 @@ describe('createApp plugin runner -- physics async timing (AC-06)', () => {
     expect(result.value.physics).toBeDefined();
     // Verify the resource is present in the World (not just on the App handle,
     // confirming the physics3d build fully populated it before resolve).
-    expect(result.value.world.hasResource('PhysicsWorld')).toBe(true);
+    expect(result.value.world.hasResource(PhysicsWorldResource)).toBe(true);
     await result.value.dispose();
   });
 });

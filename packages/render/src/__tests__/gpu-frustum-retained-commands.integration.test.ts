@@ -9,6 +9,7 @@ import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
 import { IndirectPassBindings } from '../gpu-driven/production-raster-encode';
 import { Materials } from '../materials';
+import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it.each([
@@ -30,10 +31,34 @@ it.each([
       );
     }
   }
+  // These structural RhiNull programs declare their pure coverage entries;
+  // actual shader effects are qualified by the native raster fixtures.
+  const coverageEntries = [
+    'fs_main',
+    'fs_opaque',
+    'fs_forward_screen',
+    'fs_ao_input',
+    'fs_depth_masked',
+  ].map((name) => ({
+    name,
+    stage: 'fragment',
+    bindings: [],
+    effects: {
+      mayDiscard: false,
+      writesDepth: false,
+      writesSampleMask: false,
+      writesStorage: false,
+    },
+  }));
+  for (const entry of manifest.materialShaders) {
+    if (entry.identifier !== 'forgeax::default-standard-pbr') continue;
+    entry.entryPoints = coverageEntries;
+    for (const variant of entry.variants) variant.entryPoints = coverageEntries;
+  }
   const profiler = createProfiler();
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
-    { profiler },
+    { profiler, standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
     {
       rhi,
@@ -85,11 +110,7 @@ it.each([
     if (!phaseStarted.ok) throw phaseStarted.error;
     for (let frame = 0; frame < 3; frame++) {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
     }
     expect(errors).toEqual([]);
@@ -118,11 +139,7 @@ it.each([
     // without re-encoding a single command.
     world.set(camera, Transform, { pos: [0, 0, 4], quat: [0, 1, 0, 0] }).unwrap();
     world.update().unwrap();
-    const reversedDraw = renderer.draw({
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    });
+    const reversedDraw = renderer.draw({ source: attached });
     if (!reversedDraw.ok) throw reversedDraw.error;
     const reversed = renderer.inspect().renderScene;
     expect(reversed.gpuDriven.batchCount).toBe(9);
@@ -197,11 +214,7 @@ it('re-encodes in proportion to edited batches, not to the batch count', async (
     );
     const draw = () => {
       world.update().unwrap();
-      const drawn = renderer.draw({
-        leases: [attached],
-        camera: { lease: attached },
-        environment: { lease: attached },
-      });
+      const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
     };
     try {

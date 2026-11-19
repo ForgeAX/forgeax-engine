@@ -204,8 +204,24 @@ fn directMultiScatterFromView(
   return fms * energyLoss;
 }
 
+// Internal component result. Transmission stays in the non-SSS specular lane,
+// matching the former zero-albedo reference; only reflected Lambert is diffused.
+// The total retains the original arithmetic order. Forward consumes only it,
+// so the native compiler can remove component outputs and their extra products.
+struct DirectLobes {
+  radiance : vec3<f32>,
+  diffuse : vec3<f32>,
+  specular : vec3<f32>,
+};
+fn directLobesRadiance(lobes: DirectLobes) -> vec3<f32> {
+  return lobes.radiance;
+}
+fn scaleDirectLobes(lobes: DirectLobes, factor: vec3<f32>) -> DirectLobes {
+  return DirectLobes(lobes.radiance * factor, lobes.diffuse * factor, lobes.specular * factor);
+}
+
 // standardOpaqueBrdf with the view half of the multiple-scatter term hoisted.
-fn standardOpaqueBrdfFromView(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0: vec3<f32>,
+fn standardOpaqueSpecularFromView(alpha: f32, f0: vec3<f32>,
   ms: DirectMultiScatterView, nDotL: f32, nDotH: f32, vDotH: f32, useLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -217,7 +233,20 @@ fn standardOpaqueBrdfFromView(baseColor: vec3<f32>, metallic: f32, alpha: f32, f
       directDfgLut, directDfgSampler,
 #endif
     );
-  return (1.0 - metallic) * baseColor / 3.14159265 + specular;
+  return specular;
+}
+
+fn standardOpaqueBrdfFromView(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0: vec3<f32>,
+  ms: DirectMultiScatterView, nDotL: f32, nDotH: f32, vDotH: f32, useLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return (1.0 - metallic) * baseColor / 3.14159265 + standardOpaqueSpecularFromView(alpha, f0, ms, nDotL, nDotH, vDotH, useLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+);
 }
 
 // One evaluation for raster direct lighting and the opaque reference integrator.
@@ -225,7 +254,7 @@ fn standardOpaqueBrdfFromView(baseColor: vec3<f32>, metallic: f32, alpha: f32, f
 // Specular lobe of the standard opaque BRDF with an explicit D scale. `dEnergy`
 // multiplies the GGX distribution only (Unreal: `D_GGX(a2, NoH) * Energy`,
 // ShadingModels.ush:187-190); 1.0 is the point-light lobe.
-fn standardOpaqueBrdfEnergy(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0: vec3<f32>,
+fn standardOpaqueSpecularEnergy(alpha: f32, f0: vec3<f32>,
   nDotV: f32, nDotL: f32, nDotH: f32, vDotH: f32, dEnergy: f32, useLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -237,7 +266,20 @@ fn standardOpaqueBrdfEnergy(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0:
       directDfgLut, directDfgSampler,
 #endif
     );
-  return (1.0 - metallic) * baseColor / 3.14159265 + specular;
+  return specular;
+}
+
+fn standardOpaqueBrdfEnergy(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0: vec3<f32>,
+  nDotV: f32, nDotL: f32, nDotH: f32, vDotH: f32, dEnergy: f32, useLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  return (1.0 - metallic) * baseColor / 3.14159265 + standardOpaqueSpecularEnergy(alpha, f0, nDotV, nDotL, nDotH, vDotH, dEnergy, useLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+);
 }
 
 fn standardOpaqueBrdf(baseColor: vec3<f32>, metallic: f32, alpha: f32, f0: vec3<f32>,

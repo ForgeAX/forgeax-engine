@@ -1,14 +1,22 @@
 import { expect, it } from 'vitest';
 import type { ProjectFacts } from '../../types.js';
 import { wechatHostSource } from '../wechat.js';
+import { generatedWechatConfiguration } from './configuration-host.fixture';
 
 it('selects the scene budget in the WeChat host rather than the shared game scene', () => {
   const facts = { name: 'Game' } as ProjectFacts;
-  expect(wechatHostSource(facts, '/native')).toContain('maxRenderShortSide: 720,');
+  const source = wechatHostSource(facts, '/native');
+  expect(generatedWechatConfiguration(source).configured.sceneMaxRenderShortSide).toBe(720);
+  expect(source).toContain('maxRenderShortSide: configured.sceneMaxRenderShortSide,');
+  expect(source.indexOf('const plan =')).toBeLessThan(
+    source.indexOf('const platform = createWechatPlatform'),
+  );
   for (const maxRenderShortSide of [0, 480, 1080])
-    expect(wechatHostSource(facts, '/native', false, { wechat: { maxRenderShortSide } })).toContain(
-      `maxRenderShortSide: ${maxRenderShortSide},`,
-    );
+    expect(
+      generatedWechatConfiguration(
+        wechatHostSource(facts, '/native', false, { wechat: { maxRenderShortSide } }),
+      ).configured.sceneMaxRenderShortSide,
+    ).toBe(maxRenderShortSide);
 });
 
 it('adds bounded CPU profiling only to an explicit WeChat diagnostic build', () => {

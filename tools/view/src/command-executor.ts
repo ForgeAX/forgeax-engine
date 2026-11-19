@@ -1,7 +1,7 @@
 import { workspaceDiagnosticRecord } from '@forgeax/view-workspace-core/command-error';
 import type { ViewFrontendConfig } from '@forgeax/view-viewer/config';
 type OwnerArgs = { root?: string };
-type StartArgs = OwnerArgs & { frontendConfig?: Pick<ViewFrontendConfig, 'layout'> };
+type StartArgs = OwnerArgs & { project?: string; frontendConfig?: Pick<ViewFrontendConfig, 'layout'> };
 import { resolve } from 'node:path';
 import { runViewProjectOpen } from './view-project-open.ts';
 import { runViewStartInteractive, runViewStatus, runViewStop } from './view-start.ts';
@@ -10,6 +10,7 @@ const ownerEnv = (args: OwnerArgs) => ({ ...process.env, FORGEAX_PROJECT_ROOT: r
 const ownerArgv = (args: OwnerArgs) => ['--root', ownerEnv(args).FORGEAX_PROJECT_ROOT];
 export async function start(args: StartArgs) {
   const argv = ownerArgv(args);
+  if (args.project !== undefined) argv.push('--project', args.project);
   return { ok: true, value: await runViewStartInteractive(argv, ownerEnv(args), args.frontendConfig) };
 }
 

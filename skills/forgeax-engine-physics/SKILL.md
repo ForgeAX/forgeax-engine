@@ -11,7 +11,17 @@ description: >-
 
 ## Mental model
 
-Physics is component-driven: attach components instead of calling a body-creation API. `physicsSyncBackend` scans `(Transform, RigidBody, Collider)` archetypes and calls `ensureBody` for new entities; `physicsStepSimulation` advances simulation; `physicsWriteback` writes dynamic positions/rotations to `Transform`. After `propagateTransforms`, resolved world TRS supplies static and non-CharacterController kinematic collider poses, including hierarchy, rotation, and scale. Rapier owns dynamic pose after creation. The selected backend publishes its ready resource under `PhysicsWorld`; the interfaces are `PhysicsWorld2D` and `PhysicsWorld`. World clamps host delta into `Time.delta`, then advances constant `FixedTime.delta` up to `maxStepsPerUpdate`. Discarded whole steps accumulate in `droppedSeconds` / `droppedUpdates`; only fractional `overstep` survives, with no later replay. Native plugin readiness completes before the App starts simulation. Read current collision pairs through read-only `CollidingEntities`.
+Physics is component-driven: attach components instead of calling a body-creation API. `physicsSyncBackend` scans `(Transform, RigidBody, Collider)` archetypes and calls `ensureBody` for new entities; `physicsStepSimulation` advances simulation; `physicsWriteback` writes dynamic positions/rotations to `Transform`. After `propagateTransforms`, resolved world TRS supplies static and non-CharacterController kinematic collider poses, including hierarchy, rotation, and scale. Rapier owns dynamic pose after creation. The selected backend publishes its ready resource under `PhysicsWorldResource` or `PhysicsWorld2DResource`; the interfaces are `PhysicsWorld2D` and `PhysicsWorld`. World clamps host delta into `Time.delta`, then advances constant `FixedTime.delta` up to `maxStepsPerUpdate`. Discarded whole steps accumulate in `droppedSeconds` / `droppedUpdates`; only fractional `overstep` survives, with no later replay. Native plugin readiness completes before the App starts simulation. Read current collision pairs through read-only `CollidingEntities`.
+
+Ordinary `Collider` projection follows resolved world TRS and treats negative
+scale as magnitude. Source-owned static derived geometry is an explicit
+exception: `sourceTransform.sceneMatrix` supplies the full Scene affine matrix,
+and Rapier maps supported convex-compound or trimesh geometry into its native
+pose, preserving shear. Mirrored trimeshes reverse triangle winding. While this
+source is accepted, the Scene matrix remains the sole pose authority; ECS pose
+edits, direct motion calls and body-type-only updates do not transfer ownership.
+Retire it with its exact empty static candidate before transferring pose or
+body-type ownership. See the Physics README's Derived Physics contract.
 
 Browser/Node Rapier 3D loading selects the SIMD payload only after a WebAssembly
 feature probe succeeds; unsupported runtimes retain the scalar payload. Geometry
@@ -29,10 +39,59 @@ at activation; manual world constructors/factories accept the same options.
 Fewer iterations can soften contacts/joints, increase penetration or jitter and
 delay sleep. This changes solver convergence, not fixed cadence, CCD or rendering.
 `RigidBody.additionalSolverIterations` only adds work to its connected island.
-Do not advertise a native-step saving as a whole-game FPS gain; validate the actual
+Report a native-step saving as step-time only, and validate the actual
 workload and settling. Read the [owning contract](../../packages/physics/README.md#solver-precision).
 
 ## Core API and components
+
+For fixed controllers, consume `getCommittedBodyDynamics` and its exact
+generation/step fence, then `applyBodyForceAtPoint`/`applyBodyTorque`. These are
+native additive SI forces/torques, reset after the solve. Persistent sensor
+consumers use `getSensorOverlaps`: the full previous completed roster survives
+pre-solve sync, includes empty steps and exposes retired members in `stale`.
+Rigid geometry consumers use optional `getCommittedColliderPrimitives` for
+detached accepted native shapes, pose/scale and identity generations, with
+bilateral packed-group filtering. Keep pose history at the consumer's accepted
+submission boundary; never derive native surface motion from pending Scene TRS.
+Pair collider poses only while `motionDiscontinuity` matches. Explicit `teleport`
+and `setBodyMotion` commands advance it without replacing the body or collider;
+native integration and ordinary kinematic motion preserve it.
+Use `intersectsCommittedBodyObb` with nonnegative `fullExtentsM` to select a whole
+body with the captured generation/completed-step fence. The native owner halves
+the full side lengths once. Snapshot `rawAggregateCount` precedes filtering;
+only an originally empty aggregate can query component-local bounds. Native
+compound children retain their collider identity plus an explicit child index.
+Read the owning Physics README's Fixed Dynamics and Sensor Rosters contract.
+For async force participants, use `createSolverParticipant` and detached byte
+payloads; never retain callback contexts or native objects. The selected backend
+owns Worker execution, input-reader acknowledgement and the results clock. Place
+reset/launch and other native motion commands after `physicsSyncBackend` and
+before `waterBuoyancy`/`physicsStepSimulation`; a pending solve is a structured
+Result refusal, not a reason to catch exceptions or mutate a snapshot. Read
+[solver participants](../../packages/physics/README.md#solver-participants)
+before changing fixed-step continuation or async result consumption.
+Water's saved `WaterPontoonSet`/runtime participant owns buoyancy and CPU DI;
+never select a nearest Body or replace point force with `F*dt` impulse.
+Opt-in local residual queries retain receiving native entity/generation. Their
+external-source field excludes only the same receiver, preserving background and
+other entry waves. The saved `WaterShallowCollider.dispersiveMotion` source role
+separates full entry displacement from transported floating displacement; passive
+heave does not authorize repeated entry injection. Preserve actual native forces
+and source-enabled idle/perturbation evidence when repairing either boundary.
+Socket references must be live descendants, excluding the root. World force
+centers retain hierarchy, signed scale and shear; coefficient geometry uses the
+socket's immediate-parent-local position. Runtime caches each enabled-mask solve
+for its participant configuration and root generation; see Water's owning README
+for reinitialization and disabled wet-state semantics.
+Completed `splashWakeEvents` contain immutable force-time contact geometry and
+contact-point velocity relative to the selected water flow, including angular
+motion. Preserve query time, fixed delta, root and Body generations; add World
+identity at extraction rather than joining current traces. `positionM` remains
+the pontoon center; only `contact.kind: 'water-plane-intersection'` authorizes a
+contact footprint. Solver output wire 2 carries this snapshot and rejects wire 1.
+Async switches are per root: retain the shared solver while another enabled root
+opts in. Derive that decision during ECS query iteration; row facades are borrowed
+and cannot be spread and read after iteration.
 
 | Name | Package | Form | Purpose |
 |:--|:--|:--|:--|
@@ -46,11 +105,17 @@ workload and settling. Read the [owning contract](../../packages/physics/README.
 | `RigidBodyTypeValue` / `ColliderShapeValue` | physics | Enum constants and `*FromF32` narrowing helpers | Type-safe component enum values. |
 | `createRapier3DPhysicsWorld` | rapier3d | `async fn` | Construct a 3D PhysicsWorld manually; also used internally by `createApp`. |
 | `createRapier2DPhysicsWorld` | rapier2d | `async fn` | Construct a 2D PhysicsWorld manually. |
-| `PhysicsErrorCode` | physics (types SSOT) | Closed union; read source, do not copy members | Structured failure codes. |
+| `PhysicsErrorCode` | physics (types SSOT) | Closed union; read members from source | Structured failure codes. |
 
 ### Collider transform projection
 
 Physics consumes resolved world TRS, so child colliders follow parent translation, rotation, and scale. Cuboid half-extents use absolute per-axis scale. Spheres conservatively use the largest absolute scale. Capsules scale half-height along Y and cross-section by max(X,Z) in 3D or X in 2D. Negative scale uses its magnitude, without mirrored collision shapes. 2D projects only Z rotation into Rapier's scalar angle.
+
+Use render `Visibility` to hide a mesh while keeping collision. When replacing a
+starter prop, remove its scene entry with its body and collider. Rapier 3D
+suspends an ordinary static Collider at zero world scale and restores it on
+the next valid fixed sync. For `invalid-body-config`, check authored dimensions
+and resolved scale, including the parent chain. See [Transform Pose Projection](../../packages/physics/README.md#transform-pose-projection).
 
 > [!IMPORTANT]
 > Use enum constants such as `RigidBodyTypeValue.dynamic` / `ColliderShapeValue.sphere`, not raw numbers. Component fields/defaults: `packages/physics/README.md`, Component Schemas. Read `PhysicsErrorCode` from `packages/types/src/index.ts`; do not duplicate its members.
@@ -60,9 +125,9 @@ Physics consumes resolved world TRS, so child colliders follow parent translatio
 Character movement is explicitly driven once per fixed tick with `PhysicsWorld.moveAndSlide(entity, desiredDelta)`, using `Vec3` in 3D and `Vec2` in 2D. Attach kinematic `RigidBody`, `Collider`, and `CharacterController`; combine input, gravity, and jump into `desiredDelta`. The method resolves collisions, slopes, autostep, and ground snapping; writes resolved position to `Transform` and contacts to `CharacterController.grounded`; returns actual displacement. There are no options or `dt` argument because displacement already includes time. Parameters are reread from components every frame (D-7 full reset).
 
 ```ts
-import { FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
-import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, type PhysicsWorld } from '@forgeax/engine-physics';
+import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue, PhysicsWorldResource, PhysicsSync, PhysicsSimulation } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 
 const char = world.spawn(
@@ -74,14 +139,14 @@ const char = world.spawn(
 
 let verticalVelocity = 0;
 const desiredDelta = vec3.create(); // Vec3 is a branded Float32Array; array literals do not typecheck.
-world.addSystem(FixedUpdate, {
+world.addSystem(FixedUpdate, defineSystem({
   name: 'move-character',
-  after: ['physicsSyncBackend'],
-  before: ['physicsStepSimulation'],
+  after: [PhysicsSync],
+  before: [PhysicsSimulation],
   queries: [],
   fn() {
-    if (!world.hasResource('PhysicsWorld')) return;
-    const pw = world.getResource<PhysicsWorld>('PhysicsWorld');
+    if (!world.hasResource(PhysicsWorldResource)) return;
+    const pw = world.getResource(PhysicsWorldResource);
     if (!pw.hasBody(char)) return;
     const dt = world.getResource(FixedTime).delta;
     if (world.get(char, CharacterController).unwrap().grounded) verticalVelocity = 0;
@@ -89,11 +154,11 @@ world.addSystem(FixedUpdate, {
     vec3.set(desiredDelta, 0, verticalVelocity * dt, 0); // Add input displacement once.
     pw.moveAndSlide(char, desiredDelta); // Returns the applied Vec3 displacement.
   },
-}).unwrap();
+})).unwrap();
 ```
 
 > [!CAUTION]
-> Common pitfalls: compare boolean `grounded` with `=== true`, never `!== 0` (always true). Spawn capsules at rest height (ground top + radius + halfHeight); embedding them in ground degenerates KCC contact. Check trajectory Y for continuous-slope snapping rather than relying on `computedGrounded()`. Guard asynchronous initialization with `if (!pw.hasBody(entity)) return;`, not by catching `body-not-found`. `physicsSyncBackend` skips kinematic mirroring for CharacterController archetypes to avoid double writes. Demo: `apps/hello/character`.
+> Common pitfalls: compare boolean `grounded` with `=== true` (`!== 0` is always true). Spawn capsules at rest height (ground top + radius + halfHeight); embedding them in ground degenerates KCC contact. Check trajectory Y for continuous-slope snapping rather than relying on `computedGrounded()`. Guard asynchronous initialization with `if (!pw.hasBody(entity)) return;`, not by catching `body-not-found`. `physicsSyncBackend` skips kinematic mirroring for CharacterController archetypes to avoid double writes. Demo: `apps/hello/character`.
 
 ## Moving supports and dynamic pushes
 
@@ -158,7 +223,7 @@ app.start();
 
 - **Components attached but no movement**: check `Transform` (writeback target) and `createApp({ plugins: [the selected physics backend plugin] })` (tick installation). All three components are required.
 - **No physics in initial frames**: asynchronous WASM loading leaves PhysicsWorld temporarily unavailable; systems return early by design.
-- **Large host deltas**: never pass host delta directly into physics. World clamps `Time.delta` to `maxDeltaSeconds`, runs at most `maxStepsPerUpdate` fixed steps, and records dropped whole steps without later catch-up. The `physicsStepSimulation` guard for `dt <= 0` / `> 0.1s` is backend defense, not host-frame recovery.
+- **Large host deltas**: let World feed physics: it clamps `Time.delta` to `maxDeltaSeconds`, runs at most `maxStepsPerUpdate` fixed steps, and records dropped whole steps without later catch-up. The `physicsStepSimulation` guard for `dt <= 0` / `> 0.1s` is backend defense, not host-frame recovery.
 - **2D/3D mismatch**: `'rapier-2d'` uses `PhysicsWorld2D`; `'rapier-3d'` uses `PhysicsWorld`. Schemas are shared but coordinate dimensions differ.
 
 ## Managed joints and skeletal motion
@@ -190,8 +255,8 @@ app.start();
 Register one ready physics participant with the ECS World when deterministic
 source/fresh-target evidence must include portable physics state. Let ECS own
 the record, restore transaction, trace, report, tolerance, and error contract.
-Keep Rapier handles and native values inside the backend; never expose them to
-App, Preview, or Remote. Recover by switching on the error code and following
+Keep Rapier handles and native values inside the backend; keep them hidden from
+App, Preview, and Remote. Recover by switching on the error code and following
 its `expected`, `hint`, and `detail`.
 
 ## Mesh collision

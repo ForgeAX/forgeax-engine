@@ -1,3 +1,4 @@
+import { PhysicsWorld2DResource } from '@forgeax/engine-physics';
 import type { World as EcsWorld } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import {
@@ -72,7 +73,7 @@ describe('active-body 2D physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
     registerPhysicsSystems2D(world);
     for (let index = 0; index < 64; index += 1) spawnDynamic(world, [index * 4, 0, 0], 0);
     tick(world, SETTLE_TICKS);
@@ -93,7 +94,7 @@ describe('active-body 2D physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
     registerPhysicsSystems2D(world);
     const resting = spawnDynamic(world, [0, 0, 0], 0);
     tick(world, 2);
@@ -109,7 +110,7 @@ describe('active-body 2D physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
     registerPhysicsSystems2D(world);
     const faller = spawnDynamic(world, [0, 10, 0], 1);
     tick(world, 2);
@@ -126,7 +127,7 @@ describe('active-body 2D physics writeback', () => {
     if (!RAPIER) return;
     const world = prepareWorld();
     const pw = createRapier2DPhysicsWorld(RAPIER);
-    world.insertResource('PhysicsWorld', pw);
+    world.insertResource(PhysicsWorld2DResource, pw);
     registerPhysicsSystems2D(world);
     const sleeper = spawnDynamic(world, [3, 0, 0], 0);
     tick(world, SETTLE_TICKS);

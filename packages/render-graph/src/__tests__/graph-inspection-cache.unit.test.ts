@@ -1,6 +1,126 @@
+import type { Buffer, Texture } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder';
+import { compiledRenderGraphGeneration } from '../compiled-graph';
+import type { CompiledRenderGraph, CompiledRenderGraphInfo, RenderGraphFrame } from '../types';
+
+it('reads compiled generations without inspection and falls back for external graphs', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const builder = new RenderGraphBuilder();
+  const buffer = builder.createBuffer('generation-buffer', { size: 16 }).unwrap();
+  builder
+    .addCopyPass('write-generation-buffer', {
+      accesses: [{ resource: buffer, usage: 'copy-dst' }],
+      encode() {},
+    })
+    .unwrap();
+  const graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+  const inspect = vi.spyOn(graph, 'inspect');
+
+  const generation = compiledRenderGraphGeneration(graph);
+  expect(generation).toBeGreaterThan(0);
+  expect(inspect).not.toHaveBeenCalled();
+
+  const info = graph.inspect();
+  expect(info.generation).toBe(generation);
+  expect(info.resources).toMatchObject([
+    { label: 'generation-buffer', allocationState: 'live', byteSize: 16 },
+  ]);
+  expect(info.resourceAllocation?.liveBytes).toBe(16);
+  expect(inspect).toHaveBeenCalledOnce();
+  (await graph.retire()).unwrap();
+
+  const externalInfo = { generation: 73 } as unknown as CompiledRenderGraphInfo;
+  const externalInspect = vi.fn(() => externalInfo);
+  const externalGraph = {
+    inspect: externalInspect,
+  } as Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>;
+  expect(compiledRenderGraphGeneration(externalGraph)).toBe(73);
+  expect(externalInspect).toHaveBeenCalledOnce();
+});
+
+it('projects resolved import allocations without owning them and invalidates only changed or failed inputs', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const texture = () =>
+    device
+      .createTexture({
+        format: 'rgba16float',
+        size: { width: 16, height: 16, depthOrArrayLayers: 1 },
+        usage: 4,
+      })
+      .unwrap();
+  const firstTexture = texture(),
+    secondTexture = texture();
+  const buffer = device.createBuffer({ size: 16, usage: 128 }).unwrap();
+  interface Frame extends RenderGraphFrame {
+    texture: Texture;
+    buffer: Buffer;
+    fail: boolean;
+  }
+  const builder = new RenderGraphBuilder<Frame>();
+  const importedTexture = builder
+    .importTexture(
+      'imported-texture',
+      { format: 'rgba16float', size: { width: 16, height: 16 }, usage: 4 },
+      (frame) => frame.texture,
+    )
+    .unwrap();
+  const importedBuffer = builder
+    .importBuffer('imported-buffer', { size: 16, usage: 128 }, (frame) => {
+      if (frame.fail) throw new Error('owned resolver failure');
+      return frame.buffer;
+    })
+    .unwrap();
+  builder
+    .addComputePass('read-imports', {
+      accesses: [
+        { resource: builder.view(importedTexture).unwrap(), usage: 'sampled-read' },
+        { resource: importedBuffer, usage: 'storage-read' },
+      ],
+      encode() {},
+    })
+    .unwrap();
+  const graph = builder.compile({ device, surfaceSize: { width: 16, height: 16 } }).unwrap();
+  const before = graph.inspect();
+  expect(before.resources.every((resource) => resource.physicalAllocationKey === undefined)).toBe(
+    true,
+  );
+  const execute = (source: Texture, fail = false) =>
+    graph.execute({
+      encoder: device.createCommandEncoder().unwrap(),
+      texture: source,
+      buffer,
+      fail,
+    });
+  execute(firstTexture).unwrap();
+  const first = graph.inspect();
+  expect(first.resources.every((resource) => resource.physicalAllocationKey !== undefined)).toBe(
+    true,
+  );
+  expect(first.resourceAllocation?.liveBytes).toBe(0);
+  execute(firstTexture).unwrap();
+  expect(graph.inspect()).toBe(first);
+  execute(secondTexture).unwrap();
+  const second = graph.inspect();
+  expect(second.resources[0]?.physicalAllocationKey).not.toBe(
+    first.resources[0]?.physicalAllocationKey,
+  );
+  expect(first.resources[0]?.physicalAllocationKey).toBeDefined();
+  expect(before.resources[0]?.physicalAllocationKey).toBeUndefined();
+  expect(execute(firstTexture, true).ok).toBe(false);
+  expect(
+    graph.inspect().resources.every((resource) => resource.physicalAllocationKey === undefined),
+  ).toBe(true);
+  execute(secondTexture).unwrap();
+  expect(graph.inspect().resources[0]?.physicalAllocationKey).toBe(
+    second.resources[0]?.physicalAllocationKey,
+  );
+  (await graph.retire()).unwrap();
+  device.destroyTexture(firstTexture).unwrap();
+  device.destroyTexture(secondTexture).unwrap();
+  device.destroyBuffer(buffer).unwrap();
+});
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

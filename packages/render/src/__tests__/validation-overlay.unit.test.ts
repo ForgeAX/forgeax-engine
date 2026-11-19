@@ -63,12 +63,11 @@ it.each([
     const validated = validateRenderables(
       internals,
       worldRenderResources(world),
-      [world].map(worldRenderResources),
+      worldRenderResources(world),
       pipeline,
       {} as RenderFrameState,
       rows,
       dispatch,
-      undefined,
       undefined,
       (_phase, action) => {
         Object.assign(lastDispatch, { stencilReference: 99, defines: { LATER_MUTATION: '1' } });

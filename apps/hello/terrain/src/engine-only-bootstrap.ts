@@ -97,3 +97,6 @@ const entry: ExecutionBootstrapEntry = async (data) => {
   };
 };
 export default entry;
+
+export * from './ecs-resources.ts';
+export { PhysicsWorldResource } from '@forgeax/engine-physics';

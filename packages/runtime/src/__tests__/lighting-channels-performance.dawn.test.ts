@@ -374,9 +374,7 @@ it.skipIf(process.env.LIGHTING_CHANNEL_PERF !== '1')(
                   outer.begin();
                   let receipt: import('@forgeax/engine-render').FrameReceipt;
                   try {
-                    receipt = renderValue(
-                      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-                    );
+                    receipt = renderValue(renderer.draw({ source: lease }));
                   } finally {
                     outer.end();
                   }
@@ -457,7 +455,9 @@ it.skipIf(process.env.LIGHTING_CHANNEL_PERF !== '1')(
                     ),
                     0.95,
                   ),
-                  profile: renderValue(buildProfileModel(capture)),
+                  profile: renderValue(
+                    buildProfileModel(capture, { orderEvidence: 'recorder-closure' }),
+                  ),
                   inspection,
                   processMemory: process.memoryUsage(),
                   hostLoadAverage: loadavg(),

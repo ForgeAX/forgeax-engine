@@ -1500,7 +1500,12 @@ export function createGltfImporter(options: GltfParseOptions = {}): Importer {
   return {
     key: 'gltf',
     import: (ctx) => importGltf(ctx, options),
-    capabilities: { catalog: { publish: publishesCatalogProduct } },
+    capabilities: {
+      ...(options.meshopt === undefined && options.draco === undefined
+        ? { parallelPreparation: true as const }
+        : {}),
+      catalog: { publish: publishesCatalogProduct },
+    },
   };
 }
 

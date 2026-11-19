@@ -1,4 +1,4 @@
-import type { RhiDevice, TextureView } from '@forgeax/engine-rhi';
+import type { RhiDevice, Texture, TextureView } from '@forgeax/engine-rhi';
 import { texelFallbackDescriptor, writeTexelFallback } from '../ibl/skylight-bind-group';
 import { runShimSyncStep } from './renderer-helpers';
 
@@ -9,6 +9,8 @@ const ARRAY_FALLBACK_LAYERS = 2;
 interface LayeredTextureFallbackViews {
   /** 1x1x1 white volume bound to `texture_3d` params until a source promotes. */
   readonly defaultWhite3dTextureView: TextureView;
+  /** The texture behind {@link defaultWhite3dTextureView}; uniform volumetric fog imports it. */
+  readonly defaultWhite3dTexture: Texture;
   /** Two-layer white array bound to `texture_2d_array` params until a source promotes. */
   readonly defaultWhite2dArrayTextureView: TextureView;
 }
@@ -22,14 +24,16 @@ export function createLayeredTextureFallbackViews(
   rhiDevice: RhiDevice,
   createTexture: RhiDevice['createTexture'],
 ): LayeredTextureFallbackViews {
+  const volume = createWhiteView(rhiDevice, createTexture, '3d', 1);
   return {
-    defaultWhite3dTextureView: createWhiteView(rhiDevice, createTexture, '3d', 1),
+    defaultWhite3dTextureView: volume.view,
+    defaultWhite3dTexture: volume.texture,
     defaultWhite2dArrayTextureView: createWhiteView(
       rhiDevice,
       createTexture,
       '2d-array',
       ARRAY_FALLBACK_LAYERS,
-    ),
+    ).view,
   };
 }
 
@@ -38,7 +42,7 @@ function createWhiteView(
   createTexture: RhiDevice['createTexture'],
   viewDimension: '3d' | '2d-array',
   layers: number,
-): TextureView {
+): { readonly texture: Texture; readonly view: TextureView } {
   const label = `fallback-white-${viewDimension}`;
   const descriptor = texelFallbackDescriptor(label, 'rgba8unorm', viewDimension, layers);
   const texture = runShimSyncStep(
@@ -73,5 +77,5 @@ function createWhiteView(
     'check fallback texture format / usage',
   );
   if (!view.ok) throw view.error;
-  return view.value;
+  return { texture: texture.value, view: view.value };
 }

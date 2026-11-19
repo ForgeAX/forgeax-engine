@@ -191,11 +191,7 @@ describe('modeling output on the real renderer (Dawn)', () => {
         world.update(1 / 60).unwrap();
         const lease = attached.value;
         for (let i = 0; i < 3; i++) {
-          await drawReadyFrame(renderer, {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          });
+          await drawReadyFrame(renderer, { source: lease });
         }
         if (device === undefined || target === undefined) throw new Error('device not captured');
         return readPixels(device, target);

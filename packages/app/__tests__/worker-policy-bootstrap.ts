@@ -4,7 +4,7 @@ import type { RenderFeature } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 import baseEntry from './render-worker-bootstrap';
-import { run, WorkerCounter } from './worker-policy-kernel';
+import kernelModule, { WorkerCounter } from './worker-policy-kernel';
 
 const entry: ExecutionBootstrapEntry = async (data) => {
   const base = await baseEntry(1);
@@ -46,17 +46,12 @@ const entry: ExecutionBootstrapEntry = async (data) => {
                     : './worker-policy-kernel.ts',
                   import.meta.url,
                 ).href;
-          ctx.world
-            .addSystem(
-              Update,
-              defineSharedKernel(moduleUrl, {
-                name: 'worker-policy-counter',
-                queries: [{ write: [WorkerCounter] }],
-                minimumRows: 1,
-                run,
-              }),
-            )
-            .unwrap();
+          const kernel = defineSharedKernel(moduleUrl, {
+            ...kernelModule,
+            name: 'worker-policy-counter',
+            minimumRows: 1,
+          });
+          ctx.world.addSystem(Update, kernel).unwrap();
           const receive = (event: MessageEvent) => {
             if (event.data === 'poison-kernel')
               ctx.world.set(first, WorkerCounter, { fail: 1 }).unwrap();
@@ -64,7 +59,7 @@ const entry: ExecutionBootstrapEntry = async (data) => {
           port?.addEventListener('message', receive);
           return () => {
             port?.removeEventListener('message', receive);
-            ctx.world.removeSystem(Update, 'worker-policy-counter').unwrap();
+            ctx.world.removeSystem(Update, kernel).unwrap();
             for (const entity of entities) ctx.world.despawn(entity).unwrap();
           };
         },

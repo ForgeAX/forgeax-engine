@@ -1,14 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { defineComponent, fieldTypeToMetaKey, TYPE_METADATA } from '../component';
+import { describe, expect, it, vi } from 'vitest';
+import { defineComponent } from '../component';
+import { ArrayStore } from '../storage/array-store';
 import { createColumn, growColumn } from '../storage/column';
 import { World } from '../world';
 import { worldRead } from '../world-read';
-import {
-  elementByteSize,
-  readArrayElementAt,
-  reinterpretSlotBytes,
-  writeArrayElementAt,
-} from '../world-storage-primitives';
+import { columnLayout } from './__fixtures__/column-layout';
 
 const cases = [
   ['f32', 4, 1 / 3, Math.fround(1 / 3)],
@@ -21,24 +17,20 @@ const cases = [
   ['u8', 1, -1, 0xff],
   ['bool', 1, 257, 1],
   ['enum', 4, -1, 0xffffffff],
-  ['ref', 4, -1, 0xffffffff],
 ] as const;
 
 describe('scalar storage', () => {
-  it.each(
-    cases,
-  )('%s preserves conversion across column growth and byte subviews', (type, width, input, expected) => {
-    expect(elementByteSize(type)).toBe(width);
+  it.each(cases)('%s preserves conversion across column growth', (type, width, input, expected) => {
     for (const shared of [false, true]) {
-      const column = createColumn(type, 2, 1, shared);
+      const layout = columnLayout(type);
+      const column = createColumn(layout, 2, shared);
+      expect(column.layout).toBe(layout);
+      expect(column.view.BYTES_PER_ELEMENT).toBe(width);
+      expect(column.view.byteLength).toBe(2 * width);
       column.view[1] = input;
       const grown = growColumn(column, 4);
+      expect(grown.layout).toBe(layout);
       expect(Array.from(grown.view)).toEqual([0, expected, 0, 0]);
-      const bytes = new Uint8Array(grown.buffer, width, width * 2);
-      writeArrayElementAt(bytes, 1, type, input);
-      expect(readArrayElementAt(bytes, 1, type)).toBe(expected);
-      expect(readArrayElementAt(bytes, 2, type)).toBe(0);
-      expect(Array.from(reinterpretSlotBytes(bytes, type, 2))).toEqual([expected, expected]);
       expect(grown.view[0]).toBe(0);
       expect(grown.view[3]).toBe(0);
     }
@@ -67,71 +59,14 @@ describe('scalar storage', () => {
     world.despawn(entity).unwrap();
   });
 
-  it.each([
-    'entity',
-    'shared<Payload>',
-  ] as const)('reinterprets %s handles as unsigned words', (type) => {
-    const words = new Uint32Array([7, 0xffffffff, 9]);
-    const bytes = new Uint8Array(words.buffer, 4, 4);
-    expect(Array.from(reinterpretSlotBytes(bytes, type, 1))).toEqual([0xffffffff]);
-    expect(readArrayElementAt(bytes, 0, type)).toBe(0xffffffff);
-  });
-
   it('does not resolve Object prototype names as storage types', () => {
     for (const name of ['constructor', 'toString', '__proto__']) {
-      expect(fieldTypeToMetaKey(name)).toBeNull();
+      expect(() => defineComponent(`RejectedScalar_${name}`, { value: name } as never)).toThrow();
+      expect(() =>
+        defineComponent(`RejectedArray_${name}`, { value: `array<${name}>` } as never),
+      ).toThrow();
     }
   });
-});
-
-it.each(
-  cases,
-)('%s scalar reads/writes preserve exact native edge conversions and partial tails', (type, width) => {
-  const Ctor = TYPE_METADATA[type]?.viewCtor;
-  if (Ctor === undefined) throw new Error('Expected admitted scalar constructor');
-  for (const shared of [false, true]) {
-    const makeBuffer = () =>
-      shared ? new SharedArrayBuffer(width * 4 + 1) : new ArrayBuffer(width * 4 + 1);
-    const actual = new Uint8Array(makeBuffer(), width, width * 2 + 1);
-    const reference = new Uint8Array(makeBuffer(), width, width * 2 + 1);
-    const native = new Ctor(
-      reference.buffer,
-      reference.byteOffset,
-      Math.floor(reference.byteLength / width),
-    );
-    for (const index of [-1, -0, 0, 1, 1.5, 2, Number.NaN, Infinity]) {
-      for (const value of [
-        0,
-        -0,
-        Number.NaN,
-        Infinity,
-        -Infinity,
-        -1,
-        Number.MAX_SAFE_INTEGER,
-        1 / 3,
-      ]) {
-        native[index] = value;
-        writeArrayElementAt(actual, index, type, value);
-        expect(Array.from(new Uint8Array(actual.buffer))).toEqual(
-          Array.from(new Uint8Array(reference.buffer)),
-        );
-        expect(readArrayElementAt(actual, index, type)).toBe(native[index] ?? 0);
-      }
-    }
-  }
-});
-
-it('preserves empty, detached and misaligned scalar access failures', () => {
-  const empty = new Uint8Array(0);
-  expect(readArrayElementAt(empty, 0, 'f32')).toBe(0);
-  expect(() => writeArrayElementAt(empty, 0, 'f32', 1)).not.toThrow();
-  const misaligned = new Uint8Array(new ArrayBuffer(16), 1, 8);
-  expect(() => readArrayElementAt(misaligned, 0, 'f32')).toThrow(RangeError);
-  expect(() => writeArrayElementAt(misaligned, 0, 'f32', 1)).toThrow(RangeError);
-  const detached = new Uint8Array(8);
-  structuredClone(detached.buffer, { transfer: [detached.buffer] });
-  expect(() => readArrayElementAt(detached, 0, 'f32')).toThrow(TypeError);
-  expect(() => writeArrayElementAt(detached, 0, 'f32', 1)).toThrow(TypeError);
 });
 
 it('resolves current scalar storage after growth, migration, swap-remove and identity reuse', () => {
@@ -172,4 +107,71 @@ it('resolves current scalar storage after growth, migration, swap-remove and ide
   for (const other of others) world.despawn(other).unwrap();
   world.despawn(replacement).unwrap();
   world.trimMemory().unwrap();
+});
+
+it('reclaims backing if its component typed view cannot be constructed', () => {
+  const arrays = new ArrayStore();
+  const location = new Uint32Array(3);
+  const Native = Uint32Array;
+  vi.stubGlobal(
+    'Uint32Array',
+    class extends Native {
+      constructor() {
+        super(0);
+        throw new RangeError('controlled block view construction failure');
+      }
+    },
+  );
+  try {
+    expect(arrays.alloc(location, 0, 16)).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+  expect([...location]).toEqual([0, 0, 0]);
+  expect(arrays.stats()).toMatchObject({ liveArrays: 0, blocks: 0, committedBytes: 0 });
+  expect(arrays.alloc(location, 0, 16)).toBe(true);
+  expect(arrays.u32(location[0] as number).byteLength).toBe(65536);
+});
+
+it.each([
+  [16, 16],
+  [17, 64],
+  [65, 256],
+  [257, 1024],
+  [1025, 2048],
+  [4097, 8192],
+  [262145, 524288],
+])('keeps component capacity policy for%s bytes ->%s', (bytes, capacity) => {
+  const arrays = new ArrayStore();
+  const location = new Uint32Array(3);
+  expect(arrays.alloc(location, 0, bytes)).toBe(true);
+  expect(arrays.capacity(location[0] as number)).toBe(capacity);
+  expect(arrays.stats().liveArrays).toBe(1);
+  arrays.release(location[0] as number, location[1] as number);
+  arrays.trim();
+  expect(arrays.stats()).toMatchObject({ liveArrays: 0, committedBytes: 0 });
+});
+
+it('keeps mixed slab codecs and replaces the codec of a reused dedicated cell', () => {
+  const arrays = new ArrayStore();
+  const location = new Uint32Array(3);
+  expect(arrays.alloc(location, 0, 16)).toBe(true);
+  const slab = location[0] as number;
+  const floats = arrays.view(slab, Float32Array);
+  const bytes = arrays.view(slab, Uint8Array);
+  floats[0] = 3.5;
+  expect(arrays.view(slab, Float32Array)).toBe(floats);
+  expect(arrays.view(slab, Uint8Array)).toBe(bytes);
+  expect(new Float32Array(bytes.buffer)[0]).toBe(3.5);
+
+  expect(arrays.alloc(location, 0, 512)).toBe(true);
+  const block = location[0] as number;
+  arrays.view(block, Float64Array)[0] = 9.5;
+  arrays.release(block, 0);
+  expect(arrays.alloc(location, 0, 512)).toBe(true);
+  expect(location[0]).toBe(block);
+  const next = arrays.view(block, Int16Array);
+  next[0] = -7;
+  expect(arrays.view(block, Int16Array)[0]).toBe(-7);
+  expect(arrays.view(block, Float64Array)).toBeInstanceOf(Float64Array);
 });

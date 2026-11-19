@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
+import { driveReadyAppFrames } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-audio headless smoke.
 //
 // Strategy: createApp with audioPlugin(), verify App handle + AudioEngine
@@ -20,11 +21,11 @@ import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 // engine's canvas-form audio auto-creation will fail; in that case the
 // smoke reports present=false with the real environmental cause, not a
 // migration gap.
-
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
+
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -139,7 +140,10 @@ const { webAudioPlugin } = await import('@forgeax/engine-audio-webaudio');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+const MANIFEST_URL = URL.createObjectURL(
+  new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
+);
+process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 const appResult = await createApp(mockCanvas, { platform: createSmokePlatform(mockCanvas),
   plugins: [webAudioPlugin(), audioPlugin()],
@@ -184,14 +188,12 @@ if (!startResult.ok) {
 }
 
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
-let framesObserved = 0;
-for (let i = 0; i < TARGET_FRAMES; i++) {
+const framesObserved = await driveReadyAppFrames(app.renderer, () => {
   const due = rafQueue.shift();
-  if (!due) break;
+  if (!due) return false;
   fakeNow += 16.67;
   due.cb(fakeNow);
-  framesObserved++;
-}
+}, TARGET_FRAMES);
 globalThis.performance.now = realPerformanceNow;
 
 const stopResult = app.stop();

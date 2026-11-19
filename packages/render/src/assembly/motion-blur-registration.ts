@@ -1,17 +1,23 @@
 import { MOTION_BLUR_PARAMS_BYTE_SIZE } from '../features/motion-blur/motion-blur-params';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import type { RendererState } from '../render-system';
+import { deferredPostProcessEntry } from './deferred-post-process-entry';
 
 export function registerMotionBlurPostProcess(
   renderSystem: Pick<RendererState, 'registerBuiltinPostProcess'>,
-  source: string,
+  source: string | (() => string),
 ): void {
-  renderSystem.registerBuiltinPostProcess('forgeax.motion-blur', {
-    source,
+  const descriptor = {
     params: {
       byteSize: MOTION_BLUR_PARAMS_BYTE_SIZE,
       defaultValue: new Uint8Array(MOTION_BLUR_PARAMS_BYTE_SIZE),
     },
     reads: ['scene-color', 'scene-temporal'],
-  } satisfies PostProcessShaderEntry);
+  } satisfies Omit<PostProcessShaderEntry, 'source'>;
+  renderSystem.registerBuiltinPostProcess(
+    'forgeax.motion-blur',
+    typeof source === 'string'
+      ? { ...descriptor, source }
+      : deferredPostProcessEntry(descriptor, source),
+  );
 }

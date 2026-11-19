@@ -60,11 +60,11 @@ it('preserves a large failed-frame tape through the original WebSocket limit', a
   try {
     expect(await transfer(Array.from(bytes), root)).toBe('WS_ERR_UNSUPPORTED_MESSAGE_LENGTH');
     const path = join(root, 'artifacts/ci-focus/vfx-mesh-lighting/full');
-    await expect(readFile(join(path, 'following-frame.rhitape'))).rejects.toMatchObject({
+    await expect(readFile(join(path, 'original-operation.rhitape'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
     expect(await transfer(encodeVfxDiagnosticTape(bytes), root)).toBe('saved');
-    const stored = await readFile(join(path, 'following-frame.rhitape'));
+    const stored = await readFile(join(path, 'original-operation.rhitape'));
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     expect(stored.byteLength).toBe(bytes.byteLength);
     expect(createHash('sha256').update(stored).digest('hex')).toBe(sha256);

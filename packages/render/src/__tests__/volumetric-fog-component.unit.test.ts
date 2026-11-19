@@ -1,6 +1,11 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
-import { type VolumetricFogAuthoring, validateVolumetricFog } from '../volume/component';
+import {
+  type VolumetricFogAuthoring,
+  VolumetricFogSamplingValue,
+  validateVolumetricFog,
+  volumetricFogSamplingLane,
+} from '../volume/component';
 
 const density = {
   guid: 'density-guid',
@@ -25,8 +30,8 @@ describe('VolumetricFog authoring contract', () => {
     const result = validateVolumetricFog(validFog);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.density.guid).toBe('density-guid');
-      expect(result.value.density.generation).toBe(3);
+      expect(result.value.density?.guid).toBe('density-guid');
+      expect(result.value.density?.generation).toBe(3);
       expect(result.value).not.toHaveProperty('quality');
       expect(result.value).not.toHaveProperty('grid');
     }
@@ -97,5 +102,42 @@ describe('VolumetricFog authoring contract', () => {
       expect(result.error.code).toBe('volume-invalid-parameters');
       expect(result.error.detail).toEqual({ field: 'density.format', value: format });
     }
+  });
+
+  it('accepts a uniform medium without a density texture', () => {
+    const { density: _density, ...withoutTexture } = validFog;
+    const input: VolumetricFogAuthoring = { ...withoutTexture, sampling: 'uniform' };
+    expect(validateVolumetricFog(input)).toEqual({ ok: true, value: input });
+  });
+
+  it('still requires a density texture for every sampled mode', () => {
+    const { density: _density, ...withoutTexture } = validFog;
+    for (const sampling of ['noise', 'density', 'density-albedo', undefined] as const) {
+      const result = validateVolumetricFog({
+        ...withoutTexture,
+        ...(sampling === undefined ? {} : { sampling }),
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('volume-density-shape-mismatch');
+    }
+  });
+
+  it('keeps uniform bounds and optics validation', () => {
+    const { density: _density, ...withoutTexture } = validFog;
+    const uniform = { ...withoutTexture, sampling: 'uniform' as const };
+    const bounds = validateVolumetricFog({
+      ...uniform,
+      bounds: { min: [1, 0, 0], max: [0, 1, 1] },
+    });
+    expect(!bounds.ok && bounds.error.code).toBe('volume-invalid-bounds');
+    const anisotropy = validateVolumetricFog({ ...uniform, anisotropy: 1 });
+    expect(!anisotropy.ok && anisotropy.error.code).toBe('volume-invalid-parameters');
+  });
+
+  it('packs uniform into its own shader lane above every textured mode', () => {
+    expect(VolumetricFogSamplingValue.uniform).toBe(3);
+    expect(
+      (['noise', 'density', 'density-albedo', 'uniform'] as const).map(volumetricFogSamplingLane),
+    ).toEqual([0, 1, 2, 3]);
   });
 });

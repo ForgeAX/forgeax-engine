@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Materials } from '../materials';
+import { MaterialAuthoringContractError, Materials } from '../materials';
 
 const custom = {
   surfaceModule: 'test::cutout-surface',
@@ -9,10 +9,10 @@ const custom = {
 
 describe('Materials.standard custom Surface alpha-clip admission', () => {
   it.each([
-    [undefined, 'disabled'],
-    [false, 'disabled'],
-    [true, 'enabled'],
-  ] as const)('projects alphaClip=%s to every existing pass tag %s', (alphaClip, expected) => {
+    [undefined, false],
+    [false, false],
+    [true, true],
+  ] as const)('publishes alphaClip=%s in the canonical static contract', (alphaClip, expected) => {
     const material = Materials.standard({
       ...custom,
       ...(alphaClip === undefined ? {} : { alphaClip }),
@@ -22,14 +22,7 @@ describe('Materials.standard custom Surface alpha-clip admission', () => {
       'deferred',
       'shadow-caster',
     ]);
-    expect(
-      material.passes?.map((pass) => {
-        const tags = pass.renderState?.tags;
-        return typeof tags === 'object' && tags !== null && 'AlphaClip' in tags
-          ? tags.AlphaClip
-          : undefined;
-      }),
-    ).toEqual([expected, expected, expected]);
+    expect(material.staticSwitches).toEqual({ alphaClipping: expected, alphaHash: false });
     expect(material.passes?.map((pass) => pass.program?.moduleSlots?.surface)).toEqual([
       custom.surfaceModule,
       custom.surfaceModule,
@@ -40,5 +33,23 @@ describe('Materials.standard custom Surface alpha-clip admission', () => {
 
   it('preserves the complete omitted-option material when explicitly disabled', () => {
     expect(Materials.standard({ ...custom, alphaClip: false })).toEqual(Materials.standard(custom));
+  });
+
+  it('preserves independent explicit hash and threshold selections', () => {
+    const material = Materials.standard({
+      ...custom,
+      staticSwitches: { alphaHash: true, alphaClipping: true },
+    });
+    expect(material.staticSwitches).toEqual({ alphaClipping: true, alphaHash: true });
+  });
+
+  it('rejects conflicting coverage declarations before publication', () => {
+    expect(() =>
+      Materials.standard({
+        ...custom,
+        alphaClip: false,
+        staticSwitches: { alphaClipping: true },
+      }),
+    ).toThrow(MaterialAuthoringContractError);
   });
 });

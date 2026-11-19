@@ -10,7 +10,7 @@
 // Structural-only smoke: 1 frame render, shadow factor sampling confirms
 // semantic expectations.
 
-import { readFileSync } from 'node:fs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from '@forgeax/engine-ecs';
@@ -48,7 +48,7 @@ async function loadManifestDataUrl(): Promise<string | null> {
       here,
       '../../../../../apps/hello/shadow-opt-out/dist/shaders/manifest.json',
     );
-    const text = readFileSync(manifestPath, 'utf8');
+    const text = readShaderManifestText(manifestPath);
     return `data:application/json,${encodeURIComponent(text)}`;
   } catch {
     return null;
@@ -119,21 +119,20 @@ function buildWorld(assets: AssetRegistry, cube: AssetHandle<'mesh'>): World {
         direction: [-0.3, -1.0, -0.5],
         color: [1, 0.95, 0.9],
         intensity: 1.0,
-        // feat-20260613-csm M6 / w22: matches apps/hello/shadow-opt-out/src/main.ts
-        // (cascadeCount=1, the AC-10 degenerate baseline). Pre-CSM the test
-        // pinned orthoHalfExtent=8 to match the legacy fixed-extent path;
-        // that field is gone in CSM (per-cascade frustum AABB-fit replaces it).
-        // shadowDistance tightened from 60 to 20 -- with cascadeCount=1 the
-        // cascade covers the full [camera near, shadowDistance] depth slab, so a
-        // 60-unit reach would make the light-space AABB cover ~60 world units and
-        // the cutout pattern's 0.15-unit holes stop being resolvable at
-        // mapSize=1024. 20 is past the camera's z=8 -> z=0 cube reach with margin.
-        cascadeCount: 1,
+      // feat-20260613-csm M6 / w22: matches apps/hello/shadow-opt-out/src/main.ts
+      // (cascadeCount=1, the AC-10 degenerate baseline). Pre-CSM the test
+      // pinned orthoHalfExtent=8 to match the legacy fixed-extent path;
+      // that field is gone in CSM (per-cascade frustum AABB-fit replaces it).
+      // shadowDistance tightened from 60 to 20 -- with cascadeCount=1 the
+      // cascade covers the full [camera near, shadowDistance] depth slab, so a
+      // 60-unit reach would make the light-space AABB cover ~60 world units and
+      // the cutout pattern's 0.15-unit holes stop being resolvable at
+      // mapSize=1024. 20 is past the camera's z=8 -> z=0 cube reach with margin.
+      cascadeCount: 1,
         mapSize: FIXTURE_MAP_SIZE,
         shadowDistance: 20,
       },
-    },
-  );
+    });
 
   world.spawn(
     {
@@ -185,11 +184,7 @@ describe('shadow-opt-out AC-17 dawn (ShadowParticipation + cutout)', () => {
       const world = buildWorld(assets, cube);
       const worldAttachment1 = renderer.attach(world);
       if (!worldAttachment1.ok) throw worldAttachment1.error;
-      const frameRequest = {
-        leases: [worldAttachment1.value],
-        camera: { lease: worldAttachment1.value },
-        environment: { lease: worldAttachment1.value },
-      };
+      const frameRequest = { source: worldAttachment1.value };
 
       // Cube A: casts shadow (default)
       const matA = assets.create(Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] })).unwrap();

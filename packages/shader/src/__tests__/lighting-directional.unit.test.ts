@@ -110,12 +110,10 @@ describe('direct-lighting roughness floor (Unreal View.MinRoughness)', () => {
   });
 
   it('applies to every direct-light evaluator and not to the ray BSDF or environment', () => {
-    expect(source).toContain('standardOpaqueBrdfEnergy(baseColor, metallic, directAlpha,');
+    expect(source).toContain('standardOpaqueSpecularEnergy(directAlpha,');
     for (const shader of [source, punctual]) {
       expect(shader).toContain('directLightingAlpha(alphaSq)');
-      expect(shader).toMatch(
-        /standardOpaqueBrdf(Energy|FromView)?\(baseColor, metallic, directAlpha,/,
-      );
+      expect(shader).toMatch(/standardOpaqueSpecular(Energy|FromView)\(directAlpha,/);
       expect(shader).not.toContain('standardOpaqueBrdf(baseColor, metallic, alphaSq,');
     }
     expect(punctual.match(/directLightingAlpha\(alphaSq\)/g)).toHaveLength(2);

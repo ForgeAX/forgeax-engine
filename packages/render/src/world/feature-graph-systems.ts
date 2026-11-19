@@ -1,7 +1,15 @@
-import type { World } from '@forgeax/engine-ecs';
-import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
+import { defineResource, defineSystem, type World } from '@forgeax/engine-ecs';
+import {
+  type CompiledRenderGraph,
+  type CompiledRenderGraphInfo,
+  compiledRenderGraphGeneration,
+  compiledRenderGraphPassDeclarations,
+} from '@forgeax/engine-render-graph';
 import { err, ok, type Result, type RhiCommandEncoder } from '@forgeax/engine-rhi';
-import { compileSharedFeatureGraph } from '../assembly/feature-frame-graph';
+import {
+  compileSharedFeatureGraph,
+  sharedFeatureHoistedPlans,
+} from '../assembly/feature-frame-graph';
 import { RenderFeatureStageFailedError } from '../errors/render';
 import type { RenderFeatureGraphReceipt } from '../features/graph-receipt';
 import type { RenderFeaturePlanExecution } from '../features/host';
@@ -11,19 +19,35 @@ import {
   sharedFrameNativeExecutions,
   sharedFrameNativeFailure,
 } from '../features/shared-frame-native-commands';
+import { publishSharedGraphTextures } from '../features/shared-graph-textures';
 import type { SharedFeatureGraphInspection } from '../inspection-types';
+import type { RenderResourceScope } from '../publication/resource-scope';
+import {
+  createRenderGraphPassInstrumentation,
+  renderGraphPassInstrumentationActive,
+} from '../record/frame-targets';
 import { createPassTimingInstrumentation } from '../record/gpu-pass-timing/instrumentation';
 import type { RenderSystemInternals } from '../record/render-context';
+import {
+  RenderEncoderOpenOrder,
+  RenderFeatureGraphCompileOrder,
+  RenderFeatureGraphRetireOrder,
+  RenderGraphCompileOrder,
+  RenderSubmissionRetireOrder,
+} from '../system-order';
+import type { WaterFluidGraphFrame } from '../water/fluid-graph';
 import { featureFrameOutcome, stageRecordedFeatureGraph } from './feature-systems';
-import { RENDER_ENCODER_OPEN_SYSTEM, renderFrameEncoder } from './record-systems';
+
+import { renderFrameEncoder } from './record-systems';
+
 import { RenderCleanup, RenderRecord, renderSubmission } from './render-world';
-import { RENDER_SUBMISSION_RETIRE_SYSTEM, retireAfterSubmission } from './submission-systems';
+import { retireAfterSubmission } from './submission-systems';
 import { recordContext } from './view-record-context';
 
 export const RENDER_FEATURE_GRAPH_COMPILE_SYSTEM = 'render-feature-graph-compile';
 export const RENDER_FEATURE_GRAPH_RETIRE_SYSTEM = 'render-feature-graph-retire';
 
-type Graph = CompiledRenderGraph<SharedFeatureCommandFrame>;
+type Graph = CompiledRenderGraph<SharedFeatureCommandFrame & WaterFluidGraphFrame>;
 
 export type SharedGraphOutcome =
   | { readonly ok: true; readonly receipt: RenderFeatureGraphReceipt<Graph> }
@@ -33,20 +57,30 @@ export type SharedGraphOutcome =
 interface SharedFeatureGraphState {
   readonly frame: number;
   readonly internals: RenderSystemInternals;
+  readonly resources: readonly RenderResourceScope[];
   readonly generation: number;
   readonly queue: RenderSystemInternals['device']['queue'];
   outcome: SharedGraphOutcome | undefined;
   native: readonly RenderFeaturePlanExecution[] | undefined;
   encoding:
-    | { readonly kind: 'waiting' | 'scene-input-pending' | 'encoded' }
+    | { readonly kind: 'waiting' | 'preparation-pending' | 'scene-input-pending' | 'encoded' }
     | { readonly kind: 'failed'; readonly error: RenderFeatureStageFailedError };
 }
 
-const SharedFeatureGraph = Object.freeze({ name: 'SharedFeatureGraph' });
-const SharedFeatureGraphOwner = Object.freeze({ name: 'SharedFeatureGraphOwner' });
+const SharedFeatureGraph = defineResource<SharedFeatureGraphState>('SharedFeatureGraph');
+const SharedFeatureGraphOwner = defineResource<SharedOwner>('SharedFeatureGraphOwner');
 
 interface SharedOwner {
   shell: SharedFrameNativeCommands | undefined;
+  current:
+    | {
+        graph: Graph;
+        generation: number;
+        queue: RenderSystemInternals['device']['queue'];
+        owner: object | undefined;
+        frame: number;
+      }
+    | undefined;
   nativeFrames: number;
   fallbackFrames: number;
   emptyFrames: number;
@@ -60,6 +94,7 @@ function sharedOwner(world: World): SharedOwner {
   if (!world.hasResource(SharedFeatureGraphOwner))
     world.insertResource<SharedOwner>(SharedFeatureGraphOwner, {
       shell: undefined,
+      current: undefined,
       nativeFrames: 0,
       fallbackFrames: 0,
       emptyFrames: 0,
@@ -68,19 +103,59 @@ function sharedOwner(world: World): SharedOwner {
       encodeFailures: 0,
       last: { frame: 0, generation: 0, route: 'none', receipt: undefined, encoded: false },
     });
-  return world.getResource<SharedOwner>(SharedFeatureGraphOwner);
+  return world.getResource(SharedFeatureGraphOwner);
 }
 
 /** Detached inspection; reading it never creates an owner or changes admission. */
 export function inspectSharedFeatureGraphs(world: World): SharedFeatureGraphInspection | undefined {
   if (!world.hasResource(SharedFeatureGraphOwner)) return undefined;
-  const { shell: _shell, ...counters } = world.getResource<SharedOwner>(SharedFeatureGraphOwner);
+  const {
+    shell: _shell,
+    current: _current,
+    ...counters
+  } = world.getResource<SharedOwner>(SharedFeatureGraphOwner);
   return Object.freeze({ ...counters, last: Object.freeze({ ...counters.last }) });
+}
+
+function retireHistory(world: World, owner: SharedOwner): void {
+  const current = owner.current;
+  if (current === undefined) return;
+  owner.current = undefined;
+  if (current.owner !== undefined) publishSharedGraphTextures(current.owner, undefined);
+  retireAfterSubmission(world, {
+    generation: current.generation,
+    queue: current.queue,
+    release: () => {
+      void current.graph.retire();
+    },
+  });
+}
+
+export function releaseSharedFeatureGraphHistory(world: World): void {
+  if (world.hasResource(SharedFeatureGraphOwner)) retireHistory(world, sharedOwner(world));
+}
+
+export function sharedFeatureGraphInspection(world: World):
+  | {
+      readonly frameId: number;
+      readonly deviceGeneration: number;
+      readonly graph: CompiledRenderGraphInfo;
+    }
+  | undefined {
+  if (!world.hasResource(SharedFeatureGraphOwner)) return undefined;
+  const current = sharedOwner(world).current;
+  return current === undefined
+    ? undefined
+    : {
+        frameId: current.frame,
+        deviceGeneration: current.generation,
+        graph: current.graph.inspect(),
+      };
 }
 
 function sharedGraphOf(world: World): SharedFeatureGraphState | undefined {
   if (!world.hasResource(SharedFeatureGraph)) return undefined;
-  const state = world.getResource<SharedFeatureGraphState>(SharedFeatureGraph);
+  const state = world.getResource(SharedFeatureGraph);
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 
@@ -89,10 +164,17 @@ function stageFailure(cause: unknown): RenderFeatureStageFailedError {
 }
 
 /** The submission selects its shared view before RenderRecord; no callback or batch mirror. */
-export function stageSharedFeatureGraph(world: World, internals: RenderSystemInternals): void {
+export function stageSharedFeatureGraph(
+  world: World,
+  internals: RenderSystemInternals,
+  resources: readonly RenderResourceScope[],
+): void {
+  if (internals.featureHost !== undefined)
+    publishSharedGraphTextures(internals.featureHost, undefined);
   world.insertResource<SharedFeatureGraphState>(SharedFeatureGraph, {
     frame: renderSubmission(world).frame,
     internals,
+    resources,
     generation: recordContext(internals).deviceScope?.generation ?? 0,
     queue: internals.device.queue,
     outcome: undefined,
@@ -101,13 +183,20 @@ export function stageSharedFeatureGraph(world: World, internals: RenderSystemInt
   });
 }
 
-function compileSharedGraph(world: World, state: SharedFeatureGraphState): SharedGraphOutcome {
+function compileSharedGraph(
+  world: World,
+  state: SharedFeatureGraphState,
+): SharedGraphOutcome | undefined {
   const sealed = featureFrameOutcome(world);
   if (sealed?.kind !== 'sealed')
     return { ok: false, error: stageFailure('Feature frame is not sealed') };
+  if (sealed.batch.frame.preparationPending) {
+    state.encoding = { kind: 'preparation-pending' };
+    return undefined;
+  }
   try {
     const owner = sharedOwner(world);
-    const graph = prepareSharedGraph(state, sealed.batch.frame, owner);
+    const graph = prepareSharedGraph(state, sealed.batch.frame, owner, sealed.batch.views);
     const plans = sealed.batch.frame.plans;
     const identity = { frame: state.frame, generation: state.generation, view: undefined, plans };
     const receipt: RenderFeatureGraphReceipt<Graph> =
@@ -146,12 +235,15 @@ function prepareSharedGraph(
   state: SharedFeatureGraphState,
   result: import('../features/host').RenderFeatureFrameResult,
   owner: SharedOwner,
+  views: import('../features/host').RenderFeatureFrameBatch['views'],
 ): Graph | undefined {
   const { internals } = state;
   const sharedInputs = internals.featureSceneInputs?.hasSharedWork === true;
-  const executions = sharedInputs
-    ? undefined
-    : sharedFrameNativeExecutions(result, internals.device.caps);
+  const hoistedWork = sharedFeatureHoistedPlans(views).some((plan) => plan.passes.length !== 0);
+  const executions =
+    sharedInputs || hoistedWork
+      ? undefined
+      : sharedFrameNativeExecutions(result, internals.device.caps);
   if (executions?.every((execution) => execution.passes.length === 0)) {
     owner.emptyFrames++;
     return undefined;
@@ -165,7 +257,13 @@ function prepareSharedGraph(
     !scope.isAlive()
   ) {
     owner.fallbackFrames++;
-    return compileSharedFeatureGraph(internals, result);
+    return compileSharedFeatureGraph(
+      internals,
+      result,
+      state.resources,
+      views,
+      owner.current?.generation === state.generation ? owner.current.graph : undefined,
+    );
   }
   if (owner.shell?.current(scope, internals.device) !== true) {
     void owner.shell?.dispose();
@@ -176,7 +274,7 @@ function prepareSharedGraph(
   else owner.shellReuses++;
   owner.nativeFrames++;
   state.native = executions;
-  return prepared.graph;
+  return prepared.graph as Graph;
 }
 
 /** Current frame already selected its shared producer. */
@@ -211,6 +309,11 @@ export function sharedFeatureSceneInputsPending(world: World): boolean {
   return sharedGraphOf(world)?.encoding.kind === 'scene-input-pending';
 }
 
+/** Required Feature inputs have not produced a graph for this frame yet. */
+export function sharedFeaturePreparationPending(world: World): boolean {
+  return sharedGraphOf(world)?.encoding.kind === 'preparation-pending';
+}
+
 /** Execute only the graph compiled in RenderRecord, after its scene-input captures encoded. */
 export function encodeSharedFeatureGraph(
   world: World,
@@ -228,17 +331,28 @@ export function encodeSharedFeatureGraph(
   try {
     if (receipt.kind === 'compiled') {
       const { internals } = state;
+      const graphGeneration = compiledRenderGraphGeneration(receipt.graph);
+      internals.observationGraphGeneration = graphGeneration;
+      const instrumentation = renderGraphPassInstrumentationActive(internals)
+        ? createRenderGraphPassInstrumentation({
+            internals,
+            graph: receipt.graph,
+            owner: 'shared',
+          })
+        : undefined;
       const timing = internals.gpuPassTimingCapture;
       const nativePassNames: string[] = [];
       const encoded = receipt.graph.execute(
         {
           encoder,
+          runtime: internals,
           featureExecutions: state.native,
           nativePassNames,
           reportError: (error) => internals.errorRegistry.fire(error),
         },
         undefined,
-        timing === undefined ? undefined : createPassTimingInstrumentation(timing),
+        instrumentation ??
+          (timing === undefined ? undefined : createPassTimingInstrumentation(timing)),
       );
       if (!encoded.ok) {
         const error = stageFailure(
@@ -248,9 +362,14 @@ export function encodeSharedFeatureGraph(
         state.encoding = { kind: 'failed', error };
         return err(error);
       }
+      if (internals.observationFrameId !== undefined)
+        internals.observationCaptureOwner?.recordGraph(
+          internals.observationFrameId,
+          graphGeneration,
+        );
       internals.framePassNames?.push(
         ...(state.native === undefined
-          ? receipt.graph.inspect().passes.map((pass) => pass.name)
+          ? compiledRenderGraphPassDeclarations(receipt.graph).map((pass) => pass.name)
           : nativePassNames),
       );
     }
@@ -268,46 +387,76 @@ export function encodeSharedFeatureGraph(
 }
 
 export function registerFeatureGraphSystems(world: World): void {
+  sharedOwner(world);
   world
-    .addSystem(RenderRecord, {
-      commands: 'none',
-      name: RENDER_FEATURE_GRAPH_COMPILE_SYSTEM,
-      after: [RENDER_ENCODER_OPEN_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        const state = sharedGraphOf(world);
-        if (state === undefined || renderFrameEncoder(world).kind !== 'open') return;
-        state.outcome = compileSharedGraph(world, state);
-      },
-    })
+    .addSystem(
+      RenderRecord,
+      defineSystem({
+        sets: [RenderFeatureGraphCompileOrder],
+        commands: 'none',
+        name: RENDER_FEATURE_GRAPH_COMPILE_SYSTEM,
+        after: [RenderEncoderOpenOrder],
+        before: [RenderGraphCompileOrder],
+        queries: [],
+        fn: (world) => {
+          const state = sharedGraphOf(world);
+          if (state === undefined || renderFrameEncoder(world).kind !== 'open') return;
+          state.outcome = compileSharedGraph(world, state);
+        },
+      }),
+    )
     .unwrap();
   world
-    .addSystem(RenderCleanup, {
-      commands: 'none',
-      name: RENDER_FEATURE_GRAPH_RETIRE_SYSTEM,
-      before: [RENDER_SUBMISSION_RETIRE_SYSTEM],
-      queries: [],
-      fn: (world) => {
-        const state = sharedGraphOf(world);
-        world.removeResource(SharedFeatureGraph);
-        const outcome = state?.outcome;
-        if (state === undefined || outcome?.ok !== true || outcome.receipt.kind !== 'compiled')
-          return;
-        const graph = outcome.receipt.graph;
-        // The empty native shell belongs to DeviceScope, not this frame's leases.
-        if (state.native !== undefined) return;
-        if (state.encoding.kind !== 'encoded') {
-          void graph.retire();
-          return;
-        }
-        retireAfterSubmission(world, {
-          generation: state.generation,
-          queue: state.queue,
-          release: () => {
+    .addSystem(
+      RenderCleanup,
+      defineSystem({
+        sets: [RenderFeatureGraphRetireOrder],
+        commands: 'none',
+        name: RENDER_FEATURE_GRAPH_RETIRE_SYSTEM,
+        before: [RenderSubmissionRetireOrder],
+        queries: [],
+        fn: (world) => {
+          const state = sharedGraphOf(world);
+          world.removeResource(SharedFeatureGraph);
+          const outcome = state?.outcome;
+          if (state === undefined || outcome?.ok !== true) return;
+          if (outcome.receipt.kind === 'empty') {
+            const history = sharedOwner(world);
+            if (renderSubmission(world).accepted) retireHistory(world, history);
+            return;
+          }
+          const graph = outcome.receipt.graph;
+          // The empty native shell belongs to DeviceScope, not this frame's leases.
+          if (state.native !== undefined) return;
+          if (state.encoding.kind !== 'encoded') {
             void graph.retire();
-          },
-        });
-      },
-    })
+            return;
+          }
+          const history = sharedOwner(world);
+          const previous = history.current;
+          const submission = renderSubmission(world);
+          const accepted = submission.accepted;
+          if (accepted) graph.commitExecution();
+          else graph.discardExecution();
+          if (accepted)
+            history.current = {
+              graph,
+              generation: state.generation,
+              queue: state.queue,
+              owner: state.internals.featureHost,
+              frame: state.frame,
+            };
+          const retired = accepted ? previous?.graph : graph;
+          if (retired === undefined) return;
+          retireAfterSubmission(world, {
+            generation: accepted && previous !== undefined ? previous.generation : state.generation,
+            queue: accepted && previous !== undefined ? previous.queue : state.queue,
+            release: () => {
+              void retired.retire();
+            },
+          });
+        },
+      }),
+    )
     .unwrap();
 }

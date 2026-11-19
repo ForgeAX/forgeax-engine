@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { stageViewToolPackage, VIEW_TOOL_FILES } from '../sdk-view.mjs';
+import { stageViewConsumerSkills, stageViewToolPackage, VIEW_TOOL_FILES } from '../sdk-view.mjs';
 
 async function fixture(imports) {
   const directory = await mkdtemp(resolve(tmpdir(), 'sdk-view-test-'));
@@ -15,6 +15,13 @@ async function fixture(imports) {
     await mkdir(resolve(view, path), { recursive: true });
   for (const path of VIEW_TOOL_FILES.filter((file) => file.startsWith('scripts/')))
     await cp(resolve(import.meta.dirname, '../../../tools/view', path), resolve(view, path));
+  await cp(resolve(import.meta.dirname, '../../../tools/view/skills'), resolve(view, 'skills'), {
+    recursive: true,
+  });
+  await cp(
+    resolve(import.meta.dirname, '../../../tools/view/start.mjs'),
+    resolve(view, 'start.mjs'),
+  );
   for (const file of ['host.pack.json', 'README.md', 'LICENSE'])
     await writeFile(
       resolve(view, file),
@@ -52,6 +59,11 @@ test('the official tool has one Engine version and no private workspace dependen
     const value = JSON.parse(await readFile(resolve(f.output, 'package.json')));
     assert.equal(value.private, true, 'View is an SDK-local tool, never an npm publication');
     assert.equal(value.version, '1.2.3');
+    assert.ok(value.files.includes('start.mjs'));
+    assert.equal(
+      await readFile(resolve(f.output, 'start.mjs'), 'utf8'),
+      await readFile(resolve(f.view, 'start.mjs'), 'utf8'),
+    );
     assert.equal(
       await readFile(resolve(f.output, 'dist/index.mjs'), 'utf8'),
       "export * from '@forgeax/engine/profiler';\n",
@@ -85,6 +97,34 @@ test('the official tool has one Engine version and no private workspace dependen
     await assert.rejects(readFile(resolve(f.output, 'dist/viewer/panel-graph.json')), {
       code: 'ENOENT',
     });
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test('SDK game onboarding receives View-owned consumer skills without contributor build helpers', async () => {
+  const f = await fixture([]);
+  try {
+    const skills = resolve(f.directory, 'sdk/skills');
+    const ids = await stageViewConsumerSkills(f.view, skills);
+    assert.deepEqual(ids, ['forgeax-view-cli', 'forgeax-view-start']);
+    for (const id of ids) {
+      assert.deepEqual(await readdir(resolve(skills, id)), ['SKILL.md']);
+      assert.equal(
+        await readFile(resolve(skills, id, 'SKILL.md'), 'utf8'),
+        await readFile(resolve(f.view, 'skills', id, 'SKILL.md'), 'utf8'),
+      );
+    }
+    await stageViewToolPackage(f.view, f.output, '1.2.3');
+    for (const id of ids)
+      assert.deepEqual(await readdir(resolve(f.output, 'skills', id)), ['SKILL.md']);
+    const guide = await readFile(resolve(skills, 'forgeax-view-start/SKILL.md'), 'utf8');
+    assert.match(
+      guide,
+      /node \.\/node_modules\/@forgeax\/engine\/tools\/view\/start\.mjs --project \./,
+    );
+    assert.doesNotMatch(guide, /--build auto|Finish requested\s+game work/);
+    await assert.rejects(stageViewConsumerSkills(f.view, skills), { code: 'ERR_FS_CP_EEXIST' });
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }
@@ -133,11 +173,17 @@ test('the packed tool loads the real cold-import dependency outside its source c
       [
         '--input-type=module',
         '--eval',
-        "import { importRuntimeContent } from './package/scripts/runtime-content-import.mjs'; import { savePreviewRhiEvidence } from './package/scripts/preview-rhi-evidence.mjs'; console.log(typeof importRuntimeContent, typeof savePreviewRhiEvidence);",
+        "import { importRuntimeContent } from './package/scripts/runtime-content-import.mjs'; import { savePreviewRhiEvidence } from './package/scripts/preview-rhi-evidence.mjs'; import { projectDocument } from './package/scripts/project-document.mjs'; console.log(typeof importRuntimeContent, typeof savePreviewRhiEvidence, typeof projectDocument);",
       ],
       { cwd: installed },
     );
-    assert.equal(imported.trim(), 'function function');
+    assert.equal(imported.trim(), 'function function function');
+    const { stdout: help } = await execute(process.execPath, ['package/start.mjs', '--help'], {
+      cwd: installed,
+    });
+    assert.match(help, /--project/);
+    assert.match(help, /foreground/);
+    await access(resolve(installed, 'package/skills/forgeax-view-start/SKILL.md'));
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }

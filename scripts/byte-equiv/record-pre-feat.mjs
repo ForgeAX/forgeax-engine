@@ -24,10 +24,11 @@
 //   With --demo: runs a single demo (for faster iteration).
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../lib/shader-manifest.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -369,7 +370,7 @@ async function recordDemo(demo) {
   const manifestPath = resolve(ENGINE_ROOT, demo.manifestPath);
   let MANIFEST_URL;
   try {
-    MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+    MANIFEST_URL = processShaderManifestUrl(manifestPath);
   } catch (err) {
     console.error(`  SKIP - manifest not found at ${manifestPath}: ${err.message}`);
     return null;
@@ -397,9 +398,7 @@ async function recordDemo(demo) {
   const lease = attached.value;
   const drawFrame = () =>
     renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
+      source: lease,
     });
   console.log(`  backend=${renderer.inspect().capabilities.backendKind}`);
 

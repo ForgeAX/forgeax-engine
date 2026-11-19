@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::diffuse_composite
 #import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle}
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardReflectance}
+#import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, standardGBufferValid, decodeStandardReflectance, decodeStandardGBufferReflectance}
 #import forgeax_pbr::ibl_shared::{standardDiffuseWeight}
 #import forgeax_pbr::ibl_sampling::{environmentMultiScattering}
 
@@ -10,7 +10,7 @@
 @group(0) @binding(1) var depth: texture_depth_2d;
 @group(0) @binding(2) var normal: texture_2d<u32>;
 @group(0) @binding(3) var albedoMetallic: texture_2d<u32>;
-@group(0) @binding(4) var f0Occlusion: texture_2d<u32>;
+@group(0) @binding(4) var dielectricSpecularSource: texture_2d<u32>;
 @group(0) @binding(5) var<uniform> view: View;
 // Bound only by the reflection-enabled entries. RGB already includes material AO;
 // alpha transports missing GGX energy from the same DFG lookup as the specular lane.
@@ -28,7 +28,9 @@ fn shadeDiffuse(in: FullscreenOutput, d: vec3f) -> vec4f {
   let pixel = vec2i(in.position.xy);
   if (any(textureDimensions(normal) != extent) ||
       any(textureDimensions(albedoMetallic) != extent) ||
-      any(textureDimensions(f0Occlusion) != extent)) { return vec4f(0); }
+      any(textureDimensions(dielectricSpecularSource) != extent)) { return vec4f(0); }
+  let packedNormal = textureLoad(normal, pixel, 0).rg;
+  if (!standardGBufferValid(packedNormal)) { return vec4f(0); }
   let z = textureLoad(depth, pixel, 0);
   if (!(z > 0.0 && z <= 1.0)) { return vec4f(0); }
   if (!all(d >= vec3f(0)) || !all(d < vec3f(1e30))) { return vec4f(0); }
@@ -38,9 +40,9 @@ fn shadeDiffuse(in: FullscreenOutput, d: vec3f) -> vec4f {
   if (!all(abs(position) < vec3f(1e30))) { return vec4f(0); }
   let outgoing = view.cameraPos - position;
   if (!(dot(outgoing, outgoing) > 0.0)) { return vec4f(0); }
-  let n = loadStandardNormalRoughness(normal, pixel);
+  let n = decodeStandardGBufferNormal(packedNormal);
   let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
-  let response = decodeStandardReflectance(textureLoad(f0Occlusion, pixel, 0).r);
+  let response = decodeStandardGBufferReflectance(albedo, textureLoad(dielectricSpecularSource, pixel, 0).r, packedNormal).response;
   let weight = standardDiffuseWeight(max(dot(n.xyz, normalize(outgoing)), 0.0),
     response.rgb, n.w, albedo.a);
   // Material AO belongs only to this indirect term. The raster scene target
@@ -74,10 +76,12 @@ fn shadeIrradiance(in: FullscreenOutput, d: vec4f) -> vec4f {
 fn shadeReflectionIrradiance(in: FullscreenOutput, d: vec4f) -> vec4f {
   if (d.w != 1.0 || !all(d.xyz >= vec3f(0)) || !all(d.xyz < vec3f(1e30))) { return vec4f(0); }
   let pixel = vec2i(in.position.xy);
+  let packedNormal = textureLoad(normal, pixel, 0).rg;
+  if (!standardGBufferValid(packedNormal)) { return vec4f(0); }
   let z = textureLoad(depth, pixel, 0);
   if (!(z > 0.0 && z <= 1.0)) { return vec4f(0); }
-  let material = decodeStandardReflectance(textureLoad(f0Occlusion, pixel, 0).r);
   let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
+  let material = decodeStandardGBufferReflectance(albedo, textureLoad(dielectricSpecularSource, pixel, 0).r, packedNormal).response;
   let response = textureLoad(reflectionResponse, pixel, 0);
   // Inter-microfacet bounces follow cosine-weighted GI, independently of the
   // directional reflection signal. SSR can replace the latter without losing this.

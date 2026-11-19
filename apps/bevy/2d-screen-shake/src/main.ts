@@ -1,6 +1,7 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildScreenShakeWorld, stepScreenShake } from './screen-shake.js';
 
@@ -14,16 +15,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   buildScreenShakeWorld(app.world);
 
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'screen-shake',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
-      const elapsed = world.hasResource('Time') ? world.getResource<{ dt: number; elapsed: number }>('Time').elapsed : 0;
-      const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
+      const elapsed = world.hasResource(Time) ? world.getResource(Time).elapsed : 0;
+      const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       stepScreenShake(world, dt, elapsed, snapshot);
     },
   });
+app.world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

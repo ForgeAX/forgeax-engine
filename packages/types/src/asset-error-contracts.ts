@@ -204,7 +204,7 @@ export class AssetError extends Error {
 export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
   'asset-not-ready': 'wait for the requested asset preparation and retry on the next frame',
   'asset-reference-invalid':
-    'use a live reference created by this asset owner; explicitly copy content between scopes',
+    'use a live reference created by this asset owner (assets.create or assets.load on the World asset registry; a World.allocSharedRef handle is not an asset reference); explicitly copy content between scopes',
   'asset-owner-closed':
     'create or restore a new asset owner; references from the retired scope are invalid',
   'asset-write-conflict':
@@ -532,6 +532,12 @@ export interface AssetMeshBinContractViolationDetail {
  *   indexCount, indexBufferLength, meshAssetGuid }`.
  */
 export type AssetErrorDetail =
+  | {
+      readonly guid: string;
+      readonly dependencyGuid: string;
+      readonly expectedKind: string;
+      readonly actualKind: string;
+    }
   | import('./asset.js').AssetCodecFailureDetail
   | AssetMaterialShaderRefBrokenDetail
   | AssetTilesetRegionIndexOutOfRangeDetail

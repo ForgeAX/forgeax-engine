@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `iter_combinations` example: an N-body gravity simulation exercising Query.combinations through chained Update systems and createApp time.",
+  "description": "Reproduction of Bevy's `iter_combinations` example: an N-body gravity simulation using query snapshots and pairwise traversal in chained Update systems.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",

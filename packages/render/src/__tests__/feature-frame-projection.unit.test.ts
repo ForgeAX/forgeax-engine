@@ -8,26 +8,25 @@ import { abortFeatureFrame, prepareFeatureFrame } from './feature-frame-driver';
 
 function view(
   identity: string,
-  worlds: readonly World[],
+  world: World,
   hiddenEntityReports: readonly RenderFeatureHiddenEntityReport[] = [],
 ): RenderFeatureFrameInput {
   return {
     identity,
     render: true,
-    worlds,
-    owner: 0,
+    world,
     frameNumber: 1,
     caps: {} as never,
     hiddenEntityReports,
   };
 }
 
-function report(world: World, entity: number): RenderFeatureHiddenEntityReport {
-  return { world, entity: entity as never };
+function report(_world: World, entity: number): RenderFeatureHiddenEntityReport {
+  return { entity: entity as never };
 }
 
 function keys(reports: readonly RenderFeatureHiddenEntityReport[] | undefined) {
-  return reports?.map(({ world, entity }) => `${world.identity}:${entity}`);
+  return reports?.map(({ entity }) => `${entity}`);
 }
 
 describe('Feature frame projections preserve renderer inputs', () => {
@@ -36,12 +35,12 @@ describe('Feature frame projections preserve renderer inputs', () => {
     const host = createRenderFeatureHost([]).unwrap();
     const inputReports = [report(world, 9)];
     const first = prepareFeatureFrame(host, [
-      view('frame', [world], inputReports),
-      view('view:"', [world]),
+      view('frame', world, inputReports),
+      view('view:"', world),
     ]);
     abortFeatureFrame(host);
     inputReports.push(report(world, 10));
-    const second = prepareFeatureFrame(host, [view('other', [world])]);
+    const second = prepareFeatureFrame(host, [view('other', world)]);
     try {
       expect([...first.views.keys()]).toEqual(['frame', 'view:"']);
       expect([...second.views.keys()]).toEqual(['other']);
@@ -59,22 +58,21 @@ describe('Feature frame projections preserve renderer inputs', () => {
   it('rejects duplicate view identities before publishing a batch', () => {
     const host = createRenderFeatureHost([]).unwrap();
     try {
-      expect(() => prepareFeatureFrame(host, [view('frame', []), view('frame', [])])).toThrow(
-        'duplicate render view identity',
-      );
+      expect(() =>
+        prepareFeatureFrame(host, [view('frame', new World()), view('frame', new World())]),
+      ).toThrow('duplicate render view identity');
     } finally {
       host.dispose();
     }
   });
-
   it('retains and deduplicates each view input without leaking sibling visibility', () => {
     const world = new World();
     const left = report(world, 9);
     const right = report(world, 10);
     const host = createRenderFeatureHost([]).unwrap();
     const batch = prepareFeatureFrame(host, [
-      view('left', [world], [left, left]),
-      view('right', [world], [right, right]),
+      view('left', world, [left, left]),
+      view('right', world, [right, right]),
     ]);
     try {
       expect(batch.frame.errors).toEqual([]);
@@ -91,15 +89,14 @@ describe('Feature frame projections preserve renderer inputs', () => {
     'empty',
   ] as const)('projects successful extract reports with %s work into every view once', (work) => {
     const world = new World();
-    const otherWorld = new World();
     const left = report(world, 9);
     const right = report(world, 10);
     const shared = report(world, 11);
-    const sameEntityInOtherWorld = report(otherWorld, 11);
+    const reusedSlotGeneration = report(world, 1048587);
     const feature: RenderFeature<unknown> = {
       identity: 'review.visibility',
       extract: (context) => {
-        for (const entry of [shared, shared, sameEntityInOtherWorld])
+        for (const entry of [shared, shared, reusedSlotGeneration])
           context.reportHiddenEntity?.(entry);
         return ok(undefined);
       },
@@ -108,16 +105,16 @@ describe('Feature frame projections preserve renderer inputs', () => {
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     const batch = prepareFeatureFrame(host, [
-      view('left', [world, otherWorld], [left, shared]),
-      view('right', [world, otherWorld], [right, shared]),
+      view('left', world, [left, shared]),
+      view('right', world, [right, shared]),
     ]);
     try {
       expect(batch.frame.errors).toEqual([]);
       expect(keys(batch.views.get('left')?.hiddenEntityReports)).toEqual(
-        keys([left, shared, sameEntityInOtherWorld]),
+        keys([left, shared, reusedSlotGeneration]),
       );
       expect(keys(batch.views.get('right')?.hiddenEntityReports)).toEqual(
-        keys([right, shared, sameEntityInOtherWorld]),
+        keys([right, shared, reusedSlotGeneration]),
       );
     } finally {
       abortFeatureFrame(host);
@@ -130,18 +127,9 @@ describe('Feature frame projections preserve renderer inputs', () => {
     const source = '@fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }';
     const first = createFullscreenRenderFeature({ identity: 'z::overlay', source });
     const second = createFullscreenRenderFeature({ identity: 'a::inversion', source });
-    const features = [
-      {
-        ...first,
-        requiredFullscreenPostProcesses: [
-          ...(first.requiredFullscreenPostProcesses ?? []),
-          ...(first.requiredFullscreenPostProcesses ?? []),
-        ],
-      },
-      second,
-    ];
+    const features = [first, second];
     const host = createRenderFeatureHost(features).unwrap();
-    const batch = prepareFeatureFrame(host, [view('left', [world]), view('right', [world])]);
+    const batch = prepareFeatureFrame(host, [view('left', world), view('right', world)]);
     try {
       expect(batch.frame.errors).toEqual([]);
       for (const projected of batch.views.values()) {
@@ -164,17 +152,17 @@ describe('Feature frame projections preserve renderer inputs', () => {
   it('admits only fullscreen programs present in the current successful plan', () => {
     const world = new World();
     const source = '@fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }';
-    const fullscreen = createFullscreenRenderFeature({ identity: 'game::optional', source });
     let enabled = false;
-    const feature = {
-      ...fullscreen,
-      plan: () => (enabled ? fullscreen.plan(undefined, {} as never) : ok({ work: [] })),
-    };
+    const feature = createFullscreenRenderFeature({
+      identity: 'game::optional',
+      source,
+      enabled: () => enabled,
+    });
     const host = createRenderFeatureHost([feature]).unwrap();
     try {
       for (const active of [false, true, false, true]) {
         enabled = active;
-        const batch = prepareFeatureFrame(host, [view('left', [world]), view('right', [world])]);
+        const batch = prepareFeatureFrame(host, [view('left', world), view('right', world)]);
         try {
           expect(batch.frame.errors).toEqual([]);
           for (const projected of batch.views.values()) {
@@ -186,6 +174,38 @@ describe('Feature frame projections preserve renderer inputs', () => {
         }
       }
     } finally {
+      host.dispose();
+    }
+  });
+
+  it('keeps a planned fullscreen resource out of the standalone effect chain', () => {
+    const source = '@fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }';
+    const program = 'game.planned-copy';
+    const feature: RenderFeature<undefined> = {
+      identity: 'game::planned-post',
+      placement: 'after-tonemap',
+      requiredFullscreenPostProcesses: [{ identity: program, source }],
+      extract: () => ok(undefined),
+      plan: () =>
+        ok({
+          work: [
+            {
+              scope: 'frame',
+              resources: [{ kind: 'fullscreen-program', name: program, source }],
+              passes: [],
+            },
+          ],
+        }),
+    };
+    const host = createRenderFeatureHost([feature]).unwrap();
+    try {
+      const batch = prepareFeatureFrame(host, [view('main', new World())]);
+      expect(batch.frame.errors).toEqual([]);
+      expect(batch.views.get('main')?.fullscreenEffects.has(program)).toBe(true);
+      expect(batch.views.get('main')?.fullscreenEffects.has(feature.identity)).toBe(false);
+      expect(batch.frame.postProcessIdentities).toEqual([]);
+    } finally {
+      abortFeatureFrame(host);
       host.dispose();
     }
   });

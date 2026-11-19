@@ -15,7 +15,7 @@ import {
   type PhysicsSyncQueryRow,
   type PhysicsSyncState,
   readPhysicsSyncDescriptor,
-} from './physics-sync.js';
+} from './physics-sync-descriptor.js';
 import type { Rapier3DModule } from './wasm-loader.js';
 
 /** Preserve moveAndSlide's fail-fast order before touching ECS state. */

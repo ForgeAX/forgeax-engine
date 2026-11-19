@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
 // Point-shadow recipe smoke.
 //
 // This is intentionally a consumer-shaped check, not only a cube-array
@@ -206,6 +207,7 @@ try {
     removeEventListener() {},
   };
 
+  await ensureShaderManifestProfile('point-ssao');
   const [app, ecs, render, scene, runtime, shader, geometry] = await Promise.all([
     import('@forgeax/engine-app'),
     import('@forgeax/engine-ecs'),
@@ -301,11 +303,7 @@ try {
   let receipt;
   for (let frame = 0; frame < frameTarget; frame += 1) {
     world.update(1 / 60).unwrap();
-    receipt = await drawReadyFrame(renderer, {
-      leases: [attachment.value],
-      camera: { lease: attachment.value },
-      environment: { lease: attachment.value },
-    });
+    receipt = await drawReadyFrame(renderer, { source: attachment.value });
     frames += 1;
   }
   if (receipt === undefined) throw new Error('point-shadow smoke: no FrameReceipt');
@@ -383,15 +381,12 @@ try {
     { component: render.PointLight, data: { color: [1, 0.72, 0.4], intensity: 18, range: 12 } },
   );
   scene.propagateTransforms(noShadowWorld).unwrap();
+  attachment.value.dispose();
   noShadowAttachment = renderer.attach(noShadowWorld);
   if (!noShadowAttachment.ok) throw noShadowAttachment.error;
   for (let frame = 0; frame < 6; frame += 1) {
     noShadowWorld.update(1 / 60).unwrap();
-    await drawReadyFrame(renderer, {
-      leases: [noShadowAttachment.value],
-      camera: { lease: noShadowAttachment.value },
-      environment: { lease: noShadowAttachment.value },
-    });
+    await drawReadyFrame(renderer, { source: noShadowAttachment.value });
   }
   inactiveInspection = renderer.inspect().pointShadow;
   inactiveProjection = render.inspectPointShadow([], atlasCapacity);

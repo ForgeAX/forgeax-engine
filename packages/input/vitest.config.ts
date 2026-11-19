@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineProject } from 'vitest/config';
 
 // engine-input unit tests (vitest unit project). Typecheck enabled at the
@@ -9,6 +10,8 @@ import { defineProject } from 'vitest/config';
 // Coverage thresholds at 70% per plan-strategy section 5.4 (browser-backend
 // has DOM-side branches that node env cannot exercise).
 export default defineProject({
+  // Vite/OXC transforms use the shared compiler policy; tsc owns references.
+  tsconfig: fileURLToPath(new URL('../../tsconfig.base.json', import.meta.url)),
   test: {
     environment: 'node',
     name: '@forgeax/engine-input',

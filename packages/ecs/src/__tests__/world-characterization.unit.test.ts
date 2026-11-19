@@ -1,3 +1,5 @@
+import { defineResource } from '../resource';
+import { defineSystem } from '../schedule';
 import { Update } from '../schedule-token';
 // M1 w1: World facade characterization tests.
 //
@@ -219,13 +221,14 @@ describe('M1 w1: update characterization', () => {
   it('update runs registered systems', () => {
     const w = new World();
     let called = false;
-    w.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'marker',
       queries: [],
       fn: () => {
         called = true;
       },
     });
+    w.addSystem(Update, systemToken1);
     w.update();
     expect(called).toBe(true);
   });
@@ -238,7 +241,7 @@ describe('M1 w1: update characterization', () => {
   it('update dispatches deferred commands (spawn via commands)', () => {
     const w = new World();
     let spawnedEntity: EntityHandle | null = null;
-    w.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'spawner',
       queries: [],
       fn: (_world, _results, commands) => {
@@ -246,6 +249,7 @@ describe('M1 w1: update characterization', () => {
         spawnedEntity = e as unknown as EntityHandle;
       },
     });
+    w.addSystem(Update, systemToken2);
     w.update();
     expect(spawnedEntity).not.toBeNull();
     if (spawnedEntity === null) throw new Error('spawnedEntity was null');
@@ -260,29 +264,37 @@ describe('M1 w1: update characterization', () => {
 
 describe('M1 w1: resources characterization', () => {
   it('insertResource and getResource round-trip', () => {
+    const resource1 = defineResource<number>('myKey');
+
     const w = new World();
-    w.insertResource('myKey', 42);
-    expect(w.hasResource('myKey')).toBe(true);
-    expect(w.getResource<number>('myKey')).toBe(42);
+    w.insertResource(resource1, 42);
+    expect(w.hasResource(resource1)).toBe(true);
+    expect(w.getResource(resource1)).toBe(42);
   });
 
   it('hasResource returns false for unknown key', () => {
+    const resource2 = defineResource<unknown>('nonexistent');
+
     const w = new World();
-    expect(w.hasResource('nonexistent')).toBe(false);
+    expect(w.hasResource(resource2)).toBe(false);
   });
 
   it('removeResource deletes a resource', () => {
+    const resource3 = defineResource<number>('myKey');
+
     const w = new World();
-    w.insertResource('myKey', 42);
-    w.removeResource('myKey');
-    expect(w.hasResource('myKey')).toBe(false);
+    w.insertResource(resource3, 42);
+    w.removeResource(resource3);
+    expect(w.hasResource(resource3)).toBe(false);
   });
 
   it('insertResource overwrites existing resource', () => {
+    const resource4 = defineResource<number>('myKey');
+
     const w = new World();
-    w.insertResource('myKey', 42);
-    w.insertResource('myKey', 99);
-    expect(w.getResource<number>('myKey')).toBe(99);
+    w.insertResource(resource4, 42);
+    w.insertResource(resource4, 99);
+    expect(w.getResource(resource4)).toBe(99);
   });
 });
 
@@ -301,17 +313,20 @@ describe('M1 w1: inspection characterization', () => {
   it('inspect returns system count', () => {
     const w = new World();
     expect(w.inspect().systemCount).toBe(0);
-    w.addSystem(Update, { name: 's1', queries: [], fn: () => {} });
+    const systemToken3 = defineSystem({ name: 's1', queries: [], fn: () => {} });
+    w.addSystem(Update, systemToken3);
     expect(w.inspect().systemCount).toBe(1);
   });
 
   it('inspect returns resource keys', () => {
+    const resource5 = defineResource<number>('k1');
+
     const w = new World();
     // World constructor registers protected Time and FixedTime resources
     const initialKeys = w.inspect().resourceKeys;
     expect(initialKeys).toContain('Time');
     expect(initialKeys).toContain('FixedTime');
-    w.insertResource('k1', 1);
+    w.insertResource(resource5, 1);
     expect(w.inspect().resourceKeys).toContain('k1');
   });
 
@@ -325,7 +340,8 @@ describe('M1 w1: inspection characterization', () => {
   it('inspect returns systems with set membership', () => {
     const w = new World();
     const TestSet = defineSystemSet({ name: 'test-set' });
-    w.addSystems(Update, TestSet, [{ name: 's1', queries: [], fn: () => {} }]);
+    const systemToken4 = defineSystem({ name: 's1', queries: [], fn: () => {} });
+    w.addSystems(Update, TestSet, [systemToken4]);
     const snap = w.inspect();
     const sys = snap.systems.find((s) => s.name === 's1');
     expect(sys).toBeDefined();
@@ -340,29 +356,39 @@ describe('M1 w1: inspection characterization', () => {
 describe('M1 w1: addSystem / removeSystem / replaceSystem characterization', () => {
   it('addSystem registers a system', () => {
     const w = new World();
-    w.addSystem(Update, { name: 'sys1', queries: [], fn: () => {} });
+    const systemToken5 = defineSystem({ name: 'sys1', queries: [], fn: () => {} });
+    w.addSystem(Update, systemToken5);
     expect(w.inspect().systemCount).toBe(1);
   });
 
   it('removeSystem removes a registered system', () => {
     const w = new World();
-    w.addSystem(Update, { name: 'sys1', queries: [], fn: () => {} });
-    const r = w.removeSystem(Update, 'sys1');
+    const systemToken6 = defineSystem({ name: 'sys1', queries: [], fn: () => {} });
+    w.addSystem(Update, systemToken6);
+    const r = w.removeSystem(Update, systemToken6);
     expect(r.ok).toBe(true);
     expect(w.inspect().systemCount).toBe(0);
   });
 
   it('removeSystem returns error for unknown system', () => {
     const w = new World();
-    const r = w.removeSystem(Update, 'nonexistent');
+    const r = w.removeSystem(
+      Update,
+      defineSystem({ name: 'nonexistent', queries: [], fn: () => {} }),
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('system-before-unknown');
   });
 
   it('replaceSystem replaces a system descriptor', () => {
     const w = new World();
-    w.addSystem(Update, { name: 'sys1', queries: [], fn: () => {} });
-    const r = w.replaceSystem(Update, 'sys1', { name: 'sys1', queries: [], fn: () => {} });
+    const systemToken7 = defineSystem({ name: 'sys1', queries: [], fn: () => {} });
+    w.addSystem(Update, systemToken7);
+    const r = w.replaceSystem(
+      Update,
+      systemToken7,
+      defineSystem({ name: 'sys1', queries: [], fn: () => {} }),
+    );
     expect(r.ok).toBe(true);
     expect(w.inspect().systemCount).toBe(1);
   });
@@ -376,10 +402,9 @@ describe('M1 w1: addSystems characterization', () => {
   it('addSystems registers systems into a set', () => {
     const w = new World();
     const TestSet = defineSystemSet({ name: 'test-set' });
-    const r = w.addSystems(Update, TestSet, [
-      { name: 's1', queries: [], fn: () => {} },
-      { name: 's2', queries: [], fn: () => {} },
-    ]);
+    const systemToken8 = defineSystem({ name: 's1', queries: [], fn: () => {} });
+    const systemToken9 = defineSystem({ name: 's2', queries: [], fn: () => {} });
+    const r = w.addSystems(Update, TestSet, [systemToken8, systemToken9]);
     expect(r.ok).toBe(true);
     expect(w.inspect().systemCount).toBe(2);
   });

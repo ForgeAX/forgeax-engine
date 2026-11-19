@@ -14,6 +14,21 @@ on the authored element. Its `onAction` delegation reads `data-ui-action`, not a
 arbitrary `data-action` attribute. Verify real click acknowledgement and visible
 geometry rather than the presence of HTML text.
 
+## Configuration route
+
+Declare project settings in a build configuration plugin providing
+`devkitAppOptions.configuration`; use the [App configuration entry](../../packages/app/README.md#engine-configuration)
+and [game-3d plugin](../../templates/game-3d/assets/project-configuration.ts).
+Keep bootstrap/native bindings outside the data definition. Supply actual Host
+facts and storage through `configurationHost`; do not guess model names.
+Use `app.configuration.setQuality` for preset/group requests and inspect the
+requested/applied plans, constraints, sources and submitted/completed revision.
+A texture-residency change returns `configuration-recreate-required` before any
+hot field applies; retain pending restart intent. A setter ACK or UI-only picture
+is not ready-scene evidence. Do not call `renderer.setProfile` to bypass a managed
+App's configuration. Verify A-to-B-to-A and replacement-realm adoption on actual
+Browser/Worker frames; native assembly must resolve before constructing domains.
+
 ## Render happy path
 
 Supply optional host tools through the App host adapter. Keep environment and
@@ -21,8 +36,27 @@ HMR interpretation in DevKit or the bundler adapter; App, Renderer and animation
 consume explicit capabilities and diagnostic subscriptions. Follow the
 [runtime boundary contracts](../../scripts/ci/README.md#runtime-and-tool-boundary-contracts)
 when adding an adapter or diagnosing a boundary gate failure.
+The built-in Water Scene plugin installs synchronous `WaterPontoonSet` physics
+between backend sync and simulation and publishes splash/wake only after
+collision completion. Read runtime `WaterBuoyancy` for full numerical evidence;
+a render tape does not prove forces. Follow the Water README for saved
+relative/socket anchors and specified-body CPU particle DI. CPU DI requires a
+`WaterParticleQueryInstance` tick at the system position; particle query pins
+select independent execution, depth and wave branches. Inspect the exported
+system and particle request positions rather than presentation transforms.
+
+Water application ordering uses Runtime's exported `WaterSceneReconcile`,
+`WaterContactProbes`, `WaterBuoyancy` and `WaterBuoyancyCompletion` tokens.
+Use Physics's `PhysicsSync`/`PhysicsSimulation` around fixed motion and Input's
+`InputFrameStartScan` before camera input. Keep the same `defineSystem` token
+for registration and removal; diagnostic names do not identify schedule edges.
+Read status from `WATER_SCENE_STATUS_RESOURCE` and Physics from
+`PhysicsWorldResource`, deriving their complete owner types from the tokens.
 
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.
+Feature texture completion carries the receipt's frame, device and graph identity;
+the final returned draw receipt owns credit and retirement. Preserve host completion
+holds without requiring object identity across this boundary.
 Use `createApp`, then let the host perform `attach -> draw`; use `inspect`, `observe`, and `recover`
 with the returned receipt. Domain producers keep their own assets, input, audio, and plugin owners.
 
@@ -37,8 +71,8 @@ the GPU owner with a fresh epoch/baseline while retaining the source World ident
 World updates wait until the replacement is ready and has publication capacity.
 For confirmed device loss with resident meshes, wait for the receiver's bounded
 disposal acknowledgment before reusing the source World. Cleanup failure,
-timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; do not
-infer GPU release from Worker termination.
+timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; treat
+Worker termination as no evidence of GPU release.
 Recheck both together after asynchronous waits: loss clears the old queue before
 the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
@@ -73,7 +107,7 @@ the same serializable facts through its frame-complete message.
 
 ```ts
 import { createApp } from '@forgeax/engine/app/browser';
-import { Time, Update } from '@forgeax/engine/ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine/ecs';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 const result = await createApp(canvas, {}, forgeaxBundlerAdapter());
@@ -83,14 +117,14 @@ if (!result.ok) {
 }
 
 const app = result.value;
-app.world.addSystem(Update, {
+app.world.addSystem(Update, defineSystem({
   name: 'move-player',
   queries: [],
   fn: (world) => {
     const delta = world.getResource(Time).delta;
     void delta;
   },
-}).unwrap();
+})).unwrap();
 app.start().unwrap();
 ```
 
@@ -136,6 +170,7 @@ const report = result.value.execution.report();
 | WebGPU adapter cannot be acquired | Keep `auto`; usable Worker WebGL2 remains eligible. Inspect `report.capabilities.workerWebGpu` for admission and `report.render.capabilities.backendKind` for the actual backend |
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
+| Immutable native local carrier | With `engine: false`, pass the same-graph `localBootstrap` entry to preserve decoder/component identity; retain `bootstrap` as the Worker URL. See the [execution contract](../../packages/app/README.md#worker-execution). |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |
 | Fixed presentation rate (e.g. 30 FPS) | `app.execution.setFrameRateLimit(30)`; `null` removes it. Admission stays on display callbacks and World time is unchanged |
 
@@ -315,18 +350,19 @@ GPU particles, use [`packages/vfx-render/README.md`](../../packages/vfx-render/R
 Each frame has one host-owned sequence:
 
 ```text
-measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw({ leases, camera, environment })
+measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw({ source: lease })
 ```
 
 `createApp` measures the delta once. A `World` owns time integration, fixed-step catch-up, and `Time` / `FixedTime` resources. Do not add a callback list, app-owned elapsed clock, app-side time clamp, or a second requestAnimationFrame loop.
 
 The frame loop reports a failed world update or draw through `app.onError`. It does not swallow structured failures.
 
-Native startup Hosts with screen UI return `null` from `drawSource` until the
+Native startup Hosts with screen UI return `ui-only` from `sceneAdmission` until the
 existing root activation transaction commits. This submits UI-only pending frames
-even after shader initialization. Return `undefined` to admit the primary scene,
-and withdraw it on failure; do not infer readiness from Camera presence or opaque
-UI pixels. The same App loop keeps World updates, UI, input, and Reload alive.
+even after shader initialization. Return `scene` to admit the primary source,
+and withdraw it on failure; take readiness from this return value, not from Camera
+presence or opaque UI pixels.
+The same App loop keeps World updates, UI, input, and Reload alive.
 
 ```ts
 const stopListening = app.onError((error) => {
@@ -389,13 +425,13 @@ app.world.addSystem(Update, AnimateHud).unwrap();
 For deterministic simulation, register the behavior on `FixedUpdate` instead. Use schedule edges or sets for ordering; never recreate an app callback queue.
 
 ```ts
-import { FixedUpdate } from '@forgeax/engine/ecs';
+import { defineSystem, FixedUpdate } from '@forgeax/engine/ecs';
 
-app.world.addSystem(FixedUpdate, {
+app.world.addSystem(FixedUpdate, defineSystem({
   name: 'step-combat',
   queries: [],
   fn: () => stepCombat(),
-}).unwrap();
+})).unwrap();
 ```
 
 ## Input and plugin wiring
@@ -440,7 +476,7 @@ const ReadInput = defineSystem({
   name: 'read-input',
   queries: [],
   fn: (world) => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     if (input.keyboard.down('KeyW')) moveForward();
   },
 });
@@ -472,7 +508,7 @@ await app.dispose();
 - `createApp` returns `Result`; handle `.ok`, `.error.code`, and `.error.hint` before starting.
 - `createRenderer` is lower level. A host using it directly owns `world.update(deltaSeconds)` and `renderer.draw` itself.
 - The app owns browser lifecycle and error fan-out; the World owns game scheduling and time.
-- A demo that freezes after migration exposes an engine or schedule integration failure. Do not add a demo-side callback or manual loop workaround.
+- A demo that freezes after migration exposes an engine or schedule integration failure. Fix the engine or schedule integration instead of a demo-side callback or manual loop.
 
 For exact option, Result, lifecycle, input, and renderer contracts, read `packages/app/README.md`, `packages/app/src/types.ts`, and `packages/app/src/internal/frame-loop.ts`.
 
@@ -485,8 +521,7 @@ report, tolerance, and structured error diagnostics. The schema is
 `packages/app/schema/simulation-inspection.schema.json`.
 
 App does not define record/schema/component state or restore policy. Preview and
-Remote only consume the summary through existing read/eval paths. Do not add
-restore/replay actions or transport raw World, Rapier, or Web Audio objects.
+Remote only consume the summary through existing read/eval paths. Expose only the summary; restore/replay actions and raw World, Rapier, or Web Audio objects stay out of transport.
 
 ## Plugin asset authoring
 

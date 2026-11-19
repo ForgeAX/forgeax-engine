@@ -8,7 +8,7 @@ import type { _InternalRenderPipelineContext } from './render-context';
 export function shadowUpdatePolicy(
   identity: ShadowViewIdentity,
   lights: ViewLights,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   effectiveShadowMapSize: number | undefined,
   effectiveSpotShadowMapSize: number | undefined,
   pointShadowTarget: Texture | undefined,
@@ -23,7 +23,7 @@ export function shadowUpdatePolicy(
     identity.kind === 'directional'
       ? lights.directionalCsmConfig
       : (light as PointShadowSnapshot | undefined);
-  const source = worlds[light !== undefined && 'worldId' in light ? (light.worldId ?? 0) : 0];
+  const source = sourceScope;
   if (policy === undefined || source === undefined) return undefined;
   const aspect = 'shadowMapAspect' in policy ? (policy.shadowMapAspect ?? 1) : 1;
   const size =
@@ -59,7 +59,7 @@ export function shadowUpdatePolicy(
 /** One recording's light facts are shared by every cascade, face and layer. */
 export function createShadowUpdatePolicy(
   lights: ViewLights,
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   effectiveShadowMapSize: number | undefined,
   effectiveSpotShadowMapSize: number | undefined,
   pointShadowTarget: () => Texture | undefined,
@@ -73,7 +73,7 @@ export function createShadowUpdatePolicy(
     shadowUpdatePolicy(
       identity,
       lights,
-      worlds,
+      sourceScope,
       effectiveShadowMapSize,
       effectiveSpotShadowMapSize,
       pointShadowTarget(),

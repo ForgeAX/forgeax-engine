@@ -2,13 +2,18 @@ import type { CameraSnapshot } from '../render-contract';
 import type { ValidatedRenderable } from './frame-snapshot';
 
 /** Closed owner-declared selections that can be re-read without a recorded frame. */
-export type ScenePassSelection = 'camera-outline';
+export type ScenePassSelection =
+  | 'camera-outline'
+  | 'camera-outline-distance'
+  | 'camera-outline-focus'
+  | 'camera-outline-accent'
+  | 'camera-outline-large';
 
-export type ScenePassSelectionCamera = Pick<CameraSnapshot, 'worldId' | 'outline'>;
+export type ScenePassSelectionCamera = Pick<CameraSnapshot, 'outline'>;
 
 const EMPTY_ENTRIES: readonly ValidatedRenderable[] = Object.freeze([]);
 
-type EntitySelection = { readonly worldId: number; readonly entities: readonly number[] };
+type EntitySelection = { readonly entities: readonly number[] };
 
 export function resolveScenePassSelection(
   selection: ScenePassSelection,
@@ -16,15 +21,26 @@ export function resolveScenePassSelection(
 ): EntitySelection {
   switch (selection) {
     case 'camera-outline':
-      return { worldId: camera.worldId ?? 0, entities: camera.outline?.entities ?? [] };
+      return { entities: camera.outline?.distanceField ? [] : (camera.outline?.entities ?? []) };
+    case 'camera-outline-distance':
+      return { entities: camera.outline?.distanceField ? (camera.outline.entities ?? []) : [] };
+    case 'camera-outline-focus':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.focusedEntities ?? []) : [],
+      };
+    case 'camera-outline-accent':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.accentEntities ?? []) : [],
+      };
+    case 'camera-outline-large':
+      return {
+        entities: camera.outline?.distanceField ? (camera.outline.largeEntities ?? []) : [],
+      };
   }
 }
 
 function selected(entry: ValidatedRenderable, selection: EntitySelection): boolean {
-  return (
-    selection.worldId === entry.source.worldId &&
-    selection.entities.includes(entry.source.entityKey)
-  );
+  return selection.entities.includes(entry.source.entityKey);
 }
 
 export function selectScenePassPipelineEntries(

@@ -1,7 +1,7 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import { type ClusterOccupancyReport, measureClusterOccupancy } from '../../cluster-binner';
-import { GTAO_SAMPLE_COUNTS, getSsaoParameters, SSAO_SAMPLE_COUNTS } from '../../ssao-config';
+import { getSsaoParameters } from '../../ssao-config';
 import type { StandardTopologyInputValue } from './topology';
 import type { StandardClusterTransport } from './transport';
 
@@ -10,15 +10,22 @@ type AmbientOcclusionConfig = NonNullable<NonNullable<RenderPipelineAsset['confi
 export interface StandardAmbientOcclusionInspection {
   readonly requested: boolean;
   readonly status: 'off' | 'active' | 'requested-unavailable';
-  readonly algorithm: 'ssao' | 'gtao';
+  readonly algorithm: 'ssao' | 'gtao' | 'spiral-ssao';
+  readonly application: 'lighting' | 'scene-color';
   readonly execution: 'none' | 'fragment' | 'compute';
   readonly reason?: 'disabled' | 'requested-passes-not-in-active-graph';
   readonly producerId: 'forgeax::standard::surface-data';
   readonly input: {
-    readonly normalSchema: 'forgeax::scene-data::standard-surface-normal-v1';
-    readonly normalSpace: 'world';
-    readonly normalEncoding: 'octahedral-normal-x12-y12-roughness-u8';
-    readonly normalFormat: 'r32uint';
+    readonly normalSchema:
+      | 'forgeax::scene-data::standard-gbuffer-normal-v2'
+      | 'forgeax::scene-data::standard-surface-normal-v1'
+      | 'depth-reconstruction';
+    readonly normalSpace: 'world' | 'view';
+    readonly normalEncoding:
+      | 'xyz10-valid30-dfg31-roughness8-occlusion8'
+      | 'octahedral-normal-x12-y12-roughness-u8'
+      | 'depth-reconstructed';
+    readonly normalFormat: 'rg32uint' | 'r32uint' | 'none';
     readonly depthSchema: 'forgeax::scene-data::standard-surface-depth-v1';
     readonly depthSpace: 'camera-device-depth';
     readonly depthEncoding: 'rhi-zero-to-one';
@@ -38,16 +45,18 @@ export interface StandardAmbientOcclusionInspection {
     readonly resolutionScale: number;
     readonly quality: 'low' | 'medium' | 'high';
     readonly sampleBudget: number;
+    readonly sceneColorStrength: number;
     readonly directLightingStrength: number;
     readonly rawIntensityApplication: 'once-before-filter';
-    readonly filter: '5x5-depth-normal-bilateral';
+    readonly filter: '5x5-depth-normal-bilateral' | '7+7-depth-bilateral';
   };
   readonly output: {
-    readonly rawFormat: 'rgba8unorm';
+    readonly rawFormat: 'rgba8unorm' | 'r8unorm';
     readonly filteredFormat: 'r8unorm';
     readonly extent?: { readonly width: number; readonly height: number };
     readonly rawBytes?: number;
     readonly filteredBytes?: number;
+    readonly horizontalBytes?: number;
     readonly clusterRegionBytes: number;
   };
   readonly work: {
@@ -71,6 +80,15 @@ export interface StandardClusterTransportInspection {
   readonly producer: StandardClusterTransport['producer'];
   readonly requested: StandardClusterTransport['requestedLightCount'];
   readonly admitted: StandardClusterTransport['admittedLightCount'];
+  /** Local lights over the limit that the Cluster does not shade (`requested - admitted`). */
+  readonly droppedLocalLights: number;
+  /**
+   * Per-cluster entry cap K applied when the light index list overflowed:
+   * each cluster kept its first K lights. `null` when every entry fit.
+   */
+  readonly clusterEntryCapK: number | null;
+  /** Cluster entries dropped under `clusterEntryCapK`. */
+  readonly droppedClusterEntries: number;
   readonly shadowed: number;
   readonly maxLights: number;
   readonly indexCount: StandardClusterTransport['membershipEntryCount'];
@@ -95,6 +113,9 @@ export interface StandardNoLocalLightingInspection {
   readonly producer: 'none';
   readonly requested: 0;
   readonly admitted: 0;
+  readonly droppedLocalLights: 0;
+  readonly clusterEntryCapK: null;
+  readonly droppedClusterEntries: 0;
   readonly shadowed: 0;
   readonly maxLights: number;
   readonly indexCount: 0;
@@ -121,6 +142,9 @@ export function inspectStandardClusterTransport(
     producer: transport.producer,
     requested: transport.requestedLightCount,
     admitted: transport.admittedLightCount,
+    droppedLocalLights: transport.requestedLightCount - transport.admittedLightCount,
+    clusterEntryCapK: prepared.clusterEntryCapK ?? null,
+    droppedClusterEntries: prepared.droppedClusterEntries,
     shadowed: prepared.local.filter((light) => light.shadowed === true).length,
     maxLights: prepared.maxLights,
     indexCount: transport.membershipEntryCount,
@@ -175,6 +199,9 @@ export function inspectStandardLighting(
       producer: 'none' as const,
       requested: 0 as const,
       admitted: 0 as const,
+      droppedLocalLights: 0 as const,
+      clusterEntryCapK: null,
+      droppedClusterEntries: 0 as const,
       shadowed: 0 as const,
       maxLights: input.prepared.maxLights,
       indexCount: 0 as const,
@@ -234,10 +261,9 @@ function collectAmbientOcclusionFacts(input: {
   );
   const blur = input.graph?.passes.find((pass) => pass.name === 'ssao-blur');
   const active = requested && calc !== undefined && blur !== undefined;
-  const normalName = calc?.accesses.find((access) => access.usage === 'sampled-read')?.resource;
-  const depthName = calc?.accesses.find(
-    (access) => access.usage === 'sampled-read' && access.resource !== normalName,
-  )?.resource;
+  const sampled = calc?.accesses.filter((access) => access.usage === 'sampled-read') ?? [];
+  const normalName = sampled.length === 1 ? undefined : sampled[0]?.resource;
+  const depthName = sampled[sampled.length === 1 ? 0 : 1]?.resource;
   const rawName = calc?.accesses.find(
     (access) => access.usage === 'storage-write' || access.usage === 'color-attachment',
   )?.resource;
@@ -248,12 +274,11 @@ function collectAmbientOcclusionFacts(input: {
   const depth = graphResource(input.graph, depthName);
   const raw = graphResource(input.graph, rawName);
   const filtered = graphResource(input.graph, filteredName);
-  const inputExtent = normal?.extent;
+  const horizontal = graphResource(input.graph, 'ssao-horizontal');
+  const inputExtent = normal?.extent ?? depth?.extent;
   const outputExtent = raw?.extent;
   const rawPixels = (outputExtent?.width ?? 0) * (outputExtent?.height ?? 0);
-  const sampleBudget = (parameters.algorithm === 'gtao' ? GTAO_SAMPLE_COUNTS : SSAO_SAMPLE_COUNTS)[
-    parameters.quality
-  ];
+  const sampleBudget = parameters.sampleCount;
   // Match the production GTAO adapter: three slices below 30 samples, five
   // at 30+, with two depth candidates per radial step.
   const slices = sampleBudget >= 30 ? 5 : 3;
@@ -265,7 +290,16 @@ function collectAmbientOcclusionFacts(input: {
     .filter(
       (pass) =>
         (requested && pass.name === 'standard-scene-surface-data') ||
-        ['ssao-calc', 'gtao-calc-compute', 'ssao-blur', 'ssao-cluster-pack'].includes(pass.name),
+        [
+          'ssao-parameters',
+          'ssao-linear-depth',
+          'ssao-scene-color',
+          'ssao-calc',
+          'gtao-calc-compute',
+          'ssao-blur-horizontal',
+          'ssao-blur',
+          'ssao-cluster-pack',
+        ].includes(pass.name),
     )
     .map((pass) => pass.name);
   const status: StandardAmbientOcclusionInspection['status'] = !requested
@@ -274,7 +308,7 @@ function collectAmbientOcclusionFacts(input: {
       ? 'active'
       : 'requested-unavailable';
   const unavailable = status === 'requested-unavailable';
-  const normalDepthBytes = sumKnownBytes([normal, depth]);
+  const normalDepthBytes = sumKnownBytes(normal === undefined ? [depth] : [normal, depth]);
   const additionalInputBytes = input.renderPath === 'forward' ? normalDepthBytes : 0;
   const clusterRegionBytes =
     !active || input.clusterAoExtent === undefined
@@ -289,6 +323,7 @@ function collectAmbientOcclusionFacts(input: {
     normal,
     raw,
     filtered,
+    horizontal,
     inputExtent,
     outputExtent,
     rawPixels,
@@ -305,10 +340,28 @@ function collectAmbientOcclusionFacts(input: {
 
 function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
   return Object.freeze({
-    normalSchema: 'forgeax::scene-data::standard-surface-normal-v1' as const,
-    normalSpace: 'world' as const,
-    normalEncoding: 'octahedral-normal-x12-y12-roughness-u8' as const,
-    normalFormat: 'r32uint' as const,
+    normalSchema:
+      facts.calc !== undefined && facts.normal === undefined
+        ? ('depth-reconstruction' as const)
+        : facts.normal?.format === 'rg32uint'
+          ? ('forgeax::scene-data::standard-gbuffer-normal-v2' as const)
+          : ('forgeax::scene-data::standard-surface-normal-v1' as const),
+    normalSpace:
+      facts.calc !== undefined && facts.normal === undefined
+        ? ('view' as const)
+        : ('world' as const),
+    normalEncoding:
+      facts.calc !== undefined && facts.normal === undefined
+        ? ('depth-reconstructed' as const)
+        : facts.normal?.format === 'rg32uint'
+          ? ('xyz10-valid30-dfg31-roughness8-occlusion8' as const)
+          : ('octahedral-normal-x12-y12-roughness-u8' as const),
+    normalFormat:
+      facts.calc !== undefined && facts.normal === undefined
+        ? ('none' as const)
+        : facts.normal?.format === 'rg32uint'
+          ? ('rg32uint' as const)
+          : ('r32uint' as const),
     depthSchema: 'forgeax::scene-data::standard-surface-depth-v1' as const,
     depthSpace: 'camera-device-depth' as const,
     depthEncoding: 'rhi-zero-to-one' as const,
@@ -331,7 +384,8 @@ function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbient
 
 function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
   return Object.freeze({
-    rawFormat: 'rgba8unorm' as const,
+    rawFormat:
+      facts.parameters.algorithm === 'spiral-ssao' ? ('r8unorm' as const) : ('rgba8unorm' as const),
     filteredFormat: 'r8unorm' as const,
     ...(facts.outputExtent === undefined
       ? {}
@@ -343,6 +397,9 @@ function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbien
         }),
     ...(facts.raw?.byteSize === undefined ? {} : { rawBytes: facts.raw.byteSize }),
     ...(facts.filtered?.byteSize === undefined ? {} : { filteredBytes: facts.filtered.byteSize }),
+    ...(facts.horizontal?.byteSize === undefined
+      ? {}
+      : { horizontalBytes: facts.horizontal.byteSize }),
     clusterRegionBytes: facts.clusterRegionBytes,
   });
 }
@@ -361,6 +418,7 @@ function inspectStandardAmbientOcclusion(input: {
     requested,
     status,
     algorithm: parameters.algorithm,
+    application: parameters.application,
     execution: !active ? 'none' : calc?.name === 'gtao-calc-compute' ? 'compute' : 'fragment',
     ...(!requested
       ? { reason: 'disabled' as const }
@@ -379,14 +437,20 @@ function inspectStandardAmbientOcclusion(input: {
       resolutionScale: parameters.resolutionScale,
       quality: parameters.quality,
       sampleBudget,
+      sceneColorStrength: parameters.sceneColorStrength,
       directLightingStrength: parameters.directLightingStrength,
       rawIntensityApplication: 'once-before-filter' as const,
-      filter: '5x5-depth-normal-bilateral' as const,
+      filter:
+        parameters.algorithm === 'spiral-ssao'
+          ? ('7+7-depth-bilateral' as const)
+          : ('5x5-depth-normal-bilateral' as const),
     }),
     output: ambientOcclusionOutputInspection(facts),
     work: Object.freeze({
       rawPixels: active ? facts.rawPixels : 0,
-      filterTapBudget: active ? facts.rawPixels * 25 : 0,
+      filterTapBudget: active
+        ? facts.rawPixels * (parameters.algorithm === 'spiral-ssao' ? 14 : 25)
+        : 0,
       depthCandidateBudget: active ? facts.rawPixels * facts.depthCandidatesPerPixel : 0,
     }),
     passes: Object.freeze(facts.passNames),

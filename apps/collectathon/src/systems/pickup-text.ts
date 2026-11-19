@@ -1,4 +1,5 @@
 import type { AssetHandle } from '@forgeax/engine-types';
+import { CoreCollectOrder } from '../system-order';
 // apps/collectathon -- pickup-text: MSDF floating "+1" text on Core pickup (AC-12).
 //
 // Two-phase per frame:
@@ -20,14 +21,14 @@ import type { AssetHandle } from '@forgeax/engine-types';
 // + despawn lifecycle. The Map tracks remaining life; state-scoped despawn on
 // Play exit cleans up stale handles automatically.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { GlyphText } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { StateToken } from '@forgeax/engine-state';
 import { despawnOnExit } from '@forgeax/engine-state';
 
-import { PICKUP_SIGNAL_KEY, type PickupSignal } from '../resources';
+import { PICKUP_SIGNAL_KEY } from '../resources';
 import { readDt } from './frame-time';
 
 /** Bubble rise speed (world units per second). */
@@ -50,19 +51,19 @@ const FONT_SIZE = 0.15;
 export function createPickupTextSystem(
   fontHandle: AssetHandle<'font'>,
   gameState: StateToken,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   const active: Map<EntityHandle, number> = new Map();
 
   return defineSystem({
     name: 'pickup-text',
-    after: ['core-collect'],
+    after: [CoreCollectOrder],
     queries: [],
     fn: (world: World, _results, commands) => {
       const dt = readDt(world);
 
       // Phase 1: spawn "+1" text from the pickup signal written by core-collect.
       if (world.hasResource(PICKUP_SIGNAL_KEY)) {
-        const signals = world.getResource<PickupSignal[]>(PICKUP_SIGNAL_KEY);
+        const signals = world.getResource(PICKUP_SIGNAL_KEY);
         for (const s of signals) {
           const e = world
             .spawn(

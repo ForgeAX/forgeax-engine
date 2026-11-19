@@ -34,6 +34,7 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const lifetime = useRef<AbortController | null>(null);
+  const downloadUrl = useRef<string | null>(null);
   const upload = useRef<HTMLInputElement>(null);
   const packs = inspection.packs;
   const generators = packs.filter(pack => pack.source.kind === 'scriptable-pack-source');
@@ -59,7 +60,11 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
     setBusy(true);
     void refresh(controller.signal).catch(cause => { if (!controller.signal.aborted) setError(String(cause)); })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (downloadUrl.current !== null) URL.revokeObjectURL(downloadUrl.current);
+      downloadUrl.current = null;
+    };
   }, [refresh]);
   async function act(operation: () => Promise<unknown>) {
     if (busy || lifetime.current?.signal.aborted) return;
@@ -86,10 +91,16 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
     const snapshot = await call<{ packs: Pack[] }>('snapshot');
     if (lifetime.current?.signal.aborted) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot)], { type: 'application/json' }));
+    if (downloadUrl.current !== null) URL.revokeObjectURL(downloadUrl.current);
+    downloadUrl.current = url;
     try {
       const link = document.createElement('a');
       link.href = url; link.download = `${target.projectId}-runtime-content.json`; link.click();
-    } finally { URL.revokeObjectURL(url); }
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      downloadUrl.current = null;
+      throw error;
+    }
   }
   return <section className="cb-runtime" aria-label="Runtime content" data-testid="runtime-content">
     <Toolbar>

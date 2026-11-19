@@ -220,11 +220,7 @@ if (!app.ok) {
         healthTransitions: () => healthTransitions.slice(),
         debug: () => ({ rhiCaptureAvailable: app.value.rhiCapture !== undefined }),
         drawOnce: () => {
-          const result = renderer.draw({
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          });
+          const result = renderer.draw({ source: lease });
           return result.ok
             ? result
             : (() => {

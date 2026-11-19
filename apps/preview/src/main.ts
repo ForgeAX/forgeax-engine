@@ -24,9 +24,9 @@ import {
   type App,
   activateExecutionRoot,
   type CanvasAppError,
+  EngineConfigurationError,
   type GameHost,
   gameHostPlugin,
-  isAppError,
 } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import {
@@ -353,7 +353,7 @@ async function startPreview(app: App, previewRun: PreviewUiRun): Promise<void> {
         const capture = previewProfiler.latestCapture();
         if (capture === undefined) return;
         window.clearInterval(poll);
-        const model = buildProfileModel(capture);
+        const model = buildProfileModel(capture, { orderEvidence: 'recorder-closure' });
         if (!model.ok) {
           console.warn(`[preview] profiler model failed: ${model.error.code}`);
           return;
@@ -680,6 +680,11 @@ function reportCreateError(err: CanvasAppError): {
   readonly code: string;
   readonly detail: string;
 } {
+  if (err instanceof EngineConfigurationError) {
+    const detail = `${err.detail.path}: ${err.detail.reason}`;
+    console.error(`[preview] EngineConfigurationError ${err.code}: ${detail}`);
+    return { code: err.code, detail };
+  }
   if (err instanceof EngineEnvironmentError) {
     const inner = err.detail.webgpuError;
     const code = inner !== undefined && 'code' in inner ? inner.code : '<none>';
@@ -690,40 +695,6 @@ function reportCreateError(err: CanvasAppError): {
     console.error(`[preview] AssetRuntimeAssemblyError ${err.code}: ${err.hint}`);
     return { code: err.code, detail: err.detail.kind };
   }
-  if (isAppError(err)) {
-    switch (err.code) {
-      case 'app-not-started':
-      case 'app-already-running':
-      case 'app-canvas-detached':
-      case 'app-system-update-failed':
-      case 'app-pointer-lock-failed':
-        console.error(`[preview] AppError ${err.code}: ${err.hint}`);
-        return { code: err.code, detail: err.hint };
-    }
-  } else {
-    switch (err.code) {
-      case 'adapter-unavailable':
-      case 'feature-not-enabled':
-      case 'limit-exceeded':
-      case 'shader-compile-failed':
-      case 'rhi-not-available':
-      case 'webgpu-runtime-error':
-      case 'command-encoder-finished':
-      case 'render-pass-not-ended':
-      case 'queue-submit-failed':
-      case 'queue-write-buffer-out-of-bounds':
-      case 'render-system-no-camera':
-      case 'render-system-multi-camera':
-      case 'render-system-multi-light':
-      case 'asset-not-registered':
-      case 'device-lost':
-      case 'oom':
-      case 'internal-error':
-      case 'hierarchy-broken':
-      case 'destroy-after-destroy':
-        console.error(`[preview] RhiError ${err.code}: ${err.hint}`);
-        return { code: err.code, detail: err.hint };
-    }
-  }
-  return { code: 'unknown', detail: String(err) };
+  console.error(`[preview] ${err.name} ${err.code}: ${err.hint}`);
+  return { code: err.code, detail: err.hint };
 }

@@ -1,37 +1,29 @@
+import type { ArrayFieldPlan, FieldPlan } from '../component';
+import type { WorldRead } from '../world-read';
+import { ARRAY_FIELD_ARITY, type ArrayStore } from './array-store';
 // @forgeax/engine-ecs — per-field independent buffer column storage (D-01).
 //
 // Each component field gets its own ArrayBuffer/SharedArrayBuffer + TypedArray view.
 // This enables independent per-column transfer() expansion and
 // supports dynamic column add/remove during archetype migration.
 //
-// `array<T>` (variable-capacity) fields take TWO columns in archetype layout
-// (D-3): the primary u32 column carries the BufferPool slot id; a sidecar
-// column carries the live element count, named `<fieldName>:count` and
-// keyed by `arrayCountColumnName(fieldName)`. `array<T,N>` (fixed-capacity)
-// fields (feat-20260602) take a SINGLE inline stride-N column (arity = N) --
-// no BufferPool slot id, no sidecar count column. The elements live
-// contiguously per row. `buffer<N>` likewise takes a single stride-N u8
-// column. Variable `buffer` still uses a u32 BufferPool slot id column.
-// Capacity is never stored as an independent column: for variable-capacity
-// fields it is derived from `BufferPool.view(slotId).byteLength /
-// elementBytes`; for fixed-capacity fields the schema-declared N is the
-// capacity.
+// Variable `array<T>` fields take one arity-3 u32 column holding
+// the whole location `[block, byteOffset, count]` in the World's ArrayStore
+// (`storage/array-store.ts`); capacity follows from the block. `array<T,N>`
+// (fixed-capacity) fields take a single inline stride-N column (arity = N)
+// with the elements contiguous per row. Byte arrays use the same u8 element layout.
 
-import { type ScalarFieldType, TYPE_METADATA, type TypedArrayFor } from '../component';
-
-// ────────────────────────────────────────────────────────────────────────────
+import { SCALAR_LAYOUTS, type ScalarFieldType, type TypedArrayFor } from '../component';
 // ManagedColumnReader — read-only view onto a managed-vocab column
 // (feat-20260614 M4 / D-4 / AC-08 / AC-09 / AC-10)
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Read-only access shape for the 4 managed-vocab column keywords --
- * `'string'` / `` `ref<T>` `` / variable `'buffer'` / variable `` `array<T>` ``.
+ * Read-only column access for strings, references and managed arrays.
  *
- * The column carries u32 slot ids (`UniqueRefStore` / `BufferPool`); direct
- * index assignment would corrupt the slot table. The reader exposes
- * `.length` + `.get(i): number` so consumers can walk row indices and
- * retrieve slot ids, then route through the public dispatch (`world.set`,
+ * The column carries u32 handles (`UniqueRefStore` ids, or the arity-3
+ * `[block, byteOffset, count]` array locations); direct index assignment
+ * would corrupt the backing store. The reader exposes `.length` +
+ * `.get(i): number` so consumers can walk the raw words, then route through the public dispatch (`world.set`,
  * `world.push`, `world.allocUniqueRef`, etc.) for any mutation.
  *
  * Phantom brand `__managed` (D-7 / requirements-decisions q2): the
@@ -49,25 +41,20 @@ export interface ManagedColumnReader<T extends string> {
   get(i: number): number;
   readonly __managed: T;
 }
-
-/**
- * Sidecar column name for the live `count` of an `array<T>` (variable-
- * capacity) field. Format `<fieldName>:count` keeps the suffix outside the
- * legal user-facing schema name space (the colon is forbidden in user
- * field names by convention) so the archetype Map can carry both columns
- * under one `Map<fieldName, Column>` keyed namespace without collision
- * (D-3 double-column allocation in M1 / w7).
- */
-export function arrayCountColumnName(fieldName: string): string {
-  return `${fieldName}:count`;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Column: one field's storage
-// ────────────────────────────────────────────────────────────────────────────
 
 /** TypedArray view types used by columns. */
 export type FieldView = TypedArrayFor<ScalarFieldType>;
+
+/** Element-indexed numeric views; field admission checks the declared element constructor. */
+export function isNumericArray(value: unknown): value is FieldView | Uint8ClampedArray {
+  return (
+    ArrayBuffer.isView(value) &&
+    !(value instanceof DataView) &&
+    !(value instanceof BigInt64Array) &&
+    !(value instanceof BigUint64Array)
+  );
+}
 
 function isSharedBuffer(buffer: ArrayBufferLike): buffer is SharedArrayBuffer {
   return typeof SharedArrayBuffer !== 'undefined' && buffer instanceof SharedArrayBuffer;
@@ -85,14 +72,10 @@ interface ColumnWindow {
 
 export interface Column {
   [COLUMN_WINDOW]?: ColumnWindow | undefined;
-  buffer: ArrayBuffer | SharedArrayBuffer;
   view: FieldView;
-  capacity: number;
-  fieldType: ScalarFieldType;
   /**
-   * Number of elements per row (stride). Scalar and variable-capacity columns
-   * default to 1 (one u32 slot id or one scalar value per row). Fixed-capacity
-   * `array<T,N>` / `buffer<N>` inline columns (feat-20260602) have arity = N.
+   * The component's immutable compiled layout, shared by every physical column
+   * for this field. It owns the native storage kind and elements per row.
    *
    * For inline columns, the TypedArray view returned by `col.view.subarray()`
    * aliases the column buffer directly. The view is transient: `growColumn`
@@ -100,9 +83,7 @@ export interface Column {
    * the view after any structural change. See `packages/ecs/README.md`
    * Transient view contract section.
    */
-  arity: number;
-  /** Variable-array sidecar key, derived once with this table's field layout. */
-  countField?: string;
+  readonly layout: FieldPlan;
 }
 
 /**
@@ -144,25 +125,19 @@ export function columnWindow(
 /**
  * Create a column for a single field with given capacity.
  *
- * @param fieldType - scalar storage type for the column view ctor
+ * @param layout - component-owned field layout
  * @param capacity - number of rows
- * @param arity - elements per row (stride); default 1 for scalar/variable columns
  */
-export function createColumn(
-  fieldType: ScalarFieldType,
-  capacity: number,
-  arity = 1,
-  shared = false,
-): Column {
-  const meta = TYPE_METADATA[fieldType];
-  if (!meta) throw new Error(`Missing TYPE_METADATA entry for scalar field type ${fieldType}`);
+export function createColumn(layout: FieldPlan, capacity: number, shared = false): Column {
+  const meta = SCALAR_LAYOUTS[layout.storage];
+  if (!meta) throw new Error(`Missing scalar layout for field type ${layout.storage}`);
   const bytesPerElement = meta.byteSize;
   const buffer = shared
-    ? new SharedArrayBuffer(bytesPerElement * capacity * arity)
-    : new ArrayBuffer(bytesPerElement * capacity * arity);
+    ? new SharedArrayBuffer(bytesPerElement * capacity * layout.arity)
+    : new ArrayBuffer(bytesPerElement * capacity * layout.arity);
   const Ctor = meta.viewCtor;
   const view = new Ctor(buffer);
-  return { buffer, view, capacity, fieldType, arity };
+  return { view, layout };
 }
 
 /**
@@ -186,71 +161,110 @@ export const HAS_TRANSFER: boolean =
  * Both paths produce data-equivalent results (O-1 acceptance criterion).
  */
 export function growColumn(col: Column, newCapacity: number): Column {
-  const meta = TYPE_METADATA[col.fieldType];
-  if (!meta) throw new Error(`Missing TYPE_METADATA entry for scalar field type ${col.fieldType}`);
+  const meta = SCALAR_LAYOUTS[col.layout.storage];
+  if (!meta) throw new Error(`Missing scalar layout for field type ${col.layout.storage}`);
   const bytesPerElement = meta.byteSize;
-  const newByteLength = bytesPerElement * newCapacity * col.arity;
+  const newByteLength = bytesPerElement * newCapacity * col.layout.arity;
   const Ctor = meta.viewCtor;
+  const previous = col.view.buffer;
 
   let buffer: ArrayBuffer | SharedArrayBuffer;
-  if (isSharedBuffer(col.buffer)) {
+  if (isSharedBuffer(previous)) {
     buffer = new SharedArrayBuffer(newByteLength);
-    new Uint8Array(buffer).set(new Uint8Array(col.buffer));
+    new Uint8Array(buffer).set(new Uint8Array(previous));
   } else if (HAS_TRANSFER) {
     // Zero-copy path: transfer() resizes the underlying buffer in-place
     // and detaches the source. The old column's buffer becomes detached,
     // but we return a new Column object so callers never touch the old one.
-    buffer = (col.buffer as unknown as { transfer(newByteLength: number): ArrayBuffer }).transfer(
+    buffer = (previous as unknown as { transfer(newByteLength: number): ArrayBuffer }).transfer(
       newByteLength,
     );
   } /* istanbul ignore next -- fallback for runtimes without ES2024 transfer() */ else {
     // Fallback path: allocate new buffer + byte-level copy.
     buffer = new ArrayBuffer(newByteLength);
-    new Uint8Array(buffer).set(new Uint8Array(col.buffer));
+    new Uint8Array(buffer).set(new Uint8Array(previous));
   }
 
   const view = new Ctor(buffer);
-  return { ...col, buffer, view, capacity: newCapacity, [COLUMN_WINDOW]: undefined };
+  return { ...col, view, [COLUMN_WINDOW]: undefined };
+}
+/** Read the live length without creating a row window. */
+export function columnArrayLength(column: Column, row: number): number | undefined {
+  const plan = column.layout;
+  if (plan.kind === 'fixed-array') return plan.arity;
+  if (plan.kind === 'array') return column.view[row * ARRAY_FIELD_ARITY + 2] ?? 0;
+  return undefined;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Buffer-write input normalization (feat-20260621 V2 / AC-A4)
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Normalize a `'buffer'` / `'buffer<N>'` write payload to a `Uint8Array` view
- * over its raw bytes. The write surface (`FieldInputType<'buffer'>`) accepts
- * any `AllowSharedBufferSource` (Float32Array / ArrayBuffer / Uint8Array / any
- * TypedArray); the column store and read side speak `Uint8Array` only. This is
- * the single ingestion point that bridges the two — a strict superset of the
- * prior Uint8Array-only behavior (an existing `Uint8Array` caller round-trips
- * through `new Uint8Array(buffer, byteOffset, byteLength)`, same bytes, same
- * length), so existing callers see zero behavior change.
- *
- * Returns `null` for non-buffer-source inputs (e.g. a forced cast feeding a
- * number) so callers keep their existing "no-op / alloc(0)" branch for raw
- * that is not a real buffer view.
- */
-export function normalizeBufferWrite(raw: unknown): Uint8Array | null {
-  if (raw instanceof Uint8Array) {
-    return raw;
-  }
-  if (ArrayBuffer.isView(raw)) {
-    return new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-  }
-  if (raw instanceof ArrayBuffer) {
-    return new Uint8Array(raw);
-  }
-  if (typeof SharedArrayBuffer !== 'undefined' && raw instanceof SharedArrayBuffer) {
-    return new Uint8Array(raw);
-  }
-  return null;
+export function columnArrayElement(
+  store: ArrayStore,
+  column: Column,
+  row: number,
+  index: number,
+): number | undefined {
+  const plan = column.layout;
+  if (plan.kind === 'fixed-array')
+    return index < plan.arity ? column.view[row * plan.arity + index] : undefined;
+  if (plan.kind !== 'array') return undefined;
+  const base = row * ARRAY_FIELD_ARITY;
+  if (index >= (column.view[base + 2] as number)) return undefined;
+  const source = store.view(column.view[base] as number, plan.element.viewCtor);
+  return source[(column.view[base + 1] as number) / plan.element.byteSize + index];
 }
 
-/** The backing buffer of a buffer-source write payload, without a byte view. */
-export function bufferOfWrite(raw: unknown): ArrayBufferLike | null {
-  if (ArrayBuffer.isView(raw)) return raw.buffer;
-  if (raw instanceof ArrayBuffer) return raw;
-  if (typeof SharedArrayBuffer !== 'undefined' && raw instanceof SharedArrayBuffer) return raw;
-  return null;
+/** Borrow one physical row window until the column or cell is reused. */
+export function borrowColumnArray(
+  store: ArrayStore,
+  column: Column,
+  row: number,
+  plan: ArrayFieldPlan,
+): FieldView {
+  const Ctor = plan.element.viewCtor;
+  if (plan.kind === 'fixed-array') {
+    return new Ctor(
+      column.view.buffer,
+      column.view.byteOffset + row * plan.arity * plan.element.byteSize,
+      plan.arity,
+    );
+  }
+  const base = row * ARRAY_FIELD_ARITY;
+  return new Ctor(
+    store.buffer(column.view[base] as number),
+    column.view[base + 1] as number,
+    column.view[base + 2] as number,
+  );
+}
+
+export function copyColumnArray(
+  store: ArrayStore,
+  column: Column,
+  row: number,
+  target: Parameters<WorldRead['copyArray']>[3],
+): number | undefined {
+  const plan = column.layout;
+  let source: FieldView;
+  let start: number;
+  let count: number;
+  if (plan.kind === 'array') {
+    const base = row * ARRAY_FIELD_ARITY;
+    const location = column.view;
+    count = location[base + 2] as number;
+    if (target.length < count) return undefined;
+    source = store.view(location[base] as number, plan.element.viewCtor);
+    start = (location[base + 1] as number) / plan.element.byteSize;
+  } else if (plan.kind === 'fixed-array') {
+    count = plan.arity;
+    if (target.length < count) return undefined;
+    source = column.view;
+    start = row * count;
+  } else {
+    return undefined;
+  }
+  if (target.buffer === source.buffer) {
+    // Native set handles a target that aliases the same backing.
+    target.set(source.subarray(start, start + count));
+  } else {
+    for (let index = 0; index < count; index++) target[index] = source[start + index] as number;
+  }
+  return count;
 }

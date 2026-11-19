@@ -8,6 +8,10 @@ test('publicly admitted loopback services accept localhost and IPv4 spellings at
     broker.admit({ target: { url: 'http://localhost:4200/?forgeaxWorkspaceTarget=target' } });
     assert.equal(broker.allow('http://127.0.0.1:4200/shaders/manifest.json').port, '4200');
     assert.equal(broker.allow('ws://127.0.0.1:4200/host').protocol, 'ws:');
+    broker.admit({ frontendEndpoint: 'ws://127.0.0.1:4210/__forgeax/view-workspace?frontendTicket=fixture' });
+    assert.equal(broker.allow('ws://127.0.0.1:4210/__forgeax/view-workspace').port, '4210');
+    broker.admit({ endpoint: 'ws://127.0.0.1:4220/foreign' });
+    assert.throws(() => broker.allow('ws://127.0.0.1:4220/foreign'));
     assert.throws(() => broker.allow('http://127.0.0.1:4300/private'));
     assert.throws(() => broker.allow('http://example.org:4200/private'));
     assert.throws(() => broker.allow('file:///private/file'));

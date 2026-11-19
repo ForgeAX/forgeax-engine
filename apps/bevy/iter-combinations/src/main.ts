@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update } from '@forgeax/engine-ecs';
 // apps/bevy/iter-combinations - reproduction of Bevy's `iter_combinations` example.
 //
@@ -10,9 +11,8 @@ import { Time, Update } from '@forgeax/engine-ecs';
 //   - createApp -> owns the frame loop AND auto-inserts the 'Time' resource
 //     (world.getResource(Time).delta) before each world.update().
 //   - world.addSystem (x2, chained) -> stepInteract (pairwise force accumulation
-//     via Query.combinations) then stepIntegrate (verlet), mirroring Bevy's
+//     over a query snapshot) then stepIntegrate (verlet), mirroring Bevy's
 //     (interact_bodies, integrate) in FixedUpdate.
-//   - stepInteract uses Query.combinations, mapping Bevy's Query::iter_combinations_mut.
 //
 // The World + step math live in the shared src/iter-combinations.ts (SSOT for this
 // app AND the dawn smoke), so the two never drift.
@@ -46,21 +46,23 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Bevy: (interact_bodies, integrate) — accumulate pairwise forces first, then
   // verlet-integrate, both off Time.delta.
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'interact-bodies',
     queries: [],
     fn: (world) => {
       stepInteract(world);
     },
   });
-  app.world.addSystem(Update, {
+app.world.addSystem(Update, systemToken1);
+  const systemToken2 = defineSystem({
     name: 'integrate',
     queries: [],
     fn: (world) => {
-      const dt = world.hasResource('Time') ? world.getResource(Time).delta : 0;
+      const dt = world.hasResource(Time) ? world.getResource(Time).delta : 0;
       stepIntegrate(world, dt);
     },
   });
+app.world.addSystem(Update, systemToken2);
 
   const started = app.start();
   if (!started.ok) console.error('[bevy-iter-combinations] app.start failed:', started.error);

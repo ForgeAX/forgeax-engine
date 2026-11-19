@@ -4,9 +4,11 @@
 // forgeax: emissive sphere + non-emissive cube, Space toggles Camera.bloom.
 // Thin over existing BLOOM_ENABLED/BLOOM_DISABLED + hello/bloom surface.
 
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { BLOOM_DISABLED, BLOOM_ENABLED, Camera } from '@forgeax/engine/render';
 import { buildBloomWorld } from './bloom';
 
@@ -32,12 +34,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   let prevSpace = false;
   let currentBloom: number = BLOOM_DISABLED;
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bloom-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (!snap) return;
       const cur = snap.keyboard.down(' ');
       if (cur && !prevSpace) {
@@ -47,6 +49,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

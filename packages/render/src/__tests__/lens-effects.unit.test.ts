@@ -1,7 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
-import { withBuiltinRenderFeatures } from '../assembly/render-feature-post-processes';
 import { Camera, LensEffects, resolveLensEffects } from '../components';
 import { createRenderFeatureHost } from '../features/host';
 import {
@@ -85,14 +84,14 @@ describe('camera LensEffects', () => {
   });
 
   it('creates no resources for disabled cameras and packs a deterministic frame seed', () => {
-    const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
+    // Lens output belongs to Standard post-process assembly, not the Water builtin roster.
+    const host = createRenderFeatureHost([]).unwrap();
     try {
       const frame = prepareFeatureFrame(host, [
         {
           identity: 'main',
           render: true,
-          worlds: [new World()],
-          owner: 0,
+          world: new World(),
           frameNumber: 1,
           caps: { rgba16floatRenderable: false } as never,
         },
@@ -128,7 +127,7 @@ describe('camera LensEffects', () => {
       'lens-effects',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.find((stage) => stage.name === 'lens-effects')).toEqual({
+    expect(plan.stageDomains.find((stage) => stage.name === 'lens-effects')).toEqual({
       name: 'lens-effects',
       input: 'linear-ldr',
       output: 'linear-ldr',
@@ -160,7 +159,7 @@ describe('camera LensEffects', () => {
       'lens-effects',
       'output-encoding',
     ]);
-    expect(plan.physicalStages.find((stage) => stage.name === 'chromatic-aberration')).toEqual({
+    expect(plan.stageDomains.find((stage) => stage.name === 'chromatic-aberration')).toEqual({
       name: 'chromatic-aberration',
       input: 'linear-hdr',
       output: 'linear-hdr',

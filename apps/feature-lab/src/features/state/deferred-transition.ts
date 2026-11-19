@@ -1,10 +1,11 @@
-import { Update, World } from '@forgeax/engine/ecs';
+import { defineSystem, Update, World } from '@forgeax/engine/ecs';
 import {
   addOnEnter,
   defineState,
   getPreviousState,
   getState,
   registerStatesPlugin,
+  StateSet,
   setNextState,
   setNextStateForce,
 } from '@forgeax/engine/state';
@@ -24,12 +25,13 @@ export default defineFeature({
     const world = new World();
     const dispose = registerStatesPlugin(world);
     const seen: string[] = [];
-    world.addSystem(Update, {
+    const systemToken1 = defineSystem({
       name: 'fl-defer-observer',
       queries: [],
-      after: ['transitionStates'],
+      after: [StateSet],
       fn: (world) => void seen.push(getState(world, FLDeferLevel).unwrap()),
     });
+    world.addSystem(Update, systemToken1);
     let entered = 0;
     const offB = addOnEnter(FLDeferLevel, 'b', () => {
       entered += 1;

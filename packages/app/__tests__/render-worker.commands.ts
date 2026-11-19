@@ -23,9 +23,9 @@ export const renderWorkerCommands = {
     }
   },
   async recordRenderWorkerEvidence(_context: unknown, tier: string, evidence: unknown) {
-    if (!['engine-worker', 'render-worker', 'terminate-render', 'lose-device', 'lose-device-with-resident-mesh', 'engine-owner-loss'].includes(tier))
+    if (!['engine-worker', 'render-worker', 'terminate-render', 'lose-device-with-resident-mesh', 'engine-owner-loss'].includes(tier))
       throw new Error('Unknown evidence case');
-    if (tier === 'terminate-render' || tier === 'lose-device' || tier === 'lose-device-with-resident-mesh')
+    if (tier === 'terminate-render' || tier === 'lose-device-with-resident-mesh')
       process.stderr.write(`[render-worker-recovery] ${JSON.stringify(evidence)}\n`);
     const directory = resolve('artifacts/render-worker');
     await mkdir(directory, { recursive: true });

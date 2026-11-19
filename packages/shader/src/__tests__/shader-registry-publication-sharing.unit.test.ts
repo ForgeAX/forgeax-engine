@@ -50,6 +50,33 @@ afterEach(() => {
 });
 
 describe('ShaderRegistry publication sharing', () => {
+  it('keeps the admitted indexes when a replacement fails material validation', async () => {
+    const valid = publication('fn original() {}');
+    const { materialShaders } = valid;
+    let text = JSON.stringify(valid);
+    const load = async () => {
+      const registry = new ShaderRegistry({
+        manifestUrl: '/rejected-publication-replacement',
+        readText: async () => text,
+      });
+      return { registry, result: await registry.loadManifest() };
+    };
+    const first = await load();
+    expect(first.result.ok).toBe(true);
+    text = JSON.stringify({ ...valid, materialShaders: [...materialShaders, ...materialShaders] });
+    const rejected = await load();
+    expect(rejected.result.ok).toBe(false);
+    expect([...rejected.registry.entries()]).toEqual([]);
+    expect([...rejected.registry.materialShaderManifestEntries()]).toEqual([]);
+    text = JSON.stringify(valid);
+    const restored = await load();
+    expect(restored.result.ok).toBe(true);
+    expect([...restored.registry.entries()][0]).toBe([...first.registry.entries()][0]);
+    expect([...restored.registry.materialShaderManifestEntries()][0]).toBe(
+      [...first.registry.materialShaderManifestEntries()][0],
+    );
+  });
+
   it('preserves block order and tail bytes, with identical native and fallback identities', async () => {
     const a = 'a'.repeat(131_072);
     const b = 'b'.repeat(131_072);
@@ -104,6 +131,55 @@ describe('ShaderRegistry publication sharing', () => {
     expect((await second.loadManifest()).ok).toBe(true);
     expect([...first.entries()][0]?.hash).toBe('\uD800');
     expect([...second.entries()][0]?.hash).toBe('\uD801');
+  });
+
+  it('keeps multibyte text and surrogate pairs distinct across bounded digest chunks', async () => {
+    const header = '{"entries":[{"hash":"entry","wgsl":"';
+    const prefix = 'x'.repeat(262_144 - header.length - 1);
+    const load = async (source: string) => {
+      const registry = new ShaderRegistry({
+        manifestUrl: '/native-unicode-chunks',
+        readText: async () => `${header}${source}","bindings":"[]"}]}`,
+      });
+      expect((await registry.loadManifest()).ok).toBe(true);
+      return [...registry.entries()][0];
+    };
+    const firstSource = `${prefix}\uD83D\uDE00\u6C34tail`;
+    const secondSource = `${prefix}\uD83D\uDE01\u6C34tail`;
+    const first = await load(firstSource);
+    const second = await load(secondSource);
+    expect(first?.wgsl).toBe(firstSource);
+    expect(second?.wgsl).toBe(secondSource);
+    expect(second).not.toBe(first);
+    expect(await load(secondSource)).toBe(second);
+    const changedPrefix = `${prefix.slice(0, -1)}y\uD83D\uDE00\u6C34tail`;
+    const third = await load(changedPrefix);
+    expect(third?.wgsl).toBe(changedPrefix);
+    expect(third).not.toBe(first);
+    expect(await load(changedPrefix)).toBe(third);
+    vi.stubGlobal('crypto', undefined);
+    expect(await load(changedPrefix)).toBe(third);
+  });
+
+  it('checks every ASCII code unit across bounded digest chunks', async () => {
+    const load = async (source: string) => {
+      const registry = new ShaderRegistry({
+        manifestUrl: '/native-ascii-chunks',
+        readText: async () => `{"entries":[{"hash":"entry","wgsl":"${source}","bindings":"[]"}]}`,
+      });
+      expect((await registry.loadManifest()).ok).toBe(true);
+      return [...registry.entries()][0];
+    };
+    const source = `${'x'.repeat(262_144)}tail`;
+    const changed = `${'x'.repeat(262_144)}Tail`;
+    const first = await load(source);
+    const second = await load(changed);
+    expect(first?.wgsl).toBe(source);
+    expect(second?.wgsl).toBe(changed);
+    expect(second).not.toBe(first);
+    expect(await load(changed)).toBe(second);
+    vi.stubGlobal('crypto', undefined);
+    expect(await load(changed)).toBe(second);
   });
 
   it('reuses the admitted manifest for a second registry once the deferred text digest settles', async () => {

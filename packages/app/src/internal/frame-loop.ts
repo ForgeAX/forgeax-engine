@@ -13,8 +13,9 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import type { AppErrorCode, AppErrorDetailFor } from '../errors';
 import { AppError } from '../errors';
 import type { ExecutionFrameInspection } from '../execution';
-import { APP_PHASE_CATALOG, type DrawSource } from '../types';
+import { APP_PHASE_CATALOG, type SceneAdmission } from '../types';
 import type { FramePacer } from './frame-pacer';
+import { appSchedulePhaseCatalog, observeAppScheduleRuns } from './profiled-schedule-runs';
 
 /** Delta given to the first tick after start()/resume() when its measured interval is ~0. */
 const NOMINAL_FRAME_SECONDS = 1 / 60;
@@ -34,14 +35,14 @@ export interface FrameLoopOptions {
   readonly debugRhi?: { onFrameEnd(): void };
   readonly profiler?: Profiler;
   /** Forward the exact successful renderer receipt to the App/browser bridge. */
-  readonly onSubmitted?: (receipt: FrameReceipt) => void;
+  readonly onSubmitted?: (receipt: FrameReceipt, renderDrawCpuMs: number | undefined) => void;
   /** Forward a receipt only after its completion Result is successful. */
   readonly onCompleted?: (receipt: FrameReceipt) => void;
   /** Reconcile host-owned camera state after World update and before draw. */
   readonly beforeDraw?: () => void;
   /** An update-only step drew nothing: frame-scoped immediate-mode data of that update is dropped. */
   readonly onFrameSkipped?: () => void;
-  readonly drawSource?: DrawSource;
+  readonly sceneAdmission?: () => SceneAdmission;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Optional frame-rate limit; a callback it rejects only reserves its successor. */
   readonly pacer?: FramePacer;
@@ -54,25 +55,26 @@ export interface FrameLoopHandle {
   drainFrameReceipts(): Promise<void>;
   pause(): Result<void, AppError>;
   resume(): Result<void, AppError>;
+  /** Suspend only host scheduling for an observational snapshot; release is idempotent. */
+  suspendScheduling(): Result<() => Result<void, AppError>, AppError>;
   /**
    * Run one complete update/draw frame through this loop while paused;
    * `render: false` runs the update only (no draw, no receipt credit).
    */
   stepFrame(deltaSeconds: number, render?: boolean): Result<void, AppError | RenderError>;
-  /** Replace the per-frame world routing pull without replacing the loop. */
-  setDrawSource(drawSource: FrameLoopOptions['drawSource']): void;
   getState(): FrameState;
   /** Snapshot the host-owned receipt credit counters without mutating them. */
   inspect(): ExecutionFrameInspection;
   setStopped(): void;
 }
 
-function beginFrame(session: RecorderSession | undefined, frameId: number): boolean {
-  if (session === undefined) return false;
+function beginFrame(session: RecorderSession | undefined): ProfileFrameToken | undefined {
+  if (session === undefined) return undefined;
   try {
-    return session.beginFrame(frameId).ok;
+    const started = session.beginFrame();
+    return started.ok ? started.value : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -170,45 +172,35 @@ function fireWorldUpdateResult(
   return result.ok;
 }
 
-function updateInjectedWorlds(
-  worlds: readonly World[],
-  ownWorld: World,
-  deltaSeconds: number,
-  fireError: ((e: AppError | RenderError) => void) | undefined,
-  attachedWorlds: ReadonlySet<World>,
-  updatedWorlds: Set<World>,
-): void {
-  for (const injectedWorld of worlds) {
-    if (
-      injectedWorld === ownWorld ||
-      updatedWorlds.has(injectedWorld) ||
-      !attachedWorlds.has(injectedWorld)
-    ) {
-      continue;
-    }
-    try {
-      if (fireWorldUpdateResult(injectedWorld.update(deltaSeconds), fireError)) {
-        updatedWorlds.add(injectedWorld);
-      }
-    } catch (cause: unknown) {
-      if (fireError !== undefined) fireError(makeWorldUpdateError(cause));
-    }
-  }
-}
-
 export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   const { world, renderer } = opts;
-  const phaseCatalogRegistration = opts.profiler?.registerPhaseCatalog('app', APP_PHASE_CATALOG);
+  const phaseCatalogRegistration = opts.profiler?.registerPhaseCatalog(
+    'app',
+    APP_PHASE_CATALOG,
+    () => appSchedulePhaseCatalog([world]),
+  );
   let releasePhaseCatalog =
     phaseCatalogRegistration?.ok === true ? phaseCatalogRegistration.value : undefined;
-  let drawSource = opts.drawSource;
   const now = () => opts.platform.now().unwrap();
+  function drawClock(): number | undefined {
+    try {
+      const sample = opts.platform.now();
+      return sample.ok ? sample.value : undefined;
+    } catch {
+      // Timing is observational; a clock failure must not affect a draw or its receipt.
+      return undefined;
+    }
+  }
 
   let state: FrameState = 'idle';
   let waitingForCredit = false;
+  let schedulingSuspension: object | undefined;
   function setState(next: FrameState): void {
     if (state === next) return;
-    if (next !== 'running') waitingForCredit = false;
+    if (next !== 'running') {
+      waitingForCredit = false;
+      schedulingSuspension = undefined;
+    }
     state = next;
     opts.onStateChange?.(next);
   }
@@ -217,6 +209,8 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   // elapsed value. Keep it independently so a 200 ms host gap remains a
   // temporal discontinuity even when World.update accepts only 100 ms.
   let lastSampleTimeSeconds = 0;
+  // Exclude recorder snapshot waits from the existing raw host-time projection.
+  let snapshotTimeSeconds = 0;
   // Pause/resume is an explicit temporal lifecycle boundary. Keep it pending
   // until a renderer receipt proves that the fresh baseline was submitted.
   let temporalResetPending = false;
@@ -239,6 +233,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   }
 
   function scheduleFrame(): Result<void, AppError> {
+    if (schedulingSuspension !== undefined) return ok(undefined);
     try {
       const requested = opts.platform.requestFrame(tick);
       if (!requested.ok) return err(makeWorldUpdateError(requested.error));
@@ -248,9 +243,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       return err(makeWorldUpdateError(cause));
     }
   }
-  let profilerFrameId = 0;
-  let profilerCaptureId: string | undefined;
-  const leases = new Map<World, RenderWorldLease>();
+  let sourceLease: RenderWorldLease | undefined;
   const maxFramesInFlight = 2;
   let submittedFrames = 0;
   let completedFrames = 0;
@@ -301,13 +294,14 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   function trackReceipt(
     receipt: FrameReceipt,
     fireError: (e: AppError | RenderError) => void,
+    renderDrawCpuMs: number | undefined,
   ): void {
     submittedFrames += 1;
     pendingReceipts += 1;
     highWaterFrames = Math.max(highWaterFrames, pendingReceipts);
 
     try {
-      opts.onSubmitted?.(receipt);
+      opts.onSubmitted?.(receipt, renderDrawCpuMs);
     } catch {
       // Browser projection is observational and cannot change frame state.
     }
@@ -342,7 +336,31 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         // authoritative completion proof when an adapter has no inspection.
       }
       try {
-        opts.onCompleted?.(receipt);
+        const profiler = opts.profiler;
+        if (profiler === undefined || !profiler.hasCompletionCpuObservers()) {
+          opts.onCompleted?.(receipt);
+        } else {
+          let identity:
+            | {
+                readonly profileFrame: NonNullable<FrameReceipt['profileFrame']>;
+                readonly frameId: number;
+                readonly deviceGeneration: number;
+              }
+            | undefined;
+          try {
+            const profileFrame = receipt.profileFrame;
+            if (profileFrame !== undefined)
+              identity = {
+                profileFrame,
+                frameId: receipt.frameId,
+                deviceGeneration: receipt.deviceGeneration,
+              };
+          } catch {
+            // A diagnostic identity read must not prevent the existing notification.
+          }
+          if (identity === undefined) opts.onCompleted?.(receipt);
+          else profiler.observeReceiptCompletion(identity, () => opts.onCompleted?.(receipt));
+        }
       } catch {
         // Browser completion projection is observational and cannot change
         // frame ownership or turn a successful receipt into a failure.
@@ -386,7 +404,12 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
           settle();
           // Resume only a Host frame already blocked by credit. Keep its sole
           // reserved successor; ordinary completions never manufacture frames.
-          if (completed && waitingForCredit && state === 'running') {
+          if (
+            completed &&
+            waitingForCredit &&
+            state === 'running' &&
+            schedulingSuspension === undefined
+          ) {
             try {
               runFrame();
             } catch (cause) {
@@ -406,67 +429,19 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   }
 
   function attachPrimary(fireError: (e: AppError | RenderError) => void): void {
-    if (leases.has(world)) return;
+    if (sourceLease !== undefined) return;
     try {
       const result = renderer.attach(world);
-      if (result.ok) leases.set(world, result.value);
+      if (result.ok) sourceLease = result.value;
       else fireError(result.error);
     } catch (cause: unknown) {
       fireError(makeWorldUpdateError(cause));
     }
   }
 
-  function syncInjectedAttachments(
-    worlds: readonly World[] | undefined,
-    fireError?: (e: AppError | RenderError) => void,
-  ): ReadonlySet<World> | undefined {
-    if (worlds === undefined) {
-      for (const [attached, lease] of leases) {
-        if (attached !== world) {
-          lease.dispose();
-          leases.delete(attached);
-        }
-      }
-      return undefined;
-    }
-
-    const next = new Set<World>();
-    for (const candidate of worlds) {
-      if (candidate === world || next.has(candidate)) continue;
-      if (leases.has(candidate)) {
-        next.add(candidate);
-        continue;
-      }
-      try {
-        const result = renderer.attach(candidate);
-        if (result.ok) {
-          leases.set(candidate, result.value);
-          next.add(candidate);
-        } else fireError?.(result.error);
-      } catch (cause: unknown) {
-        fireError?.(makeWorldUpdateError(cause));
-      }
-    }
-    for (const [attached, lease] of leases) {
-      if (attached !== world && !next.has(attached)) {
-        lease.dispose();
-        leases.delete(attached);
-      }
-    }
-    return next;
-  }
-
-  function releaseInjectedAttachments(): void {
-    syncInjectedAttachments(undefined);
-  }
-
   function releaseAttachments(): void {
-    releaseInjectedAttachments();
-    const lease = leases.get(world);
-    if (lease !== undefined) {
-      lease.dispose();
-      leases.delete(world);
-    }
+    sourceLease?.dispose();
+    sourceLease = undefined;
   }
 
   function runProfiledPhase<T>(
@@ -524,71 +499,48 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     }
     firstFramePending = false;
     lastTimestamp = timestamp;
-    const sampleTimeSeconds = manualStep ? lastSampleTimeSeconds + deltaSeconds : timestamp / 1000;
+    const sampleTimeSeconds = manualStep
+      ? lastSampleTimeSeconds + deltaSeconds
+      : timestamp / 1000 - snapshotTimeSeconds;
     const session = opts.profiler?.activeSession();
-    let profileFrame: ProfileFrameToken | undefined;
+    const profileFrame = beginFrame(session);
     let frameError: AppError | RenderError | undefined;
     let primaryUpdated = false;
     const reportError = (error: AppError | RenderError): void => {
       frameError ??= error;
       opts.onError?.(error);
     };
-    if (session !== undefined) {
-      if (profilerCaptureId !== session.captureId) {
-        profilerCaptureId = session.captureId;
-        profilerFrameId = 0;
-      }
-      const frameId = ++profilerFrameId;
-      if (beginFrame(session, frameId)) {
-        profileFrame = { captureId: session.captureId, frameId };
-      }
-    }
-
     runProfiledPhase(session, 'frame-total', () => {
       attachPrimary(reportError);
 
       runProfiledPhase(session, 'world-update-primary', () => {
+        const releaseObserver =
+          profileFrame === undefined || session?.detail !== 'nested'
+            ? undefined
+            : observeAppScheduleRuns(world, session);
         try {
           if (fireWorldUpdateResult(world.update(deltaSeconds), reportError)) {
             primaryUpdated = true;
           }
         } catch (cause: unknown) {
           reportError(makeWorldUpdateError(cause));
+        } finally {
+          releaseObserver?.();
         }
       });
 
-      let injected: ReturnType<DrawSource>;
-      runProfiledPhase(session, 'draw-source', () => {
-        if (drawSource === undefined) return;
+      let admission: SceneAdmission | undefined;
+      runProfiledPhase(session, 'scene-admission', () => {
         try {
-          injected = drawSource();
+          const next = opts.sceneAdmission?.() ?? 'scene';
+          if (next !== 'scene' && next !== 'ui-only')
+            throw new TypeError('sceneAdmission must return scene or ui-only');
+          admission = next;
         } catch (cause: unknown) {
           reportError(makeWorldUpdateError(cause));
         }
       });
-
-      const attachedInjectedWorlds = syncInjectedAttachments(injected?.worlds, reportError);
-      const updatedWorlds = injected === undefined ? undefined : new Set<World>();
-      if (updatedWorlds !== undefined && primaryUpdated && leases.has(world)) {
-        updatedWorlds.add(world);
-      }
-
-      runProfiledPhase(session, 'world-update-injected', () => {
-        if (
-          injected != null &&
-          attachedInjectedWorlds !== undefined &&
-          updatedWorlds !== undefined
-        ) {
-          updateInjectedWorlds(
-            injected.worlds,
-            world,
-            deltaSeconds,
-            reportError,
-            attachedInjectedWorlds,
-            updatedWorlds,
-          );
-        }
-      });
+      if (admission === undefined) return;
 
       if (!render) {
         skipDraw(sampleTimeSeconds, reportError);
@@ -597,70 +549,39 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       runProfiledPhase(session, 'renderer-draw', () => {
         try {
           opts.beforeDraw?.();
-          let drawResult: ReturnType<Renderer['draw']>;
-          if (injected === null) {
+          let drawInput: RenderFrameInput;
+          if (admission === 'ui-only') {
             temporalResetPending = true;
-            drawResult = renderer.draw({
-              leases: [],
-              camera: null,
-              environment: null,
+            drawInput = {
+              source: null,
               sampleTimeSeconds,
               ...(profileFrame === undefined ? {} : { profileFrame }),
               ...(opts.geometryLane === undefined ? {} : { geometryLane: opts.geometryLane }),
-            });
-          } else if (injected === undefined) {
-            const primaryLease = leases.get(world);
-            if (!primaryUpdated || primaryLease === undefined) return;
-            drawResult = renderer.draw({
-              leases: [primaryLease],
-              camera: { lease: primaryLease },
-              environment: { lease: primaryLease },
-              sampleTimeSeconds,
-              ...(temporalResetPending ? { temporalReset: true } : {}),
-              ...(profileFrame === undefined ? {} : { profileFrame }),
-              ...(opts.geometryLane === undefined ? {} : { geometryLane: opts.geometryLane }),
-            });
+            };
           } else {
-            if (updatedWorlds === undefined) return;
-            const readyEntries = injected.worlds
-              .filter((candidate) => updatedWorlds.has(candidate))
-              .map((candidate) => ({ candidate, lease: leases.get(candidate) }))
-              .filter(
-                (entry): entry is { candidate: World; lease: RenderWorldLease } =>
-                  entry.lease !== undefined,
-              );
-            const readyLeases = readyEntries.map((entry) => entry.lease);
-            const cameraWorld = injected.worlds[injected.cameraOwner];
-            const environmentWorld = injected.worlds[injected.resourceOwner];
-            if (cameraWorld === undefined || environmentWorld === undefined) return;
-            const cameraLease = leases.get(cameraWorld);
-            const environmentLease = leases.get(environmentWorld);
-            if (
-              readyLeases.length === 0 ||
-              cameraLease === undefined ||
-              environmentLease === undefined
-            )
-              return;
-            drawResult = renderer.draw({
-              leases: readyLeases,
-              camera: { lease: cameraLease },
-              environment: { lease: environmentLease },
+            const primaryLease = sourceLease;
+            if (!primaryUpdated || primaryLease === undefined) return;
+            drawInput = {
+              source: primaryLease,
               sampleTimeSeconds,
               ...(temporalResetPending ? { temporalReset: true } : {}),
               ...(profileFrame === undefined ? {} : { profileFrame }),
               ...(opts.geometryLane === undefined ? {} : { geometryLane: opts.geometryLane }),
-            });
+            };
           }
+          const started = opts.onSubmitted === undefined ? undefined : drawClock();
+          const drawResult = renderer.draw(drawInput);
           if (drawResult.ok) {
             if (drawResult.value === undefined) return;
             if (isFrameReceipt(drawResult.value)) {
-              trackReceipt(drawResult.value, reportError);
+              const renderDrawCpuMs = acceptedDrawDuration(started);
+              trackReceipt(drawResult.value, reportError, renderDrawCpuMs);
               // The raw host sample becomes the next temporal baseline only
               // after Renderer.draw accepted the queue submission. A failed
               // submit must not advance the fallback clock used by a later
               // manual step or by the worker-facing frame request.
               lastSampleTimeSeconds = sampleTimeSeconds;
-              if (injected !== null) temporalResetPending = false;
+              if (admission === 'scene') temporalResetPending = false;
             } else {
               reportError(
                 makeWorldUpdateError(new Error('renderer returned an invalid FrameReceipt')),
@@ -682,6 +603,14 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       // change the App frame result or make the host loop stop.
     }
     return frameError === undefined ? ok(undefined) : err(frameError);
+  }
+
+  function acceptedDrawDuration(started: number | undefined): number | undefined {
+    const ended = started === undefined ? undefined : drawClock();
+    const duration = started !== undefined && ended !== undefined ? ended - started : undefined;
+    return duration !== undefined && Number.isFinite(duration) && duration >= 0
+      ? duration
+      : undefined;
   }
 
   /**
@@ -708,7 +637,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   }
 
   function tick(): void {
-    if (state !== 'running') return;
+    if (state !== 'running' || schedulingSuspension !== undefined) return;
     cancelPendingFrame = undefined;
 
     // Reserve the sole successor before synchronous World/render work. Some
@@ -753,11 +682,50 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   }
 
   return {
-    setDrawSource(nextDrawSource): void {
-      if (drawSource !== nextDrawSource) syncInjectedAttachments(undefined);
-      drawSource = nextDrawSource;
-    },
     drainFrameReceipts,
+    suspendScheduling(): Result<() => Result<void, AppError>, AppError> {
+      if (state !== 'running' || schedulingSuspension !== undefined) {
+        return err(
+          makeAppError(
+            'app-not-started',
+            'the running frame loop has no active scheduling suspension',
+            'capture only an active App and finish its current snapshot first',
+            {},
+          ),
+        );
+      }
+      let suspendedAt: number;
+      try {
+        suspendedAt = now();
+      } catch (cause) {
+        return err(makeWorldUpdateError(cause));
+      }
+      const lease = {};
+      schedulingSuspension = lease;
+      waitingForCredit = false;
+      const cancelled = cancelFrame();
+      if (!cancelled.ok) {
+        setState('paused');
+        return cancelled;
+      }
+      return ok(() => {
+        if (schedulingSuspension !== lease) return ok(undefined);
+        let snapshotMilliseconds: number;
+        try {
+          snapshotMilliseconds = now() - suspendedAt;
+        } catch (cause) {
+          setState('paused');
+          return err(makeWorldUpdateError(cause));
+        }
+        if (schedulingSuspension !== lease) return ok(undefined);
+        schedulingSuspension = undefined;
+        lastTimestamp += snapshotMilliseconds;
+        snapshotTimeSeconds += snapshotMilliseconds / 1000;
+        const scheduled = scheduleFrame();
+        if (!scheduled.ok) setState('paused');
+        return scheduled;
+      });
+    },
     stepFrame(deltaSeconds, render = true): Result<void, AppError | RenderError> {
       const reason =
         state !== 'paused'
@@ -807,6 +775,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         return err(makeWorldUpdateError(cause));
       }
       lastSampleTimeSeconds = lastTimestamp / 1000;
+      snapshotTimeSeconds = 0;
       temporalResetPending = wasPaused;
       firstFramePending = true;
       setState('running');
@@ -878,6 +847,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       }
       temporalResetPending = true;
       firstFramePending = true;
+      snapshotTimeSeconds = 0;
       setState('running');
       const scheduled = scheduleFrame();
       if (!scheduled.ok) setState('paused');

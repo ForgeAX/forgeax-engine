@@ -28,28 +28,52 @@ describe('material pool program affinity', () => {
 });
 
 describe('material pool routing key', () => {
-  it('hashes program content only: not names, values or key insertion order', () => {
+  it('routes equivalent contracts together across publication names and uniform values', () => {
     const roots = ['/project/assets'];
     const key = (input: unknown) => programAffinityKey(roots, undefined, input);
+    const program = { module: 'forgeax::default-standard-pbr' };
     const base = {
       guid: 'a',
       sourceKey: 'material/a',
       sourcePath: '/project/assets/a.pack.ts',
-      source: { kind: 'material', passes: [{ name: 'forward' }], values: { roughness: 0.1 } },
+      source: {
+        kind: 'material',
+        passes: [{ name: 'forward', program }],
+        values: { roughness: 0.1 },
+      },
     };
     const reordered = {
       sourcePath: '/project/assets/b.pack.ts',
       sourceKey: 'material/b',
       guid: 'b',
-      source: { values: { roughness: 0.9 }, passes: [{ name: 'forward' }], kind: 'material' },
+      source: {
+        values: { roughness: 0.9 },
+        passes: [{ program, name: 'forward' }],
+        kind: 'material',
+      },
     };
     expect(key(reordered)).toBe(key(base));
     expect(key(base)).toMatch(/^[0-9a-f]{64}$/);
-    expect(key({ ...base, source: { ...base.source, passes: [{ name: 'deferred' }] } })).not.toBe(
-      key(base),
-    );
+    expect(
+      key({ ...base, source: { ...base.source, passes: [{ name: 'deferred', program }] } }),
+    ).not.toBe(key(base));
     expect(key({ ...base, sourcePath: '/other/a.pack.ts' })).not.toBe(key(base));
     expect(programAffinityKey(roots, 'webgpu-storage', base)).not.toBe(key(base));
+  });
+
+  it('uses the cooked shorthand parameter layout and preserves explicit declarations', () => {
+    const source = {
+      kind: 'material',
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
+      values: { roughness: 0.1 },
+    };
+    const withEmission = { ...source, values: { ...source.values, emissiveIntensity: 2 } };
+    const key = (material: unknown) =>
+      programAffinityKey(['/assets'], undefined, { source: material });
+    expect(key(withEmission)).not.toBe(key(source));
+
+    const parameters = standardSurfaceParameters([{ name: 'roughness', type: 'f32' }]);
+    expect(key({ ...source, parameters })).toBe(key({ ...withEmission, parameters }));
   });
 });
 

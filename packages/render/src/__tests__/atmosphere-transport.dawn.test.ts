@@ -2,32 +2,13 @@
 import { writeFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { nativeAtmosphereSource as source } from './atmosphere-shader.fixture';
+import {
+  nativeAtmosphereKernel,
+  nativeAtmosphereSource as source,
+} from './atmosphere-shader.fixture';
 
 it('measures RGB versus scalar extinction using the physical GPU transport and fixed output transform', async () => {
-  const common = source('common');
-  const structs = ['AtmosphereMedium', 'View']
-    .map((name) => new RegExp(`struct ${name} \\{[\\s\\S]*?\\};`).exec(common)?.[0])
-    .join('\n');
-  const outputTransform = ['acesInput', 'acesOutput', 'tonemapAcesFilmic']
-    .map((name) => {
-      const body = new RegExp(`fn ${name}\\([\\s\\S]*?\n}`).exec(source('tone-mapping'))?.[0];
-      if (body === undefined) throw new Error(`Missing production output function ${name}`);
-      return body;
-    })
-    .join('\n');
-  const kernel =
-    outputTransform +
-    '\n' +
-    structs +
-    '\n' +
-    'fn atmosphere_scene_visibility(m:AtmosphereMedium,p:vec3<f32>)->f32{return 1.0;}' +
-    source('atmosphere-table-access') +
-    source('atmosphere-optics') +
-    '\n' +
-    source('atmosphere-coordinates') +
-    '\n' +
-    source('atmosphere-sampling');
+  const kernel = nativeAtmosphereKernel();
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('GPU unavailable');
   const device = await adapter.requestDevice();

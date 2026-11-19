@@ -20,6 +20,8 @@ export const SCRIPTABLE_PACK_ASSET_KINDS = [
   'material',
   'scene',
   'texture',
+  'texture-generator',
+  'gpu-texture',
   'equirect',
   'sampler',
   'font',
@@ -35,6 +37,11 @@ export const SCRIPTABLE_PACK_ASSET_KINDS = [
   'ies-profile',
   'terrain',
   'navigation-mesh',
+  'water-body',
+  'water-zone',
+  'water-wave-set',
+  'water-brush-recipe',
+  'water-simulation-recipe',
 ] as const satisfies readonly ScriptablePackAssetKind[];
 
 export function isScriptablePackAssetKind(value: string): value is ScriptablePackAssetKind {
@@ -99,4 +106,6 @@ export interface ScriptablePackReadError {
   readonly hint: string;
   readonly detail?: unknown;
 }
+
+export { gpuTextureOutputs } from './gpu-texture-outputs.js';
 export * from './pack-authoring-draft.js';

@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 
 const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
-it('runs point power laws and preserves default/Spot near floors on the real GPU', async () => {
+it('runs Point and Spot power laws and preserves default near floors on the real GPU', async () => {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('point decay requires a real Dawn adapter');
   const device = await adapter.requestDevice();
@@ -30,7 +30,14 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
     device.queue.writeBuffer(
       input,
       0,
-      new Float32Array(cases.flatMap((row) => [row.distance, row.decay, row.inverseRange, 0])),
+      new Float32Array(
+        cases.flatMap((row) => [
+          row.distance,
+          row.decay,
+          row.inverseRange,
+          row.decay === 2 ? 0 : row.decay === 0 ? -0 : row.decay,
+        ]),
+      ),
     );
     const volume = source('volume/volume-integrate.wgsl').match(
       /fn evalVolumePoint\([\s\S]*?\n\}/,
@@ -54,7 +61,7 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
         let surface = evalDistanceAttenuation(squared, row.z, row.y, 1e-4);
         let volume = evalVolumePoint(vec3<f32>(0.0, 0.0, row.x), vec3<f32>(1.0), row.z, row.y, vec3<f32>(0.0));
         let spotDistance = max(row.x, 0.04);
-        let spot = evalSpotAttenuation(vec3<f32>(0.0, 0.0, spotDistance), vec3<f32>(0.0, 0.0, -1.0), vec3<f32>(0.0), 0.95, 0.8, row.z);
+        let spot = evalSpotAttenuation(vec3<f32>(0.0, 0.0, spotDistance), vec3<f32>(0.0, 0.0, -1.0), vec3<f32>(0.0), 0.95, 0.8, row.z, decodeSpotDecay(bitcast<u32>(row.w)));
         result[id.x * 2u] = vec4<f32>(surface, volume.x, spot, original(spotDistance * spotDistance, row.z, 1e-4));
         let angle = 0.49 + f32(id.x % 3u) * 0.01;
         result[id.x * 2u + 1u] = vec4<f32>(original(squared, row.z, 1e-4), original(squared, row.z, 1e-5), evalSpotCone(0.5, 0.5, angle), evalSpotCone(0.6, 0.4, angle));
@@ -98,7 +105,15 @@ it('runs point power laws and preserves default/Spot near floors on the real GPU
         ).toBeLessThanOrEqual(Math.max(1e-7, Math.abs(expected) * 3e-5));
         if (row.decay === 2) expect(actual).toBe(values[index * 8 + 4 + channel]);
       }
-      expect(values[index * 8 + 2]).toBe(values[index * 8 + 3]);
+      const spotDistance = Math.max(Math.fround(row.distance), 0.04);
+      const window = Math.max(0, 1 - (spotDistance ** 2 * Math.fround(row.inverseRange)) ** 2);
+      const expected = window ** 2 / Math.max(spotDistance ** Math.fround(row.decay), 1e-4);
+      const actual = values[index * 8 + 2] ?? Number.NaN;
+      expect(
+        Math.abs(actual - expected),
+        JSON.stringify({ ...row, actual, expected }),
+      ).toBeLessThanOrEqual(Math.max(1e-7, expected * 3e-5));
+      if (row.decay === 2) expect(actual).toBe(values[index * 8 + 3]);
       expect(values[index * 8 + 6]).toBe(index % 3 === 0 ? 0 : 1);
       const t = (0.49 + (index % 3) * 0.01 - 0.4) / 0.2;
       expect(values[index * 8 + 7]).toBeCloseTo(t * t * (3 - 2 * t), 5);

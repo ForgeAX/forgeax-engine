@@ -1,8 +1,8 @@
-import { mat4 } from '@forgeax/engine-math';
+import { type Mat4, mat4 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { GpuSceneInputs } from '../gpu-scene-inputs';
-import { SkinInputFrame, SkinInputs } from '../scene/skin-inputs';
+import { SkinInputFrame, type SkinInputSlot, SkinInputs } from '../scene/skin-inputs';
 import { StableRangeAllocator } from '../stable-range-allocator';
 
 const world = (x: number) => {
@@ -10,6 +10,16 @@ const world = (x: number) => {
   m[12] = x;
   return m;
 };
+/** One single-joint Binding per entity, keyed by the entity, with an identity
+ * inverse bind: the composed matrix is the published joint matrix. */
+function bindJoints(skin: SkinInputs, source: SkinInputSlot, entities: number[]): void {
+  const skeleton = skin.skeleton(1, world(0));
+  for (const entity of entities) skin.bind(entity, source, skeleton, [entity]);
+}
+const readInverse = mat4.create();
+const readJoint = (frame: SkinInputFrame, entity: number, out: Mat4) =>
+  frame.matrix(entity, 0, out, readInverse);
+const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => from + i);
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const inputs = new GpuSceneInputs(device, (slot) => slot);
@@ -29,25 +39,32 @@ it('preserves actual Skin values across page reuse and retained frame lifetimes'
   };
   const matrix = mat4.create();
   try {
+    bindJoints(skin, source, [7]);
     skin.setJoint(source, 7, world(1));
     const first = capture();
     const root = first.inputRoot();
-    expect(first.readJoint(source, 7, matrix)).toBe(true);
+    const revision = first.inputRevision;
+    expect(readJoint(first, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(1);
     first.release();
     skin.setJoint(source, 7, world(2));
     const changed = capture();
     expect(changed.inputRoot()).toBe(root);
-    expect(changed.readJoint(source, 7, matrix)).toBe(true);
+    expect(changed.inputRevision).toBeGreaterThan(revision);
+    const unchanged = capture();
+    expect(unchanged.inputRevision).toBe(changed.inputRevision);
+    unchanged.release();
+    expect(readJoint(changed, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(2);
     const retained = changed.retain();
     frames.push(retained);
     changed.release();
     skin.setJoint(source, 7, world(3));
     const latest = capture();
-    expect(latest.readJoint(source, 7, matrix)).toBe(true);
+    expect(readJoint(latest, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(3);
-    expect(retained.readJoint(source, 7, matrix)).toBe(true);
+    expect(retained.inputRevision).toBe(changed.inputRevision);
+    expect(readJoint(retained, 7, matrix)).toBe(true);
     expect(matrix[12]).toBe(2);
   } finally {
     for (const frame of frames) frame.release();
@@ -120,7 +137,7 @@ it('owns unqueried Binding and Skeleton bytes through removal and Scene-slot reu
 
 it.each([
   1, 64, 1024,
-])('updates shared facts without querying or rewriting %i bindings', async (count) => {
+])('updates shared Skeleton facts without querying or rewriting %i bindings', async (count) => {
   const { inputs, arena, skin, source } = await fixture();
   const skeleton = skin.skeleton(1, world(1));
   skin.setJoint(source, 7, world(3));
@@ -130,13 +147,15 @@ it.each([
   const query = vi.spyOn(SkinInputFrame.prototype, 'available');
   try {
     skin.setJoint(source, 7, world(5));
-    expect(allocate.mock.calls.map(([words]) => words)).toEqual([17, ...Array(8).fill(256)]);
-    allocate.mockClear();
+    expect(allocate).not.toHaveBeenCalled(); // Joints publish as poses at capture.
     skin.updateSkeleton(skeleton, 1, world(2));
     expect(allocate.mock.calls.map(([words]) => words)).toEqual([18, ...Array(8).fill(256)]);
     expect(query).not.toHaveBeenCalled();
+    allocate.mockClear();
     const next = skin.capture();
-    expect(allocate.mock.calls).toHaveLength(9); // Root capture does not enumerate/pin rows.
+    // One pose row per Binding reading the joint; capture neither enumerates nor pins rows.
+    expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(count);
+    expect(query).not.toHaveBeenCalled();
     const out = mat4.create(),
       inverse = mat4.create();
     expect(old.matrix(count - 1, 0, out, inverse)).toBe(true);
@@ -156,21 +175,24 @@ it.each([
 
 it('copies an eight-level held path once per edited page and allocates nothing for equal writes', async () => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, range(0, 256));
   for (let i = 0; i < 256; i++) skin.setJoint(source, i, world(i));
   const old = skin.capture();
   const allocate = vi.spyOn(arena, 'allocateDescriptor');
   try {
     skin.setJoint(source, 0, world(0));
+    skin.capture().release();
     expect(allocate).not.toHaveBeenCalled();
     for (let i = 0; i < 256; i++) skin.setJoint(source, i, world(i + 1000));
+    expect(allocate).not.toHaveBeenCalled();
+    const next = skin.capture();
     expect(allocate.mock.calls.filter(([words]) => words === 256)).toHaveLength(8);
     expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(256);
-    const next = skin.capture();
     const out = mat4.create();
     for (let i = 0; i < 256; i++) {
-      expect(old.readJoint(source, i, out)).toBe(true);
+      expect(readJoint(old, i, out)).toBe(true);
       expect(out[12]).toBe(i);
-      expect(next.readJoint(source, i, out)).toBe(true);
+      expect(readJoint(next, i, out)).toBe(true);
       expect(out[12]).toBe(i + 1000);
     }
     next.release();
@@ -187,6 +209,7 @@ it.each([
   1, 2, 3, 4, 5, 6, 7, 8, 9,
 ])('rolls back allocation failure %i on an owning eight-level path', async (step) => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
   skin.setJoint(source, 7, world(1));
   const old = skin.capture();
   const actual = arena.allocateDescriptor.bind(arena);
@@ -197,17 +220,15 @@ it.each([
     return actual(words);
   });
   try {
-    expect(() => skin.setJoint(source, 7, world(2))).toThrow(cause);
+    skin.setJoint(source, 7, world(2));
+    expect(() => skin.capture()).toThrow(cause);
     allocate.mockRestore();
-    const current = skin.capture();
-    expect(current.root).toBe(old.root);
-    current.release();
     skin.setJoint(source, 7, world(3));
     const next = skin.capture();
     const out = mat4.create();
-    expect(next.readJoint(source, 7, out)).toBe(true);
+    expect(readJoint(next, 7, out)).toBe(true);
     expect(out[12]).toBe(3);
-    expect(old.readJoint(source, 7, out)).toBe(true);
+    expect(readJoint(old, 7, out)).toBe(true);
     expect(out[12]).toBe(1);
     next.release();
   } finally {
@@ -221,24 +242,27 @@ it.each([
 
 it('keeps namespace identities leased by unqueried fixed facts and recycles only after retirement', async () => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
   skin.setJoint(source, 7, world(1));
   const old = skin.capture();
   skin.remove(source);
+  skin.unbind(7);
   const other = skin.source();
   try {
     expect(other.id).not.toBe(source.id);
     const out = mat4.create();
-    expect(old.readJoint(source, 7, out)).toBe(true);
+    expect(readJoint(old, 7, out)).toBe(true);
     expect(out[12]).toBe(1);
     const current = skin.capture();
-    expect(current.readJoint(source, 7, out)).toBe(false);
+    expect(current.available(7)).toBe(false);
     current.release();
     old.release();
     const reused = skin.source();
     expect(reused.id).toBe(source.id);
+    bindJoints(skin, reused, [7]);
     skin.setJoint(reused, 7, world(8));
     const next = skin.capture();
-    expect(next.readJoint(reused, 7, out)).toBe(true);
+    expect(readJoint(next, 7, out)).toBe(true);
     expect(out[12]).toBe(8);
     next.release();
   } finally {
@@ -292,9 +316,11 @@ it('retains complete ordered duplicate influences and recovers without rebinding
 
 it('continues independent cleanup and poisons adoption after physical retirement fails', async () => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
   skin.setJoint(source, 7, world(1));
   const frame = skin.capture();
   skin.removeJoint(source, 7);
+  skin.capture().release(); // Only the held root keeps the pose row and its path.
   const actual = arena.releaseDescriptor.bind(arena);
   const cause = new Error('row retirement failed');
   let calls = 0;
@@ -323,8 +349,10 @@ it.each([
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
 ])('keeps the accepted root after Map insertion failure %i', async (failure) => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
   skin.setJoint(source, 7, world(1));
   const old = skin.capture();
+  skin.setJoint(source, 7, world(2));
   const original = Map.prototype.set;
   const cause = new Error('joint path Map insertion failure');
   let insertions = 0;
@@ -345,7 +373,7 @@ it.each([
   });
   let thrown: unknown;
   try {
-    skin.setJoint(source, 7, world(2));
+    skin.capture().release();
   } catch (error) {
     thrown = error;
   } finally {
@@ -353,16 +381,13 @@ it.each([
   }
   try {
     expect(thrown).toBe(cause);
-    const current = skin.capture();
-    expect(current.root).toBe(old.root);
-    current.release();
     skin.setJoint(source, 7, world(3));
     const recovered = skin.capture();
-    const out = new Float32Array(16);
-    expect(recovered.readJoint(source, 7, out)).toBe(true);
+    const out = mat4.create();
+    expect(readJoint(recovered, 7, out)).toBe(true);
     expect(out[12]).toBe(3);
     recovered.release();
-    expect(old.readJoint(source, 7, out)).toBe(true);
+    expect(readJoint(old, 7, out)).toBe(true);
     expect(out[12]).toBe(1);
   } finally {
     old.release();
@@ -460,11 +485,14 @@ it('fails closed on removal when the final logical release fails', async () => {
 
 it('restores the exclusive pointer after numeric dirty registration fails', async () => {
   const { inputs, device, arena, skin, source } = await fixture();
-  const allocate = vi.spyOn(arena, 'allocateDescriptor');
+  bindJoints(skin, source, [7]);
   skin.setJoint(source, 7, world(1));
+  const allocate = vi.spyOn(arena, 'allocateDescriptor');
+  skin.capture().release();
   const row = allocate.mock.results[0]?.value as number;
   const leaf = allocate.mock.results[1]?.value as number;
   allocate.mockRestore();
+  skin.setJoint(source, 7, world(2));
   const write = vi.spyOn(device.queue, 'writeBuffer');
   const actual = Map.prototype.set;
   const cause = new Error('dirty range registration failed');
@@ -482,23 +510,19 @@ it('restores the exclusive pointer after numeric dirty registration fails', asyn
     return actual.call(this, key, value);
   });
   try {
-    expect(() => skin.setJoint(source, 7, world(2))).toThrow(cause);
+    expect(() => skin.capture()).toThrow(cause);
     set.mockRestore();
     expect(failed).toBe(true);
-    const frame = skin.capture();
     const out = mat4.create();
-    expect(frame.readJoint(source, 7, out)).toBe(true);
-    expect(out[12]).toBe(1);
     const numeric = inputs.capture();
     numeric.buffer().unwrap();
     numeric.seal().unwrap();
     numeric.release();
-    frame.release();
     const words = write.mock.calls[0]?.[2] as Uint32Array;
     expect(words[leaf + 7]).toBe(row);
     skin.setJoint(source, 7, world(3));
     const next = skin.capture();
-    expect(next.readJoint(source, 7, out)).toBe(true);
+    expect(readJoint(next, 7, out)).toBe(true);
     expect(out[12]).toBe(3);
     next.release();
   } finally {
@@ -554,6 +578,7 @@ it('keeps empty fixed roots live and rejects reads after their idempotent releas
 
 it('reuses numeric backing during bounded two-root joint churn', async () => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, range(0, 256));
   for (let i = 0; i < 256; i++) skin.setJoint(source, i, world(i));
   let previous = skin.capture();
   let settledBytes = 0;
@@ -568,7 +593,7 @@ it('reuses numeric backing during bounded two-root joint churn', async () => {
         if (round === 7) settledBytes = buffer.byteLength;
         if (round > 7) expect(buffer.byteLength).toBe(settledBytes);
         const out = mat4.create();
-        expect(previous.readJoint(source, 7, out)).toBe(true);
+        expect(readJoint(previous, 7, out)).toBe(true);
         expect(out[12]).toBe(7 + Math.max(0, round - 1) * 1000);
       } finally {
         numeric.release();
@@ -603,7 +628,7 @@ it('reads retained numeric rows after owner retirement and rejects all demand af
     for (const frame of [empty, held]) {
       expect(() => frame.available(0)).toThrow();
       expect(() => frame.jointCount(0)).toThrow();
-      expect(() => frame.readJoint(source, 7, out)).toThrow();
+      expect(() => readJoint(frame, 7, out)).toThrow();
       expect(() => frame.matrix(0, 0, out, inverse)).toThrow();
       expect(() => frame.historyCompatible(held, 0)).toThrow();
     }
@@ -619,25 +644,32 @@ it('reads retained numeric rows after owner retirement and rejects all demand af
 
 it('keeps signed zero changes and old rows exact across numeric backing growth', async () => {
   const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
   const matrix = world(3);
   skin.setJoint(source, 7, matrix);
   const before = skin.capture();
   const bytes = arena.byteLength;
   matrix[1] = -0;
   skin.setJoint(source, 7, matrix);
-  for (let entity = 256; entity < 512; entity++) skin.setJoint(source, entity, world(entity));
+  const grow = skin.skeleton(512, new Float32Array(512 * 16));
+  const signed = vi.spyOn(arena, 'allocateDescriptor');
   const after = skin.capture(),
     out = mat4.create();
   try {
+    // -0 is a changed f32 word: the pose republishes.
+    expect(signed.mock.calls.filter(([words]) => words === 17)).toHaveLength(1);
+    signed.mockRestore();
     expect(arena.byteLength).toBeGreaterThan(bytes);
-    expect(before.readJoint(source, 7, out)).toBe(true);
-    expect(Object.is(out[1], 0)).toBe(true);
-    expect(after.readJoint(source, 7, out)).toBe(true);
-    expect(Object.is(out[1], -0)).toBe(true);
+    expect(readJoint(before, 7, out)).toBe(true);
+    expect(out[12]).toBe(3);
+    expect(readJoint(after, 7, out)).toBe(true);
+    expect(out[12]).toBe(3);
+    skin.remove(grow);
     const allocate = vi.spyOn(arena, 'allocateDescriptor');
     try {
       skin.setJoint(source, 7, matrix);
-      expect(allocate).not.toHaveBeenCalled();
+      skin.capture().release();
+      expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(0);
     } finally {
       allocate.mockRestore();
     }
@@ -989,7 +1021,9 @@ it('never overwrites a captured joint row through a remembered exclusive leaf', 
   const { inputs, skin, source } = await fixture();
   const out = mat4.create();
   try {
+    bindJoints(skin, source, [7, 8]);
     skin.setJoint(source, 7, world(1));
+    skin.capture().release();
     // An exclusive path writes in place and remembers this leaf.
     skin.setJoint(source, 7, world(2));
     const captured = skin.capture();
@@ -997,14 +1031,14 @@ it('never overwrites a captured joint row through a remembered exclusive leaf', 
       // The same leaf after capture must copy, never reuse the remembered page.
       skin.setJoint(source, 7, world(3));
       skin.setJoint(source, 8, world(4));
-      expect(captured.readJoint(source, 7, out)).toBe(true);
+      expect(readJoint(captured, 7, out)).toBe(true);
       expect(out[12]).toBe(2);
-      expect(captured.readJoint(source, 8, out)).toBe(false);
+      expect(readJoint(captured, 8, out)).toBe(false);
       const next = skin.capture();
       try {
-        expect(next.readJoint(source, 7, out)).toBe(true);
+        expect(readJoint(next, 7, out)).toBe(true);
         expect(out[12]).toBe(3);
-        expect(next.readJoint(source, 8, out)).toBe(true);
+        expect(readJoint(next, 8, out)).toBe(true);
         expect(out[12]).toBe(4);
       } finally {
         next.release();

@@ -37,7 +37,10 @@ async function fixture(base = './') {
   const generated = config.root;
   if (generated === undefined) throw new Error('Missing generated root');
   const host = await readFile(resolve(generated, 'main.ts'), 'utf8');
-  const expression = /bootstrap: (new URL\([\s\S]+?\n\s+\)),/.exec(host)?.[1];
+  const expression =
+    /bootstrap: (new URL\(\s*['"]\.\/execution-bootstrap\.ts['"]\s*,\s*import\.meta\.url\s*,?\s*\)),/.exec(
+      host,
+    )?.[1];
   if (expression === undefined) throw new Error('Missing generated bootstrap URL');
   const runtimeImport = JSON.stringify(normalizePath(runtime));
   await writeFile(

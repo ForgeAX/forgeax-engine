@@ -13,13 +13,6 @@ import {
 
 export type GpuSceneSlotBounds = (slot: RenderSceneSlot) => RenderSceneBounds | undefined;
 
-/**
- * Old/new world boxes (six floats each) of the rows an instance-only update
- * moved, read after `GpuSceneSlotBounds` answered the slot's new union. Any
- * `undefined` falls back to the slot's old and new union boxes.
- */
-export type GpuSceneSlotRowBoxes = (slot: RenderSceneSlot) => Float32Array | undefined;
-
 /** Changed world bounds since a cursor, or `'unbounded'` when a change has no proven box. */
 export type GpuSceneChangedBounds = Float32Array | 'unbounded';
 
@@ -91,7 +84,6 @@ export class GpuSceneContentBoxes {
     journal: RowChangeLog,
     delta: RenderSceneApplyResult,
     boundsOf?: GpuSceneSlotBounds,
-    rowBoxesOf?: GpuSceneSlotRowBoxes,
   ): void {
     this.cached = undefined;
     if (delta.resynced > 0) {
@@ -102,13 +94,6 @@ export class GpuSceneContentBoxes {
       const changed = this.appendOld(journal, record.slot, CONTENT_CHANGED);
       if (changed !== 0) journal.appendContent(record.slot, CONTENT_CHANGED);
       this.delete(record.slot);
-    }
-    // Only an instance-only update may report row boxes; the bounds cache
-    // answers them only while the root transform and mesh are unchanged.
-    let rowUpdateSlots: Set<number> | undefined;
-    if (rowBoxesOf !== undefined && delta.instanceUpdatedSlots.length > 0) {
-      rowUpdateSlots = new Set();
-      for (const record of delta.instanceUpdatedSlots) rowUpdateSlots.add(record.slot);
     }
     const seen = this.seen;
     seen.clear();
@@ -122,34 +107,9 @@ export class GpuSceneContentBoxes {
       for (const record of records) {
         if (seen.has(record.slot)) continue;
         seen.add(record.slot);
-        const rows =
-          rowUpdateSlots?.has(record.slot) === true
-            ? this.recordRowBoxes(journal, record, boundsOf, rowBoxesOf)
-            : false;
-        if (!rows) this.recordSlot(journal, record, boundsOf);
+        this.recordSlot(journal, record, boundsOf);
       }
     }
-  }
-
-  /** An instance-only update: the moved rows' old/new boxes replace the union pair. */
-  private recordRowBoxes(
-    journal: RowChangeLog,
-    record: RenderSceneSlot,
-    boundsOf: GpuSceneSlotBounds | undefined,
-    rowBoxesOf: GpuSceneSlotRowBoxes | undefined,
-  ): boolean {
-    if (!this.hasBox(record.slot) || record.snapshot.skinBinding !== undefined) return false;
-    const bounds = boundsOf?.(record);
-    const rows = bounds === undefined ? undefined : rowBoxesOf?.(record);
-    if (bounds === undefined || rows === undefined) return false;
-    let changed = CONTENT_CHANGED;
-    for (let at = 0; at + 6 <= rows.length; at += 6) {
-      journal.appendContent(record.slot, CONTENT_BOX | changed, rows, at);
-      changed = 0;
-    }
-    if (changed !== 0) journal.appendContent(record.slot, changed);
-    this.write(record.slot, bounds);
-    return true;
   }
 
   private recordSlot(
@@ -284,6 +244,21 @@ export class GpuSceneContentBoxes {
       },
     );
     return visited === 'done' ? changed : undefined;
+  }
+
+  /**
+   * Whether a slot was created, changed or removed after `since`: the
+   * emptiness of {@link changedSlotsSince} without collecting the slots.
+   */
+  hasChangedSlotsSince(since: SceneContentCursor, current: SceneContentCursor): boolean {
+    if (since === current) return false;
+    if (since.journal !== current.journal) return true;
+    const visited = current.journal.visitContent(
+      since.position,
+      current.position,
+      (_slot, flags) => (flags & (CONTENT_WHOLE | CONTENT_CHANGED)) === 0,
+    );
+    return visited !== 'done';
   }
 
   /**

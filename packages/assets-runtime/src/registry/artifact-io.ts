@@ -1,4 +1,8 @@
-import { decompressZstd } from '@forgeax/engine-codec';
+import {
+  copyRetainedZstdBytes,
+  decompressRetainedZstd,
+  decompressZstd,
+} from '@forgeax/engine-codec';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import {
   decodedArtifactRangeIssue,
@@ -9,7 +13,7 @@ import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@fo
 import { beginLoadTimeline, encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
 import type { BundleTransferObservation } from '../internal/bundle-diagnostics.js';
-import { BundleStore } from '../internal/bundle-store.js';
+import type { BundleStore } from '../internal/bundle-store.js';
 import {
   bytesOf,
   type PackageFetcher,
@@ -100,7 +104,9 @@ export async function decodeArtifactTransport(
       ),
     );
   }
-  const decoded = await decompressZstd(bytes);
+  const decoded = await (request.descriptor.mediaType === 'text/wgsl'
+    ? decompressRetainedZstd(bytes)
+    : decompressZstd(bytes));
   if (!decoded.ok) {
     return err(
       failure(
@@ -130,7 +136,10 @@ export async function finishArtifactBytes(
         selected.error,
       ),
     );
-  return verifyArtifactBytes(selected.value, request);
+  const verified = await verifyArtifactBytes(selected.value, request);
+  if (verified.ok && selected.value !== bytes)
+    copyRetainedZstdBytes(bytes, verified.value, request.descriptor.decodedRange?.offset ?? 0);
+  return verified;
 }
 
 export async function verifyArtifactBytes(
@@ -213,6 +222,71 @@ export async function readStoredArtifact(
       integrity: { algorithm: 'sha256', digest: range.bundleDigest },
     },
   });
+}
+
+export interface BundledArtifactRead<Failure> {
+  readonly fetcher: ArtifactFetcher;
+  /** Resolved Bundle file URL. */
+  readonly url: string;
+  readonly init?: PackageRequest;
+  /** The Bundle could not be read or did not match its digest. */
+  unreadable(error: PackageReadFailure | AssetArtifactError): Failure;
+  /** This owner's entry failed to decode or verify. */
+  rejected(error: AssetArtifactError): Failure;
+  /** The stored window is not one complete Bundle entry. */
+  invalid(reason: string): Failure;
+}
+
+/** Read one Bundle entry through the resident Bundle store and verify it for `request`. */
+export async function readBundledArtifact<Failure>(
+  bundles: BundleStore<Failure>,
+  request: ArtifactReadRequest,
+  read: BundledArtifactRead<Failure>,
+): Promise<Result<Uint8Array, Failure>> {
+  const { descriptor } = request;
+  const range = descriptor.byteRange;
+  if (range === undefined) return err(read.invalid('no Bundle window'));
+  const { url, fetcher } = read;
+  const grouped = descriptor.decodedRange !== undefined;
+  const rejected = (result: Result<Uint8Array, AssetArtifactError>) =>
+    result.ok ? result : err(read.rejected(result.error));
+  const entry = await bundles.read({
+    url,
+    range,
+    fetch: async (window) => {
+      const fetched = await readStoredArtifact(
+        request,
+        fetcher,
+        url,
+        range,
+        read.init,
+        window,
+        (response) =>
+          bundles.transfers.observe(
+            `${url}\0${range.bundleDigest}`,
+            window ? range.length : undefined,
+            response,
+          ),
+      );
+      return fetched.ok ? fetched : err(read.unreadable(fetched.error));
+    },
+    finish: async (stored) =>
+      rejected(
+        grouped
+          ? await decodeArtifactTransport(stored, request)
+          : await readArtifact(request, fetcher, async () => ok(stored)),
+      ),
+    reuse: async (copy) =>
+      grouped ? ok(copy) : rejected(await verifyArtifactBytes(copy, request)),
+    invalid: read.invalid,
+    // A decoded group is read only to select and verify a private member.
+    shared: grouped,
+    ...(descriptor.integrity === undefined || grouped
+      ? {}
+      : { digest: descriptor.integrity.digest }),
+  });
+  // A decoded group is shared; each owner selects and verifies its own range.
+  return entry.ok && grouped ? rejected(await finishArtifactBytes(entry.value, request)) : entry;
 }
 
 export async function readArtifact(
@@ -353,207 +427,4 @@ export async function readArtifact(
     detail: { ok: verified.ok },
   });
   return verified;
-}
-
-export class ArtifactReadCache {
-  private readonly bundles = new BundleStore<AssetArtifactError>();
-  private readonly cache = new Map<
-    string,
-    Promise<Result<Uint8Array, AssetArtifactError>> | WeakRef<Uint8Array>
-  >();
-  private readonly transfers = new Map<
-    string,
-    Promise<Result<Uint8Array, PackageReadFailure>> | WeakRef<Uint8Array>
-  >();
-
-  inspectTransfers() {
-    return this.bundles.transfers.snapshot();
-  }
-
-  readArtifact(
-    request: ArtifactReadRequest,
-    fetcher: ArtifactFetcher,
-  ): Promise<Result<Uint8Array, AssetArtifactError>> {
-    const key = `${request.guid.toLowerCase()}\0${request.packageUrl}\0${request.artifactKey}`;
-    return this.read(key, async () => {
-      const { descriptor } = request;
-      const { integrity } = descriptor;
-      const range = descriptor.byteRange;
-      if (range !== undefined) {
-        // Envelope admission rejects unsafe paths; readArtifact repeats the check per read.
-        const path = validateArtifactPath(descriptor.path, {
-          packageRoot: request.packageUrl,
-          guid: request.guid,
-          artifactKey: request.artifactKey,
-        });
-        if (!path.ok) return path;
-        const url = artifactUrl(request.packageUrl, path.value);
-        const read = await this.bundles.read({
-          url,
-          range,
-          fetch: async (entry) => {
-            const read = await readStoredArtifact(
-              request,
-              fetcher,
-              url,
-              range,
-              undefined,
-              entry,
-              (response) =>
-                this.bundles.transfers.observe(
-                  `${url}\0${range.bundleDigest}`,
-                  entry ? range.length : undefined,
-                  response,
-                ),
-            );
-            if (read.ok || 'code' in read.error)
-              return read as Result<Uint8Array, AssetArtifactError>;
-            return err(
-              failure(
-                'asset-artifact-missing',
-                request,
-                `readable Bundle at ${path.value}`,
-                `${read.error.observed} at ${url}; publish the Bundle at the declared package-relative path and retry the load (${read.error.attempts} request(s))`,
-                read.error.observed,
-              ),
-            );
-          },
-          finish: (stored) =>
-            descriptor.decodedRange === undefined
-              ? readArtifact(request, fetcher, async () => ok(stored))
-              : decodeArtifactTransport(stored, request),
-          reuse: (copy) =>
-            descriptor.decodedRange === undefined
-              ? verifyArtifactBytes(copy, request)
-              : Promise.resolve(ok(copy)),
-          ...(integrity === undefined || descriptor.decodedRange !== undefined
-            ? {}
-            : { digest: integrity.digest }),
-          invalid: (reason) =>
-            failure(
-              'asset-artifact-integrity-mismatch',
-              request,
-              'a stored window matching one complete Bundle entry',
-              'rebuild the player package and retry the same GUID',
-              reason,
-            ),
-        });
-        // One Bundle read can fail several owners; each reports its own request.
-        return read.ok
-          ? descriptor.decodedRange === undefined
-            ? read
-            : finishArtifactBytes(read.value, request)
-          : err({
-              ...read.error,
-              detail: {
-                ...read.error.detail,
-                guid: request.guid,
-                artifactKey: request.artifactKey,
-              },
-            } as AssetArtifactError);
-      }
-      // A mutable URL alone cannot attest shared content. Unverified artifacts
-      // retain their original GUID-local transport and invalidation behavior.
-      if (integrity === undefined) return readArtifact(request, fetcher);
-      let transferKey: string | undefined;
-      let transfer:
-        | Promise<Result<Uint8Array, PackageReadFailure>>
-        | WeakRef<Uint8Array>
-        | undefined;
-      const result = await readArtifact(request, fetcher, async (url) => {
-        transferKey = JSON.stringify([
-          url,
-          descriptor.mediaType,
-          descriptor.contentEncoding ?? 'identity',
-          descriptor.byteLength,
-          integrity.algorithm,
-          integrity.digest,
-        ]);
-        transfer = this.transfers.get(transferKey);
-        if (transfer !== undefined && 'deref' in transfer) {
-          const bytes = transfer.deref();
-          if (bytes !== undefined) return ok(bytes.slice());
-          transfer = undefined;
-        }
-        if (transfer === undefined) {
-          transfer = readPackage(fetcher, url, bytesOf);
-          this.transfers.set(transferKey, transfer);
-        }
-        const bytes = await transfer;
-        if (bytes.ok && this.transfers.get(transferKey) === transfer) {
-          // Completed transfers must not pin a second raw copy of every asset.
-          // Collection is an ordinary cache miss; GUID bytes keep their owner.
-          if (typeof WeakRef === 'function') {
-            transfer = new WeakRef(bytes.value);
-            this.transfers.set(transferKey, transfer);
-          } else this.transfers.delete(transferKey);
-        }
-        // Decode, integrity checks and loader-owned bytes remain GUID-local.
-        return bytes.ok ? ok(bytes.value.slice()) : bytes;
-      });
-      if (!result.ok && transferKey !== undefined && this.transfers.get(transferKey) === transfer)
-        this.transfers.delete(transferKey);
-      return result;
-    });
-  }
-
-  /** Borrow only completed bytes; independent fixed captures never wait on domain I/O. */
-  peek(key: string): Uint8Array | undefined {
-    const existing = this.cache.get(key);
-    return existing !== undefined && 'deref' in existing ? existing.deref() : undefined;
-  }
-
-  read(
-    key: string,
-    reader: () => Promise<Result<Uint8Array, AssetArtifactError>>,
-  ): Promise<Result<Uint8Array, AssetArtifactError>> {
-    const existing = this.cache.get(key);
-    if (existing !== undefined && !('deref' in existing)) return existing;
-    const bytes = existing?.deref();
-    if (bytes !== undefined) return Promise.resolve(ok(bytes));
-    const pending = reader();
-    this.cache.set(key, pending);
-    void pending.then(
-      (result) => {
-        if (this.cache.get(key) !== pending) return;
-        // Decoders own their private bytes. Retain only a reuse hint after
-        // completion, not a second copy of every loaded GUID's artifacts.
-        if (result.ok && typeof WeakRef === 'function')
-          this.cache.set(key, new WeakRef(result.value));
-        else this.cache.delete(key);
-      },
-      () => {
-        if (this.cache.get(key) === pending) this.cache.delete(key);
-      },
-    );
-    return pending;
-  }
-
-  /** Drop only settled copies; active readers retain their shared request identity. */
-  releaseCompleted(): number {
-    let released = this.bundles.trim();
-    for (const cache of [this.cache, this.transfers]) {
-      for (const [key, entry] of cache) {
-        if (!('deref' in entry)) continue;
-        cache.delete(key);
-        released++;
-      }
-    }
-    return released;
-  }
-
-  clear(key?: string): void {
-    this.transfers.clear();
-    this.bundles.clear();
-    if (key === undefined) this.cache.clear();
-    else this.cache.delete(key);
-  }
-
-  clearPrefix(prefix: string): void {
-    // Existing GUID generation fences reject old callers. Clearing physical
-    // reads also forces fresh bytes after invalidation, without another lease table.
-    this.transfers.clear();
-    this.bundles.clear();
-    for (const key of this.cache.keys()) if (key.startsWith(prefix)) this.cache.delete(key);
-  }
 }

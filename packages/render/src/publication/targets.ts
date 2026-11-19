@@ -61,6 +61,7 @@ export function publicationTargetSources(
   for (const { value: material } of materials) {
     for (const source of material.textureSources?.values() ?? []) {
       if (
+        source.source === 'feature' ||
         isCanvasTextureSource(source) ||
         isExternalTextureSource(source) ||
         sources.has(renderTextureSourceKey(source))
@@ -169,7 +170,11 @@ export class RenderPublicationTargetReceiver {
       if (material.snapshot.textureSources === undefined) return material;
       const textureSources = new Map<string, MaterialTextureSource>(
         [...material.snapshot.textureSources].map(([name, token]) => {
-          if (isCanvasTextureSource(token) || isExternalTextureSource(token))
+          if (
+            token.source === 'feature' ||
+            isCanvasTextureSource(token) ||
+            isExternalTextureSource(token)
+          )
             return [name, token] as const;
           const key = renderTextureSourceKey(token);
           const source = sources.get(key) ?? sources.get(this.originKey(key) ?? key);

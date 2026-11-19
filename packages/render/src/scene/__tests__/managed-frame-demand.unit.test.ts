@@ -26,7 +26,7 @@ it('recovers from more than seventeen profiles and preserves shared profile refe
   const selected = new SubsurfaceSelection();
   for (const resource of resources) {
     frame = frame.with(resource);
-    selected.add({ material: resource, materials: [resource] }, frame);
+    selected.add({ material: resource, materials: [resource], materialBindingSources: [] }, frame);
   }
   selected.adopt(frame);
   expect(selected.demand).toBe(32);
@@ -139,19 +139,19 @@ it('maintains explicit hidden preparation membership at source changes and remov
   const base = receiptRow().source;
   const hidden = { ...base, entityKey: 1, authorVisible: false, pipelinePreparation: [] };
   scene.apply([
-    { kind: 'update', worldId: 0, entityKey: 1, snapshot: hidden },
-    { kind: 'update', worldId: 0, entityKey: 2, snapshot: { ...base, entityKey: 2 } },
+    { kind: 'update', entityKey: 1, snapshot: hidden },
+    { kind: 'update', entityKey: 2, snapshot: { ...base, entityKey: 2 } },
   ]);
-  const first = scene.slot(0, 1);
+  const first = scene.slot(1);
   if (first === undefined) throw new Error('Missing hidden source');
   expect([...scene.pipelinePreparationSlots]).toEqual([first.slot]);
-  scene.apply([{ kind: 'update', worldId: 0, entityKey: 2, world: base.transform.world }]);
+  scene.apply([{ kind: 'update', entityKey: 2, world: base.transform.world }]);
   expect([...scene.pipelinePreparationSlots]).toEqual([first.slot]);
-  scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]);
-  scene.apply([{ kind: 'update', worldId: 0, entityKey: 3, snapshot: { ...base, entityKey: 3 } }]);
+  scene.apply([{ kind: 'remove', entityKey: 1 }]);
+  scene.apply([{ kind: 'update', entityKey: 3, snapshot: { ...base, entityKey: 3 } }]);
   expect(scene.pipelinePreparationSlots.size).toBe(0);
   scene.reset([{ ...hidden, entityKey: 3 }]);
-  expect([...scene.pipelinePreparationSlots]).toEqual([scene.slot(0, 3)?.slot]);
+  expect([...scene.pipelinePreparationSlots]).toEqual([scene.slot(3)?.slot]);
   scene.reset([{ ...base, entityKey: 3 }]);
   expect(scene.pipelinePreparationSlots.size).toBe(0);
 });

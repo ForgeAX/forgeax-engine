@@ -34,6 +34,7 @@ const TTF_MAGIC = new Uint8Array([0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 const WOFF2_MAGIC = new Uint8Array([0x77, 0x4f, 0x46, 0x32]);
 
 const REAL_TTF_CANDIDATES = [
+  join(process.env.WINDIR ?? 'C:/Windows', 'Fonts', 'arial.ttf'),
   '/System/Library/Fonts/Supplemental/Arial.ttf',
   '/Library/Fonts/Arial Unicode.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -108,10 +109,12 @@ async function findRealTtf(): Promise<string | undefined> {
       });
 
       it('(a2) plain Node real run uses the Worker-capable host and writes artefacts', async () => {
-        const ttfPath = resolve(
-          dirname(fileURLToPath(import.meta.url)),
-          '../../../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf',
-        );
+        const ttfPath =
+          (await findRealTtf()) ??
+          resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            '../../../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf',
+          );
         const result = await bakeFont(ttfPath, tmpRoot);
         const png = await readFile(result.atlasPath);
         const sidecar = JSON.parse(await readFile(result.sidecarPath, 'utf8')) as {

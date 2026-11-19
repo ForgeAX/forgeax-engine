@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -37,8 +38,7 @@ describe('render feature retry rules', () => {
     const host = createRenderFeatureHost([feature]).unwrap();
     const frame = (frameNumber: number) =>
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber,
         caps: caps(false),
       });
@@ -71,8 +71,7 @@ describe('render feature retry rules', () => {
     const host = createRenderFeatureHost([feature]).unwrap();
 
     const failed = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(true),
     });
@@ -87,8 +86,7 @@ describe('render feature retry rules', () => {
     }
 
     const retried = runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 2,
       caps: caps(true),
     });
@@ -122,16 +120,14 @@ describe('render feature retry rules', () => {
     const host = createRenderFeatureHost([feature]).unwrap();
 
     runSingleViewFeatureFrame(host, {
-      worlds: [],
-      owner: 0,
+      world: new World(),
       frameNumber: 1,
       caps: caps(false),
     });
     expect(host.diagnostics()[0]?.status).toBe('disabled');
     expect(
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 2,
         caps: caps(true),
       }).stageEvents,
@@ -140,8 +136,7 @@ describe('render feature retry rules', () => {
     expect(host.recover({ frameNumber: 3, caps: caps(true) })).toEqual(ok(undefined));
     expect(
       runSingleViewFeatureFrame(host, {
-        worlds: [],
-        owner: 0,
+        world: new World(),
         frameNumber: 3,
         caps: caps(true),
       }).stageEvents,

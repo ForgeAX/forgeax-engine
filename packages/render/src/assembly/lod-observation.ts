@@ -10,11 +10,19 @@ import type { FrameReceipt } from '../render-contract';
 import type { LodOcclusionInspectionCell } from '../render-system';
 import type { ViewSettlementOwner } from '../world/view-settlement';
 
-interface LodObservationLeaseCapture {
-  readonly lease: RenderReadLease;
-  readonly worldIdentity: string;
-  readonly generation: number;
-}
+export type LodObservationSourceCapture =
+  | {
+      readonly kind: 'local';
+      readonly lease: RenderReadLease;
+      readonly worldIdentity: string;
+      readonly generation: number;
+    }
+  | {
+      readonly kind: 'publication';
+      readonly worldIdentity: string;
+      readonly resources: import('../publication/resource-scope').RenderResourceScope;
+      readonly revision: number;
+    };
 
 export interface LodObservationViewCapture {
   readonly viewKey: string;
@@ -36,13 +44,13 @@ export interface LodObservationCapture {
   readonly frameId: number;
   readonly deviceGeneration: number;
   readonly views: readonly LodObservationViewCapture[];
-  readonly leases: readonly LodObservationLeaseCapture[];
+  readonly source: LodObservationSourceCapture | undefined;
 }
 
 export interface LodObservationCaptureValidity {
   readonly isLatest: () => boolean;
   readonly isViewCurrent: (view: LodObservationViewCapture) => boolean;
-  readonly isLeaseAttached: (lease: LodObservationLeaseCapture) => boolean;
+  readonly isSourceAttached: (source: LodObservationSourceCapture) => boolean;
 }
 
 export function unavailableLodObservation(
@@ -133,49 +141,27 @@ export async function observeLodOcclusionCapture(
     }
     if (
       currentInspection.view.attachmentId !== view.attachmentId ||
-      !capture.leases.some((lease) => lease.worldIdentity === view.attachmentId)
+      capture.source?.worldIdentity !== view.attachmentId
     ) {
       unavailableReason ??= 'attachment-unavailable';
       continue;
     }
-    if (
-      currentInspection.worlds.some(
-        (world) => !capture.leases.some((lease) => lease.worldIdentity === world.attachmentId),
-      )
-    ) {
-      unavailableReason ??= 'world-attribution-unavailable';
-      continue;
-    }
-    if (
-      currentInspection.samples.length > MAX_INSPECTION_SAMPLES ||
-      currentInspection.worlds.some((world) =>
-        world.rows.some((row) => row.samples.length > MAX_INSPECTION_SAMPLES),
-      )
-    ) {
+    if (currentInspection.samples.length > MAX_INSPECTION_SAMPLES) {
       unavailableReason ??= 'snapshot-too-large';
       continue;
     }
-    const attributedWorlds = currentInspection.worlds.filter(
-      (world) =>
-        world.rows.length > 0 &&
-        world.attribution.status === 'same-submit' &&
-        world.attribution.submit.frameId === receipt.frameId &&
-        world.attribution.submit.deviceGeneration === receipt.deviceGeneration &&
-        world.attribution.submit.build === currentInspection.submit.build,
-    );
+    const attribution = currentInspection.attribution;
     const attributed =
-      currentInspection.worlds.length > 0 &&
-      attributedWorlds.length === currentInspection.worlds.length;
-    if (!attributed) {
-      unavailableReason ??=
-        attributedWorlds.length > 0
-          ? 'world-attribution-unavailable'
-          : hasUnsupportedLodLane(view.owner)
-            ? 'unsupported-lod-lane'
-            : 'lod-readback-unavailable';
-    }
+      attribution.status === 'same-submit' &&
+      attribution.submit.frameId === receipt.frameId &&
+      attribution.submit.deviceGeneration === receipt.deviceGeneration &&
+      attribution.submit.build === currentInspection.submit.build;
+    if (!attributed)
+      unavailableReason ??= hasUnsupportedLodLane(view.owner)
+        ? 'unsupported-lod-lane'
+        : 'lod-readback-unavailable';
     if (gpuDrivenInspectionOf(view.owner).overflow)
-      unavailableReason ??= 'world-attribution-unavailable';
+      unavailableReason ??= 'source-attribution-unavailable';
   }
 
   const result: LodOcclusionReceiptObservation =
@@ -251,9 +237,7 @@ function ownerInspectionMatchesCapture(
     inspection.view.cameraEntity === view.entityKey &&
     inspection.view.viewGeneration === view.viewGeneration &&
     inspection.view.attachmentId === view.attachmentId &&
-    inspection.worlds.every((world) =>
-      capture.leases.some((lease) => lease.worldIdentity === world.attachmentId),
-    )
+    capture.source?.worldIdentity === view.attachmentId
   );
 }
 
@@ -276,14 +260,12 @@ function validateCapture(
 ): LodOcclusionReceiptUnavailableReason | undefined {
   const captureFailure = currentCaptureFailure(capture, validity);
   if (captureFailure !== undefined) return captureFailure;
-  for (const lease of capture.leases) {
-    if (!validity.isLeaseAttached(lease)) return 'lease-detached';
-  }
+  if (capture.source === undefined || !validity.isSourceAttached(capture.source))
+    return 'lease-detached';
   for (const view of capture.views) {
     if (view.state === 'held') continue;
     if (view.attachmentId === 'none') return 'attachment-unavailable';
-    if (!capture.leases.some((lease) => lease.worldIdentity === view.attachmentId))
-      return 'attachment-unavailable';
+    if (capture.source?.worldIdentity !== view.attachmentId) return 'attachment-unavailable';
     if (view.inspection === undefined) return 'lod-readback-unavailable';
     if (view.owner.lod.cell !== view.inspection) return 'lod-readback-unavailable';
     if (
@@ -307,7 +289,8 @@ function currentCaptureFailure(
   validity: LodObservationCaptureValidity,
 ): LodOcclusionReceiptUnavailableReason | undefined {
   if (!validity.isLatest()) return 'superseded';
-  if (capture.leases.some((lease) => !validity.isLeaseAttached(lease))) return 'lease-detached';
+  if (capture.source === undefined || !validity.isSourceAttached(capture.source))
+    return 'lease-detached';
   if (capture.views.some((view) => !graphMatchesCapture(view))) return 'graph-generation-mismatch';
   if (capture.views.some((view) => !validity.isViewCurrent(view))) return 'view-retired';
   return undefined;

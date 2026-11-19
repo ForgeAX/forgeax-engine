@@ -62,7 +62,7 @@ it.each([
       if (candidate !== undefined)
         return renderer.draw({ publication: structuredClone(candidate.message) });
       assert(lease);
-      return renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+      return renderer.draw({ source: lease });
     })();
     candidate?.accept();
     if (!drawn.ok) throw drawn.error;

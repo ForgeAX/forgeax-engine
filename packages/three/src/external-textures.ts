@@ -2,6 +2,7 @@ import type { ExternalTexture as NativeExternalTexture, Renderer } from '@forgea
 import type { MaterialTextureValue } from '@forgeax/engine-types';
 import {
   ExternalTexture,
+  RedFormat,
   SRGBColorSpace,
   type Texture,
   VideoTexture,
@@ -27,6 +28,11 @@ export class ExternalTextures {
   constructor(private readonly renderer: Renderer) {}
 
   async initialize(texture: ExternalTexture | VideoTexture): Promise<void> {
+    if (texture.format === RedFormat)
+      return unsupported(
+        'External scalar textures require native sample swizzling',
+        texture.uuid,
+      ).unwrap();
     const input =
       texture instanceof ExternalTexture
         ? (texture.sourceTexture as GPUTexture | null)

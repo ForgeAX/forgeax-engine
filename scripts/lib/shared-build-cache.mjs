@@ -1,5 +1,13 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { hashFiles, hashText, walkFiles } from '../build-task-cache.mjs';
 
 // One input identity for local and transferred shader outputs. Generated release
@@ -49,6 +57,16 @@ export function sharedShaderInputFingerprint(root, engineEntries) {
     .filter(
       (path) => !path.startsWith(join(root, 'packages/vite-plugin-shader/dist/engine-inputs/')),
     );
+  const shaderRoot = join(root, 'packages/shader/src');
+  // The producer loads executable dependencies from dist. Test code under this
+  // source root is outside that graph. Keep every raw shader and other input.
+  const shaderSources = walkFiles(shaderRoot).filter(
+    (path) =>
+      !(
+        /\.(?:[cm]?[jt]sx?)$/.test(path) &&
+        relative(shaderRoot, path).split(sep).includes('__tests__')
+      ),
+  );
   return hashText(
     JSON.stringify({
       bytes: hashFiles(root, [
@@ -63,12 +81,14 @@ export function sharedShaderInputFingerprint(root, engineEntries) {
             /\.(?:[cm]?js|wasm)$/.test(path) ||
             path === join(root, 'packages/wgpu-wasm/pkg/package.json'),
         ),
-        ...walkFiles(join(root, 'packages/shader/src')),
+        ...shaderSources,
         join(root, 'packages/vfx-render/package.json'),
         ...walkFiles(join(root, 'packages/vfx-render/src/shaders')),
         join(root, 'package.json'),
         join(root, 'pnpm-lock.yaml'),
         join(root, 'scripts/build-shared-inputs.mjs'),
+        join(root, 'scripts/lib/shader-source-budget.mjs'),
+        join(root, 'scripts/lib/runner-resources.mjs'),
         join(root, 'scripts/ci/build-shared-app-inputs.mjs'),
         join(root, 'scripts/lib/shared-build-cache.mjs'),
         join(root, 'scripts/build-task-cache.mjs'),
@@ -115,4 +135,33 @@ export function reusableSharedShader(root, sharedManifestPath, inputFingerprint,
       `cannot read shared shader input ${sharedManifestPath}: ${error.code ?? error.name}: ${error.message}`,
     );
   }
+}
+
+// Project verified producer bytes with an ordinary path-bound receipt. The
+// consumer revalidates compiler/source/profile and payload digest as usual.
+export function projectSharedShader(root, sourceManifest, destination, inputFingerprint) {
+  let reason;
+  const source = reusableSharedShader(root, sourceManifest, inputFingerprint, (value) => {
+    reason = value;
+  });
+  if (source === null) throw new Error(`shared shader projection rejected: ${reason}`);
+  const shaderPath = resolve(destination, 'shaders/manifest.json');
+  const payloadPath = relative(root, shaderPath).replaceAll('\\', '/');
+  if (payloadPath.startsWith('..') || resolve(root, payloadPath) !== shaderPath)
+    throw new Error('shared shader projection must remain inside the repository');
+  mkdirSync(dirname(shaderPath), { recursive: true });
+  cpSync(source, shaderPath);
+  writeFileSync(
+    resolve(destination, 'manifest.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        producer: 'shared-app-inputs',
+        shaderBuild: sharedShaderReceipt(root, shaderPath, inputFingerprint),
+        payload: { engineShaderManifest: payloadPath },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }

@@ -1,3 +1,5 @@
+import { StateSet } from "../src/register-plugin";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import type { AssetHandle } from '@forgeax/engine-types';
@@ -23,7 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { defineComponent, Entity, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { ChildOf, Children, worldInstantiateScene } from '@forgeax/engine-scene';
 import { defineState } from '../src/define-state';
-import { type StatePayload, stateResourceKey } from '../src/resources';
+import { stateResource } from '../src/resources';
 import { registerStatesPlugin } from '../src/register-plugin';
 import { setNextState, setNextStateForce, getState, getPreviousState } from '../src/set-next-state';
 import { addOnEnter } from '../src/on-enter-on-exit';
@@ -68,8 +70,8 @@ describe('transitionStatesSystem', () => {
     const sBefore = getState(world, LevelId);
     expect(sBefore.ok && sBefore.value).toBe('main-menu');
 
-    const nsKey = stateResourceKey(LevelId);
-    const nsBefore = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const nsBefore = world.getResource(nsKey).next;
     expect(nsBefore).toBeDefined();
 
     // Run one frame — triggers transitionStatesSystem
@@ -82,7 +84,7 @@ describe('transitionStatesSystem', () => {
     const psAfter = getPreviousState(world, LevelId);
     expect(psAfter.ok && psAfter.value).toBe('main-menu');
 
-    const nsAfter = world.getResource<StatePayload>(nsKey).next;
+    const nsAfter = world.getResource(nsKey).next;
     expect(nsAfter).toBeUndefined();
   });
 
@@ -107,8 +109,8 @@ describe('transitionStatesSystem', () => {
     expect(r2.ok).toBe(true);
 
     // NextState remains undefined
-    const nsKey = stateResourceKey(LevelId);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const ns = world.getResource(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -133,8 +135,8 @@ describe('transitionStatesSystem', () => {
     expect(eData.ok).toBe(true);
 
     // NextState cleared
-    const nsKey = stateResourceKey(LevelId);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const ns = world.getResource(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -164,8 +166,8 @@ describe('transitionStatesSystem', () => {
     expect(eData.ok).toBe(false);
 
     // NextState cleared
-    const nsKey = stateResourceKey(LevelId);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const ns = world.getResource(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -307,14 +309,14 @@ describe('transitionStatesSystem', () => {
     expect(result.ok).toBe(true);
 
     // Pending NextState has force=true
-    const nsKey = stateResourceKey(LevelId);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(LevelId);
+    const ns = world.getResource(nsKey).next;
     expect(ns?.force).toBe(true);
 
     world.update(1 / 60).unwrap();
 
     // After transition, NextState cleared — force consumed
-    const nsAfter = world.getResource<StatePayload>(nsKey).next;
+    const nsAfter = world.getResource(nsKey).next;
     expect(nsAfter).toBeUndefined();
   });
 });
@@ -387,8 +389,8 @@ describe('AC-18: multi-token independence', () => {
     expect(s2.ok && s2.value).toBe('menu');
 
     // GameMode NextState remains undefined
-    const nsKey = stateResourceKey(GameMode);
-    const ns = world.getResource<StatePayload>(nsKey).next;
+    const nsKey = stateResource(GameMode);
+    const ns = world.getResource(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -512,7 +514,7 @@ describe('M41: invalid variant atomic refusal', () => {
       got: invalid,
       valid: ['main-menu', 'tutorial'],
     });
-    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
+    expect(world.getResource(stateResource(M41Primary)).next).toBeUndefined();
     expect(world.inspect().entityCount).toBe(before.entityCount);
     expect(executionSignature()).toEqual(before.execution);
     expect(getState(world, M41Primary)).toEqual(before.level);
@@ -524,7 +526,7 @@ describe('M41: invalid variant atomic refusal', () => {
     expect(world.get(enterEntity, Entity).ok).toBe(true);
 
     world.update(1 / 60).unwrap();
-    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
+    expect(world.getResource(stateResource(M41Primary)).next).toBeUndefined();
     expect(getState(world, M41Primary)).toMatchObject({ ok: true, value: 'main-menu' });
     expect(getPreviousState(world, M41Primary)).toMatchObject({ ok: true, value: 'main-menu' });
     expect(callbackRuns).toBe(0);
@@ -543,7 +545,7 @@ describe('M41: invalid variant atomic refusal', () => {
     expect(world.get(enterEntity, Entity).ok).toBe(false);
     expect(repairedEntity).toBeDefined();
     expect(repairedEntity === undefined ? false : world.get(repairedEntity, Entity).ok).toBe(true);
-    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
+    expect(world.getResource(stateResource(M41Primary)).next).toBeUndefined();
 
     setNextState(world, M41Primary, 'main-menu');
     world.update(1 / 60).unwrap();
@@ -552,7 +554,7 @@ describe('M41: invalid variant atomic refusal', () => {
     world.update(1 / 60).unwrap();
     expect(repairedEntity === undefined ? false : world.get(repairedEntity, Entity).ok).toBe(false);
     expect(callbackRuns).toBe(1);
-    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
+    expect(world.getResource(stateResource(M41Primary)).next).toBeUndefined();
 
     removeCallback();
   });
@@ -738,17 +740,22 @@ describe('AC-13: schedule anchors', () => {
     expect(names).toContain('transitionStates');
   });
 
-  it('user system with before:\'transitionStates\' anchor resolves (no error from addSystem)', () => {
+  it('user system ordered before StateSet sees the previous value', () => {
     const world = makeWorld();
 
-    // Adding a user system that references 'transitionStates' as anchor
-    // should not throw — the anchor name exists.
-    world.addSystem(Update, {
+    let observed = '';
+    setNextState(world, LevelId, 'tutorial').unwrap();
+    const systemToken1 = defineSystem({
       name: 'user-before-transition',
       queries: [],
-      fn: () => {},
-      before: ['transitionStates'],
+      fn: () => {
+        observed = getState(world, LevelId).unwrap();
+      },
+      before: [StateSet],
     });
+    world.addSystem(Update, systemToken1).unwrap();
+    world.update(1 / 60).unwrap();
+    expect(observed).toBe('main-menu');
 
     const systems = world.inspect().systems;
     const names = systems.map((s) => s.name);
@@ -756,26 +763,31 @@ describe('AC-13: schedule anchors', () => {
     expect(names).toContain('transitionStates');
   });
 
-  it('user system with after:\'transitionStates\' anchor resolves (no error from addSystem)', () => {
+  it('user system ordered after StateSet sees the committed value', () => {
     const world = makeWorld();
 
-    world.addSystem(Update, {
+    let observed = '';
+    setNextState(world, LevelId, 'tutorial').unwrap();
+    const systemToken2 = defineSystem({
       name: 'user-after-transition',
       queries: [],
-      fn: () => {},
-      after: ['transitionStates'],
+      fn: () => {
+        observed = getState(world, LevelId).unwrap();
+      },
+      after: [StateSet],
     });
+    world.addSystem(Update, systemToken2).unwrap();
+    world.update(1 / 60).unwrap();
+    expect(observed).toBe('tutorial');
 
     const systems = world.inspect().systems;
     const names = systems.map((s) => s.name);
     expect(names).toContain('user-after-transition');
   });
 
-  it('transitionStates system name is a permanent user-facing anchor (C-1)', () => {
+  it('transitionStates retains its diagnostic label', () => {
     const world = makeWorld();
 
-    // Verify the exact name string is 'transitionStates' — this is the
-    // user-facing anchor that requirements C-1 mandates must be preserved.
     const systems = world.inspect().systems;
     const ts = systems.find((s) => s.name === 'transitionStates');
     expect(ts).toBeDefined();

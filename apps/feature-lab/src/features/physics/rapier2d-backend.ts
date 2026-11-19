@@ -2,11 +2,11 @@ import { vec2 as v2 } from '@forgeax/engine/math';
 import {
   Collider,
   ColliderShapeValue,
+  PhysicsWorld2DResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
-import type { RapierPhysicsWorld2D } from '@forgeax/engine/physics-rapier2d';
-import physics2d from '@forgeax/engine/physics-rapier2d';
+import physics2d, { RapierPhysicsWorld2D } from '@forgeax/engine/physics-rapier2d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnCamera } from '../../lab/stage';
@@ -35,16 +35,17 @@ export default defineFeature({
   async setup({ world, frames, hud }) {
     const checks = new CheckList();
     spawnCamera(world);
-    const { physics, waitedFrames } = await waitForPhysicsWorld<RapierPhysicsWorld2D>(
+    const { physics, waitedFrames } = await waitForPhysicsWorld(
       world,
       frames,
+      PhysicsWorld2DResource,
     );
     checks.ok(
       'PhysicsWorld2D resource inserted',
       physics !== undefined,
       `waited ${waitedFrames} frames`,
     );
-    if (physics === undefined) return { checks: () => checks.items };
+    if (!(physics instanceof RapierPhysicsWorld2D)) return { checks: () => checks.items };
     hud.status(`Rapier 2D ready after ${waitedFrames} frames`);
     checks.ok(
       'configured global solver iterations = 2',
@@ -110,7 +111,10 @@ export default defineFeature({
       removed !== undefined,
       `bodies=${physics.getBodyCount()}`,
     );
-    checks.ok('resource still owned by the plugin', tryResource(world) === physics);
+    checks.ok(
+      'resource still owned by the plugin',
+      tryResource(world, PhysicsWorld2DResource) === physics,
+    );
     return { checks: () => checks.items };
   },
 });

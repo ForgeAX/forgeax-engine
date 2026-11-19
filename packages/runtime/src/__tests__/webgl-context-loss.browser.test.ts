@@ -35,7 +35,7 @@ it('recovers real WebGL context loss and assets through a replacement Renderer g
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const request = { source: lease };
   const sample = async () => {
     const receipt = await drawReadyFrame(renderer, request, ['final-display']);
     const result = await renderer.observe(receipt, { include: ['final-display'] });
@@ -44,6 +44,7 @@ it('recovers real WebGL context loss and assets through a replacement Renderer g
     if (!image) throw new Error('Missing completed display');
     return [...image.bytes];
   };
+  let phase = 'initial-frames';
   try {
     expect(renderer.inspect().capabilities.backendKind).toBe('wgpu-webgl2');
     world.update(1 / 60).unwrap();
@@ -54,6 +55,7 @@ it('recovers real WebGL context loss and assets through a replacement Renderer g
     const extension = gl?.getExtension('WEBGL_lose_context');
     if (!extension) throw new Error('Actual WebGL context-loss extension required');
     // Keep work in flight to cover completion rejection racing the DOM event.
+    phase = 'context-loss';
     const inFlight = renderer.draw(request);
     if (!inFlight.ok) throw inFlight.error;
     const completed = inFlight.value.completed;
@@ -68,15 +70,30 @@ it('recovers real WebGL context loss and assets through a replacement Renderer g
     const restored = new Promise<void>((resolve) => {
       canvas.addEventListener('webglcontextrestored', () => resolve(), { once: true });
     });
+    phase = 'context-restoration';
     extension.restoreContext();
     await restored;
+    phase = 'renderer-recovery';
     const first = renderer.recover();
     const second = renderer.recover();
     const results = await Promise.all([first, second]);
     for (const result of results) if (!result.ok) throw result.error;
     expect(renderer.state()).toBe('alive');
+    phase = 'restored-frames';
     for (let frame = 0; frame < 60; frame++) await drawReadyFrame(renderer, request);
     expect(await sample()).toEqual(before);
+  } catch (error) {
+    console.error(
+      'WebGL context recovery failure',
+      JSON.stringify({
+        phase,
+        state: renderer.state(),
+        recovery: renderer.inspect().recovery,
+        error:
+          error instanceof Error ? { ...error, message: error.message, cause: error.cause } : error,
+      }),
+    );
+    throw error;
   } finally {
     await renderer.dispose();
     canvas.remove();

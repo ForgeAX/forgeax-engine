@@ -482,11 +482,7 @@ const cubeDeadline = Date.now() + 15_000;
 while (cubeFaceSubmissions < CUBE_CAMERA_FACE_ORDER.length) {
   if (Date.now() >= cubeDeadline) throw new Error(`cube capture incomplete: ${cubeFaceSubmissions}/6 faces`);
   world.update(1 / 60).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  await drawReadyFrame(renderer, { source: attached.value });
   for (const passName of renderer.inspect().perFramePassNames) {
     if (passName.startsWith('cube-capture-face.')) cubeFaceSubmissions++;
     if (REFLECTION_EVIDENCE) reflectionPassNames.add(passName);
@@ -512,11 +508,7 @@ for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
     console.error(`[smoke] FAIL - world update failed: ${updated.error.code}`);
     process.exit(1);
   }
-  const next = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const next = renderer.draw({ source: attached.value });
   if (!next.ok) {
     console.error(`[smoke] FAIL - receipt draw failed: ${next.error.code}`);
     process.exit(1);
@@ -539,11 +531,7 @@ if (!REFLECTION_EVIDENCE) {
     console.error(`[smoke] FAIL - material world update failed: ${updated.error.code}`);
     process.exit(1);
   }
-  const next = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const next = renderer.draw({ source: attached.value });
   if (!next.ok) {
     console.error(`[smoke] FAIL - material receipt draw failed: ${next.error.code}`);
     process.exit(1);
@@ -555,7 +543,7 @@ if (!REFLECTION_EVIDENCE) {
     process.exit(1);
   }
 }
-const observedFaces = observed.ok ? observed.value.targetReadbacks ?? [] : [];
+const observedFaces = observed.ok ? ( observed.value.targetReadbacks ?? []) : [];
 const lowerYellowProbe = observedFaces[4] === undefined
   ? undefined
   : (() => {
@@ -648,11 +636,7 @@ const resized = renderer.resizeRenderTarget(targetResult.value, {
 const drawEvidenceFrame = async () => {
   const updated = world.update(1 / 60);
   if (!updated.ok) throw updated.error;
-  const receipt = await drawReadyFrame(renderer, {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const receipt = await drawReadyFrame(renderer, { source: attached.value });
   for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
   await delay(0);
   return receipt;
@@ -725,11 +709,7 @@ if (REFLECTION_EVIDENCE) {
   submitFailureArmed = true;
   const failedUpdate = world.update(1 / 60);
   if (!failedUpdate.ok) throw failedUpdate.error;
-  const failedDraw = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const failedDraw = renderer.draw({ source: attached.value });
   if (failedDraw.ok) throw new Error('reflection fallback submit fault was not injected');
   const afterFailure = renderer.inspect().reflectionProbes;
   const afterRow = fallbackRow(afterFailure, 'probe');
@@ -819,11 +799,7 @@ if (REFLECTION_EVIDENCE && skylightEntity !== undefined) {
     console.error(`[smoke] FAIL - neutral transition update failed: ${updated.error.code}`);
     process.exit(1);
   }
-  const next = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const next = renderer.draw({ source: attached.value });
   if (!next.ok) {
     console.error(`[smoke] FAIL - neutral transition draw failed: ${next.error.code}`);
     process.exit(1);
@@ -841,11 +817,7 @@ if (REFLECTION_EVIDENCE && skylightEntity !== undefined) {
     console.error(`[smoke] FAIL - neutral transition settle update failed: ${settled.error.code}`);
     process.exit(1);
   }
-  const settledDraw = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const settledDraw = renderer.draw({ source: attached.value });
   if (!settledDraw.ok) {
     console.error(`[smoke] FAIL - neutral transition settle draw failed: ${settledDraw.error.code}`);
     process.exit(1);
@@ -865,11 +837,7 @@ if (REFLECTION_EVIDENCE && skylightEntity !== undefined) {
     console.error(`[smoke] FAIL - neutral temporal reset update failed: ${recovered.error.code}`);
     process.exit(1);
   }
-  const recoveredDraw = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
+  const recoveredDraw = renderer.draw({ source: attached.value });
   if (!recoveredDraw.ok) {
     console.error(`[smoke] FAIL - neutral temporal reset draw failed: ${recoveredDraw.error.code}`);
     process.exit(1);

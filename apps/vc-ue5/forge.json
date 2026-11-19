@@ -1,0 +1,18 @@
+{
+  "id": "vc-ue5",
+  "name": "VC UE5 | 体积云地面参考",
+  "schemaVersion": "3.0.0",
+  "assetRoots": [
+    "assets"
+  ],
+  "assetLibraries": [
+    "@forgeax/engine/content",
+    "@forgeax-assets/volumetric-clouds",
+    "@forgeax-assets/ue-volumetric-clouds"
+  ],
+  "roots": {
+    "build": "2b7ecad7-0300-5d14-89bc-4ccdac55b1fe",
+    "engine": "c648f5c5-c1eb-5a9c-80e9-6bd52b148d09",
+    "frontend": "8b158dca-91ea-5f95-b7be-e930d08f379a"
+  }
+}

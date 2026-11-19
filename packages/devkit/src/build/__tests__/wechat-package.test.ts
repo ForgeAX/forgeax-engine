@@ -9,6 +9,7 @@ import { expect, it } from 'vitest';
 import { verifyDist, writeDistManifest } from '../../dist.js';
 import type { ProjectFacts } from '../../types.js';
 import { prepareWechatBuild, verifyWechatPackageBudget, writeWechatProject } from '../wechat.js';
+import { generatedWechatConfiguration } from './configuration-host.fixture';
 
 it.each([
   undefined,
@@ -35,10 +36,13 @@ it.each([
         sourceSnapshot: createScriptablePackSourceSnapshot(),
         filesystemInputs: undefined,
       },
-      budget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: budget, time },
+      budget === undefined
+        ? {}
+        : { dynamicGeometryMeshBudgetBytes: budget, textureMipSkip: 2, time },
     );
     const source = await readFile(resolve(root, 'wechat-main.ts'), 'utf8');
     expect(source).toContain('Game 1.2.3 | Engine ');
+    const { plan, configured } = generatedWechatConfiguration(source);
     const call = source.slice(
       source.indexOf('graphics = value(await constructRuntimeRendererHost('),
       source.indexOf('releases.push(() => graphics.renderer.dispose());'),
@@ -46,6 +50,8 @@ it.each([
     const options = await runInNewContext(
       `(async () => { let graphics; ${call} return graphics; })()`,
       {
+        plan,
+        configured,
         constructRuntimeRendererHost: async (_canvas: unknown, options: unknown) => ({
           ok: true,
           value: options,
@@ -56,13 +62,15 @@ it.each([
         gpuShaders: {},
         ui: {},
         gameVfx: { feature: {} },
+        gameFeatures: { features: [] },
         forgeaxBundlerAdapter: () => ({}),
       },
     );
     expect(options.dynamicGeometryMeshBudgetBytes).toBe(budget);
+    expect(options.textureMipSkip).toBe(budget === undefined ? 0 : 2);
     const world = runInNewContext(
       `${source.slice(source.indexOf('const world = new World('), source.indexOf('let game;'))} world`,
-      { World },
+      { World, plan, configured },
     ) as World;
     world.update(1 / 60).unwrap();
     expect(world.getResource(Time).maxDeltaSeconds).toBe(

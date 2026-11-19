@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { FixedUpdate, Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { quat } from '@forgeax/engine-runtime';
@@ -7,7 +8,7 @@ import type { VideoTexturePanel } from '../video-texture-panel';
 import type { WorldScoreTextHandle } from '../world-score-text';
 import { CameraRig, GameplayInput, PlayerMotion } from '../components/gameplay';
 import { GameState } from '../gameplay-state';
-import { GAME_DEFAULT_GAMEPLAY_CONFIG, type GameplayConfig } from '../resources/gameplay';
+import { GAME_DEFAULT_GAMEPLAY_CONFIG } from '../resources/gameplay';
 
 export type CameraFollowSystemContext = {
   readonly world: World;
@@ -21,14 +22,14 @@ export type CameraFollowSystemContext = {
 
 /** Writes the one camera Transform from player/camera ECS state each frame. */
 export function installCameraFollowSystem(ctx: CameraFollowSystemContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-camera-follow',
     runIf: inState(GameState, 'Play'),
     after: [FixedUpdate],
     queries: [],
     fn: () => {
       const dt = ctx.world.getResource(Time).delta;
-      const config = ctx.world.getResource<GameplayConfig>(GAME_DEFAULT_GAMEPLAY_CONFIG);
+      const config = ctx.world.getResource(GAME_DEFAULT_GAMEPLAY_CONFIG);
       const playerTransform = ctx.world.get(ctx.player, Transform);
       const playerMotion = ctx.world.get(ctx.player, PlayerMotion);
       const input = ctx.world.get(ctx.player, GameplayInput);
@@ -63,5 +64,6 @@ export function installCameraFollowSystem(ctx: CameraFollowSystemContext): void 
       ctx.worldScoreText?.step(dt, ctx.camera);
       ctx.videoTexturePanel?.step(ctx.camera);
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 }

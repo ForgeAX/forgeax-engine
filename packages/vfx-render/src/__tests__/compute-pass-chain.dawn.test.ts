@@ -110,7 +110,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     up: new Float32Array([0, 1, 0]),
     viewProjection: identity(),
   };
-  type PublishedIntent = Parameters<typeof feature.plan>[0]['worlds'][number]['intents'][number];
+  type PublishedIntent = NonNullable<
+    Parameters<typeof feature.plan>[0]['source']
+  >['intents'][number];
   const accepted = new Map<string, PublishedIntent>();
   let frameNumber = 0;
   let tick = 0;
@@ -179,32 +181,29 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     }
     const frame: Parameters<typeof feature.plan>[0] = {
       frameNumber: ++frameNumber,
-      worlds: [
-        {
-          sourceWorldIndex: 0,
-          worldId: 0,
-          runtimeId: 0,
-          renderGeneration: 0,
-          emitterState: new Map(
-            cooked.program.emitters.map((emitter) => [
-              `${Number(player)}:${emitter.id}`,
-              { enabled: true, localToWorld: identity(), player, emitter: reference(emitter) },
-            ]),
-          ),
-          materials: new Map(),
-          meshes: new Map(),
-          camera,
-          views: [{ identity: 'main', camera }],
-          intents,
-          retained: [...accepted.values()].map((intent) => ({
-            player,
-            emitter: intent.emitter,
-            intent,
-            localToWorld: identity(),
-            visible: false,
-          })),
-        },
-      ],
+      source: {
+        worldId: 0,
+        runtimeId: 0,
+        renderGeneration: 0,
+        emitterState: new Map(
+          cooked.program.emitters.map((emitter) => [
+            `${Number(player)}:${emitter.id}`,
+            { enabled: true, localToWorld: identity(), player, emitter: reference(emitter) },
+          ]),
+        ),
+        materials: new Map(),
+        meshes: new Map(),
+        camera,
+        views: [{ identity: 'main', camera }],
+        intents,
+        retained: [...accepted.values()].map((intent) => ({
+          player,
+          emitter: intent.emitter,
+          intent,
+          localToWorld: identity(),
+          visible: false,
+        })),
+      },
     };
     return frame;
   };
@@ -214,8 +213,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       .plan(
         frame,
         singleViewContext({
-          resolveAsset: (sourceIndex, handle, revision) => {
-            expect(sourceIndex).toBe(0);
+          resolveAsset: (handle, revision) => {
             return runtimeAssets(world.assets).resolveAsset(handle, revision);
           },
           targets: [],
@@ -544,8 +542,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         right.trace.filter((command) => command[0] === 'dispatchWorkgroups').length,
       );
       for (const lease of prepared.session.commitFrame()) lease.release().unwrap();
-      for (const intent of required(frame.worlds[0]).intents)
-        accepted.set(intent.emitter.id, intent);
+      for (const intent of required(frame.source).intents) accepted.set(intent.emitter.id, intent);
       tick += ticks;
     }
     expect(await native.popErrorScope()).toBeNull();

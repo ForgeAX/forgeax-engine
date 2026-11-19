@@ -5,7 +5,11 @@ import { RhiNullAdapter, rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { standardPbrManifestRow } from '../../../render/src/__tests__/shader-manifest-fixture';
+import {
+  nativeOutputShaderFixture,
+  standardPbrManifestRow,
+  waterInfoShaderFixture,
+} from '../../../render/src/__tests__/shader-manifest-fixture';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -21,11 +25,15 @@ function requireValue<T>(
 const manifest = `data:application/json,${encodeURIComponent(
   JSON.stringify({
     entries: [
+      ...waterInfoShaderFixture.entries,
+      ...nativeOutputShaderFixture.entries,
       { hash: 'pbr00000', wgsl: 'f_schlick(', glsl: '', bindings: '' },
       { hash: 'unlit000', wgsl: 'unlit', glsl: '', bindings: '' },
       { hash: 'tonemap0', wgsl: 'struct TonemapParams {}', glsl: '', bindings: '' },
     ],
     materialShaders: [
+      ...waterInfoShaderFixture.materialShaders,
+      ...nativeOutputShaderFixture.materialShaders,
       {
         identifier: 'forgeax::default-unlit',
         sourcePath: 'unlit.wgsl',
@@ -130,8 +138,8 @@ it.each([
   ).renderer;
   const la = requireValue(a.attach(world));
   const lb = requireValue(b.attach(world));
-  const ra = { leases: [la], camera: { lease: la }, environment: { lease: la } };
-  const rb = { leases: [lb], camera: { lease: lb }, environment: { lease: lb } };
+  const ra = { source: la };
+  const rb = { source: lb };
   world.update(0).unwrap();
   requireValue(a.draw(ra));
   requireValue(b.draw(rb));

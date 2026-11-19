@@ -39,7 +39,6 @@ export interface MeshBatchSource {
 
 export interface GpuDrivenBatchBinding {
   readonly source?: MeshBatchSource;
-  readonly worldId: number;
   readonly assetHandle: number;
   readonly lods?: readonly MeshLodLevel['mesh'][];
   readonly material: MaterialResource;
@@ -53,7 +52,6 @@ export interface GpuDrivenBatchBinding {
 
 export interface GpuDrivenBatchKey {
   readonly drawItemIndex?: number;
-  readonly worldId?: number;
   readonly assetHandle: number;
   readonly drawKind: 'indexed' | 'non-indexed';
   readonly first: number;
@@ -155,6 +153,15 @@ export interface SubmissionPlan {
   readonly visibleCapacity: number;
   /** The canonical source root precedes per-view Mesh execution expansion. */
   readonly sourceGroups?: BatchSources;
+}
+
+/** Actual view work, including source-only selector plans before receipt preparation. */
+export function planDrawsSkin(plan: SubmissionPlan): boolean {
+  return plan.batches.some(
+    (batch) =>
+      batch.candidates.length > 0 &&
+      (batch.prepared?.identity.deformation ?? batch.binding?.geometry.deformation) === 'skin',
+  );
 }
 
 export interface ResourceClassSplitInspection {
@@ -405,7 +412,6 @@ function sameEligibleInputs(a: RenderableSnapshot, b: RenderableSnapshot): boole
     a.materials === b.materials &&
     a.materialOverrides === b.materialOverrides &&
     a.materialBindingSources === b.materialBindingSources &&
-    a.worldId === b.worldId &&
     a.lods === b.lods &&
     a.lodHysteresis === b.lodHysteresis &&
     a.authorVisible === b.authorVisible &&
@@ -545,7 +551,6 @@ export function eligibleGpuDrivenDraws(
       sourceDrawIndex: drawItemIndex,
       ...(draw.prepared === undefined ? {} : { prepared: draw.prepared }),
       binding: Object.freeze({
-        worldId: snapshot.worldId,
         assetHandle: snapshot.assetHandle,
         ...(snapshot.lods === undefined || morph
           ? {}
@@ -557,7 +562,6 @@ export function eligibleGpuDrivenDraws(
       }),
       key: {
         drawItemIndex,
-        worldId: snapshot.worldId,
         assetHandle: snapshot.assetHandle,
         drawKind: draw.kind,
         first: draw.first,
@@ -644,7 +648,6 @@ function membershipProjectionUncached(
         draw.binding.source?.materialOverrides === undefined
           ? batchText(draw.key, draw.lod)
           : JSON.stringify([
-              draw.binding.worldId,
               draw.binding.assetHandle,
               draw.binding.geometry.deformation,
               draw.key.materialResourceClass,

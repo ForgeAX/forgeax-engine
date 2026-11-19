@@ -1,3 +1,6 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `spatial_audio_3d` example.
 //
@@ -7,9 +10,9 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
-import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
+import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update, Time } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 import { Transform } from '@forgeax/engine-scene';
@@ -47,7 +50,7 @@ const scene = buildSpatialAudioWorld(world, canvas.width / Math.max(canvas.heigh
 const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-spatial-audio-3d: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-const audioEngine = world.getResource<WebAudioEngine>('AudioEngine');
+const audioEngine = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 
 let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let loaded = false;
@@ -80,13 +83,13 @@ let emitterMoving = false;
 let muted = false;
 let emitterPhase = 0;
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'spatial-audio-3d-controls',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: () => {
     const dt = world.getResource(Time).delta;
-    const snapshot = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snapshot = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const listenerTransform = world.get(scene.listener, Transform);
     const emitterTransform = world.get(scene.emitter, Transform);
     if (!listenerTransform.ok || !emitterTransform.ok) return;
@@ -145,6 +148,7 @@ world.addSystem(Update, {
     spatialStatus.textContent = `listener=(${listenerX.toFixed(1)}, ${listenerZ.toFixed(1)}) | emitter=(${emitterX.toFixed(1)}, ${(emitterTransform.value.pos[2] ?? 0).toFixed(1)}) | pan=${pan}`;
   },
 });
+world.addSystem(Update, systemToken1);
 
 const started = app.start();
 if (!started.ok) {

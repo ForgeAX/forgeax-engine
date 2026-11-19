@@ -23,7 +23,9 @@ export async function prepareDocuments(
       if (!selected(artifact.path)) return artifact;
       const path = resolve(root, artifact.path);
       const plain = Buffer.from(await readDeliveryDocument(path));
-      const result = compress ? await compressZstd(plain) : { ok: true as const, value: plain };
+      const result = compress
+        ? await compressZstd(plain, { level: 19 })
+        : { ok: true as const, value: plain };
       if (!result.ok)
         throw new Error(`${artifact.path}: zstd compression failed: ${result.error.code}`);
       await writeFile(path, result.value);

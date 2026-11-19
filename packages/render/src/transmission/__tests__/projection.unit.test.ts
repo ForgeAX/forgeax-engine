@@ -12,7 +12,6 @@ function query(dispatch: MaterialDispatch, sources: readonly RenderableSnapshot[
     setSceneRow(slots, snapshot.entityKey, {
       slot: snapshot.entityKey,
       generation: 1,
-      worldId: snapshot.worldId,
       entityKey: snapshot.entityKey,
       snapshot,
     });

@@ -15,16 +15,37 @@ import {
   AgXToneMapping,
   type Camera,
   CineonToneMapping,
+  Color,
   LinearToneMapping,
   NeutralToneMapping,
   NoToneMapping,
+  type Object3D,
   OrthographicCamera,
   PerspectiveCamera,
   ReinhardToneMapping,
+  Scene,
   WebGLCoordinateSystem,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
+
+/** Shared source background semantics; the caller owns the synchronous output window. */
+export function writeSceneClearColor(
+  output: Float32Array,
+  scene: Object3D,
+  fallback: Color,
+  alpha: number,
+): Float32Array {
+  const background =
+    scene instanceof Scene && scene.background instanceof Color ? scene.background : undefined;
+  const color = background ?? fallback;
+  const coverage = background === undefined ? alpha : 1;
+  output[0] = color.r * coverage;
+  output[1] = color.g * coverage;
+  output[2] = color.b * coverage;
+  output[3] = coverage;
+  return output;
+}
 
 export function cameraData(camera: Camera, toneMapping: number, exposure: number): CameraData {
   if (!(camera instanceof PerspectiveCamera || camera instanceof OrthographicCamera))

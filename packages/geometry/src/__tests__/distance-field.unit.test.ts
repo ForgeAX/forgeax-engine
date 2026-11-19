@@ -1,5 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import { buildMeshDistanceField, sampleMeshDistanceField } from '../distance-field';
+import { createSphereGeometry } from '../sphere';
 
 const positions = [
   -1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
@@ -9,6 +10,17 @@ const indices = [
   1, 6, 5,
 ];
 describe('mesh distance-field derived representation', () => {
+  it('accepts a closed sphere with exact pole and longitude seams', async () => {
+    const mesh = createSphereGeometry(1, 24, 16).unwrap();
+    assert(mesh.attributes.position);
+    assert(mesh.indices);
+    const result = await buildMeshDistanceField(mesh.attributes.position, mesh.indices, {
+      resolution: 12,
+    });
+    expect(result.ok, result.ok ? undefined : result.error.detail.reason).toBe(true);
+    expect(sampleMeshDistanceField(result.unwrap(), [0, 0, 0])).toBeLessThan(-0.8);
+  });
+
   it('rejects inward winding before publishing a field', async () => {
     expect(
       (await buildMeshDistanceField(positions, [...indices].reverse(), { resolution: 12 })).ok,

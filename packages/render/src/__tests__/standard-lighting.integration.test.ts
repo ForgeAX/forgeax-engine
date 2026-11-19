@@ -5,7 +5,7 @@ import {
   type StandardLightFrame,
 } from '../pipeline/standard-lighting/prepare';
 
-function makeFrame(lightCount: 1 | 32 | 256, localCount: number): StandardLightFrame {
+function makeFrame(lightCount: number, localCount: number): StandardLightFrame {
   const local = Array.from({ length: localCount }, (_, index) => ({
     kind: index % 2 === 0 ? ('point' as const) : ('spot' as const),
     shadowed: false,
@@ -36,6 +36,7 @@ describe('Standard shared lighting derivation', () => {
     [1, 1],
     [32, 32],
     [256, 256],
+    [1024, 1024],
   ] as const)('accepts the %i local-light budget without truncation', (lightCount, localCount) => {
     const result = prepareStandardLighting(makeFrame(lightCount, localCount));
 
@@ -55,24 +56,5 @@ describe('Standard shared lighting derivation', () => {
     expect(
       Array.from(result.value.lightIndexList.slice(0, result.value.membershipEntryCount)),
     ).not.toContain(1);
-  });
-
-  it('rejects local lights above the 256-light budget without truncation', () => {
-    const result = prepareStandardLighting(makeFrame(256, 257));
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    if (result.error.code !== 'standard-light-budget-exceeded') return;
-    expect(result.error.detail).toEqual({ actual: 257, budget: 256 });
-  });
-
-  it('caps preparation to the published fixed-array capacity', () => {
-    const result = prepareStandardLighting(makeFrame(256, 65), 64);
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe('standard-light-budget-exceeded');
-    if (result.error.code !== 'standard-light-budget-exceeded') return;
-    expect(result.error.detail).toEqual({ actual: 65, budget: 64 });
   });
 });

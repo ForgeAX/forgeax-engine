@@ -50,7 +50,7 @@ describe('clearcoat physical shader layer', () => {
 
     for (const root of [standard, skin]) {
       expect(root).toContain(
-        'var directRadiance = evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,',
+        'var directRadiance = evaluateStandardDirect(standardPositionWS, standardFragmentNdc(in), standardViewZ(in), in.clip.xy,',
       );
       expect(root).toContain(
         'physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow',

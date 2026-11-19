@@ -21,6 +21,7 @@ import {
   packagedProfilePublication,
 } from '../../../packages/vite-plugin-shader/dist/packaged-profiles.mjs';
 import { engineShaderSourceDigest } from '../../../packages/vite-plugin-shader/dist/source-digest.mjs';
+import { runnerResources, shaderProducerCompileWorkers } from '../../lib/runner-resources.mjs';
 import {
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -42,6 +43,81 @@ const publication = (marker) =>
 const packaged = (output) => decodePackagedProfiles(readFileSync(join(output, 'profiles.json.gz')));
 const profileMarker = (output, name) =>
   packagedProfilePublication(packaged(output), name)?.fragments[0];
+
+test('compatibility adopts the exact Core compiler and BASE before source preparation and GPU admission', () => {
+  const core = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs['core-build'];
+  const compatibility = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'))
+    .jobs.compatibility;
+  assert.equal(compatibility.env.SHADER_OUTPUT, core.env.SHADER_OUTPUT);
+  assert.equal(compatibility.env.SHADER_POINT_SHADOWS, core.env.SHADER_POINT_SHADOWS);
+  const restore = compatibility.steps.find((step) =>
+    step.run?.includes('node scripts/ci/restore-core-shader-inputs.mjs'),
+  );
+  assert.ok(restore, 'retain one source-verified Core handoff');
+  assert.match(
+    restore.run,
+    /--artifact-id '\$\{\{ needs\.shader-producer-inputs\.outputs\.artifact_id \}\}'/,
+  );
+  assert.match(restore.run, /--prepare-compiler/);
+  assert.equal(restore['timeout-minutes'], 5);
+  assert.equal(restore['continue-on-error'], undefined);
+  assert.equal(
+    compatibility.steps.filter((step) => /actions\/cache\/(?:save|restore)@/.test(step.uses ?? ''))
+      .length,
+    0,
+    'compatibility uses its admitted Core receipt instead of an independent shader cache',
+  );
+  assert.equal(
+    compatibility.steps.some((step) =>
+      /steps\.shader-(?:cache|inputs)\./.test(JSON.stringify(step)),
+    ),
+    false,
+    'removed producer IDs cannot leave unreachable cache writes behind',
+  );
+  const preparation = compatibility.steps.find((step) =>
+    step.name?.startsWith('Prepare the source-verified shader publication'),
+  );
+  assert.equal(preparation['timeout-minutes'], 10);
+  assert.match(preparation.run, /prepare-shader-release-inputs\.mjs --build --profile base-ssao/);
+  assert.match(preparation.run, /--input packages\/vite-plugin-shader\/dist\/engine-inputs\/ci/);
+  for (const step of [restore, preparation]) {
+    assert.match(step.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
+    assert.match(step.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
+  }
+  const gpu = compatibility.steps.find((step) =>
+    step.name?.startsWith('Run actual GPU compatibility'),
+  );
+  assert.ok(compatibility.steps.indexOf(restore) < compatibility.steps.indexOf(preparation));
+  assert.ok(compatibility.steps.indexOf(preparation) < compatibility.steps.indexOf(gpu));
+});
+
+test('stock compatibility rejects missing producer identity before expensive preparation', () => {
+  const job = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8')).jobs
+    .compatibility;
+  const index = job.steps.findIndex(
+    (step) => step.name === 'Require admitted shaders before preparation',
+  );
+  assert.ok(index >= 0, 'stock carriers need early producer admission');
+  const guard = job.steps[index];
+  assert.match(guard.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
+  assert.match(guard.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
+  assert.ok(
+    index <
+      job.steps.findIndex((step) => step.uses === './.github/actions/prepare-source-checkouts'),
+  );
+  assert.ok(index < job.steps.findIndex((step) => step.run?.includes('pnpm install')));
+  for (const [identity, expected] of [
+    ['', 1],
+    ['invalid', 1],
+    ['12345', 0],
+  ]) {
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', guard.run], {
+      env: { ...process.env, CORE_ARTIFACT_ID: identity },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, expected, result.stderr);
+  }
+});
 
 test('workflow stance permits bounded cache transport but rejects test and job overrides', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-cache-stance-'));
@@ -87,6 +163,18 @@ test('preparing one shader profile preserves declarations and other profiles', (
   try {
     mkdirSync(join(input, 'point-ssao', 'shaders'), { recursive: true });
     writeFileSync(join(input, 'point-ssao', 'shaders', 'manifest.json'), publication('point'));
+    writeFileSync(
+      join(input, 'point-ssao', 'manifest.json'),
+      JSON.stringify({
+        producer: 'repo-build-inputs',
+        payload: { engineShaderManifest: join(input, 'point-ssao/shaders/manifest.json') },
+        shaderBuild: sharedShaderReceipt(
+          process.cwd(),
+          join(input, 'point-ssao/shaders/manifest.json'),
+          sharedShaderInputFingerprint(process.cwd(), { pointShadows: true, hdrpSsao: true }),
+        ),
+      }),
+    );
     mkdirSync(output, { recursive: true });
     const shaderSourceDigest = engineShaderSourceDigest('packages/shader/src');
     writeFileSync(
@@ -124,10 +212,62 @@ test('preparing one shader profile preserves declarations and other profiles', (
   }
 });
 
+test('packaging without a build cannot relabel unverified bytes with current source provenance', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'forgeax-profile-admission-'));
+  const input = join(directory, 'input');
+  const output = join(directory, 'output');
+  const shaderPath = join(input, 'base-ssao/shaders/manifest.json');
+  const manifestPath = join(input, 'base-ssao/manifest.json');
+  try {
+    mkdirSync(dirname(shaderPath), { recursive: true });
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, 'profiles.json.gz'), 'previous output');
+    const publish = (profile = { pointShadows: false, hdrpSsao: true }) => {
+      writeFileSync(shaderPath, publication('current'));
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          producer: 'repo-build-inputs',
+          payload: { engineShaderManifest: shaderPath },
+          shaderBuild: sharedShaderReceipt(
+            process.cwd(),
+            shaderPath,
+            sharedShaderInputFingerprint(process.cwd(), profile),
+          ),
+        }),
+      );
+    };
+    const args = [script, '--profile', 'base-ssao', '--input', input, '--output', output];
+    for (const mutate of [
+      () => rmSync(manifestPath),
+      () => writeFileSync(manifestPath, '{}'),
+      () => writeFileSync(shaderPath, publication('changed bytes')),
+      () => publish({ pointShadows: true, hdrpSsao: true }),
+      () => {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        manifest.shaderBuild.inputFingerprint = 'old compiler/source';
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+      },
+    ]) {
+      publish();
+      mutate();
+      const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+      assert.notEqual(result.status, 0, 'unverified input was silently stamped current');
+      assert.match(result.stderr, /shader-profile-input-unverified/);
+      assert.match(result.stderr, /--build --profile base-ssao/);
+      assert.equal(readFileSync(join(output, 'profiles.json.gz'), 'utf8'), 'previous output');
+    }
+    publish();
+    execFileSync(process.execPath, args, { encoding: 'utf8' });
+    assert.equal(profileMarker(output, 'base-ssao'), 'current');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('SDK and browser use one profile producer and preserve source-build validation', () => {
   const sdk = readFileSync('scripts/forgeax/build-sdk.mjs', 'utf8');
   const browser = readFileSync('scripts/ci/run-split-vitest-browser.mjs', 'utf8');
-  const producer = readFileSync(script, 'utf8');
   const sourceProducer = readFileSync('scripts/build-shared-inputs.mjs', 'utf8');
   assert.match(sdk, /prepare-shader-release-inputs\.mjs',\s*'--build'/);
   assert.doesNotMatch(sdk, /\['point-base', '--point-shadows'\]/);
@@ -139,33 +279,30 @@ test('SDK and browser use one profile producer and preserve source-build validat
   assert.ok(
     browser.indexOf('const prepared =') < browser.indexOf('const cliPath = resolveCliPath()'),
   );
-  assert.match(producer, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD: '1'/);
-  assert.ok(
-    sourceProducer.indexOf("process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1'") <
-      sourceProducer.indexOf('await build('),
-  );
+  const sourceMode = sourceProducer.indexOf("process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1'");
+  assert.ok(sourceMode >= 0 && sourceMode < sourceProducer.indexOf('await build('));
   assert.match(browser, /'--passWithNoTests=false'/);
 });
 
-test('point-shadow Smoke prepares its verified profile on the same sole owner', () => {
+test('point-shadow consumers own verified profile preparation independent of shard and caller', () => {
   const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
-  const fleet = workflow.slice(
-    workflow.indexOf('  smoke-fleet:\n'),
-    workflow.indexOf('  smoke-fleet-required-context:\n'),
+  assert.ok(
+    !parse(workflow).jobs['smoke-fleet'].steps.some(
+      (step) => step.name === 'Prepare point-shadow smoke shader profile',
+    ),
   );
-  const preparation = fleet.indexOf('- name: Prepare point-shadow smoke shader profile');
-  const smoke = fleet.indexOf('- name: Hello-learn-render-5.3.2-point-shadows smoke');
-  assert.ok(preparation >= 0 && preparation < smoke);
-  const step = fleet.slice(preparation, smoke);
-  const profileStep = parse(workflow).jobs['smoke-fleet'].steps.find(
-    (candidate) => candidate.name === 'Prepare point-shadow smoke shader profile',
-  );
-  assert.equal(profileStep.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0)");
-  assert.match(step, /prepare-shader-release-inputs\.mjs --build --profile point-ssao/);
-  assert.match(step, /--shared-input-manifest "\$FORGEAX_SHARED_APP_INPUTS_MANIFEST"/);
-  assert.doesNotMatch(step, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD/);
+  for (const file of [
+    'apps/hello/deep-agent-feedback/scripts/smoke-point-shadow.mjs',
+    'apps/hello/gi/scripts/gi-dawn.mjs',
+    'apps/learn-render/5.advanced-lighting/3.2.point-shadows/scripts/smoke.mjs',
+  ]) {
+    const source = readFileSync(file, 'utf8');
+    const prepare = source.indexOf("ensureShaderManifestProfile('point-ssao')");
+    const build = source.indexOf('await shader.buildEngineShaderManifest');
+    const directBuild = source.indexOf('await buildEngineShaderManifest');
+    assert.ok(prepare >= 0 && prepare < (build < 0 ? directBuild : build), file);
+  }
 });
-
 test('Editor prerequisite prepares the default shader profile before recording engine dist', () => {
   const source = readFileSync('scripts/ci/build-editor-prerequisite.mjs', 'utf8');
   const profile = source.indexOf("'scripts/forgeax/prepare-shader-release-inputs.mjs'");
@@ -184,6 +321,8 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     for (const file of [
       script,
       'scripts/lib/shared-build-cache.mjs',
+      'scripts/lib/runner-resources.mjs',
+      'scripts/lib/shader-source-budget.mjs',
       'scripts/build-task-cache.mjs',
       'packages/vite-plugin-shader/dist/source-digest.mjs',
       'packages/vite-plugin-shader/dist/packaged-profiles.mjs',
@@ -217,8 +356,18 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       import { mkdirSync, writeFileSync } from 'node:fs';
       import { resolve } from 'node:path';
       import { getHeapStatistics } from 'node:v8';
-      if (getHeapStatistics().heap_size_limit < 4096 * 1024 * 1024) {
-        throw new Error('Source shader publication requires its 4 GiB parent heap');
+      import { runnerResources, shaderProducerCompileWorkers, shaderProducerHeapSize } from './lib/runner-resources.mjs';
+      import { admitShaderSourceBudget } from './lib/shader-source-budget.mjs';
+      const heapMiB = shaderProducerHeapSize(runnerResources());
+      if (!process.execArgv.includes('--max-old-space-size=' + heapMiB) ||
+          getHeapStatistics().heap_size_limit < heapMiB * 1024 * 1024) {
+        throw new Error('Source shader publication requires its runner-sized heap');
+      }
+      admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });
+      const workers = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
+      if (process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS &&
+          workers !== Number(process.env.FORGEAX_TEST_EXPECTED_SHADER_WORKERS)) {
+        throw new Error('Release shader publication requires its bounded compiler pool');
       }
       const out = process.argv[process.argv.indexOf('--out') + 1];
       mkdirSync(resolve(out, 'shaders'), { recursive: true });
@@ -306,6 +455,17 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       mutate();
       assert.match(invoke(), /SOURCE_BUILD_CALLED/);
       assert.equal(profileMarker(output, 'point-ssao'), 'sourceBuild');
+    }
+    for (const requested of ['1', '2', '64']) {
+      const expected = shaderProducerCompileWorkers(runnerResources(), requested);
+      assert.match(
+        invoke({
+          FORGEAX_BUILD_NO_TASK_CACHE: '1',
+          FORGEAX_SHADER_COMPILE_WORKERS: requested,
+          FORGEAX_TEST_EXPECTED_SHADER_WORKERS: String(expected),
+        }),
+        /SOURCE_BUILD_CALLED/,
+      );
     }
     // Restored SDK profile inputs have no local task-cache receipt and may
     // arrive on a different checkout path. Reuse their existing transfer receipt.
@@ -461,6 +621,40 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     }
     publishCore();
     assert.match(invokeBase({ FORGEAX_BUILD_NO_TASK_CACHE: '1' }), /SOURCE_BUILD_CALLED/);
+    // A surviving shared transfer retains BASE even when Core was lost.
+    publish();
+    rmSync(join(root, coreDirectory), { recursive: true, force: true });
+    rmSync(input, { recursive: true, force: true });
+    const companion = 'shared-app-inputs/profiles/base-ssao';
+    const companionShader = join(root, companion, 'shaders/manifest.json');
+    const companionManifest = join(root, companion, 'manifest.json');
+    const publishCompanion = () => {
+      write(`${companion}/shaders/manifest.json`, publication('sharedBase'));
+      writeFileSync(
+        companionManifest,
+        JSON.stringify({
+          producer: 'shared-app-inputs',
+          payload: { engineShaderManifest: `${companion}/shaders/manifest.json` },
+          shaderBuild: sharedShaderReceipt(
+            root,
+            companionShader,
+            sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
+          ),
+        }),
+      );
+    };
+    publishCompanion();
+    assert.match(invokeBase(), /verified shared-profile base-ssao; compile count=0/);
+    assert.equal(profileMarker(output, 'base-ssao'), 'sharedBase');
+    for (const mutate of [
+      () => rmSync(companionManifest),
+      () => writeFileSync(companionShader, '{"corrupt":true}'),
+      () => write('packages/compiler/dist/index.js', 'companion compiler changed'),
+    ]) {
+      publishCompanion();
+      mutate();
+      assert.match(invokeBase(), /SOURCE_BUILD_CALLED/);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

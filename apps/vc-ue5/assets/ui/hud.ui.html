@@ -1,0 +1,101 @@
+<aside class="telemetry panel" aria-label="渲染统计">
+  <div class="eyebrow"><span class="marker" aria-hidden="true"></span> VC / UE5 <span class="stage">D</span></div>
+  <h1>地面参考</h1>
+  <dl>
+    <div><dt>完成帧</dt><dd data-ui-part="frame">等待中</dd></div>
+    <div><dt>实际帧率</dt><dd data-ui-part="fps">预热中</dd></div>
+  </dl>
+  <details data-ui-part="render-timing" open>
+    <summary>渲染耗时</summary>
+    <dl>
+      <div><dt>CPU 单帧</dt><dd data-ui-part="cpu-frame">预热中</dd></div>
+      <div><dt>GPU 单帧</dt><dd data-ui-part="gpu-frame">预热中</dd></div>
+      <div><dt>GPU P50</dt><dd data-ui-part="gpu-p50">预热中</dd></div>
+      <div><dt>完整天空 GPU</dt><dd data-ui-part="gpu">预热中</dd></div>
+      <div><dt>云单项预算</dt><dd data-ui-part="cloud-budget">预热中</dd></div>
+      <div><dt>逐 Pass GPU</dt><dd data-ui-part="gpu-raw">预热中</dd></div>
+    </dl>
+    <details data-ui-part="gpu-details" hidden>
+      <summary>逐 Pass 明细</summary>
+      <ol data-ui-part="gpu-passes"></ol>
+    </details>
+  </details>
+</aside>
+<aside class="properties panel" aria-label="体积云参数">
+  <header class="properties-header"><h2>体积云</h2><span class="eyebrow">UE 属性</span></header>
+  <div class="section-label">画质预设</div>
+  <div class="mode-buttons quality-buttons" data-ui-part="quality-presets" role="group" aria-label="体积云画质预设">
+    <button type="button" data-ui-action="cloud-preset" data-preset="quality-low" data-quality aria-pressed="false">低</button>
+    <button type="button" data-ui-action="cloud-preset" data-preset="quality-medium" data-quality aria-pressed="false">中</button>
+    <button type="button" data-ui-action="cloud-preset" data-preset="quality-high" data-quality aria-pressed="false">高</button>
+  </div>
+  <div class="section-label">预设与时钟</div>
+  <div class="mode-buttons" data-ui-part="weather-presets" role="group" aria-label="天气预设与时钟">
+    <button type="button" data-ui-action="cloud-preset" data-preset="reference">参考预设</button>
+    <button type="button" data-ui-action="cloud-preset" data-preset="clear" aria-pressed="false">晴天</button>
+    <button type="button" data-ui-action="cloud-preset" data-preset="backlit" aria-pressed="false">低太阳逆光</button>
+    <button type="button" data-ui-action="cloud-preset" data-preset="overcast" aria-pressed="false">密云</button>
+    <button type="button" data-ui-action="cloud-pause" data-ui-part="clock-pause" aria-pressed="false">暂停</button>
+    <button type="button" data-ui-action="cloud-reset">重置云</button>
+  </div>
+  <div class="section-label">云模式</div>
+  <div class="mode-buttons" aria-label="云渲染模式">
+    <button type="button" data-ui-action="cloud-off" data-ui-part="cloud-off" aria-pressed="false">无云</button>
+    <button type="button" data-ui-action="cloud-uniform" data-ui-part="cloud-uniform" aria-pressed="false">均匀云</button>
+    <button type="button" data-ui-action="cloud-shape" data-ui-part="cloud-shape" aria-pressed="true">生成云</button>
+    <button type="button" data-ui-action="cloud-sample-ue" data-ui-part="cloud-sample-ue" aria-pressed="false">UE 原纹理</button>
+    <button type="button" data-ui-action="cloud-band" data-ui-part="cloud-band" aria-pressed="false">云带</button>
+    <button type="button" data-ui-action="cloud-band-wide" data-ui-part="cloud-band-wide" aria-pressed="false">宽实例</button>
+  </div>
+  <div class="section-label">查看</div>
+  <div class="mode-buttons view-buttons" aria-label="云查看模式">
+    <button type="button" data-ui-action="cloud-view-normal" data-ui-part="cloud-view-normal" aria-pressed="true">画面</button>
+    <button type="button" data-ui-action="cloud-view-transmittance" data-ui-part="cloud-view-transmittance" aria-pressed="false">透射率</button>
+    <button type="button" data-ui-action="cloud-view-contour" data-ui-part="cloud-view-contour" aria-pressed="false">云轮廓</button>
+  </div>
+  <p class="cloud-status" data-ui-part="cloud-status" role="status" aria-live="polite"></p>
+  <details open><summary>云层</summary><fieldset class="cloud-grid" aria-label="云层参数" data-ui-part="group-layer"></fieldset></details>
+  <details><summary>云形与风</summary>
+    <fieldset class="cloud-grid" aria-label="云形参数" data-ui-part="group-density"></fieldset>
+    <fieldset class="cloud-grid" aria-label="物理风与参考时间" data-ui-part="group-motion"></fieldset>
+    <button class="section-action" type="button" data-ui-action="cloud-initialize">初始化参考时间</button>
+  </details>
+  <details open><summary>太阳与曝光</summary><fieldset class="cloud-grid" aria-label="太阳和相机" data-ui-part="group-sun">
+    <label class="sun-slider span-columns" for="sun-elevation"><span>太阳高度<output for="sun-elevation" data-ui-part="sun-elevation-value">0.00°</output></span><input id="sun-elevation" type="range" min="-90" max="180" step="any" data-ui-part="sun-elevation"></label>
+    <label class="sun-slider span-columns" for="sun-azimuth"><span>太阳方位<output for="sun-azimuth" data-ui-part="sun-azimuth-value">0.00°</output></span><input id="sun-azimuth" type="range" min="-360" max="360" step="any" data-ui-part="sun-azimuth"></label>
+  </fieldset></details>
+  <details><summary>相位与多次散射</summary><fieldset class="cloud-grid" aria-label="光学参数" data-ui-part="group-scattering"></fieldset></details>
+  <details><summary>自阴影与外部云影</summary>
+    <fieldset class="cloud-grid" aria-label="云影参数" data-ui-part="group-shadows"></fieldset>
+    <button type="button" class="section-action" data-ui-action="shadow-comparison">云带对照</button>
+  </details>
+  <details><summary>追踪与重建</summary>
+    <fieldset class="cloud-grid" aria-label="追踪参数" data-ui-part="group-tracing"></fieldset>
+    <dl class="fact-list">
+      <div><dt>重建模式</dt><dd>Mode 0（只读）</dd></div>
+      <div><dt>历史状态</dt><dd data-ui-part="history">等待中</dd></div>
+    </dl>
+  </details>
+  <details><summary>快照</summary>
+    <div class="mode-buttons snapshot-buttons">
+      <button type="button" data-ui-action="cloud-snapshot-save">保存快照</button>
+      <button type="button" data-ui-action="cloud-snapshot-load">加载快照</button>
+    </div>
+    <label>快照 JSON<textarea data-ui-part="snapshot-json" rows="4" spellcheck="false"></textarea></label>
+    <p data-ui-part="snapshot-status"></p>
+  </details>
+  <details><summary>材质与来源</summary><dl class="fact-list" data-ui-part="material-source"></dl></details>
+  <details><summary>运行状态</summary><dl class="fact-list">
+    <div><dt>运行请求</dt><dd data-ui-part="request">等待中</dd></div>
+    <div><dt>Renderer 采用</dt><dd data-ui-part="adoption">等待中</dd></div>
+  </dl></details>
+</aside>
+<nav class="controls panel" aria-label="地面相机控制">
+  <span><kbd>WASD</kbd> 移动 <kbd>↑ ← ↓ →</kbd> 转向 <span class="drag">或右键拖动</span></span>
+  <button type="button" data-ui-action="reset" data-ui-part="camera-ground" aria-pressed="true">地面视角</button>
+  <button type="button" data-ui-action="camera-shadow" data-ui-part="camera-shadow" aria-pressed="false">云影视角</button>
+  <button type="button" data-ui-action="camera-ground-shadow" data-ui-part="camera-ground-shadow" aria-pressed="false">地面云影</button>
+  <button type="button" data-ui-action="fixture" data-ui-part="fixture" aria-pressed="true">遮挡物：开启</button>
+  <button type="button" data-ui-action="route" data-ui-part="route" aria-pressed="false">固定路线</button>
+  <button type="button" data-ui-action="cut">切镜</button>
+</nav>

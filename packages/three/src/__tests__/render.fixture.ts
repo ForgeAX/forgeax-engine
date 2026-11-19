@@ -123,7 +123,11 @@ export function comparePixels(actual: Uint8Array, expected: Uint8Array, epsilon 
   return error / actual.length;
 }
 
-export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: string) {
+export async function verifyReplay(
+  capture: THREE.ThreeFrameCapture,
+  label?: string,
+  extent = { width: SIZE, height: SIZE },
+) {
   const started = performance.now();
   const milestonesMs: Record<string, number> = {};
   // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
@@ -156,8 +160,8 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: str
       const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
       milestonesMs.readback = performance.now() - started;
       const image = readbackImage(read).unwrap();
-      expect(image.width).toBe(SIZE);
-      expect(image.height).toBe(SIZE);
+      expect(image.width).toBe(extent.width);
+      expect(image.height).toBe(extent.height);
       comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
       const validation = await nativeDevice.popErrorScope();
       expect(validation?.message ?? null).toBeNull();
@@ -251,7 +255,7 @@ async function verifyRenderFrames(
     return frame;
   };
   f.mesh.matrixAutoUpdate = false;
-  f.mesh.matrix.set(1, 0.35, 0.2, 0.1, 0, 0.8, -0.2, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  f.mesh.matrix.set(1, 0, 0, 0.1, 0, 0.8, 0, 0, 0, 0, 1.3, 0, 0, 0, 0, 1);
   const affine = await coreFrame('manual-affine');
   expect(equalBytes(displayPixels(affine), baseline)).toBe(false);
   const normals = new THREE.MeshStandardMaterial({ color: 0x80b090, roughness: 1 });
@@ -503,9 +507,22 @@ async function verifySpotLightMutations(
   f.scene.add(spot, spot.target);
   let spotBaseline: THREE.ThreeFrameCapture | undefined;
   let spotPixels: Uint8Array | undefined;
-  for (const state of ['baseline', 'power', 'range', 'target', 'hard-edge', 'restore'] as const) {
+  let reducedPower = 0;
+  for (const state of [
+    'baseline',
+    'power',
+    'decay',
+    'range',
+    'target',
+    'hard-edge',
+    'restore',
+  ] as const) {
     if (state === 'power') spot.power = 9 * Math.PI;
-    if (state === 'range') spot.distance = 1;
+    if (state === 'decay') spot.decay = 0;
+    if (state === 'range') {
+      spot.decay = 2;
+      spot.distance = 1;
+    }
     if (state === 'target') {
       spot.distance = 0;
       spot.target.position.x = 5;
@@ -526,10 +543,13 @@ async function verifySpotLightMutations(
       expect(actual[CENTER + 1]).toBeGreaterThan(100);
       spotBaseline = frame;
       spotPixels = actual;
+    } else if (state === 'decay') {
+      expect(actual[CENTER + 1]).toBeGreaterThan(reducedPower + 20);
     } else if (state === 'range' || state === 'target') {
       expect(actual[CENTER + 1]).toBeLessThan(3);
     } else if (state === 'power') {
-      expect(actual[CENTER + 1]).toBeLessThan((spotPixels?.[CENTER + 1] ?? 0) - 20);
+      reducedPower = actual[CENTER + 1] ?? 0;
+      expect(reducedPower).toBeLessThan((spotPixels?.[CENTER + 1] ?? 0) - 20);
     } else if (state === 'hard-edge') {
       expect(equalBytes(actual, spotPixels)).toBe(false);
     } else {
@@ -580,7 +600,7 @@ async function verifyMaterialMutations(
       try {
         comparePixels(displayPixels(frame), expected);
       } catch (cause) {
-        materialFailures.push(new Error(`${material.type} differs from Three r184`, { cause }));
+        materialFailures.push(new Error(`${material.type} differs from Three r187`, { cause }));
       }
     }
     if (material instanceof THREE.MeshPhysicalMaterial) {
@@ -612,7 +632,7 @@ async function verifyMaterialMutations(
             comparePixels(pixels, reference);
           } catch (cause) {
             materialFailures.push(
-              new Error(`Physical clearcoat ${clearcoat} differs from Three r184`, { cause }),
+              new Error(`Physical clearcoat ${clearcoat} differs from Three r187`, { cause }),
             );
           }
         }

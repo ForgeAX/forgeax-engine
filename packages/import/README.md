@@ -41,11 +41,17 @@ author light intensity remains authoritative.
 
 ScriptablePack sources use the public `@forgeax/engine-import` producer bridge.
 The output is the same Pack v2 durable payload used by ordinary importers. The
-17 `SCRIPTABLE_PACK_ASSET_KINDS` are `mesh`, `material`, `scene`, `texture`,
-`equirect`, `sampler`, `font`, `render-pipeline`, `tileset`, `video`,
-`skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`, and
-`particle-effect`, and `ies-profile`; all are loadable by GUID, while `refs`,
-`artifacts`, `mediaType`, and `programFingerprint` remain producer facts.
+`SCRIPTABLE_PACK_ASSET_KINDS` declares `plugin`, `mesh`, `material`, `scene`, `texture`, `texture-generator`,
+`gpu-texture`, `equirect`, `sampler`, `font`, `render-pipeline`, `tileset`,
+`video`, `skeleton`, `skin`, `animation-clip`, `animation-graph`, `audio`,
+`particle-effect`, `ies-profile`, `terrain`, `navigation-mesh`, `water-body`,
+`water-zone`, `water-wave-set`, `water-brush-recipe`, and `water-simulation-recipe`.
+These Water kinds use the closed [Types contracts](../types/README.md) and the
+ordinary Pack producer bridge. All are loadable by GUID;
+`refs`, `artifacts`, `mediaType`, and `programFingerprint` remain producer facts.
+For `texture-generator`, Cook prepares GPU programs. The independent `gpu-texture`
+producer publishes output references with no image artifact; runtime Render
+owns pixel generation and mipmaps.
 A published particle payload keeps `programFingerprint` and emitter summaries
 only; the `particle-effect/program.json` artifact is the single program copy.
 Particle mesh renderers retain either a static Mesh GUID or the closed
@@ -136,14 +142,18 @@ identity. The result is a dynamic `sourceKey -> Asset` map; the bridge derives
 assets through the same registered output producers and Pack v2 finalizer used
 by ordinary imports.
 
-The optional ScriptablePack product DDC preserves typed-array backing buffers
-and shared-view offsets using V8's native ArrayBuffer encoding. Cached geometry
-reads and Worker messages copy the asset's own buffers rather than the complete
-serialized Pack. Earlier cache formats are cold misses; source generation,
-content digests and publication validation remain authoritative.
+The optional ScriptablePack product DDC uses V8's native ArrayBuffer encoding.
+It preserves typed-array bytes and overlapping-view aliases. Disjoint views
+from Node's allocation pool are stored independently so allocator offsets and
+pool membership do not enter the SDK artifact. Cached geometry reads and Worker
+messages copy the asset's own buffers rather than the complete serialized Pack.
+Earlier cache formats are cold misses; source generation, content digests and
+publication validation remain authoritative.
 
-Authored material outputs with passes use the registered `material` NativeCooker,
-including Engine Standard roots. A shipped template is source ownership, not a
+Authored material outputs use the registered `material` NativeCooker,
+including Engine Standard roots and parent-only children. Cooking resolves the
+current Pack's GUID-linked material table before publication; external ancestors
+are observed content dependencies from the same staged generation. A shipped template is source ownership, not a
 published per-material program: the producer must retain its admitted ray-hit and
 Card derivatives as well as raster programs. Direct Pack v3 uses the same rule;
 legacy Pack v2 already-published Engine materials retain their transport contract.
@@ -458,6 +468,9 @@ Actual encoded artifacts retain independent byte-integrity SHA-256 digests.
 
 Direct Pack JSON cooks consecutive assets in batches of at most four when their
 native cookers declare `concurrency: 'parallel'`. Undeclared cookers run alone.
+Parallel ScriptablePack outputs refill each completed lane within the existing
+four-cook limit. Results publish in authored order through a bounded window;
+serial cookers remain barriers and failures drain already admitted siblings.
 Every admitted batch drains before validation returns its first authored error.
 GUID checks, fingerprints and reference closure retain the existing finalizer.
 
@@ -479,9 +492,11 @@ published snapshot only when no other subject is still pending) and hits only wh
 all digests are equal. The resolver cooks nothing: an unavailable dependency is a
 miss, the cook then waits on `asset-not-found`, and a later pass retries. A
 changed, missing or failed dependency is a miss, so a byte-equal dependency rebuilt from an edited source keeps its
-dependents. Products with a reference-only external row (no content bytes to
-validate; a known limit) or a native cooker without `cacheIdentity` bypass this
-cache; a miss or damaged entry rebuilds normally. These entries are disposable
+dependents. Reference-only external rows retain their GUID identity in the cached
+product and pass through the completed worklist's current reference validation;
+they neither require a content digest nor enter the content-read scheduling hints.
+Actual content reads without a digest and native cookers without `cacheIdentity`
+bypass this cache; a miss or damaged entry rebuilds normally. These entries are disposable
 derived data, not Pack or Catalog authority.
 
 > [!NOTE]
@@ -491,11 +506,17 @@ derived data, not Pack or Catalog authority.
 > reuse: serialization, decompression, or cache I/O failure falls back to normal
 > Pack production.
 
-Cache format 10 copies only reachable typed-view bytes into zeroed backing storage and
-normalizes string storage before V8 encoding. Unrelated pooled bytes and V8
-one-byte/two-byte string representations cannot enter SDK publication identity.
-Unobserved backing tails are trimmed. View offsets, shared buffers and explicitly
-reachable ArrayBuffer bytes are preserved.
+Cache format 11 copies only reachable typed-view bytes into zeroed backing storage,
+normalizes Node Buffer-pool groups and keeps the format 10 string normalization.
+Unrelated pooled bytes and V8 one-byte/two-byte string representations cannot
+enter SDK publication identity; unobserved backing tails are trimmed.
+
+| Input backing | Cached layout |
+|:--|:--|
+| Explicitly reachable `ArrayBuffer` | Full backing and view offsets are preserved. |
+| Ordinary nonpooled buffer | Shared backing and view offsets are preserved. |
+| Node Buffer pool | Overlapping views retain aliases; disjoint views use aligned backing groups. |
+
 Before V8 encoding, equal immutable plain-data subtrees and byte bodies are shared
 within the disposable product representation. Caller-owned publications are not
 mutated; sparse arrays, special scalar values and cyclic/non-POD graphs keep their

@@ -135,25 +135,52 @@ function packageOutput(
   return { ok: true, value: { format, output, distRoot } };
 }
 
+function invalidPackageOptions(options: PackageOptions): CommandResult<never> | undefined {
+  if (
+    options.format !== 'tauri' &&
+    (options.platform !== undefined || options.prepareOnly !== undefined)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'package-options-invalid',
+        expected: 'platform and prepareOnly only with the tauri format',
+        hint: 'Use --format tauri --platform windows|macos|linux|android|ios.',
+        detail: {},
+      },
+    };
+  }
+  return undefined;
+}
+
 export async function packageCommand(
   options: PackageOptions = {},
 ): Promise<CommandResult<unknown>> {
+  const invalid = invalidPackageOptions(options);
+  if (invalid !== undefined) return invalid;
   const facts = await readProjectFacts(options.root);
   if (!facts.ok) return facts;
+  if (options.format === 'tauri') {
+    const { packageTauriProject } = await import('./tauri-package.js');
+    return packageTauriProject(facts.value, options);
+  }
   const planned = packageOutput(facts.value, options);
   if (!planned.ok) return planned;
   const { format, output, distRoot } = planned.value;
-  const packageDocuments =
-    format === 'web-zip' ? await readGamePackageDocuments(facts.value.root) : undefined;
-  if (packageDocuments !== undefined && !packageDocuments.ok) return packageDocuments;
+  const packageDocuments = await packageDocumentList(format, facts.value.root);
+  if (!packageDocuments.ok) return packageDocuments;
   const source = await readDeliverySource(facts.value.root);
   const engine = await engineStatusCommand({ root: facts.value.root });
   if (!engine.ok) return engine;
-  const built = await buildCommand({
-    root: facts.value.root,
-    base: './',
-    ...(options.json === undefined ? {} : { json: options.json }),
-  });
+  const built = await buildProject(
+    {
+      root: facts.value.root,
+      base: './',
+      ...(options.json === undefined ? {} : { json: options.json }),
+    },
+    undefined,
+    format === 'single-html' ? 'native' : undefined,
+  );
   if (!built.ok) return built;
   const verified = await verifyDist(distRoot);
   if (!verified.ok) return verified;
@@ -164,7 +191,7 @@ export async function packageCommand(
   let playerRoot: string | undefined;
   try {
     const player = await prepareDist(distRoot, verified.value, {
-      compressDocuments: format === 'web-zip' && options.compress !== false,
+      compressDocuments: options.compress !== false,
       ...(format === 'web-zip'
         ? { outputParent: resolve(facts.value.root, '.forgeax/player') }
         : {}),
@@ -188,10 +215,7 @@ export async function packageCommand(
     const entries = await Promise.all(
       paths.map(async (path) => ({ path, bytes: await readFile(resolve(player.root, path)) })),
     );
-    const bytes = createZip([
-      ...entries,
-      ...(packageDocuments?.ok === true ? packageDocuments.value : []),
-    ]);
+    const bytes = createZip([...entries, ...packageDocuments.value]);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const finalSource = await readDeliverySource(facts.value.root);
     if (JSON.stringify(source) !== JSON.stringify(finalSource)) {
@@ -287,7 +311,8 @@ export async function testCommand(
         root: facts.value.root,
         run: true,
         watch: false,
-        passWithNoTests: false,
+        // A game may ship without tests; acceptance is the real play journey.
+        passWithNoTests: true,
         cliExclude: (await installedProjectSkillDirectories(facts.value.root)).map(
           (directory) => `${directory}/**`,
         ),
@@ -326,4 +351,8 @@ export async function testCommand(
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'project-tests-failed') };
   }
+}
+
+async function packageDocumentList(format: string, root: string) {
+  return format === 'web-zip' ? readGamePackageDocuments(root) : { ok: true as const, value: [] };
 }

@@ -192,12 +192,7 @@ export async function submitFrame(
   lease: RenderWorldLease,
 ): Promise<void> {
   propagateTransforms(world).unwrap();
-  await drawReadyFrame(renderer, {
-    leases: [lease],
-    camera: { lease },
-    environment: { lease },
-    fixedStep: world.getResource(FixedTime).tick,
-  });
+  await drawReadyFrame(renderer, { source: lease, fixedStep: world.getResource(FixedTime).tick });
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 

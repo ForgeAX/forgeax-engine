@@ -15,12 +15,12 @@
 //        (d) FALSIFY: the sorted path differs by > 0.1 between orders at a
 //            cyclic probe, so the probes observe order-dependent compositing;
 //        (e) no renderer error events.
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { readFileSync } from 'node:fs';
+
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SIZE = 128;
 const EPSILON = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -86,7 +86,7 @@ const { constructRuntimeRendererHost } = await import(
 const { OIT_PROBES, probePixel, probeReference, spawnOitScene } = await import('./oit-scene.mjs');
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const shaderManifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const shaderManifestUrl = processShaderManifestUrl(manifestPath);
 const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl });
 if (!constructed.ok) {
   console.error(`[smoke] FAIL - renderer construction: ${JSON.stringify(constructed.error)}`);
@@ -132,7 +132,7 @@ async function drawFrame(sample) {
   propagateTransforms(world).unwrap();
   const receipt = await drawReadyFrame(
     renderer,
-    { leases: [lease], camera: { lease }, environment: { lease } },
+    { source: lease },
     sample ? ['linear-hdr'] : undefined,
   );
   framesObserved++;

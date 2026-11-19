@@ -13,7 +13,6 @@ try {
   assert.equal(
     (
       await querySubmittedTerrainHeight(harness.firstReceipt, {
-        worldId: 0,
         entity: harness.subjects.terrain,
         x: 62,
         z: 62,

@@ -17,6 +17,7 @@ export function createRasterState(
   vertex: string,
   fragment: string,
   formats: readonly GPUTextureFormat[],
+  constants?: Readonly<Record<string, number>>,
 ): RasterState {
   const runtime = (frame as RenderPipelineFrame).runtime;
   const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
@@ -30,7 +31,12 @@ export function createRasterState(
       label,
       layout: pipelineLayout,
       vertex: { module, entryPoint: vertex, buffers: [] },
-      fragment: { module, entryPoint: fragment, targets: formats.map((format) => ({ format })) },
+      fragment: {
+        module,
+        entryPoint: fragment,
+        ...(constants === undefined ? {} : { constants }),
+        targets: formats.map((format) => ({ format })),
+      },
       primitive: { topology: 'triangle-list' },
     })
     .unwrap();

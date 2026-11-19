@@ -255,11 +255,7 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
     registerPropagateTransforms(world);
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
-    const frameRequest = {
-      leases: [worldAttachment1.value],
-      camera: { lease: worldAttachment1.value },
-      environment: { lease: worldAttachment1.value },
-    };
+    const frameRequest = { source: worldAttachment1.value };
 
     // feat-20260614 M8: registerWithGuid deleted. catalog(guid, payload) feeds
     // loadByGuid; world.allocSharedRef mints the column handle the bridge needs.

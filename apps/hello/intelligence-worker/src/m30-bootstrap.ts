@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -18,6 +20,8 @@ import { M30_LIMITS, M30_PROVIDER_A_ID, M30_PROVIDER_B_ID } from './m30-provider
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M30Proof>("m30IntelligenceProof");
+
 
 
 interface M30Proof {
@@ -180,7 +184,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         terminalCounts: new Map(),
         lastSequences: new Map(),
       };
-      world.insertResource('m30IntelligenceProof', proof);
+      world.insertResource(resource1, proof);
 
       const post = (event: string, detail: Record<string, unknown> = {}): void => {
         evidencePort?.postMessage({ kind: 'm30-worker-event', event, detail });
@@ -418,7 +422,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         if (state.phase === 'await-a-retry' && state.aRetryCompleted) finish();
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm30-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -437,11 +441,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           }
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm30/intelligence-system',
       );
 

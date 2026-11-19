@@ -471,6 +471,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       axes(false, false, false),
       axes(true, false, false),
       axes(true, false, true),
+      axes(false, false, true),
       axes(false, true, true),
     ];
     const resolve = (request: string, backend: 'webgpu' | 'wgpu-webgl2' = 'webgpu') =>
@@ -509,20 +510,28 @@ fn cloud_direct_solar_factorX() -> f32 {
   });
 
   it('resolves LEAN_LIGHTING together with the simple receiver', () => {
-    const axes = (simple: boolean, transmission: boolean) => ({
+    const axes = (simple: boolean, transmission: boolean, lean = simple) => ({
       defines: {
         STORAGE_BUFFER_AVAILABLE: true,
         TRANSMISSION_AVAILABLE: transmission,
         DIRECTIONAL_SHADOW_SIMPLE: simple,
-        LEAN_LIGHTING: simple,
+        LEAN_LIGHTING: lean,
       },
     });
-    const variants = [axes(false, false), axes(true, false), axes(false, true)];
+    const variants = [
+      axes(false, false),
+      axes(true, false),
+      axes(false, true),
+      axes(false, false, true),
+    ];
     const resolve = (request: string) =>
       resolveMaterialShaderVariantSet(request, variants, 'webgpu', true);
     const lean = resolve('DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true');
     expect(lean).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
     expect(lean).toContain('LEAN_LIGHTING=true');
+    const fullShadowLean = resolve('DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=true');
+    expect(fullShadowLean).toContain('DIRECTIONAL_SHADOW_SIMPLE=false');
+    expect(fullShadowLean).toContain('LEAN_LIGHTING=true');
     const general = resolve(
       'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+TRANSMISSION_AVAILABLE=true',
     );
@@ -546,6 +555,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       axes(false, false, false),
       axes(true, false, false),
       axes(false, true, false),
+      axes(false, false, true),
       axes(false, true, true),
     ];
     // Same order as the PSO seam: the discard mask selects its source axis
@@ -567,7 +577,9 @@ fn cloud_direct_solar_factorX() -> f32 {
       STANDARD_SURFACE_DISCARD_VIEW_CLIPPING | STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
     ]) {
       const general = seam(mask);
-      expect(general).toContain('CLIPPING_PLANES=true');
+      expect(general).toContain(
+        `CLIPPING_PLANES=${(mask & STANDARD_SURFACE_DISCARD_VIEW_CLIPPING) !== 0}`,
+      );
       expect(general).toContain('DIRECTIONAL_SHADOW_SIMPLE=false');
       expect(general).toContain('LEAN_LIGHTING=false');
       // The resolved key names a published row, so the draw compiles.
@@ -593,9 +605,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       applySurfaceDiscardAxis(request, materialAbiRasterConstants(undefined, mask)).variantSet;
     expect(select(0)).toBe(request);
     expect(select(STANDARD_SURFACE_DISCARD_VIEW_CLIPPING)).toBe(`${request}+CLIPPING_PLANES=true`);
-    expect(select(STANDARD_SURFACE_DISCARD_LOD_COVERAGE)).toBe(
-      `${request}+LOD_DITHER=true+CLIPPING_PLANES=true`,
-    );
+    expect(select(STANDARD_SURFACE_DISCARD_LOD_COVERAGE)).toBe(`${request}+LOD_DITHER=true`);
     // An explicit false is flipped in place; the empty all-true key stays.
     expect(
       applySurfaceDiscardAxis(
@@ -611,7 +621,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     ).toBe('');
   });
 
-  it('folds the discard sources a visible-surface or coverage row is published with', () => {
+  it('keeps visible-surface and temporal coverage discard demand independent', () => {
     const row = (visible: boolean, coverage: boolean, clip: boolean, lod: boolean) => ({
       defines: {
         STORAGE_BUFFER_AVAILABLE: true,
@@ -626,8 +636,8 @@ fn cloud_direct_solar_factorX() -> f32 {
       row(false, false, false, false),
       row(false, false, true, false),
       row(false, false, true, true),
-      row(true, false, true, true),
-      row(false, true, true, true),
+      row(true, false, false, false),
+      row(false, true, false, false),
     ];
     const resolve = (request: string) =>
       resolveMaterialShaderVariantSet(request, variants, 'webgpu', true);
@@ -652,8 +662,8 @@ fn cloud_direct_solar_factorX() -> f32 {
       `${scene}+COVERAGE_ONLY=true`,
     ]) {
       const key = resolve(request);
-      expect(key, request).toContain('CLIPPING_PLANES=true');
-      expect(key, request).toContain('LOD_DITHER=true');
+      expect(key, request).toContain('CLIPPING_PLANES=false');
+      expect(key, request).toContain('LOD_DITHER=false');
       expect(published(key), request).toBe(true);
     }
   });
@@ -1015,6 +1025,18 @@ describe('temporal material PSO creation contract', () => {
     });
   });
 
+  it.each([
+    'rgba8uint',
+    'r32uint',
+  ] as const)('refuses an integer normal carrier as a temporal velocity target: %s', (colorFormat) => {
+    const result = validateTemporalPipelineContract(source, { ...context, colorFormat });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('shader-compile-failed');
+      expect(result.error.expected).toBe('temporal material target format is rgba16float');
+    }
+  });
+
   it('accepts r8unorm only for the output-domain coverage temporal variant', () => {
     const coverageContext = {
       ...context,
@@ -1330,6 +1352,10 @@ describe('material shader color-domain contract', () => {
   it('routes HDR sprite targets to fs_main_hdr while unorm targets use fs_main', () => {
     const source = [
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-renderer.ts'), 'utf8'),
+      readFileSync(
+        resolve(import.meta.dirname, '../assembly/renderer-frame-operations.ts'),
+        'utf8',
+      ),
       readFileSync(resolve(import.meta.dirname, '../assembly/material-fragment-entry.ts'), 'utf8'),
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready-passes.ts'), 'utf8'),
     ]
@@ -1385,7 +1411,7 @@ describe('material shader color-domain contract', () => {
     );
     expect(source).toContain('? (vertexEntryPoint ?? authoredVertexEntry)');
     expect(source).toMatch(
-      /const instancesLayout =\s+[\s\S]*layoutKind === 'gpu-driven-pbr'[\s\S]*layoutKind === 'gpu-driven-skin'[\s\S]*layoutKind === 'gpu-driven-cluster-pbr'[\s\S]*layoutKind === 'gpu-driven-cluster-skin'[\s\S]*state\.gpuDrivenInstancesBindGroupLayout/u,
+      /function materialPipelineInstancesLayout\([\s\S]*layoutKind === 'gpu-driven-pbr'[\s\S]*layoutKind === 'gpu-driven-skin'[\s\S]*layoutKind === 'gpu-driven-cluster-pbr'[\s\S]*layoutKind === 'gpu-driven-cluster-skin'[\s\S]*state\.gpuDrivenInstancesBindGroupLayout/u,
     );
   });
 });

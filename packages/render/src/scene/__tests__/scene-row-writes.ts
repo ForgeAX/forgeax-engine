@@ -18,9 +18,8 @@ export function setSceneRow(
   }
   if (row.slot !== undefined && row.slot !== slot)
     throw new RangeError('Scene write requires its exact non-negative slot address');
-  const { worldId: _worldId, entityKey: _entityKey, transform, ...content } = row.snapshot;
+  const { entityKey: _entityKey, transform, ...content } = row.snapshot;
   return slots.write(slot, {
-    worldId: row.worldId,
     entityKey: row.entityKey,
     generation: row.generation,
     content,

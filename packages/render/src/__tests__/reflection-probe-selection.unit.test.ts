@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { type ReflectionProbeFact, selectReflectionProbe } from '../reflection/projection';
 
 const fact = (overrides: Partial<ReflectionProbeFact> = {}): ReflectionProbeFact => ({
-  worldId: 0,
   entityKey: 1,
   center: [0, 0, 0],
   halfExtents: [2, 2, 2],
@@ -37,7 +36,7 @@ describe('ReflectionProbe deterministic selection', () => {
   });
 
   it('does not depend on World reorder or mix World identities', () => {
-    const probes = [fact({ worldId: 2, entityKey: 8 }), fact({ worldId: 1, entityKey: 3 })];
+    const probes = [fact({ entityKey: 8 }), fact({ entityKey: 3 })];
     const first = selectReflectionProbe(probes, [0, 0, 0]);
     const second = selectReflectionProbe([...probes].reverse(), [0, 0, 0]);
     expect(first).toEqual(second);

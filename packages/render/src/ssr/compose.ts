@@ -11,6 +11,7 @@ import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
+import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 
 /** Material response is produced with the visible surface; composition never
  * redraws that surface, so equal-depth overlaps cannot apply the delta twice. */
@@ -22,6 +23,7 @@ export function addSsrCompositionPass(
     readonly fallback: GraphTextureView;
     readonly response: GraphTextureView;
     readonly normal: GraphTextureView;
+    readonly gbufferV2?: boolean;
     readonly view: GraphBuffer;
     readonly execution?: 'compute' | 'fragment';
     readonly mipLevelCount?: number;
@@ -66,6 +68,12 @@ export function addSsrCompositionPass(
     ],
     colorAttachments: [{ view: input.scene.view, loadOp: 'load', storeOp: 'store' }],
     encodeDirect: (pass, frame, resources) => {
+      if (input.gbufferV2 === true && frame.ssrShaders?.gbuffer !== 'standard-gbuffer/2')
+        throw new RhiError({
+          code: 'shader-compile-failed',
+          expected: 'standard-gbuffer/2 SSR composition',
+          hint: 'Rebuild the Engine shader manifest.',
+        });
       const source = fragment ? frame.ssrShaders?.composeFragment : frame.ssrShaders?.compose;
       if (source === undefined) return;
       const device = frame.runtime.device;
@@ -133,6 +141,9 @@ export function addSsrCompositionPass(
             fragment: {
               module,
               entryPoint: fragment ? 'fs_ssr_compose_fragment' : 'fs_ssr_compose',
+              ...(input.gbufferV2 === true
+                ? { constants: STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS }
+                : {}),
               targets: [
                 {
                   format: input.scene.format,

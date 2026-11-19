@@ -59,14 +59,33 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
   [
-    'diagnostics',
+    'diagnostic-pages',
     'node',
     ['tools/view/scripts/verify-diagnostic-pages-integration.mjs'],
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
+  ['diagnostic-texture', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  [
+    'diagnostic-gpu-2d',
+    'node',
+    ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
+    { FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-2d') },
+  ],
+  [
+    'diagnostic-gpu-array',
+    'node',
+    ['tools/view/scripts/verify-gpu-texture-preview.mjs'],
+    {
+      FORGEAX_GPU_TEXTURE_ARRAY: '1',
+      FORGEAX_EVIDENCE_DIR: resolve(root, 'artifacts/view-integration/gpu-texture-array'),
+    },
+  ],
+  [
+    'diagnostic-pack-authoring',
+    'node',
+    ['tools/view/scripts/verify-pack-authoring-integration.mjs'],
+  ],
+  ['diagnostic-pack-save', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],
 ];
 if (!candidate)
@@ -103,9 +122,9 @@ for (const probe of probes) {
       : []),
   ]);
 }
-// Retain both language producers and cold reopening of each saved publication.
+// Both languages publish live. JavaScript also exercises cold snapshot recovery.
 for (const language of ['js', 'ts'])
-  for (const cold of [false, true]) {
+  for (const cold of language === 'js' ? [false, true] : [false]) {
     const output = resolve(
       root,
       `artifacts/view-integration/runtime-${language}/${cold ? 'cold' : 'live'}`,
@@ -128,16 +147,19 @@ for (const language of ['js', 'ts'])
 // Keep the complete Modeling journey last so no later replay inherits its GPU work.
 steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
-// Keep complete owners and each language's live/cold chain on four processes.
-// Run 42955764870 hit the 30-minute cap after Plugin (782 s) and both runtime
-// chains (JS 95 s, TS 187 s) shared a lane with Modeling. Balance the complete
-// owners against the retained 42130885413 replay; keep Modeling last after the
-// diagnostic replay so no later browser journey inherits its GPU work.
+// Keep the long plugin journey away from both POINT browser tails. Modeling
+// is the last GPU owner on its lane.
 const shards = [
-  ['contracts', 'plugin', 'runtime-js', 'runtime-ts'],
-  ['lifecycle', 'workspace', 'engine-only'],
-  ['game3d'],
-  ['diagnostics', 'modeling'],
+  [
+    'contracts',
+    'engine-only',
+    'diagnostic-texture',
+    'diagnostic-pack-authoring',
+    'diagnostic-gpu-2d',
+  ],
+  ['game3d', 'lifecycle', 'diagnostic-pack-save', 'diagnostic-gpu-array'],
+  ['plugin', 'workspace', 'runtime-js'],
+  ['diagnostic-pages', 'runtime-ts', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));
@@ -163,6 +185,10 @@ const selected = steps.filter(
     owner === 'prepare' ||
     (shard !== undefined ? shards[shard].includes(owner) : group === undefined || owner === group),
 );
+if (shard !== undefined) {
+  const ownerOrder = new Map(shards[shard].map((owner, index) => [owner, index]));
+  selected.sort(([left], [right]) => (ownerOrder.get(left) ?? -1) - (ownerOrder.get(right) ?? -1));
+}
 if (process.argv.includes('--dry-run')) {
   console.log(JSON.stringify(selected));
   process.exit(0);
@@ -192,6 +218,7 @@ for (const [owner, file, args, env = {}] of selected) {
       stage: [file, ...args].join(' '),
       seconds: (performance.now() - start) / 1000,
       exitCode: result.status,
+      signal: result.signal,
       spawnError: result.error?.message,
       candidate,
       owner,

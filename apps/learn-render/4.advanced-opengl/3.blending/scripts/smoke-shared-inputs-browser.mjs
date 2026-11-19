@@ -3,6 +3,7 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
+import { zstdDecompressSync } from 'node:zlib';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -173,7 +174,7 @@ async function browserCheck(origin, resource) {
       }
       const urls = ['/blending/pack-index.json', '/blending/shaders/manifest.json'];
       const payloads = await Promise.all(urls.map(async (path) => {
-        const response = await page.evaluate(async (url) => { const r = await fetch(url); return { ok: r.ok, status: r.status, body: await r.text() }; }, path).catch((cause) => {
+        const response = await page.evaluate(async (url) => { const r = await fetch(url); const bytes = new Uint8Array(await r.arrayBuffer()); let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return { ok: r.ok, status: r.status, body: btoa(bin) }; }, path).catch((cause) => {
           throw new Error(`preview fetch failed ${path}: ${JSON.stringify({
             pageUrl: page.url(),
             failedRequests,
@@ -182,7 +183,10 @@ async function browserCheck(origin, resource) {
           })}`, { cause });
         });
         if (!response.ok) throw new Error(`preview fetch failed ${path}: ${response.status}`);
-        return response.body;
+        // A production build ships the shader manifest as one zstd frame; the pack index is plain JSON.
+        const raw = Buffer.from(response.body, 'base64');
+        const isZstd = raw.length > 4 && raw.readUInt32LE(0) === 0xfd2fb528;
+        return (isZstd ? zstdDecompressSync(raw) : raw).toString('utf8');
       }));
       const catalog = decodeCatalogWire(JSON.parse(payloads[0])).unwrap();
       const manifest = JSON.parse(payloads[1]);

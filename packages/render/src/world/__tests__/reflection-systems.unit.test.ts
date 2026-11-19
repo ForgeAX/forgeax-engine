@@ -1,7 +1,9 @@
+import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import type { ReflectionProbeRecordState } from '../../record/render-context';
 import type { CameraSnapshot } from '../../render-contract';
 import type { ExtractedFrame } from '../../render-system-extract';
+import { RenderCascadeFitOrder } from '../../system-order';
 import { TemporalViewHistory } from '../../temporal/frame';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import {
@@ -30,7 +32,7 @@ import {
 } from '../view-frame-systems';
 import { registerViewFrameStub, withInertTemporal } from './temporal-owner-fixture';
 
-const opts = { cameraOwner: 0, resourceOwner: 0 } as const;
+const opts = {} as const;
 const lights = {
   directional: [],
   point: [],
@@ -67,11 +69,12 @@ function setup({
   const world = createRenderWorld();
   world.insertResource(
     RenderViewInput,
-    new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
+    Object.assign(new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }), {
+      world: new World(),
+    }),
   );
   const probeFacts = [
     {
-      worldId: 0,
       entityKey: 5,
       center: [0, 0, 0],
       halfExtents: [1, 1, 1],
@@ -89,13 +92,13 @@ function setup({
   // Registered first so only `after` can order the probe system behind it.
   registerReflectionProbeSystems(world);
   registerViewFrameStub(world, () => recorder.prepareViewFrame());
-  world
-    .addSystem(RenderPrepare, {
-      name: RENDER_CASCADE_FIT_SYSTEM,
-      queries: [],
-      fn: () => void order.push('cascade-fit'),
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    sets: [RenderCascadeFitOrder],
+    name: RENDER_CASCADE_FIT_SYSTEM,
+    queries: [],
+    fn: () => void order.push('cascade-fit'),
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
   const recorder = {
     prepareViewFrame: () => {
       order.push('frame');
@@ -155,13 +158,12 @@ function setup({
       })
       .unwrap();
   }
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world) => stageViewFrame(world, staged, opts),
-    })
-    .unwrap();
+  const systemToken2 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    queries: [],
+    fn: (world) => stageViewFrame(world, staged, opts),
+  });
+  world.addSystem(RenderExtract, systemToken2).unwrap();
   return { world, order, log, staged, held, frameState, selected, projected, probeFacts };
 }
 
@@ -272,7 +274,7 @@ describe('view-reflection-probes', () => {
     beginRenderFrame(world, 1);
     expect(rows()).toBe(1);
     endRenderFrame(world);
-    world.getResource<{ facts: readonly unknown[] }>(RenderProbeInput).facts = [];
+    world.getResource(RenderProbeInput).facts = [];
     beginRenderFrame(world, 2);
     expect(rows()).toBe(0);
     expect(args[0]).toEqual([]);

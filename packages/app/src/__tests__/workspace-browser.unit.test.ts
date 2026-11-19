@@ -1,5 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { createWorldContext, Update, World } from '@forgeax/engine-ecs';
+import { createWorldContext, defineSystem, Update, World } from '@forgeax/engine-ecs';
 import { Camera, createBarrelDistortionMapping, SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Children, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
@@ -233,7 +233,6 @@ describe('workspace browser plugin lifecycle', () => {
       },
       meshMaterialBindings: [
         {
-          worldId: 0,
           worldIdentity: 'child',
           entityKey: 42,
           bindings: [{ handle: 4, source: 'mesh-default' }],
@@ -695,7 +694,6 @@ describe('workspace browser plugin lifecycle', () => {
                     ...childInspection,
                     meshMaterialBindings: [
                       {
-                        worldId: 0,
                         worldIdentity: childWorldIdentity,
                         entityKey: 42,
                         bindings: [{ handle: 4, source: 'mesh-default' }],
@@ -774,15 +772,14 @@ describe('workspace browser plugin lifecycle', () => {
           expect(pickErrors).toEqual([]);
         }
         if (cycle === 9) {
-          world
-            .addSystem(Update, {
-              name: 'broken-game',
-              queries: [],
-              fn() {
-                throw new Error('broken game');
-              },
-            })
-            .unwrap();
+          const systemToken1 = defineSystem({
+            name: 'broken-game',
+            queries: [],
+            fn() {
+              throw new Error('broken game');
+            },
+          });
+          world.addSystem(Update, systemToken1).unwrap();
           const update = world.update();
           expect(update.ok).toBe(false);
           const notify = vi.mocked(app.onError).mock.calls.at(-1)?.[0];
@@ -797,7 +794,7 @@ describe('workspace browser plugin lifecycle', () => {
           expect(failures).toEqual([
             expect.objectContaining({ kind: 'failed', targetId: 'target', error }),
           ]);
-          world.removeSystem(Update, 'broken-game').unwrap();
+          world.removeSystem(Update, systemToken1).unwrap();
         }
         expect(setInputAllowed).toHaveBeenCalledWith(false);
         await fiber.dispose();
@@ -809,11 +806,20 @@ describe('workspace browser plugin lifecycle', () => {
         if (cycle < 9) expect([...world.query({}).unwrap()].length).toBe(1);
       }
       setInputAllowed.mockClear();
+      const gameRead = vi.fn(() => ({ weatherCatalog: { version: 1, entries: ['clear'] } }));
       const game = await context.plugin(engineWorkspaceBrowserPlugin, {
         app,
         canvas,
         transport,
         input: { owner: () => 'game', grantGame() {}, revokeGame() {} } as never,
+        gameReads: () => [
+          {
+            id: 'fixture.weather',
+            title: 'Fixture weather',
+            read: () => null,
+            workspace: { entity: () => entity, read: gameRead },
+          },
+        ],
         project: { id: 'project', root: '/project' },
         target: {
           targetId: 'game',
@@ -845,13 +851,30 @@ describe('workspace browser plugin lifecycle', () => {
       };
       const reads = Promise.all([
         command('describe', { targetId: 'game' }),
-        command('scene.tree.get', { targetId: 'game', previewOwner: 'session' }),
+        command('entity.inspect', {
+          targetId: 'game',
+          previewOwner: 'session',
+          entityId: `game:${world.identity}:${entity}`,
+        }),
       ]);
       await vi.waitFor(() => expect(responsesEntered).toBe(2));
       expect(await reads).toEqual([
         expect.objectContaining({ ok: true }),
-        expect.objectContaining({ ok: true }),
+        expect.objectContaining({
+          ok: true,
+          value: expect.objectContaining({
+            gameObservations: [
+              {
+                id: 'fixture.weather',
+                targetId: 'game',
+                worldId: world.identity,
+                value: { weatherCatalog: { version: 1, entries: ['clear'] } },
+              },
+            ],
+          }),
+        }),
       ]);
+      expect(gameRead).toHaveBeenCalledOnce();
       let contextDisposed = false;
       const disposing = context.fiber.dispose().then(() => {
         contextDisposed = true;
@@ -867,6 +890,7 @@ describe('workspace browser plugin lifecycle', () => {
       expect(contextDisposed).toBe(true);
       expect(setInputAllowed).not.toHaveBeenCalled();
     } finally {
+      releaseFrame();
       vi.unstubAllGlobals();
       await context.fiber.dispose();
     }

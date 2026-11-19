@@ -1,16 +1,18 @@
 import { type App, createApp } from '@forgeax/engine-app';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { type EntityHandle, Time, Update, World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, Time, Update, World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { RhiBackendInstrumentation } from '@forgeax/engine-render';
 import {
   ANTIALIAS_MSAA,
   CAMERA_PROJECTION_ORTHOGRAPHIC,
   type CAMERA_PROJECTION_PERSPECTIVE,
   Camera,
   DirectionalLight,
+  extractCameraSnapshots,
   type FrameReceipt,
   Instances,
   LightProbe,
@@ -19,15 +21,16 @@ import {
   MeshRenderer,
   ReadonlyDynamicInputPage,
   type Renderer,
+  type RenderFrameInput,
   type RenderWorldLease,
   type SurfaceDynamicInputFrame,
   type SurfaceDynamicInputMemberIdentity,
 } from '@forgeax/engine-render';
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
-import type { EncodedTape } from '@forgeax/engine-rhi-debug';
+import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
   GlobalTransform,
-  PROPAGATE_TRANSFORMS_SYSTEM,
+  PropagateTransforms,
   propagateTransforms,
   scenePlugin,
   Transform,
@@ -38,7 +41,6 @@ import {
   loadVfxGpuEffect,
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
 } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost, type VfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import {
@@ -49,7 +51,10 @@ import {
   type SurfaceOpticalParameters,
 } from '../../../../apps/preview/src/surface-optical-evidence';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
-import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+} from '../../../../scripts/test/ready-render-frame.mjs';
 import quality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import {
   assetGuid,
@@ -57,8 +62,6 @@ import {
   RUSTED_IRON_MATERIAL_GUID,
 } from '../../../../templates/game-3d/assets/shared/asset-refs';
 import { testPlatform } from '../../../app/src/__tests__/platform-fixture';
-import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
-import { extractCameraSnapshots } from '../../../render/src/render-system-extract';
 import { installDefaultAssetDecoders } from '../asset-contributions';
 import { testAssets } from './helpers/runtime-assets';
 import {
@@ -154,11 +157,13 @@ export {
   SURFACE_OPTICAL_CASES,
 };
 
+// Keep surface-pipeline parity on the neutral Standard root. The game template
+// browser smoke exercises its separately generated paving texture and mips.
 export const SURFACE_CASES = [
   {
     id: 'default-base',
-    guid: AssetGuid.format(assetGuid(PACKAGE_IDS.materials, 'material/ground')),
-    sourceKey: 'material/ground',
+    guid: AssetGuid.format(assetGuid(PACKAGE_IDS.materials, 'material/standard-root')),
+    sourceKey: 'material/standard-root',
     sourceClosure: ['templates/game-3d/assets/materials.pack.ts'],
     pass: 'deferred',
     rootPlan: 'base-deferred',
@@ -803,7 +808,7 @@ interface SurfaceAppLifecycleCameraDiagnostics {
         readonly resourceGeneration: number | undefined;
         readonly status: 'submitted' | 'completed';
         readonly passes: readonly {
-          readonly pass: 'nearest-layer' | 'color';
+          readonly pass: NonNullable<SurfaceRenderSubmission>['passes'][number]['pass'];
           readonly memberEvidence: string;
           readonly memberIds: readonly string[] | undefined;
           readonly commandKinds: readonly string[];
@@ -1376,14 +1381,13 @@ class SurfaceAppLifecycleRun {
 
   /** The World Update system: the single time snapshot owner for events and play edges. */
   installEventSystem(): void {
-    this.world
-      .addSystem(Update, {
-        name: 'surface-water-public-event-lifecycle',
-        before: [PROPAGATE_TRANSFORMS_SYSTEM],
-        queries: [],
-        fn: () => this.updateWaterEvents(),
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      name: 'surface-water-public-event-lifecycle',
+      before: [PropagateTransforms],
+      queries: [],
+      fn: () => this.updateWaterEvents(),
+    });
+    this.world.addSystem(Update, systemToken1).unwrap();
   }
 
   subscribeFrames(): () => void {
@@ -1565,7 +1569,7 @@ class SurfaceAppLifecycleRun {
     if (snapshot === undefined) {
       throw new Error('surface-app-lifecycle: VFX recovery snapshot unavailable');
     }
-    const runtime = this.world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = this.world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     return {
       hostGeneration: snapshot.generation,
       renderGeneration: snapshot.renderGeneration,
@@ -1724,19 +1728,37 @@ class SurfaceAppLifecycleDrive {
     this.app = app;
   }
 
-  // Freeze the baseline at submission, before later RAF ticks can use the
-  // remaining receipt credit while this frame's GPU completion is pending.
+  // Freeze the App at its first submission. A cold device may only be preparing
+  // pipelines on that receipt, so finish the same baseline at zero World delta.
   async captureBaseline(): Promise<SurfaceAppLifecycleFrameCapture> {
     const { run, app } = this;
-    run.armLifecycleObservation();
-    run.pauseAfterReceiptCount = 1;
-    app.start().unwrap();
-    await run.waitForReceipts(1);
-    app.pause().unwrap();
-    const baselineReceipt = run.receipts[0];
-    if (baselineReceipt === undefined) {
-      throw new Error('surface-app-lifecycle: baseline receipt unavailable');
-    }
+    const baselineReceipt = await completeReadyFrame(
+      async () => {
+        const index = run.receipts.length;
+        run.armLifecycleObservation();
+        if (index === 0) {
+          run.pauseAfterReceiptCount = 1;
+          app.start().unwrap();
+        } else app.stepFrame(0).unwrap();
+        await run.waitForReceiptCount(index + 1);
+        const receipt = run.receipts[index];
+        if (receipt === undefined)
+          throw new Error('surface-app-lifecycle: baseline receipt unavailable');
+        return receipt;
+      },
+      {
+        timeoutMs: 30_000,
+        async onCompleted(receipt) {
+          if (
+            receipt.presentation !== 'ready' &&
+            receipt.observationDomains?.includes('linear-hdr')
+          ) {
+            const observed = await run.renderer.observe(receipt, { include: ['linear-hdr'] });
+            if (!observed.ok) throw observed.error;
+          }
+        },
+      },
+    );
     return run.captureReceipt('baseline', baselineReceipt);
   }
 
@@ -2191,7 +2213,7 @@ class SurfaceAppLifecycleDrive {
       expired = capture;
     }
     const expiredWorldTime = world.getResource(Time).elapsed;
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const expiredVfxPlayerCount = run.input.vfxHost.inspect(world)?.players.length ?? 0;
     if (
       runtime.inspectPlayers().length !== 0 ||
@@ -2890,8 +2912,74 @@ function surfaceAssets(source: AssetRegistry): AssetRegistry {
   return assets;
 }
 
+export interface SurfaceManagedMediumStage {
+  readonly renderPath: 'forward' | 'deferred';
+  readonly geometryLane: 'direct' | 'automatic';
+  readonly phase: 'standard' | 'baseline' | 'live-probe' | 'retirement' | 'restored';
+}
+
+export interface SurfaceManagedMediumCapture {
+  readonly recorder: Pick<RecorderAttachment, 'captureFrame' | 'frameBoundary'>;
+  completedFrame(evidence: {
+    readonly stage: SurfaceManagedMediumStage;
+    readonly receipt: Pick<FrameReceipt, 'frameId' | 'deviceGeneration' | 'graphGeneration'>;
+    readonly tape: EncodedTape;
+    readonly inspection: ReturnType<Renderer['inspect']>;
+  }): void;
+}
+
+/** Retain the actual ready submission, after its original completion fence. */
+export async function drawSurfaceManagedMediumFrame(
+  renderer: Renderer,
+  request: RenderFrameInput,
+  stage: SurfaceManagedMediumStage,
+  diagnostics?: SurfaceManagedMediumCapture,
+) {
+  if (
+    diagnostics === undefined ||
+    stage.renderPath !== 'forward' ||
+    stage.geometryLane !== 'automatic' ||
+    stage.phase === 'standard' ||
+    stage.phase === 'restored'
+  )
+    return drawReadyFrame(renderer, request, ['linear-hdr']);
+  const { recorder } = diagnostics;
+  let pending: ReturnType<RecorderAttachment['captureFrame']> | undefined;
+  let captured: { readonly frameId: number; readonly tape: EncodedTape } | undefined;
+  const options = {
+    beforeSubmit: async () => {
+      pending = recorder.captureFrame();
+      (await recorder.frameBoundary()).unwrap();
+    },
+    afterSubmit: async (receipt: FrameReceipt) => {
+      if (pending === undefined) throw new Error('managed-medium: capture was not armed');
+      (await recorder.frameBoundary()).unwrap();
+      const encoded = await pending;
+      pending = undefined;
+      if (!encoded.ok) throw encoded.error;
+      captured = { frameId: receipt.frameId, tape: encoded.value };
+    },
+    onCompleted: (receipt: FrameReceipt) => {
+      if (receipt.presentation !== 'ready') return;
+      if (captured?.frameId !== receipt.frameId)
+        throw new Error('managed-medium: capture does not match completed frame');
+      diagnostics.completedFrame({
+        stage,
+        receipt,
+        tape: captured.tape,
+        inspection: renderer.inspect(),
+      });
+    },
+  };
+  return drawReadyFrame(renderer, request, ['linear-hdr'], options);
+}
+
 /** Exercise shared Mesh defaults and last-probe retirement through both physical draw lanes. */
-export async function runSurfaceManagedMediumOracle(renderer: Renderer, source: AssetRegistry) {
+export async function runSurfaceManagedMediumOracle(
+  renderer: Renderer,
+  source: AssetRegistry,
+  diagnostics?: SurfaceManagedMediumCapture,
+) {
   const assets = surfaceAssets(source);
   const ordinary = assets
     .create(
@@ -2971,19 +3059,15 @@ export async function runSurfaceManagedMediumOracle(renderer: Renderer, source: 
       const configured = renderer.setProfile({ ...profile, renderPath, ssao: false });
       if (!configured.ok) throw configured.error;
       for (const geometryLane of ['direct', 'automatic'] as const) {
-        const capture = async (isMedium: boolean) => {
+        const capture = async (isMedium: boolean, phase: SurfaceManagedMediumStage['phase']) => {
           renderer.setSurfaceDynamicInput(isMedium ? { ...dynamicInput, frameTime: 0 } : undefined);
           world.update(1 / 60).unwrap();
           propagateTransforms(world).unwrap();
-          const receipt = await drawReadyFrame(
+          const receipt = await drawSurfaceManagedMediumFrame(
             renderer,
-            {
-              leases: [lease],
-              camera: { lease },
-              environment: { lease },
-              geometryLane,
-            },
-            ['linear-hdr'],
+            { source: lease, geometryLane },
+            { renderPath, geometryLane, phase },
+            diagnostics,
           ).catch((cause) => {
             throw new Error(
               `managed-medium: ${String(cause)}; rendererError=${JSON.stringify(lastRenderError)}`,
@@ -3012,9 +3096,9 @@ export async function runSurfaceManagedMediumOracle(renderer: Renderer, source: 
           if (!samples.every(Number.isFinite)) throw new Error('managed-medium: non-finite pixels');
           return samples;
         };
-        const standard = await capture(false);
+        const standard = await capture(false, 'standard');
         assets.update(mesh, { materialSlots: slots(medium) }).unwrap();
-        const baseline = await capture(true);
+        const baseline = await capture(true, 'baseline');
         const irradiance = new Float32Array(27);
         irradiance.set([256, 128, 64]);
         const probe = world
@@ -3023,13 +3107,13 @@ export async function runSurfaceManagedMediumOracle(renderer: Renderer, source: 
             { component: LightProbe, data: { irradiance, radius: 20 } },
           )
           .unwrap();
-        const lit = await capture(true);
+        const lit = await capture(true, 'live-probe');
         world.despawn(probe).unwrap();
-        const retired = await capture(true);
+        const retired = await capture(true, 'retirement');
         if ((renderer.inspect().renderScene.probeBlend?.records.length ?? 0) !== 0)
           throw new Error('managed-medium: last-probe retirement retained object records');
         assets.update(mesh, { materialSlots: slots(ordinary) }).unwrap();
-        const restored = await capture(false);
+        const restored = await capture(false, 'restored');
         const result = {
           renderPath,
           geometryLane,
@@ -3145,12 +3229,7 @@ export async function runSurfaceOpticalOracle(
     for (let frame = 0; frame < quality.staticFrames; frame += 1) {
       renderer.setSurfaceDynamicInput({ ...dynamicInput, frameTime: 0 });
       world.update(1 / 60).unwrap();
-      const request = {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-        geometryLane: 'direct' as const,
-      };
+      const request = { source: attached.value, geometryLane: 'direct' as const };
       const finalFrame = frame === quality.staticFrames - 1;
       // A diagnostic recorder must start after runtime preparation, so its
       // one physical frame contains the actual nearest/color picture.
@@ -3543,12 +3622,7 @@ async function captureSurfaceMsaaEdgeFrame(input: {
     const finalFrame = frame === input.warmupFrames - 1;
     const drawn = await drawReadyFrame(
       input.renderer,
-      {
-        leases: [input.lease],
-        camera: { lease: input.lease, entityKey: input.cameraEntity },
-        environment: { lease: input.lease },
-        geometryLane: 'direct',
-      },
+      { source: input.lease, camera: { entityKey: input.cameraEntity }, geometryLane: 'direct' },
       finalFrame ? ['linear-hdr'] : undefined,
     );
     if (finalFrame) receipt = drawn;

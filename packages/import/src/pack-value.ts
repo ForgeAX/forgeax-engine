@@ -1,3 +1,5 @@
+import { isDeepFrozenJson } from '@forgeax/engine-types';
+
 /**
  * Shared digest and Pack projection: supported numeric views become arrays,
  * rather than the indexed objects that JSON.stringify produces for native views.
@@ -5,6 +7,9 @@
  */
 export function normaliseForPack(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
+  // Deep-frozen JSON holds no byte views and cannot change: share it as is, so
+  // later digests keep seeing one object.
+  if (Object.isFrozen(value) && isDeepFrozenJson(value)) return value;
   if (
     value instanceof Float32Array ||
     value instanceof Float64Array ||

@@ -1,10 +1,6 @@
-import { type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, Update, type World } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
-import {
-  FRAME_START_SCAN_SYSTEM_NAME,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputSnapshot,
-} from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } from '@forgeax/engine-input';
 import { quat } from '@forgeax/engine-math';
 import type { CameraExposure } from '@forgeax/engine-render';
 import {
@@ -21,6 +17,8 @@ import {
   validateCameraExposure,
 } from '@forgeax/engine-render';
 import { Children, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
+import type { ExecutionHdrObservationResult } from './execution/types';
+import { observeLuminance, type PixelAssetNames, pickPixel } from './observation-pixels';
 
 export interface AppObservation {
   readonly worldIdentity: string;
@@ -32,6 +30,13 @@ export interface AppObservation {
   readonly prepareFrame: () => void;
   /** Return control to the game camera and remove the transient observation camera. */
   readonly release: () => void;
+  /**
+   * Classify the next presented frame's pre-tonemap scene luminance into EV
+   * codes and bloom high-pass classes (below / knee / above threshold).
+   */
+  readonly luminance: () => Promise<unknown>;
+  /** Report entity, mesh, material slot and HDR value visible at one display pixel. */
+  readonly pick: (value: unknown) => Promise<unknown>;
 }
 
 /** Apply the shared Engine pointer-look rotation to an observation transform. */
@@ -75,9 +80,15 @@ export function createAppObservation(
       entity: number,
     ): RenderSceneBounds | undefined | Promise<RenderSceneBounds | undefined>;
   },
-  execution: { readonly report: () => unknown },
+  execution: {
+    readonly report: () => unknown;
+    readonly observeNextHdrFrame?: (options?: {
+      readonly signal?: AbortSignal;
+    }) => Promise<ExecutionHdrObservationResult>;
+  },
+  assets?: PixelAssetNames,
 ): AppObservation {
-  const observationSystem = 'app-observation-camera-ownership';
+  let observationSystem: import('@forgeax/engine-ecs').System<readonly []> | undefined;
   const firstCameraEntity = (): EntityHandle | undefined => {
     const cameras = world.query({ with: [Camera, Transform] }).unwrap();
     for (const span of cameras.spans().unwrap()) {
@@ -141,10 +152,11 @@ export function createAppObservation(
     if (observationEntity === undefined) gameCameraEntity = source;
     if (observationEntity !== undefined) {
       if (observationEntity !== source) {
+        gameCameraEntity = source;
         world.set(observationEntity, Camera, cameraValue(source) as never).unwrap();
         world.set(observationEntity, Transform, transformValue(source) as never).unwrap();
       }
-      setActiveCamera(world, observationEntity);
+      setActiveCamera(world, observationEntity, gameCameraEntity);
       return observationEntity;
     }
     observationEntity = world
@@ -153,7 +165,7 @@ export function createAppObservation(
         { component: Transform, data: transformValue(source) as never },
       )
       .unwrap();
-    setActiveCamera(world, observationEntity);
+    setActiveCamera(world, observationEntity, gameCameraEntity);
     return observationEntity;
   };
 
@@ -170,7 +182,7 @@ export function createAppObservation(
     if (next !== undefined) setActiveCamera(world, next);
     gameCameraEntity = undefined;
     if (ownershipInstalled) {
-      world.removeSystem(Update, observationSystem);
+      if (observationSystem !== undefined) world.removeSystem(Update, observationSystem);
       ownershipInstalled = false;
     }
   };
@@ -180,30 +192,29 @@ export function createAppObservation(
   // and remove this lease-owned system when control returns to the game.
   function installOwnershipSystem(): void {
     if (ownershipInstalled) return;
-    world
-      .addSystem(Update, {
-        name: observationSystem,
-        queries: [],
-        after: [FRAME_START_SCAN_SYSTEM_NAME],
-        fn: () => {
-          const active = observationEntity;
-          if (active === undefined) return;
-          rememberGameCamera();
-          const snapshot = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
-            ? world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)
-            : undefined;
-          if (snapshot?.mouse.pointerLocked) {
-            const transform = world.get(active, Transform);
-            if (transform.ok) {
-              const { x, y } = snapshot.mouse.movementDelta;
-              const orientation = rotateObservationCamera(transform.value.quat, x, y);
-              world.set(active, Transform, { quat: orientation }).unwrap();
-            }
+    observationSystem = defineSystem({
+      name: 'app-observation-camera-ownership',
+      queries: [],
+      after: [InputFrameStartScan],
+      fn: () => {
+        const active = observationEntity;
+        if (active === undefined) return;
+        rememberGameCamera();
+        const snapshot = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
+          ? world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)
+          : undefined;
+        if (snapshot?.mouse.pointerLocked) {
+          const transform = world.get(active, Transform);
+          if (transform.ok) {
+            const { x, y } = snapshot.mouse.movementDelta;
+            const orientation = rotateObservationCamera(transform.value.quat, x, y);
+            world.set(active, Transform, { quat: orientation }).unwrap();
           }
-          setActiveCamera(world, active);
-        },
-      })
-      .unwrap();
+        }
+        setActiveCamera(world, active, gameCameraEntity);
+      },
+    });
+    world.addSystem(Update, observationSystem).unwrap();
     ownershipInstalled = true;
   }
 
@@ -379,9 +390,22 @@ export function createAppObservation(
     }
     return cameraState();
   };
+  const pixels = {
+    world,
+    ...(execution.observeNextHdrFrame === undefined
+      ? {}
+      : { observeNextHdrFrame: execution.observeNextHdrFrame }),
+    ...(assets === undefined ? {} : { assets }),
+    camera: () => {
+      const active = resolveGameCameraEntity();
+      return active === undefined ? undefined : cameraValue(active);
+    },
+  };
   return {
     worldIdentity: world.identity,
     executionReport: () => execution.report(),
+    luminance: () => observeLuminance(pixels),
+    pick: (value) => pickPixel(pixels, value),
     camera: { get: cameraState, set: setCamera },
     find({ name, limit = 20 }) {
       const matches: { entity: number; name: string; position: number[] }[] = [];
@@ -407,7 +431,7 @@ export function createAppObservation(
     prepareFrame() {
       if (observationEntity !== undefined) {
         rememberGameCamera();
-        setActiveCamera(world, observationEntity);
+        setActiveCamera(world, observationEntity, gameCameraEntity);
       }
     },
     async focus(value) {

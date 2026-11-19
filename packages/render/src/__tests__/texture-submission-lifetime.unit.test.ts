@@ -6,6 +6,7 @@ import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { type MaterialSourceSnapshot, materialSourceScope } from '../material-source';
 import { worldRenderResources } from '../publication/resource-scope';
 
 function texture(generate = false): TextureAsset {
@@ -27,6 +28,161 @@ async function setup() {
   store.bindDeviceScope(scope);
   return { device, store, scope, world: new World({ assets: new AssetRegistry() }) };
 }
+
+it('retains accepted material scopes across drained frames and retires replaced scopes after their submissions', async () => {
+  const { device, store, scope, world } = await setup();
+  const owner = worldRenderResources(world);
+  const firstSource = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(firstSource).unwrap();
+  const source = (revision: number, value: TextureAsset): MaterialSourceSnapshot => ({
+    root: handle,
+    revision,
+    assets: [{ handle, revision, value }],
+  });
+  const firstScope = materialSourceScope(owner, source(1, firstSource));
+  const firstOwner = store.retainMaterialScope(firstScope);
+  const created = vi.spyOn(device, 'createTexture');
+  const destroyed = vi.spyOn(device, 'destroyTexture');
+  const first = store.ensureResident(handle, firstSource, firstScope).unwrap();
+  for (let frame = 0; frame < 4; frame++) {
+    const completed = Promise.resolve();
+    store.trackMeshSubmission(completed);
+    await completed;
+    expect(store.ensureResident(handle, firstSource, firstScope).unwrap().view).toBe(first.view);
+  }
+  expect(created).toHaveBeenCalledTimes(1);
+  let finish!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  store.trackMeshSubmission(completed);
+  const nextSource = { ...firstSource, data: new Uint8Array(64) };
+  const nextScope = materialSourceScope(owner, source(2, nextSource));
+  const nextOwner = store.retainMaterialScope(nextScope);
+  const next = store.ensureResident(handle, nextSource, nextScope).unwrap();
+  const released = firstOwner.release(true);
+  expect(firstScope.resolveAsset(handle).unwrap()).toBe(firstSource);
+  expect(first.texture.isDestroyed).toBe(false);
+  expect(next.view).not.toBe(first.view);
+  finish();
+  await released;
+  expect(first.texture.isDestroyed).toBe(true);
+  expect(next.texture.isDestroyed).toBe(false);
+  expect(destroyed).toHaveBeenCalledTimes(1);
+  await nextOwner.release(true);
+  expect(next.texture.isDestroyed).toBe(true);
+  for (let revision = 3; revision < 35; revision++) {
+    const currentScope = materialSourceScope(owner, source(revision, texture()));
+    const currentOwner = store.retainMaterialScope(currentScope);
+    const current = store.ensureResident(handle, texture(), currentScope).unwrap();
+    expect(current.texture.isDestroyed).toBe(false);
+    expect(created.mock.calls.length - destroyed.mock.calls.length).toBe(1);
+    await currentOwner.release(true);
+    expect(current.texture.isDestroyed).toBe(true);
+  }
+  expect(created.mock.calls.length).toBe(destroyed.mock.calls.length);
+  store.destroyAll();
+  scope.retire();
+  expect(scope.resourceDelta()).toBe(0);
+});
+
+it('retires a replaced material scope after its own submission without waiting for unrelated work', async () => {
+  const { store, scope, world } = await setup();
+  const owner = worldRenderResources(world);
+  const image = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(image).unwrap();
+  const source = (revision: number): MaterialSourceSnapshot => ({
+    root: handle,
+    revision,
+    assets: [{ handle, revision, value: image }],
+  });
+  const firstScope = materialSourceScope(owner, source(1));
+  const firstOwner = store.retainMaterialScope(firstScope);
+  const first = store.ensureResident(handle, image, firstScope).unwrap();
+  let finishFirst!: () => void;
+  let finishSecond!: () => void;
+  const firstCompleted = new Promise<void>((resolve) => {
+    finishFirst = resolve;
+  });
+  const secondCompleted = new Promise<void>((resolve) => {
+    finishSecond = resolve;
+  });
+  store.trackMeshSubmission(firstCompleted);
+  const released = firstOwner.release(true);
+  const secondScope = materialSourceScope(owner, source(2));
+  const secondOwner = store.retainMaterialScope(secondScope);
+  const second = store.ensureResident(handle, image, secondScope).unwrap();
+  store.trackMeshSubmission(secondCompleted);
+  try {
+    expect(first.texture.isDestroyed).toBe(false);
+    finishFirst();
+    await released;
+    expect(first.texture.isDestroyed).toBe(true);
+    expect(second.texture.isDestroyed).toBe(false);
+  } finally {
+    finishSecond();
+    await secondCompleted;
+    await secondOwner.release(true);
+    store.destroyAll();
+    scope.retire();
+  }
+  expect(scope.resourceDelta()).toBe(0);
+});
+
+it('keeps a separately held material scope alive until its own later submission completes', async () => {
+  const { store, scope, world } = await setup();
+  const image = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(image).unwrap();
+  const fixed = materialSourceScope(worldRenderResources(world), {
+    root: handle,
+    revision: 1,
+    assets: [{ handle, revision: 1, value: image }],
+  });
+  const current = store.retainMaterialScope(fixed);
+  const held = store.retainMaterialScope(fixed);
+  const resident = store.ensureResident(handle, image, fixed).unwrap();
+  await current.release(true);
+  expect(resident.texture.isDestroyed).toBe(false);
+  let finish!: () => void;
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  held.track(completed);
+  const released = held.release(true);
+  expect(resident.texture.isDestroyed).toBe(false);
+  finish();
+  await released;
+  expect(resident.texture.isDestroyed).toBe(true);
+  store.destroyAll();
+  scope.retire();
+  expect(scope.resourceDelta()).toBe(0);
+});
+
+it('retires pending material texture derivations even before a resident allocation exists', async () => {
+  const { store, scope, world } = await setup();
+  const image = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(image).unwrap();
+  const encoded: TextureAsset = { ...image, encoding: 'ktx2', data: new Uint8Array(4) };
+  const fixed = materialSourceScope(worldRenderResources(world), {
+    root: handle,
+    revision: 1,
+    assets: [{ handle, revision: 1, value: encoded }],
+  });
+  const current = store.retainMaterialScope(fixed);
+  expect(store.prepareTextureData(handle, encoded, fixed).ok).toBe(false);
+  const completed = store.waitTextureData(handle, fixed);
+  expect(store.isTexturePreparing(handle, fixed)).toBe(true);
+  try {
+    const released = current.release(true);
+    expect(store.isTexturePreparing(handle, fixed)).toBe(false);
+    await released;
+  } finally {
+    await completed;
+    store.destroyAll();
+    scope.retire();
+  }
+  expect(scope.resourceDelta()).toBe(0);
+});
 
 it('invalidates a borrowed texture immediately while old submissions retire in completion order', async () => {
   const { store, scope, world } = await setup();
@@ -213,19 +369,19 @@ it('keeps numeric scopes separate from handle generations and sweeps exact ident
   const { store, scope, world } = await setup();
   const source = texture(),
     first = runtimeAssetRegistry(world.assets).create(source).unwrap();
-  const otherWorld = store.ensureResident(first, source, 1).unwrap();
-  const original = store.ensureResident(first, source, 0).unwrap();
+  const otherWorld = store.ensureResident(first, source, undefined).unwrap();
+  const original = store.ensureResident(first, source, undefined).unwrap();
   runtimeAssetRegistry(world.assets).release(first).unwrap();
   const next = { ...source, data: new Uint8Array(64) },
     second = runtimeAssetRegistry(world.assets).create(next).unwrap();
-  const replacement = store.ensureResident(second, next, 0).unwrap();
+  const replacement = store.ensureResident(second, next, undefined).unwrap();
   expect(replacement.view).not.toBe(original.view);
   expect(replacement.view).not.toBe(otherWorld.view);
-  expect(store.getTextureGpuView(first, 1)).toBe(otherWorld.view);
+  expect(store.getTextureGpuView(first, undefined)).toBe(otherWorld.view);
   store.releaseUnreferenced(new Set([Number(second)]));
-  expect(store.getTextureGpuView(first, 0)).toBeUndefined();
-  expect(store.getTextureGpuView(first, 1)).toBeUndefined();
-  expect(store.getTextureGpuView(second, 0)).toBe(replacement.view);
+  expect(store.getTextureGpuView(first, undefined)).toBeUndefined();
+  expect(store.getTextureGpuView(first, undefined)).toBeUndefined();
+  expect(store.getTextureGpuView(second, undefined)).toBe(replacement.view);
   runtimeAssetRegistry(world.assets).release(second).unwrap();
   store.destroyAll();
   scope.retire();

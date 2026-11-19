@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,6 +24,59 @@ afterEach(async () => {
 });
 
 describe('checkProjectAssets', () => {
+  it('checks cloud materials and instances without a project build plugin', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-cloud-check-'));
+    temporary.push(root);
+    await mkdir(resolve(root, 'assets'));
+    await writeFile(
+      resolve(root, 'assets/cloud.pack.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        packageId: '019a50a5-0000-7000-8000-000000000001',
+        assets: {
+          cloud: {
+            kind: 'cloud-material',
+            execution: 'cooked',
+            payload: {
+              version: 1,
+              model: {
+                kind: 'uniform',
+                sample: {
+                  extinctionPerMeter: 0.00012,
+                  albedo: [1, 1, 1],
+                  emissivePerMeter: [0, 0, 0],
+                  materialAO: 1,
+                },
+              },
+              parameters: {},
+            },
+          },
+          instance: {
+            kind: 'cloud-material-instance',
+            execution: 'cooked',
+            payload: {
+              version: 1,
+              material: '019a50a5-0000-7000-8000-000000000004',
+              parameters: {},
+              overrides: {},
+            },
+          },
+        },
+      }),
+    );
+    expect(await checkProjectAssets(root, ['assets'])).toEqual({
+      checked: 2,
+      skipped: [],
+      failures: [],
+    });
+    const path = resolve(root, 'assets/cloud.pack.json');
+    await writeFile(path, (await readFile(path, 'utf8')).replace('0.00012', '-2'));
+    const invalid = await checkProjectAssets(root, ['assets']);
+    expect(invalid.checked).toBe(1);
+    expect(invalid.failures).toMatchObject([{ key: 'cloud', kind: 'cloud-material' }]);
+    expect(invalid.failures[0]?.message).toContain('extinctionPerMeter');
+  });
+
   it('cooks a textured custom particle-billboard material and its vfx programs', async () => {
     const root = await project();
     expect(await checkProjectAssets(root, ['.'])).toEqual({

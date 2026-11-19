@@ -13,12 +13,12 @@ let smokeAssets;
 //   move light        the point shadow follows the moved light
 // Evidence is self-verification against geometric shadow positions derived
 // from the authored light and sphere positions.
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { createProjector, luminance, openDawnCanvas } from '../../scripts/dawn-readback.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -37,11 +37,11 @@ const {
 } = await import('../src/scene.mjs');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const manifest = readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8');
+
 let renderer;
 try {
   const hostResult = await constructRuntimeRendererHost(dawn.canvas, {}, {
-    shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
+    shaderManifestUrl: processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json')),
   });
 if (!hostResult.ok) throw hostResult.error;
 ({ renderer, assets: smokeAssets } = hostResult.value);

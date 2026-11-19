@@ -10,6 +10,7 @@ import {
   SIZE,
   verifyReplay,
 } from './render.fixture';
+import { shouldReplayAuthoredShadow } from './shadow-replay-policy.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
 export interface AuthoredShadowJourney {
@@ -22,6 +23,7 @@ export interface AuthoredShadowJourney {
 
 export function createAuthoredShadowJourney(
   kind: 'directional' | 'point' | 'spot',
+  { coreValidation = false }: { readonly coreValidation?: boolean } = {},
 ): AuthoredShadowJourney {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x405060);
@@ -53,6 +55,7 @@ export function createAuthoredShadowJourney(
   const renderer = new THREE.WebGPURenderer({ canvas });
   renderer.shadowMap.enabled = true;
   const replays = replayChecks();
+  let captureCount = 0;
   let replayCount = 0;
   const verifyCapturedReplay = async (capture: THREE.ThreeFrameCapture, label: string) => {
     if (replayCount++ === 0) await verifyReplay(capture, label);
@@ -77,8 +80,11 @@ export function createAuthoredShadowJourney(
       milestonesMs.saved = performance.now() - started;
       const pixels = displayPixels(capture);
       comparePixels(pixels, reference);
-      await verifyCapturedReplay(capture, `${kind}/${name}`);
-      milestonesMs.replayScheduled = performance.now() - started;
+      captureCount++;
+      if (shouldReplayAuthoredShadow(name, coreValidation)) {
+        await verifyCapturedReplay(capture, `${kind}/${name}`);
+        milestonesMs.replayScheduled = performance.now() - started;
+      } else milestonesMs.replayDeferred = performance.now() - started;
       return pixels;
     } finally {
       // biome-ignore lint/suspicious/noConsole: Preserve the original case deadline with named phase receipts.
@@ -130,7 +136,7 @@ export function createAuthoredShadowJourney(
     }
     renderer.shadowMap.type = THREE.BasicShadowMap;
     await measure('basic');
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     await measure('pcf-soft');
     if (!(sun instanceof THREE.PointLight)) {
       sun.shadow.mapSize.set(256, 128);
@@ -166,12 +172,21 @@ export function createAuthoredShadowJourney(
       sun.shadow.radius = 4;
       await measure('variance-wide');
     }
+    expect(captureCount).toBe(kind === 'point' ? 13 : 18);
+    expect(replayCount).toBe(
+      coreValidation ? (kind === 'point' ? 10 : 14) : kind === 'point' ? 13 : 18,
+    );
   };
   const withCompleteReplays = async (verify: () => Promise<void>) => {
     try {
       await verify();
     } finally {
       await verifyPendingReplays();
+      // biome-ignore lint/suspicious/noConsole: Record actual retired core/full replay counts.
+      console.info(
+        '[three-shadow-roster]',
+        JSON.stringify({ kind, coreValidation, captures: captureCount, replays: replayCount }),
+      );
     }
   };
   const dispose = async () => {
@@ -196,14 +211,16 @@ export function createAuthoredShadowJourney(
         await verifyBaseline();
         await verifyAuthoredFilters();
         await verifyLayersAndVariance();
-        expect(replayCount).toBe(kind === 'point' ? 13 : 18);
       }),
     dispose,
   };
 }
 
-export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot') {
-  const journey = createAuthoredShadowJourney(kind);
+export async function verifyAuthoredShadow(
+  kind: 'directional' | 'point' | 'spot',
+  options: { readonly coreValidation?: boolean } = {},
+) {
+  const journey = createAuthoredShadowJourney(kind, options);
   try {
     await journey.verifyAll();
   } finally {

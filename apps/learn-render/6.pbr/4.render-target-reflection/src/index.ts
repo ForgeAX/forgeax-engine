@@ -722,11 +722,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
         const updated = world.update(1 / 60);
         if (!updated.ok) throw updated.error;
-        const next = renderer.draw({
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const next = renderer.draw({ source: attached.value });
         if (!next.ok) throw next.error;
         const completed = await next.value.completed;
         if (!completed.ok) throw completed.error;
@@ -745,11 +741,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       lastTickets = cubeTickets;
       const updated = world.update(1 / 60);
       if (!updated.ok) throw updated.error;
-      const next = renderer.draw({
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const next = renderer.draw({ source: attached.value });
       if (!next.ok) throw next.error;
       const finalReceipt = next.value;
       const completed = await finalReceipt.completed;
@@ -891,11 +883,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const drawReflectionEvidenceFrame = async (passNames: Set<string>): Promise<FrameReceipt> => {
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) throw next.error;
     const completed = await next.value.completed;
     if (!completed.ok) throw completed.error;
@@ -1014,11 +1002,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     submitFailureArmed = true;
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const failed = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const failed = renderer.draw({ source: attached.value });
     if (failed.ok) throw new Error('reflection fallback submit fault was not injected');
     const afterFailure = renderer.inspect().reflectionProbes;
     const afterRow = probeFallbackRow(afterFailure);
@@ -1133,11 +1117,7 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const drawNeutralTransitionFrame = async (): Promise<void> => {
     const updated = world.update(1 / 60);
     if (!updated.ok) throw updated.error;
-    const next = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
+    const next = renderer.draw({ source: attached.value });
     if (!next.ok) throw next.error;
     const completed = await next.value.completed;
     if (!completed.ok) throw completed.error;

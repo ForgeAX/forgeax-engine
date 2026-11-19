@@ -10,6 +10,39 @@ type TargetCopyGraphCaptureRequest = Exclude<
   { readonly kind: 'pass-replay' }
 >;
 
+type CaptureDescriptor = NonNullable<
+  ReturnType<
+    NonNullable<
+      NonNullable<RenderFrameState['compiledFrameGraph']>['targets']
+    >['getColorTargetDescriptor']
+  >
+>;
+
+function matchesCaptureDescriptor(
+  descriptor: CaptureDescriptor,
+  expected: TargetCopyGraphCaptureRequest['expected'],
+): boolean {
+  return (
+    descriptor.format === expected.format &&
+    descriptor.size.width === expected.width &&
+    descriptor.size.height === expected.height &&
+    (descriptor.usage & expected.usage) === expected.usage
+  );
+}
+
+function matchesCaptureIdentity(
+  actual: TargetCopyGraphCaptureRequest['expected']['identity'],
+  expected: TargetCopyGraphCaptureRequest['expected']['identity'],
+): boolean {
+  return (
+    expected === undefined ||
+    (actual !== undefined &&
+      actual.graphGeneration === expected.graphGeneration &&
+      actual.recordFrameNumber === expected.recordFrameNumber &&
+      actual.textureIdentity === expected.textureIdentity)
+  );
+}
+
 export function encodeGraphTargetCapture(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -19,6 +52,8 @@ export function encodeGraphTargetCapture(
   const graphAccess = frameState.compiledFrameGraph?.targets;
   const graphTexture = graphAccess?.getColorTargetTexture(graphCapture.name);
   const descriptor = graphAccess?.getColorTargetDescriptor(graphCapture.name);
+  const layer = graphCapture.layer ?? 0;
+  const targetLayers = descriptor?.size.depthOrArrayLayers ?? 1;
   const recordFrameNumber = frameState.frameNumber;
   const actualIdentity =
     graphAccess !== undefined && graphAccess !== null && graphTexture !== undefined
@@ -73,6 +108,16 @@ export function encodeGraphTargetCapture(
       }),
       'target-not-present-in-current-graph',
     );
+  } else if (!Number.isSafeInteger(layer) || layer < 0 || layer >= targetLayers) {
+    captureFailure(
+      JSON.stringify({
+        target: graphCapture.name,
+        layer,
+        depthOrArrayLayers: targetLayers,
+        reason: 'array-layer-out-of-range',
+      }),
+      'array-layer-out-of-range',
+    );
   } else if (
     descriptor.size.width !== graphCapture.width ||
     descriptor.size.height !== graphCapture.height
@@ -105,12 +150,7 @@ export function encodeGraphTargetCapture(
       }),
       'copy-src-usage-missing',
     );
-  } else if (
-    descriptor.format !== graphCapture.expected.format ||
-    descriptor.size.width !== graphCapture.expected.width ||
-    descriptor.size.height !== graphCapture.expected.height ||
-    (descriptor.usage & graphCapture.expected.usage) !== graphCapture.expected.usage
-  ) {
+  } else if (!matchesCaptureDescriptor(descriptor, graphCapture.expected)) {
     captureFailure(
       JSON.stringify({
         target: graphCapture.name,
@@ -128,12 +168,7 @@ export function encodeGraphTargetCapture(
       }),
       'descriptor-mismatch',
     );
-  } else if (
-    graphCapture.expected.identity !== undefined &&
-    (graphAccess.graphGeneration !== graphCapture.expected.identity.graphGeneration ||
-      graphCapture.expected.identity.recordFrameNumber !== recordFrameNumber ||
-      graphCapture.expected.identity.textureIdentity !== getTextureIdentity(graphTexture))
-  ) {
+  } else if (!matchesCaptureIdentity(actualIdentity, graphCapture.expected.identity)) {
     captureFailure(
       JSON.stringify({
         target: graphCapture.name,
@@ -147,7 +182,7 @@ export function encodeGraphTargetCapture(
     );
   } else {
     encoder.copyTextureToBuffer(
-      { texture: graphTexture },
+      { texture: graphTexture, origin: { x: 0, y: 0, z: layer } },
       {
         buffer: graphCapture.buffer,
         bytesPerRow: graphCapture.bytesPerRow,

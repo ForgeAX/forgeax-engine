@@ -20,6 +20,7 @@ import {
   shaderSourceDigestInput,
 } from '../../../packages/shader/src/manifest-publication.ts';
 import { publishShaderManifest } from '../../../packages/vite-plugin-shader/src/manifest-publication.ts';
+import { readShaderManifestText } from '../../lib/shader-manifest.mjs';
 import { projectAppShaderManifest } from '../app-shader-manifest.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -342,8 +343,12 @@ test('merges compact app shader deltas with the shared engine manifest', async (
     assert.deepEqual(report.merged, [
       { app: 'delta', path: 'apps/delta/dist/shaders/manifest.json' },
     ]);
+    assert.deepEqual(
+      readFileSync(join(appRoot, 'dist', 'shaders', 'manifest.json')).subarray(0, 4),
+      Buffer.from([0x28, 0xb5, 0x2f, 0xfd]),
+    );
     const merged = JSON.parse(
-      readFileSync(join(appRoot, 'dist', 'shaders', 'manifest.json'), 'utf8'),
+      readShaderManifestText(join(appRoot, 'dist', 'shaders', 'manifest.json')),
     );
     const sourceDigest = (text) =>
       createHash('sha256')
@@ -381,6 +386,8 @@ test('materializes current app publication into a loader-admitted runtime manife
       sources: { [digest(source)]: [0] },
       receipts: [],
       entryPoints: [],
+      reflections: [],
+      reflectionBindings: [],
       entries: [{ hash: 'engine', sourceDigest: digest(source) }],
       materialShaders: [],
     };
@@ -422,7 +429,9 @@ test('materializes current app publication into a loader-admitted runtime manife
       JSON.stringify(projectAppShaderManifest(app, shared)),
     );
     execFileSync(process.execPath, [script, '--root', root, '--app-root', 'apps/demo']);
-    const merged = JSON.parse(readFileSync(join(appRoot, 'dist', 'shaders', 'manifest.json')));
+    const merged = JSON.parse(
+      readShaderManifestText(join(appRoot, 'dist', 'shaders', 'manifest.json')),
+    );
     const admitted = await readShaderManifestPublication(merged);
     assert.equal(admitted.entries[1].wgsl, custom);
     assert.equal(admitted.materialShaders[0].variants[0].composedWgsl, custom);
@@ -473,7 +482,7 @@ test('empty deltas share one immutable runtime file without dropping normalized 
     });
     execFileSync(process.execPath, [script, '--root', root]);
     for (const target of targets) {
-      assert.deepEqual(JSON.parse(readFileSync(target, 'utf8')), {
+      assert.deepEqual(JSON.parse(readShaderManifestText(target)), {
         entries: [{ hash: 'engine', wgsl: 'shared shader' }],
         materialShaders: [],
       });

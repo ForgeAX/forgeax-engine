@@ -1,3 +1,5 @@
+import { GameProjectileSimulationOrder } from '../src/system-order';
+import { defineSystem } from "@forgeax/engine-ecs";
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { FixedUpdate, World, type EntityHandle } from '@forgeax/engine-ecs';
@@ -67,12 +69,11 @@ describe('sentinel ranged threat owner', () => {
     const world = new World();
     registerStatesPlugin(world);
     installGameplayState({ context: new Context(), world, reset: () => {} });
-    for (const [name, after] of [
-      ['physicsCollisionSync', []],
-      ['game-projectile-simulation', ['physicsCollisionSync']],
-    ] as const) {
-      world.addSystem(FixedUpdate, { name, after: [...after], queries: [], fn: () => {} }).unwrap();
-    }
+    const collision = defineSystem({ name: 'physicsCollisionSync', queries: [], fn: () => {} });
+    const movement = defineSystem({ name: 'game-player-movement', queries: [], after: [collision], fn: () => {} });
+    const extraction = defineSystem({ name: 'game-energy-core-extraction', queries: [], after: [movement], fn: () => {} });
+    for (const system of [collision, movement, extraction]) world.addSystem(FixedUpdate, system).unwrap();
+
     const player = world.spawn({ component: Transform, data: {} }).unwrap();
     const sentinel = world.spawn(
       { component: Sentinel, data: {} },
@@ -108,7 +109,7 @@ describe('sentinel ranged threat owner', () => {
       },
       onOutcome: (_source, outcome) => { outcomes.push(outcome); },
       onTargetResolved: () => {},
-      after: ['physicsCollisionSync', 'game-projectile-simulation'],
+      after: [collision, GameProjectileSimulationOrder],
       before: [],
     });
 

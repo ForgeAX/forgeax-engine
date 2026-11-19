@@ -5,34 +5,39 @@ type ShaderEntries = Map<string, ProbeEntries>;
 
 /** The existing material binding owner, indexed by its scalar identities. */
 export class MaterialBgAssemblyCache {
-  private readonly worlds = new Map<string, Map<number, ShaderEntries>>();
+  private sourceIdentity: string | undefined;
+  private readonly materials = new Map<number, ShaderEntries>();
 
   get(
-    worldIdentity: string | undefined,
+    sourceIdentity: string | undefined,
     materialHandle: number | undefined,
     shaderId: string | undefined,
     probeIndex?: number,
   ): MaterialBgAssemblyCacheEntry | undefined {
-    if (worldIdentity === undefined || materialHandle === undefined) return undefined;
-    return this.worlds
-      .get(worldIdentity)
-      ?.get(materialHandle)
+    if (
+      sourceIdentity === undefined ||
+      this.sourceIdentity !== sourceIdentity ||
+      materialHandle === undefined
+    )
+      return undefined;
+    return this.materials
+      .get(materialHandle)
       ?.get(shaderId ?? '')
       ?.get(probeIndex);
   }
 
   set(
-    worldIdentity: string,
+    sourceIdentity: string,
     materialHandle: number,
     shaderId: string | undefined,
     probeIndex: number | undefined,
     entry: MaterialBgAssemblyCacheEntry,
   ): void {
-    let materials = this.worlds.get(worldIdentity);
-    if (materials === undefined) {
-      materials = new Map();
-      this.worlds.set(worldIdentity, materials);
+    if (this.sourceIdentity !== sourceIdentity) {
+      this.clear();
+      this.sourceIdentity = sourceIdentity;
     }
+    const materials = this.materials;
     let shaders = materials.get(materialHandle);
     if (shaders === undefined) {
       shaders = new Map();
@@ -48,12 +53,12 @@ export class MaterialBgAssemblyCache {
   }
 
   *values(): IterableIterator<MaterialBgAssemblyCacheEntry> {
-    for (const materials of this.worlds.values())
-      for (const shaders of materials.values())
-        for (const probes of shaders.values()) yield* probes.values();
+    for (const shaders of this.materials.values())
+      for (const probes of shaders.values()) yield* probes.values();
   }
 
   clear(): void {
-    this.worlds.clear();
+    this.materials.clear();
+    this.sourceIdentity = undefined;
   }
 }

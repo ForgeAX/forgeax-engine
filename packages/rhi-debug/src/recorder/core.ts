@@ -13,7 +13,6 @@ import type {
 } from '@forgeax/engine-rhi';
 import { type CaptureFailureDetail, createRhiDebugError, type RhiDebugError } from '../errors';
 import { digestBytes } from '../protocol/codec';
-import { handleAccess } from '../protocol/event-semantics';
 import { computeTextureLayout, projectTextureExtent, textureBlockLayout } from '../texel-layout';
 import type {
   HandleId,
@@ -23,6 +22,7 @@ import type {
   RhiCapsRecorded,
   Tape,
 } from '../types';
+import type { RecorderBootstrap } from './bootstrap';
 
 const SNAPSHOT_TIMEOUT_MS = 30_000;
 
@@ -252,13 +252,10 @@ interface RecorderInternal {
   >;
   /**
    * @internal
-   * Bootstrap create-event table. Populated by registerHandle when called
-   * with a create event payload — records every create* (buffer, texture,
-   * pipeline, bindGroup, shaderModule, …) from the moment wrap() is called,
-   * independent of the recorder state machine (Idle / Armed / Recording).
-   * Preserved across arm() cycles (SSOT for closure computation in getTape).
+   * Live bootstrap recipes and their dependency/capture ownership. Native
+   * wrapper collection retires its root; live dependents retain the recipe.
    */
-  bootstrapCreates: Map<HandleId, RhiCallEvent>;
+  bootstrapCreates: RecorderBootstrap;
   /** Handles whose initialData event was emitted by the current capture. */
   snapshotSeededHandles: Set<HandleId>;
   omittedSeeds: Set<HandleId>;
@@ -403,6 +400,7 @@ function shouldRecord(s: RecorderInternal): boolean {
 
 function pushEvent(s: RecorderInternal, event: RhiCallEvent): void {
   if (!shouldRecord(s)) return;
+  s.bootstrapCreates.retainEvent(event);
   s.events.push(event);
 }
 
@@ -415,6 +413,7 @@ function pushSnapshotEvent(s: RecorderInternal, event: RhiCallEvent): void {
   if (s._skipRecord || (!isRecordingActive(s) && s.state !== RecorderState.Snapshotting)) {
     return;
   }
+  s.bootstrapCreates.retainEvent(event);
   s.events.push(event);
 }
 
@@ -438,6 +437,7 @@ function registerHandle(
 ): HandleId {
   const hId = allocHandleId(kind);
   s.handleMap.set(handle, { handleId: hId, ...(device === undefined ? {} : { device }) });
+  s.bootstrapCreates.register(hId, handle);
   if (createEvent !== undefined) {
     if ('handleId' in createEvent) Object.assign(createEvent, { handleId: hId });
     s.bootstrapCreates.set(hId, createEvent);
@@ -522,13 +522,6 @@ function reconcileSwapchainViewFormats(s: RecorderInternal): void {
       addSwapchainViewFormat(source, event.desc.format);
     }
   }
-}
-
-function hasBootstrapDependency(s: RecorderInternal, handleId: HandleId): boolean {
-  for (const event of s.bootstrapCreates.values()) {
-    if (handleAccess(event).read.includes(handleId)) return true;
-  }
-  return false;
 }
 
 function getHandleId(s: RecorderInternal, handle: object, kind: string): HandleId {
@@ -704,7 +697,6 @@ export {
   allocHandleId,
   ensureTextureCreateEvent,
   getHandleId,
-  hasBootstrapDependency,
   invalidateIndexBufferShadow,
   invalidateTinyTextureShadow,
   isDepthOrStencilFormat,

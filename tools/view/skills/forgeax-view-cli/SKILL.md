@@ -8,6 +8,14 @@ description: >-
 
 # ForgeaX View API and CLI
 
+For startup, first use [View startup](../forgeax-view-start/SKILL.md): run the
+game's installed `tools/view/start.mjs` with explicit `--project`. The operations
+below target a running View on the returned Backend root H. They are not the
+ordinary one-file startup route and may be absent from cold Engine CLI help.
+Run the examples through the game's installed CLI as `pnpm exec forgeax ...`
+from the game root, always passing the returned `--root H`. The tables abbreviate
+this as `forgeax`. Do not select a global SDK's CLI for another Engine instance.
+
 > [!IMPORTANT]
 > The resident workspace API is authoritative. The browser and CLI are clients
 > of the same owner; the CLI does not implement project, asset, scene, or camera
@@ -71,30 +79,34 @@ of guessing from paths, names, or a previous target.
 
 | Need | Owner and entry |
 |:--|:--|
-| Backend or optional View lifecycle | `forgeax backend ...` and `forgeax view start\|status\|stop`; use [View startup](../forgeax-view-start/SKILL.md) |
+| Open optional View | Use the file in [View startup](../forgeax-view-start/SKILL.md); no Backend prestart |
+| Advanced instance controls | `forgeax backend ...` and `forgeax view start\|status\|stop` with explicit `--root H`; low-level start requires a compatible Backend |
 | Allocate a project on the running View | `forgeax view project open --root <backend-root> --project <project-root> --json`; open the returned headed URL |
 | Call one resident workspace operation through Engine CLI | `forgeax view workspace call --root <backend-root> --operation <id> --args <json> --json`; requires the selected View host Pack and running View owner |
-| Call the resident View workspace API | `forgeax-view workspace --operation <id> --args <json>` with the issued endpoint and token |
 | List pages and reveal a Pack | `forgeax view workspace call --operation pages.list --args '{}' --json`, then `--operation pack.reveal --args '{"projectId":"...","sourcePath":"assets/example.pack.ts","revision":"...","connectionId":"..."}' --json` |
 | Author assets or control an independent AI run | Engine CLI; use the installed `forgeax-engine-cli` skill when available |
 
 `forgeax help view --tree --json` discovers declarations from the running
 backend's selected host Pack. A listed command does not prove its plugin
-is mounted or its provider is callable. The `forgeax-view workspace --help`
-operation list describes its client grammar; an unavailable operation fails at
-the connected owner. The workspace CLI accepts `--endpoint` and `--token`, or
-`FORGEAX_VIEW_WORKSPACE_ENDPOINT` and `FORGEAX_VIEW_WORKSPACE_TOKEN`. Treat
-these credentials as connection secrets; do not paste them into reports.
-The resident View registers `view.workspace.*` on ToolApi; the frontend
-transport and both CLI entries reach the same View owner. The Engine CLI
-entry uses the backend's existing authentication. Select the package host
-with `backend start --host-pack`; a downloaded View package alone
-does not make this command discoverable.
+is mounted or its provider is callable. The resident View registers
+`view.workspace.*` on ToolApi; the frontend and Engine CLI reach the same owner.
+The Engine CLI uses the backend's existing authentication. Normal file startup
+selects the matching Host Pack; manual `backend start --host-pack` is an advanced
+integration route. A downloaded tool alone does not make these commands discoverable.
+The source-only standalone workspace client accepts an issued endpoint/token;
+ordinary npm games do not need its binary or manual credentials. Never paste
+connection secrets into reports.
 `pages.list` exposes a bounded page inventory; `pack.reveal` waits for the
 addressed frontend to show the Pack. With multiple pages, select the exact
 `connectionId`; a stale page or source revision returns a non-action result.
 
 ## Open an asset through the API
+
+Project catalogue reads, directory browsing and registration use the same
+Engine-owned catalogue through the resident workspace. `ViewWorkspaceClient`
+returns their successful DTOs directly; ToolApi has already consumed the
+owner's `Result` envelope. Failures reject through workspace diagnostics.
+Do not unwrap another `Result` or infer project readiness from a catalogue entry.
 
 With one Scene page connected, read its identities, list its exact target's
 assets, then open a returned GUID. Scene, mesh, material and texture opens use

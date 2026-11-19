@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   access,
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readdir,
@@ -13,7 +14,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { dirname, join, relative, sep, win32 } from 'node:path';
+
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { inspectEngineWorkspace } from '../engine-binding.js';
@@ -149,6 +151,330 @@ async function createStrictProject(directory: string) {
   return { project, engine, packageRoot, digest: inspected.value.digest };
 }
 
+async function writeLinkedDependency(
+  project: string,
+  name: string,
+  target: string,
+  override = false,
+  absolute = false,
+) {
+  const specifier = `link:${absolute ? target : relative(project, target).split(sep).join('/')}`;
+  const manifest = {
+    name: 'snapshot-fixture',
+    version: '1.0.0',
+    packageManager: 'pnpm@12.15.0',
+    dependencies: { [name]: override ? '0.4.18' : specifier },
+  };
+  const overrides = override ? { overrides: { [name]: specifier } } : {};
+  const entry = { specifier, version: specifier };
+  const lock = {
+    lockfileVersion: '9.0',
+    ...overrides,
+    importers: { '.': { dependencies: { [name]: entry } } },
+    packages: {},
+    snapshots: {},
+  };
+  await writeJson(join(project, 'package.json'), manifest);
+  await writeJson(join(project, 'pnpm-workspace.yaml'), { packages: [], ...overrides });
+  await writeJson(join(project, 'pnpm-lock.yaml'), lock);
+  await writeJson(join(project, 'node_modules/.pnpm/lock.yaml'), lock);
+  await writeFile(
+    join(project, 'node_modules/.modules.yaml'),
+    'packageManager: pnpm@12.15.0\nvirtualStoreDir: .pnpm\nvirtualStoreDirMaxLength: 60\n',
+  );
+  await writeJson(join(project, 'node_modules/.pnpm-workspace-state-v1.json'), {
+    projects: { [await realpath(project)]: manifest },
+    settings: { workspacePackagePatterns: [] },
+  });
+  const installed = join(project, 'node_modules', name);
+  await mkdir(dirname(installed), { recursive: true });
+  await symlink(target, installed, 'junction');
+  return { installed, specifier, lock, entry };
+}
+
+it.each([
+  { override: false, absolute: false },
+  { override: false, absolute: true },
+  { override: true, absolute: false },
+  { override: true, absolute: true },
+])('accepts a bound 0.0.0 Engine source link (override: $override, absolute: $absolute)', async ({
+  override,
+  absolute,
+}) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-source-link-'));
+  try {
+    const { project, engine, packageRoot, digest } = await createStrictProject(directory);
+    await writeLinkedDependency(project, '@forgeax/engine', packageRoot, override, absolute);
+
+    await expect(
+      inspectRunDependencyClosure(
+        project,
+        { schemaVersion: '1.0.0', path: engine },
+        digest,
+        '12.15.0',
+      ),
+    ).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  false,
+  true,
+])('proves the bound Engine peer of a directory linked by a scoped override (wrong peer: %s)', async (wrongPeer) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-linked-assets-'));
+  try {
+    const { project, engine, packageRoot, digest } = await createStrictProject(directory);
+    const dependency = '@forgeax-assets/cloud-fixture';
+    const assetRoot = join(directory, 'assets');
+    await mkdir(assetRoot);
+    await writeJson(join(assetRoot, 'package.json'), {
+      name: dependency,
+      version: '1.0.0',
+      peerDependencies: { '@forgeax/engine': '*' },
+    });
+
+    const fixture = await writeLinkedDependency(project, '@forgeax/engine', packageRoot);
+    const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
+    manifest.dependencies[dependency] = 'file:../assets';
+    const overrides = { [`snapshot-fixture>${dependency}`]: 'link:../assets' };
+    const lock = {
+      ...fixture.lock,
+      overrides,
+      importers: {
+        '.': {
+          dependencies: {
+            ...fixture.lock.importers['.'].dependencies,
+            [dependency]: { specifier: 'link:../assets', version: 'link:../assets' },
+          },
+        },
+      },
+    };
+    await writeJson(join(project, 'package.json'), manifest);
+    await writeJson(join(project, 'pnpm-workspace.yaml'), { packages: [], overrides });
+    await writeJson(join(project, 'pnpm-lock.yaml'), lock);
+    await writeJson(join(project, 'node_modules/.pnpm/lock.yaml'), lock);
+    await writeJson(join(project, 'node_modules/.pnpm-workspace-state-v1.json'), {
+      projects: { [await realpath(project)]: manifest },
+      settings: { workspacePackagePatterns: [] },
+    });
+    await mkdir(join(project, 'node_modules/@forgeax-assets'), { recursive: true });
+    await symlink(assetRoot, join(project, 'node_modules', dependency), 'junction');
+
+    // The linked package resolves its peer through its physical ancestor.
+    const selected = wrongPeer
+      ? await writeEngineFixture(join(directory, 'other-engine'))
+      : packageRoot;
+    await mkdir(join(directory, 'node_modules/@forgeax'), { recursive: true });
+    await symlink(selected, join(directory, 'node_modules/@forgeax/engine'), 'junction');
+    const check = inspectRunDependencyClosure(
+      project,
+      { schemaVersion: '1.0.0', path: engine },
+      digest,
+      '12.15.0',
+    );
+    if (wrongPeer)
+      await expect(check).rejects.toMatchObject({ code: 'project-dependency-identity-mismatch' });
+    else await expect(check).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['missing-binding', 'project-local-dependency'],
+  ['registry-locator', 'project-pnpm-dependency-mismatch'],
+  ['wrong-locator', 'project-dependency-identity-mismatch'],
+  ['wrong-source', 'project-dependency-identity-mismatch'],
+  ['wrong-binding', 'project-dependency-identity-mismatch'],
+  ['missing-link', 'project-dependency-not-installed'],
+  ['copied-package', 'project-dependency-identity-mismatch'],
+  ['missing-source', 'project-dependency-link-unresolved'],
+])('rejects an unproven Engine source link (%s)', async (control, code) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-source-link-invalid-'));
+  try {
+    const fixture = await createStrictProject(directory);
+    const { project, engine, packageRoot, digest } = fixture;
+    const linked = await writeLinkedDependency(project, '@forgeax/engine', packageRoot);
+    let binding: { schemaVersion: string; path: string } | null = {
+      schemaVersion: '1.0.0',
+      path: engine,
+    };
+    let expectedDigest: string | undefined = digest;
+    if (control === 'missing-binding') {
+      await rm(join(project, '.forgeax/engine-binding.json'));
+      binding = null;
+      expectedDigest = undefined;
+    } else if (control === 'missing-link' || control === 'copied-package') {
+      await rm(linked.installed);
+      if (control === 'copied-package')
+        await cp(packageRoot, linked.installed, { recursive: true });
+    } else if (control === 'registry-locator') {
+      linked.entry.version = '0.0.0';
+    } else {
+      const other = await writeEngineFixture(join(directory, 'other-engine'));
+      const otherSpecifier = `link:${relative(project, other).split(sep).join('/')}`;
+      if (control === 'wrong-binding') {
+        binding = { schemaVersion: '1.0.0', path: dirname(dirname(other)) };
+        await writeJson(join(project, '.forgeax/engine-binding.json'), binding);
+        const inspected = await inspectEngineWorkspace(binding.path);
+        if (!inspected.ok) throw new Error(inspected.error.hint);
+        expectedDigest = inspected.value.digest;
+      } else if (control === 'wrong-locator') {
+        linked.entry.version = otherSpecifier;
+      } else {
+        const specifier = control === 'missing-source' ? 'link:../missing-engine' : otherSpecifier;
+        const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
+        manifest.dependencies['@forgeax/engine'] = specifier;
+        await writeJson(join(project, 'package.json'), manifest);
+        linked.entry.specifier = specifier;
+        linked.entry.version = specifier;
+      }
+    }
+    await writeJson(join(project, 'pnpm-lock.yaml'), linked.lock);
+    await writeJson(join(project, 'node_modules/.pnpm/lock.yaml'), linked.lock);
+
+    await expect(
+      inspectRunDependencyClosure(project, binding, expectedDigest, '12.15.0'),
+    ).rejects.toMatchObject({ code });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['valid', undefined],
+  ['wrong-name', 'project-dependency-identity-mismatch'],
+  ['broken-link', 'project-dependency-link-unresolved'],
+])('verifies a third-party source link without an Engine binding (%s)', async (control, code) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-third-party-link-'));
+  try {
+    const { project } = await createStrictProject(directory);
+    await rm(join(project, '.forgeax/engine-binding.json'));
+    const source = join(directory, 'platform-sdk');
+    await mkdir(source);
+    await writeJson(join(source, 'package.json'), {
+      name: control === 'wrong-name' ? 'other-sdk' : 'platform-sdk',
+      version: '0.2.0',
+    });
+    await writeFile(join(source, 'index.js'), 'export const platform = true;\n');
+    await writeLinkedDependency(project, 'platform-sdk', source);
+    if (control === 'broken-link') await rm(source, { recursive: true });
+
+    const result = inspectRunDependencyClosure(project, null, undefined, '12.15.0');
+    if (code === undefined) await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ code });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'policy',
+  'workspace',
+  'installed-policy',
+] as const)('finds the template installation without crossing an owning boundary (%s)', async (kind) => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-template-workspace-'));
+  try {
+    const fixture = await createStrictProject(directory);
+    const game = join(fixture.project, 'templates/game-3d');
+    await mkdir(game, { recursive: true });
+    await mkdir(join(game, '.forgeax'));
+    await writeJson(join(game, '.forgeax/engine-binding.json'), {
+      schemaVersion: '1.0.0',
+      path: await realpath(fixture.engine),
+    });
+    const manifest = JSON.parse(await readFile(join(fixture.project, 'package.json'), 'utf8'));
+    await writeJson(join(game, 'package.json'), manifest);
+    await writeFile(
+      join(fixture.project, 'templates/pnpm-workspace.yaml'),
+      kind === 'workspace' ? 'packages: []\n' : 'allowBuilds: {esbuild: true}\n',
+    );
+    if (kind === 'installed-policy')
+      await writeJson(join(fixture.project, 'templates/pnpm-lock.yaml'), {});
+    const lock = JSON.parse(await readFile(join(fixture.project, 'pnpm-lock.yaml'), 'utf8'));
+    lock.importers['templates/game-3d'] = lock.importers['.'];
+    await writeJson(join(fixture.project, 'pnpm-lock.yaml'), lock);
+    await writeJson(join(fixture.project, 'node_modules/.pnpm/lock.yaml'), lock);
+    const statePath = join(fixture.project, 'node_modules/.pnpm-workspace-state-v1.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    state.projects[await realpath(game)] = manifest;
+    await writeJson(statePath, state);
+    const check = inspectRunDependencyClosure(
+      game,
+      { schemaVersion: '1.0.0', path: await realpath(fixture.engine) },
+      fixture.digest,
+      '11.7.0',
+    );
+    if (kind === 'policy') await expect(check).resolves.toBeUndefined();
+    else await expect(check).rejects.toMatchObject({ code: 'project-pnpm-record-unreadable' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('verifies a linked checkout transitive workspace in its own pnpm installation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-linked-workspace-'));
+  try {
+    const { project } = await createStrictProject(directory);
+    await rm(join(project, '.forgeax/engine-binding.json'));
+    const external = join(directory, 'external');
+    const sdk = join(external, 'packages/platform-sdk');
+    const shared = join(external, 'packages/shared-runtime');
+    const rootManifest = { name: 'external', version: '1.0.0', private: true };
+    const sdkManifest = {
+      name: 'platform-sdk',
+      version: '0.2.0',
+      dependencies: { 'shared-runtime': 'workspace:*' },
+    };
+    const sharedManifest = { name: 'shared-runtime', version: '1.0.0' };
+    await mkdir(join(sdk, 'node_modules'), { recursive: true });
+    await mkdir(shared, { recursive: true });
+    await mkdir(join(external, 'node_modules/.pnpm'), { recursive: true });
+    await writeJson(join(external, 'package.json'), rootManifest);
+    await writeJson(join(sdk, 'package.json'), sdkManifest);
+    await writeJson(join(shared, 'package.json'), sharedManifest);
+    await writeFile(join(sdk, 'index.js'), 'export { shared } from "shared-runtime";\n');
+    await writeFile(join(shared, 'index.js'), 'export const shared = true;\n');
+    await symlink(shared, join(sdk, 'node_modules/shared-runtime'), 'junction');
+    await writeJson(join(external, 'pnpm-workspace.yaml'), { packages: ['packages/*'] });
+    const lock = {
+      lockfileVersion: '9.0',
+      importers: {
+        '.': {},
+        'packages/platform-sdk': {
+          dependencies: {
+            'shared-runtime': { specifier: 'workspace:*', version: 'link:../shared-runtime' },
+          },
+        },
+        'packages/shared-runtime': {},
+      },
+    };
+    await writeJson(join(external, 'pnpm-lock.yaml'), lock);
+    await writeJson(join(external, 'node_modules/.pnpm/lock.yaml'), lock);
+    await writeFile(
+      join(external, 'node_modules/.modules.yaml'),
+      'packageManager: pnpm@12.15.0\nvirtualStoreDir: .pnpm\nvirtualStoreDirMaxLength: 60\n',
+    );
+    await writeJson(join(external, 'node_modules/.pnpm-workspace-state-v1.json'), {
+      projects: {
+        [await realpath(external)]: rootManifest,
+        [await realpath(sdk)]: sdkManifest,
+        [await realpath(shared)]: sharedManifest,
+      },
+      settings: { workspacePackagePatterns: ['packages/*'] },
+    });
+    await writeLinkedDependency(project, 'platform-sdk', sdk);
+
+    await expect(
+      inspectRunDependencyClosure(project, null, undefined, '12.15.0'),
+    ).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it.each([
   'configuration-only',
   'no-config',
@@ -201,6 +527,37 @@ it.each([
     await expect(
       inspectRunDependencyClosure(project, null, undefined, '11.7.0'),
     ).resolves.toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('verifies the implicit root workspace recorded by pnpm without admitting package glob drift', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-implicit-root-'));
+  try {
+    const fixture = await createStrictProject(directory);
+    const statePath = join(fixture.project, 'node_modules/.pnpm-workspace-state-v1.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const binding = { schemaVersion: '1.0.0', path: fixture.engine };
+    await writeFile(join(fixture.project, 'pnpm-workspace.yaml'), 'allowBuilds: {}\n');
+    state.settings.workspacePackagePatterns = ['.'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).resolves.toBeUndefined();
+
+    state.settings.workspacePackagePatterns = ['packages/*'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).rejects.toMatchObject({ code: 'project-pnpm-workspace-state-stale' });
+
+    await writeFile(join(fixture.project, 'pnpm-workspace.yaml'), 'packages: []\n');
+    state.settings.workspacePackagePatterns = ['.'];
+    await writeJson(statePath, state);
+    await expect(
+      inspectRunDependencyClosure(fixture.project, binding, fixture.digest, '11.7.0'),
+    ).rejects.toMatchObject({ code: 'project-pnpm-workspace-state-stale' });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -441,11 +798,16 @@ it('keeps the generated wgpu binding in the published snapshot despite wasm-pack
       JSON.stringify({ dependencies: { [manifest.name]: '*' } }),
     );
     await writeFile(join(dependency, 'package.json'), JSON.stringify(manifest));
-    await symlink(
-      fileURLToPath(new URL('../../../wgpu-wasm/node_modules', import.meta.url)),
-      join(dependency, 'node_modules'),
-      'junction',
-    );
+    // Rebase the fixture's dependencies rather than relocating pnpm's relative
+    // links under a second Windows junction namespace.
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      const installed = await realpath(
+        fileURLToPath(new URL(`../../../wgpu-wasm/node_modules/${name}`, import.meta.url)),
+      );
+      const link = join(dependency, 'node_modules', name);
+      await mkdir(dirname(link), { recursive: true });
+      await symlink(installed, link, 'junction');
+    }
     await writeFile(join(dependency, 'pkg/.gitignore'), '*\n');
     const payload = {
       'package.json': '{"type":"module"}',
@@ -991,7 +1353,11 @@ it('accepts a bound 0.0.0 Engine beside its independently locked 0.3.9 registry 
   }
 });
 
-it('rejects identical file payload copied beneath an unrelated virtual-store placement', async () => {
+it.each([
+  false,
+  'registry',
+  'engine',
+])('proves file payload placement with its peer context (qualified: %s)', async (qualified) => {
   const directory = await mkdtemp(join(tmpdir(), 'engine-doctor-file-placement-'));
   try {
     const fixture = await createStrictProject(directory);
@@ -1002,7 +1368,17 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
     );
     await mkdir(source);
     await mkdir(unrelated, { recursive: true });
-    const payload = { name: 'file-lib', version: '2.3.4', files: ['index.js'] };
+    const peerName = qualified === 'engine' ? '@forgeax/engine' : 'peer';
+    const peerVersion = qualified === 'engine' ? 'packages+engine' : '1.0.0';
+    const payload = {
+      name: 'file-lib',
+      version: '2.3.4',
+      files: ['index.js'],
+      ...(qualified ? { peerDependencies: { [peerName]: '*' } } : {}),
+    };
+    const peerSuffix = qualified ? `(${peerName}@${peerVersion})` : '';
+    const locator = `file:../file-source${peerSuffix}`;
+    const snapshotKey = `file-lib@${locator}`;
     for (const root of [source, unrelated]) {
       await writeJson(join(root, 'package.json'), payload);
       await writeFile(join(root, 'index.js'), 'export const value = 1;\n');
@@ -1020,7 +1396,7 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
       importers: {
         '.': {
           dependencies: {
-            'file-lib': { specifier: 'file:../file-source', version: 'file:../file-source' },
+            'file-lib': { specifier: 'file:../file-source', version: locator },
           },
         },
       },
@@ -1028,8 +1404,18 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
         'file-lib@file:../file-source': {
           resolution: { directory: '../file-source', type: 'directory' },
         },
+        ...(qualified ? { 'peer@1.0.0': { resolution: { integrity: 'sha512-fixture' } } } : {}),
       },
-      snapshots: { 'file-lib@file:../file-source': {} },
+      snapshots: {
+        [snapshotKey]: qualified
+          ? {
+              dependencies: {
+                [peerName]: qualified === 'engine' ? 'link:../engine/packages/engine' : '1.0.0',
+              },
+            }
+          : {},
+        ...(qualified ? { 'file-lib@file:../file-source(peer@2.0.0)': {}, 'peer@1.0.0': {} } : {}),
+      },
     };
     const lockText = JSON.stringify(lock);
     await writeFile(join(fixture.project, 'pnpm-lock.yaml'), lockText);
@@ -1041,7 +1427,7 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
         'virtualStoreDir: .pnpm',
         'virtualStoreDirMaxLength: 60',
         'hoistedDependencies:',
-        '  "file-lib@file:../file-source":',
+        `  "${snapshotKey}":`,
         '    file-lib: private',
         '',
       ].join('\n'),
@@ -1065,13 +1451,31 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
       code: 'project-file-dependency-unverified',
     });
 
+    const peerPlacement = qualified ? `_${peerName.replaceAll('/', '+')}@${peerVersion}` : '';
     const resolved = join(
       fixture.project,
-      'node_modules/.pnpm/file-lib@file+..+file-source/node_modules/file-lib',
+      `node_modules/.pnpm/file-lib@file+..+file-source${peerPlacement}/node_modules/file-lib`,
     );
     await mkdir(resolved, { recursive: true });
     await writeJson(join(resolved, 'package.json'), payload);
     await writeFile(join(resolved, 'index.js'), 'export const value = 1;\n');
+    if (qualified) {
+      const peer =
+        qualified === 'engine'
+          ? fixture.packageRoot
+          : join(fixture.project, 'node_modules/.pnpm/peer@1.0.0/node_modules/peer');
+      if (qualified !== 'engine') {
+        await mkdir(peer, { recursive: true });
+        await writeJson(join(peer, 'package.json'), {
+          name: 'peer',
+          version: '1.0.0',
+          files: ['index.js'],
+        });
+        await writeFile(join(peer, 'index.js'), 'export const peer = true;\n');
+      }
+      await mkdir(dirname(join(dirname(resolved), peerName)), { recursive: true });
+      await symlink(peer, join(dirname(resolved), peerName), 'junction');
+    }
     await rm(join(fixture.project, 'node_modules/file-lib'));
     await symlink(resolved, join(fixture.project, 'node_modules/file-lib'), 'junction');
     await expect(
@@ -1082,6 +1486,50 @@ it('rejects identical file payload copied beneath an unrelated virtual-store pla
         '11.7.0',
       ),
     ).resolves.toBeUndefined();
+    if (qualified === 'engine') {
+      const wrong = join(directory, 'wrong-engine');
+      await cp(fixture.packageRoot, wrong, { recursive: true });
+      const peerLink = join(dirname(resolved), peerName);
+      await rm(peerLink);
+      await symlink(wrong, peerLink, 'junction');
+      await expect(
+        inspectRunDependencyClosure(
+          fixture.project,
+          { schemaVersion: '1.0.0', path: fixture.engine },
+          fixture.digest,
+          '11.7.0',
+        ),
+      ).rejects.toMatchObject({ code: 'project-dependency-identity-mismatch' });
+      await rm(peerLink);
+      await symlink(fixture.packageRoot, peerLink, 'junction');
+      await rm(join(fixture.project, '.forgeax/engine-binding.json'));
+      await expect(
+        inspectRunDependencyClosure(fixture.project, null, undefined, '11.7.0'),
+      ).rejects.toMatchObject({ code: 'project-local-dependency' });
+      await writeJson(join(fixture.project, '.forgeax/engine-binding.json'), {
+        schemaVersion: '1.0.0',
+        path: fixture.engine,
+      });
+    }
+    if (qualified) {
+      const wrongPeer = join(
+        fixture.project,
+        'node_modules/.pnpm/file-lib@file+..+file-source_peer@2.0.0/node_modules/file-lib',
+      );
+      await mkdir(wrongPeer, { recursive: true });
+      await writeJson(join(wrongPeer, 'package.json'), payload);
+      await writeFile(join(wrongPeer, 'index.js'), 'export const value = 1;\n');
+      await rm(join(fixture.project, 'node_modules/file-lib'));
+      await symlink(wrongPeer, join(fixture.project, 'node_modules/file-lib'), 'junction');
+      await expect(
+        inspectRunDependencyClosure(
+          fixture.project,
+          { schemaVersion: '1.0.0', path: fixture.engine },
+          fixture.digest,
+          '11.7.0',
+        ),
+      ).rejects.toMatchObject({ code: 'project-file-dependency-unverified' });
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

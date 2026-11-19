@@ -1,3 +1,6 @@
+import { GameTargetFeedbackOrder } from '../../../src/system-order';
+import { GameProjectileSimulationOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { MeshRenderer } from '@forgeax/engine-render';
 import { FixedTime, FixedUpdate, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
@@ -83,10 +86,11 @@ export function admitTargetImpact(
 
 /** Own the transient HitFlash lifecycle; physical admission lives in projectile-impact. */
 export function installTargetFeedbackSystem(ctx: TargetFeedbackSystemContext): void {
-  ctx.world.addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
     name: 'game-target-feedback',
+sets: [GameTargetFeedbackOrder],
     runIf: inState(GameState, 'Play'),
-    after: ['game-projectile-simulation'],
+    after: [GameProjectileSimulationOrder],
     queries: [],
     fn: () => {
       const dt = ctx.world.getResource(FixedTime).delta;
@@ -104,5 +108,6 @@ export function installTargetFeedbackSystem(ctx: TargetFeedbackSystemContext): v
       const intensity = ctx.chromaticAberration.snapshot().intensity;
       if (intensity > 0) ctx.chromaticAberration.setIntensity(Math.max(0, intensity - dt * 0.14));
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
 }

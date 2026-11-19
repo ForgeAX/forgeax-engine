@@ -1,5 +1,6 @@
 import {
   defineComponent,
+  defineSystem,
   ENTITY_NULL_RAW,
   type EntityHandle,
   FixedTime,
@@ -30,7 +31,6 @@ interface Pose {
   pos: Float32Array;
   rotation: Float32Array;
   scale: Float32Array;
-  shear: Float32Array;
 }
 interface History {
   previous: Pose;
@@ -73,7 +73,6 @@ function pose(): Pose {
     pos: new Float32Array(3),
     rotation: new Float32Array(4),
     scale: new Float32Array(3),
-    shear: new Float32Array(3),
   };
 }
 function readPose(world: World, entity: EntityHandle, target: Pose): boolean {
@@ -81,15 +80,13 @@ function readPose(world: World, entity: EntityHandle, target: Pose): boolean {
   return (
     read.copyArray(entity, Transform, 'pos', target.pos) === 3 &&
     read.copyArray(entity, Transform, 'quat', target.rotation) === 4 &&
-    read.copyArray(entity, Transform, 'scale', target.scale) === 3 &&
-    read.copyArray(entity, Transform, 'shear', target.shear) === 3
+    read.copyArray(entity, Transform, 'scale', target.scale) === 3
   );
 }
 function copyPose(from: Pose, to: Pose): void {
   to.pos.set(from.pos);
   to.rotation.set(from.rotation);
   to.scale.set(from.scale);
-  to.shear.set(from.shear);
 }
 function equal(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
   if (a.length !== b.length) return false;
@@ -97,12 +94,7 @@ function equal(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
   return true;
 }
 function samePose(a: Pose, b: Pose): boolean {
-  return (
-    equal(a.pos, b.pos) &&
-    equal(a.rotation, b.rotation) &&
-    equal(a.scale, b.scale) &&
-    equal(a.shear, b.shear)
-  );
+  return equal(a.pos, b.pos) && equal(a.rotation, b.rotation) && equal(a.scale, b.scale);
 }
 function parent(world: World, entity: EntityHandle): number | undefined {
   const value = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
@@ -144,7 +136,6 @@ function refresh(world: World, state: Presentation): void {
       history.previous.pos.set(history.current.pos);
       history.previous.rotation.set(history.current.rotation);
       history.previous.scale.set(history.current.scale);
-      history.previous.shear.set(history.current.shear);
     }
     state.dropped = dropped;
   }
@@ -209,18 +200,15 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
         state.scale[axis] =
           (history.previous.scale[axis] ?? 1) +
           ((history.current.scale[axis] ?? 1) - (history.previous.scale[axis] ?? 1)) * alpha;
-        state.shear[axis] =
-          (history.previous.shear[axis] ?? 0) +
-          ((history.current.shear[axis] ?? 0) - (history.previous.shear[axis] ?? 0)) * alpha;
       }
       quat.slerp(state.rotation, history.previous.rotation, history.current.rotation, alpha);
-      mat4.compose(cached.local, state.pos, state.rotation, state.scale, state.shear);
+      mat4.compose(cached.local, state.pos, state.rotation, state.scale);
     } else {
       if (readPose(world, node, state)) {
-        mat4.compose(cached.local, state.pos, state.rotation, state.scale, state.shear);
+        mat4.compose(cached.local, state.pos, state.rotation, state.scale);
       } else {
         const local = world.get(node, Transform).unwrap();
-        mat4.compose(cached.local, local.pos, local.quat, local.scale, local.shear);
+        mat4.compose(cached.local, local.pos, local.quat, local.scale);
       }
     }
     if (resolved === undefined) cached.matrix.set(cached.local);
@@ -249,6 +237,28 @@ export function readPresentationWorldMatrix(
   if (state.history.size === 0 && !world.hasComponent(entity, TransformInterpolation))
     return readRenderArrayView(world, entity, GlobalTransform, 'world');
   return sample(world, entity, state);
+}
+
+/** Copy the presentation matrix into caller-owned storage without a transient view. */
+export function copyPresentationWorldMatrix(
+  world: World,
+  entity: EntityHandle,
+  target: Float32Array,
+): boolean {
+  const state = presentations.get(world);
+  let field: 'world' | 'presentation' = 'world';
+  if (state !== undefined) {
+    refresh(world, state);
+    if (state.prepared === state.version) {
+      if (state.active.has(entity)) field = 'presentation';
+    } else if (state.history.size !== 0 || world.hasComponent(entity, TransformInterpolation)) {
+      const sampled = sample(world, entity, state);
+      if (sampled === undefined) return false;
+      for (let lane = 0; lane < 16; lane++) target[lane] = sampled[lane] as number;
+      return true;
+    }
+  }
+  return world[worldRead].copyArray(entity, GlobalTransform, field, target) === 16;
 }
 
 /** Explicit discontinuity: the next sampled pose starts at the new author value. */
@@ -407,7 +417,6 @@ export function registerTransformInterpolation(world: World): () => void {
     pos: new Float32Array(3),
     rotation: quat.create(),
     scale: new Float32Array(3),
-    shear: new Float32Array(3),
     published: mat4.create(),
     version: 0,
     prepared: -1,
@@ -417,25 +426,23 @@ export function registerTransformInterpolation(world: World): () => void {
     dropped: 0,
   };
   presentations.set(world, state);
-  world
-    .addSystem(FixedUpdate, {
-      name: 'captureTransformPrevious',
-      before: [FixedUpdate],
-      queries: [],
-      fn: () => capture(world, state, true),
-    })
-    .unwrap();
-  world
-    .addSystem(FixedUpdate, {
-      name: 'captureTransformCurrent',
-      after: [FixedUpdate],
-      queries: [],
-      fn: () => capture(world, state, false),
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: 'captureTransformPrevious',
+    before: [FixedUpdate],
+    queries: [],
+    fn: () => capture(world, state, true),
+  });
+  world.addSystem(FixedUpdate, systemToken1).unwrap();
+  const systemToken2 = defineSystem({
+    name: 'captureTransformCurrent',
+    after: [FixedUpdate],
+    queries: [],
+    fn: () => capture(world, state, false),
+  });
+  world.addSystem(FixedUpdate, systemToken2).unwrap();
   return () => {
-    world.removeSystem(FixedUpdate, 'captureTransformPrevious').unwrap();
-    world.removeSystem(FixedUpdate, 'captureTransformCurrent').unwrap();
+    world.removeSystem(FixedUpdate, systemToken1).unwrap();
+    world.removeSystem(FixedUpdate, systemToken2).unwrap();
     presentations.delete(world);
   };
 }

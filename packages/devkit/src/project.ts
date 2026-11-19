@@ -58,10 +58,10 @@ function timeoutFromPackage(
  * DevKit dev and production builds. Omitted or false keeps the smaller default
  * shader build.
  */
-function pointShadowsFromPackage(
+function shaderOptionsFromPackage(
   root: string,
   packageJson: Record<string, unknown>,
-): CommandResult<{ readonly pointShadows?: true }> {
+): CommandResult<Pick<ProjectFacts, 'pointShadows' | 'shaderPublication'>> {
   const forgeax = packageJson.forgeax;
   const value =
     forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
@@ -75,7 +75,24 @@ function pointShadowsFromPackage(
       { root, pointShadows: value },
     );
   }
-  return { ok: true, value: value === true ? { pointShadows: true } : {} };
+  const publication =
+    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
+      ? (forgeax as Record<string, unknown>).shaderPublication
+      : undefined;
+  if (publication !== undefined && publication !== 'compiled' && publication !== 'source')
+    return projectError(
+      'package-manifest-invalid',
+      'package.json#forgeax.shaderPublication to be compiled or source',
+      'Select a supported shader publication format or remove the field.',
+      { root, shaderPublication: publication },
+    );
+  return {
+    ok: true,
+    value: {
+      ...(value === true ? { pointShadows: true } : {}),
+      ...(publication === undefined ? {} : { shaderPublication: publication }),
+    },
+  };
 }
 
 /** Read the shared project startup policy without requiring a forge.json project. */
@@ -175,7 +192,7 @@ export async function readProjectFacts(
   if (!startup.ok) return startup;
   const frame = timeoutFromPackage(root, packageJson, 'frameTimeoutMs');
   if (!frame.ok) return frame;
-  const shaders = pointShadowsFromPackage(root, packageJson);
+  const shaders = shaderOptionsFromPackage(root, packageJson);
   if (!shaders.ok) return shaders;
   const assetLibraries = await resolveAssetLibraries(root, forge.assetLibraries);
   if (!assetLibraries.ok) return assetLibraries;

@@ -4,8 +4,7 @@
 //   - Insert the `InputBackend` producer as a World resource under
 //     `INPUT_BACKEND_KEY`, then add the `InputFrameStartScan` system token to
 //     the schedule. After `world.update()` runs, read the snapshot through
-//     `world.getResource<InputSnapshot>('InputSnapshot')` (or the
-//     re-exported `INPUT_SNAPSHOT_RESOURCE_KEY` constant).
+//     `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)`.
 //   - In a browser context, attach a PointerLock-aware producer with
 //     `attachBrowserInputBackend(canvas)`; the returned callable is
 //     both a detach handle and an `InputBackend`.
@@ -30,12 +29,7 @@ export type {
   ActionState,
   GetVectorOptions,
 } from './action-state';
-export {
-  deriveActionStates,
-  getAxis,
-  getVector,
-  INPUT_MAP_KEY,
-} from './action-state';
+export { deriveActionStates, getAxis, getVector } from './action-state';
 export {
   attachBrowserInputBackend,
   type BrowserInputBackendOptions,
@@ -52,8 +46,6 @@ export {
   makeCompositeBackend,
 } from './composite-backend';
 export {
-  FRAME_START_SCAN_SYSTEM_NAME,
-  INPUT_BACKEND_KEY,
   InputFrameStartScan,
   InputSet,
 } from './frame-start-scan-system';
@@ -69,7 +61,6 @@ export type {
 export {
   createGamepadFeedback,
   GAMEPAD_FEEDBACK_CAPACITY,
-  GAMEPAD_FEEDBACK_KEY,
   GAMEPAD_FEEDBACK_MAX_DURATION_MS,
 } from './gamepad-feedback';
 export type {
@@ -101,12 +92,14 @@ export type {
   VirtualAxisSample,
   VirtualJoystickConfig,
 } from './input-snapshot';
-export {
-  createInputSnapshot,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  snapshotFromSample,
-} from './input-snapshot';
+export { createInputSnapshot, snapshotFromSample } from './input-snapshot';
 export { inputBackendPlugin, ownedInputBackendPlugin } from './plugin-service';
+export {
+  GAMEPAD_FEEDBACK_KEY,
+  INPUT_BACKEND_KEY,
+  INPUT_MAP_KEY,
+  INPUT_SNAPSHOT_RESOURCE_KEY,
+} from './resources';
 export {
   isUiOwnedEvent,
   resolveUiOwnership,

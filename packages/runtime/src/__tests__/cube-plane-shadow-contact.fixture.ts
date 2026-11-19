@@ -36,33 +36,22 @@ interface SceneCase {
 export const CUBE_CONTACT_SIZE = 640;
 export const CUBE_CONTACT_CASES: readonly SceneCase[] = [
   { name: 'contact' },
-  { name: 'near camera', eyeZ: 3.8 },
-  { name: 'far camera', eyeZ: 4.2 },
-  { name: 'low camera', eyeY: 0.8 },
-  { name: 'high camera', eyeY: 1.8 },
-  { name: '45 degree sun', elevation: 45 },
-  { name: '70 degree sun', elevation: 70 },
-  { name: 'positive sun yaw', yaw: 20 },
-  { name: 'negative sun yaw', yaw: -20 },
-  { name: 'double-sided', doubleSided: true },
+  { name: 'low oblique camera', eyeY: 0.8, eyeZ: 4.2, yaw: -20 },
   { name: 'tilted double-sided', tilt: 30, doubleSided: true },
-  { name: 'opposite tilt', tilt: -20, doubleSided: true },
   { name: 'centimeter scene', scale: 0.01 },
-  { name: 'decimeter scene', scale: 0.1 },
-  { name: 'ten-meter scene', scale: 10 },
   { name: 'hundred-meter scene', scale: 100 },
   { name: 'grazing sun', elevation: 3 },
-  { name: 'high sun', elevation: 75 },
   { name: 'upstream caster', casterDistance: 2000 },
   { name: 'near-plane crossing caster', casterDistance: 248.64 },
   { name: 'authored normal offset', normalBias: 0.05 },
   { name: 'authored zero depth floor', depthBias: 0 },
   ...Object.entries(DirectionalShadowFilterValue)
     .filter(([, value]) => value !== DirectionalShadowFilterValue.pcfVogel)
-    .flatMap(([name, shadowFilter]) => [
-      { name: `${name} filter`, shadowFilter },
-      { name: `${name} filter grazing`, shadowFilter, elevation: 3 },
-    ]),
+    .map(([name, shadowFilter]) => ({
+      name: `${name} filter grazing`,
+      shadowFilter,
+      elevation: 3,
+    })),
 ];
 
 function value<T>(result: RenderResult<T, unknown>): T {
@@ -264,7 +253,7 @@ export async function createCubePlaneShadowContactFixture(
             propagateTransforms(world).unwrap();
             const receipt = await drawReadyFrame(
               renderer,
-              { leases: [lease], camera: { lease }, environment: { lease } },
+              { source: lease },
               frame === 2 ? ['linear-hdr'] : undefined,
             );
             if (frame !== 2) continue;

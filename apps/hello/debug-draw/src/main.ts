@@ -10,6 +10,7 @@
 //
 // Canvas: 256x256 (plan-strategy R-6 lavapipe soft-raster CI control)
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createDebugDraw } from '@forgeax/engine-debug-draw';
 import { Update } from '@forgeax/engine-ecs';
 import type { Mat4 } from '@forgeax/engine-math';
@@ -365,8 +366,7 @@ async function runRuntime(): Promise<void> {
   // DebugDraw is immediate-mode: the auto-attached debug-overlay pass flushes
   // the current staging buffer and clears it at the end of each frame.
   const ddRuntime = app.debugDraw;
-  app.world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'debug-draw-runtime-shapes',
       queries: [],
       fn: () => {
@@ -382,7 +382,9 @@ async function runRuntime(): Promise<void> {
         const fcamViewProj = mat4.multiply(mat4.create(), fcamProj, fcamView);
         ddRuntime.frustum(fcamViewProj, [1, 1, 0, 1]);
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken1)
     .unwrap();
 
   app.start();
@@ -569,8 +571,7 @@ async function runStandardTonemap(): Promise<void> {
   // >= 0.85 (AC-07).
   const debugDraw = app.debugDraw;
   let drawn = false;
-  app.world
-    .addSystem(Update, {
+  const systemToken2 = defineSystem({
       name: 'debug-draw-standard-shapes',
       queries: [],
       fn: () => {
@@ -587,7 +588,9 @@ async function runStandardTonemap(): Promise<void> {
         const fcamViewProjH = mat4.multiply(mat4.create(), fcamProjH, fcamViewH);
         debugDraw.frustum(fcamViewProjH, [1, 1, 0, 1]);
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken2)
     .unwrap();
 
   app.start();

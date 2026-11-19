@@ -126,14 +126,17 @@ it.each([
           return ((await import(/* @vite-ignore */ url.href)) as { default: string }).default;
         };
         const [html, css, localization, controller] = await Promise.all([
-          authored('../../../../templates/game-3d/assets/guide.ui.html'),
-          authored('../../../../templates/game-3d/assets/guide.ui.css'),
+          authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html'),
+          authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css'),
           fetch(
-            new URL('../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url),
+            new URL(
+              '../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+              import.meta.url,
+            ),
           ).then((r) => r.json()),
           import(
             /* @vite-ignore */ new URL(
-              '../../../../templates/game-3d/assets/ui/guide-controller.ts',
+              '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
               import.meta.url,
             ).href
           ) as Promise<{

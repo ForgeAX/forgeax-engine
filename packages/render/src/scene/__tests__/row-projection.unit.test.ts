@@ -25,14 +25,13 @@ function scene(count: number) {
     ({ assetHandle: handle, material: resource, materials: [resource] }) as unknown as RowContent;
   for (let entity = 0; entity < count; entity++)
     slots.write(entity, {
-      worldId: 0,
       entityKey: entity,
       generation: 1,
       content: entity % 2 === 0 ? content(7, a) : content(8, b),
       pose: mat4.identity(mat4.create()),
     });
   const identity = {};
-  let meshes = new MeshFrame().with(0, 7, mesh).with(0, 8, mesh);
+  let meshes = new MeshFrame().with(7, mesh).with(8, mesh);
   let materials = new MaterialFrame(undefined).with(a).with(b);
   const rows = (): ProjectedRows => ({ identity, slots: slots.capture(), meshes, materials });
   return {
@@ -40,7 +39,7 @@ function scene(count: number) {
     rows,
     a,
     editMesh: (handle: number) => {
-      meshes = meshes.with(0, handle, createBoxGeometry(2, 2, 2).unwrap());
+      meshes = meshes.with(handle, createBoxGeometry(2, 2, 2).unwrap());
     },
     editMaterial: (resource: MaterialResource) => {
       resource.adopt({ ...resource.snapshot, roughness: 0.25 });
@@ -99,7 +98,6 @@ describe('RowProjection', () => {
     if (b === undefined) throw new Error('missing material b');
     // Row 0 leaves material a for b: a later edit of a no longer reaches it.
     s.slots.write(0, {
-      worldId: 0,
       entityKey: 0,
       generation: 1,
       content: { assetHandle: 8, material: b, materials: [b] } as unknown as RowContent,

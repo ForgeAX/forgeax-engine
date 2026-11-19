@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { parseAst, Visitor } from 'vite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DistManifest } from '../dist.js';
 import {
   bundleSingleHtmlEntry,
@@ -81,7 +81,7 @@ describe('single HTML delivery', () => {
     const { root, dist, manifest } = await fixture();
     const indexHtml = await readFile(resolve(dist, 'index.html'), 'utf8');
     const bundle = await bundleSingleHtmlEntry(dist, indexHtml);
-    expect(bundle.ok).toBe(true);
+    expect(bundle.ok, bundle.ok ? undefined : JSON.stringify(bundle.error)).toBe(true);
     if (!bundle.ok) return;
     const output = resolve(root, 'release', 'fixture.html');
     const result = await writeSingleHtml({
@@ -90,15 +90,59 @@ describe('single HTML delivery', () => {
       manifest,
       bundle: bundle.value,
     });
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
     if (!result.ok) return;
     const html = await readFile(output, 'utf8');
     expect(html).toContain('__forgeaxSingleHtml');
-    expect(html).toContain('<\\/script>');
+    expect(html).not.toContain("const marker = '</script>'");
     expect(html).not.toContain('src="./assets/app.js"');
     expect(html).toContain('data:font/woff2;base64');
     expect(html).toContain('data:image/svg+xml;base64');
     expect(await readFile(`${output}.sha256`, 'utf8')).toContain(result.value.html.sha256);
+  });
+
+  it('stores equal resource bytes once while retaining every path and media type', async () => {
+    const { root, dist, manifest } = await fixture();
+    const bytes = noise(16 * 1024, 27);
+    const paths = ['first.bin', 'second.wasm'];
+    try {
+      await Promise.all(paths.map((path) => writeFile(resolve(dist, path), bytes)));
+      const result = await writeSingleHtml({
+        distRoot: dist,
+        output: resolve(root, 'release', 'deduplicated.html'),
+        manifest: {
+          ...manifest,
+          artifacts: [
+            ...manifest.artifacts,
+            ...paths.map((path, index) => ({
+              path,
+              mediaType: index === 0 ? 'application/octet-stream' : 'application/wasm',
+              bytes: bytes.byteLength,
+              sha256: '',
+            })),
+          ],
+        },
+        bundle: { entrySource: 'globalThis.__entryRuns = 1;', artifacts: [] },
+      });
+      expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+      if (!result.ok) return;
+      const html = await readFile(result.value.html.path, 'utf8');
+      const source = html.match(/id="forgeax-asset-payload"[^>]*>([\s\S]*?)<\/script>/)?.[1];
+      const entries = JSON.parse(source ?? '[]') as {
+        readonly path: string;
+        readonly mime: string;
+        readonly index: number;
+      }[];
+      const first = entries.find(({ path }) => path === paths[0]);
+      const second = entries.find(({ path }) => path === paths[1]);
+      expect(first?.mime).toBe('application/octet-stream');
+      expect(second?.mime).toBe('application/wasm');
+      expect(first?.index).toBeDefined();
+      expect(second?.index).toBe(first?.index);
+      expect(html.split(bytes.toString('base64'))).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('fails closed when a local stylesheet resource is outside the verified closure', async () => {
@@ -127,8 +171,117 @@ describe('single HTML delivery', () => {
       dist,
       '<html><body><script type="module">document.body.dataset.inline = "true";</script></body></html>',
     );
-    expect(bundle.ok).toBe(true);
+    expect(bundle.ok, bundle.ok ? undefined : JSON.stringify(bundle.error)).toBe(true);
     if (bundle.ok) expect(bundle.value.entrySource).toContain('dataset.inline');
+  });
+
+  it('bundles ordered local module entries with one evaluation of their shared dependency', async () => {
+    const { dist } = await fixture();
+    await writeFile(
+      resolve(dist, 'assets/shared.js'),
+      'globalThis.__singleHtmlOrder.push("shared");',
+    );
+    await writeFile(
+      resolve(dist, 'assets/first.js'),
+      'import "./shared.js"; globalThis.__singleHtmlOrder.push("first");',
+    );
+    await writeFile(
+      resolve(dist, 'assets/second.js'),
+      'import "./shared.js"; globalThis.__singleHtmlOrder.push("second");',
+    );
+    const result = await bundleSingleHtmlEntry(
+      dist,
+      '<script type="module" src="./assets/first.js"></script><script type="module" src="./assets/second.js"></script>',
+    );
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    const order: string[] = [];
+    new Function('globalThis', result.value.entrySource)({ __singleHtmlOrder: order });
+    expect(order).toEqual(['shared', 'first', 'second']);
+  });
+
+  it('packages prebuilt worker graphs without recursively rebuilding cyclic worker references', async () => {
+    const { dist } = await fixture();
+    await writeFile(
+      resolve(dist, 'assets/app.js'),
+      'globalThis.worker = new Worker(new URL("./engine.js", import.meta.url), {type:"module"});',
+    );
+    await writeFile(
+      resolve(dist, 'assets/engine.js'),
+      'import "./shared.js"; globalThis.createRender = () => new Worker(new URL(`render.js`, import.meta.url).href, {type:"module"});',
+    );
+    await writeFile(
+      resolve(dist, 'assets/render.js'),
+      'import "./shared.js"; globalThis.createEngine = () => new Worker(new URL("./engine.js", import.meta.url), {type:"module"});',
+    );
+    await writeFile(resolve(dist, 'assets/shared.js'), 'globalThis.workerDependency = "ready";');
+    const result = await bundleSingleHtmlEntry(
+      dist,
+      '<script type="module" src="./assets/app.js"></script>',
+    );
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.entrySource).toContain(
+      'forgeax-resource:///__forgeax-bundle/assets/engine.js',
+    );
+    expect(
+      result.value.artifacts
+        .map((row) => Buffer.from(row.bytes).toString('utf8'))
+        .join('\n')
+        .match(/workerDependency/g),
+    ).toHaveLength(1);
+    for (const name of ['engine', 'render']) {
+      const worker = result.value.artifacts.find(
+        (row) => row.path === `__forgeax-bundle/assets/${name}.js`,
+      );
+      expect(worker).toBeDefined();
+      const source = Buffer.from(worker?.bytes ?? []).toString('utf8');
+      expect(source).toMatch(/import/);
+      expect(source).not.toContain('import "./shared.js"');
+    }
+  });
+
+  it('closes generated chunks that statically import a raw dist dependency', async () => {
+    const { root, dist, manifest } = await fixture();
+    const dependency = Buffer.from(
+      'export const value = 42; export const createWorker = () => new Worker(new URL(`worker.js`, import.meta.url).href, {type: "module"});',
+    );
+    await writeFile(resolve(dist, 'assets/dependency.js'), dependency);
+    await writeFile(resolve(dist, 'assets/worker.js'), 'postMessage(42);');
+    const result = await writeSingleHtml({
+      distRoot: dist,
+      output: resolve(root, 'release', 'cross-namespace.html'),
+      manifest: {
+        ...manifest,
+        artifacts: [
+          ...manifest.artifacts,
+          {
+            path: 'assets/dependency.js',
+            mediaType: 'text/javascript',
+            bytes: dependency.length,
+            sha256: '',
+          },
+        ],
+      },
+      bundle: {
+        entrySource: '',
+        artifacts: [
+          {
+            path: '__forgeax-bundle/assets/worker.js',
+            mediaType: 'text/javascript',
+            bytes: Buffer.from('postMessage(42);'),
+          },
+          {
+            path: '__forgeax-bundle/assets/lazy.js',
+            mediaType: 'text/javascript',
+            bytes: Buffer.from(
+              'import {value} from "./dependency.js"; globalThis.lazyValue = value;',
+            ),
+          },
+        ],
+      },
+    });
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
   });
 
   it('writes a large single-html closure with lazy resource nodes and a matching digest', async () => {
@@ -173,7 +326,7 @@ describe('single HTML delivery', () => {
         manifest: largeManifest,
         bundle,
       });
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
       if (!result.ok) return;
       const html = await readFile(output, 'utf8');
       const payloadMarker = 'data-forgeax-asset-payload';
@@ -230,14 +383,31 @@ self.onmessage = async () => self.postMessage((await import(optional)).value);
 
       const indexHtml = await readFile(resolve(dist, 'index.html'), 'utf8');
       const bundle = await bundleSingleHtmlEntry(dist, indexHtml);
-      expect(bundle.ok).toBe(true);
+      expect(bundle.ok, bundle.ok ? undefined : JSON.stringify(bundle.error)).toBe(true);
       if (!bundle.ok) return;
 
       expect(bundle.value.entrySource).toContain('globalThis.__forgeaxImport');
       expect(bundle.value.entrySource).toContain('void 0');
-      expect(bundle.value.entrySource).toMatch(
-        /compile\(\s*['"]depth_pyramid_seed['"]\s*,\s*entry\.wgsl\s*\)/,
+      const posted: unknown[] = [];
+      vi.stubGlobal('__forgeaxImport', async () => ({ value: 42 }));
+      vi.stubGlobal(
+        'Worker',
+        class {
+          postMessage(value: unknown) {
+            posted.push(value);
+          }
+        },
       );
+      try {
+        await import(
+          `data:text/javascript;base64,${Buffer.from(bundle.value.entrySource).toString('base64')}`
+        );
+        expect(Reflect.get(globalThis, '__prewarm')).toBe('shader-code');
+        expect(posted).toEqual([42]);
+      } finally {
+        Reflect.deleteProperty(globalThis, '__prewarm');
+        vi.unstubAllGlobals();
+      }
       const javascript = [
         bundle.value.entrySource,
         ...bundle.value.artifacts

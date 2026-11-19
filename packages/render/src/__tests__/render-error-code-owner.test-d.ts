@@ -54,8 +54,6 @@ const expectedCodes = [
 
   'shadow-invalid-config',
   'equirect-projection-failed',
-  'standard-light-budget-exceeded',
-  'standard-cluster-index-overflow',
   'standard-cluster-transport-unavailable',
   'standard-profile-invalid',
   'point-shadow-atlas-uninitialized',

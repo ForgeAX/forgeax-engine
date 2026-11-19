@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { type EntityHandle, FixedTime, FixedUpdate, Update } from '@forgeax/engine-ecs';
 import {
@@ -9,7 +10,7 @@ import {
   MeshRenderer,
   perspective,
 } from '@forgeax/engine-render';
-import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { propagateTransforms, PropagateTransforms, PropagateTransformsFixed, Transform } from '@forgeax/engine-scene';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 
@@ -161,13 +162,13 @@ const entry: ExecutionBootstrapEntry = (data) => {
           recordDelivery = (durationMs) => {
             if (timings.deliveryMs.length < 4096) timings.deliveryMs.push(durationMs);
           };
-          for (const [token, name] of [
-            [Update, 'propagateTransforms'],
-            [FixedUpdate, 'propagateTransformsFixed'],
+          for (const [token, system] of [
+            [Update, PropagateTransforms],
+            [FixedUpdate, PropagateTransformsFixed],
           ] as const) {
             ctx.world
-              .replaceSystem(token, name, {
-                name,
+              .replaceSystem(token, system, defineSystem({
+                name: system.name,
                 queries: [],
                 fn: (world) => {
                   const started = performance.now();
@@ -178,7 +179,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
                       timings.propagationMs.push(performance.now() - started);
                   }
                 },
-              })
+              }))
               .unwrap();
           }
           const originalUpdate = ctx.world.update.bind(ctx.world);
@@ -232,7 +233,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
             if (publications.length < 4096)
               publications.push({ baseline, durationMs: performance.now() - updateFinished });
           };
-          const system = {
+          const system = defineSystem({
             name: 'publication-tick-proof',
             queries: [],
             fn: (world: typeof ctx.world) => {
@@ -254,7 +255,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
               if (timings.gameplayMs.length < 4096)
                 timings.gameplayMs.push(performance.now() - started);
             },
-          };
+          });
           ctx.world.addSystem(Update, system).unwrap();
           if (port !== undefined) {
             port.onmessage = async (event) => {
@@ -273,9 +274,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
                   let admitted = false;
                   const admission = 'recovery-mesh-admission';
                   let receipt: DynamicGeometryReceipt;
+                  let releaseAdmission = () => {};
                   try {
                     receipt = await new Promise<DynamicGeometryReceipt>((resolve, reject) => {
-                      ctx.world.addSystem(FixedUpdate, {
+                      const systemToken1 = defineSystem({
                         name: admission,
                         queries: [],
                         fn(world) {
@@ -290,10 +292,12 @@ const entry: ExecutionBootstrapEntry = (data) => {
                             if (consumed !== undefined) resolve(consumed);
                           } catch (cause) { reject(cause); }
                         },
-                      }).unwrap();
+                      });
+ctx.world.addSystem(FixedUpdate, systemToken1).unwrap();
+                      releaseAdmission = () => ctx.world.removeSystem(FixedUpdate, systemToken1).unwrap();
                     });
                   } finally {
-                    ctx.world.removeSystem(FixedUpdate, admission).unwrap();
+                    releaseAdmission();
                   }
                   renderWorker?.postMessage('lose-device');
                   port.postMessage({ ticks, worldIdentity: ctx.world.identity, command: event.data, adapter: adapterInfo, meshReceipt: receipt });
@@ -314,13 +318,12 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 return;
               }
               if (event.data === 'terminate-render') renderWorker?.terminate();
-              if (event.data === 'lose-device') renderWorker?.postMessage('lose-device');
               port.postMessage({ ticks, worldIdentity: ctx.world.identity, command: event.data });
             };
             port.start();
           }
           return () => {
-            ctx.world.removeSystem(Update, system.name).unwrap();
+            ctx.world.removeSystem(Update, system).unwrap();
             globalThis.Worker = NativeWorker;
             ctx.world.update = originalUpdate;
             scope.postMessage = originalPost;

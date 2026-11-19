@@ -544,3 +544,32 @@ test('Node-only Mesh IO workers resolve ESM dependencies while runtime imports s
     );
   }
 });
+
+test('admits the portable shader program entry while retaining Node cooker boundaries', () => {
+  for (const specifier of [
+    '@forgeax/engine-shader-compiler/program',
+    '@forgeax/engine/shader-compiler/program',
+  ])
+    assert.deepEqual(codes(`import { prepareShaderCompiler } from '${specifier}';`), []);
+  assert.ok(
+    codes('import { createMaterialPackCooker } from "@forgeax/engine-shader-compiler";').includes(
+      'runtime-tool-import',
+    ),
+  );
+  assert.ok(
+    codes('import { build } from "vite";', {
+      file: 'packages/shader-compiler/src/compile.ts',
+    }).includes('runtime-tool-import'),
+  );
+  assert.ok(
+    codes('export const mode = process.env.MODE;', {
+      file: 'packages/shader-compiler/src/engine-program.ts',
+    }).includes('runtime-host-environment'),
+  );
+  assert.deepEqual(
+    codes('import { readFile } from "node:fs/promises"; export const mode = process.env.MODE;', {
+      file: 'packages/shader-compiler/src/material/pack-cooker.ts',
+    }),
+    [],
+  );
+});

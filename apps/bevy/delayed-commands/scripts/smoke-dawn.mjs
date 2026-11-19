@@ -5,10 +5,10 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 // bevy-delayed-commands headless dawn smoke (structural-only).
 // Verify: backend=webgpu, 60 frames no crash, 0 RhiError
 
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200, HEIGHT = 150;
 const TARGET_FRAMES = 60;
@@ -54,7 +54,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { createBoxGeometry } = await import('@forgeax/engine-geometry');
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
+const MANIFEST = processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json'));
 
 let renderer;
 try { const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST });

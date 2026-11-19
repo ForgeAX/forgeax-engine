@@ -1,12 +1,15 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `audio_control` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { type AudioState, AudioSource, type AudioBackend, audioPlugin } from '@forgeax/engine-audio';
+import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 
 
@@ -34,7 +37,7 @@ const scene = buildAudioControlWorld(world, canvas.width / Math.max(canvas.heigh
 const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-audio-control: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-const audio = world.getResource<AudioBackend>('AudioEngine');
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 if (!audio) throw new Error('bevy-audio-control: AudioEngine resource missing');
 
 let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
@@ -64,12 +67,12 @@ const writeControls = () => {
   audio.setBusMute('music', muted);
 };
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'audio-control-input',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: () => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     const space = input?.keyboard.down(' ') ?? false;
     const mute = input?.keyboard.down('m') || input?.keyboard.down('M') || false;
     const down = input?.keyboard.down('-') ?? false;
@@ -88,6 +91,7 @@ world.addSystem(Update, {
     controlStatus.textContent = `playing=${playing ? 1 : 0} | muted=${muted ? 1 : 0} | volume=${volume.toFixed(2)}`;
   },
 });
+world.addSystem(Update, systemToken1);
 
 const started = app.start();
 if (!started.ok) throw new Error(`bevy-audio-control: app.start failed: ${started.error.code}`);

@@ -42,10 +42,16 @@ the same locked Engine versions from npm. Both surfaces share the pnpm lockfile 
 pnpm-workspace.yaml allowBuilds policy. sdk-manifest.json records the store layout
 created by the pinned pnpm release.
 
-The SDK includes the built View workspace under tools/view/. init installs it
-from that local directory alongside Engine in .forgeax/cli-runtime; no separate
-View npm package is required. Use bin/forgeax.mjs backend start and view start
-with this SDK's CLI. Games continue to depend only on Engine.
+View is optional and owns its startup file. From a generated game's root, run
+`node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
+The game's installed Engine includes the matching built View; no global SDK,
+separate View package, Engine build or manual Backend startup is required.
+For the SDK-wide project chooser use `node /path/to/forgeax-sdk/tools/view/start.mjs`.
+Keep that terminal open and open the returned URL; project readiness appears in
+the page. Read `skills/forgeax-view-start/SKILL.md` for instance and shutdown rules.
+New games receive this View-owned skill through the SDK skill inventory.
+Existing games can read the current copy under their Engine's `tools/view/skills/`;
+installing or upgrading npm dependencies does not overwrite their agent prompts.
 
 game-3d is a content-bearing reference, not production artwork. Original/high-fidelity games replace
 visible content and forge.json/package/GUID/sourceKey/plugin identity, while reusing runtime code according to
@@ -97,7 +103,7 @@ pixels measure visual liveness with non-canvas elements hidden, preventing HUD c
 black 3D output; the final PNG still includes the whole page.
 
 Capture fixes viewport/screen, DPR 1, sRGB, light mode, en-US, UTC, and font readiness.
-Bundle the same Web fonts; do not rely on matching system fonts.
+Bundle the Web fonts the game uses so every machine renders the same text.
 
 For cross-machine color regression, use --deterministic and ?forgeaxCapture=1. Games pin random
 seed/logical frame/fonts and set readiness only after Canvas/UI stabilize:
@@ -174,7 +180,7 @@ The project manifest remains dependency authority. doctor checks workspace build
 SDK packages, and invalid workspace:* consumer dependencies. status derives its digest
 from real built bytes and reports build time. unlink restores default resolution.
 
-To use embedded View with this source Engine, start its backend through the source
+For advanced source-Engine integration only, start its backend through the source
 CLI from your workspace directory. The source Host supplies the Engine graph; View
 continues to use the SDK's built tool. Stop an existing backend before switching:
 

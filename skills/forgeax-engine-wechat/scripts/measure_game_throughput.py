@@ -30,7 +30,7 @@ STATE = '''async function(){
   const c=canvases.length===1?canvases[0]:undefined;
   const w=g.wx?.getWindowInfo?.();
   const player=interaction&&await i.read('game-3d.player');
-  const vase=interaction&&await i.read('game-3d.runtime-vase');
+  const vase=interaction&&(await i.list?.())?.reads?.includes('game-3d.runtime-vase')?await i.read('game-3d.runtime-vase'):undefined;
   const after=clock.now();
   return JSON.parse(JSON.stringify({utcMs:Date.now(),clockOriginMs:clock.timeOrigin,
     observedAtMs:(before+after)/2,observationCostMs:after-before,
@@ -177,7 +177,7 @@ def validate_state(value, interaction=False):
         raise ToolFailure('recorder-enabled-publication-is-not-uninstrumented-throughput')
     if interaction:
         player = value.get('player')
-        if not isinstance(player, dict) or not isinstance(value.get('vase'), dict):
+        if not isinstance(player, dict):
             raise ToolFailure('game-3d-projection-unavailable')
         if player.get('camera', {}).get('pointerLocked') is not False:
             raise ToolFailure('touch-player-pointer-locked')

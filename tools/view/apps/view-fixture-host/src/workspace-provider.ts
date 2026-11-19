@@ -17,7 +17,7 @@ const MESH_FACTS: Record<string, { vertexCount: number; triangleCount: number }>
 };
 
 function abort(signal?: AbortSignal) { signal?.throwIfAborted(); }
-type ProjectInput = { root: string; signal?: AbortSignal };
+type ProjectInput = { root: string; generation: number; signal?: AbortSignal };
 type AssetInput = { guid: string; signal?: AbortSignal };
 type PreviewInput = { asset: EngineWorkspaceAsset; signal?: AbortSignal };
 type EntityInput = { entityId: string };
@@ -42,12 +42,17 @@ export function createFixtureWorkspaceProvider(): EngineWorkspaceProvider {
   const handle = Object.freeze({ projectId: PROJECT.id });
   const entityNumber = { world: 1, ground: 2, player: 3, sun: 4 } as const;
   return {
-    openProject({ root, signal }: ProjectInput) {
+    openProject({ root, generation, signal }: ProjectInput) {
       abort(signal);
       if (root !== PROJECT_ROOT) throw new EngineWorkspaceError(
         'engine-workspace-project-mismatch', PROJECT_ROOT, 'Open the fixture project root.',
       );
-      return { project: PROJECT, target, handle };
+      return {
+        project: PROJECT,
+        status: { phase: 'running', sessionId: target.sessionId, generation, document: { sessionId: target.sessionId, targetId: target.targetId, url: 'http://127.0.0.1/fixture', browserGeneration: 1 }, target, browserGeneration: 1 },
+        subscribeStatus: () => () => {},
+        handle,
+      };
     },
     closeProject() {
       for (const entry of drafts.values()) entry.draft.close();

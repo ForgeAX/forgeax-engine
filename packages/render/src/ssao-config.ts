@@ -30,10 +30,15 @@ export const SSAO_DEFAULT_DISTANCE_EXPONENT = 1;
 export const SSAO_DEFAULT_DISTANCE_FALL_OFF = 1;
 export const SSAO_DEFAULT_RESOLUTION_SCALE = 1;
 
+export const SPIRAL_SSAO_SAMPLE_COUNTS = { low: 8, medium: 12, high: 12 } as const;
+
 export const SSAO_SAMPLE_COUNTS = { low: 16, medium: 32, high: 64 } as const;
 
 interface ResolvedSsaoParameters {
-  readonly algorithm: 'ssao' | 'gtao';
+  readonly algorithm: 'ssao' | 'gtao' | 'spiral-ssao';
+  readonly application: 'lighting' | 'scene-color';
+  readonly sceneColorStrength: number;
+  readonly sampleCount: number;
   readonly directLightingStrength: number;
   readonly radius: number;
   readonly bias: number;
@@ -51,8 +56,19 @@ interface ResolvedSsaoParameters {
  * active HDRP configuration, or for the disabled/default fallback payload.
  */
 export function getSsaoParameters(config: SsaoParameterConfig | undefined): ResolvedSsaoParameters {
+  const algorithm = config?.algorithm ?? 'gtao';
+  const quality = config?.quality ?? 'high';
+  const counts =
+    algorithm === 'gtao'
+      ? GTAO_SAMPLE_COUNTS
+      : algorithm === 'spiral-ssao'
+        ? SPIRAL_SSAO_SAMPLE_COUNTS
+        : SSAO_SAMPLE_COUNTS;
   return {
-    algorithm: config?.algorithm ?? 'gtao',
+    algorithm,
+    application: config?.application ?? 'lighting',
+    sceneColorStrength: config?.sceneColorStrength ?? 0.95,
+    sampleCount: config?.sampleCount ?? counts[quality],
     directLightingStrength: config?.directLightingStrength ?? 0,
     radius: config?.radius ?? SSAO_DEFAULT_RADIUS,
     bias: config?.bias ?? SSAO_DEFAULT_BIAS,
@@ -61,8 +77,76 @@ export function getSsaoParameters(config: SsaoParameterConfig | undefined): Reso
     distanceExponent: config?.distanceExponent ?? SSAO_DEFAULT_DISTANCE_EXPONENT,
     distanceFallOff: config?.distanceFallOff ?? SSAO_DEFAULT_DISTANCE_FALL_OFF,
     resolutionScale: config?.resolutionScale ?? SSAO_DEFAULT_RESOLUTION_SCALE,
-    quality: config?.quality ?? 'high',
+    quality,
   };
+}
+
+function invalidSsaoMode(resolved: ResolvedSsaoParameters): PostProcessError | undefined {
+  if (
+    resolved.algorithm !== 'ssao' &&
+    resolved.algorithm !== 'gtao' &&
+    resolved.algorithm !== 'spiral-ssao'
+  ) {
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'algorithm', value: resolved.algorithm },
+    });
+  }
+  if (resolved.application !== 'lighting' && resolved.application !== 'scene-color') {
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'application', value: resolved.application },
+    });
+  }
+  if (
+    !Number.isFinite(resolved.sceneColorStrength) ||
+    resolved.sceneColorStrength < 0 ||
+    resolved.sceneColorStrength > 1
+  ) {
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'sceneColorStrength', value: resolved.sceneColorStrength },
+    });
+  }
+  return undefined;
+}
+
+function invalidSsaoSampling(resolved: ResolvedSsaoParameters): PostProcessError | undefined {
+  if (
+    !Number.isInteger(resolved.sampleCount) ||
+    resolved.sampleCount < 1 ||
+    resolved.sampleCount > 64
+  ) {
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'sampleCount', value: resolved.sampleCount },
+    });
+  }
+  if (
+    !Number.isFinite(resolved.directLightingStrength) ||
+    resolved.directLightingStrength < 0 ||
+    resolved.directLightingStrength > 1
+  ) {
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'directLightingStrength', value: resolved.directLightingStrength },
+    });
+  }
+  for (const [paramName, min, max] of [
+    ['thickness', 0, Number.POSITIVE_INFINITY],
+    ['distanceExponent', 0, Number.POSITIVE_INFINITY],
+    ['distanceFallOff', 0, 1],
+    ['resolutionScale', 0.25, 1],
+  ] as const) {
+    const value = resolved[paramName];
+    if (!Number.isFinite(value) || value < min || value > max) {
+      return new PostProcessError({
+        code: 'ssao-parameter-invalid',
+        detail: { paramName, value },
+      });
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -74,14 +158,8 @@ export function resolveSsaoParameters(
   config: SsaoParameterConfig | undefined,
 ): Result<ResolvedSsaoParameters, PostProcessError> {
   const resolved = getSsaoParameters(config);
-  if (resolved.algorithm !== 'ssao' && resolved.algorithm !== 'gtao') {
-    return err(
-      new PostProcessError({
-        code: 'ssao-parameter-invalid',
-        detail: { paramName: 'algorithm', value: resolved.algorithm },
-      }),
-    );
-  }
+  const modeFailure = invalidSsaoMode(resolved);
+  if (modeFailure !== undefined) return err(modeFailure);
   if (!Number.isFinite(resolved.radius) || resolved.radius <= 0) {
     return err(
       new PostProcessError({
@@ -112,33 +190,14 @@ export function resolveSsaoParameters(
       }),
     );
   }
-  if (
-    !Number.isFinite(resolved.directLightingStrength) ||
-    resolved.directLightingStrength < 0 ||
-    resolved.directLightingStrength > 1
-  ) {
-    return err(
-      new PostProcessError({
-        code: 'ssao-parameter-invalid',
-        detail: { paramName: 'directLightingStrength', value: resolved.directLightingStrength },
-      }),
-    );
-  }
-  for (const [paramName, min, max] of [
-    ['thickness', 0, Number.POSITIVE_INFINITY],
-    ['distanceExponent', 0, Number.POSITIVE_INFINITY],
-    ['distanceFallOff', 0, 1],
-    ['resolutionScale', 0.25, 1],
-  ] as const) {
-    const value = resolved[paramName];
-    if (!Number.isFinite(value) || value < min || value > max) {
-      return err(
-        new PostProcessError({
-          code: 'ssao-parameter-invalid',
-          detail: { paramName, value },
-        }),
-      );
-    }
-  }
+  const samplingFailure = invalidSsaoSampling(resolved);
+  if (samplingFailure !== undefined) return err(samplingFailure);
   return ok(resolved);
+}
+
+/** Scene-color AO must never darken lighting a second time. */
+export function ssaoUsesLighting(
+  config: NonNullable<RenderPipelineAsset['config']>['ssao'],
+): boolean {
+  return config?.enabled === true && config.application !== 'scene-color';
 }

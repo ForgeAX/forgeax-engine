@@ -16,13 +16,12 @@ import type { AssetHandle, Handle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 
 describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeOf', () => {
-  it('Transform data shape has 4 local affine inline-array fields', () => {
+  it('Transform data shape has 3 local TRS inline-array fields', () => {
     type Data = ShapeOf<SchemaOf<typeof Transform>>;
-    expectTypeOf<keyof Data>().toEqualTypeOf<'pos' | 'quat' | 'scale' | 'shear'>();
+    expectTypeOf<keyof Data>().toEqualTypeOf<'pos' | 'quat' | 'scale'>();
     expectTypeOf<Data['pos']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['quat']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['scale']>().toEqualTypeOf<Float32Array>();
-    expectTypeOf<Data['shear']>().toEqualTypeOf<Float32Array>();
     type GlobalData = ShapeOf<SchemaOf<typeof GlobalTransform>>;
     expectTypeOf<keyof GlobalData>().toEqualTypeOf<'world' | 'presentation'>();
     expectTypeOf<GlobalData['world']>().toEqualTypeOf<Float32Array>();
@@ -34,7 +33,6 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Input['pos']>().toEqualTypeOf<Float32Array | readonly number[]>();
     expectTypeOf<Input['quat']>().toEqualTypeOf<Float32Array | readonly number[]>();
     expectTypeOf<Input['scale']>().toEqualTypeOf<Float32Array | readonly number[]>();
-    expectTypeOf<Input['shear']>().toEqualTypeOf<Float32Array | readonly number[]>();
   });
 
   it("MeshFilter data shape has 1 AssetHandle<'mesh'> field (assetHandle; M5 / w19)", () => {
@@ -46,10 +44,11 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
   it('MeshRenderer data shape carries materials, lighting and pipeline preparation', () => {
     type Data = ShapeOf<SchemaOf<typeof MeshRenderer>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
     >();
     expectTypeOf<Data['materials']>().toEqualTypeOf<readonly AssetHandle<'material'>[]>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['renderLayers']>().toEqualTypeOf<number>();
     expectTypeOf<Data['preparePipelines']>().toEqualTypeOf<boolean>();
   });
 
@@ -74,6 +73,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
   it('Camera data shape includes output exposure and color-grading fields', () => {
     type Data = ShapeOf<SchemaOf<typeof Camera>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
+      | 'cullMask'
       | 'taaFlickering'
       | 'fov'
       | 'aspect'
@@ -108,8 +108,10 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'autoAspect'
       | 'target'
       | 'targetLayer'
+      | 'postProcessing'
     >();
     expectTypeOf<Data['fov']>().toEqualTypeOf<number>();
+    expectTypeOf<Data['cullMask']>().toEqualTypeOf<number>();
     expectTypeOf<Data['far']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projection']>().toEqualTypeOf<number>();
     expectTypeOf<Data['projectionOffset']>().toEqualTypeOf<Float32Array>();
@@ -137,6 +139,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['clearColor']>().toEqualTypeOf<Float32Array>();
     // feat-20260617 / M3: AC-09 -- bool column narrows to boolean, not number.
     expectTypeOf<Data['autoAspect']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Data['postProcessing']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['target']>().toEqualTypeOf<Handle<'RenderTarget', 'shared'>>();
   });
 
@@ -207,7 +210,7 @@ describe('w7 type-level - component name literal types are preserved', () => {
     // `switch (mat.shadingModel)` in the canonical dispatch site.
     expectTypeOf<typeof MeshRenderer.name>().toEqualTypeOf<'MeshRenderer'>();
     expectTypeOf<keyof SchemaOf<typeof MeshRenderer>>().toEqualTypeOf<
-      'materials' | 'lightingChannels' | 'preparePipelines'
+      'materials' | 'lightingChannels' | 'preparePipelines' | 'renderLayers'
     >();
   });
 

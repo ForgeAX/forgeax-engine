@@ -1,0 +1,353 @@
+:root {
+  --water-ink: #e5eef4;
+  --water-muted: #94a9ba;
+  --water-line: #ffffff15;
+  --water-accent: #65c9d7;
+}
+body.water-experience {
+  margin: 0;
+  overflow: hidden;
+  color: var(--water-ink);
+  background: #0a1822;
+  font-family: Inter, "Microsoft YaHei", sans-serif;
+}
+.water-experience * {
+  box-sizing: border-box;
+}
+.water-experience main {
+  display: block;
+  height: 100dvh;
+}
+.water-experience .viewport {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+.water-experience #scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  outline: none;
+  cursor: grab;
+}
+.water-experience #scene.looking {
+  cursor: grabbing;
+}
+.water-experience #scene:focus-visible {
+  outline: 1px solid var(--water-accent);
+  outline-offset: -2px;
+}
+.water-experience > header,
+.water-experience #app > header {
+  position: fixed;
+  z-index: 5;
+  left: 20px;
+  right: 20px;
+  top: 16px;
+  height: 48px;
+  padding: 0 14px;
+  gap: 20px;
+  border: 1px solid var(--water-line);
+  border-radius: 12px;
+  background: #0d1b29d9;
+  backdrop-filter: blur(16px);
+  color: var(--water-ink);
+}
+.water-experience header .brand,
+.water-experience header .scene-title,
+.water-experience header #render-state {
+  color: var(--water-ink);
+}
+.water-experience #hero {
+  right: auto;
+  height: auto;
+  padding: 12px 18px;
+}
+.water-experience .water-settings,
+.water-experience #panel.water-settings,
+.water-experience #controls-panel.water-settings {
+  position: fixed;
+  z-index: 4;
+  right: 20px;
+  left: auto;
+  top: 78px;
+  bottom: 52px;
+  width: 348px;
+  max-height: none;
+  display: block;
+  overflow: auto;
+  padding: 0 16px 16px;
+  border: 1px solid var(--water-line);
+  border-radius: 14px;
+  background: #10202edb;
+  backdrop-filter: blur(20px);
+  color: var(--water-ink);
+  scrollbar-width: thin;
+  scrollbar-color: #526773 transparent;
+  box-shadow: 0 16px 48px #0003;
+}
+.water-experience .water-settings.closed,
+.water-experience .water-settings[hidden] {
+  display: none;
+}
+.water-settings .water-hero {
+  display: block;
+  margin: 0 -16px 12px;
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid var(--water-line);
+}
+.water-settings .water-hero > span {
+  display: inline-block;
+  margin-bottom: 8px;
+}
+.water-settings > .water-runtime-panel {
+  padding: 0 12px 12px;
+}
+.water-settings > .water-runtime-panel > summary {
+  margin: 0 -12px;
+}
+.water-settings > output.water-entry-fps {
+  display: block;
+  padding: 12px 0;
+}
+.water-experience #controls-panel.water-settings {
+  display: block;
+}
+.water-experience #panel-toggle {
+  display: block;
+}
+.water-settings h1 {
+  color: var(--water-ink);
+  font-size: 21px;
+  font-weight: 650;
+  margin: 0 0 8px;
+}
+.water-settings .water-hero h1 {
+  width: auto;
+  max-width: none;
+}
+.water-settings p,
+.water-settings .dimension-help {
+  color: var(--water-muted);
+  font-size: 12px;
+  line-height: 1.75;
+  margin: 0 0 12px;
+}
+.water-settings h2 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--water-muted);
+  margin: 0 0 10px;
+}
+.water-experience .water-settings .water-dimension {
+  border: 1px solid var(--water-line);
+  border-radius: 9px;
+  margin: 9px 0;
+  padding: 0;
+  background: #09172050;
+}
+.water-settings .water-dimension > summary {
+  padding: 13px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--water-ink);
+}
+.water-settings .water-dimension[open] > summary {
+  border-bottom: 1px solid var(--water-line);
+}
+.water-settings .dimension-body {
+  padding: 13px 12px;
+}
+.water-settings .dimension-body > section {
+  padding: 0;
+  margin: 0 0 14px;
+  border: 0;
+  background: transparent;
+}
+.water-settings label,
+.water-settings .field-label,
+.water-settings dt,
+.water-settings .range-label {
+  color: #b0c2cf;
+  font-size: 12px;
+}
+.water-settings input,
+.water-settings select,
+.water-settings button {
+  font: inherit;
+  font-size: 12px;
+}
+.water-settings input[type="number"],
+.water-settings input[type="text"],
+.water-settings select {
+  color: var(--water-ink);
+  background: #091721;
+  border: 1px solid #ffffff24;
+  border-radius: 6px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 6px 8px;
+}
+.water-settings input[type="range"] {
+  width: 100%;
+  accent-color: var(--water-accent);
+}
+.water-settings input[type="checkbox"] {
+  accent-color: var(--water-accent);
+}
+.water-settings button {
+  color: #cbd9e3;
+  background: #223747;
+  border: 1px solid #ffffff1c;
+  border-radius: 6px;
+  padding: 7px 10px;
+  min-height: 34px;
+  cursor: pointer;
+}
+.water-settings button:hover {
+  background: #2c495b;
+  border-color: #65c9d760;
+}
+.water-settings button.primary,
+.water-settings button[aria-pressed="true"],
+.water-settings button[aria-selected="true"] {
+  color: #081e28;
+  background: var(--water-accent);
+  border-color: var(--water-accent);
+}
+.water-settings button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.water-settings output,
+.water-settings dd,
+.water-settings .fact-row strong {
+  color: #d3e9ee;
+  font-variant-numeric: tabular-nums;
+}
+.water-settings pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #aabecb;
+  font-size: 10px;
+}
+.water-settings .water-actions,
+.water-settings .button-row,
+.water-settings .view-grid,
+.water-settings .experiment-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.water-settings .water-actions > *,
+.water-settings .button-row > *,
+.water-settings .experiment-views > * {
+  flex: 1;
+}
+.water-settings .water-readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.water-settings .runtime-form {
+  margin: 8px 0;
+  border-color: var(--water-line);
+}
+.water-camera-hint {
+  position: fixed;
+  z-index: 3;
+  left: 20px;
+  bottom: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--water-line);
+  border-radius: 8px;
+  background: #0d1b29d9;
+  color: #b9cbd7;
+  font-size: 11px;
+  pointer-events: none;
+  max-width: calc(100% - 40px);
+}
+.water-experience .scene-caption,
+.water-experience .scene-bottom {
+  bottom: 60px;
+  background: #0d1b29d9;
+  border: 1px solid var(--water-line);
+  color: #b9cbd7;
+}
+.water-experience .view-toolbar {
+  top: 80px;
+  left: 20px;
+  right: 388px;
+}
+.water-experience .basin-tags {
+  left: 20px;
+  top: 132px;
+}
+.water-experience .view-label {
+  bottom: 100px;
+}
+.water-experience > footer {
+  right: 390px;
+  bottom: 60px;
+  background: #0d1b29d9;
+  color: #b9cbd7;
+  border-color: var(--water-line);
+}
+.water-experience.panel-hidden #controls-panel.water-settings {
+  display: none;
+}
+.water-experience #panel.water-settings.closed {
+  display: none;
+}
+@media (max-width: 760px) {
+  .water-experience .water-settings,
+  .water-experience #panel.water-settings,
+  .water-experience #controls-panel.water-settings {
+    right: 10px;
+    top: 72px;
+    bottom: 52px;
+    width: min(320px, calc(100vw - 20px));
+  }
+  .water-experience > header,
+  .water-experience #app > header {
+    left: 10px;
+    right: 10px;
+    gap: 10px;
+  }
+  .water-camera-hint {
+    left: 10px;
+    right: 10px;
+    max-width: none;
+    font-size: 9px;
+  }
+  .water-experience .view-toolbar {
+    right: auto;
+  }
+}
+
+.water-settings .coast-field {
+  margin: 12px 0;
+}
+.water-settings .coast-field-value {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 6px 0;
+}
+.water-settings .coast-field-value > input {
+  flex: 1;
+  width: 0;
+}
+.water-settings .coast-field-value > span {
+  font-size: 11px;
+  color: var(--water-muted);
+}

@@ -12,7 +12,8 @@ import {
  * object graph crosses only for low-frequency rows that actually exist this
  * frame, so an unchanged frame structured-clones three scalars and a buffer.
  */
-export const RENDER_PUBLICATION_PROTOCOL = 4;
+/** v9 admits native feature work and complete scaled/unscaled source time. */
+export const RENDER_PUBLICATION_PROTOCOL = 9;
 
 /** What crosses the Worker boundary and what a Renderer draws. */
 export interface RenderPublicationMessage extends RenderPublicationIdentity {
@@ -42,6 +43,7 @@ const SIDE_KEYS = [
   'targets',
   'targetSources',
   'features',
+  'surfaceDynamicInputs',
   'programs',
   'assets',
   'preparedAssets',
@@ -67,7 +69,10 @@ const PROTOCOL = 0,
   UPSERTS = 9,
   REMOVED = 10,
   TRANSFORMS = 11,
-  RETIRED_JOINTS = 12;
+  RETIRED_JOINTS = 12,
+  UNSCALED_DELTA = 13,
+  UNSCALED_ELAPSED = 14,
+  TIME_SCALE = 15;
 const BASELINE = 1;
 const TEMPORAL_RESET = 2;
 /** The side metadata is complete and replaces, rather than amends, the accepted metadata. */
@@ -259,6 +264,9 @@ export function encodeRenderPublication(
   header[DELTA] = packet.time.delta;
   header[ELAPSED] = packet.time.elapsed;
   header[MAX_DELTA] = packet.time.maxDeltaSeconds;
+  header[UNSCALED_DELTA] = packet.time.unscaledDelta;
+  header[UNSCALED_ELAPSED] = packet.time.unscaledElapsed;
+  header[TIME_SCALE] = packet.time.scale;
   header[SAMPLE_TIME] = packet.sampleTimeSeconds;
   header[SORT_MODE] = packet.transparentSort.mode;
   header[SORT_YZ_ALPHA] = packet.transparentSort.yzAlpha;
@@ -343,7 +351,9 @@ export function decodeRenderPublication(
   if (typeof side !== 'object' || side === null) return shape('publication side');
   const baseline = (flags & BASELINE) !== 0;
   // A baseline carries complete metadata; a successor completes from the accepted one.
-  const prior = baseline || (flags & METADATA_COMPLETE) !== 0 ? undefined : accepted;
+  const selectPriorMetadata = () =>
+    baseline || (flags & METADATA_COMPLETE) !== 0 ? undefined : accepted;
+  const prior = selectPriorMetadata();
   let metadata = prior;
   if (side.metadata !== undefined || side.retiredMetadata !== undefined) {
     if (
@@ -368,6 +378,9 @@ export function decodeRenderPublication(
       delta: header[DELTA] as number,
       elapsed: header[ELAPSED] as number,
       maxDeltaSeconds: header[MAX_DELTA] as number,
+      unscaledDelta: header[UNSCALED_DELTA] as number,
+      unscaledElapsed: header[UNSCALED_ELAPSED] as number,
+      scale: header[TIME_SCALE] as number,
     },
     sampleTimeSeconds: header[SAMPLE_TIME] as number,
     transparentSort: {
@@ -384,6 +397,9 @@ export function decodeRenderPublication(
     targets: side.targets ?? EMPTY,
     targetSources: side.targetSources ?? EMPTY,
     features: side.features ?? EMPTY,
+    ...(side.surfaceDynamicInputs === undefined
+      ? {}
+      : { surfaceDynamicInputs: side.surfaceDynamicInputs }),
     programs: side.programs ?? EMPTY,
     assets: side.assets ?? EMPTY,
     ...(side.preparedAssets === undefined ? {} : { preparedAssets: side.preparedAssets }),

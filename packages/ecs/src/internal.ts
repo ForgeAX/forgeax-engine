@@ -11,18 +11,20 @@
 // Raw World storage stays source-private; semantic World reads live behind the
 // separate `./world-read` entry.
 export {
-  bufferFieldByteLength,
+  componentDefinition,
   componentId,
   componentSchema,
   parseManagedArraySchema,
 } from './component';
-export { componentDefinition } from './component-schema';
 
 import type { Result } from '@forgeax/engine-types';
-import type { Component } from './component';
+import { type Component, componentId as componentIdOf } from './component';
+import type { EntityHandle } from './entity-handle';
 import type { QuerySpanUnavailableError } from './errors';
 import type { DerivedRangeWriter } from './query/derived-range-writer';
 import type { Query } from './query/query';
+import type { World } from './world';
+import { worldInternal } from './world-internal';
 
 /** Internal identity for the ECS-owned derived range writer accessor. */
 export const DERIVED_WRITER: unique symbol = Symbol.for(
@@ -70,10 +72,24 @@ export function getDerivedWriter<
   return internalQuery[DERIVED_WRITER](component);
 }
 
+/**
+ * Flag one entity's component as changed without writing its value, so
+ * `changed` queries and change epochs observe it. Returns false, writing
+ * nothing, when the entity does not have the component.
+ */
+export function markComponentChanged(
+  world: World,
+  entity: EntityHandle,
+  component: Component,
+): boolean {
+  return world[worldInternal].markComponentChanged(entity, componentIdOf(component));
+}
+
 export type {
   DerivedColumnBinding,
   DerivedRangeCursor,
-  DerivedRangeRowCommit,
-  DerivedRangeRowProbe,
   DerivedRangeWriter,
 } from './query/derived-range-writer';
+export type { EntityLookup, EntityLookupColumns } from './query/entity-lookup';
+export { createEntityLookup } from './query/entity-lookup';
+export type { ArrayStore } from './storage/array-store';

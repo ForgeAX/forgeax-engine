@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { resolveEngineStartup } from '@forgeax/engine-app/configuration';
 import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { createNativeCookCache } from '@forgeax/engine-ddc';
 import { ImporterRegistry } from '@forgeax/engine-import';
@@ -13,11 +14,21 @@ import {
   startPluginAsset,
 } from '@forgeax/engine-plugin';
 import { validateDynamicGeometryMeshBudget, validateRenderProfile } from '@forgeax/engine-render';
+import { assertTextureMipSkip } from '@forgeax/engine-render/internal';
 import type { ToolRun, ToolRunOptions } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, ImportProduct } from '@forgeax/engine-types';
-import { err, ok, type PluginAssetDefinition } from '@forgeax/engine-types';
+import {
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  err,
+  ok,
+  type PluginAssetDefinition,
+} from '@forgeax/engine-types';
+import { executionWorkers } from '../execution-workers.js';
+import { validateRenderFeatureContributions } from '../host/render-feature-contributions.js';
+
 import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
+import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
 export type BuildProcessRequest =
@@ -28,6 +39,7 @@ export type BuildProcessRequest =
       readonly root: string;
       readonly definitions: readonly PluginAssetDefinition[];
       readonly sessionId: string;
+      readonly startupTimeoutMs: number;
       /** Project build DDC root backing each cooker's `context.cache`. */
       readonly buildCacheRoot?: string;
     }
@@ -118,7 +130,9 @@ function callParent(
   return new Promise((resolve, reject) => {
     const callback = ++callbackSequence;
     callbacks.set(callback, { resolve, reject });
-    process.send?.({ callback, request, operation, args } satisfies BuildCallbackRequest);
+    process.send?.(
+      encodeBuildMessage({ callback, request, operation, args } satisfies BuildCallbackRequest),
+    );
   });
 }
 
@@ -136,27 +150,44 @@ const runs = new Map<number, ToolRun<unknown>>();
 
 /** The closed set of public project App option keys. */
 const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  'configuration',
   'dynamicGeometryMeshBudgetBytes',
+  'textureMipSkip',
   'assetBudgetBytes',
+  'canvasPixelRatio',
   'standardProfile',
   'pipelineLibrary',
   'backgroundPipelineLibrary',
+  'backgroundPipelineLibraryConcurrency',
   'time',
   'renderPipelineCapacity',
+  'renderFeatures',
+  'vfxDependencies',
   'renderTaskYield',
   'loadingLabels',
   'startupUi',
   'wechat',
+  'execution',
 ]);
 
-const LOADING_LABEL_KEYS = new Set(['lang', 'loading', 'elapsed', 'slow', 'reload']);
+const LOADING_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS));
+const HOST_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS.host));
 
 function validateRenderTaskYield(value: unknown): void {
   if (value !== undefined && value !== 'none' && value !== 'features')
     throw new TypeError("devkitAppOptions.renderTaskYield must be 'none' or 'features'");
 }
 
-/** Optional loading labels are strings, plus a `phases` map of phase id to string. */
+/** Background requests in flight: an integer 1..4, matching the RHI bound; no clamping. */
+function validateBackgroundPipelineLibraryConcurrency(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 4)
+    throw new TypeError(
+      'devkitAppOptions.backgroundPipelineLibraryConcurrency must be an integer in 1..4',
+    );
+}
+
+/** Host text is closed; apps may add phase ids to the progress-label map. */
 function validateLoadingLabels(value: unknown): void {
   if (value === undefined) return;
   const record = (candidate: unknown): candidate is Record<string, unknown> =>
@@ -166,12 +197,25 @@ function validateLoadingLabels(value: unknown): void {
     Object.entries(value).every(([key, label]) =>
       key === 'phases'
         ? record(label) && Object.values(label).every((name) => typeof name === 'string')
-        : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
+        : key === 'host'
+          ? record(label) &&
+            Object.entries(label).every(
+              ([name, text]) => HOST_LABEL_KEYS.has(name) && typeof text === 'string',
+            )
+          : LOADING_LABEL_KEYS.has(key) && typeof label === 'string',
     );
   if (!valid)
     throw new TypeError(
-      'devkitAppOptions.loadingLabels must contain lang/loading/elapsed/slow/reload strings and a phases string map',
+      'devkitAppOptions.loadingLabels must contain known text strings, a phases string map, and optional known host text strings',
     );
+}
+
+/** Byte budgets and the texture mip skip share Render's validators with App. */
+function validateResourceBudgetOptions(options: DevKitAppOptions): void {
+  if (options.dynamicGeometryMeshBudgetBytes !== undefined)
+    validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
+  if (options.textureMipSkip !== undefined) assertTextureMipSkip(options.textureMipSkip);
+  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
 }
 
 function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
@@ -192,24 +236,20 @@ function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
   }
 }
 
-/** Admit a closed data-only projection; World and Render retain their policies. */
-function projectAppOptions(value: unknown): DevKitAppOptions {
-  if (value === undefined) return {};
+function validateExecutionOptions(value: DevKitAppOptions['execution']): void {
+  if (value === undefined) return;
   if (
-    typeof value !== 'object' ||
     value === null ||
-    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => key !== 'workers')
   )
-    throw new TypeError('devkitAppOptions must contain only public project App options');
-  const options = copyPackData(value) as DevKitAppOptions;
-  const capacity = options.renderPipelineCapacity;
-  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
-    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
-  validateRenderTaskYield(options.renderTaskYield);
-  validateWechatOptions(options.wechat);
-  if (options.time !== undefined) {
-    const time = options.time;
+    throw new TypeError('devkitAppOptions.execution must contain only the public workers policy');
+  if (value.workers !== undefined) executionWorkers(value.workers);
+}
+
+function validateTimeOptions(time: DevKitAppOptions['time']): void {
+  if (time !== undefined) {
     if (
       typeof time !== 'object' ||
       time === null ||
@@ -227,11 +267,64 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
     )
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
+}
+
+function validateEngineConfigurationOption(options: DevKitAppOptions): void {
+  if (options.configuration !== undefined) {
+    for (const key of [
+      'standardProfile',
+      'textureMipSkip',
+      'assetBudgetBytes',
+      'dynamicGeometryMeshBudgetBytes',
+      'time',
+      'canvasPixelRatio',
+      'renderPipelineCapacity',
+      'wechat',
+    ] as const) {
+      if (options[key] !== undefined)
+        throw new TypeError(
+          `devkitAppOptions.${key} conflicts with configuration; declare that policy in its configuration domain`,
+        );
+    }
+    const checked = resolveEngineStartup(options.configuration, { platform: 'unknown' });
+    if (!checked.ok) throw checked.error;
+  }
+}
+
+/** Admit a closed data-only projection; World and Render retain their policies. */
+function projectAppOptions(value: unknown): DevKitAppOptions {
+  if (value === undefined) return {};
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
+    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
+  )
+    throw new TypeError('devkitAppOptions must contain only public project App options');
+  const options = copyPackData(value) as DevKitAppOptions;
+  validateEngineConfigurationOption(options);
+  validateCanvasPixelRatio(options.canvasPixelRatio);
+  validateExecutionOptions(options.execution);
+  const capacity = options.renderPipelineCapacity;
+  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
+    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  validateRenderTaskYield(options.renderTaskYield);
+  validateRenderFeatureContributions(options.renderFeatures);
+  if (
+    options.vfxDependencies !== undefined &&
+    (!Array.isArray(options.vfxDependencies) ||
+      options.vfxDependencies.some((value) => typeof value !== 'string' || !value) ||
+      new Set(options.vfxDependencies).size !== options.vfxDependencies.length)
+  )
+    throw new TypeError(
+      'devkitAppOptions.vfxDependencies requires unique selected feature identities',
+    );
+  validateBackgroundPipelineLibraryConcurrency(options.backgroundPipelineLibraryConcurrency);
+  validateWechatOptions(options.wechat);
+  validateTimeOptions(options.time);
   validateLoadingLabels(options.loadingLabels);
   validateStartupUi(options.startupUi);
-  if (options.dynamicGeometryMeshBudgetBytes !== undefined)
-    validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
-  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
+  validateResourceBudgetOptions(options);
   if (options.standardProfile !== undefined) {
     const invalid = validateRenderProfile(options.standardProfile);
     if (invalid !== undefined) throw new TypeError(invalid);
@@ -323,7 +416,9 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
         },
       });
       await foundation.await();
-      const result = await startPluginAsset(context, request.root);
+      const result = await startPluginAsset(context, request.root, {
+        timeoutMs: request.startupTimeoutMs,
+      });
       if (!result.ok) throw result.error;
       root = result.value;
       return {
@@ -440,7 +535,8 @@ function serializableError(error: unknown): unknown {
   }
 }
 
-process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => {
+process.on('message', (packet: Uint8Array) => {
+  const request = decodeBuildMessage(packet) as BuildProcessRequest | BuildCallbackResponse;
   if ('callback' in request) {
     const pending = callbacks.get(request.callback);
     callbacks.delete(request.callback);
@@ -450,9 +546,13 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
   }
   const respond = async () => {
     try {
-      process.send?.({ id: request.id, ok: true, value: await execute(request) });
+      process.send?.(
+        encodeBuildMessage({ id: request.id, ok: true, value: await execute(request) }),
+      );
     } catch (cause) {
-      process.send?.({ id: request.id, ok: false, error: serializableError(cause) });
+      process.send?.(
+        encodeBuildMessage({ id: request.id, ok: false, error: serializableError(cause) }),
+      );
     }
   };
   // An importer may invoke the registry's own decoder through its injected context.
@@ -471,3 +571,21 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
 process.once('disconnect', () => {
   process.exit(0);
 });
+
+function validateCanvasPixelRatio(pixelRatio: DevKitAppOptions['canvasPixelRatio']): void {
+  if (
+    pixelRatio !== undefined &&
+    pixelRatio !== 'device' &&
+    !(typeof pixelRatio === 'number' && Number.isFinite(pixelRatio) && pixelRatio > 0) &&
+    !(
+      typeof pixelRatio === 'object' &&
+      pixelRatio !== null &&
+      pixelRatio.mode === 'device' &&
+      typeof pixelRatio.max === 'number' &&
+      Number.isFinite(pixelRatio.max) &&
+      pixelRatio.max > 0 &&
+      Reflect.ownKeys(pixelRatio).every((key) => key === 'mode' || key === 'max')
+    )
+  )
+    throw new TypeError('devkitAppOptions.canvasPixelRatio must be positive and finite or device');
+}

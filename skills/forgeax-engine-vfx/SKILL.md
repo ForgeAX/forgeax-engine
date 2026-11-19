@@ -31,7 +31,7 @@ Use one path:
 
 1. Author schema-v3 emitter metadata with `program: { module }`, required fixed bounds, schedule, and renderer GUIDs.
 2. Author `vfx_spawn` and `vfx_update` in WGSL; import `forgeax_vfx::prelude` and shared shader modules with `#import`.
-3. Cook with `createParticleCodeNativeCooker(modules)`; publish payload and `particle-effect/program.json` atomically.
+3. Cook with `createParticleCodeNativeCooker(modules)`; publish payload and the sole cooked GPU ABI, `forgeax-vfx-program-5`, at `particle-effect/program.json` atomically.
 4. Ordinary DevKit games already install one VFX assembly per execution realm; consume that owner. For explicit standalone assembly, create one `createVfxRuntimeHost({ camera })`, attach each `{ world, assets }`, and register `host.feature` through the owning App/Renderer assembly. Do not add a second host to an SDK game.
 5. Load by GUID with `loadVfxGpuEffect`, allocate a shared `ParticleEffectAsset` ref, and spawn `ParticleEffectPlayer`.
 
@@ -77,6 +77,35 @@ For editor/tool inspection, narrow registry payloads with `isVfxGpuEffectAsset`
 and project them through `describeVfxGpuEffect`. The immutable descriptor owns
 the emitter tree, timeline, dependencies and executable/partial/unavailable
 capability truth without exposing compiler objects or raw WGSL bytes.
+
+For Water-driven GPU particles, declare `waterGridEmission` and import
+`forgeax_vfx::data::water_surface`. `scanCellCapacity` bounds cells examined;
+`maximumEmissionPerCell` and `maxParticlesPerFrame` bound the grid append
+path; zero `maxParticlesPerFrame` leaves explicit schedule bursts intact.
+Keep the source, WGSL module, material and textures in the ordinary Pack (R8
+[`coast.pack.ts`](../../apps/water/r8-integration-acceptance/assets/coast.pack.ts)).
+Render binds a matching generation-qualified grid/solver-normal pair and owns
+its graph and fence lifetime; see the
+[`water-surface` contract](../../packages/vfx-render/README.md#water-surface-grid-emission).
+
+For the R8 translucent-water-sphere billboard, use
+`shading: { kind: 'translucent-water-sphere' }` and match the current four
+`materialInputs`: `subsurfaceGainOpacity`, `waterSphereShading`,
+`waterSphereFlattenSphere`, and `waterSphereProjection`. Noise offsets the
+SphereMask coordinates; alpha is `Mask * 0.25 * ParticleAlpha`, and the normal
+detail shares the TexCoord4 noise UV. Engine UV projections and stable id/seed
+randomness are adaptations, not Niagara-identical mappings or sequences. The
+selected material instance has no overrides and inherits scale 1 and strength
+0.5. The four custom lanes are `subsurfaceGainOpacity`, `waterSphereShading`,
+`waterSphereFlattenSphere`, and `waterSphereProjection`; its `.x/.y/.z/.w`
+encode shared random offset, padding, hardness 50, and radius 0.5. UE's 128x128
+repeat is the VF PseudoRandom math cycle, not a pseudo-random texture. See the
+[full author contract](../../packages/vfx/README.md#water-grid-emission-and-translucent-sphere-billboards);
+source declarations alone do not prove material cooking or runtime output.
+
+When an Engine Worker requests feature texture readbacks, explicitly configure
+`featureTextureReadbackBudgetBytes`; a non-empty readback roster without the
+aggregate cap fails preflight. This readback budget does not limit VFX births.
 
 For wind, attraction or vortex motion, declare emitter `forceFields` and import
 `forgeax_vfx::data::force_fields`; call `vfx_apply_force_fields` before the authored
@@ -125,7 +154,7 @@ Browser and Dawn are required because Null structural success cannot prove compu
   scale through `Player.seed`. Errors surface as `vfx-parameters-invalid`;
   `validateVfxPlayerParameters(json, fields)` checks offline (`fields` = declared `{ name, type }[]`).
   Parameter types accept `vec4<f32>` or `vec4` (max 32 parameters). Read diagnostics with
-  `world.getResource('VfxGpuRuntime').diagnostics()`; helpers include `vfx_loop_phase` and
+  `world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY).diagnostics()`; helpers include `vfx_loop_phase` and
   `vfx_loop_angle` (radians).
 - `loadVfxGpuEffect(assets, guid)` takes a GUID string or an `AssetGuid`.
 

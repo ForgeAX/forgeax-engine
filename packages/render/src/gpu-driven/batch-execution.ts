@@ -14,6 +14,7 @@ import {
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { materialAlphaMask } from '../material-alpha-mask';
+import { materialLeanInputs } from '../material-lean-inputs';
 import { supportsGpuShadowRenderState } from '../material-render-state';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { MaterialSnapshot } from '../render-system-extract';
@@ -85,6 +86,9 @@ export type BatchArtifactResolver = (
     readonly address: 'scene-index';
     /** Compile-time alpha-test lane; opaque programs contain no discard. */
     readonly alphaMask: boolean;
+    /** UV0-only, tangent- and basis-free vertex inputs (STANDARD_LEAN_INPUTS). */
+    readonly leanInputs: boolean;
+    readonly tangentFrame32?: boolean;
   },
 ) => MaterialShaderArtifact | undefined;
 
@@ -130,6 +134,24 @@ function needsDirectRoute(material: MaterialSnapshot, pass: BatchPass): boolean 
   );
 }
 
+/** Preserve the Pass's logical identity when selecting a physical specialization. */
+function projectBatchArtifact(
+  artifact: MaterialShaderArtifact,
+  pass: BatchPass,
+): MaterialShaderArtifact {
+  return {
+    ...artifact,
+    ...(pass.sceneIndexProgramKey === undefined
+      ? {}
+      : {
+          material: pass.shaderId,
+          specializationKey: pass.sceneIndexProgramKey,
+        }),
+    ...(pass.vertexEntry === undefined ? {} : { vertexEntry: pass.vertexEntry }),
+    ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
+  };
+}
+
 /** This join cannot inspect candidates, slots or a representative entity. */
 export function prepareBatchExecution(
   geometry: BatchGeometry,
@@ -148,10 +170,18 @@ export function prepareBatchExecution(
     pass.sceneIndexProgramKey !== undefined || isCanonicalStandardPbrMaterialShader(pass.shaderId);
   const artifact = resolve(pass.sceneIndexProgramKey ?? pass.shaderId, {
     vertexColorAvailable: hasGpuDrivenVertexColor(geometry.receipt.vertexInputs),
+    ...(geometry.receipt.vertexInputs.some((input) => input.semantic === 'tangentFrame')
+      ? { tangentFrame32: true }
+      : {}),
     deformation: geometry.deformation,
     pass: pass.kind,
     address: 'scene-index',
     alphaMask: materialAlphaMask(material.paramSnapshot),
+    leanInputs: materialLeanInputs(
+      material.paramSnapshot,
+      material.standardTextureMask,
+      material.textureCoordinates,
+    ),
   });
   if (artifact?.receipt?.sceneIndexEntry === undefined) {
     if (!required) return direct();
@@ -164,18 +194,10 @@ export function prepareBatchExecution(
     );
   }
   const receipt = artifact.receipt;
-  // A specialization has a physical program key and the Pass's logical material identity.
-  const selected: MaterialShaderArtifact = {
-    ...artifact,
-    ...(pass.sceneIndexProgramKey === undefined
-      ? {}
-      : {
-          material: pass.shaderId,
-          specializationKey: pass.sceneIndexProgramKey,
-        }),
-    ...(pass.vertexEntry === undefined ? {} : { vertexEntry: pass.vertexEntry }),
-    ...(pass.fragmentEntry === undefined ? {} : { fragmentEntry: pass.fragmentEntry }),
-  };
+  // Water frame resources and deformation are bound by the specialized direct
+  // recorder. A scene-index vertex entry alone does not admit that resource ABI.
+  if (receipt.systemInputs?.water === 'water-frame/3') return direct();
+  const selected = projectBatchArtifact(artifact, pass);
   const sourceInputs = geometry.receipt.vertexInputs;
   // UV aliases reuse bytes inside the uploaded stride (Geometry owns the alias choice).
   const layout =

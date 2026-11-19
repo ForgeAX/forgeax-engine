@@ -8,11 +8,13 @@ import { createClusterBinScratch } from './cluster-binner';
 import { EnvironmentLifecycle } from './environment/lifecycle';
 import { SkinDemandMissingError } from './errors/render';
 import type { PendingRenderFeatureErrorReport } from './features/error-reporting';
+import { getRenderFeaturePlanExecutionProjection } from './features/host';
 import { createFeatureNoiseResolver } from './features/noise-texture';
 import {
   createRenderFeatureGpuWorkOwner,
   type RenderFeatureGpuWorkOwner,
 } from './features/prepared-gpu-work';
+import { renderFeatureViewIdentity } from './features/view';
 import {
   type PostProcessShaderEntry,
   postProcessShaderEntrySignature,
@@ -51,12 +53,14 @@ import {
   disposeTransientInstanceBuffers,
 } from './instance-buffer-cache';
 import { InstanceProjectionStore } from './instances';
+import { materialSourceScope } from './material-source';
 import type { RenderFrameState } from './record/frame-snapshot';
+import { emptyFrameRecordingOutputs, resetFrameRecordingOutputs } from './record/frame-snapshot';
 import {
-  emptyFrameRecordingOutputs,
-  resetFrameRecordingOutputs,
-  worldEntityKey,
-} from './record/frame-snapshot';
+  graphExecutionProfileOwner,
+  graphExecutionProfilePhase,
+  graphExecutionProfilePhases,
+} from './record/frame-targets';
 import type { GpuPassTimingError } from './record/gpu-pass-timing/errors';
 import type {
   GpuPassTimingCapture,
@@ -64,7 +68,10 @@ import type {
   GpuPassTimingSession,
 } from './record/gpu-pass-timing/session';
 import { LodInspectionOwner } from './record/lod-inspection';
-import { createPreparedResolverCaches } from './record/prepared-material-bindings';
+import {
+  clearPreparedMaterialBindings,
+  createPreparedResolverCaches,
+} from './record/prepared-material-bindings';
 import type { PipelineState, RenderSystemInternals } from './record/render-context';
 import { ShadowRasterLedger } from './record/shadow-raster-ledger';
 import type { CubeCaptureGraphState } from './record/typed-frame-graph';
@@ -85,10 +92,17 @@ import {
 } from './temporal/frame';
 import { releaseTemporalGpuStates } from './temporal/gpu';
 import { registerCaptureFaceFeatureSystem } from './world/capture-face-feature-systems';
+import { captureGraphPassPhaseManifest } from './world/capture-graph-systems';
 import { registerViewCaptureSystems } from './world/capture-systems';
 import { registerDebugOverlaySystems } from './world/debug-overlay-systems';
 import { registerEnvironmentAdmissionSystem } from './world/environment-systems';
+import { sharedFeatureGraphInspection } from './world/feature-graph-systems';
 import { registerFeaturePlanSystems } from './world/feature-plan-systems';
+import {
+  featureFrameOutcome,
+  renderFeatureProfileGraphPasses,
+  viewFeatureFrameResult,
+} from './world/feature-systems';
 import { featureSkylightOf, registerFeatureViewsSystem } from './world/feature-view-systems';
 import { registerViewDiffuseGiSystem, registerVisibleSurfaceSystem } from './world/gi-systems';
 import { registerGpuDrivenRasterSystem } from './world/gpu-driven-raster-systems';
@@ -97,7 +111,9 @@ import { registerHistoryAdmissionSystem } from './world/history-admission-system
 import { registerLightSystems } from './world/light-systems';
 import { registerMaterialSystems } from './world/material-systems';
 import { registerPassPlanSystems } from './world/pass-plan-systems';
+import { renderSchedulePhaseCatalog } from './world/profiled-schedule-runs';
 import { registerReflectionProbeSystems } from './world/reflection-systems';
+import { ViewRecorder } from './world/render-views';
 import { renderSubmission, renderWorldFor } from './world/render-world';
 import { registerSceneSystem } from './world/scene-systems';
 import { registerShadowCasterSystem } from './world/shadow-caster-systems';
@@ -110,10 +126,11 @@ import { recoverViewTransmission, registerTransmissionSystem } from './world/tra
 import { type ViewDrawReceipt, viewDrawReceipt } from './world/view-draw-receipt';
 import { registerViewFrameSystem } from './world/view-frame-systems';
 import { viewPointsLines } from './world/view-points-lines';
-import type {
-  ViewRecordFacts,
-  ViewRecordingState,
-  ViewSettlementOwner,
+import {
+  ownerOf,
+  type ViewRecordFacts,
+  type ViewRecordingState,
+  type ViewSettlementOwner,
 } from './world/view-settlement';
 import { registerViewTopologySystem } from './world/view-topology-systems';
 
@@ -208,6 +225,105 @@ export function createRendererState(internals: RenderSystemInternals): RendererS
   return createRenderOwner(internals, 'renderer');
 }
 
+/** Capture admission includes the exact live graph pass identities of every view. */
+function renderProfilePhaseCatalog(world: World): readonly string[] {
+  const phases = new Set(renderSchedulePhaseCatalog(world));
+  const featureOutcome = featureFrameOutcome(world);
+  const views = world.query({ read: [ViewRecorder] });
+  const viewScopes = new Set<string>();
+  const collectViewProfilePhases = () => {
+    if (views.ok) {
+      for (const row of views.value) {
+        const component = world.get(row.entity, ViewRecorder);
+        if (!component.ok) continue;
+        const owner = ownerOf(world, component.value.state);
+        if (owner.recorded.camera !== undefined)
+          viewScopes.add(renderFeatureViewIdentity(owner.recorded.camera));
+        const graph = owner.frameState.compiledFrameGraph?.graph;
+        const viewOwner = graphExecutionProfileOwner(owner.internals);
+        if (graph !== undefined)
+          for (const phase of graphExecutionProfilePhases(graph, viewOwner)) phases.add(phase);
+        if (featureOutcome?.kind === 'sealed' && owner.recorded.camera !== undefined) {
+          const result = viewFeatureFrameResult(
+            featureOutcome,
+            renderFeatureViewIdentity(owner.recorded.camera),
+          );
+          for (const planned of result?.plans ?? []) {
+            const execution = getRenderFeaturePlanExecutionProjection(planned);
+            for (const pass of execution?.passes ?? []) {
+              const kind =
+                pass.graphics !== undefined
+                  ? 'raster'
+                  : pass.gpuCompute !== undefined
+                    ? 'compute'
+                    : pass.resolvedGpuCopies !== undefined
+                      ? 'copy'
+                      : undefined;
+              if (kind !== undefined)
+                phases.add(
+                  graphExecutionProfilePhase({
+                    owner: viewOwner,
+                    pass: { name: pass.name, kind },
+                  }),
+                );
+            }
+          }
+        }
+        // Capture graph pass names depend on the actual capture work (cube faces,
+        // reflection probes and mip targets); admit only declarations from those
+        // compiled graphs rather than guessing them from the display graph.
+        const capturePassManifest = captureGraphPassPhaseManifest(
+          owner.internals,
+          owner.recorded.camera?.entityKey,
+        );
+        // This retained manifest extends the admission vocabulary only. Per-frame
+        // identities are appended by instrumentation at actual graph execution.
+        for (const pass of capturePassManifest?.passes ?? [])
+          if (pass.kind !== 'subgraph')
+            phases.add(graphExecutionProfilePhase({ owner: 'capture', pass }));
+      }
+    }
+  };
+  collectViewProfilePhases();
+  for (const pass of renderFeatureProfileGraphPasses(world, [...viewScopes]))
+    phases.add(
+      graphExecutionProfilePhase({
+        owner: 'shared',
+        pass: { name: pass.name, kind: pass.kind },
+      }),
+    );
+  const collectSharedFeaturePhases = () => {
+    if (featureOutcome?.kind === 'sealed')
+      for (const planned of featureOutcome.batch.frame.plans) {
+        const execution = getRenderFeaturePlanExecutionProjection(planned);
+        for (const pass of execution?.passes ?? []) {
+          const kind =
+            pass.graphics !== undefined
+              ? 'raster'
+              : pass.gpuCompute !== undefined
+                ? 'compute'
+                : pass.resolvedGpuCopies !== undefined
+                  ? 'copy'
+                  : undefined;
+          if (kind !== undefined)
+            phases.add(
+              graphExecutionProfilePhase({ owner: 'shared', pass: { name: pass.name, kind } }),
+            );
+        }
+      }
+  };
+  collectSharedFeaturePhases();
+  const shared = sharedFeatureGraphInspection(world);
+  for (const phase of graphExecutionProfilePhases(shared?.graph ?? { passes: [] }, 'shared'))
+    phases.add(phase);
+  for (const pass of [
+    { name: 'camera-view-composite', kind: 'raster' as const },
+    { name: 'final-display-observation', kind: 'copy' as const },
+  ])
+    phases.add(graphExecutionProfilePhase({ owner: 'composition', pass }));
+  return [...phases].sort();
+}
+
 /** Initialize only a component-owned view; no standalone frame facade is allocated. */
 export function createRenderViewOwner(internals: RenderSystemInternals): ViewSettlementOwner {
   return createRenderOwner(internals, 'view');
@@ -220,14 +336,15 @@ function createRenderOwner(
   role: 'renderer' | 'view',
 ): RendererState | ViewSettlementOwner {
   const recordingState: ViewRecordingState = {
-    preparedWorlds: [],
-    directFrameId: 0,
+    preparedSourceScope: undefined,
     dispatchCounts: { unlit: 0 },
     pendingFeatureErrors: new Map<string, PendingRenderFeatureErrorReport>(),
   };
   const phaseCatalogRegistration = (
     role === 'renderer' ? internals.profiler : undefined
-  )?.registerPhaseCatalog('render', RENDER_PHASE_CATALOG);
+  )?.registerPhaseCatalog('render', RENDER_PHASE_CATALOG, () =>
+    renderProfilePhaseCatalog(renderWorldFor(internals)),
+  );
   let releaseProfilerCatalog =
     phaseCatalogRegistration?.ok === true ? phaseCatalogRegistration.value : undefined;
   const resolveFeatureNoise = createFeatureNoiseResolver({
@@ -329,6 +446,8 @@ function createRenderOwner(
       shaderRegistry: internals.assets.shaderRegistry,
       getDevice: () => internals.device,
       onGpuError: (error) => internals.errorRegistry.fire(error),
+      retainMaterialSource: (scope, source) =>
+        internals.gpuStore.retainMaterialScope(materialSourceScope(scope, source)),
       onAssetChange: (scope, change) => {
         // Published GPU residency is adopted once by the outer view assembly.
         if (scope.world === undefined) return;
@@ -338,7 +457,10 @@ function createRenderOwner(
         const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
         const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
         if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
-        const texture = content?.ok && content.value.kind === 'texture' ? content.value : undefined;
+        const texture =
+          content?.ok && (content.value.kind === 'texture' || content.value.kind === 'gpu-texture')
+            ? content.value
+            : undefined;
         const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
         if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
         internals.gpuStore.invalidateSampler(change.handle, scope);
@@ -407,13 +529,13 @@ function createRenderOwner(
   let skinDemandGapFrame = -1;
   Object.assign(internals, {
     skinTask: (
-      source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
+      source: Pick<RenderableSnapshot, 'entityKey'>,
       pass: 'main' | 'shadow',
     ): SkinTaskBinding | undefined => {
       const demand = viewSkinDemandOf(renderWorldFor(internals), internals.viewEntity);
       // The demand's own failure fails the recording, as the palette composition did.
       if (demand?.ok === false) throw demand.cause;
-      const key = worldEntityKey(source.worldId, source.entityKey);
+      const key = source.entityKey;
       if (demand?.value.has(key) === true) return demand.value.get(key);
       const frame = renderSubmission(renderWorldFor(internals)).frame;
       if (frame !== skinDemandGapFrame) {
@@ -422,9 +544,7 @@ function createRenderOwner(
       }
       if (!reportedSkinDemandGaps.has(key)) {
         reportedSkinDemandGaps.add(key);
-        internals.errorRegistry.fire(
-          new SkinDemandMissingError(source.worldId, source.entityKey, pass),
-        );
+        internals.errorRegistry.fire(new SkinDemandMissingError(source.entityKey, pass));
       }
       return undefined;
     },
@@ -486,9 +606,7 @@ function createRenderOwner(
   // feat-20260513-instanced-mesh M5 (T-M5-1 + T-M5-3); the active
   // `'limit-exceeded'` emit point is now the record stage upload path.
   //
-  // feat-20260708 M1 / D-1a #1: positive-half keys are worldEntityKey(worldId,
-  // cacheKey) composites. Negative-half fold-bucket keys (sprite fold) stay
-  // raw (material-handle-based, cross-world collision semantically correct).
+  // Entity handles and generated fold keys belong to this Renderer's source.
   const frameState: RenderFrameState = {
     frameNumber: 0,
     renderBundleCounters: { hits: 0, misses: 0 },
@@ -499,6 +617,7 @@ function createRenderOwner(
     ssrTemporalParamsPayload: new Uint8Array(32),
     ssrLastCameraEntity: undefined,
     ssrLastHistoryVersion: undefined,
+    graphResourceOwner: Object.freeze({}),
     graphGeneration: 0,
     lastSuccessfulBloom: 'off',
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
@@ -556,6 +675,8 @@ function createRenderOwner(
     warnedMultiSkylight: false,
     warnedMultiSkybox: false,
     warnedIgnoredDirectionalShadow: false,
+    warnedStandardLocalLightCap: false,
+    warnedStandardClusterEntryCap: false,
     warnedSkyboxTonemapNone: false,
     // feat-20260520-2d-sprite-layer-mvp M-3 / w25 (AC-18 path 4): per-
     // handle warn-once anchor for the sprite-bucket missing-texture
@@ -625,13 +746,13 @@ function createRenderOwner(
   };
   const postProcessOwner = createPostProcessParamsOwner(internals, (id, moduleLabel) => {
     clearPostProcessPipelineCache(id);
-    recordContext(internals).invalidateShaderModule?.(moduleLabel);
+    if (moduleLabel !== undefined) recordContext(internals).invalidateShaderModule?.(moduleLabel);
   });
   const lookupPostProcess = postProcessOwner.lookup;
   const invalidatePostProcessModule = (id: string): void => {
     const entry = lookupPostProcess(id);
     if (entry !== undefined) {
-      recordContext(internals).invalidateShaderModule?.(postProcessShaderModuleLabel(entry.source));
+      recordContext(internals).invalidateShaderModule?.(postProcessShaderModuleLabel(entry));
     }
   };
   // feat-20260609 M4 / T-10-a: post-process pipeline cache (declaration|colorFormat -> RhiRenderPipeline).
@@ -655,12 +776,7 @@ function createRenderOwner(
     if (cached !== undefined) return cached;
     const factory = internals.buildPostProcessPipeline;
     if (factory === undefined) return null;
-    const built = factory(
-      entry,
-      bgl,
-      colorFormats,
-      postProcessShaderPipelineLabel(id, entry.source),
-    );
+    const built = factory(entry, bgl, colorFormats, postProcessShaderPipelineLabel(id, entry));
     if (built === null) return null;
     postProcessPipelineCache.set(key, built);
     return built;
@@ -725,6 +841,7 @@ function createRenderOwner(
       let failure: unknown;
       try {
         frameState.standardClusterMembership.clear();
+        clearPreparedMaterialBindings(activePreparedResolverCaches.materialBindings);
         frameState.candidatePipelinePreparations?.dispose();
         if (ownsSceneInputs) recordContext(internals).featureSceneInputs?.dispose();
         disposeTargetCaptures(cubeCaptureState);
@@ -737,6 +854,7 @@ function createRenderOwner(
         disposeFeatureGpuWork();
         reflectionProbeOwner.dispose();
         frameState.ssrHistoryOwner?.dispose();
+        frameState.waterSsrHistoryOwner?.dispose();
         frameState.probePlacement?.dispose();
         frameState.probePlacement = undefined;
         frameState.probePlacementFrame = undefined;
@@ -749,6 +867,7 @@ function createRenderOwner(
         frameState.bakedField?.dispose();
         frameState.bakedField = undefined;
         frameState.ssrHistoryOwner = undefined;
+        frameState.waterSsrHistoryOwner = undefined;
         frameState.ssrSpatialAdmission = undefined;
         // Bloom generations are renderer-owned rather than graph-owned. Drain
         // candidate, active, and fence-retiring bundles before the rest of the
@@ -779,6 +898,8 @@ function createRenderOwner(
         frameState.lastSuccessfulBarrelDistortion = undefined;
         frameState.cloudHistoryActive = false;
         delete frameState.pendingCloudHistoryActive;
+        delete frameState.cloudHistoryFormat;
+        delete frameState.pendingCloudHistoryFormat;
         disposeStandardOutput(frameState);
         releaseTemporalGpuStates(frameState);
         for (const buffer of frameState.volumetricFogParams.buffers) {
@@ -858,11 +979,13 @@ function createRenderOwner(
     },
     detachScene(world: World): void {
       frameState.dynamicResolution?.reset();
+      clearPreparedMaterialBindings(activePreparedResolverCaches.materialBindings);
       persistentRenderScene.detach(world);
       recordContext(internals).featureSceneInputs?.detach(worldRenderResources(world));
     },
     registerBuiltinPostProcess: postProcessOwner.registerBuiltinPostProcess,
     resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {
+      clearPreparedMaterialBindings(activePreparedResolverCaches.materialBindings);
       frameState.gtaoCandidatePreparationFailureGeneration = undefined;
       frameState.shadowDepthLayers?.dispose();
       frameState.shadowDepthLayers = undefined;
@@ -904,6 +1027,7 @@ function createRenderOwner(
       featureGpuWork = createFeatureGpuWorkOwner(internals);
       reflectionProbeOwner.dispose();
       frameState.ssrHistoryOwner?.dispose();
+      frameState.waterSsrHistoryOwner?.dispose();
       frameState.probePlacement?.dispose();
       frameState.probePlacement = undefined;
       frameState.probePlacementFrame = undefined;
@@ -916,6 +1040,7 @@ function createRenderOwner(
       frameState.bakedField?.dispose();
       frameState.bakedField = undefined;
       frameState.ssrHistoryOwner = undefined;
+      frameState.waterSsrHistoryOwner = undefined;
       frameState.ssrSpatialAdmission = undefined;
       frameState.ssrRequested = false;
       frameState.ssrLastCameraEntity = undefined;
@@ -957,6 +1082,8 @@ function createRenderOwner(
       frameState.lastSuccessfulBarrelDistortion = undefined;
       frameState.cloudHistoryActive = false;
       delete frameState.pendingCloudHistoryActive;
+      delete frameState.cloudHistoryFormat;
+      delete frameState.pendingCloudHistoryFormat;
       resetTemporalHistory(frameState, 'device-recovery');
       releaseTemporalGpuStates(frameState);
       frameState.hdrpClusterMembership = null;

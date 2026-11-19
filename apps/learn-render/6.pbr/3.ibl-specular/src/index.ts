@@ -223,8 +223,7 @@ if (app.assets === undefined) throw new Error('This scene requires the App asset
 function installCaptureHook(
   _target: HTMLCanvasElement,
   app: App,
-  world: World,
-): void {
+  world: World): void {
   type CaptureHook = () => Promise<Uint8Array>;
   const win = window as unknown as { __captureIblSpecular?: CaptureHook };
   const renderer = app.renderer;
@@ -233,11 +232,7 @@ function installCaptureHook(
   const lease = attached.value;
   win.__captureIblSpecular = async (): Promise<Uint8Array> => {
     world.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) throw drawn.error;
     const bitmap = await createImageBitmap(_target);
     const captureCanvas = new OffscreenCanvas(_target.width, _target.height);

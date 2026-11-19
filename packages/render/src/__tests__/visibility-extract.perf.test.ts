@@ -9,10 +9,10 @@ import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { defaultMaterialSnapshot } from '../render-system-extract';
-import { extractFrames } from '../render-system-extract-tail';
+import { extractSource } from '../render-system-extract-tail';
 import { RenderScene } from '../scene/render-scene';
 
-const ENTITY_COUNT = 10_000;
+const ENTITY_COUNT = 10000;
 const SAMPLE_COUNT = 101;
 const LIGHTWEIGHT_RENDER_SCENE_PERF = process.env.FORGEAX_RENDER_PERF_LIGHTWEIGHT === '1';
 // The full 100k scene remains the local/nightly scaling check.  CI keeps the
@@ -42,7 +42,6 @@ function sceneSnapshot(entityKey: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
   };
 }
@@ -84,7 +83,7 @@ function median(values: readonly number[]): number {
 }
 
 function measureWorldSamples(worlds: readonly World[]): number[][] {
-  for (const world of worlds) extractFrames([world], 0);
+  for (const world of worlds) extractSource(world);
   const samples = worlds.map(() => [] as number[]);
   for (let sample = 0; sample < SAMPLE_COUNT; sample++) {
     const firstWorldIndex = sample % worlds.length;
@@ -93,7 +92,7 @@ function measureWorldSamples(worlds: readonly World[]): number[][] {
       const world = worlds[worldIndex];
       if (world === undefined) continue;
       const start = performance.now();
-      extractFrames([world], 0);
+      extractSource(world);
       samples[worldIndex]?.push(performance.now() - start);
     }
   }
@@ -106,15 +105,22 @@ function measureWorlds(worlds: readonly World[]): number[] {
 
 describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_ENTITY_COUNT / 1_000}k)`, () => {
   it('keeps inherited hierarchy extraction within the 10 percent budget', () => {
-    const flat = buildWorld(false, false);
+    // The ratio gate compares identical hierarchies with and without inherited
+    // visibility. The unrelated flat timing is an optional full-profile diagnostic.
+    const flat = LIGHTWEIGHT_RENDER_SCENE_PERF ? undefined : buildWorld(false, false);
     const hierarchy = buildWorld(false, true);
     const inherited = buildWorld(true, true);
-    const flatMedian = measureWorlds([flat])[0] ?? 0;
-    const [hierarchyMedian = 0, inheritedMedian = 0] = measureWorlds([hierarchy, inherited]);
+    const flatMedian = flat === undefined ? undefined : measureWorlds([flat])[0];
+    const [hierarchySamples = [], inheritedSamples = []] = measureWorldSamples([
+      hierarchy,
+      inherited,
+    ]);
+    const hierarchyMedian = median(hierarchySamples);
+    const inheritedMedian = median(inheritedSamples);
     const overhead = inheritedMedian / Math.max(hierarchyMedian, 0.001) - 1;
     // biome-ignore lint/suspicious/noConsole: retain benchmark profile evidence
     console.info(
-      `[m3-b-performance] flat=${flatMedian.toFixed(3)}ms hierarchy=${hierarchyMedian.toFixed(3)}ms inherited=${inheritedMedian.toFixed(3)}ms overhead=${(overhead * 100).toFixed(2)}% samples=${SAMPLE_COUNT}`,
+      `[m3-b-performance] flat=${flatMedian === undefined ? 'deferred' : `${flatMedian.toFixed(3)}ms`} hierarchy=${hierarchyMedian.toFixed(3)}ms inherited=${inheritedMedian.toFixed(3)}ms overhead=${(overhead * 100).toFixed(2)}% samples=${SAMPLE_COUNT} hierarchyMax=${Math.max(...hierarchySamples).toFixed(3)}ms inheritedMax=${Math.max(...inheritedSamples).toFixed(3)}ms`,
     );
 
     expect(overhead).toBeLessThanOrEqual(0.1);
@@ -136,7 +142,7 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
             ? new Float32Array(16)
             : new Float32Array(previous.transform.world);
         world[12] = (world[12] ?? 0) + 1;
-        return { kind: 'update' as const, worldId: 0, entityKey, world };
+        return { kind: 'update' as const, entityKey, world };
       }),
     );
 
@@ -157,5 +163,5 @@ describe(`visibility extraction performance (10k + RenderScene ${RENDER_SCENE_EN
     );
     expect(scene.materialize()).toBe(changed);
     expect(scene.querySpatial({ min: [-1, -1, -1], max: [1, 1, 1] }).length).toBeGreaterThan(0);
-  }, 60_000);
+  }, 60000);
 });

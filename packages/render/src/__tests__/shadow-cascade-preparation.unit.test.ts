@@ -1,10 +1,17 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
+import {
+  createMaterialShaderProgram,
+  createStandardPbrArtifactReceipt,
+} from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-raster';
 import type { RenderSystemInternals } from '../record/render-context';
-import { prepareShadowMaterialPipelines } from '../record/shadow-pass';
+import {
+  prepareShadowMaterialPipelines,
+  SHADOW_CASTER_POSITION_ONLY_ENTRY,
+} from '../record/shadow-pass';
 import { preparedShadowFixture } from './shadow-indirect.fixture';
 
 type Factory = NonNullable<RenderSystemInternals['prepareMaterialShaderPipeline']>;
@@ -62,6 +69,72 @@ it('prepares each exact request once across batches and cascades, and starts fre
     prepareShadowMaterialPipelines(f.context, true);
     expect(f.prepare).toHaveBeenCalledTimes(2);
     expect(f.context.frameState.pipelinePreparationPending).not.toBe(true);
+  } finally {
+    f.dispose();
+  }
+});
+
+it.each([
+  {
+    name: 'position-only',
+    positionOnly: true,
+    masked: false,
+    vertex: SHADOW_CASTER_POSITION_ONLY_ENTRY,
+    fragment: null,
+    constants: undefined,
+  },
+  {
+    name: 'alpha-masked',
+    positionOnly: true,
+    masked: true,
+    vertex: 'vs_scene_index',
+    fragment: 'fs_shadow',
+    constants: { '64000': 7 },
+  },
+  {
+    name: 'full vertex fallback without a fragment stage',
+    positionOnly: false,
+    masked: false,
+    vertex: 'vs_scene_index',
+    fragment: null,
+    constants: { '64000': 0 },
+  },
+])('selects the texture-mask override for the $name shadow request', async (entry) => {
+  const f = await fixture();
+  try {
+    const batch = f.batches[0];
+    const map = f.maps[0];
+    const projection = batch === undefined ? undefined : map?.get(batch.batchId);
+    if (batch === undefined || map === undefined || projection === undefined)
+      throw Error('missing fixture projection');
+    f.batches.splice(1);
+    if (entry.masked) batch.key.admission = 'alpha-mask';
+    Object.assign(batch, {
+      prepared: { identity: { material: 'forgeax::default-standard-pbr', deformation: 'rigid' } },
+    });
+    const vertexEntries = entry.positionOnly
+      ? ['vs_scene_index', SHADOW_CASTER_POSITION_ONLY_ENTRY]
+      : ['vs_scene_index'];
+    map.set(batch.batchId, {
+      ...projection,
+      shadowFragmentEntry: 'fs_shadow',
+      shadowArtifact: {
+        ...projection.shadowArtifact,
+        receipt: createStandardPbrArtifactReceipt(),
+        program: createMaterialShaderProgram(
+          '@id(64000) override standardTextureMask: u32 = 0u;',
+          vertexEntries.map((name) => ({ stage: 'vertex', name, bindings: [] })),
+        ),
+      },
+      material: { ...projection.material, standardTextureMask: entry.masked ? 7 : 0 },
+    });
+    prepareShadowMaterialPipelines(f.context, true, (_frame, identity) => identity.index === 0);
+
+    expect(f.prepare).toHaveBeenCalledTimes(1);
+    const request = f.prepare.mock.calls[0];
+    expect(request?.[16]).toBe(entry.vertex);
+    expect(request?.[19]).toBe(entry.fragment);
+    expect(request?.[21]).toEqual(entry.constants);
   } finally {
     f.dispose();
   }

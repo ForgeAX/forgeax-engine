@@ -2,6 +2,7 @@ import type { EngineWorkspaceTarget } from '@forgeax/engine/app';
 import type { WorkspaceState, WorkspaceTarget } from './contract.ts';
 import type { ViewWorkspaceClient } from './client.ts';
 import type { ViewPresentation, PreviewOwner } from './engine-presentation.ts';
+import type { FrontendFrame, FrontendPlatform } from '@forgeax/engine-host/platform';
 export type PreviewSurfaceResult = { ok: true; ready?: Promise<void>; dispose?: () => void | Promise<void> } | { ok: false; error: { code: string; expected: string; hint: string } };
 export type PreviewSurfaceOptions = { requestId?: string; presentation?: ViewPresentation; target?: WorkspaceTarget; container?: HTMLElement | null; canvas?: unknown; owner?: PreviewOwner; sceneTargetId?: string; api?: Pick<ViewWorkspaceClient, 'resizePreview'> };
 
@@ -30,15 +31,188 @@ const samePreviewScope = (left: PreviewScope | undefined, right: PreviewScope | 
   && left.browserGeneration === right.browserGeneration;
 const retiredPreview = () => new DOMException('View preview identity changed', 'AbortError');
 
-/** Borrow one retained isolated document; only its owning platform disposes the iframe. */
-export function createNativePreviewPresentation({ presentation, client, document, window }: {
-  presentation: ViewPresentation; client: ViewWorkspaceClient; document: Document; window: Window & typeof globalThis;
+export type ProjectDocumentFrameSnapshot = {
+  readonly document: { readonly sessionId: string; readonly targetId: string; readonly url: string; readonly browserGeneration?: number };
+  readonly frame?: HTMLIFrameElement;
+  readonly ready: Promise<void>;
+  readonly phase: 'preparing' | 'ready' | 'disposing' | 'failed';
+  readonly failure?: { readonly stage: 'prepare' | 'dispose'; readonly message: string };
+};
+
+/** The Shell owns the exact Host-published project document Frame for its full lifetime. */
+export function createProjectDocumentFrameOwner({ client, platform }: {
+  client: ViewWorkspaceClient; platform: FrontendPlatform;
+}) {
+  let state: WorkspaceState | null = null;
+  type Entry = { key: string; document: ProjectDocumentFrameSnapshot['document']; handle: FrontendFrame; ready: Promise<void>; generation: number };
+  let desired: { key: string; document: ProjectDocumentFrameSnapshot['document'] } | undefined;
+  let current: Entry | undefined;
+  let snapshot: ProjectDocumentFrameSnapshot | undefined;
+  let generation = 0;
+  let disposed = false;
+  let suspended = false;
+  let blockedByFailure = false;
+  let forceReplace = false;
+  let reconciling: Promise<void> | undefined;
+  const listeners = new Set<(snapshot: ProjectDocumentFrameSnapshot | undefined) => void>();
+  const publish = () => { for (const listener of listeners) listener(snapshot); };
+  const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const reconcile = () => {
+    if (reconciling || disposed || blockedByFailure) return reconciling;
+    reconciling = (async () => {
+      while (!disposed) {
+        if (current && (current.key !== desired?.key || forceReplace)) {
+          const previous = current;
+          snapshot = { document: previous.document, ready: previous.ready, phase: 'disposing' };
+          publish();
+          try { await previous.handle.dispose(); }
+          catch (error) {
+            blockedByFailure = true;
+            snapshot = { document: previous.document, ready: previous.ready, phase: 'failed',
+              failure: { stage: 'dispose', message: messageOf(error) } };
+            publish();
+            return;
+          }
+          if (current === previous) current = undefined;
+          forceReplace = false;
+          continue;
+        }
+        if (!desired) {
+          snapshot = undefined;
+          publish();
+          return;
+        }
+        if (current?.key === desired.key) return;
+        const request = desired;
+        const requestGeneration = generation;
+        let handle: FrontendFrame | undefined;
+        try {
+          handle = platform.createFrame(request.document.url);
+          const entry: Entry = { ...request, handle, generation: requestGeneration, ready: handle.ready };
+          current = entry;
+          handle.element.title = 'Project';
+          handle.element.dataset.forgeaxProjectDocument = request.document.targetId;
+          if (!handle.element.parentNode) platform.document.body.append(handle.element);
+          snapshot = { document: request.document, frame: handle.element, ready: entry.ready, phase: 'preparing' };
+          publish();
+          void entry.ready.then(() => {
+            if (disposed || current !== entry || generation !== requestGeneration || desired?.key !== request.key) return;
+            snapshot = { document: entry.document, frame: entry.handle.element, ready: entry.ready, phase: 'ready' };
+            publish();
+          }, error => {
+            if (disposed || current !== entry || generation !== requestGeneration || desired?.key !== request.key) return;
+            blockedByFailure = true;
+            snapshot = { document: entry.document, frame: entry.handle.element, ready: entry.ready, phase: 'failed',
+              failure: { stage: 'prepare', message: messageOf(error) } };
+            publish();
+          });
+          return;
+        } catch (error) {
+          blockedByFailure = true;
+          snapshot = { document: request.document, ...(handle ? { frame: handle.element } : {}),
+            ready: handle?.ready ?? Promise.resolve(), phase: 'failed',
+            failure: { stage: 'prepare', message: messageOf(error) } };
+          publish();
+          return;
+        }
+      }
+    })().finally(() => {
+      reconciling = undefined;
+      if (!disposed && current?.key !== desired?.key) void reconcile();
+    });
+    return reconciling;
+  };
+  const accept = (next: WorkspaceState) => {
+    if (disposed || (state && (next.revision ?? 0) < (state.revision ?? 0))) return;
+    state = next;
+    if (next.projectDocumentPresentation === 'observer') suspended = false;
+    const status = next.projectStatus;
+    const document = !suspended && next.projectDocumentPresentation === 'presenter'
+      ? next.projectDocument ?? (status && status.phase !== 'preparing' ? status.document : undefined)
+      : undefined;
+    const key = document && document.sessionId && document.targetId && document.url
+      ? JSON.stringify([document.sessionId, document.targetId, document.url]) : '';
+    if (key === desired?.key) {
+      if (document && desired) desired.document = document;
+      if (document && current?.key === key) current.document = document;
+      if (snapshot && document && (!current || current.key === key)) snapshot = { ...snapshot, document };
+      publish();
+      if (blockedByFailure) return;
+      return;
+    }
+    generation++;
+    desired = document && key ? { key, document } : undefined;
+    blockedByFailure = false;
+    if (current) snapshot = { document: current.document, ready: current.ready, phase: 'disposing' };
+    else snapshot = undefined;
+    publish();
+    void reconcile();
+  };
+  const unsubscribe = client.subscribe(accept);
+  void client.getState().then(next => { if (!disposed && !state) accept(next); }).catch(() => {});
+  return {
+    getSnapshot: () => snapshot,
+    async release() {
+      suspended = true;
+      desired = undefined;
+      generation++;
+      await reconciling;
+      // Preparation failure does not excuse retaining the old document.
+      // A failed disposer still blocks transfer until the owner can retire it.
+      if (snapshot?.failure?.stage === 'prepare') blockedByFailure = false;
+      await reconcile();
+      if (snapshot?.phase === 'failed') throw new Error(snapshot.failure?.message ?? 'Project document retirement failed');
+    },
+    retry() {
+      if (disposed || !blockedByFailure || !desired) return;
+      blockedByFailure = false;
+      forceReplace = snapshot?.failure?.stage === 'prepare' && current?.key === desired.key;
+      void reconcile();
+    },
+    subscribe(listener: (snapshot: ProjectDocumentFrameSnapshot | undefined) => void) {
+      listeners.add(listener);
+      listener(snapshot);
+      return () => listeners.delete(listener);
+    },
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      unsubscribe();
+      generation++;
+      desired = undefined;
+      await reconciling;
+      const entry = current;
+      if (entry) {
+        snapshot = { document: entry.document, ready: entry.ready, phase: 'disposing' };
+        publish();
+        try { await entry.handle.dispose(); }
+        catch (error) {
+          snapshot = { document: entry.document, ready: entry.ready, phase: 'failed',
+            failure: { stage: 'dispose', message: messageOf(error) } };
+          publish();
+          throw error;
+        }
+      }
+      current = undefined;
+      snapshot = undefined;
+      publish();
+      listeners.clear();
+    },
+  };
+}
+
+/** Borrow the Shell-owned project Frame; preview placement never creates or disposes it. */
+export function createNativePreviewPresentation({ frameOwner, client, document, window }: {
+  frameOwner: ReturnType<typeof createProjectDocumentFrameOwner>;
+  client: ViewWorkspaceClient; document: Document; window: Window & typeof globalThis;
 }) {
   type Placement = { target: EngineWorkspaceTarget; container: HTMLElement; owner: PreviewOwner; leaseId: string;
     resolve(): void; reject(error: unknown): void; dock?: HTMLElement | null };
   const placements = new Set<Placement>();
   let state: WorkspaceState | null = null;
   let scene: HTMLElement | undefined;
+  let projectScene: HTMLElement | undefined;
+  const sceneContainerRefs = new Map<HTMLElement, number>();
   let frame: HTMLIFrameElement | undefined;
   let originalStyle: string | null = null;
   let disposed = false;
@@ -47,15 +221,14 @@ export function createNativePreviewPresentation({ presentation, client, document
   let pending: AbortController | undefined;
   let sequence = Promise.resolve();
   const realm = document.defaultView!;
-  const frameFor = (target: EngineWorkspaceTarget) => {
-    const loaded = new URL(window.location.href);
-    if (loaded.searchParams.get('forgeaxWorkspaceTarget') !== target.targetId) return;
-    const surface = presentation.createSurface?.({ target: { ...target, url: loaded.href }, document });
-    if (!surface || typeof surface !== 'object' || !('tagName' in surface) || surface.tagName !== 'IFRAME') return;
+  const frameFor = (target?: EngineWorkspaceTarget) => {
+    const admitted = frameOwner.getSnapshot();
+    if (!admitted?.frame || admitted.phase === 'disposing' || (target && String(target.targetId) !== admitted.document.targetId)) return;
+    const surface = admitted.frame;
     if (surface !== frame) {
       if (frame) originalStyle === null ? frame.removeAttribute('style') : frame.setAttribute('style', originalStyle);
-      frame = surface as HTMLIFrameElement;
-      originalStyle = frame.getAttribute('style');
+      frame = surface;
+      originalStyle = surface.getAttribute('style');
     }
     return frame;
   };
@@ -96,6 +269,18 @@ export function createNativePreviewPresentation({ presentation, client, document
     if (entry.dock?.dataset.forgeaxViewDocumentSurface === entry.leaseId) delete entry.dock.dataset.forgeaxViewDocumentSurface;
     entry.dock = undefined;
   };
+  const retainSceneContainer = (container: HTMLElement) => {
+    const references = sceneContainerRefs.get(container) ?? 0;
+    sceneContainerRefs.set(container, references + 1);
+    if (references === 0) resize.observe(container);
+    return () => {
+      const current = sceneContainerRefs.get(container) ?? 0;
+      if (current <= 1) {
+        sceneContainerRefs.delete(container);
+        resize.unobserve(container);
+      } else sceneContainerRefs.set(container, current - 1);
+    };
+  };
   const visible = (element: HTMLElement) => {
     const box = element.getBoundingClientRect();
     return element.isConnected && box.width > 0 && box.height > 0;
@@ -108,12 +293,14 @@ export function createNativePreviewPresentation({ presentation, client, document
       if (dock && dock.dataset.forgeaxViewDocumentSurface !== entry.leaseId) dock.dataset.forgeaxViewDocumentSurface = entry.leaseId;
     }
     const scope = previewScope(state);
+    const admittedDocument = frameOwner.getSnapshot();
     const page = document.documentElement.dataset.forgeaxViewActivePage;
     const selected = scope ? [...placements].find(entry => (page === undefined || page === entry.owner.pageType) && visible(entry.container)) : undefined;
     const sceneVisible = scope && scene && (page === undefined || page === 'scene') && visible(scene)
       && state?.targetBinding !== 'play' && (!state?.play || state.play.phase === 'ready');
-    const anchor = selected?.container ?? (sceneVisible ? scene : undefined);
-    if (scope && state?.projectTarget) frameFor(state.projectTarget as EngineWorkspaceTarget);
+    const documentAnchor = scene ?? projectScene;
+    const anchor = selected?.container ?? (sceneVisible ? scene : admittedDocument && (page === undefined || page === 'scene') ? documentAnchor : undefined);
+    if (admittedDocument) frameFor(state?.projectTarget as EngineWorkspaceTarget | undefined);
     if (frame) {
       const box = anchor?.getBoundingClientRect();
       const style = { position: 'fixed', border: '0px', transform: 'none',
@@ -154,15 +341,26 @@ export function createNativePreviewPresentation({ presentation, client, document
     if (changed) place();
   };
   const unsubscribe = client.subscribe(accept);
+  const unsubscribeFrame = frameOwner.subscribe(() => place());
   void client.getState().then(next => { if (!disposed && !state) accept(next); }).catch(() => {});
   const adapter: ViewPresentation = {
     surfacePlacement: 'owner',
     createSurface: ({ target }) => frameFor(target),
+    attachProjectDocument({ container }) {
+      projectScene = container;
+      const release = retainSceneContainer(container);
+      place();
+      return () => {
+        release();
+        if (projectScene === container) projectScene = undefined;
+        place();
+      };
+    },
     attachScene({ container }) {
       scene = container;
-      resize.observe(container);
+      const release = retainSceneContainer(container);
       place();
-      return () => { resize.unobserve(container); if (scene === container) scene = undefined; place(); };
+      return () => { release(); if (scene === container) scene = undefined; place(); };
     },
     async finishPreviewCamera(target) {
       const scope = previewScope(state);
@@ -193,7 +391,7 @@ export function createNativePreviewPresentation({ presentation, client, document
   return { presentation: adapter, async dispose() {
     disposed = true;
     pending?.abort();
-    unsubscribe(); resize.disconnect(); mutation.disconnect();
+    unsubscribe(); unsubscribeFrame(); resize.disconnect(); mutation.disconnect();
     realm.removeEventListener('resize', place); realm.removeEventListener('scroll', place, true);
     await sequence.catch(() => {});
     const scope = previewScope(state);
@@ -217,7 +415,7 @@ export function installNativePreviewHost({ presentation, client, document, windo
   let active: { leaseId: string; target: WorkspaceTarget; scope: PreviewScope; dispose(): Promise<void> } | undefined;
   let queue = Promise.resolve();
   const lifetime = new AbortController();
-  const incoming = new Map<AbortController, MessagePort>();
+  const incoming = new Map<AbortController, NativePreviewRequest>();
   const retire = async () => {
     const previous = active;
     active = undefined;
@@ -284,7 +482,7 @@ export function installNativePreviewHost({ presentation, client, document, windo
     const port = event.ports[0]!;
     if (incoming.size >= 8) { port.postMessage({ ok: false, error: 'view-preview-busy' }); port.close(); return; }
     const controller = new AbortController();
-    incoming.set(controller, port);
+    incoming.set(controller, event.data);
     port.onmessage = () => controller.abort();
     port.start();
     const signal = AbortSignal.any([controller.signal, lifetime.signal]);
@@ -300,9 +498,13 @@ export function installNativePreviewHost({ presentation, client, document, windo
     if (!active) return;
     const target = next.previews?.find(entry => entry.target.targetId === active!.target.targetId)?.target;
     if (!current(active.scope) || target?.generation !== active.target.generation || target?.worldId !== active.target.worldId) {
-      for (const controller of incoming.keys()) controller.abort();
-      const retiring = retire();
-      queue = queue.then(() => retiring).catch(() => {});
+      const previous = active;
+      // A replacement can already be reading its committed state here.
+      for (const [controller, request] of incoming)
+        if (request.leaseId === previous.leaseId) controller.abort();
+      queue = queue.catch(() => {}).then(async () => {
+        if (active === previous) await retire();
+      });
     }
   };
   const unsubscribe = client.subscribe(accept);

@@ -1,9 +1,9 @@
-import type {
-  GraphTextureView,
-  RenderGraphBuilder,
+import {
+  type GraphTextureView,
+  type RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import type { Result } from '@forgeax/engine-types';
+import { err, type Result } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { RAY_PATH_STRIDE } from './path-tracer';
@@ -15,13 +15,19 @@ import {
 import { addRayReflectionPasses } from './reflections-graph';
 import type { PreparedRayDiffuse } from './renderer-diffuse';
 
+/** The exact lane's targets, after it admitted the visible-surface identity. */
+export type ExactRayDiffuseTargets = RayDiffuseTargets & {
+  readonly identity: RenderPipelineTarget;
+};
+
 export interface RayDiffuseTargets {
   readonly scene: RenderPipelineTarget;
   readonly depth: GraphTextureView;
   readonly normal: RenderPipelineTarget;
   readonly albedo: RenderPipelineTarget;
   readonly f0: RenderPipelineTarget;
-  readonly identity: RenderPipelineTarget;
+  /** Visible-surface identity; only the exact gather reads it (`visibleSurface` profiles). */
+  readonly identity?: RenderPipelineTarget;
   readonly motion: RenderPipelineTarget;
   /** The view's shared closest-depth pyramid, created on first request. */
   readonly depthPyramid?: () => Result<GraphTextureView, RenderGraphError>;
@@ -37,8 +43,25 @@ export interface RayDiffuseTargets {
 export function addRayDiffusePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   prepared: PreparedRayDiffuse,
-  target: RayDiffuseTargets,
+  input: RayDiffuseTargets,
 ) {
+  const identity = input.identity;
+  if (identity === undefined) {
+    return err(
+      new RenderGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: 'exact diffuse GI reads the visible-surface identity target',
+        hint: "the exact gather requires visibleSurface (primitive-index); use gather 'irradiance-field', 'screen-probe' or 'baked' on devices without it",
+        detail: {
+          resourceLabel: 'ray-diffuse.generate',
+          field: 'identity',
+          expected: 'visible-surface',
+          actual: 'missing',
+        },
+      }),
+    );
+  }
+  const target: ExactRayDiffuseTargets = { ...input, identity };
   const records = graph
     .importBuffer(
       'ray-diffuse.records',

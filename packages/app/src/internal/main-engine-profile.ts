@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-input';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { renderComponentsPlugin } from '@forgeax/engine-render';
+import { waterScenePlugin } from '@forgeax/engine-runtime';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { statePlugin } from '@forgeax/engine-state';
 import { inputMapPlugin } from '../input-map-plugin';
@@ -64,6 +65,7 @@ export function mainEngineProfile(options: MainEngineProfileOptions): Plugin[] {
             : ownedInputBackendPlugin(options.input, options.inputDispose),
         ]),
     scenePlugin(),
+    waterScenePlugin(),
     animationPlugin(options.animation),
     statePlugin(),
     ...(options.onDebugDrawReady === undefined || options.rendererDebugDrawHost === undefined

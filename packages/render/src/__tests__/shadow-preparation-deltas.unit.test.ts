@@ -64,6 +64,8 @@ function counters(): ShadowPreparationCounters {
     batchChecks: 0,
     candidateScans: 0,
     primitiveChecks: 0,
+    materialContentMisses: 0,
+    sceneBoundsMisses: 0,
   };
 }
 

@@ -186,17 +186,7 @@ export async function createFrontendHost(options: FrontendHostOptions = {}): Pro
       ...(options.startupPlugins ?? []),
     ],
   });
-  const disconnect = options.transport?.onDisconnect((cause) => {
-    controller.abort(cause);
-    if (!disposed) {
-      status = { state: 'failed', revision: current.revision, error: cause };
-      notify();
-      void host.dispose().catch((error) => {
-        status = { state: 'failed', revision: current.revision, error };
-        notify();
-      });
-    }
-  });
+  let disconnect: (() => void) | undefined;
   const host: FrontendHost = {
     context,
     assembly: state,
@@ -341,6 +331,27 @@ export async function createFrontendHost(options: FrontendHostOptions = {}): Pro
       return disposal;
     },
   };
+  disconnect = options.transport?.onDisconnect((cause) => {
+    controller.abort(cause);
+    if (!disposed) {
+      status = { state: 'failed', revision: current.revision, error: cause };
+      notify();
+      void host.dispose().catch((error) => {
+        status = { state: 'failed', revision: current.revision, error };
+        notify();
+      });
+    }
+  });
+  if (controller.signal.aborted) {
+    const cause = controller.signal.reason;
+    try {
+      await host.dispose();
+    } catch (cleanup) {
+      throw new AggregateError([cause, cleanup], 'Host connection and cleanup failed');
+    }
+    disconnect?.();
+    throw cause;
+  }
   if (options.autoActivate !== false) {
     try {
       await host.activate();

@@ -22,6 +22,31 @@ import { World } from '@forgeax/engine/ecs';
 import { Transform } from '@forgeax/engine/scene';
 ```
 
+## Open View
+
+```sh
+# From the game root, using its installed Engine:
+node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
+# From another directory:
+node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+```
+
+View is optional and owns this startup file. Agent guidance lives beside it at
+`tools/view/skills/forgeax-view-start/SKILL.md` in the installed package.
+No global SDK, separate View package or Engine build is required. View resolves
+its matching Engine and Host Pack from
+its own installation. Complete npm Engine and SDK installations include the file
+at `tools/view/start.mjs`; source checkouts use the same location. It calls Engine's
+public backend API directly. Default startup reuses one shared
+backend workspace under the system temporary directory per installation.
+`--new-instance` allocates an independent temporary workspace; `--root H` can
+select an explicit instance. The returned H addresses subsequent instance
+controls with an explicit `--root H`. Omitting `--project` opens project selection or adopts the existing
+project. Keep the foreground terminal open while using its returned URL.
+The URL establishes Shell availability; project and renderer readiness are
+reported separately in the page. Ctrl+C closes this presentation; Backend keeps
+its independent lifetime. Missing View does not prevent ordinary Engine CLI work.
+
 ## Game authoring workflow
 
 For every new or resumed game task, read the game project's `AGENTS.md` before editing.
@@ -41,6 +66,7 @@ paths in `value.onboarding.read`.
 |:--|:--|
 | `@forgeax/engine` | Runtime renderer assembly and the usual game entry |
 | `@forgeax/engine/app` | App and frame-loop assembly |
+| `@forgeax/engine/three/tsl` | Original CPU TSL functions sharing the Three facade constructor family; bounded native inputs follow the Three package contract |
 | `@forgeax/engine/ecs` | ECS world, components, queries, and systems |
 | `@forgeax/engine/<package-directory>` | The matching focused Engine package |
 
@@ -54,7 +80,7 @@ shipping one tarball does not eagerly import every capability into a game.
 Install the stable channel with `pnpm add --save-exact @forgeax/engine`.
 Test builds require `pnpm add --save-exact @forgeax/engine@rc`; development builds
 require `pnpm add --save-exact @forgeax/engine@next`.
-Release producers and hotfix maintainers follow RELEASING.md.
+Release producers and hotfix maintainers follow this repository's [release contract](./RELEASING.md), including the local Linux development release route. The broader shared policy is documented in ForgeaX Engine release guidance.
 The single-package release report
 records the 0.4.0 source, publication and consumer evidence.
 

@@ -31,7 +31,7 @@ type TexturePreparation = Extract<
 interface RayDiffuseFrameInput {
   readonly runtime: RenderSystemInternals;
   readonly scene: PersistentGpuDrivenState;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly lights: readonly LightSnapshot[];
   readonly sampler: Sampler;
   readonly profile: StandardExactDiffuseGi;
@@ -128,7 +128,7 @@ export class RendererRayDiffuse {
     return JSON.stringify([
       recordContext(input.runtime).deviceScope.generation,
       content ? input.scene.retained?.revision : undefined,
-      input.worlds.map((world) => world.identity),
+      input.sourceScope.identity,
       input.width,
       input.height,
       input.runtime.standardProfile?.diffuseGi,
@@ -215,7 +215,7 @@ export class RendererRayDiffuse {
       this.#ready.textures.some((texture) => !texture.current())
     )
       return false;
-    this.#scene.sync(retained, input.worlds, input.visibleSurface);
+    this.#scene.sync(retained, input.sourceScope, input.visibleSurface);
     const edit = this.#scene.edit;
     if (edit === undefined) return false;
     this.#ready = this.#ready.refresh(this.#fence(), edit);
@@ -261,7 +261,7 @@ export class RendererRayDiffuse {
       throw new Error('reference diffuse GI requires the complete retained scene');
     // The surface layout is the frame's own: rows written by the raster pass
     // resolve through exactly these addresses. Copied before the first await.
-    const projected = this.#scene.sync(retained, input.worlds, input.visibleSurface);
+    const projected = this.#scene.sync(retained, input.sourceScope, input.visibleSurface);
     if (projected.surfaces.records.byteLength === 0)
       throw new Error('no admitted receiver records');
     const entries = [...shaders.entries()];
@@ -277,8 +277,12 @@ export class RendererRayDiffuse {
     const transportLutSource = transportPublication?.variants.find(
       (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
     )?.composedWgsl;
-    const rasterSource = requirePublishedKernel(entries, 'generateRasterRays');
-    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse');
+    const rasterSource = requirePublishedKernel(
+      entries,
+      'generateRasterRays',
+      'standard-gbuffer/2',
+    );
+    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse', 'standard-gbuffer/2');
     const owned: Buffer[] = [];
     const textures: TexturePreparation[] = [];
     let transport: RayPathTracer | undefined;
@@ -301,7 +305,7 @@ export class RendererRayDiffuse {
       const sample = buffer('ray-diffuse.sample', 16, 64 | 8);
       device.queue.writeBuffer(records, 0, projected.surfaces.records).unwrap();
       for (const material of projected.materials) {
-        const world = input.worlds[material.worldId];
+        const world = input.sourceScope;
         if (world === undefined) throw new Error('missing transport material World');
         const selected = material.snapshot.materialSurfacePrograms?.['ray-hit'];
         if (selected === undefined)
@@ -366,7 +370,7 @@ export class RendererRayDiffuse {
               (
                 await compile(device, {
                   label: 'ray-diffuse.reconstruct',
-                  code: requirePublishedKernel(entries, 'reconstructDiffuse'),
+                  code: requirePublishedKernel(entries, 'reconstructDiffuse', 'standard-gbuffer/2'),
                 })
               ).unwrap(),
               pixelCount,
@@ -386,7 +390,7 @@ export class RendererRayDiffuse {
                 (
                   await compile(device, {
                     label,
-                    code: requirePublishedKernel(entries, entryPoint),
+                    code: requirePublishedKernel(entries, entryPoint, 'standard-gbuffer/2'),
                   })
                 ).unwrap(),
               allocate: buffer,

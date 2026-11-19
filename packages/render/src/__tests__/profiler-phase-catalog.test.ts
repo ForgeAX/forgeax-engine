@@ -12,7 +12,7 @@ describe('Render profiler phase catalog ownership', () => {
   it('matches the profiler receiver set and includes nested record owners', () => {
     const profiler = createProfiler();
     expect(profiler.registerPhaseCatalog('render', RENDER_PHASE_CATALOG).ok).toBe(true);
-    expect(RENDER_PHASE_CATALOG).toHaveLength(8 + RENDER_RECORD_PHASE_CATALOG.length);
+    expect(RENDER_PHASE_CATALOG).toHaveLength(23 + RENDER_RECORD_PHASE_CATALOG.length);
     expect(new Set(RENDER_PHASE_CATALOG).size).toBe(RENDER_PHASE_CATALOG.length);
     expect(new Set(RENDER_PHASE_CATALOG)).toEqual(new Set(profiler.phaseCatalog.render));
     expect(RENDER_RECORD_PHASE_CATALOG).toEqual(

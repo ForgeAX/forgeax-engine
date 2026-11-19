@@ -1,0 +1,243 @@
+{
+  "sourceCommit": "c65c03331d3bf4f8df7e62c580dd86b5e60f7599",
+  "commands": [
+    {
+      "command": "pnpm",
+      "args": ["--dir", "tools/view", "install", "--frozen-lockfile", "--ignore-scripts"],
+      "env": {}
+    },
+    {
+      "command": "pnpm",
+      "args": ["build:tools"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/forgeax-mcp/codex/build-app.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["node_modules/typescript/bin/tsc", "-p", "tools/forgeax-mcp/tsconfig.json"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "tools/forgeax-mcp/__tests__/app/bridge-protocol.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/bundler.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/completed-scene.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/compressed-request.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/host-poll.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/host-roundtrip.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/http-batch.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/large-resource.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/network-runtime.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/origin.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/program-host.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/resource-bytes.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/resource-lifetime.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/service.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/static-path-admission.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/teardown.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/tool-queue.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/uri-resolver.test.mjs",
+        "tools/forgeax-mcp/__tests__/app/view-readiness.test.mjs"
+      ],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/forgeax-mcp/test/local-plugin.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-panel-observation.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/forgeax-mcp/test/frontend-startup.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/forgeax-mcp/test/runtime-import.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/forgeax-mcp/test/runtime-acceptance.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": [
+        "tools/forgeax-mcp/test/app-browser.mjs",
+        "<root>/templates/game-3d",
+        "<root>/artifacts/view-integration/mcp-app"
+      ],
+      "env": {}
+    },
+    {
+      "command": "pnpm",
+      "args": ["exec", "tsc", "--noEmit", "-p", "tools/view-plugins/tsconfig.json"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["--test", "tools/view-plugins/modeling/__tests__/model.test.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": [
+        "--test",
+        "scripts/forgeax/__tests__/sdk-view.test.mjs",
+        "scripts/forgeax/__tests__/sdk-source.test.mjs",
+        "scripts/forgeax/__tests__/sdk-stage.test.mjs"
+      ],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["scripts/ci/verify-view-dependency-identity.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["scripts/ci/verify-view-export-falsifier.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["scripts/ci/verify-view-panels-falsifier.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-diagnostic-pages-integration.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-texture-preview-integration.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-gpu-texture-preview.mjs"],
+      "env": {
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/gpu-texture-2d"
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-gpu-texture-preview.mjs"],
+      "env": {
+        "FORGEAX_GPU_TEXTURE_ARRAY": "1",
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/gpu-texture-array"
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-pack-authoring-integration.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-pack-save-reopen-integration.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["scripts/ci/verify-engine-without-view.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-owner-surface-resize.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-page-plugin-lifecycle.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-engine-plugin-boundary.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-startup-boundaries.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-game3d-workspace.mjs"],
+      "env": {
+        "FORGEAX_ENGINE_CHECKOUT": "<root>",
+        "FORGEAX_LOCAL_ENGINE": "1"
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-workspace-experience.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-resource-preview-lifecycle.mjs"],
+      "env": {}
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-runtime-content-engine.mjs"],
+      "env": {
+        "FORGEAX_ENGINE_CHECKOUT": "<root>",
+        "FORGEAX_RUNTIME_PACK_LANGUAGE": "js",
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/runtime-js/live",
+        "FORGEAX_RUNTIME_PACK_SNAPSHOT": ""
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-runtime-content-engine.mjs"],
+      "env": {
+        "FORGEAX_ENGINE_CHECKOUT": "<root>",
+        "FORGEAX_RUNTIME_PACK_LANGUAGE": "js",
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/runtime-js/cold",
+        "FORGEAX_RUNTIME_PACK_SNAPSHOT": "<root>/artifacts/view-integration/runtime-js/live/saved-content.json"
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-runtime-content-engine.mjs"],
+      "env": {
+        "FORGEAX_ENGINE_CHECKOUT": "<root>",
+        "FORGEAX_RUNTIME_PACK_LANGUAGE": "ts",
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/runtime-ts/live",
+        "FORGEAX_RUNTIME_PACK_SNAPSHOT": ""
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view/scripts/verify-runtime-content-engine.mjs"],
+      "env": {
+        "FORGEAX_ENGINE_CHECKOUT": "<root>",
+        "FORGEAX_RUNTIME_PACK_LANGUAGE": "ts",
+        "FORGEAX_EVIDENCE_DIR": "<root>/artifacts/view-integration/runtime-ts/cold",
+        "FORGEAX_RUNTIME_PACK_SNAPSHOT": "<root>/artifacts/view-integration/runtime-ts/live/saved-content.json"
+      }
+    },
+    {
+      "command": "node",
+      "args": ["tools/view-plugins/integration/verify-modeling.mjs"],
+      "env": {}
+    }
+  ]
+}

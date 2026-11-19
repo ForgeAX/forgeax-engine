@@ -5,7 +5,77 @@ description: ForgeAX WGSL composition, reflection, and cooked shader contracts. 
 
 # forgeax-engine-shader
 
+Optional River `transitionContinuity` uses the accepted end-spline position and
+actual current-generation Ocean coverage adjacency. Author finite meter reach
+and blend width; the complete shared triangle is closed inside the inner reach
+and upstream height is retained outside support. Source flow/depth remain
+native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
+support offset in byte 92; vertex and fragment share its original-grid policy.
+Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+GPU traversal, independent Baked depth, custom deformation and independent
+advanced displacement are outside this initial continuity contract. See the
+[owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)
+and execute the nearest production Dawn gate before claiming pixels accepted.
+
 ## Contract index
+
+For a textured single-layer medium Surface, declare textures in the material parameters and sample the generated texture/sampler symbols. The compiler and Render derive the author region and relocate native optical resources together; never copy fixed IBL, backdrop, depth or planar bindings into a game shader.
+
+Water uses the root-owned `water-deformation/1` declaration and canonical
+input layout from Types; cook receipts cover color, depth, shadow and velocity.
+A Surface-only WaterInfo reader can omit deformation. The reflected
+`water-frame/3` entrypoint bindings determine the actual Water resource subset,
+visibility and dynamic-offset order. Fixed/Baked Body inputs need no texture;
+WaterInfo readers require a real same-view target. See the
+[Water material contract](../../packages/water/README.md#material-family).
+Every Body GPU row retains its accepted fixed fallback constants independently
+of the sampled source mode; disabling WaterInfo must preserve that buffer path.
+The Water-only input ABI carries raw `vertexColor` and vertex-decoded
+`vertexFlowXZ`; decode and actor-direction transformation precede interpolation.
+Static Baked/fixed switches select their source explicitly, while one Body
+publication retains the real WaterInfo and Baked resources it can access.
+`waterVertexMapping` lowers independently to vertex height availability and
+does not prune fragment reads or waves. `waterDynamicBoundsClip` lowers to
+`WATER_DYNAMIC_BOUNDS_CLIP` with default false, independently of mapping/Info.
+Its stock consumer uses post-WPO fragment position and the generation-qualified
+Body row's `dynamicBoundsCenterExtentXZ`, without requiring an Info texture.
+Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/6` producer to
+invalidate older derived bytes; the durable publication stays `material-cook/5`.
+`WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves plus an enabled
+transition. Its default deformation requires the authored `f32` wave-mask speed
+and, when vertex flow can be selected, the `f32` maximum decoded-flow speed.
+Missing fields reject before compilation; an Info switch alone does not exclude
+the Body's runtime vertex-flow fallback.
+Water Surface input preserves pre-WPO normal/position and pre-Water scene
+depth. Its appended `wavePhaseXZ` derives from small morphed WaterMesh coverage
+plus target-relative tile offsets before wrapping; do not interpolate wrapped
+phase or subtract large absolute `f32` positions. Only resolved stock default
+deformation enables complete fragment Gerstner-normal evaluation. Source depth
+uses no-WPO position, transition velocity uses post-WPO position, and target rows
+select waves/time. Keep `refractionPixelNormalStrength` and `refractionDepthBias`
+dimensionless, with `physicalIor` independent. The ordinary inherited
+`criticalAngleDot` and `refractionBottomAmount` control underside response
+independently of `specular`. Water SSR hit motion must match the exact opaque
+depth texel within its FP16 log-depth precision before replacing matrix
+reprojection; the coarse traced ray depth is not a layer identity.
+Stock Water keeps near-wave current/previous deformation and fragment normals
+at far boundaries. The retained versioned adjacency bits do not automatically
+flatten the surface to a mean plane. Preserve the far material's independent
+wave switches and saved height authority.
+The connected foam branch's
+graph-owned texture and distinct clamp/wrap samplers follow the existing medium physical tail; only an
+actually declared branch admits and binds it. It is not an authored texture
+parameter and does not change the generic medium Surface ABI.
+Shared contact foam and additive shallow-wave foam remain independent inputs.
+Combine their sampled responses with the existing maximum operation; a valid
+contact capture domain cannot mask a stronger wave source. Shared contact and
+residual-only mapping publish bounded foam coverage. Multiply coverage by the
+authored opacity/scattering texture samples; do not apply legacy height power,
+boost or threshold. Retain material amount, depth fade, normals and optics.
+SLW volume uses the shared diffuse-indirect sky input before surface AO and
+converts E/pi to isotropic ambient with a factor of one quarter. Keep the
+existing receiver AO on surface diffuse only; precomputed bent-normal lighting
+is unavailable without a lighting-owned producer.
 
 The shader compiler is build-time only: it composes real module slots, reflects
 the closed compiler context, and records actual WASM provenance. Material
@@ -13,6 +83,13 @@ identity is layered across `materialContractDigest`, `sourceClosureDigest`,
 `layoutIdentity`, `programIdentity`, `cookIdentity`, and
 `materialPublicationIdentity`; runtime receives the Pack projection and never
 compiles, cooks, or interprets feature macros.
+
+Standard's raster interface reserves one default-device inter-stage input for
+`front_facing`. Fragment position and NDC reconstruct from builtin position and
+the inverse view projection. Water-only coverage/grid inputs retain their own
+lane, and the wave mask shares the Water normal's fourth component. Keep
+vertex color, all eight UV sets, object basis and scene indexing within the
+remaining fifteen locations, and rebuild cooked profiles after template edits.
 
 > [!IMPORTANT]
 > The authoring route is WGSL source plus one MaterialAsset contract. Build-time composition and reflection publish a module manifest entry; material cook publishes the artifact and receipt; runtime resolves both through the catalog. App code never installs or duplicates a shader artifact. The recovery route is source or cook repair.
@@ -88,6 +165,20 @@ serves both. Clip-space producers reconstruct `worldPos` with `ndc_world`.
 
 ## Coordinate inputs
 
+Custom Standard Surface coverage uses the root's existing static choices:
+`alphaClipping` selects the Surface output threshold and `alphaHash` opts into
+hash coverage. `Materials.standard` defaults both off for a custom Surface;
+`alphaClip` publishes `alphaClipping`, not a pass tag. JSON roots use the same
+switches. Do not infer custom coverage from stock parameter names or the legacy
+`alphaMask` receipt: that pair describes stock inputs, not entry side effects.
+Preserve authored discard and independent LOD/view/local clipping, and verify
+the cooked direct and scene-index programs before claiming an opaque entry.
+Builtin Unlit and skinned Standard select camera clipping independently from
+material-local planes. Unlit color/depth use the explicit alpha-mask lane;
+its temporal coverage remains exact. Alpha helpers return a rejection value,
+and fragment entry points own the discard; do not extend the nested-discard
+allowlist to admit a new helper.
+
 The built-in and custom paths use named texture values. `coordinates.set`
 selects the vertex coordinate input and `coordinates.transform` applies offset,
 scale, and rotation. Do not add a global material coordinate selector; it
@@ -142,6 +233,12 @@ slots from the MaterialAsset parameter contract. WGSL reflection must match the
 derived layout. A mismatch is a build or cook failure and must be repaired at
 the source boundary.
 
+Native selected-entry `effects` accompany binding reads. Missing legacy effects
+are unknown; never infer an effect-free entry from parameter names, source text
+or another entry in the module. Preserve depth/sample-mask/storage effects and
+pipeline alpha-to-coverage when considering a position-only prepass. Contradictory
+native facts for identical source require producer repair.
+
 ## Recovery
 
 | Code | Recovery |
@@ -159,6 +256,13 @@ For every failure, switch on `error.code` and read `error.detail` and
 fixed by changing the demo's material data. This is the recovery route.
 
 ## Routing
+
+For an external Vite source consumer, build the Engine packages and run
+`node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile base-ssao`
+in its Engine checkout. Keep `forgeaxShader()` in the app. Inspect the resolved
+plugin's profile/source diagnostics; missing rows and stale compiler facts
+select source compilation. Packaging without `--build` requires the producer's
+current receipt and payload digest. See the plugin README for preparation/reuse.
 
 In an Engine contributor checkout, standalone Dawn fixtures with authored
 material packages use `buildEngineShaderManifest` with the CI-admitted shared
@@ -203,3 +307,18 @@ Keep Worker publication and device recovery on declaration/adoption paths so the
 do not decode every variant. Source-dependent validation still runs before a
 prepared program is returned. Artifact loading/decompression and GPU compilation
 retain their existing timing; this route adds no runtime compiler.
+
+## Three surface expression recipes
+
+For original r187 Standard/Basic NodeMaterial expressions, use the explicit
+`cookThreeSurface` build entry and `bindThreeSurface` player binding described in
+[Three's owning contract](../../packages/three/README.md#cooked-surface-expressions).
+Keep admission and lowering on the same private typed DAG; use native
+cook/reflection for layout and publication. Preserve ordinary material fast
+paths and the owning contract's explicit rebind boundary. Reject inputs outside
+the documented subset with a typed source path; qualify stage consumers
+independently. Do not invoke NodeMaterial.build, NodeBuilder, GLSL translation
+or the compiler from the player.
+An existing ordinary map slot may bind a completed native 2D target alongside
+independent expression roots. Cook the slot membership and await the target write;
+this does not admit render-target TextureNodes or framebuffer-dependent graphs.

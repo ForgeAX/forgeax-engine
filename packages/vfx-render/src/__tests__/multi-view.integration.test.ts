@@ -6,7 +6,6 @@ import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
@@ -112,7 +111,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   const simulationCamera = camera(500);
   const source = gpuParticleRenderFeature({ camera: { read: () => simulationCamera } });
   let cameraAvailable = true;
@@ -133,12 +132,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
   let number = 0;
   const frame = (views: readonly (typeof left)[], extractedViews = views) => {
     const frameNumber = ++number;
-    const extracted = source
-      .extract({ worlds: [world], owner: 0, frameNumber, views: extractedViews })
-      .unwrap();
+    const extracted = source.extract({ world: world, frameNumber, views: extractedViews }).unwrap();
     const plan = consumer
       .plan(structuredClone(extracted), {
-        resolveAsset: (_index, handle, revision) =>
+        resolveAsset: (handle, revision) =>
           runtimeAssets(world.assets).resolveAsset(handle, revision),
         caps: {} as never,
         generation: 0,
@@ -277,7 +274,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     // An unacknowledged successor publication must not consume the same simulation again.
     const repeated = consumer
       .plan(structuredClone(retry.extracted), {
-        resolveAsset: (_index, handle, revision) =>
+        resolveAsset: (handle, revision) =>
           runtimeAssets(world.assets).resolveAsset(handle, revision),
         caps: {} as never,
         generation: 0,

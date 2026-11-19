@@ -112,7 +112,7 @@ export function addStandardToneLutPass(
       }
       const source = factory.createShaderModule({
         code: entry.source,
-        label: postProcessShaderModuleLabel(entry.source),
+        label: postProcessShaderModuleLabel(entry),
       });
       if (!source.ok) throw source.error;
       const scope = recordContext(runtime).deviceScope;

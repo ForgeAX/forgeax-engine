@@ -1,3 +1,5 @@
+import { defineResource } from '@forgeax/engine-ecs';
+import { Update, defineSystem } from "@forgeax/engine-ecs";
 import type {
   ExecutionBootstrapEntry,
   ExecutionBootstrapHost,
@@ -17,6 +19,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const resource1 = defineResource<M27Proof>("m27IntelligenceProof");
+
 
 
 const M27_INPUT_LIMIT = 4;
@@ -140,7 +144,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         terminalCounts: new Map(),
         completedEvents: 0,
       };
-      world.insertResource('m27IntelligenceProof', proof);
+      world.insertResource(resource1, proof);
 
       const post = (event: string, detail: Record<string, unknown> = {}): void => {
         evidencePort?.postMessage({ kind: 'm27-worker-event', event, detail });
@@ -332,7 +336,7 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
         if (state.phase === 'retry' && state.retryCompleted) finish();
       };
 
-      const system = {
+      const system = defineSystem({
         name: 'm27-intelligence-worker-consumer',
         queries: [],
         fn(): void {
@@ -341,11 +345,11 @@ const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).u
           for (const event of intelligence.poll()) recordTerminal(event);
           drive();
         },
-      };
-      const update = world.scheduleToken('Update');
+      });
+      const update = Update;
       world.addSystem(update, system).unwrap();
       ctx.effect(
-        () => () => world.removeSystem(update, system.name),
+        () => () => world.removeSystem(update, system),
         'm27/intelligence-system',
       );
 

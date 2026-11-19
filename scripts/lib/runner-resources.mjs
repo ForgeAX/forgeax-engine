@@ -70,8 +70,53 @@ export function shaderCompileWorkers(resources, requested, concurrentOwners = 1)
       workerGB: 1,
     }),
   );
+  return limitRequestedWorkers(budget, requested);
+}
+
+function limitRequestedWorkers(budget, requested) {
   const count = Number.parseInt(requested ?? '', 10);
   return Number.isFinite(count) && count > 0 ? Math.min(budget, count) : budget;
+}
+
+/** Keep native compiler and runner allocations outside the producer's V8 heap. */
+export function shaderProducerHeapSize(resources) {
+  const availableGiB = resources.memoryBytes / 1024 ** 3;
+  const heapGiB = Math.max(
+    4,
+    Math.min(24, Math.floor(availableGiB / 2), Math.floor(availableGiB - 6)),
+  );
+  return heapGiB * 1024;
+}
+
+/** Cold compilation shares remaining memory with native work after reserving its heap. */
+export function shaderSourceCompileWorkers(
+  resources,
+  requested,
+  heapMiB = shaderProducerHeapSize(resources),
+) {
+  return Math.min(
+    4,
+    shaderCompileWorkers(
+      { ...resources, memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2) },
+      requested,
+    ),
+  );
+}
+
+/** An isolated manifest producer can spend more of the remaining capacity than Vitest. */
+export function shaderProducerCompileWorkers(
+  resources,
+  requested,
+  heapMiB = shaderProducerHeapSize(resources),
+) {
+  const budget = workspaceConcurrency({
+    ...resources,
+    memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2),
+    reserveGB: 2,
+    // Allow 768 MiB per native compiler lane, including its bounded program cache.
+    workerGB: 0.75,
+  });
+  return limitRequestedWorkers(Math.min(7, budget), requested);
 }
 
 /**

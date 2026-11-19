@@ -1,6 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { downloadArtifact, retryArtifact } from './download-artifact-with-retry.mjs';
 
 // Current-input producers and cheap aggregators retain their normal jobs.
 export const repairReusableJobs = Object.freeze({
@@ -14,7 +18,6 @@ export const repairReusableJobs = Object.freeze({
     'vitest-browser-shard',
     'shared-inputs-browser',
     'smoke-fleet',
-    'bevy-smoke-fleet',
     'vitest-dawn',
     'portability-bun',
     'webkit-fallback',
@@ -24,12 +27,34 @@ export const repairReusableJobs = Object.freeze({
   'native-ray-query.yml': ['native-ray-query-contract', 'native-node-gi'],
   'sdk-pr-preflight.yml': ['consumers', 'aggregate'],
   'webgpu-compatibility.yml': ['compatibility'],
-  'bench.yml': ['bench'],
   'modeling-ci.yml': ['engine-candidate'],
 });
 
-// A failed or explicitly fresh artifact consumer needs complete current inputs.
-// Reuse providers only when the complete suite can inherit its prior validation.
+// A successful name from before an owner moved cannot qualify its new work.
+const repairRequiredExecutionSteps = {
+  'ci.yml': {
+    'view-integration-0': [
+      'Prepare matching DevKit browser shader profile',
+      'Runtime Pack Worker dev/build JS/TS browser gate',
+    ],
+    'view-integration-1': [
+      'Prepare matching DevKit browser shader profile',
+      'DevKit project play browser journeys (uninstrumented)',
+    ],
+  },
+};
+
+function repairExecutionIsComplete(workflow, checkName, job) {
+  return (repairRequiredExecutionSteps[workflow]?.[checkName] ?? []).every((name) => {
+    const steps = (job.steps ?? []).filter((step) => step.name === name);
+    return (
+      steps.length === 1 && steps[0].status === 'completed' && steps[0].conclusion === 'success'
+    );
+  });
+}
+
+// SDK repair aggregates validate independently qualified original reports.
+// Coverage and smoke retain their shared-producer artifact requirements.
 export const repairArtifactSuites = Object.freeze({
   'ci.yml': {
     'coverage-pnpm-shard': 'coverage-pnpm',
@@ -42,11 +67,105 @@ export const repairArtifactSuites = Object.freeze({
   'sdk-pr-preflight.yml': { consumers: 'sdk-build', aggregate: 'sdk-build' },
 });
 
-const metricProducers = ['webkit-fallback', 'metrics-validate-browser', 'metrics-validate-runtime'];
+export const metricProducers = [
+  'webkit-fallback',
+  'metrics-validate-browser',
+  'metrics-validate-runtime',
+];
 const metricMembers = [...metricProducers, 'metrics-validate'];
 
 export const coverageMembers = [0, 1, 2, 3].map((shard) => `coverage-pnpm-shard-${shard}`);
+
+export function assertCoverageInputsUnchanged(coveredFiles, changedFiles) {
+  const configuration =
+    /(^|\/)(?:package\.json|pnpm-lock\.yaml|bun\.lock|tsconfig[^/]*\.json)$|^(?:config\/vitest|vitest\.config\.|scripts\/ci\/run-split-vitest-coverage\.mjs)/;
+  const changed = changedFiles.filter(
+    (name) =>
+      configuration.test(name) ||
+      coveredFiles.some((covered) => covered === name || covered.startsWith(`${name}/`)),
+  );
+  if (changed.length) throw new Error(`coverage-repair-inputs-changed: ${changed.join(', ')}`);
+}
+
+async function readOriginalCoverageFiles(repository, artifact) {
+  const directory = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'coverage-admission-'));
+  const archive = join(directory, 'coverage.zip');
+  try {
+    await retryArtifact(() => downloadArtifact(repository, artifact.id, archive));
+    const digest = `sha256:${createHash('sha256').update(readFileSync(archive)).digest('hex')}`;
+    if (digest !== artifact.digest) throw new Error('coverage-admission-artifact-digest');
+    const coverage = JSON.parse(
+      execFileSync('unzip', ['-p', archive, 'coverage-final.json'], {
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+      }),
+    );
+    const files = Object.keys(coverage);
+    if (files.length === 0 || files.some((name) => name.startsWith('/') || /^[A-Za-z]:/.test(name)))
+      throw new Error('coverage-admission-file-roster');
+    return files;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function changedCoverageFiles(sourceSha, targetSha) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${sourceSha}^{commit}`], { stdio: 'pipe' });
+  } catch {
+    execFileSync('git', ['fetch', '--no-tags', '--depth=1', 'origin', sourceSha], {
+      stdio: 'pipe',
+    });
+  }
+  return execFileSync('git', ['diff', '--name-only', '-z', sourceSha, targetSha], {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  })
+    .split('\0')
+    .filter(Boolean);
+}
+
+async function coverageAdmission(input, source, api, readFiles, changedFiles, proof) {
+  if (input.workflow !== 'ci.yml' || input.jobKey !== 'coverage-pnpm-shard') return proof;
+  const artifacts = await runArtifacts(api, input.repository, source.run);
+  const matches = artifacts?.filter(
+    (artifact) =>
+      artifact.name === input.checkName.replace('coverage-pnpm-shard-', 'coverage-shard-'),
+  );
+  const artifact = matches?.[0];
+  if (
+    matches?.length !== 1 ||
+    !Number.isSafeInteger(artifact?.id) ||
+    artifact.id <= 0 ||
+    artifact.expired !== false ||
+    !Number.isSafeInteger(artifact.size_in_bytes) ||
+    artifact.size_in_bytes <= 0 ||
+    !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? '') ||
+    artifact.workflow_run?.id !== source.run.id ||
+    artifact.workflow_run?.head_sha !== source.run.head_sha
+  )
+    return normal('coverage-artifact-unqualified');
+  try {
+    const covered = await readFiles(input.repository, artifact);
+    assertCoverageInputsUnchanged(
+      covered,
+      await changedFiles(source.run.head_sha, input.targetSha),
+    );
+    return proof;
+  } catch (error) {
+    return {
+      ...normal(
+        error.message?.startsWith('coverage-repair-inputs-changed:')
+          ? 'coverage-repair-inputs-changed'
+          : 'coverage-inputs-unqualified',
+      ),
+      detail: error.message,
+    };
+  }
+}
 const coveragePlaceholder = `coverage-pnpm-shard-\${{ matrix.shard }}`;
+const coverageArtifactRestoreStep =
+  'Restore original successful and current fresh coverage artifacts';
 const coverageUnrunSteps = [
   'Scrub stale global/system git auth header (self-hosted)',
   'Checkout',
@@ -89,11 +208,17 @@ function freshChecks(body = '') {
   const lines = body.split('\n').filter((line) => /^CI-Repair-Rerun:/.test(line));
   if (lines.length === 0) return [];
   if (lines.length !== 1) return null;
-  const names = lines[0]
-    .slice('CI-Repair-Rerun:'.length)
-    .split(',')
-    .map((name) => name.trim());
-  return names.every((name) => name.length > 0) && new Set(names).size === names.length
+  const value = lines[0].slice('CI-Repair-Rerun:'.length).trim();
+  let names;
+  try {
+    names = value.startsWith('[') ? JSON.parse(value) : value.split(',').map((name) => name.trim());
+  } catch {
+    return null;
+  }
+  return Array.isArray(names) &&
+    names.length > 0 &&
+    names.every((name) => typeof name === 'string' && name.length > 0 && name.trim() === name) &&
+    new Set(names).size === names.length
     ? names
     : null;
 }
@@ -111,7 +236,7 @@ export function repairComparison(comparison) {
   return ['ahead', 'identical'].includes(comparison?.status);
 }
 
-function samePullRequestIdentity(run, pr, repository) {
+export function samePullRequestIdentity(run, pr, repository) {
   if (
     run?.event !== 'pull_request' ||
     !sameRepository(run.head_repository?.full_name, repository) ||
@@ -131,6 +256,38 @@ export function samePullRequest(run, pr, repository) {
   return run?.status === 'completed' && samePullRequestIdentity(run, pr, repository);
 }
 
+/** A manual repair source needs commit association, not just a reused branch name. */
+export async function repairSourceBelongsToPr(api, run, pr, repository) {
+  if (samePullRequest(run, pr, repository)) return true;
+  if (
+    run?.status !== 'completed' ||
+    run.event !== 'workflow_dispatch' ||
+    !sameRepository(run.repository?.full_name, repository) ||
+    !sameRepository(run.head_repository?.full_name, repository) ||
+    run.head_branch !== pr.head.ref ||
+    !/^[a-f0-9]{40}$/.test(run.head_sha ?? '') ||
+    !Number.isFinite(Date.parse(pr.created_at)) ||
+    !(Date.parse(run.created_at) >= Date.parse(pr.created_at)) ||
+    (run.pull_requests?.length > 0 &&
+      !run.pull_requests.some((entry) => entry.number === pr.number))
+  )
+    return false;
+  try {
+    const associated = await api(`repos/${repository}/commits/${run.head_sha}/pulls`);
+    return (
+      Array.isArray(associated) &&
+      associated.some(
+        (candidate) =>
+          candidate.number === pr.number &&
+          sameRepository(candidate.head?.repo?.full_name, repository) &&
+          candidate.head?.ref === pr.head.ref,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function inheritedSource(job) {
   const proofs = (job.steps ?? []).filter(
     (step) => step.conclusion === 'success' && step.name.startsWith('[ci-repair-reused]'),
@@ -145,16 +302,28 @@ async function runForWorkflow(api, repository, workflow, anchor, pr) {
   const response = await api(
     `repos/${repository}/actions/workflows/${workflow}/runs?event=pull_request&head_sha=${anchor.head_sha}&status=completed&per_page=100`,
   );
-  return response.workflow_runs
-    .filter((run) => samePullRequest(run, pr, repository))
+  const selected = response.workflow_runs
+    .filter((run) => run.head_sha === anchor.head_sha && samePullRequest(run, pr, repository))
     .sort((left, right) => right.id - left.id)[0];
+  if (selected || anchor.event !== 'workflow_dispatch') return selected;
+  const manual = await api(
+    `repos/${repository}/actions/workflows/${workflow}/runs?event=workflow_dispatch&head_sha=${anchor.head_sha}&status=completed&per_page=100`,
+  );
+  for (const run of manual.workflow_runs.sort((left, right) => right.id - left.id))
+    if (
+      run.head_sha === anchor.head_sha &&
+      (await repairSourceBelongsToPr(api, run, pr, repository))
+    )
+      return run;
+  return undefined;
 }
 
-export async function runJobs(api, repository, run) {
+export async function runJobs(api, repository, run, filter = 'latest') {
+  if (filter !== 'latest' && filter !== 'all') throw new Error('invalid job history filter');
   const jobs = [];
   for (let page = 1; page <= 10; page++) {
     const response = await api(
-      `repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100&page=${page}`,
+      `repos/${repository}/actions/runs/${run.id}/jobs?filter=${filter}&per_page=100&page=${page}`,
     );
     jobs.push(...response.jobs);
     if (jobs.length >= response.total_count) break;
@@ -199,7 +368,11 @@ function coverageChildrenBlocked(jobs, run) {
 }
 
 function inactiveCoverageStep(step) {
-  if (coverageUnrunSteps.includes(step.name) || step.name.startsWith('[ci-repair-reused]'))
+  if (
+    coverageUnrunSteps.includes(step.name) ||
+    step.name === coverageArtifactRestoreStep ||
+    step.name.startsWith('[ci-repair-reused]')
+  )
     return step.status === 'completed' && step.conclusion === 'skipped';
   if (coverageDiagnosticSteps.includes(step.name))
     return step.status === 'completed' && ['success', 'skipped'].includes(step.conclusion);
@@ -218,7 +391,10 @@ function upstreamOnlyCoverageFailure(jobs, run, job) {
   const preconditions = steps.filter((step) => step.name === 'Require every coverage shard');
   const markers = steps.filter((step) => step.name.startsWith('[ci-repair-reused]'));
   if (preconditions.length !== 1 || markers.length !== 1) return false;
-  if (!coverageUnrunSteps.every((name) => steps.filter((step) => step.name === name).length === 1))
+  if (
+    !coverageUnrunSteps.every((name) => steps.filter((step) => step.name === name).length === 1) ||
+    steps.filter((step) => step.name === coverageArtifactRestoreStep).length > 1
+  )
     return false;
   return steps.every(inactiveCoverageStep);
 }
@@ -303,7 +479,7 @@ async function originalSuccess(api, input, run, job) {
     run = await api(`repos/${input.repository}/actions/runs/${source.runId}`);
     job = await api(`repos/${input.repository}/actions/jobs/${source.jobId}`);
     if (
-      !samePullRequest(run, input.pr, input.repository) ||
+      !(await repairSourceBelongsToPr(api, run, input.pr, input.repository)) ||
       workflowFile(run.path) !== input.workflow ||
       job.run_id !== run.id ||
       job.name !== input.checkName ||
@@ -329,7 +505,7 @@ export async function runArtifacts(api, repository, run) {
   return undefined;
 }
 
-function metricArtifactName(name, job) {
+export function metricArtifactName(name, job) {
   if (name === 'webkit-fallback') return 'chromium-fallback-color-lighting-status';
   if (name === 'metrics-validate-runtime') return 'metrics-report';
   return Number.isSafeInteger(job.run_attempt) && job.run_attempt > 0
@@ -388,10 +564,10 @@ async function metricSuiteArtifacts(api, input, run, jobs) {
   return result;
 }
 
-function qualifiedAnchor(anchor, input) {
+async function qualifiedAnchor(anchor, input, api) {
   return (
     workflowFile(anchor.path) === 'ci.yml' &&
-    samePullRequest(anchor, input.pr, input.repository) &&
+    (await repairSourceBelongsToPr(api, anchor, input.pr, input.repository)) &&
     anchor.id !== Number(input.currentRunId) &&
     anchor.head_sha !== input.pr.head.sha
   );
@@ -400,12 +576,10 @@ function qualifiedAnchor(anchor, input) {
 async function reusableArtifactSuite(api, input, run, jobs) {
   const consumer = repairArtifactSuites[input.workflow]?.[input.jobKey];
   if (!consumer) return true;
+  // The SDK repair aggregate validates each consumer's original report and source.
+  if (input.workflow === 'sdk-pr-preflight.yml' && input.jobKey === 'consumers') return true;
   if (declaredFreshExecution(input.pr.body, consumer)) return false;
-  if (
-    (input.workflow === 'ci.yml' && input.jobKey === 'coverage-pnpm-shard') ||
-    (input.workflow === 'sdk-pr-preflight.yml' && input.jobKey === 'consumers')
-  )
-    return true;
+  if (input.workflow === 'ci.yml' && input.jobKey === 'coverage-pnpm-shard') return true;
   if (input.workflow === 'ci.yml' && consumer === 'metrics-validate')
     return metricMembers.every(
       (name) =>
@@ -440,13 +614,17 @@ function repairIntent(input) {
 }
 
 /** Explicit CI-repair purpose accepts earlier passes, including implementation repairs. */
-export async function ciRepairQualification(input, api) {
+export async function ciRepairQualification(
+  input,
+  api,
+  { readCoverageFiles = readOriginalCoverageFiles, coverageChanges = changedCoverageFiles } = {},
+) {
   const intent = repairIntent(input);
   if (intent.reused === false) return intent;
   const { baseline } = intent;
   const { pr, repository, workflow, jobKey, checkName, targetSha } = input;
   const anchor = await api(`repos/${repository}/actions/runs/${baseline}`);
-  if (!qualifiedAnchor(anchor, input)) return normal('baseline-unqualified');
+  if (!(await qualifiedAnchor(anchor, input, api))) return normal('baseline-unqualified');
   const changes = await api(`repos/${repository}/compare/${anchor.head_sha}...${pr.head.sha}`);
   if (!repairComparison(changes)) return normal('baseline-not-ancestor');
   if (targetSha !== pr.head.sha) {
@@ -461,6 +639,8 @@ export async function ciRepairQualification(input, api) {
     return normal('artifact-consumer-needs-fresh-inputs');
   const source = await originalSuccess(api, { ...input, pr }, selected.run, selected.job);
   if (!source) return normal('reuse-provenance-unqualified');
+  if (!repairExecutionIsComplete(workflow, checkName, source.job))
+    return normal('required-execution-step-unqualified');
   const metrics = repairArtifactSuites[workflow]?.[jobKey] === 'metrics-validate';
   if (metrics && !metricProducers.includes(checkName))
     return normal('metrics-check-name-unqualified');
@@ -474,7 +654,7 @@ export async function ciRepairQualification(input, api) {
     );
     if (!repairComparison(comparison)) return normal('original-success-not-ancestor');
   }
-  return {
+  const proof = {
     reused: true,
     reason: 'declared-ci-repair',
     sourceRunId: source.run.id,
@@ -491,20 +671,89 @@ export async function ciRepairQualification(input, api) {
         }
       : {}),
   };
+  return coverageAdmission(input, source, api, readCoverageFiles, coverageChanges, proof);
 }
 
-export async function requestGitHub(endpoint, token, request = fetch) {
+export async function requestGitHub(endpoint, token, request = fetch, retryOptions = {}) {
   if (!token) throw new Error('GitHub token unavailable');
-  const response = await request(`https://api.github.com/${endpoint}`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
+  let serverDelay = 0;
+  const sleep =
+    retryOptions.sleepFn ?? ((seconds) => new Promise((done) => setTimeout(done, seconds * 1000)));
+  const result = await retryArtifact(
+    async () => {
+      serverDelay = 0;
+      const signal = AbortSignal.timeout(30_000);
+      try {
+        const response = await request(`https://api.github.com/${endpoint}`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+          },
+          signal,
+        });
+        if (!response.ok) {
+          const retryAfter = response.headers?.get('retry-after');
+          const remaining = response.headers?.get('x-ratelimit-remaining');
+          const throttled =
+            response.status === 429 ||
+            (response.status === 403 && (typeof retryAfter === 'string' || remaining === '0'));
+          if (throttled) {
+            const reset = Number(response.headers?.get('x-ratelimit-reset'));
+            serverDelay =
+              retryAfter && /^\d+$/.test(retryAfter)
+                ? Number(retryAfter)
+                : remaining === '0' && reset > 0
+                  ? Math.max(0, Math.ceil(reset - Date.now() / 1000))
+                  : 60;
+            if (serverDelay > 60) {
+              const limited = new Error('GitHub history rate limit exceeds recovery bound');
+              limited.code = 'GITHUB_HISTORY_RATE_LIMIT_BOUND';
+              throw limited;
+            }
+          } else serverDelay = 0;
+          const error = new Error(
+            `GitHub history unavailable: HTTP ${throttled ? 429 : response.status} response`,
+          );
+          error.code = `GITHUB_HISTORY_HTTP_${response.status}`;
+          throw error;
+        }
+        return await response.json();
+      } catch (error) {
+        if (signal.aborted || error?.name === 'TimeoutError') {
+          const deadline = new Error('GitHub history unavailable: HTTP 408 deadline', {
+            cause: error,
+          });
+          deadline.code = 'GITHUB_HISTORY_DEADLINE';
+          throw deadline;
+        }
+        throw error;
+      }
     },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new Error(`GitHub history unavailable (${response.status})`);
-  return response.json();
+    {
+      onRetry: ({ attempt }) =>
+        console.error(`GitHub history transport retry ${attempt}/3: ${endpoint}`),
+      ...retryOptions,
+      sleepFn: (delay) => sleep(Math.max(delay, serverDelay)),
+    },
+  );
+  return result.value;
+}
+
+// One qualification observes immutable completed history repeatedly. Keep its
+// authenticated inventory local to this invocation, and never retain failures.
+export function createGitHubHistoryClient(token, request = fetch, retryOptions) {
+  const responses = new Map();
+  return async (endpoint) => {
+    if (!responses.has(endpoint)) {
+      const response = requestGitHub(endpoint, token, request, retryOptions).catch((error) => {
+        responses.delete(endpoint);
+        throw error;
+      });
+      responses.set(endpoint, response);
+    }
+    return responses.get(endpoint);
+  };
 }
 
 async function main() {
@@ -515,7 +764,7 @@ async function main() {
     declaredRepair =
       process.env.GITHUB_EVENT_NAME === 'pull_request' &&
       Boolean(repairDeclaration(event.pull_request?.body, process.env.GITHUB_REPOSITORY));
-    const api = (endpoint) => requestGitHub(endpoint, process.env.GH_TOKEN);
+    const api = createGitHubHistoryClient(process.env.GH_TOKEN);
     result = await ciRepairQualification(
       {
         eventName: process.env.GITHUB_EVENT_NAME,
@@ -533,7 +782,11 @@ async function main() {
       },
       api,
     );
-  } catch {
+  } catch (error) {
+    // Keep credentials and response bodies out of diagnostics.
+    const code = error?.code ?? error?.cause?.code;
+    const detail = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? ` (${code})` : '';
+    console.error(`CI repair history unavailable: ${error?.name ?? 'Error'}${detail}`);
     // Missing API access, unavailable history or malformed metadata runs normal CI.
   }
   console.log(JSON.stringify(result));

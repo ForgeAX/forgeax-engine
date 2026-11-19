@@ -95,6 +95,9 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis LEAN_LIGHTING',
       '#pragma variant_axis LOD_DITHER',
       '#pragma variant_axis CLIPPING_PLANES',
+      '#pragma variant_axis WATER_WAVES_AVAILABLE',
+      '#pragma variant_axis WATER_INFO_RGBA16',
+      '#pragma variant_axis STANDARD_LEAN_INPUTS',
     ]);
   });
 
@@ -109,6 +112,9 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis SKINNING_DISABLED',
       '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
       '#pragma variant_axis LOD_DITHER',
+      '#pragma variant_axis GPU_SCENE_DIRECT',
+      '#pragma variant_axis ALPHA_MASK',
+      '#pragma variant_axis CLIPPING_PLANES',
     ]);
   });
 });

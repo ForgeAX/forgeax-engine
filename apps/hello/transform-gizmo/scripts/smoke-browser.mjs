@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { resolveBrowserWebGpuLaunch } from '../../../shared/scripts/rhi-debug-verify.mjs';
+import { createBrowserErrorEvidence } from '../../../../scripts/ci/browser-error-evidence.mjs';
 
 const output = resolve(process.env.GIZMO_EVIDENCE_DIR ?? 'artifacts/transform-gizmo');
 mkdirSync(output, { recursive: true });
@@ -33,9 +34,16 @@ const page = await browser.newPage({
   deviceScaleFactor: 1,
 });
 const errors = [];
-page.on('pageerror', (e) => errors.push(e.message));
+const errorEvidence = createBrowserErrorEvidence();
+page.on('pageerror', (e) => {
+  errors.push(e.message);
+  errorEvidence.pageError(e);
+});
 page.on('console', (m) => {
-  if (m.type() === 'error') errors.push(m.text());
+  if (m.type() === 'error') {
+    errors.push(m.text());
+    errorEvidence.consoleError(m);
+  }
 });
 const samples = [];
 const report = {
@@ -365,7 +373,7 @@ try {
   console.log(JSON.stringify(report, null, 2));
   emitSmokeReceipt('hello-transform-gizmo/browser', report.completedFrames, 'smoke:browser');
 } catch (error) {
-  const failure = { message: error.message, errors, report };
+  const failure = { message: error.message, errors, errorEvidence: await errorEvidence.snapshot(), report };
   writeFileSync(
     resolve(output, 'failure.json'),
     JSON.stringify(failure, null, 2),

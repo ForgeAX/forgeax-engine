@@ -11,6 +11,7 @@ import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,10 +53,10 @@ if (!existsSync(resolve(distRoot, 'pack-index.json'))) {
 const packIndexText = readFileSync(resolve(distRoot, 'pack-index.json'), 'utf8');
 const packIndex = decodeCatalogWire(JSON.parse(packIndexText)).unwrap();
 const packageFiles = new Map(
-  packIndex.map(entry => [entry.packageUrl, resolve(distRoot, entry.packageUrl.slice(1))]),
+  packIndex.map((entry) => [entry.packageUrl, resolve(distRoot, entry.packageUrl.slice(1))]),
 );
 const originalFetch = globalThis.fetch;
-globalThis.fetch = async request => {
+globalThis.fetch = async (request) => {
   const url = new URL(typeof request === 'string' ? request : request.url, 'http://127.0.0.1');
   if (url.pathname === '/pack-index.json') return new Response(packIndexText);
   const file = packageFiles.get(url.pathname);
@@ -81,7 +82,7 @@ const sceneDepthResource = () => {
   }
   return { kind: 'texture-view', value: sceneDepthView };
 };
-const manifest = JSON.parse(readFileSync(resolve(distRoot, 'shaders/manifest.json'), 'utf8'));
+
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { mat4 } = await import('@forgeax/engine-math');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -133,7 +134,7 @@ const host = createVfxRuntimeHost({
 const constructed = await constructRuntimeRendererHost(
   shim.mockCanvas,
   { features: falsifier === 'strike-only' ? [] : [host.feature] },
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
 );
 if (!constructed.ok) throw constructed.error;
 const renderer = constructed.value.renderer;
@@ -142,7 +143,7 @@ const persistentBuffers = new Map();
 const observedDevice = shim.sharedDevice;
 const nativeCreateBuffer = observedDevice.createBuffer.bind(observedDevice);
 if (!benchmarkMode && !m11Mode && !m35Mode) {
-  observedDevice.createBuffer = descriptor => {
+  observedDevice.createBuffer = (descriptor) => {
     const tracked = /^vfx\.state-/.test(descriptor.label ?? '') &&
       /\.(particles|history|custom|counters|indirect)$/.test(descriptor.label);
     const buffer = nativeCreateBuffer(tracked ? { ...descriptor, usage: descriptor.usage | 0x04 } : descriptor);
@@ -213,11 +214,13 @@ if (benchmarkMode) {
   };
   benchmarkAllocatedCapacity = emitters.reduce((total, emitter) => total + emitter.capacity, 0);
 }
-const stageReflection = effectAsset.program.emitters.flatMap(item => item.reflection.stages ?? []);
+const stageReflection = effectAsset.program.emitters.flatMap(
+  (item) => item.reflection.stages ?? [],
+);
 const lastKnownGoodPlan = validatedStagePlan(stageReflection, 1);
 let stageCandidate = lastKnownGoodPlan;
 if (lastKnownGoodPlan.ok && falsifier.startsWith('stage-')) {
-  const source = lastKnownGoodPlan.value.stages.map(stage => ({
+  const source = lastKnownGoodPlan.value.stages.map((stage) => ({
     ...stage,
     ...(falsifier === 'stage-cycle' ? { dependsOn: [stage.id] } : {}),
     ...(falsifier === 'stage-hazard'
@@ -232,8 +235,8 @@ const stageObservation = observeStagePlan(
   falsifier.startsWith('stage-') ? 2 : 1,
   lastKnownGoodPlan.ok ? lastKnownGoodPlan.value : undefined,
 );
-const softParticle = effectAsset.program.emitters.some(item =>
-  item.reflection.dataInterfaces?.some(interfaceValue => interfaceValue.kind === 'scene-depth'),
+const softParticle = effectAsset.program.emitters.some((item) =>
+  item.reflection.dataInterfaces?.some((interfaceValue) => interfaceValue.kind === 'scene-depth'),
 );
 const depthProviderReady = host.resolveDataInterfaces({
   requirements: [
@@ -262,14 +265,19 @@ playerEntity = world.spawn(
 let healthyWorld;
 let healthyPlayerEntity;
 let healthyLease;
+let healthyRenderer;
+let healthyDepthTexture;
+let healthyDepthView;
+let healthyDevice;
 const topologyShowcases = [
   { kind: 'ribbon', x: -2.2 },
   { kind: 'trail', x: 0 },
   { kind: 'beam', x: 2.2 },
 ];
 for (const showcase of benchmarkMode || m35Mode ? [] : topologyShowcases) {
-  const sourceEmitter = effectAsset.program.emitters.find(emitter =>
-    emitter.renderers.some(renderer => renderer.kind === showcase.kind));
+  const sourceEmitter = effectAsset.program.emitters.find((emitter) =>
+    emitter.renderers.some((renderer) => renderer.kind === showcase.kind),
+  );
   if (sourceEmitter === undefined) throw new Error(`Missing authored ${showcase.kind} emitter`);
   const showcaseEmitter = {
     ...sourceEmitter,
@@ -277,7 +285,9 @@ for (const showcase of benchmarkMode || m35Mode ? [] : topologyShowcases) {
     space: 'local',
     channels: [],
     events: [],
-    renderers: sourceEmitter.renderers.filter(rendererValue => rendererValue.kind === showcase.kind),
+    renderers: sourceEmitter.renderers.filter(
+      (rendererValue) => rendererValue.kind === showcase.kind,
+    ),
   };
   const showcaseEffect = {
     ...effectAsset,
@@ -299,7 +309,70 @@ for (const showcase of benchmarkMode || m35Mode ? [] : topologyShowcases) {
 await createWorldContext(world, [scenePlugin()]);
 
 if (m35Mode) {
-  healthyWorld = new World();
+  let surface;
+  const healthyCanvas = {
+    width: WIDTH,
+    height: HEIGHT,
+    addEventListener() {},
+    removeEventListener() {},
+    getContext(kind) {
+      if (kind !== 'webgpu') return null;
+      return {
+        configure(descriptor) {
+          if (healthyDevice !== descriptor.device) {
+            healthyDepthTexture?.destroy();
+            healthyDepthTexture = undefined;
+            healthyDepthView = undefined;
+          }
+          healthyDevice = descriptor.device;
+          surface?.destroy();
+          surface = descriptor.device.createTexture({
+            size: [WIDTH, HEIGHT],
+            format: descriptor.format,
+            viewFormats: descriptor.viewFormats ?? [],
+            usage: 0x11,
+          });
+        },
+        unconfigure() {
+          surface?.destroy();
+          surface = undefined;
+        },
+        getCurrentTexture() {
+          if (!surface) throw new Error('M35 surface is not configured');
+          return surface;
+        },
+      };
+    },
+  };
+  const feature = host.createRenderFeature([
+    createCameraProvider({ available: () => true }),
+    createSceneDepthProvider({
+      available: () => healthyDevice !== undefined,
+      sampleCount: 1,
+      resource: () => {
+        if (healthyDevice === undefined) return undefined;
+        if (healthyDepthView === undefined) {
+          healthyDepthTexture = healthyDevice.createTexture({
+            size: [WIDTH, HEIGHT],
+            format: 'depth24plus',
+            usage: 0x14,
+          });
+          healthyDepthView = healthyDepthTexture.createView();
+        }
+        return { kind: 'texture-view', value: healthyDepthView };
+      },
+    }),
+  ]);
+  const createdHealthy = await constructRuntimeRendererHost(
+    healthyCanvas,
+    { features: [feature] },
+  { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
+  );
+  if (!createdHealthy.ok) throw createdHealthy.error;
+  healthyRenderer = createdHealthy.value.renderer;
+  const initializedHealthy = await createdHealthy.value.initialization;
+  if (!initializedHealthy.ok) throw initializedHealthy.error;
+  healthyWorld = new World({ assets });
   const healthyCameraEntity = healthyWorld
     .spawn(
       { component: Transform, data: { pos: [0, 1.2, 7.5] } },
@@ -321,7 +394,7 @@ if (m35Mode) {
     )
     .unwrap();
   await createWorldContext(healthyWorld, [scenePlugin()]);
-  const rendererAttached = renderer.attach(healthyWorld);
+  const rendererAttached = healthyRenderer.attach(healthyWorld);
   if (!rendererAttached.ok) throw rendererAttached.error;
   healthyLease = rendererAttached.value;
   const hostAttached = await host.attachWorld({ world: healthyWorld, assets });
@@ -361,14 +434,8 @@ async function readRenderTargetPixels() {
   readback.destroy();
   return normalizeReadbackRgba(pixels, WIDTH, HEIGHT, bytesPerRow, target.format);
 }
-function recordDraw(leases) {
-  const cameraLease = leases[0];
-  if (cameraLease === undefined) throw new Error('recordDraw requires a camera lease');
-  const drawn = renderer.draw({
-    leases,
-    camera: { lease: cameraLease },
-    environment: { lease: cameraLease },
-  });
+function recordDraw(targetRenderer, source) {
+  const drawn = targetRenderer.draw({ source });
   if (!drawn.ok) {
     errors.push({
       code: drawn.error.code,
@@ -392,20 +459,24 @@ if (m35Mode) {
     throw new Error(`M35 public host control unavailable: ${JSON.stringify({ affectedControl, healthyControl })}`);
   }
   const inspectPlayer = (snapshot, player) =>
-    snapshot?.players.find(candidate => candidate.player === player);
+    snapshot?.players.find((candidate) => candidate.player === player);
   const updateBoth = () => {
     world.update(1 / 60).unwrap();
     healthyWorld.update(1 / 60).unwrap();
   };
   if (healthyLease === undefined) throw new Error('M35 healthy render lease unavailable');
-  const drawBoth = () => recordDraw([mainLease, healthyLease]);
+  const drawBoth = () => {
+    const primary = recordDraw(renderer, mainLease);
+    const sibling = recordDraw(healthyRenderer, healthyLease);
+    return primary.ok ? (sibling.ok ? primary : sibling) : primary;
+  };
   let initial;
   let initialSibling;
   for (let warmup = 0; warmup < READINESS_FRAME_LIMIT; warmup += 1) {
     currentFrame = warmup;
     updateBoth();
-    if (!drawBoth().ok) throw new Error(`M35 initial composite draw failed at ${warmup}`);
-    await new Promise(resolve => setImmediate(resolve));
+    if (!drawBoth().ok) throw new Error(`M35 independent source draw failed at ${warmup}`);
+    await new Promise((resolve) => setImmediate(resolve));
     initial = host.inspect(world);
     initialSibling = host.inspect(healthyWorld);
     const warmPlayer = inspectPlayer(initial, playerEntity);
@@ -440,7 +511,7 @@ if (m35Mode) {
     currentFrame += 1;
     updateBoth();
     if (!drawBoth().ok) throw new Error(`M35 paused composite draw failed at ${index}`);
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     const affected = host.inspect(world);
     const sibling = host.inspect(healthyWorld);
     const affectedPlayer = inspectPlayer(affected, playerEntity);
@@ -458,7 +529,7 @@ if (m35Mode) {
   const overflow = host.inspect(world);
   const overflowPlayer = inspectPlayer(overflow, playerEntity);
   const overflowDiagnostics =
-    overflow?.diagnostics.filter(diagnostic => diagnostic.detail.player === playerEntity) ?? [];
+    overflow?.diagnostics.filter((diagnostic) => diagnostic.detail.player === playerEntity) ?? [];
   const pendingBeforeReplay = pausedFrames.at(-1)?.lastCommitted?.sequence ?? -1;
   if (
     overflowPlayer === undefined ||
@@ -471,7 +542,7 @@ if (m35Mode) {
     overflowPlayer.lastCommitted?.tick !== initialCommitted?.tick ||
     overflowPlayer.lastCommitted?.phaseTick !== initialCommitted?.phaseTick ||
     overflowPlayer.lastCommitted?.playCycle !== initialCommitted?.playCycle ||
-    pausedFrames.some(frame => frame.siblingDiagnostics.length !== 0) ||
+    pausedFrames.some((frame) => frame.siblingDiagnostics.length !== 0) ||
     (pausedFrames.at(-1)?.siblingLastCommitted?.tick ?? -1) <= (initialSiblingCommitted?.tick ?? -1)
   ) {
     throw new Error(`M35 overflow contract failed: ${JSON.stringify({ initial, overflow, pausedFrames })}`);
@@ -484,7 +555,7 @@ if (m35Mode) {
   currentFrame += 1;
   updateBoth();
   if (!drawBoth().ok) throw new Error('M35 resumed composite draw failed');
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   const afterResume = host.inspect(world);
   const afterResumePlayer = inspectPlayer(afterResume, playerEntity);
   if (
@@ -500,7 +571,7 @@ if (m35Mode) {
   currentFrame += 1;
   updateBoth();
   if (!drawBoth().ok) throw new Error('M35 replay composite draw failed');
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   const afterReplay = host.inspect(world);
   const afterReplaySibling = host.inspect(healthyWorld);
   const afterReplayPlayer = inspectPlayer(afterReplay, playerEntity);
@@ -560,19 +631,19 @@ if (m35Mode) {
       });
       eventSubmitted = true;
     }
-    let drawn = recordDraw([mainLease]);
+    let drawn = recordDraw(renderer, mainLease);
     // A pending receipt waited on pipeline preparation and presented nothing;
     // redraw the same simulated frame (render-only) until it is presented.
     while (drawn.ok && drawn.value.presentation !== 'ready' && performance.now() < presentationDeadline) {
-      await new Promise(resolve => setImmediate(resolve));
-      drawn = recordDraw([mainLease]);
+      await new Promise((resolve) => setImmediate(resolve));
+      drawn = recordDraw(renderer, mainLease);
     }
     if (!drawn.ok) throw new Error(`Boss Lightning draw failed at frame ${frame}`);
     if (!benchmarkMode && !m11Mode) {
-      const presentation = recordDraw([mainLease]);
+      const presentation = recordDraw(renderer, mainLease);
       if (!presentation.ok) throw new Error(`Render-only Boss Lightning frame failed at ${frame}`);
     }
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
     if (benchmarkMode) {
       await shim.sharedDevice?.queue.onSubmittedWorkDone();
       if (frame === benchmarkBeamEvidenceFrame) {
@@ -601,18 +672,18 @@ if (m35Mode) {
     const renderGenerationBefore = runtime.renderGeneration;
     const featureRecovery = host.feature.recover();
     const stalePatch = stale?.patch({});
-    world.update(1 / 60).unwrap();
+      world.update(1 / 60).unwrap();
     const restarted = runtime.getInstance(playerEntity);
     const restartedInspect = runtime.inspectPlayer(playerEntity);
     const currentPatch = restarted?.patch({});
-    world.update(1 / 60).unwrap();
+      world.update(1 / 60).unwrap();
     const currentInspect = runtime.inspectPlayer(playerEntity);
     for (let recoveryFrame = 0; recoveryFrame < 10; recoveryFrame += 1) {
       currentFrame += 1;
       world.update(1 / 60).unwrap();
-      const recoveredDraw = recordDraw([mainLease]);
+      const recoveredDraw = recordDraw(renderer, mainLease);
       if (!recoveredDraw.ok) throw new Error(`M11 recovery draw failed at frame ${recoveryFrame}`);
-      await new Promise(resolve => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
     }
     queuedIntents = runtime.snapshot().length;
     runtimeDiagnostics = runtime.diagnostics();
@@ -665,7 +736,7 @@ if (persistentBuffers.size > 0) {
   };
   const before = await snapshot();
   for (let frame = 0; frame < 3; frame++) {
-    if (!recordDraw([mainLease]).ok) throw new Error('Paused VFX presentation failed');
+    if (!recordDraw(renderer, mainLease).ok) throw new Error('Paused VFX presentation failed');
   }
   const after = await snapshot();
   let livingInstances = 0;
@@ -744,7 +815,7 @@ const billboardEnergy = zoneEnergy(billboardZone.x0, billboardZone.x1, billboard
 const meshEnergy = zoneEnergy(meshZone.x0, meshZone.x1, meshZone.y0, meshZone.y1);
 const topologyPixels = topologyPixelEvidence();
 const sortedFrameDurations = [...frameDurations].sort((left, right) => left - right);
-const durationPercentile = percentile =>
+const durationPercentile = (percentile) =>
   sortedFrameDurations[Math.max(0, Math.ceil(sortedFrameDurations.length * percentile) - 1)] ?? 0;
 const topologyZones = {
   ribbon: zoneEnergy(25, 80, 75, 145),
@@ -761,6 +832,9 @@ if (m35Mode) {
   const detachHealthyAgain = await host.detachWorld({ world: healthyWorld });
   mainLease.dispose();
   healthyLease?.dispose();
+  await healthyRenderer?.dispose();
+  await healthyRenderer?.dispose();
+  healthyDepthTexture?.destroy();
   await renderer.dispose();
   await renderer.dispose();
   m35Recovery = {
@@ -777,7 +851,7 @@ if (m35Mode) {
 const strikeOnly = false;
 const recovery = typeof renderer.recover === 'function';
 const lastWarmupErrorFrame = errors
-  .filter(error => error.code === 'render-feature-preparation-failed')
+  .filter((error) => error.code === 'render-feature-preparation-failed')
   .reduce((lastFrame, error) => Math.max(lastFrame, error.frame), -1);
 const readinessFrame =
   firstReadinessFrame === undefined
@@ -825,14 +899,13 @@ const result = {
     : {}),
   topologyZones,
   advancedRendererFields,
-  topologyCounters: Object.fromEntries(
-    effectAsset.program.emitters
-      .flatMap(item => item.renderers)
-      .map(rendererValue => [rendererValue.kind, { capacity: rendererValue.capacity ?? 0, produced: 0, dropped: 0 }]),
+  topologyCounters: Object.fromEntries( effectAsset.program.emitters
+    .flatMap((item) => item.renderers)
+      .map((rendererValue) => [rendererValue.kind, { capacity: rendererValue.capacity ?? 0, produced: 0, dropped: 0 }]),
   ),
   indirectDraws: effectAsset.program.emitters
-    .flatMap(item => item.renderers)
-    .map(rendererValue => rendererValue.kind),
+    .flatMap((item) => item.renderers)
+    .map((rendererValue) => rendererValue.kind),
   billboardZone,
   meshZone,
   readiness: [...new Set(readiness)],
@@ -853,14 +926,15 @@ const result = {
   subEmitterVisible,
   queueCleared,
   mainEffectRunning,
-  arcNovaLayerRunning: ['charge-arcane-dial', 'impact-violet-shock'].every(id => effectAsset.program.emitters.some(item => item.id === id)),
+  arcNovaLayerRunning: ['charge-arcane-dial', 'impact-violet-shock'].every((id) => effectAsset.program.emitters.some((item) => item.id === id),
+  ),
   stageReadiness: stageObservation.stageReadiness,
   stageOutput: stageObservation.stageOutput,
   stageDependencies: lastKnownGoodPlan.ok
-    ? lastKnownGoodPlan.value.stages.map(stage => ({ id: stage.id, dependsOn: stage.dependsOn }))
+    ? lastKnownGoodPlan.value.stages.map((stage) => ({ id: stage.id, dependsOn: stage.dependsOn }))
     : [],
   stageDispatch: lastKnownGoodPlan.ok
-    ? lastKnownGoodPlan.value.stages.map(stage => stage.entryPoint)
+    ? lastKnownGoodPlan.value.stages.map((stage) => stage.entryPoint)
     : [],
   lastKnownGoodStage: stageObservation.lastKnownGoodStage,
 };
@@ -884,11 +958,11 @@ if (!m35Mode && !benchmarkMode && falsifier.length === 0 && !result.arcNovaLayer
   console.error(`[smoke-dawn] FAIL Arc Nova GPU layer is not running ${JSON.stringify(result)}`);
   process.exit(1);
 }
-if (!m35Mode && !['ribbon', 'trail', 'beam'].every(kind => result.indirectDraws.includes(kind))) {
+if (!m35Mode && !['ribbon', 'trail', 'beam'].every((kind) => result.indirectDraws.includes(kind))) {
   console.error(`[smoke-dawn] FAIL independent topology evidence is missing ${JSON.stringify(result)}`);
   process.exit(1);
 }
-if (!m35Mode && Object.values(topologyPixels).some(count => count < 20)) {
+if (!m35Mode && Object.values(topologyPixels).some((count) => count < 20)) {
   console.error(`[smoke-dawn] FAIL advanced topology pixels are missing ${JSON.stringify(result)}`);
   process.exit(1);
 }
@@ -901,7 +975,7 @@ if (
   result.stageDispatch.length === 0 ||
   result.stageDependencies.length === 0 ||
   result.lastKnownGoodStage === undefined ||
-  !result.stageReadiness.some(item => item.id === requiredStageId)
+  !result.stageReadiness.some((item) => item.id === requiredStageId)
 ) {
   console.error(`[smoke-dawn] FAIL managed stage evidence missing ${JSON.stringify(result)}`);
   process.exit(1);
@@ -909,7 +983,7 @@ if (
 if (
   falsifier.startsWith('stage-') &&
   (result.stageOutput !== 'last-known-good' ||
-    !result.stageReadiness.some(item => item.state === 'candidate-rejected' && item.retryable))
+    !result.stageReadiness.some((item) => item.state === 'candidate-rejected' && item.retryable))
 ) {
   console.error(`[smoke-dawn] FAIL stage falsifier did not retain LKG ${JSON.stringify(result)}`);
   process.exit(1);

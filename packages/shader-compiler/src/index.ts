@@ -14,6 +14,19 @@ export {
 export { getShaderCompilerFingerprint } from './compiler-fingerprint.js';
 export { projectShaderConditionals } from './conditionals.js';
 export {
+  type EngineShaderSource,
+  engineMaterialArtifactReceipt,
+  engineMaterialForwardFog,
+  engineMaterialParamSchema,
+  engineShaderDefines,
+  engineShaderSourceImports,
+  filterImportsByDefines,
+  type PreparedEngineShaderSource,
+  prepareEngineShaderSource,
+  resolveImportModuleId,
+  SURFACE_SLOT_MODULE,
+} from './engine-program.js';
+export {
   compileFailed,
   err,
   initFailed,
@@ -40,6 +53,7 @@ export {
   type SurfaceComposition,
   type SurfaceCompositionRequest,
   type SurfaceCompositionStage,
+  waterDeformationAbiSource,
 } from './material/compose.js';
 export { composeMaterial } from './material/compose-material.js';
 export {
@@ -136,8 +150,10 @@ export {
   type MaterialVariantContext,
 } from './material/variant-context.js';
 export { createShaderProgramCompiler } from './program-compiler.js';
+export { prepareShaderProgramCompiler } from './program-template.js';
 export {
   compareDerivedMaterialInterface,
   type ParsedReflection,
   parseReflection,
 } from './reflection.js';
+export { createTextureGeneratorPackCooker } from './texture-generator-cooker.js';

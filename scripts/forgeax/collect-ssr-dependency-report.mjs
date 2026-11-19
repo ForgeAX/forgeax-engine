@@ -22,7 +22,8 @@ export const DEFAULT_REQUIRED_ANCESTORS = Object.freeze([
   }),
   Object.freeze({
     label: 'parentSsrM0Revision',
-    revision: '1a07a092da53ed1bdb363862615f687704a3a2cb',
+    // M0 landed through a squash; its development head is not a main ancestor.
+    revision: 'b852c75bed156df1c855c8c9cba6e4d04497c696',
   }),
 ]);
 

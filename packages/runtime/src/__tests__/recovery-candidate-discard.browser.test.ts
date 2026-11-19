@@ -106,9 +106,7 @@ it('discards a replacement device after its execution probe fails and recovers o
       const deadline = performance.now() + 15_000;
       while (performance.now() < deadline) {
         world.update(1 / 60).unwrap();
-        const receipt = renderer
-          .draw({ leases: [lease], camera: { lease }, environment: { lease } })
-          .unwrap();
+        const receipt = renderer.draw({ source: lease }).unwrap();
         (await receipt.completed).unwrap();
         if (receipt.presentation === 'ready') return receipt;
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

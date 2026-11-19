@@ -11,7 +11,7 @@ import { planPasses, planResources, singleViewContext } from './vfx-frame-fixtur
 
 type Retained = { intentSequence: number; intent?: { sequence: number } };
 const retainedRows = (data: unknown): Retained[] =>
-  (data as { worlds: { retained: Retained[] }[] }).worlds.flatMap((world) => world.retained);
+  (data as { source?: { retained: Retained[] } }).source?.retained ?? [];
 
 it('sends a retained intent until the receiver adopted it, then only its sequence', async () => {
   const matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -84,8 +84,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_integrate(ct
     const data = structuredClone(
       source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           views: [{ identity: 'main', render: true }],
           frameNumber: ++frameNumber,
         })
@@ -96,7 +95,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_integrate(ct
         data,
         singleViewContext({
           targets,
-          resolveAsset: (_index, handle, revision) =>
+          resolveAsset: (handle, revision) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },

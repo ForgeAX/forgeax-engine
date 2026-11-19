@@ -8,11 +8,16 @@ import type { SeedShaderModule } from './material-shader-policy';
 import type { Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
+  findVariantByDefines,
   findVariantByKey,
+  isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
+  materialShaderAxes,
+  materialShaderPreparedSourceRows,
   materialShaderSourceEquals,
   type ShaderCatalog,
+  shaderTemplateVariantEntry,
 } from '@forgeax/engine-shader';
 import type { ManifestEntry } from '@forgeax/engine-types';
 import { atmosphereAvailable, directionalPcssCapable } from '../environment/capability';
@@ -63,6 +68,8 @@ export interface EngineShaderModules {
   readonly bloomVertical: ShaderModule | null;
   readonly bloomComposite: ShaderModule | null;
   readonly ssao: ShaderModule | null;
+  readonly ssaoGBufferV2?: boolean;
+  readonly gtaoGBufferV2?: boolean;
   readonly gtaoCompute: ShaderModule | null;
   readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
 }
@@ -186,6 +193,10 @@ export function findEngineManifestEntry(
   manifestEntries: readonly ManifestEntry[],
   identifier: string,
 ): ManifestEntry | undefined {
+  const named = manifestEntries.find(
+    (entry) => entry.identifier === identifier && isShaderTemplateManifestRow(entry),
+  );
+  if (named !== undefined) return named;
   const materialEntry = findMaterialShaderEntry(registry, identifier);
   if (materialEntry === undefined) return undefined;
   return (
@@ -277,8 +288,9 @@ function classifyEngineManifestEntries(
     ),
   };
   for (const entry of manifestEntries) {
-    const role = markerRoleOf(entry.wgsl);
-    found[role] ??= entry;
+    const role =
+      entry.role ?? (isShaderTemplateManifestRow(entry) ? undefined : markerRoleOf(entry.wgsl));
+    if (role !== undefined) found[role] ??= entry;
   }
   return found;
 }
@@ -316,77 +328,89 @@ function axisAbsentOr(defines: VariantDefines, axis: string, value: boolean): bo
   return !(axis in defines) || defines[axis] === value;
 }
 
-/** Boot programs exclude every optional feature lane a draw selects lazily. */
-function isBootBaselineVariant(defines: VariantDefines): boolean {
-  return (
-    defines.COVERAGE_ONLY !== true &&
-    defines.VISIBLE_SURFACE_AVAILABLE !== true &&
-    // Alpha-mask programs are an extra lane an alpha-cutout material selects.
-    defines.ALPHA_MASK !== true &&
-    defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
-    defines.LEAN_LIGHTING !== true &&
-    // Scene-index variants bind only GPU Scene tables in slot 3.
-    defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE !== true &&
-    defines.PROBE_BLEND_AVAILABLE !== true &&
-    axisAbsentOr(defines, 'CLUSTER_FORWARD_AVAILABLE', false) &&
-    axisAbsentOr(defines, 'VERTEX_COLOR_AVAILABLE', false) &&
-    axisAbsentOr(defines, 'REFLECTION_FALLBACK_AVAILABLE', false) &&
-    axisAbsentOr(defines, 'SKINNING_DISABLED', true)
-  );
-}
-
-function matchesShadowFilterAxes(defines: VariantDefines, caps: ReadyDeviceCapabilities): boolean {
-  return (
-    axisAbsentOr(defines, 'DIRECTIONAL_PCSS_AVAILABLE', caps.directionalPcss) &&
-    axisAbsentOr(defines, 'PROJECTOR_AVAILABLE', caps.projector)
-  );
-}
-
-function isStorageFallbackBootVariant(
-  defines: VariantDefines,
+/** Boot excludes optional draw lanes; storage fallback additionally excludes atmosphere. */
+function bootVariantConstraints(
   caps: ReadyDeviceCapabilities,
-): boolean {
-  return (
-    defines.STORAGE_BUFFER_AVAILABLE === false &&
-    defines.ATMOSPHERE_AVAILABLE !== true &&
-    isBootBaselineVariant(defines) &&
-    matchesShadowFilterAxes(defines, caps)
-  );
+  storageFallback: boolean,
+): Readonly<Record<string, boolean>> {
+  return {
+    STORAGE_BUFFER_AVAILABLE: storageFallback ? false : caps.storageBuffer,
+    ATMOSPHERE_AVAILABLE: storageFallback ? false : caps.atmosphere,
+    DIRECTIONAL_PCSS_AVAILABLE: caps.directionalPcss,
+    PROJECTOR_AVAILABLE: caps.projector,
+    WATER_WAVES_AVAILABLE: false,
+    WATER_INFO_RGBA16: false,
+    COVERAGE_ONLY: false,
+    VISIBLE_SURFACE_AVAILABLE: false,
+    ALPHA_MASK: false,
+    DIRECTIONAL_SHADOW_SIMPLE: false,
+    LEAN_LIGHTING: false,
+    STANDARD_LEAN_INPUTS: false,
+    GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false,
+    GPU_SCENE_DIRECT: false,
+    PROBE_BLEND_AVAILABLE: false,
+    CLUSTER_FORWARD_AVAILABLE: false,
+    VERTEX_COLOR_AVAILABLE: false,
+    REFLECTION_FALLBACK_AVAILABLE: false,
+    SKINNING_DISABLED: true,
+    ...(storageFallback
+      ? {}
+      : { EXTENDED_LIGHTING_AVAILABLE: caps.extendedLighting, TRANSMISSION_AVAILABLE: false }),
+  };
 }
 
-function isRuntimeBootVariant(defines: VariantDefines, caps: ReadyDeviceCapabilities): boolean {
-  return (
-    defines.STORAGE_BUFFER_AVAILABLE === caps.storageBuffer &&
-    axisAbsentOr(defines, 'ATMOSPHERE_AVAILABLE', caps.atmosphere) &&
-    axisAbsentOr(defines, 'EXTENDED_LIGHTING_AVAILABLE', caps.extendedLighting) &&
-    axisAbsentOr(defines, 'TRANSMISSION_AVAILABLE', false) &&
-    isBootBaselineVariant(defines) &&
-    matchesShadowFilterAxes(defines, caps)
-  );
-}
-
-/** Match by fields because multi-axis keys are compound and order-sensitive. */
+/** Select one legal boot declaration without expanding a source family's feature matrix. */
 function variantWgslByIdentifier(
   registry: ShaderCatalog,
-  admits: (defines: VariantDefines) => boolean,
-): ReadonlyMap<string, string> {
-  const wgslById = new Map<string, string>();
+  caps: ReadyDeviceCapabilities,
+  storageFallback = false,
+): ReadonlyMap<string, MaterialShaderManifestVariant> {
+  const wgslById = new Map<string, MaterialShaderManifestVariant>();
+  const constraints = bootVariantConstraints(caps, storageFallback);
+  const requests = Object.entries(constraints);
   for (const materialEntry of registry.materialShaderManifestEntries()) {
-    const exact = materialEntry.variants.find((variant) => admits(variant.defines));
+    if (!BOOT_MATERIAL_IDENTIFIERS.has(materialEntry.identifier)) continue;
+    let exact: MaterialShaderManifestVariant | undefined;
+    if (isShaderTemplateManifestRow(materialEntry)) {
+      const axes = new Set(materialShaderAxes(materialEntry));
+      if (!axes.has('STORAGE_BUFFER_AVAILABLE')) continue;
+      exact = findVariantByDefines(
+        materialEntry,
+        Object.fromEntries(requests.filter(([axis]) => axes.has(axis))),
+      );
+    } else {
+      exact = materialEntry.variants.find(
+        ({ defines }) =>
+          defines.STORAGE_BUFFER_AVAILABLE === constraints.STORAGE_BUFFER_AVAILABLE &&
+          requests.every(([axis, value]) => axisAbsentOr(defines, axis, value)),
+      );
+    }
     const variant =
       exact === undefined ? undefined : findVariantByKey(materialEntry, exact.definesKey);
-    if (variant !== undefined) wgslById.set(materialEntry.identifier, variant.composedWgsl);
+    if (variant !== undefined) wgslById.set(materialEntry.identifier, variant);
   }
   return wgslById;
 }
 
+const BOOT_MATERIAL_IDENTIFIERS = new Set([
+  'forgeax::default-standard-pbr',
+  SKIN_MATERIAL_SHADER_ID,
+  'forgeax::default-standard-pbr-skin',
+  'forgeax::default-unlit',
+  'forgeax::default-shadow-caster',
+  'forgeax::sprite',
+  'forgeax::sprite-lit',
+]);
+
 function patchEntry(
   entry: ManifestEntry,
-  wgslById: ReadonlyMap<string, string>,
+  wgslById: ReadonlyMap<string, MaterialShaderManifestVariant>,
   identifier: string,
 ): ManifestEntry {
-  const wgsl = wgslById.get(identifier);
-  return wgsl !== undefined ? { ...entry, wgsl } : entry;
+  const variant = wgslById.get(identifier);
+  return variant === undefined
+    ? entry
+    : (shaderTemplateVariantEntry(entry, variant) ?? { ...entry, wgsl: variant.composedWgsl });
 }
 
 /** WebGL2 compiles the storage=false variants against its uniform fallback layouts. */
@@ -395,9 +419,7 @@ function applyStorageFallbackVariants(
   entries: ResolvedEngineManifestEntries,
   caps: ReadyDeviceCapabilities,
 ): void {
-  const wgslById = variantWgslByIdentifier(registry, (defines) =>
-    isStorageFallbackBootVariant(defines, caps),
-  );
+  const wgslById = variantWgslByIdentifier(registry, caps, true);
   entries.pbr = patchEntry(entries.pbr, wgslById, 'forgeax::default-standard-pbr');
   entries.unlit = patchEntry(entries.unlit, wgslById, 'forgeax::default-unlit');
   if (entries.shadowCaster !== undefined)
@@ -418,9 +440,7 @@ function applyRuntimeVariants(
   entries: ResolvedEngineManifestEntries,
   caps: ReadyDeviceCapabilities,
 ): void {
-  const wgslById = variantWgslByIdentifier(registry, (defines) =>
-    isRuntimeBootVariant(defines, caps),
-  );
+  const wgslById = variantWgslByIdentifier(registry, caps);
   entries.pbr = selectCloudShadowCompatibleEntry(
     patchEntry(entries.pbr, wgslById, 'forgeax::default-standard-pbr'),
     findMaterialShaderEntry(registry, 'forgeax::default-standard-pbr'),
@@ -542,7 +562,7 @@ export async function prewarmFullscreenPostProcesses(
   seed: SeedShaderModule,
 ): Promise<void> {
   for (const postProcess of postProcesses) {
-    const label = postProcessShaderModuleLabel(postProcess.source);
+    const label = postProcessShaderModuleLabel(postProcess);
     const module = await compile(
       postProcess.source,
       label,
@@ -578,6 +598,17 @@ export async function prewarmStandardScenePrograms(
 ): Promise<StandardSceneShaderSources | undefined> {
   const deferred = findMaterialShaderEntry(registry, 'forgeax::engine-standard-deferred-lighting');
 
+  const declarations = [...registry.entries()];
+  const contractFor = (material: MaterialShaderManifestEntry | undefined) => {
+    if (material === undefined) return undefined;
+    const declared = declarations.find((entry) => entry.identifier === material.identifier);
+    if (declared !== undefined) return declared.programContract;
+    const hash = material.hash;
+    return hash === undefined
+      ? undefined
+      : declarations.find((entry) => entry.hash === hash)?.programContract;
+  };
+  let gbufferCompatible = contractFor(deferred)?.gbuffer === 'standard-gbuffer/2';
   const resolve = async (clustered: boolean, directDfgLut = false): Promise<ShaderSource> => {
     if (deferred === undefined)
       throw new RhiError({
@@ -615,6 +646,11 @@ export async function prewarmStandardScenePrograms(
     if (!caps.storageBuffer && (field === 'shadowVariance' || field === 'subsurface')) continue;
     const entry = findMaterialShaderEntry(registry, identifier);
     if (entry === undefined) continue;
+    if (
+      (field === 'decalProject' || field === 'decalApply' || field === 'subsurface') &&
+      contractFor(entry)?.gbuffer !== 'standard-gbuffer/2'
+    )
+      gbufferCompatible = false;
     const source = materialShaderSource(entry.variants[0] ?? entry);
     seed(
       identifier,
@@ -625,6 +661,7 @@ export async function prewarmStandardScenePrograms(
   }
   return {
     ...companions,
+    ...(gbufferCompatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
     ...(caps.storageBuffer && deferred !== undefined
       ? {
           deferred: {
@@ -674,9 +711,11 @@ export async function prewarmAtmospherePrograms(
   );
   if (sources === undefined) return undefined;
   const prefilter = manifestEntries.find((entry) =>
-    entry.entryPoints === undefined
-      ? entry.wgsl.includes('fn prefilterEnv_fs(')
-      : entry.entryPoints.some((point) => point.name === 'prefilterEnv_fs'),
+    isShaderTemplateManifestRow(entry)
+      ? entry.role === 'iblPrefilter'
+      : entry.entryPoints === undefined
+        ? entry.wgsl.includes('fn prefilterEnv_fs(')
+        : entry.entryPoints.some((point) => point.name === 'prefilterEnv_fs'),
   );
   if (prefilter === undefined) {
     throw new RhiError({
@@ -705,8 +744,8 @@ export function seedPbrSourceAliases(
   seed: SeedShaderModule,
 ): void {
   for (const materialEntry of registry.materialShaderManifestEntries()) {
-    for (const variant of materialEntry.variants) {
-      if (materialShaderSourceEquals(variant, pbrSource))
+    for (const variant of materialShaderPreparedSourceRows(materialEntry)) {
+      if ('definesKey' in variant && materialShaderSourceEquals(variant, pbrSource))
         seed(
           `module-${materialEntry.identifier}#${variant.definesKey}`,
           pbrModule,
@@ -742,9 +781,12 @@ export async function compileUnlitModules(
       VERTEX_COLOR_AVAILABLE: vertexColor,
       STORAGE_BUFFER_AVAILABLE: caps.storageBuffer,
       ATMOSPHERE_AVAILABLE: caps.atmosphere,
+      WATER_WAVES_AVAILABLE: false,
+      WATER_INFO_RGBA16: false,
       COVERAGE_ONLY: false,
       SKINNING_DISABLED: true,
       GPU_DRIVEN_SCENE_INDEX_AVAILABLE: sceneIndex,
+      GPU_SCENE_DIRECT: false,
     });
   const colored = variantOf(true, false);
   if (colored !== undefined && colored.composedWgsl !== unlitEntry.wgsl) {
@@ -813,6 +855,11 @@ export async function prewarmShadowCasterModules(
     shadowCasterModule,
     manifestShaderSource(shadowCasterEntry),
   );
+  const shadowFamily = findMaterialShaderEntry(registry, 'forgeax::default-shadow-caster');
+  // Native programs are selected by the actual caster's geometry and coverage.
+  // The ordinary material adapter owns readiness on first use; a device boot
+  // must not prepare every unused skin/color/alpha/scene-address combination.
+  if (shadowFamily !== undefined && isShaderTemplateManifestRow(shadowFamily)) return;
   const activeVariants = findMaterialShaderEntry(
     registry,
     'forgeax::default-shadow-caster',
@@ -906,6 +953,9 @@ export async function compileSpriteLitModules(
     'inspect manifest sprite-lit entry composed wgsl; check device.features',
   );
   seed('module-forgeax::sprite-lit', spriteLitModule, source);
+  const spriteFamily = findMaterialShaderEntry(registry, 'forgeax::sprite-lit');
+  if (spriteFamily !== undefined && isShaderTemplateManifestRow(spriteFamily))
+    return spriteLitModule;
   const modulesBySource = new Map<string, ShaderModule>([[source, spriteLitModule]]);
   const variants = findMaterialShaderEntry(registry, 'forgeax::sprite-lit')?.variants ?? [];
   for (const variant of variants) {

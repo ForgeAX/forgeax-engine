@@ -103,11 +103,7 @@ it('projects managed shared material and mesh writes into two independent browse
       const counts = [];
       for (const { renderer, lease } of consumers) {
         for (let frame = 0; frame < 3; frame++) {
-          await drawReadyFrame(renderer, {
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          });
+          await drawReadyFrame(renderer, { source: lease });
         }
       }
       progress(`${name}-submitted`);

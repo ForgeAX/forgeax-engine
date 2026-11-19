@@ -1,3 +1,5 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+
 // apps/collectathon -- player-move: KCC movement + input + third-person camera.
 //
 // This file owns the parent (KCC) Transform writer. Per-frame:
@@ -13,14 +15,15 @@
 // are exported and unit-tested in __tests__/player-move.test.ts; the closure
 // system fn wires them to the live app input + physics.
 
-import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, System, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY, InputFrameStartScan } from '@forgeax/engine-input';
 import type { Mat4Like, Vec3 } from '@forgeax/engine-math';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import { CharacterController } from '@forgeax/engine-physics';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
+import { PlayerMoveOrder } from '../system-order';
 
 import { readDt } from './frame-time';
 
@@ -160,22 +163,23 @@ export function createMoveSystem(
   player: EntityHandle,
   camera: EntityHandle,
   signal: PlayerMoveSignal,
-): SystemHandle<readonly []> {
+): System<readonly []> {
   let verticalVel = 0;
   // Scratch vectors reused per frame (no per-frame allocation in the hot path).
   const fwd = vec3.create();
   const right = vec3.create();
 
   return defineSystem({
+    sets: [PlayerMoveOrder],
     name: 'player-move',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world: World) => {
       // Guard 1 (D-9): PhysicsWorld resource appears only after Rapier WASM
       // finishes its async load. getResource throws until then -- swallow + skip.
       let pw: PhysicsWorld;
       try {
-        pw = world.getResource<PhysicsWorld>('PhysicsWorld');
+        pw = world.getResource(PhysicsWorldResource);
       } catch {
         return;
       }
@@ -183,7 +187,7 @@ export function createMoveSystem(
       if (!pw.hasBody(player)) return;
 
       const dt = readDt(world);
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       const intent = snap ? planarIntent(snap) : { dx: 0, dz: 0 };
 
       // Rotate the planar intent into the camera's world XZ basis so W always

@@ -3,6 +3,7 @@ import {
   Collider,
   ColliderShapeValue,
   type ManagedJointInput,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
@@ -17,7 +18,7 @@ async function fixture() {
   const rapier = await loadRapier3D();
   if ('code' in rapier) throw rapier;
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const unregister = registerPhysicsSystems(world);
   const bodies = [0, 1, 2].map((x) =>
     world

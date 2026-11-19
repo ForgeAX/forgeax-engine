@@ -1,4 +1,7 @@
+import { defineResource } from '@forgeax/engine-ecs';
 import type { EngineToHostMessage, ExecutionInitMessage } from '../../execution/protocol';
+
+const resource1 = defineResource<boolean>('fixture-root-active');
 
 // Dedicated-browser-Worker fixture. Imports the actual owning class and actual
 // Native Cordis/World; only the failing child module URL is a controlled boundary.
@@ -122,7 +125,7 @@ async function run(mode: string): Promise<void> {
       scope.postMessage({ kind: 'root-enter' });
       await rootGate;
       if (mode === 'root-fails') throw new Error('fixture-native-root-failure');
-      ctx.world.insertResource('fixture-root-active', true);
+      ctx.world.insertResource(resource1, true);
     },
   });
   let primary: unknown;
@@ -139,8 +142,7 @@ async function run(mode: string): Promise<void> {
     primary: serializableDetail(primary),
     parentErrors,
     gpuCalls,
-    rootActive:
-      world.hasResource('fixture-root-active') && world.getResource('fixture-root-active'),
+    rootActive: world.hasResource(resource1) && world.getResource(resource1),
     childCount: children.length,
     child:
       children[0] === undefined

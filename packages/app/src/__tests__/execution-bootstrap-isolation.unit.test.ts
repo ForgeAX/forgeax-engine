@@ -5,6 +5,7 @@ import { Context, type PluginPrograms } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { err } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
 import {
   activateExecutionRoot,
   executionBootstrapHostPlugin,
@@ -20,6 +21,36 @@ function moduleUrl(source: string): string {
 }
 
 describe('execution bootstrap isolation', () => {
+  it('preserves a native local bootstrap identity without importing its URL again', async () => {
+    const plugin = { name: 'native-bootstrap-identity', apply() {} };
+    const data = { value: 7 };
+    const entry = vi.fn(() => ({ plugins: [plugin] }));
+    const result = await prepareBootstrapEntry('https://unused.invalid/bootstrap.mjs', data, entry);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    expect(result.value.plugins?.[0]).toBe(plugin);
+    expect(entry).toHaveBeenCalledExactlyOnceWith(data, undefined);
+  });
+
+  it('passes the immutable startup plan to the native entry before plugin activation', async () => {
+    const plan = resolveEngineStartup({}, { platform: 'unknown' }).unwrap();
+    const entry = vi.fn((_data: unknown, startup?: typeof plan) => {
+      expect(startup).toBe(plan);
+      if (startup === undefined) throw new Error('Missing startup plan');
+      expect(Object.isFrozen(startup.settings)).toBe(true);
+      return { plugins: [] };
+    });
+    const data = { value: 7 };
+    const result = await prepareBootstrapEntry(
+      'https://unused.invalid/bootstrap.mjs',
+      data,
+      entry,
+      plan,
+    );
+    expect(result.ok).toBe(true);
+    expect(entry).toHaveBeenCalledExactlyOnceWith(data, plan);
+  });
+
   it('provides source geometry before plugin startup without waiting for child readiness', async () => {
     const assets = new AssetRegistry({
       shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
@@ -156,13 +187,18 @@ describe('execution bootstrap isolation', () => {
   });
 
   it('activates realm-local bootstrap plugins and disposes their effects', async () => {
-    const url = moduleUrl(`export default function(data){return {plugins:[{
+    const url =
+      moduleUrl(`import { defineResource } from '${import.meta.resolve('@forgeax/engine-ecs')}';
+    export const Bootstrapped = defineResource('bootstrapped');
+    export const Cleaned = defineResource('cleaned');
+    export default function(data){return {plugins:[{
       name:'test-bootstrap',inject:['world','executionBootstrapHost'],apply(ctx){
-        ctx.world.insertResource('bootstrapped',data.value);
-        ctx.effect(()=>()=>ctx.world.insertResource('cleaned',true),'test/cleanup');
+        ctx.world.insertResource(Bootstrapped,data.value);
+        ctx.effect(()=>()=>ctx.world.insertResource(Cleaned,true),'test/cleanup');
         ctx.executionBootstrapHost.setPointerLockAllowed(false);
       }
     }]}}`);
+    const { Bootstrapped, Cleaned } = await import(/* @vite-ignore */ url);
     const prepared = await prepareBootstrapEntry(url, { value: true });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -177,10 +213,10 @@ describe('execution bootstrap isolation', () => {
       }),
       ...(prepared.value.plugins ?? []),
     ]);
-    expect(world.getResource('bootstrapped')).toBe(true);
+    expect(world.getResource(Bootstrapped)).toBe(true);
     expect(pointerLock).toHaveBeenCalledWith(false);
     await context.fiber.dispose();
-    expect(world.getResource('cleaned')).toBe(true);
+    expect(world.getResource(Cleaned)).toBe(true);
     // A rebuilt World borrows the same session channel; its Fiber must not close it.
     expect(close).not.toHaveBeenCalled();
   });
@@ -219,21 +255,25 @@ describe('execution bootstrap isolation', () => {
   });
 
   it('keeps schedule identity in the realm-local World', async () => {
-    const url = moduleUrl(`export default function(){return {plugins:[{
+    const url =
+      moduleUrl(`import { Update, defineSystem } from '${import.meta.resolve('@forgeax/engine-ecs')}';
+    export { Update, World } from '${import.meta.resolve('@forgeax/engine-ecs')}';
+    export default function(){return {plugins:[{
       name:'module-system',inject:['world'],apply(ctx){
-        const system={name:'module-system',queries:[],fn(){}};
-        ctx.world.addSystem(ctx.world.scheduleToken('Update'),system).unwrap();
-        ctx.effect(()=>()=>ctx.world.removeSystem(ctx.world.scheduleToken('Update'),system.name),'test/system');
+        const system=defineSystem({name:'module-system',queries:[],fn(){}});
+        ctx.world.addSystem(Update,system).unwrap();
+        ctx.effect(()=>()=>ctx.world.removeSystem(Update,system),'test/system');
       }
     }]}}`);
     const prepared = await prepareBootstrapEntry(url, undefined);
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
-    const world = new World();
+    const { World: BootstrapWorld, Update: BootstrapUpdate } = await import(/* @vite-ignore */ url);
+    const world = new BootstrapWorld();
     const context = await createWorldContext(world, prepared.value.plugins ?? []);
-    expect(world.inspect().scheduleSystemCount(world.scheduleToken('Update'))).toBe(1);
+    expect(world.inspect().scheduleSystemCount(BootstrapUpdate)).toBe(1);
     await context.fiber.dispose();
-    expect(world.inspect().scheduleSystemCount(world.scheduleToken('Update'))).toBe(0);
+    expect(world.inspect().scheduleSystemCount(BootstrapUpdate)).toBe(0);
   });
 
   it('rejects a missing default export structurally', async () => {

@@ -50,13 +50,13 @@ export function projectMaterialPayloadTransport(
   const payload = object(payloadValue);
   if (payload === undefined) return payloadValue;
   const field =
-    payload.schemaVersion === 'material-cook/4'
+    payload.schemaVersion === 'material-cook/5'
       ? undefined
       : payload.cooked !== undefined
         ? 'cooked'
         : 'record';
   const cooked = object(field === undefined ? payload : payload[field]);
-  if (cooked?.schemaVersion !== 'material-cook/4' || !Array.isArray(cooked.programs))
+  if (cooked?.schemaVersion !== 'material-cook/5' || !Array.isArray(cooked.programs))
     return payloadValue;
   const artifacts = object(artifactsValue);
   let changed = false;

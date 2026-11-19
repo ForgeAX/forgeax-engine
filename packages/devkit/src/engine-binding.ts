@@ -565,7 +565,7 @@ export async function engineStatusCommand(
         npmCompatible: projectDependencies === 'registry' || projectDependencies === 'none',
         healthy,
         next: healthy
-          ? ['forgeax project build', 'forgeax project capture --backend auto --require-ui']
+          ? ['forgeax project build', 'forgeax project capture --backend auto']
           : ['pnpm build:engine', 'forgeax project engine check'],
       },
     };
@@ -585,7 +585,7 @@ export async function engineStatusCommand(
       healthy: resolved.source === 'sdk' && resolved.built,
       next:
         resolved.source === 'sdk' && resolved.built
-          ? ['forgeax project build', 'forgeax project capture --backend auto --require-ui']
+          ? ['forgeax project build', 'forgeax project capture --backend auto']
           : ['pnpm install', 'forgeax project check'],
     },
   };
@@ -631,7 +631,7 @@ export async function engineUseLocalCommand(
       ...status.value,
       next:
         workspace.value.missingBuilds.length === 0
-          ? ['forgeax project build', 'forgeax project capture --backend auto --require-ui']
+          ? ['forgeax project build', 'forgeax project capture --backend auto']
           : ['pnpm build:engine', 'forgeax project engine check'],
     },
   };

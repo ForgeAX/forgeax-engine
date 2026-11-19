@@ -7,6 +7,11 @@ import {
   validateMassProperties,
 } from '../derived-physics';
 
+function requiredFixtureValue<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null) throw new Error('Required fixture value is missing');
+  return value;
+}
+
 const shape = (id = 'left') => ({
   kind: 'convex-compound' as const,
   id,
@@ -25,6 +30,73 @@ describe('derived physics data contract', () => {
     sourcePoints[0] = 99;
     expect(result.value.kind === 'convex-compound' && result.value.pieces[0]?.[0]).toBe(-1);
     expect(result.value.rotation[3]).toBeCloseTo(1);
+  });
+
+  it('retains a validated affine source matrix as the single pose authority', () => {
+    const sceneMatrix = [1, 0, 0, 0, 0.5, 2, 0, 0, 0.25, 0.3, 3, 0, 4, 5, 6, 1];
+    const result = cloneDerivedPhysicsInput({
+      entity: 7,
+      revision: 1,
+      sourceKey: 'river:7',
+      bodyType: 'static',
+      sourceTransform: { sceneMatrix },
+      shapes: [shape()],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    sceneMatrix[4] = 99;
+    expect(result.value.sourceTransform?.sceneMatrix[4]).toBe(0.5);
+    const singular = [...sceneMatrix];
+    singular[10] = 0;
+    expect(
+      cloneDerivedPhysicsInput({
+        entity: 7,
+        revision: 2,
+        sourceKey: 'river:7',
+        bodyType: 'static',
+        sourceTransform: { sceneMatrix: singular },
+        shapes: [shape()],
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'derived-candidate-invalid' } });
+  });
+
+  it('rejects an independent motion snapshot when a source matrix owns the static pose', () => {
+    const result = cloneDerivedPhysicsInput({
+      entity: 7,
+      revision: 1,
+      sourceKey: 'river:7',
+      bodyType: 'static',
+      sourceTransform: {
+        sceneMatrix: [1, 0, 0, 0, 0.5, 2, 0, 0, 0.25, 0.3, 3, 0, 4, 5, 6, 1],
+      },
+      motion: {
+        centerOfMass: [20, 30, 40],
+        linearVelocity: [1, 0, 0],
+        angularVelocity: [0, 1, 0],
+        rotation: [0, Math.SQRT1_2, 0, Math.SQRT1_2],
+      },
+      shapes: [shape()],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'derived-candidate-invalid' },
+    });
+  });
+
+  it('validates source matrices again after Native f32 quantization', () => {
+    const nearlyDependent = [1, 1, 0, 0, 1 + 5e-8, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    expect(Math.fround(requiredFixtureValue(nearlyDependent[4]))).toBe(1);
+    expect(
+      cloneDerivedPhysicsInput({
+        entity: 7,
+        revision: 1,
+        sourceKey: 'river:7',
+        bodyType: 'static',
+        sourceTransform: { sceneMatrix: nearlyDependent },
+        shapes: [shape()],
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'derived-candidate-invalid' } });
   });
 
   it('rejects degenerate explicit mass', () => {

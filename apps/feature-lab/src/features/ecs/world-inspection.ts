@@ -1,5 +1,15 @@
-import { defineComponent, defineSystemSet, FixedUpdate, Update, World } from '@forgeax/engine/ecs';
+import {
+  defineComponent,
+  defineResource,
+  defineSystem,
+  defineSystemSet,
+  FixedUpdate,
+  Update,
+  World,
+} from '@forgeax/engine/ecs';
 import { defineFeature } from '../../lab/feature';
+
+const resource1 = defineResource<number>('FLInspectRes');
 
 function deepFrozen(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return true;
@@ -21,12 +31,12 @@ export default defineFeature({
     const world = new World();
     const e = world.spawn({ component: A, data: { v: 1 } }, { component: B, data: {} }).unwrap();
     world.spawn({ component: A, data: { v: 2 } }).unwrap();
-    world.insertResource('FLInspectRes', 1);
+    world.insertResource(resource1, 1);
     const InspectSet = defineSystemSet({ name: 'fl-inspect-set' });
-    world.addSystems(Update, InspectSet, [
-      { name: 'fl-inspect-u', queries: [], fn: () => undefined },
-    ]);
-    world.addSystem(FixedUpdate, { name: 'fl-inspect-f', queries: [], fn: () => undefined });
+    const systemToken1 = defineSystem({ name: 'fl-inspect-u', queries: [], fn: () => undefined });
+    world.addSystems(Update, InspectSet, [systemToken1]);
+    const systemToken2 = defineSystem({ name: 'fl-inspect-f', queries: [], fn: () => undefined });
+    world.addSystem(FixedUpdate, systemToken2);
     const snap = world.inspect();
     checks.equal('entityCount', snap.entityCount, 2);
     checks.equal(

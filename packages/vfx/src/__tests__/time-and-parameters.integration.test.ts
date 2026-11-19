@@ -3,11 +3,7 @@ import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { describe, expect, it } from 'vitest';
 import type { VfxGpuEffectAsset } from '../gpu-program.js';
-import {
-  VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
-  vfxGpuRuntimePlugin,
-} from '../gpu-runtime.js';
+import { VFX_GPU_RUNTIME_RESOURCE_KEY, vfxGpuRuntimePlugin } from '../gpu-runtime.js';
 import { ParticleEffectPlayer, vfxPlayerParameters } from '../player.js';
 import { validateVfxPlayerParameters } from '../player-parameters.js';
 import { runtimeEffectFixture } from './runtime-effect-fixture';
@@ -70,7 +66,7 @@ async function setup(data: Record<string, unknown> = {}) {
     .spawn({ component: ParticleEffectPlayer, data: { effect: handle, ...data } })
     .unwrap();
   const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   return { world, runtime, player, assets, ctx };
 }
 

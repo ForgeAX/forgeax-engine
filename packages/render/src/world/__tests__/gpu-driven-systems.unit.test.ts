@@ -1,5 +1,7 @@
+import { defineSystem } from '@forgeax/engine-ecs';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { EMPTY_GPU_DRAW_SELECTION, GpuDrawSelection } from '../../gpu-driven/draw-selection';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import type {
@@ -7,12 +9,14 @@ import type {
   PreparedGpuDrivenFrame,
 } from '../../gpu-driven/production-raster';
 import type { GpuDrivenLaneReason } from '../../inspection-types';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { updateGpuDrivenShadowViews } from '../../record/frame-gpu-driven';
 import type { FrameGpuDrivenSources } from '../../record/frame-gpu-driven-input';
 import type { RenderSystemInternals } from '../../record/render-context';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import type { PersistentGpuDrivenState } from '../../scene/render-scene';
 import type { SsrDependenciesInspection } from '../../ssr/admission';
+import { RenderSkinDemandOrder } from '../../system-order';
 import {
   consumeViewGpuDrivenRaster,
   RENDER_GPU_DRIVEN_RASTER_SYSTEM,
@@ -127,7 +131,7 @@ function stagePreparation(
     internals,
     frameState,
     camera,
-    worlds: [],
+    sourceScope: worldRenderResources(world),
     renderables: [],
     lights: { pointShadow: [], spot: [] } as unknown as FrameGpuDrivenSources['lights'],
     shadowCasterProjection: undefined,
@@ -202,7 +206,12 @@ describe('render-gpu-driven-prepare system', () => {
 
   it('leaves the recorded view without a selection once the system is removed', () => {
     const { world, view, internals } = setup('forward', true);
-    expect(world.removeSystem(RenderQueue, RENDER_GPU_DRIVEN_PREPARE_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(
+        RenderQueue,
+        registeredSystem(world, RenderQueue, 'render-gpu-driven-prepare'),
+      ).ok,
+    ).toBe(true);
     expect(world.run(RenderQueue).ok).toBe(true);
     expect(viewGpuDrivenOf(world, view)).toBeUndefined();
     expect(() => consume(internals)).toThrow(RENDER_GPU_DRIVEN_PREPARE_SYSTEM);
@@ -299,7 +308,9 @@ describe('render-gpu-driven-prepare system', () => {
     for (const system of context.world.scheduleData().find((s) => s.name === 'RenderCleanup')
       ?.systems ?? [])
       if (system.name !== 'render-gpu-driven-abort')
-        context.world.removeSystem(RenderCleanup, system.name).unwrap();
+        context.world
+          .removeSystem(RenderCleanup, registeredSystem(context.world, RenderCleanup, system.name))
+          .unwrap();
     expect(context.world.run(RenderCleanup).ok).toBe(true);
     expect(abort).toHaveBeenCalledTimes(1);
     expect(staged.frameState.gpuDrivenFrame).toBeUndefined();
@@ -363,6 +374,8 @@ describe('render-gpu-driven-prepare system', () => {
     ['automatic', false, false],
   ] as const)('stages %s raster with prepared=%s after Skin and refines HZB to %s', (geometryLane, hasPrepared, lateOcclusion) => {
     const context = setup('forward', false);
+    // Forward HZB is opt-in; this case exercises its post-Skin refinement.
+    viewPassPlanQueue(context.world, context.view).stage({ ...input(false), gpuOcclusion: true });
     const order: string[] = [];
     const prepared = {
       selection: EMPTY_GPU_DRAW_SELECTION,
@@ -384,16 +397,16 @@ describe('render-gpu-driven-prepare system', () => {
       owner: { scene: { stageRasterLane } },
     });
     context.world.addComponent(context.view, { component: ViewRecorder, data: { state } }).unwrap();
-    context.world
-      .addSystem(RenderQueue, {
-        name: RENDER_SKIN_DEMAND_SYSTEM,
-        queries: [],
-        fn: () => {
-          order.push('skin');
-          expect(stageRasterLane).not.toHaveBeenCalled();
-        },
-      })
-      .unwrap();
+    const systemToken1 = defineSystem({
+      sets: [RenderSkinDemandOrder],
+      name: RENDER_SKIN_DEMAND_SYSTEM,
+      queries: [],
+      fn: () => {
+        order.push('skin');
+        expect(stageRasterLane).not.toHaveBeenCalled();
+      },
+    });
+    context.world.addSystem(RenderQueue, systemToken1).unwrap();
     registerGpuDrivenRasterSystem(context.world);
     expect(context.world.run(RenderQueue).ok).toBe(true);
     expect(order).toEqual(['skin', 'raster']);
@@ -478,9 +491,13 @@ describe('render-gpu-driven-prepare system', () => {
       owner: { scene: { stageRasterLane } },
     });
     context.world.addComponent(context.view, { component: ViewRecorder, data: { state } }).unwrap();
-    context.world
-      .addSystem(RenderQueue, { name: RENDER_SKIN_DEMAND_SYSTEM, queries: [], fn: () => {} })
-      .unwrap();
+    const systemToken2 = defineSystem({
+      sets: [RenderSkinDemandOrder],
+      name: RENDER_SKIN_DEMAND_SYSTEM,
+      queries: [],
+      fn: () => {},
+    });
+    context.world.addSystem(RenderQueue, systemToken2).unwrap();
     registerGpuDrivenRasterSystem(context.world);
     expect(context.world.run(RenderQueue).ok).toBe(true);
     expect(stageRasterLane).not.toHaveBeenCalled();

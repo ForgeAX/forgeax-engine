@@ -2,8 +2,9 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve, win32 } from 'node:path';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 export const BASELINE_PATH = 'config/dependency-vulnerability-baseline.json';
 
@@ -34,10 +35,12 @@ function lockfileArgument(root, path) {
 // need only one reviewed baseline entry.
 export function collectFindings(report, root) {
   const findings = new Map();
-  const prefix = `${resolve(root)}/`;
+  const rootPath = isAbsolute(root) || win32.isAbsolute(root) ? root : resolve(root);
+  const prefix = `${rootPath.replaceAll('\\', '/').replace(/\/$/, '')}/`;
   for (const result of report.results ?? []) {
-    const lockfile = result.source.path.startsWith(prefix)
-      ? result.source.path.slice(prefix.length)
+    const sourcePath = result.source.path.replaceAll('\\', '/');
+    const lockfile = sourcePath.startsWith(prefix)
+      ? sourcePath.slice(prefix.length)
       : result.source.path;
     for (const entry of result.packages ?? []) {
       const groups = entry.groups?.length
@@ -174,7 +177,7 @@ export function main(argv = process.argv.slice(2)) {
   return result.status;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     process.exitCode = main();
   } catch (error) {

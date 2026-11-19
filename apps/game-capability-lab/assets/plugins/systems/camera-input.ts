@@ -1,3 +1,5 @@
+import { GameInputActionsOrder } from "../../../src/system-order";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Time, Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { inState } from '@forgeax/engine-state';
@@ -5,7 +7,7 @@ import type { ViewMode } from '../hud';
 import { zoomPerspectiveFov } from '../camera-zoom';
 import { CameraRig, GameplayInput } from '../components/gameplay';
 import { GameState } from '../gameplay-state';
-import { GAME_DEFAULT_GAMEPLAY_CONFIG, type GameplayConfig } from '../resources/gameplay';
+import { GAME_DEFAULT_GAMEPLAY_CONFIG } from '../resources/gameplay';
 
 export type CameraInputSystemContext = {
   readonly world: World;
@@ -18,14 +20,14 @@ export type CameraInputSystemContext = {
 
 /** Camera-only input policy. Pose and camera policy live in ECS CameraRig/Camera. */
 export function installCameraInputSystem(ctx: CameraInputSystemContext): void {
-  ctx.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'game-camera-input',
     runIf: inState(GameState, 'Play'),
-    after: ['game-input-actions'],
+    after: [GameInputActionsOrder],
     queries: [],
     fn: () => {
       const dt = ctx.world.getResource(Time).delta;
-      const config = ctx.world.getResource<GameplayConfig>(GAME_DEFAULT_GAMEPLAY_CONFIG);
+      const config = ctx.world.getResource(GAME_DEFAULT_GAMEPLAY_CONFIG);
       const snap = ctx.readInput();
       const arrowUp = snap.action('arrowUp').isPressed();
       const arrowDown = snap.action('arrowDown').isPressed();
@@ -69,5 +71,6 @@ export function installCameraInputSystem(ctx: CameraInputSystemContext): void {
         ctx.world.set(ctx.player, GameplayInput, { lookYaw, lookPitch });
       }
     },
-  }).unwrap();
+  });
+ctx.world.addSystem(Update, systemToken1).unwrap();
 }

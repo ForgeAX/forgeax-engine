@@ -2,7 +2,6 @@ import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { CapsuleShadowSnapshot } from '../capsule-shadow/world-capsules';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
-import { worldEntityKey } from './frame-snapshot';
 import { type SkinTaskBinding, SkinTasks } from './skin-tasks';
 
 const CAPSULE_NOT_SKINNED = Object.freeze({ status: 'not-skinned' as const });
@@ -49,23 +48,22 @@ export class RecordingSkinTasks {
     this.rootCompletion = undefined;
     this.host.roots.discardSkinFrame();
   }
-
   /**
    * Compose and upload the palettes of every CPU Skin row a view may draw,
-   * keyed by `worldEntityKey`; `undefined` marks a row without a Scene slot or
+   * keyed by the complete entity handle; `undefined` marks a row without a Scene slot or
    * whose current pose is unavailable (no draw). Only `render-skin-demand`
    * calls this, in RenderQueue, before the view records its draws; recording
    * reads the returned bindings and never composes a palette itself.
    */
   prepareDemand(
-    rows: Iterable<Pick<RenderableSnapshot, 'worldId' | 'entityKey'>>,
+    rows: Iterable<Pick<RenderableSnapshot, 'entityKey'>>,
   ): Map<number, SkinTaskBinding | undefined> {
     const demand = new Map<number, SkinTaskBinding | undefined>();
     for (const source of rows) {
-      const key = worldEntityKey(source.worldId, source.entityKey);
+      const key = source.entityKey;
       if (demand.has(key)) continue;
       const tasks = this.actual();
-      const slot = this.frame?.slots.lookup(source.worldId, source.entityKey);
+      const slot = this.frame?.slots.lookup(source.entityKey);
       demand.set(key, slot === undefined ? undefined : tasks.demand(slot));
     }
     return demand;
@@ -75,7 +73,7 @@ export class RecordingSkinTasks {
     if (source.capsuleShadowRequested !== true) return;
     if (source.skinBinding === undefined) return CAPSULE_NOT_SKINNED;
     const tasks = this.actual();
-    const slot = this.frame?.slots.lookup(source.worldId, source.entityKey);
+    const slot = this.frame?.slots.lookup(source.entityKey);
     return slot === undefined ? POSE_UNAVAILABLE : tasks.capsules(slot);
   }
 

@@ -80,6 +80,29 @@ it.each([
   }
 });
 
+it('looks up texture-backed instance slots by the source entity', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 37, instances: 2, submeshes: 1 });
+  const lookup = vi.fn(() => undefined);
+  Object.assign(f.c, {
+    gpuDrivenScene: {},
+    gpuDrivenSceneSlotForEntity: lookup,
+  });
+  Object.assign(f.c.pipelineState, { sceneDirectPipelineLayout: {} });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.record(pass);
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(37);
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual([37]);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
 it.each([
   true,
   false,
@@ -623,6 +646,98 @@ it('keeps an omitted color pass pending until its owned pipeline is compiled', a
     prepare.mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
     f.record(pass);
     expect(f.receipts).toEqual([{ entity: 1, submesh: 0 }]);
+    expect(f.c.frameState.pipelinePreparationPending).toBeUndefined();
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('requests the selected pipeline before a pending material binding blocks recording', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, submeshes: 1 });
+  const requested = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    expect(() =>
+      recordGeometryDraws(
+        f.c,
+        pass,
+        null,
+        f.c.materialSlotIndices,
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        () => {
+          throw new Error('material texture is pending');
+        },
+        'forward',
+      ),
+    ).toThrow('material texture is pending');
+    expect(requested).toHaveBeenCalled();
+    expect(f.receipts).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('requests later material pipelines without binding an earlier pending pipeline', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  for (const entity of [1, 2]) {
+    const entry = f.add({ entity, submeshes: 1 });
+    entry.source.material.adopt({
+      ...entry.source.material.snapshot,
+      materialShaderId: `test::pending-${entity}`,
+    });
+  }
+  const prepare = vi.fn().mockReturnValue(null);
+  Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: prepare });
+  f.acceptMaterials();
+  const binding = vi.fn(() => {
+    throw new Error('pending material must not bind');
+  });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const record = (resolveBinding: () => typeof f.materialGroup) =>
+    recordGeometryDraws(
+      f.c,
+      pass,
+      null,
+      f.c.materialSlotIndices,
+      1,
+      f.meshGroup,
+      f.meshGroup,
+      resolveBinding,
+      'forward',
+    );
+  try {
+    expect(() => record(binding)).not.toThrow();
+    expect(prepare.mock.calls.map(([shader]) => shader)).toEqual([
+      'test::pending-1',
+      'test::pending-2',
+    ]);
+    expect(binding).not.toHaveBeenCalled();
+    expect(f.receipts).toEqual([]);
+    expect(f.c.frameState.pipelinePreparationPendingReason).toMatchObject({
+      code: 'material-pipeline-preparation',
+      entity: 1,
+      pass: 'forward',
+    });
+    delete f.c.frameState.pipelinePreparationPending;
+    delete f.c.frameState.pipelinePreparationPendingReason;
+    prepare.mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
+    const readyBinding = vi.fn(() => f.materialGroup);
+    record(readyBinding);
+    expect(readyBinding).toHaveBeenCalledTimes(2);
+    expect(f.receipts).toEqual([
+      { entity: 1, submesh: 0 },
+      { entity: 2, submesh: 0 },
+    ]);
     expect(f.c.frameState.pipelinePreparationPending).toBeUndefined();
     expect(f.errors).toEqual([]);
   } finally {

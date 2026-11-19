@@ -1,5 +1,76 @@
 # @forgeax/engine-app
 
+## Engine configuration
+
+Build configuration plugins provide `devkitAppOptions.configuration` through the
+existing build root. See the [game-3d configuration plugin](../../templates/game-3d/assets/project-configuration.ts).
+Generated Hosts resolve device facts and saved quality choices before canvas
+sizing, Worker selection, World, Renderer and audio construction.
+
+| Declaration | Owner and meaning |
+|:--|:--|
+| `settings.presentation` | Host drawing-buffer ratio and output color space |
+| `settings.execution` | Worker policies, task pool size and publication capacity |
+| `settings.assets` | AssetRegistry content capacity per owned Registry |
+| `settings.audio` | Independent Host cache/pending and source publication limits |
+| `settings.simulation` | World time, animation cadence and physics solver inputs |
+| `settings.rendering` | Render requirements, view limits and distinct resource capacities |
+| `quality` | A device recommendation or low/medium/high preset, then explicit group changes |
+| `deviceProfiles` | Single-parent inheritance, explicit matches/priorities and quality ceilings |
+
+```ts
+const result = await createApp(canvas, {
+  configuration: {
+    settings: { rendering: { renderPath: 'deferred' } },
+    quality: { base: { kind: 'device-default' } },
+  },
+}, hostAdapter);
+const app = result.unwrap();
+await app.configuration?.setQuality({
+  base: { kind: 'preset', preset: 'medium' },
+  groups: { textures: 'high' },
+});
+const status = app.configuration?.inspect();
+```
+
+Constructor bindings, bootstrap modules, callbacks and native objects stay in the
+Host. An explicit `configurationHost` supplies facts and optional preference
+storage. Browser defaults read the observable platform without guessing a model,
+and use the URL pathname as the default preference scope. Generated project Hosts
+use `createBrowserConfigurationHost(projectId)` with the stable project identity.
+Built-in Host storage uses `createEngineConfigurationStore` to save versioned
+user intent; unavailable storage or invalid saved data reports a warning and
+uses project defaults. Explicit custom stores retain their error contract.
+WeChat supplies its actual platform/model and project-scoped storage. Its inherited `Default` baseline keeps
+the existing 720 scene short-axis policy, including custom descendants of IOS or
+Android; Browser gets no new DPR or 720 cap.
+
+`resolveEngineStartup` is the pure composition entry. Device settings are merged
+root-to-leaf, then project settings. A saved/project preset replaces device group
+defaults; explicit groups follow. Inherited `maximumQuality` ceilings cannot be
+relaxed by a child. Missing parents, cycles, duplicate definitions, ambiguous
+matches, unknown fields and invalid owner parameters fail before construction.
+`rendering.qualityLimits` retains precise ceilings; it cannot increase a tier's
+work. Definitions, constructor plans and realm copies are immutable.
+
+> [!IMPORTANT]
+> `inspect().applied` means owners accepted the parameters. Match its revision to
+> `rendering.submittedRevision` and `completedRevision` for actual ready scene
+> evidence. Loading/UI-only and old-revision pictures cannot acknowledge a change.
+> Texture mip residency is constructor-only: a request that changes it returns
+> `configuration-recreate-required`, applies no hot fields, exposes `pendingRestart`
+> and saves the next-start choice. Restoring device defaults cancels that request.
+
+For native assembly, call `prepareEngineStartup` and `projectEngineStartup`
+before constructing owned domains; generated WeChat code already does this.
+A borrowed Registry cannot adopt a constructor capacity. Explicit `taskWorkers`
+requires the selected Engine Worker dispatcher. Native WeChat rejects
+Host-audio publication/cache settings and Worker requests that it does not own.
+Legacy App/DevKit scatter fields are mutually exclusive with `configuration`;
+DevKit converts old project declarations in one direction. The mixed
+`settings.rendering.profile` bridge and legacy bootstrap `configureRenderer` are
+deprecated for removal in 0.7. A managed App rejects the late bootstrap hook.
+
 Renderer inspection field selection reaches the Render owner before inventory
 production and structured cloning. Use `execution.inspectRenderer({ fields:
 ['state', 'frame'] })` for status; omission preserves the full detached export.
@@ -52,7 +123,7 @@ DOM test overrides and pointer-lock error dispatch remain with their owners.
 
 ```ts
 import { createApp } from '@forgeax/engine-app/browser';
-import { Time, Update } from '@forgeax/engine-ecs';
+import { defineSystem, Time, Update } from '@forgeax/engine-ecs';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 const result = await createApp(canvas, {}, forgeaxBundlerAdapter());
@@ -62,14 +133,14 @@ if (!result.ok) {
 }
 
 const app = result.value;
-app.world.addSystem(Update, {
+app.world.addSystem(Update, defineSystem({
   name: 'move-player',
   queries: [],
   fn: (world) => {
     const delta = world.getResource(Time).delta;
     movePlayer(delta);
   },
-}).unwrap();
+})).unwrap();
 app.start().unwrap();
 ```
 
@@ -335,6 +406,28 @@ sessions forward the same operation into their App realm. Mesh, Material, Textur
 and Equirect inspection reads current payloads and publication identities as
 bounded JSON facts. Mesh facts include vertex/index counts, bounds, submeshes and
 material slots; no geometry or pixel buffers are transported or reconstructed.
+
+Cloud material inspection uses the registered cloud decoder and returns
+`WorkspaceCloudMaterialInspection`: the selected asset's adopted publication,
+model, optional instance parent, and up to 256 parameter definitions with current
+values and override flags. `truncated` reports additional parameters. Instance
+values resolve through the Render authoring owner. Optional authored `label` and
+`group` fields are presentation metadata, each bounded to 128 characters. Handles
+are released on success, failure and cancellation; inspection opens no renderer.
+The same result includes `cookIdentity`, optional `densityKernelIdentity`, and
+all cooked `variants` (at most 16). Each variant carries its program identity,
+program and optional renderer artifact digests, compiler identity, static values,
+and whether those static values match the Registry-resolved selection. No WGSL,
+reflection bindings, or GPU adoption claim is included.
+`declaredDependencies` includes material-default texture GUIDs and, for instances,
+the parent material plus explicitly overridden texture GUIDs. `declaredBy`
+distinguishes material and instance declarations; a material default remains a
+declaration when an instance overrides it. Entries are deduplicated by declaring
+owner, kind and GUID, then sorted by those fields. This collection uses all
+parameters before the 256-parameter display limit and returns at most 512 entries;
+`dependenciesTruncated` independently reports an incomplete dependency list.
+These are asset declarations, not effective component overrides or sampled GPU
+bindings. Uniform materials without cooked programs return an empty variant list.
 Inspection preserves project identity and cancellation; each existing preview
 continues to own its independently acquired result.
 Inspection `meta` and top-level `publication` describe the current runtime handle,
@@ -389,6 +482,15 @@ components return `name: null`; display labels, row types, icons, and filter
 counts belong to the consuming UI. Pagination carries the first
 page's structural revision and rejects changes between pages; sample timestamps
 do not imply a cross-frame snapshot. Values are bounded and read-only.
+
+On a native Play target, a game may opt in a registered read with
+`gameHost.gameProjection.registerRead({ id, title, read, workspace: { entity, read } })`.
+`workspace.entity()` returns the current handle owned by that Play World;
+`workspace.read()` returns a synchronous JSON snapshot for that entity. Inspect
+adds `gameObservations` entries with `id`, `targetId`, `worldId` and `value`
+only for matching registrations. Unavailable, invalid, or oversized observations
+are omitted (128 KiB total JSON budget). The data is detached from the game;
+readers cannot invoke an action or request an arbitrary game read through inspect.
 
 The tool Fiber borrows the World. Disposal withdraws the service and invalidates
 retained tool references, without destroying game entities or stopping the App.
@@ -471,6 +573,12 @@ publication of the submitted frame context, so display picking and overlays use
 the same picture. The canvas retains the latest accepted submitted and completed
 facts in `canvas.forgeaxFrameProgress`; subscriptions remain future-only, with
 events notifying new frames. App clears this snapshot when its execution retires.
+For an asynchronous display-pick request, `retainBrowserFrameSubmitted(canvas,
+frameId)` performs a synchronous handoff to the native workspace target. It holds
+one exact input frame until the caller releases it; completion, abort and input
+disposal release the hold. It does not widen ordinary history or wait for the GPU.
+The target still rejects retired devices, changed extents and retired entity handles.
+
 The built root and browser entries share one runtime module identity for canvas
 frame state and App errors; publication, picking and reset must remain coherent
 when consumers import both entries. Remove the subscription when the canvas is
@@ -538,10 +646,11 @@ Generated hosts enable the default profile with `?forgeax-gpu-stub=1`.
 
 ## Worker execution
 
-`execution.workers` selects Engine, Render, and Kernel Workers independently.
-Every omitted policy is `auto`: supported Engine and Render Workers run alongside
-a lazy shared Kernel pool. The World remains the only simulation authority;
-Kernel Workers operate only on eligible numeric `QuerySpan` shards.
+`execution.workers` selects Engine and Render Workers and shared numeric kernels
+independently. Every omitted policy is `auto`: supported Engine and Render
+Workers run alongside shared kernels on the task pool. The World remains the
+only simulation authority; pool Workers operate only on eligible numeric
+`QuerySpan` row ranges.
 
 Auto GPU Worker selection probes a WebGPU adapter, then a disposable OffscreenCanvas
 WebGL2 context when the native adapter is unavailable, before transferring the
@@ -550,11 +659,14 @@ and includes the wgpu/WebGL2 fallback; `render.capabilities.backendKind` names t
 selected renderer backend. Auto retains Host execution when neither Worker backend
 is usable or the probe exceeds its deadline. The explicit GPU stub preserves its topology.
 
-The Host creates and retires the physical Kernel Workers as siblings of the
-Engine Worker. The Engine's lazy pool sends the existing POD jobs through one
-MessagePort per lane; the Host forwards them to the native Worker, and the same
-shared atomic completion joins each dispatch. Lane disposal, startup failure,
-Engine failure and final App disposal retire these native Workers and ports.
+The Host creates and retires the physical pool Workers as siblings of the
+Engine Worker; the Engine Worker owns the task pool that dispatches to them.
+Each SharedKernel dispatch cuts its rows into slices (about six per
+participant) that the Engine Worker and every started pool Worker claim from
+one atomic cursor; the Engine Worker blocks until the last slice finished.
+Kernels are pure per row, so the result does not depend on who ran which
+slice. Startup failure, Engine failure and final App disposal retire these
+native Workers and ports.
 The World retains scheduling and shared-storage authority. A disposed realm
 cannot leave a nested Worker thread retaining its module graph.
 
@@ -622,19 +734,25 @@ if (report.world.health === 'poisoned') {
 |:--|:--|:--|:--|
 | `workers.engine` | Move the bootstrap into a supported Engine Worker | Require Engine Worker capabilities | Run the bootstrap on the Host |
 | `workers.render` | Give rendering its own supported Worker | Require independent rendering | Co-locate Renderer with World |
-| `workers.kernels` | Enable shared numeric kernels where supported | Require isolation, SAB and Atomics | Run numeric kernels inline |
+| `workers.kernels` | Run shared numeric kernels on the task pool where supported | Require isolation, SAB and Atomics | Run numeric kernels inline |
 
-Render and Kernel Workers require an enabled Engine Worker. With `engine: false`,
+For immutable local carriers, `execution.localBootstrap` can carry the imported
+`ExecutionBootstrapEntry` from the same native module graph. App uses it only when
+the Engine Worker is disabled; it keeps object identity for shared decoders and
+components, validates the same bootstrap data/result, and never transfers the
+function to a Worker. `bootstrap` remains the Worker URL and diagnostic locator.
+
+Render Workers and shared kernels require an enabled Engine Worker. With `engine: false`,
 auto children are disabled; explicitly requiring either child is an error.
 Missing isolation disables only auto kernels, preserving independent rendering.
 Worker scripts must share the document origin: an opaque `CSP: sandbox` page
 reports `worker` unavailable and auto runs every realm on the Host.
 Each `report.workers` entry exposes `requested`, `enabled`, `reason`, and
 `missingCapabilities`; schema version 2 replaces the old mutually exclusive tier.
-A pool is enabled by policy but creates lanes only when eligible kernels exist.
+The task pool grows to full size once an eligible kernel is warmed.
 
 ```ts
-// Default: Engine + Render + eligible Kernel Workers when supported.
+// Default: Engine + Render + shared kernels when supported.
 execution: { bootstrap: new URL('./game-bootstrap.mjs', import.meta.url) }
 // Keep render isolation, execute numeric kernels inline.
 execution: { bootstrap, workers: { kernels: false } }
@@ -648,7 +766,7 @@ execution: { bootstrap, workers: { engine: false } }
 > A canvas or assemble call without `execution.bootstrap` constructs local
 > World/Renderer/plugin objects. Those objects cannot be moved to another realm;
 > this form reports Engine Workers disabled. Use a bootstrap module for auto
-> placement, and move renderer setup into `configureRenderer`.
+> placement, and declare renderer requirements in the build configuration plugin.
 
 Measured responsiveness, baseline costs and recovery evidence are documented in
 Render Worker validation. The
@@ -847,14 +965,16 @@ animation, materials, lighting, environments, targets and declarative features.
 Bootstrap `features` constructs the same declared implementations in both
 realms: `extract` reads the source World, while `plan` and graphics work execute
 in the child. `onSourceFrameSubmitted(data, feedback)` receives only the matching
-submitted frame's feedback. Feature plugins may lease these declared
+submitted frame's feedback. `onSourceFrameCompleted` receives the actual Renderer receipt
+facts through the same revision-scoped completion notice before storage return;
+it never derives GPU evidence from the Host's frame ID. Feature plugins may lease these declared
 implementations; functions created solely in the source realm cannot be sent.
 CameraView travels in the same camera publication: split screens, held minimaps,
 and camera targets use the same Renderer pipeline in either execution tier.
 Each view keeps private writable state and history; source intents are
 acknowledged once after the shared submission.
 
-Use bootstrap `configureRenderer(renderer)` for pipeline/post-effect setup in
+Use constructor `configuration.settings.rendering` for render requirements in
 the Renderer realm. Source plugins use `executionBootstrapHost.renderTargets`
 for logical target creation, resizing, texture sources and destruction. The
 child owns physical targets and receipt-bound readback. The source has no
@@ -876,10 +996,9 @@ consuming its next publication, preserving a stable resource seed and one
 complete frame in the tape. The frame loop must supply the captured frame.
 
 The App `startupTimeoutMs` policy also bounds child Renderer initialization and
-replacement, plus SharedKernel worker initialization and module preflight; a child
-does not impose a separate shorter startup limit. Kernel startup and preflight
-share one pool-start deadline, while running kernel dispatch keeps its separate
-5-second deadline. The first source frame uses this startup policy too: deferred
+replacement, plus SharedKernel module preflight; a child does not impose a
+separate shorter startup limit. Every module preflight shares one deadline,
+while running kernel dispatch keeps its separate 5-second deadline. The first source frame uses this startup policy too: deferred
 source preparation must not inherit the shorter steady-frame admission budget.
 After its first accepted source completion, `frameTimeoutMs` bounds subsequent
 source execution (default two seconds). A split frame waiting for Render Worker
@@ -924,7 +1043,7 @@ and split execution. Read `app.canvas` again and rebind caller-owned DOM listene
 App detaches and reattaches its input backend. The replacement Renderer uses that
 new surface rather than inheriting the failed World's transferred canvas.
 
-An unavailable `true` policy returns `app-execution-worker-unavailable`; only `auto` falls back. Serve shared kernels with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`, then verify the Worker-realm facts in `app.execution.report()`. Every SharedKernel module is imported, export-checked, and retained in every lane before the Engine Worker reports ready; frame jobs invoke that retained module synchronously, so an invalid module fails before the first shared write without adding a dynamic-import Promise to each dispatch. A partial Kernel write poisons the World, stops update/draw, and requires explicit rebuild to obtain a new World identity.
+An unavailable `true` policy returns `app-execution-worker-unavailable`; only `auto` falls back. Serve shared kernels with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` or `credentialless`, then verify the Worker-realm facts in `app.execution.report()`. Every SharedKernel module is imported, export-checked, and retained in the Engine Worker before it reports ready, and announced to every pool Worker; frame jobs invoke the retained module synchronously, so an invalid module fails before the first shared write without adding a dynamic-import Promise to each dispatch. A pool Worker that has not loaded the module yet leaves its slices to the others. A partial Kernel write poisons the World, stops update/draw, and requires explicit rebuild to obtain a new World identity.
 
 `bootstrapData` must be structured-cloneable and is validated before a canvas is
 transferred. `bootstrapPort` is the realm side of a host-created
@@ -1068,7 +1187,7 @@ if (admission !== undefined && !admission.ok) throw admission.error;
 Every frame follows one host-owned sequence:
 
 ```text
-measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })
+measured deltaSeconds -> world.update(deltaSeconds) -> renderer.draw({ source: lease })
 ```
 
 The host measures the delta once and forwards that same value to its World. A `World` validates the delta, owns `Time` and `FixedTime`, runs its `Update` and `FixedUpdate` schedules, and applies its own time policy. App does not maintain an elapsed clock, clamp time, register frame callbacks, or offer a second scheduling surface.
@@ -1136,20 +1255,10 @@ console output:
 | Renderer or device failure | `app.onError` and `lastError` expose the closed error code with `expected`, `hint`, and discriminated `detail`. |
 | No failure observed | `lastError` is `undefined`; do not infer readiness from App construction alone. |
 
-Hosts that discover additional Worlds during bootstrap can update the routing pull
-without creating a second frame loop:
-
-```ts
-app.setDrawSource(() => ({
-  worlds: [app.world, overlayWorld],
-  cameraOwner: 0,
-  resourceOwner: 0,
-}));
-// `app.setDrawSource(undefined)` restores the single-world path.
-```
-
-The injected Worlds are updated by the same frame loop before the renderer draw;
-the setter changes only draw routing, while each World retains its own time policy.
+Scene admission is sampled after the App's source World update. An optional
+`sceneAdmission: () => 'scene' | 'ui-only'` getter belongs to that source realm.
+It changes frame content without adding another World or frame loop. UI-only
+frames preserve pending scene edits and the next scene's temporal reset.
 
 ## Opt-in CPU profiling
 
@@ -1230,13 +1339,13 @@ app.world.addSystem(Update, AnimateHud).unwrap();
 Use `FixedUpdate` for deterministic simulation.
 
 ```ts
-import { FixedUpdate } from '@forgeax/engine-ecs';
+import { defineSystem, FixedUpdate } from '@forgeax/engine-ecs';
 
-app.world.addSystem(FixedUpdate, {
+app.world.addSystem(FixedUpdate, defineSystem({
   name: 'step-combat',
   queries: [],
   fn: () => stepCombat(),
-}).unwrap();
+})).unwrap();
 ```
 
 Schedule ordering is ECS data. Use `before`, `after`, system sets, and token-first mutation APIs rather than a callback list.
@@ -1253,7 +1362,7 @@ const ReadInput = defineSystem({
   name: 'read-input',
   queries: [],
   fn: (world) => {
-    const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const input = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     if (input.keyboard.down('KeyW')) moveForward();
   },
 });
@@ -1300,7 +1409,7 @@ the realm-neutral assembly with an explicit platform lease.
 | `CreateAppOptions.time` | `TimePolicy` | Policy used only for the newly created canvas-form World. |
 | `CreateAppOptions.features` | `readonly RenderFeature<unknown>[]` | Existing renderer feature seam, forwarded by reference and order. |
 | `CreateAppOptions.ssrIdentity` | `SsrAdmissionIdentity` | Optional exact source/tree/lock/build binding for the renderer-owned SSR M0 inspection; omission means SSR is not requested. |
-| `CreateAppOptions.execution` | `ExecutionOptions` | Names the bootstrap module and composes independent Engine, Render and Kernel Worker policies (`auto`, `true`, or `false`). |
+| `CreateAppOptions.execution` | `ExecutionOptions` | Names the bootstrap module and composes independent Engine Worker, Render Worker and shared-kernel policies (`auto`, `true`, or `false`). |
 | `ExecutionOptions.assetCatalog` | `ExecutionAssetCatalog` | Supplies the serializable catalog URL and optional scope fence to the selected Engine realm. |
 | `App.execution.report()` | `ExecutionReport` | Returns schema-valid worker decisions, Host capability observations, the actual Render Worker backend/storage-buffer capability and limit, health, frame-credit, performance, audio, and fault projection. |
 | `App.execution.rebuild()` | `Promise<Result<ExecutionReport, AppError>>` | Rebuilds only a poisoned Worker World with a new identity. |
@@ -1312,7 +1421,6 @@ the realm-neutral assembly with an explicit platform lease.
 | `App.stepFrame(deltaSeconds, { render? })` | `Result<void, AppDispatchError>` | While paused, advances one deterministic update/draw frame through the same App frame authority used by rAF; `render: false` runs the update only. |
 | `App.releaseSurfacePreserveWorld()` / `restoreSurface()` | `Promise<Result<void, RhiError>>` | Temporarily pauses presentation and relinquishes the canvas surface while preserving the same World, Renderer, registry, and execution authority; restore resumes only a loop that was running before release. |
 | `App.onError(callback)` | `() => void` | Subscribes to structured World and renderer failures. |
-| `App.setDrawSource(drawSource)` | `void` | Replaces per-frame multi-world routing; `undefined` restores the single-world path. |
 | `App.world` / `App.renderer` | readonly | Exposes the assembled ECS and renderer instances. |
 
 For split rendering, `report.render.capabilities` and
@@ -1449,6 +1557,12 @@ the current game camera. It does not write the authored camera. `camera.get()`
 reports `control: game | observer`; `release()` removes observation control and
 restores a live game camera. Focus unions the selected entity subtree bounds from the Renderer and fits the observation camera projection. Plain transform targets retain point focus. A mesh whose renderer bounds are unavailable is rejected before camera acquisition; explicit position, target and distance remain overrides. All changes remain
 runtime-only and disappear when the World is replaced.
+
+An observer borrows its source camera's declared `CameraView` and companion
+effects through the native ActiveCamera viewpoint selection. It replaces that
+one composition slot, preserves other views and restores the original roster on
+release. The source camera's transform, view budget and effect components are
+never rewritten; lens-dependent effects resolve against the observer's lens.
 
 ## Project plugin roots
 
@@ -1599,11 +1713,11 @@ disposes only that newly created Fiber. Explicit successful disposal reports
 
 ## Host streaming audio observations
 
-`execution.report().audio.streaming`, when available, carries aggregate encoded/PCM/pending bytes, pending reads and underruns from the existing Host consumer. Main and Engine Worker frame paths share the same closed intents. Kernel Workers receive no audio objects. Rebuild replaces the consumer and fences old reads; [the audio owner](../audio-webaudio/README.md#long-audio-through-source-meta-and-guid) defines buffering/control/failure semantics.
+`execution.report().audio.streaming`, when available, carries aggregate encoded/PCM/pending bytes, pending reads and underruns from the existing Host consumer. Main and Engine Worker frame paths share the same closed intents. Pool Workers receive no audio objects. Rebuild replaces the consumer and fences old reads; [the audio owner](../audio-webaudio/README.md#long-audio-through-source-meta-and-guid) defines buffering/control/failure semantics.
 
-`execution.createHostAudio` is the Host-only consumer factory for shared native bus effects. It is used in both selected main and Worker realms, called again on rebuild, and never serialized into Worker initialization. Return a fresh consumer per generation; read [the Host assembly example](../audio-webaudio/README.md#app-host-effect-assembly).
+`AppHostAdapter.createHostAudio` is the Host-only consumer factory for shared native bus effects, including local Apps without an execution bootstrap. App passes the resolved device/project `settings.audio.host` after startup configuration, calls it again on rebuild, and never serializes it into Worker initialization. Return a fresh consumer per generation; read [the Host assembly example](../audio-webaudio/README.md#app-host-effect-assembly). The legacy `execution.createHostAudio` binding is deprecated for removal in 0.7; supplying both bindings fails before construction.
 
-Generated Worker game Hosts expose the current consumer's engine through borrowed
+Generated game Hosts expose the current consumer's engine through borrowed
 `GameHost.audio` and resolve the native `executionHostAudioFactory` service for
 each replacement. A frontend plugin configures the initial engine in place and
 provides a synchronous factory that returns a fresh, configured consumer. Await
@@ -1637,7 +1751,7 @@ its next `InputBackendSample` carries terminal results and loss count back.
 Frame credit, World identity and the input target's attachment/generation fence
 old and duplicate output. Candidate failure disposes its producer. Rebuild
 revokes the old Host input attachment, and input Fiber cleanup releases only its
-owned effect. Render and Kernel Workers receive no actuator or native Promise.
+owned effect. Render and pool Workers receive no actuator or native Promise.
 
 `app.stop()` stops scheduling; effects already dispatched retain their finite
 native duration. Use `feedback.stop(target)` before stopping to request cancel,
@@ -1650,9 +1764,9 @@ Assemble hosts can receive `onFrameSubmitted` and `onFrameCompleted` callbacks.
 They use the same receipt identity, World identity and completed presentation
 projection as the browser Host. A UI-only completed frame remains `pending`, so
 startup controllers cannot mistake a loading screen for game readiness.
-`drawSource: () => null` admits only the configured screen UI while keeping the
-same App loop and primary World updates. Return `undefined` once the current
-activation transaction commits to admit the primary scene; return `null` again
+`sceneAdmission: () => 'ui-only'` admits only the configured screen UI while
+keeping the same App loop and source World updates. Return `'scene'` once the
+current activation transaction commits; return `'ui-only'` again
 on failure or retirement. This is explicit frame content, not Camera detection.
 UI-only receipts cannot consume the next scene's temporal reset after resume.
 
@@ -1712,13 +1826,14 @@ does not remove recovery input. A failed or disposed child startup releases its
 one-shot forwarding field as well.
 
 `app.remoteEval` executes in the selected Engine realm. Its `execution` root
-exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, pipelineLibraryLimits?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
+exposes `inspectRenderer({ signal?, fields?, pipelineLibrary?, pipelineLibraryLimits?, pipelineLibraryRequestedOnly?, runtimeRequests? })` (type `ExecutionRendererInspectionContext`):
 
 `pipelineLibraryLimits` travels through the existing inspection request to the
 single export action, including independent Render Workers. Its failure retains the
 structured cause and does not change ordinary drawing or device recovery. A complete
 export includes `pipelineLibraryPolicy` so a consumer can declare a matching finite
-input policy.
+input policy. `pipelineLibraryRequestedOnly` travels the same way and selects only
+recipes the renderer asked for in this session.
 
 `runtimeRequests:true` selects cached bounded demand history and omits the legacy
 full pending recipe list, avoiding uncached Shader hashing in this incident read.
@@ -1751,6 +1866,12 @@ Inspection is neither a hardware-completion nor a pixel/presentation proof.
 ## Capture completion and issued receipts
 
 Ordinary Render Worker frames await their existing receipt observation promise.
+Feature texture completion carries frame, device and graph identity fields;
+the returned receipt owns credit and retirement, including host completion holds.
+Cooperative completion wrappers retain the submitted frame, device generation,
+graph generation and backend identity. Feature-texture completion matches those
+facts rather than the wrapper object's reference; a different submitted receipt
+still rejects completion.
 Timing or snapshot observations join that barrier when enabled. Retirement may
 drain only the current physical completion after the prior FIFO prefix has
 already completed successfully; early observation/prefix failures still drain
@@ -1758,9 +1879,13 @@ both promises before closing video frames or retiring the receipt.
 
 `rhiCapture.captureFrame()` artifacts include `submittedFrame`. The App awaits the issued receipt completion for the recorded generation before publishing a capture. Missing submissions or retired generations remain unavailable; a prior `lastReceipt` never certifies a new capture.
 
+`createApp(canvas, { backgroundPipelineLibrary, backgroundPipelineLibraryConcurrency })` sets how many native requests of the background library stay outstanding. The value is an integer from 1 to 4 and travels with the App options to the Renderer's background prepare; omission keeps the hardware-based default. It is not clamped: an out-of-range value is rejected by the RHI and reported through the background failure path, while the renderer stays alive.
+
 `createApp(canvas, { dynamicGeometryMeshBudgetBytes })` forwards the explicit retained dynamic mesh byte budget to Render. It remains POD through Engine and Render Worker startup; omission retains 64 MiB. Render validates positive safe integers up to 512 MiB and owns admission, fence retirement, and recovery.
 
 `createApp(canvas, { assetBudgetBytes })` sets the content byte budget of every Engine-created AssetRegistry serving the App World: the main-thread Renderer, the Engine Worker source realm, and the Render Worker Renderer. Omission keeps the 4 GiB default (`DEFAULT_ASSET_BUDGET_BYTES`); `createApp` rejects anything other than a positive safe integer before any realm starts. The budget guards against runaway growth; exceeding it fails adoption with `asset-budget-exceeded` / `available content bytes`.
+
+`createApp(canvas, { textureMipSkip })` forwards the per-quality texture mip skip to every Renderer realm (main thread, Engine Worker and Render Worker). Textures that declare `skippableMips: true` drop that many leading packed mip levels from their GPU copy; other textures are unchanged. Omission keeps 0, the full authored chain. `createApp` rejects anything other than an integer from 0 to 32 before any realm starts.
 
 The browser-local debug bridge accepts `window.__forgeax.captureFrame(options, onSubmitted)`.
 Use its submission callback to start a canvas snapshot before GPU completion can yield to

@@ -150,7 +150,6 @@ async function createFixture(
     parameterBlock: new Uint8Array(),
   };
   const entry = {
-    sourceWorldIndex: 0,
     worldId: 0,
     runtimeId: 0,
     renderGeneration: 0,
@@ -177,12 +176,12 @@ async function createFixture(
   const plan = (generation = 1) =>
     feature
       .plan(
-        { worlds: [entry], frameNumber: ++frameNumber } as never,
+        { source: entry, frameNumber: ++frameNumber } as never,
         {
           targets: [],
           caps: {},
           generation,
-          resolveAsset: (_index: number, handle: number, revision: number) =>
+          resolveAsset: (handle: number, revision: number) =>
             runtimeAssets(world.assets).resolveAsset(handle, revision),
         } as never,
       )
@@ -427,7 +426,7 @@ it('keeps native plan admission when private view command isolation is requested
     isolateViewGraph: true,
   });
   const result = feature.plan(
-    { worlds: [], frameNumber: 1 } as never,
+    { source: undefined, frameNumber: 1 } as never,
     {
       views: [],
       generation: 0,

@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 
 import { World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -8,7 +9,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const KEYBOARD_INPUT_STATE = 'bevyKeyboardInputState';
+export const KEYBOARD_INPUT_STATE = defineResource<KeyboardInputState>("bevyKeyboardInputState");
 
 export interface KeyboardInputState {
   heldCodeA: boolean;
@@ -54,7 +55,7 @@ export function buildKeyboardInputWorld(world: World): KeyboardInputState {
 }
 
 export function stepKeyboardInput(world: World, snapshot: InputSnapshot): void {
-  const state = world.getResource<KeyboardInputState>(KEYBOARD_INPUT_STATE);
+  const state = world.getResource(KEYBOARD_INPUT_STATE);
   state.heldCodeA = snapshot.keyboard.downCode('KeyA');
   state.heldQuestion = snapshot.keyboard.down('?');
   if (snapshot.keyboard.justPressedCode('KeyA')) state.justPressedCodeA += 1;
@@ -64,6 +65,6 @@ export function stepKeyboardInput(world: World, snapshot: InputSnapshot): void {
 }
 
 export function readKeyboardInputState(world: World): KeyboardInputState {
-  const state = world.getResource<KeyboardInputState>(KEYBOARD_INPUT_STATE);
+  const state = world.getResource(KEYBOARD_INPUT_STATE);
   return { ...state };
 }

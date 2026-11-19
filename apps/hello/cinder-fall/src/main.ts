@@ -1,3 +1,4 @@
+import { defineSystem } from "@forgeax/engine-ecs";
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createBrowserPlatform } from '@forgeax/engine/platform-browser';
 import {
@@ -18,13 +19,7 @@ import {
 } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { GlobalTransform, Transform, scenePlugin } from '@forgeax/engine-scene';
-import {
-  loadVfxGpuEffect,
-  ParticleEffectPlayer,
-  VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
-  type VfxValueMap,
-} from '@forgeax/engine-vfx';
+import { loadVfxGpuEffect, ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY, type VfxValueMap } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { CinderFallCast, type CinderFallPhase } from './cast.js';
@@ -343,15 +338,14 @@ async function bootstrap(): Promise<void> {
         throw new Error(`hello-cinder-fall: impact channel failed: ${submitted.error.hint}`);
       impactChannelSubmitted = true;
     }
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     targetStatus.textContent = JSON.stringify(
       { ...snapshot, renderer: 'engine.vfx-render', gpu: runtime.inspectPlayers() },
       null,
       2,
     );
   };
-  world
-    .addSystem(FixedUpdate, {
+  const systemToken1 = defineSystem({
       name: 'cinder-fall-gameplay',
       queries: [],
       fn: (world) => {
@@ -366,7 +360,9 @@ async function bootstrap(): Promise<void> {
         }
         setPhase(cast.advanceFixed(world.getResource(FixedTime).delta).phase);
       },
-    })
+    });
+world
+    .addSystem(FixedUpdate, systemToken1)
     .unwrap();
   const platform = createBrowserPlatform(targetCanvas).unwrap();
   const appResult = await createApp({

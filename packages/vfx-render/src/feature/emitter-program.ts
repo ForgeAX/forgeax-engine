@@ -32,7 +32,7 @@ function needsCompactionOffsets(capacity: number): boolean {
 }
 
 export function simulationDispatches(
-  intent: Pick<VfxGpuTickIntent, 'emitter' | 'spawnCount'>,
+  intent: Pick<VfxGpuTickIntent, 'emitter' | 'spawnCount' | 'waterGridEmission'>,
   stages: VfxValidatedStagePlan,
 ): ComputeDispatches {
   const groups = Math.max(1, Math.ceil(intent.emitter.capacity / WORKGROUP_SIZE));
@@ -66,12 +66,55 @@ export function simulationDispatches(
           : []),
         { kind: 'direct', entryPoint: 'forgeax_vfx_compact_main', workgroups: [groups] },
       ];
+  const waterEmission = intent.waterGridEmission;
+  const waterGroups =
+    waterEmission === undefined ? 0 : Math.ceil(waterEmission.scanCellCapacity / WORKGROUP_SIZE);
+  const waterDispatches: ComputeDispatches =
+    waterEmission === undefined
+      ? []
+      : [
+          {
+            kind: 'direct',
+            entryPoint: 'forgeax_vfx_water_emission_cells_main',
+            workgroups: [waterGroups],
+          },
+          {
+            kind: 'direct',
+            entryPoint: 'forgeax_vfx_water_emission_scan_blocks_main',
+            workgroups: [waterGroups],
+          },
+          {
+            kind: 'direct',
+            entryPoint: 'forgeax_vfx_water_emission_scan_block_offsets_main',
+            workgroups: [1],
+          },
+          {
+            kind: 'direct',
+            entryPoint: 'forgeax_vfx_water_emission_add_offsets_main',
+            workgroups: [waterGroups],
+          },
+          {
+            kind: 'direct',
+            entryPoint: 'forgeax_vfx_water_emission_append_main',
+            workgroups: [waterGroups],
+          },
+        ];
   return [
+    ...waterDispatches,
     {
       kind: 'direct',
       entryPoint: 'forgeax_vfx_spawn_main',
-      workgroups: [intent.spawnCount === 0 ? 0 : groups],
+      workgroups: [intent.spawnCount === 0 && waterEmission === undefined ? 0 : groups],
     },
+    ...(entries.includes('forgeax_vfx_pool_allocate_main')
+      ? [
+          {
+            kind: 'direct' as const,
+            entryPoint: 'forgeax_vfx_pool_allocate_main',
+            workgroups: [1] as const,
+          },
+        ]
+      : []),
     {
       kind: 'direct',
       entryPoint: fusedUpdate ? 'forgeax_vfx_update_compact_main' : 'forgeax_vfx_update_main',
@@ -123,8 +166,16 @@ export function reflectedDataInterfaceRequirements(
   const reflectedBindings = new Set(
     emitter.reflection.bindings.flatMap((group) => group.entries.map((entry) => entry.binding)),
   );
-  return (emitter.reflection.dataInterfaces ?? []).filter((requirement) =>
-    reflectedBindings.has(requirement.binding),
+  return (emitter.reflection.dataInterfaces ?? []).filter(
+    (requirement) =>
+      reflectedBindings.has(requirement.binding) &&
+      (requirement.kind !== 'water-surface' ||
+        (requirement.solverNormalBinding !== undefined &&
+          reflectedBindings.has(requirement.solverNormalBinding) &&
+          requirement.domainBinding !== undefined &&
+          reflectedBindings.has(requirement.domainBinding) &&
+          (requirement.waterEmissionBinding === undefined ||
+            reflectedBindings.has(requirement.waterEmissionBinding)))),
   );
 }
 

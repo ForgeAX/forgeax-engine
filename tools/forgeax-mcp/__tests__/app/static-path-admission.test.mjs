@@ -43,7 +43,20 @@ test('MCP HTTP dependency preserves static route admission without a second path
       status: 200,
       body: 'public-ok',
     });
-    for (const path of ['/static/admin/private.txt', '/static/%61dmin/private.txt'])
+    for (const path of ['/static\\hello%20world.txt', '/static/hello\\..\\admin/private.txt'])
+      assert.equal((await request(path)).status, 400);
+    assert.deepEqual(await request('/static/hello%20world.txt?tag=\\allowed'), {
+      status: 200,
+      body: 'public-ok',
+    });
+    for (const path of [
+      '/static/admin/private.txt',
+      '/static/%61dmin/private.txt',
+      '/static/admin/%0A',
+      '/static/admin/%0D',
+      '/static/admin/%E2%80%A8',
+      '/static/admin/%E2%80%A9',
+    ])
       assert.deepEqual(await request(path), { status: 401, body: 'Denied' });
     const malformed = await request('/static/%%36%31dmin/private.txt');
     assert.equal(malformed.status, 404);

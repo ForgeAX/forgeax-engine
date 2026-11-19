@@ -5,7 +5,7 @@ import { expect, it } from 'vitest';
 import { saveBrowserEvidence } from './browser-evidence.fixture';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 
-it('renders pending textures and preserves r184 upload timing across image replacements', {
+it('renders pending textures and preserves r187 upload timing across image replacements', {
   timeout: 120000,
 }, async () => {
   const canvas = document.createElement('canvas');
@@ -16,8 +16,7 @@ it('renders pending textures and preserves r184 upload timing across image repla
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
   camera.position.z = 5;
-  // r184 caches views by extent: a 1x1 image aliases its placeholder view.
-  // Use a real 2x2 upload to exercise the intended asynchronous lifecycle.
+  // Use a real 2x2 upload to exercise pending-to-ready image replacement.
   const texture = new THREE.DataTexture();
   let phase: 'forgeax' | 'three' = 'forgeax';
   const updates: Record<'forgeax' | 'three', number[]> = { forgeax: [], three: [] };

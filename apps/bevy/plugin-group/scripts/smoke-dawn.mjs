@@ -1,14 +1,17 @@
 #!/usr/bin/env node
+import { defineResource as defineEcsResource } from '@forgeax/engine-ecs';
+const ecsM33DawnFirstBuiltResource = defineEcsResource("m33DawnFirstBuilt");
+const ecsM33DawnSecondBuiltResource = defineEcsResource("m33DawnSecondBuilt");
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 let smokeAssets;
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-plugin-group headless Dawn smoke — proves group expansion through createApp.
 
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 160;
@@ -87,7 +90,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { quat } = await import('@forgeax/engine-math');
 const here = fileURLToPath(new URL('.', import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const { createApp } = await import('@forgeax/engine-app');
 const { helloWorldPlugins } = await import(resolve(here, '..', 'src', 'plugin-group.ts'));
 
@@ -127,15 +130,16 @@ const m33First = {
     m33Counters.first += 1;
     m33Order.push('first');
     const entity = ctx.world.spawn({ component: M33FirstMarker, data: { value: 1 } }).unwrap();
-    ctx.world.insertResource('m33DawnFirstBuilt', true);
-    ctx.world.addSystem(Update, defineSystem({
+    ctx.world.insertResource(ecsM33DawnFirstBuiltResource, true);
+    const systemToken1 = defineSystem({
       name: 'm33-dawn-first-system',
       queries: [],
       fn: () => {},
-    })).unwrap();
+    });
+    ctx.world.addSystem(Update, systemToken1).unwrap();
     return () => {
-      ctx.world.removeSystem(Update, 'm33-dawn-first-system');
-      ctx.world.removeResource('m33DawnFirstBuilt');
+      ctx.world.removeSystem(Update, systemToken1);
+      ctx.world.removeResource(ecsM33DawnFirstBuiltResource);
       ctx.world.despawn(entity);
     };
   },
@@ -147,15 +151,16 @@ const m33Second = {
     m33Counters.second += 1;
     m33Order.push('second');
     const entity = ctx.world.spawn({ component: M33SecondMarker, data: { value: 3 } }).unwrap();
-    ctx.world.insertResource('m33DawnSecondBuilt', true);
-    ctx.world.addSystem(Update, defineSystem({
+    ctx.world.insertResource(ecsM33DawnSecondBuiltResource, true);
+    const systemToken2 = defineSystem({
       name: 'm33-dawn-second-system',
       queries: [],
       fn: () => {},
-    })).unwrap();
+    });
+    ctx.world.addSystem(Update, systemToken2).unwrap();
     return () => {
-      ctx.world.removeSystem(Update, 'm33-dawn-second-system');
-      ctx.world.removeResource('m33DawnSecondBuilt');
+      ctx.world.removeSystem(Update, systemToken2);
+      ctx.world.removeResource(ecsM33DawnSecondBuiltResource);
       ctx.world.despawn(entity);
     };
   },
@@ -172,8 +177,8 @@ if (
   !['hello-world', 'print-hello', 'print-world', 'm33-dawn-first', 'm33-dawn-second'].every((name) => m33Registry.includes(name)) ||
   JSON.stringify(m33Counters) !== JSON.stringify({ first: 1, second: 1 }) ||
   JSON.stringify(m33Order) !== JSON.stringify(['first', 'second']) ||
-  !world.hasResource('m33DawnFirstBuilt') ||
-  !world.hasResource('m33DawnSecondBuilt') ||
+  !world.hasResource(ecsM33DawnFirstBuiltResource) ||
+  !world.hasResource(ecsM33DawnSecondBuiltResource) ||
   world.inspect().entityCount !== 3 ||
   !world.inspect().systems.some((system) => system.name === 'm33-dawn-first-system') ||
   !world.inspect().systems.some((system) => system.name === 'm33-dawn-second-system')
@@ -212,8 +217,8 @@ if (!allPass) {
 }
 await appResult.value.dispose();
 if (
-  world.hasResource('m33DawnFirstBuilt') ||
-  world.hasResource('m33DawnSecondBuilt') ||
+  world.hasResource(ecsM33DawnFirstBuiltResource) ||
+  world.hasResource(ecsM33DawnSecondBuiltResource) ||
   world.inspect().systems.some((system) => system.name.startsWith('m33-dawn-'))
 ) {
   console.error('[smoke] FAIL - plugin fiber cleanup left World contributions');

@@ -32,7 +32,7 @@ describe('Standard planar reflection normal distortion', () => {
     );
     expect(specular).toContain('clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0))');
     expect(shader).toContain(
-      'standardPlanarSpecular(in.worldPos, geometricNormal, physicalNormal, v, iblRoughness',
+      'standardPlanarSpecular(standardPositionWS, geometricNormal, physicalNormal, v, iblRoughness',
     );
   });
 

@@ -446,6 +446,15 @@ fn process_function(
         false,
     );
 
+    // For each original expression, the index range of the expressions that
+    // evaluating it appended to the new arena. Constant evaluation may resolve
+    // an expression to a handle that already exists (for example, an access
+    // into a constant `Compose` resolves to that component), so mapping an
+    // `Emit` range by its first and last handles alone could reach back over
+    // expressions that an earlier `Emit` already covered.
+    let mut appended_ranges = HandleVec::with_capacity(expressions.len());
+    let mut appended_end = 0u32;
+
     for (old_h, mut expr, span) in expressions.drain() {
         if let Expression::Override(h) = expr {
             expr = Expression::Constant(override_map[h]);
@@ -453,9 +462,17 @@ fn process_function(
         adjust_expr(&adjusted_local_expressions, &mut expr);
         let h = evaluator.try_eval_and_append(expr, span)?;
         adjusted_local_expressions.insert(old_h, h);
+        let start = appended_end;
+        appended_end = appended_end.max(h.index() as u32 + 1);
+        appended_ranges.insert(old_h, start..appended_end);
     }
 
-    adjust_block(&adjusted_local_expressions, &mut function.body);
+    let new_pos = NewPositions {
+        handles: &adjusted_local_expressions,
+        appended: &appended_ranges,
+        arena: &function.expressions,
+    };
+    adjust_block(&new_pos, &mut function.body);
 
     filter_emits_in_block(&mut function.body, &function.expressions);
 
@@ -703,9 +720,44 @@ fn adjust_expr(new_pos: &HandleVec<Expression, Handle<Expression>>, expr: &mut E
     }
 }
 
+/// Where `process_function` moved a function's expressions.
+struct NewPositions<'a> {
+    /// The new handle of each original expression.
+    handles: &'a HandleVec<Expression, Handle<Expression>>,
+    /// The index range of new expressions appended while evaluating each
+    /// original expression. The ranges are contiguous and in order.
+    appended: &'a HandleVec<Expression, core::ops::Range<u32>>,
+    /// The new expression arena.
+    arena: &'a Arena<Expression>,
+}
+
+impl core::ops::Index<Handle<Expression>> for NewPositions<'_> {
+    type Output = Handle<Expression>;
+
+    fn index(&self, handle: Handle<Expression>) -> &Self::Output {
+        &self.handles[handle]
+    }
+}
+
+impl NewPositions<'_> {
+    /// Map an `Emit` range to the new expressions appended while evaluating
+    /// the expressions it covered.
+    ///
+    /// An expression that resolved to an existing handle appended nothing, so
+    /// it does not pull that earlier handle back into this range.
+    fn emit_range(&self, range: &Range<Expression>) -> Range<Expression> {
+        let Some((first, last)) = range.first_and_last() else {
+            return range.clone();
+        };
+        let start = self.appended[first].start;
+        let end = self.appended[last].end;
+        Range::from_index_range(start..end, self.arena)
+    }
+}
+
 /// Replace every expression handle in `block` with its counterpart
 /// given by `new_pos`.
-fn adjust_block(new_pos: &HandleVec<Expression, Handle<Expression>>, block: &mut Block) {
+fn adjust_block(new_pos: &NewPositions, block: &mut Block) {
     for stmt in block.iter_mut() {
         adjust_stmt(new_pos, stmt);
     }
@@ -713,17 +765,13 @@ fn adjust_block(new_pos: &HandleVec<Expression, Handle<Expression>>, block: &mut
 
 /// Replace every expression handle in `stmt` with its counterpart
 /// given by `new_pos`.
-fn adjust_stmt(new_pos: &HandleVec<Expression, Handle<Expression>>, stmt: &mut Statement) {
+fn adjust_stmt(new_pos: &NewPositions, stmt: &mut Statement) {
     let adjust = |expr: &mut Handle<Expression>| {
         *expr = new_pos[*expr];
     };
     match *stmt {
         Statement::Emit(ref mut range) => {
-            if let Some((mut first, mut last)) = range.first_and_last() {
-                adjust(&mut first);
-                adjust(&mut last);
-                *range = Range::new_from_bounds(first, last);
-            }
+            *range = new_pos.emit_range(range);
         }
         Statement::Block(ref mut block) => {
             adjust_block(new_pos, block);

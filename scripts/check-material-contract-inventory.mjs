@@ -3,24 +3,25 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readArtifactJsonText } from './lib/artifact-json.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const baselinePath = join(root, 'scripts', 'material-contract-inventory.json');
 const baseline = JSON.parse(await readFile(baselinePath, 'utf8'));
 
-async function collect(directory) {
+async function collect(directory, suffix) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...(await collect(path)));
-    else if (entry.name.endsWith('.wgsl.meta.json')) result.push(path);
+    if (entry.isDirectory()) result.push(...(await collect(path, suffix)));
+    else if (entry.name.endsWith(suffix)) result.push(path);
   }
   return result;
 }
 
 const records = [];
 for (const directory of [join(root, 'apps'), join(root, 'packages')]) {
-  for (const path of await collect(directory)) {
+  for (const path of await collect(directory, '.wgsl.meta.json')) {
     const metadata = JSON.parse(await readFile(path, 'utf8'));
     const identifier = metadata.importSettings?.materialShaderIdentifier;
     const hasParamSchema = Array.isArray(metadata.paramSchema);
@@ -40,8 +41,8 @@ records.sort((left, right) => left.path.localeCompare(right.path));
 
 const materialPackages = [];
 for (const directory of [join(root, 'apps'), join(root, 'packages')]) {
-  for (const path of await collectMaterialPackages(directory)) {
-    const pack = JSON.parse(await readFile(path, 'utf8'));
+  for (const path of await collect(directory, '.pack.json')) {
+    const pack = JSON.parse(readArtifactJsonText(path));
     const materialAssets =
       pack.schemaVersion === '3.0.0' && pack.assets && !Array.isArray(pack.assets)
         ? Object.entries(pack.assets)
@@ -168,14 +169,4 @@ if (duplicates.length > 0) {
   for (const [identifier, paths] of duplicates)
     console.error(`  ${identifier}: ${paths.join(', ')}`);
   process.exitCode = 1;
-}
-
-async function collectMaterialPackages(directory) {
-  const result = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...(await collectMaterialPackages(path)));
-    else if (entry.name.endsWith('.pack.json')) result.push(path);
-  }
-  return result;
 }

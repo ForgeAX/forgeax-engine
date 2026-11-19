@@ -90,6 +90,10 @@ import {
 } from '@forgeax/engine-rhi';
 
 import { COMMAND_COUNTS } from './command-counts';
+import {
+  UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
+  type VerifiedFloatTextureCapabilities,
+} from './internal/float-texture-capabilities';
 import { probeR32FloatCapability } from './internal/r32float-capability';
 import {
   hasExternalTextureCapability,
@@ -307,44 +311,6 @@ export function disposeDevice(device: RhiDevice): void {
   DISPOSED_DEVICE_SET.add(device);
 }
 
-// Caps probe — split by spec-feature gate vs mandatory-but-spec-noncompliant
-// fallback (m1-1-b scope-amend, plan §6 D-2 gap):
-//
-//   * Optional spec features (`rg11b10ufloat-renderable`,
-//     `float32-filterable`) carry an authoritative `device.features.has(...)`
-//     answer. A `createTexture` probe on the unsupported format triggers a
-//     WebGPU validation error which the dawn / Chrome implementations
-//     fan out via `device.onuncapturederror` even when caught by JS try /
-//     catch — the SUT-level `onerror-gate` (apps/shared/src/onerror-gate.ts)
-//     observes that channel and turns a green-on-paper probe into a CI red
-//     `limit-exceeded` error. Solution: gate the probe by `features.has(...)`
-//     first and skip the destructive `createTexture` call entirely when the
-//     feature is absent.
-//
-//   * `rgba16float` is mandatory `RENDER_ATTACHMENT` per spec but observed
-//     unreliable on WebKit — exactly the AC-02 motivation. Keep the real
-//     `createTexture` probe here: any browser declaring it but rejecting at
-//     `createTexture` time deserves a `false` cap, and a violation under
-//     `rgba16float` would ALREADY break HDR / IBL paths so the
-//     onuncapturederror fan-out is correctly diagnostic, not noise.
-
-function probeRgba16floatRenderable(device: GPUDevice): boolean {
-  let tex: GPUTexture | undefined;
-  try {
-    tex = device.createTexture({
-      label: 'forgeax-caps-probe-rgba16float-renderable',
-      format: 'rgba16float',
-      usage: 16, // GPUTextureUsage.RENDER_ATTACHMENT
-      size: [1, 1, 1],
-    });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    tex?.destroy?.();
-  }
-}
-
 function probeRg11b10ufloatRenderable(device: GPUDevice, features: GPUSupportedFeatures): boolean {
   // Feature-gated: `rg11b10ufloat-renderable` is an optional feature per spec.
   // Skip the destructive createTexture probe when the feature is absent so the
@@ -385,14 +351,7 @@ function probeFloat32Filterable(device: GPUDevice, features: GPUSupportedFeature
   }
 }
 
-/** Probe the 11 caps fields from GPUDevice.features + GPUDevice.limits
- *  (charter proposition 5). 4 new fields (samplerAliasing /
- *  firstInstanceIndirect / storageBuffer / storageTexture) added by
- *  feat-20260511-rhi-spec-realign-aggressive w19 per D-P3 + research R-03
- *  §3.1 mapping matrix. 3 new HDR / filterable caps fields
- *  (rgba16floatRenderable / rg11b10ufloatRenderable / float32Filterable)
- *  added by feat-20260608-rhi-hdr-renderable-caps-and-warn-once M1 per
- *  D-1 + D-2 + D-2.1. */
+/** Derive feature, limit, and verified texture capability fields for one device. */
 function timestampPeriodOf(rawDevice: GPUDevice): number {
   const period = (rawDevice as GPUDevice & { readonly timestampPeriod?: unknown }).timestampPeriod;
   return typeof period === 'number' && period > 0 ? period : 1;
@@ -403,6 +362,8 @@ function deriveCaps(
   features: GPUSupportedFeatures,
   limits: GPUSupportedLimits,
   depthTextureLoad: boolean,
+  floatTextureCapabilities: VerifiedFloatTextureCapabilities,
+  vertexOnlyRenderBundles: boolean | undefined,
 ): RhiCaps {
   const has = (name: string): boolean => features.has(name as GPUFeatureName);
   // Texture-compression three-way caps (M4 w26): derived from adapter.features
@@ -412,15 +373,10 @@ function deriveCaps(
   const textureCompressionBc = has('texture-compression-bc');
   const textureCompressionEtc2 = has('texture-compression-etc2');
   const textureCompressionAstc = has('texture-compression-astc');
-  // HDR renderable + filterable caps (m1-1-b: split probe by spec-feature gate
-  // vs mandatory-but-noncompliant fallback). `rgba16float` is mandatory
-  // `RENDER_ATTACHMENT` per spec but unreliable on WebKit — keep the real
-  // probe (AC-02 motivation). `rg11b10ufloat-renderable` and `float32-
-  // filterable` carry authoritative `features.has(...)` answers; gate by
-  // feature first to avoid fan-out via `device.onuncapturederror` (apps/
-  // shared/src/onerror-gate.ts) when the optional feature is absent.
+  // Float texture usages are verified asynchronously at adapter device
+  // initialization. Optional usages are gated before their validation probes.
   const hdrCaps = {
-    rgba16floatRenderable: probeRgba16floatRenderable(rawDevice),
+    ...floatTextureCapabilities,
     rg11b10ufloatRenderable: probeRg11b10ufloatRenderable(rawDevice, features),
     float32Filterable: probeFloat32Filterable(rawDevice, features),
   };
@@ -432,6 +388,9 @@ function deriveCaps(
     // ticks and publishes their period as `timestampPeriod`.
     timestampPeriodNanoseconds: has('timestamp-query') ? timestampPeriodOf(rawDevice) : null,
     indirectDrawing: true, // WebGPU spec mandates drawIndirect / drawIndexedIndirect.
+    ...(vertexOnlyRenderBundles === undefined
+      ? {}
+      : { nativeVertexOnlyRenderBundles: vertexOnlyRenderBundles }),
     textureCompressionBc,
     textureCompressionEtc2,
     textureCompressionAstc,
@@ -1643,20 +1602,23 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
  */
 export function makeRhiDevice(
   rawDevice: GPUDevice,
-  options: { readonly depthTextureLoad?: boolean } = {},
+  options: { readonly depthTextureLoad?: boolean; readonly vertexOnlyRenderBundles?: boolean } = {},
+  floatTextureCapabilities: VerifiedFloatTextureCapabilities = UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
 ): {
   device: RhiDevice;
   /** Exposed for createShaderModule and other shim entry points that need to
    *  bypass the createX Result wrapper. */
   raw: GPUDevice;
 } {
-  const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice);
-  void rawDevice.lost?.then(() => pipelineLibrary.dispose());
+  const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice, options.vertexOnlyRenderBundles);
+  void rawDevice.lost?.then((info) => pipelineLibrary.deviceLost(info));
   const caps = deriveCaps(
     rawDevice,
     rawDevice.features,
     rawDevice.limits,
     options.depthTextureLoad ?? true,
+    floatTextureCapabilities,
+    options.vertexOnlyRenderBundles,
   );
   const accelerationStructures = new WebGpuAccelerationStructures(
     caps.rayQuery,
@@ -2006,10 +1968,22 @@ export function makeRhiDevice(
       return ok(out as unknown as BindGroup);
     },
     createPipelineLayout(desc: PipelineLayoutDescriptor): Result<PipelineLayout, RhiError> {
-      const out = pipelineLibrary.createPipelineLayout(
-        mirror(desc, PL_KEYS) as unknown as GPUPipelineLayoutDescriptor,
-      );
-      return ok(out as unknown as PipelineLayout);
+      try {
+        const out = pipelineLibrary.createPipelineLayout(
+          mirror(desc, PL_KEYS) as unknown as GPUPipelineLayoutDescriptor,
+        );
+        return ok(out as unknown as PipelineLayout);
+      } catch (cause) {
+        return err(
+          cause instanceof RhiErrorClass
+            ? cause
+            : new RhiErrorClass({
+                code: 'webgpu-runtime-error',
+                expected: 'underlying GPUDevice.createPipelineLayout to succeed',
+                hint: cause instanceof Error ? cause.message : String(cause),
+              }),
+        );
+      }
     },
     createRenderPipeline(desc: RenderPipelineDescriptor): Result<RenderPipeline, RhiError> {
       try {
@@ -2063,7 +2037,14 @@ export function makeRhiDevice(
               );
               // forgeax-async-whitelist: dom-native - only a completed device recipe can return immediately.
               return completion instanceof Promise
-                ? completion.then((pipeline) => ok(pipeline as unknown as RenderPipeline), failed)
+                ? completion.then(
+                    (pipeline) => ok(pipeline as unknown as RenderPipeline),
+                    // A device lost under the request is the cause, not the descriptor.
+                    async (cause: unknown) => {
+                      const lost = await pipelineLibrary.lossAfterFailure();
+                      return lost === undefined ? failed(cause) : err(lost);
+                    },
+                  )
                 : ok(completion as unknown as RenderPipeline);
             } catch (cause) {
               return failed(cause);
@@ -2103,7 +2084,14 @@ export function makeRhiDevice(
               );
               // forgeax-async-whitelist: dom-native - only a completed device recipe can return immediately.
               return completion instanceof Promise
-                ? completion.then((pipeline) => ok(pipeline as unknown as ComputePipeline), failed)
+                ? completion.then(
+                    (pipeline) => ok(pipeline as unknown as ComputePipeline),
+                    // A device lost under the request is the cause, not the descriptor.
+                    async (cause: unknown) => {
+                      const lost = await pipelineLibrary.lossAfterFailure();
+                      return lost === undefined ? failed(cause) : err(lost);
+                    },
+                  )
                 : ok(completion as unknown as ComputePipeline);
             } catch (cause) {
               return failed(cause);

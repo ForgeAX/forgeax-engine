@@ -122,11 +122,7 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
       propagateTransforms(world).unwrap();
       const pending = capture ? recorder.captureFrame() : undefined;
       if (pending) (await recorder.frameBoundary()).unwrap();
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+      await drawReadyFrame(renderer, { source: lease });
       if (pending) (await recorder.frameBoundary()).unwrap();
       return pending;
     };

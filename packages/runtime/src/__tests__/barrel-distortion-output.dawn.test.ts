@@ -502,11 +502,7 @@ describe('barrel distortion real output on Dawn', () => {
 
       const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = await drawReady(fixture.renderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const receipt = await drawReady(fixture.renderer, { source: attached.value });
         expect(receipt.ok).toBe(true);
         if (!receipt.ok) throw receipt.error;
         return receipt.value;
@@ -550,11 +546,7 @@ describe('barrel distortion real output on Dawn', () => {
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
       expect(world.update(1 / 60).ok).toBe(true);
-      const receipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const receipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(receipt.ok).toBe(true);
       if (!receipt.ok) throw receipt.error;
       await fixture.device.queue.onSubmittedWorkDone();
@@ -607,11 +599,7 @@ describe('barrel distortion real output on Dawn', () => {
       // Seed that baseline outside the moving path so every recorded edge
       // position exercises the active compute lane.
       expect(world.update(1 / 60).ok).toBe(true);
-      const baselineDraw = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const baselineDraw = await drawReady(fixture.renderer, { source: attached.value });
       expect(baselineDraw.ok).toBe(true);
       await fixture.device.queue.onSubmittedWorkDone();
       // Move across the view and then reverse over the same path. A one-way
@@ -622,11 +610,7 @@ describe('barrel distortion real output on Dawn', () => {
       for (const position of edgePositions) {
         world.set(edge, Transform, { pos: [position, 0, 0] }).unwrap();
         expect(world.update(1 / 60).ok).toBe(true);
-        const drawn = await drawReady(fixture.renderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const drawn = await drawReady(fixture.renderer, { source: attached.value });
         expect(drawn.ok).toBe(true);
         if (!drawn.ok) throw drawn.error;
         receipts.push(drawn.value);
@@ -732,11 +716,7 @@ describe('barrel distortion real output on Dawn', () => {
       if (!attached.ok) throw attached.error;
       const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = await drawReady(fixture.renderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const receipt = await drawReady(fixture.renderer, { source: attached.value });
         expect(receipt.ok).toBe(true);
         if (!receipt.ok) throw receipt.error;
         return receipt.value;
@@ -829,11 +809,7 @@ describe('barrel distortion real output on Dawn', () => {
 
       const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = await drawReady(fixture.renderer, {
-          leases: [attached.value],
-          camera: { lease: attached.value },
-          environment: { lease: attached.value },
-        });
+        const receipt = await drawReady(fixture.renderer, { source: attached.value });
         expect(receipt.ok).toBe(true);
         if (!receipt.ok) throw receipt.error;
         await fixture.device.queue.onSubmittedWorkDone();
@@ -1101,11 +1077,7 @@ describe('barrel distortion real output on Dawn', () => {
       if (!attached.ok) throw attached.error;
 
       expect(world.update(1 / 60).ok).toBe(true);
-      const baselineReceipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const baselineReceipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(baselineReceipt.ok).toBe(true);
       if (!baselineReceipt.ok) throw baselineReceipt.error;
       await fixture.device.queue.onSubmittedWorkDone();
@@ -1119,11 +1091,7 @@ describe('barrel distortion real output on Dawn', () => {
         })
         .unwrap();
       expect(world.update(1 / 60).ok).toBe(true);
-      const warpedReceipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const warpedReceipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(warpedReceipt.ok).toBe(true);
       if (!warpedReceipt.ok) throw warpedReceipt.error;
       await fixture.device.queue.onSubmittedWorkDone();
@@ -1141,17 +1109,15 @@ describe('barrel distortion real output on Dawn', () => {
 
       world.removeComponent(camera, BarrelDistortion).unwrap();
       expect(world.update(1 / 60).ok).toBe(true);
-      const disabledReceipt = await drawReady(fixture.renderer, {
-        leases: [attached.value],
-        camera: { lease: attached.value },
-        environment: { lease: attached.value },
-      });
+      const disabledReceipt = await drawReady(fixture.renderer, { source: attached.value });
       expect(disabledReceipt.ok).toBe(true);
       if (!disabledReceipt.ok) throw disabledReceipt.error;
       await fixture.device.queue.onSubmittedWorkDone();
       const disabled = await readBarrelPixels(fixture.device, fixture.renderTarget);
       expect(disabledReceipt.value.barrelDistortion?.strength).toBe(0);
       expect(countRgbDifferences(baseline, disabled)).toBe(0);
+
+      attached.value.dispose();
 
       const whiteAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
       const whiteWorld = new World({ assets: whiteAssets });
@@ -1160,7 +1126,9 @@ describe('barrel distortion real output on Dawn', () => {
         barrel: { strength: 0.35, centerX: 0.5, centerY: 0.5 },
         geometry: false,
       });
-      const whiteReceipt = await drawPublished(fixture.renderer, whiteWorld);
+      const whiteLease = fixture.renderer.attach(whiteWorld).unwrap();
+      whiteWorld.update(1 / 60).unwrap();
+      const whiteReceipt = await drawReady(fixture.renderer, { source: whiteLease });
       expect(whiteReceipt.ok).toBe(true);
       await fixture.device.queue.onSubmittedWorkDone();
       const white = await readBarrelPixels(fixture.device, fixture.renderTarget);
@@ -1172,6 +1140,8 @@ describe('barrel distortion real output on Dawn', () => {
         }
       }
       expect(dimPixels).toBe(0);
+
+      whiteLease.dispose();
 
       const offCenterAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
       const offCenterWorld = new World({ assets: offCenterAssets });
@@ -1186,9 +1156,7 @@ describe('barrel distortion real output on Dawn', () => {
       if (!offCenterAttached.ok) throw offCenterAttached.error;
       expect(offCenterWorld.update(1 / 60).ok).toBe(true);
       const offCenterReceipt = await drawReady(fixture.renderer, {
-        leases: [offCenterAttached.value],
-        camera: { lease: offCenterAttached.value },
-        environment: { lease: offCenterAttached.value },
+        source: offCenterAttached.value,
       });
       expect(offCenterReceipt.ok).toBe(true);
       if (!offCenterReceipt.ok) throw offCenterReceipt.error;

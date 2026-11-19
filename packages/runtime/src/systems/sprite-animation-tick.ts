@@ -1,3 +1,4 @@
+import { SpriteAnimationInvalidError } from '../errors/sprite-animation';
 // @forgeax/engine-runtime - sprite-animation tick system (M4 / T-23).
 //
 // Walks every entity that carries `SpriteAnimation`, advances its dt
@@ -58,7 +59,7 @@
 // charter P3 + P4 + P5 + F1.
 
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
-import { SpriteAnimationInvalidError } from '@forgeax/engine-ecs/projection';
+
 import {
   SpriteAnimation,
   SpriteRegionOverride,

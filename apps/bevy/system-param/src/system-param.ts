@@ -1,3 +1,4 @@
+import { defineResource } from '@forgeax/engine-ecs';
 // Reproduction of Bevy's ecs/system_param example.
 //
 // A reusable parameter owns its query and resource contract. The system only
@@ -5,6 +6,7 @@
 // rebuilding the same query/resource plumbing at every call site.
 
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import {
   Time,
   Update,
@@ -20,7 +22,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
-export const SYSTEM_PARAM_COUNT = 'bevySystemParamPlayerCount';
+export const SYSTEM_PARAM_COUNT = defineResource<PlayerCountResource>("bevySystemParamPlayerCount");
 
 const TRACK_WIDTH = 520;
 const PLAYER_START = -TRACK_WIDTH / 2;
@@ -113,7 +115,7 @@ export function buildSystemParamWorld(world: World): SystemParamState {
   };
   world.insertResource(SYSTEM_PARAM_COUNT, { value: 0 } satisfies PlayerCountResource);
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'system-param-counter',
     queries: [{ with: [SystemParamPlayer] }],
     fn: (world, queryResults) => {
@@ -121,16 +123,17 @@ export function buildSystemParamWorld(world: World): SystemParamState {
       for (const _row of queryResults[0]) playerCount += 1;
       const counter = {
         playerCount,
-        resource: world.getResource<PlayerCountResource>(SYSTEM_PARAM_COUNT),
+        resource: world.getResource(SYSTEM_PARAM_COUNT),
       };
-      state.elapsed += world.getResource<typeof Time>(Time).delta;
+      state.elapsed += world.getResource(Time).delta;
       state.runs += 1;
       counter.resource.value = counter.playerCount;
       state.playerCount = counter.playerCount;
       state.counterX = counterX(counter.playerCount, state.elapsed);
       setX(world, counterEntity, state.counterX);
     },
-  }).unwrap();
+  });
+world.addSystem(Update, systemToken1).unwrap();
 
   return state;
 }
@@ -141,7 +144,7 @@ export function readSystemParamState(world: World, state: SystemParamState): Sys
     elapsed: state.elapsed,
     runs: state.runs,
     playerCount: state.playerCount,
-    resourceValue: world.getResource<PlayerCountResource>(SYSTEM_PARAM_COUNT).value,
+    resourceValue: world.getResource(SYSTEM_PARAM_COUNT).value,
     counterX: counter.ok ? (counter.value.pos[0] ?? Number.NaN) : Number.NaN,
   };
 }

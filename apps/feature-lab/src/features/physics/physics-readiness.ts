@@ -2,10 +2,11 @@ import {
   Collider,
   ColliderShapeValue,
   PhysicsError,
+  PhysicsWorldResource,
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine/physics';
-import type { RapierPhysicsWorld3D } from '@forgeax/engine/physics-rapier3d';
+
 import physics3d from '@forgeax/engine/physics-rapier3d';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
@@ -24,10 +25,11 @@ export default defineFeature({
   async setup({ world, frames }) {
     const checks = new CheckList();
     spawnCamera(world);
-    const presentAtSetup = tryResource(world) !== undefined;
-    const { physics, waitedFrames } = await waitForPhysicsWorld<RapierPhysicsWorld3D>(
+    const presentAtSetup = tryResource(world, PhysicsWorldResource) !== undefined;
+    const { physics, waitedFrames } = await waitForPhysicsWorld(
       world,
       frames,
+      PhysicsWorldResource,
     );
     checks.ok(
       'PhysicsWorld resource becomes available',

@@ -38,22 +38,39 @@ function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolea
     a.solverGroups !== b.solverGroups
   )
     return false;
-  if (a.kind === 'voxels' && b.kind === 'voxels')
-    return same(a.voxelSize, b.voxelSize) && same(a.regions, b.regions);
-  if (a.kind === 'heightfield' && b.kind === 'heightfield')
+  const samePrimitiveGeometry = () => {
+    if (a.kind === 'cuboid' && b.kind === 'cuboid') return same(a.halfExtents, b.halfExtents);
+    if (a.kind === 'sphere' && b.kind === 'sphere') return a.radius === b.radius;
+    if (
+      (a.kind === 'capsule' && b.kind === 'capsule') ||
+      (a.kind === 'cylinder' && b.kind === 'cylinder')
+    )
+      return a.radius === b.radius && a.halfHeight === b.halfHeight;
+    return undefined;
+  };
+  const sameGeometry = () => {
+    if (a.kind === 'voxels' && b.kind === 'voxels')
+      return same(a.voxelSize, b.voxelSize) && same(a.regions, b.regions);
+    if (a.kind === 'heightfield' && b.kind === 'heightfield')
+      return (
+        a.rows === b.rows &&
+        a.columns === b.columns &&
+        same(a.scale, b.scale) &&
+        same(a.heights, b.heights)
+      );
+    if (a.kind === 'trimesh' && b.kind === 'trimesh')
+      return same(a.vertices, b.vertices) && same(a.indices, b.indices);
+    const primitive = samePrimitiveGeometry();
+    if (primitive !== undefined) return primitive;
     return (
-      a.rows === b.rows &&
-      a.columns === b.columns &&
-      same(a.scale, b.scale) &&
-      same(a.heights, b.heights)
+      a.kind === 'convex-compound' &&
+      b.kind === 'convex-compound' &&
+      a.nativeLayout === b.nativeLayout &&
+      a.pieces.length === b.pieces.length &&
+      a.pieces.every((piece, i) => same(piece, b.pieces[i]))
     );
-  return (
-    a.kind === 'convex-compound' &&
-    b.kind === 'convex-compound' &&
-    a.nativeLayout === b.nativeLayout &&
-    a.pieces.length === b.pieces.length &&
-    a.pieces.every((piece, i) => same(piece, b.pieces[i]))
-  );
+  };
+  return sameGeometry();
 }
 
 /** Borrow equal committed shapes; only new disabled colliders belong to the
@@ -207,7 +224,15 @@ export function createDerivedColliderDesc(
   shape: DerivedShapeInput,
 ): ColliderDesc {
   let geometry: ColliderDesc;
-  if (shape.kind === 'voxels') {
+  if (shape.kind === 'cuboid') {
+    geometry = RAPIER.ColliderDesc.cuboid(...shape.halfExtents);
+  } else if (shape.kind === 'sphere') {
+    geometry = RAPIER.ColliderDesc.ball(shape.radius);
+  } else if (shape.kind === 'capsule') {
+    geometry = RAPIER.ColliderDesc.capsule(shape.halfHeight, shape.radius);
+  } else if (shape.kind === 'cylinder') {
+    geometry = RAPIER.ColliderDesc.cylinder(shape.halfHeight, shape.radius);
+  } else if (shape.kind === 'voxels') {
     geometry = RAPIER.ColliderDesc.voxelRegions(shape.regions, {
       x: shape.voxelSize[0],
       y: shape.voxelSize[1],
@@ -220,6 +245,14 @@ export function createDerivedColliderDesc(
       new Float32Array(shape.heights),
       { x: shape.scale[0], y: shape.scale[1], z: shape.scale[2] },
     );
+  } else if (shape.kind === 'trimesh') {
+    const desc = RAPIER.ColliderDesc.trimesh(
+      shape.vertices,
+      shape.indices,
+      RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
+    );
+    if (desc === null) throw new Error('Rapier rejected the static trimesh');
+    geometry = desc;
   } else {
     const positions: { x: number; y: number; z: number }[] = [];
     const parts: Shape[] = shape.pieces.map((vertices) => {
@@ -253,26 +286,29 @@ export function createDerivedColliderDesc(
           parts.map(() => ({ x: 0, y: 0, z: 0, w: 1 })),
         );
   }
-  const desc = geometry
-    .setTranslation(shape.origin?.[0] ?? 0, shape.origin?.[1] ?? 0, shape.origin?.[2] ?? 0)
-    .setRotation({
-      x: shape.rotation?.[0] ?? 0,
-      y: shape.rotation?.[1] ?? 0,
-      z: shape.rotation?.[2] ?? 0,
-      w: shape.rotation?.[3] ?? 1,
-    })
-    .setFriction(shape.friction ?? 0.5)
-    .setRestitution(shape.restitution ?? 0)
-    // Disabled colliders still contribute native mass. Staging must be
-    // massless; admission assigns density only to its committed shape set.
-    .setDensity(0)
-    .setCollisionGroups(shape.collisionGroups ?? 0xffffffff)
-    .setSolverGroups(shape.solverGroups ?? 0xffffffff)
-    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS)
-    .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL)
-    .setEnabled(false);
-  if (shape.isSensor === true) desc.setSensor(true);
-  return desc;
+  const configureDerivedCollider = (geometry: ColliderDesc, shape: DerivedShapeInput) => {
+    const desc = geometry
+      .setTranslation(shape.origin?.[0] ?? 0, shape.origin?.[1] ?? 0, shape.origin?.[2] ?? 0)
+      .setRotation({
+        x: shape.rotation?.[0] ?? 0,
+        y: shape.rotation?.[1] ?? 0,
+        z: shape.rotation?.[2] ?? 0,
+        w: shape.rotation?.[3] ?? 1,
+      })
+      .setFriction(shape.friction ?? 0.5)
+      .setRestitution(shape.restitution ?? 0)
+      // Disabled colliders still contribute native mass. Staging must be
+      // massless; admission assigns density only to its committed shape set.
+      .setDensity(0)
+      .setCollisionGroups(shape.collisionGroups ?? 0xffffffff)
+      .setSolverGroups(shape.solverGroups ?? 0xffffffff)
+      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS)
+      .setActiveCollisionTypes(RAPIER.ActiveCollisionTypes.ALL)
+      .setEnabled(false);
+    if (shape.isSensor === true) desc.setSensor(true);
+    return desc;
+  };
+  return configureDerivedCollider(geometry, shape);
 }
 
 /** Build the complete disabled roster before returning it to the transaction owner.

@@ -143,11 +143,7 @@ describe('swap-chain-format.browser - AC-01 + AC-02 integration guards', () => {
     if (renderer === undefined || lease === undefined) {
       throw new Error(`${label}: renderer and World lease must be attached before draw`);
     }
-    const drawn = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const drawn = renderer.draw({ source: lease });
     if (!drawn.ok) {
       throw new Error(
         `${label}: renderer.draw failed ${JSON.stringify({

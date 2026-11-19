@@ -189,13 +189,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     ssao: false,
   };
   let seeds = [{ id: 7, generation: 1, position: [0, 0, -3] as const, cellSize: 2, traced: true }];
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'automatic',
-    });
+  const submit = () => renderer.draw({ source: lease, geometryLane: 'automatic' });
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
@@ -225,11 +219,9 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
   const hdr = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = await drawReadyFrame(
-      renderer,
-      { leases: [lease], camera: { lease }, environment: { lease }, geometryLane: 'automatic' },
-      ['linear-hdr'],
-    );
+    const receipt = await drawReadyFrame(renderer, { source: lease, geometryLane: 'automatic' }, [
+      'linear-hdr',
+    ]);
     const observation = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');

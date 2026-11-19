@@ -1,13 +1,10 @@
-import { AssetGuid, type PackageId } from '@forgeax/engine-pack/guid';
-import type { MaterialAsset } from '@forgeax/engine-types';
-import { deriveStandardLayerPlan } from '@forgeax/engine-types';
-
-type SurfacePack = {
-  packageId: PackageId;
-  build: () =>
-    | { readonly ok: true; readonly value: Readonly<Record<string, MaterialAsset>> }
-    | Promise<{ readonly ok: true; readonly value: Readonly<Record<string, MaterialAsset>> }>;
-};
+import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type {
+  PackBuildReadContext,
+  PackOutput,
+  ScriptablePackDefinition,
+} from '@forgeax/engine-pack/source';
+import { deriveStandardLayerPlan, err, type MaterialAsset, ok } from '@forgeax/engine-types';
 
 type ViteImportMeta = ImportMeta & {
   glob<T>(
@@ -17,7 +14,7 @@ type ViteImportMeta = ImportMeta & {
 };
 
 const packModules = Object.values(
-  (import.meta as ViteImportMeta).glob<SurfacePack>(
+  (import.meta as ViteImportMeta).glob<ScriptablePackDefinition>(
     [
       '../../../../templates/game-3d/assets/materials.pack.ts',
       '../../../../apps/preview/assets/surface-standard-evidence.pack.ts',
@@ -31,17 +28,55 @@ const packModules = Object.values(
 if (packModules.length !== 2)
   throw new Error('surface-evidence-fixture: required pack module missing');
 
-const builtPacks = packModules.map((pack) => {
-  const built = pack.build();
-  if (built instanceof Promise || !built.ok) {
-    throw new Error('surface-evidence-fixture: materials pack did not produce outputs');
-  }
-  return { packageId: pack.packageId, values: built.value };
-});
-const materials = Object.assign({}, ...builtPacks.map((pack) => pack.values)) as Record<
-  string,
-  MaterialAsset | undefined
->;
+const dependencyModules = Object.values(
+  (import.meta as ViteImportMeta).glob<ScriptablePackDefinition>(
+    ['../../../../apps/preview/assets/water-r0-recipes.pack.ts'],
+    { eager: true, import: 'default' },
+  ),
+);
+const dependencyPacks = await Promise.all(
+  dependencyModules.map(async (pack) => {
+    const built = await pack.build({
+      packageId: pack.packageId,
+      readByGuid: async () => err(new Error('surface-evidence-fixture: undeclared dependency')),
+    });
+    if (!built.ok)
+      throw new Error(
+        `surface-evidence-fixture: dependency pack failed: ${JSON.stringify(built.error)}`,
+      );
+    return { packageId: pack.packageId, values: built.value };
+  }),
+);
+if (dependencyPacks.length !== 1)
+  throw new Error('surface-evidence-fixture: required dependency pack missing');
+
+const reader: PackBuildReadContext = {
+  async readByGuid<TAsset extends PackOutput>(guid: AssetGuid) {
+    for (const pack of dependencyPacks) {
+      for (const [sourceKey, asset] of Object.entries(pack.values)) {
+        if (
+          AssetGuid.format(AssetGuid.derive(pack.packageId, sourceKey)) === AssetGuid.format(guid)
+        )
+          return ok(asset as TAsset);
+      }
+    }
+    return err(new Error(`surface-evidence-fixture: missing dependency ${AssetGuid.format(guid)}`));
+  },
+};
+const builtPacks = await Promise.all(
+  packModules.map(async (pack) => {
+    const built = await pack.build({ packageId: pack.packageId, ...reader });
+    if (!built.ok)
+      throw new Error(
+        `surface-evidence-fixture: materials pack did not produce outputs: ${JSON.stringify(built.error)}`,
+      );
+    return { packageId: pack.packageId, values: built.value };
+  }),
+);
+const materials: Record<string, MaterialAsset | undefined> = {};
+for (const pack of builtPacks)
+  for (const [sourceKey, asset] of Object.entries(pack.values))
+    if (asset.kind === 'material' && !('execution' in asset)) materials[sourceKey] = asset;
 
 function guidForSourceKey(sourceKey: string): AssetGuid {
   const owner = builtPacks.find((pack) => Object.hasOwn(pack.values, sourceKey));
@@ -54,7 +89,7 @@ function guidForSourceKey(sourceKey: string): AssetGuid {
 const rustedIron = materials['material/rusted-iron'];
 
 const defaultBase = materials['material/ground'];
-const defaultPhysical = materials['material/painted'];
+const defaultPhysical = materials['material/painted-evidence'];
 const customPhysical = materials['material/rusted-iron-custom-physical'];
 if (
   rustedIron === undefined ||
@@ -93,7 +128,7 @@ export const SURFACE_CASES = [
   {
     id: 'default-physical',
     material: defaultPhysical,
-    materialGuid: '019fb7ce-3200-7000-8000-000000000002',
+    materialGuid: AssetGuid.format(guidForSourceKey('material/painted-evidence')),
     surfaceModule: defaultPhysical.passes?.[0]?.program.moduleSlots?.surface ?? '',
     physical: true,
   },

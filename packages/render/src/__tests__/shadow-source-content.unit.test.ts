@@ -110,7 +110,7 @@ it('clears removed caster footprints, including the last caster, then retains th
     f.pool._commitResourceReplacement();
     for (const entityKey of [1, 2]) {
       const revision = f.scene.contentCursor;
-      const delta = f.apply([{ kind: 'remove', worldId: 0, entityKey }]);
+      const delta = f.apply([{ kind: 'remove', entityKey }]);
       expect(delta.removedSlots).toHaveLength(1);
       const next = f.input();
       const boxes = f.scene.changedBoundsSince(revision, next.ignoredChangeSlots);
@@ -169,7 +169,7 @@ it.each([
     const before = frame();
     expect(before.input.ignoredChangeSlots.has(dynamicSlot ?? -1)).toBe(true);
     expect(before.views.map((view) => view.cache)).toEqual(['hit', 'hit', 'hit']);
-    f.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
+    f.apply([{ kind: 'remove', entityKey: 3 }]);
     const after = frame();
     expect(after.input.ignoredChangeSlots.has(dynamicSlot ?? -1)).toBe(false);
     expect(after.views.map((view) => view.cache)).toEqual(['hit', 'hit', 'hit']);
@@ -204,8 +204,8 @@ it.each([
       ...(declaredStatic ? { mobility: 'static' as const } : {}),
     };
     const delta = f.apply([
-      { kind: 'remove', worldId: 0, entityKey: 3 },
-      { kind: 'update', worldId: 0, entityKey: 4, snapshot: replacement },
+      { kind: 'remove', entityKey: 3 },
+      { kind: 'update', entityKey: 4, snapshot: replacement },
     ]);
     const reused = delta.createdSlots[0];
     expect(reused?.slot).toBe(created.slot);
@@ -230,8 +230,8 @@ it('clears a removed static footprint when its slot is reused by a dynamic caste
     if (old === undefined) throw Error('expected static caster');
     const replacement = shadowSourceSnapshot(3, 0);
     const delta = f.apply([
-      { kind: 'remove', worldId: 0, entityKey: 1 },
-      { kind: 'update', worldId: 0, entityKey: 3, snapshot: replacement },
+      { kind: 'remove', entityKey: 1 },
+      { kind: 'update', entityKey: 3, snapshot: replacement },
     ]);
     expect(delta.createdSlots[0]?.slot).toBe(old.slot);
     expect(delta.createdSlots[0]?.generation).not.toBe(old.generation);

@@ -1,46 +1,20 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { writeHeapSnapshot } from 'node:v8';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { createMaterialShaderProgram } from '../material/program';
-
-function retainedProgram(index: number) {
-  return createMaterialShaderProgram(
-    `const MATERIAL_BODY_RETENTION_${index}: u32 = 0u;\n${' '.repeat(2 * 1024 * 1024)}\n@vertex fn retained_vertex(@location(0) long_retained_position_input: vec3f) -> @builtin(position) vec4f {return vec4f(long_retained_position_input,1.);}`,
-  );
-}
 
 it('retains complete runtime sources without duplicating analyzed bodies in lazy accessors', () => {
-  const programs = Array.from({ length: 3 }, (_, index) => retainedProgram(index));
-  const directory = mkdtempSync(join(tmpdir(), 'forgeax-material-retention-'));
-  try {
-    const snapshot = JSON.parse(
-      readFileSync(writeHeapSnapshot(join(directory, 'heap.heapsnapshot')), 'utf8'),
-    );
-    const fields: string[] = snapshot.snapshot.meta.node_fields;
-    const width = fields.length;
-    const names: string[] = snapshot.strings;
-    const kinds: string[] = snapshot.snapshot.meta.node_types[0];
-    const nodes: number[] = snapshot.nodes;
-    let fullBodies = 0;
-    for (let offset = 0; offset < nodes.length; offset += width) {
-      const kind = kinds[nodes[offset + fields.indexOf('type')] as number];
-      const name = names[nodes[offset + fields.indexOf('name')] as number] as string;
-      const bytes = nodes[offset + fields.indexOf('self_size')] as number;
-      if (
-        kind === 'string' &&
-        name.startsWith('const MATERIAL_BODY_RETENTION_') &&
-        bytes > 1024 * 1024
-      )
-        fullBodies++;
-    }
-    // Raw runtime text stays whole. Keep one body per program; V8 may also
-    // retain its latest RegExp input, but analysis must not duplicate every body.
-    expect(fullBodies).toBeGreaterThanOrEqual(programs.length);
-    expect(fullBodies).toBeLessThanOrEqual(programs.length + 1);
-    for (const program of programs) expect(program.source.length).toBeGreaterThan(2 * 1024 * 1024);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+  // Measure the program's owner, independently of earlier shared Vitest modules
+  // and fixtures whose heap snapshot can exceed V8's string-reading limit.
+  const observed = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [fileURLToPath(new URL('./material-program-retention.fixture.mjs', import.meta.url))],
+      { encoding: 'utf8', timeout: 25_000, maxBuffer: 1024 * 1024 },
+    ),
+  ) as { fullBodies: number; sourceLengths: number[] };
+  expect(observed.sourceLengths).toHaveLength(3);
+  // Keep one body per program; V8 may also retain its latest RegExp input.
+  expect(observed.fullBodies).toBeGreaterThanOrEqual(observed.sourceLengths.length);
+  expect(observed.fullBodies).toBeLessThanOrEqual(observed.sourceLengths.length + 1);
+  for (const length of observed.sourceLengths) expect(length).toBeGreaterThan(2 * 1024 * 1024);
 }, 30000);

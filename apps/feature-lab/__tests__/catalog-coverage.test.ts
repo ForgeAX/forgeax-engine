@@ -18,6 +18,21 @@ const GATE_PROVED_ROWS = new Set([
   // Renderer internals observed only through perf and pixel-parity gates.
   'Render bundle reuse',
   'Custom ShadowCaster pass',
+  // Water owner/cook/publication tests, native Dawn, browser distribution and R3 project pixels.
+  'Water system',
+  // R5 independent project GPU stages and actual Worker solver lifetimes.
+  'GPU WaterMesh',
+  'Async water solver buoyancy',
+  // R4 native fixed-step dynamics, exact-body CPU DI and captured Ocean foam pixels.
+  'Synchronous water buoyancy',
+  'Water CPU particle queries',
+  'Static water foam',
+  // R6 saved-scene dual-solver Demo, native field readback and browser/Dawn owner gates.
+  'Local water fluid simulation',
+  // R7 needs its producer-backed Pack project, completed GPU readbacks and durable reload.
+  'Advanced shallow water simulation',
+  'River water bake',
+  'World Ocean FFT patch',
   // Fresh-device field composition and native contact replay, documented in README.
   'Managed scene SDF collision',
   'GPU-driven custom Surface ABI',
@@ -44,6 +59,8 @@ const GATE_PROVED_ROWS = new Set([
   'Resident Host Pack selection',
   'Bound Preview host',
   'Project preview',
+  // Generated pre-module Host markup; see the DevKit startup UI and generated-host gates.
+  'Project startup presentation',
   'Cached asset thumbnails',
   'Material preview',
   'Mesh preview',
@@ -66,6 +83,7 @@ const GATE_PROVED_ROWS = new Set([
   // Native PCM output and real bounded Range responses use the owning HTTP fixture.
   'Long audio windows',
   // Packaging, SDK and release.
+  'Tauri platform packaging',
   'Single-HTML offline delivery',
   'Player Asset Bundles',
   'Asset/format producers',

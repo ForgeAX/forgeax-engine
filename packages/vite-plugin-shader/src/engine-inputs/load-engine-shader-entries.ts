@@ -1,14 +1,25 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { terrainProgramSource } from '@forgeax/engine-shader-compiler';
+import {
+  SURFACE_SLOT_MODULE,
+  terrainProgramSource,
+  waterDeformationAbiSource,
+} from '@forgeax/engine-shader-compiler';
+
+export { SURFACE_SLOT_MODULE } from '@forgeax/engine-shader-compiler';
+
 import {
   assertMaterialAsset,
+  type MaterialDeformationDeclaration,
   type MaterialProgram,
+  type MaterialSurfaceModel,
   type ShaderProgramContract,
+  WATER_DEFORMATION_INPUTS,
+  WATER_DEFORMATION_VERSION,
 } from '@forgeax/engine-types';
-import { cloudAtmosphereEntries } from './cloud-atmosphere-entries';
 
 const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/m;
 
@@ -20,6 +31,8 @@ export interface EngineShaderFile {
   readonly program?: MaterialProgram;
   /** Engine-owned fixed Surface composition, prepared only at build time. */
   readonly surfaceModule?: string;
+  readonly surfaceModel?: MaterialSurfaceModel;
+  readonly deformation?: MaterialDeformationDeclaration;
   /** Non-reflectable numerical and output-format facts published with this WGSL entry. */
   readonly programContract?: ShaderProgramContract;
 }
@@ -53,8 +66,6 @@ export function extractDefineImportPath(source: string): string | undefined {
   return DEFINE_IMPORT_PATH_RE.exec(source)?.[1];
 }
 
-export const SURFACE_SLOT_MODULE = 'forgeax_material::slot::surface' as const;
-
 /** Project the engine default Surface into the Standard slot identity. */
 export function projectSurfaceSlotSource(source: string): string {
   return source.replace(
@@ -73,8 +84,43 @@ async function resolveEntries<T extends Record<string, unknown>>(
   return Object.fromEntries(resolved) as { [K in keyof T]: Awaited<T[K]> };
 }
 
+/** The same source bytes used by Standard and the Build-only cloud material probe. */
+const readShaderText = (path: string): Promise<string> => readFile(path, 'utf8');
+
+export async function loadCloudDensityModules(readText = readShaderText) {
+  const require = createRequire(import.meta.url);
+  const srcDir = resolve(dirname(require.resolve('@forgeax/engine-shader/package.json')), 'src');
+  const modules = {
+    'forgeax_cloud::coordinates': resolve(srcDir, 'cloud/coordinates.wgsl'),
+    'forgeax_cloud::medium': resolve(srcDir, 'cloud/medium.wgsl'),
+  } as const;
+  const coordinates = await readText(modules['forgeax_cloud::coordinates']);
+  const medium = await readText(modules['forgeax_cloud::medium']);
+  const imports = { 'forgeax_cloud::coordinates': coordinates, 'forgeax_cloud::medium': medium };
+  const identity = createHash('sha256').update(JSON.stringify(imports)).digest('hex');
+  return { imports, identity, sourcePaths: Object.values(modules) };
+}
+
 /** Load canonical Engine shader entries and their import closure. */
-export async function loadEngineShaderEntries() {
+export async function loadCloudRendererModules(readText = readShaderText) {
+  const engine = await loadEngineShaderEntries(readText);
+  const require = createRequire(import.meta.url);
+  const srcDir = resolve(dirname(require.resolve('@forgeax/engine-shader/package.json')), 'src');
+  const names = await readdir(srcDir);
+  const cloudNames = await readdir(resolve(srcDir, 'cloud'));
+  return {
+    imports: engine.imports,
+    sourcePaths: [
+      ...names.filter((name) => name.endsWith('.wgsl')).map((name) => resolve(srcDir, name)),
+      ...cloudNames
+        .filter((name) => name.endsWith('.wgsl'))
+        .map((name) => resolve(srcDir, 'cloud', name)),
+    ],
+  };
+}
+
+/** Load canonical Engine shader entries and their import closure. */
+export async function loadEngineShaderEntries(readText = readShaderText) {
   const require = createRequire(import.meta.url);
   const packageJsonPath = require.resolve('@forgeax/engine-shader/package.json');
   const srcDir = resolve(dirname(packageJsonPath), 'src');
@@ -82,7 +128,7 @@ export async function loadEngineShaderEntries() {
   const readSource = (fileName: string): Promise<string> => {
     let source = sourceReads.get(fileName);
     if (source === undefined) {
-      source = readFile(resolve(srcDir, fileName), 'utf8');
+      source = readText(resolve(srcDir, fileName));
       sourceReads.set(fileName, source);
     }
     return source;
@@ -103,6 +149,35 @@ export async function loadEngineShaderEntries() {
       ...file,
       id: `${file.id}?portable-fragment`,
     }));
+  const gbufferEntry = (file: EngineShaderFile): EngineShaderFile => ({
+    ...file,
+    programContract: {
+      ...file.programContract,
+      schemaVersion: 'shader-program-contract/1',
+      gbuffer: 'standard-gbuffer/2',
+    },
+  });
+  const readGBufferEntry = (...args: Parameters<typeof readEntry>) =>
+    readEntry(...args).then(gbufferEntry);
+  const readGBufferFragmentEntry = (...args: Parameters<typeof readFragmentEntry>) =>
+    readFragmentEntry(...args).then(gbufferEntry);
+  const density = loadCloudDensityModules(readText);
+  const cloudSampled = Promise.all(
+    [false, true].map(async (detail) => {
+      const { identity } = await density;
+      const entry = await readEntry(
+        'cloud/sampled-view.wgsl',
+        `forgeax::cloud-sampled-view-${identity}-${detail ? 1 : 0}`,
+      );
+      return {
+        ...entry,
+        id: `${entry.id}?detail=${detail}`,
+        source: `${entry.source}
+const CLOUD_DETAIL: bool = ${detail};
+`,
+      };
+    }),
+  );
   const terrainEntries = Promise.all(
     [false, true].flatMap((ids) =>
       [false, true].map(async (shadow) => {
@@ -136,11 +211,83 @@ export async function loadEngineShaderEntries() {
     defaultStandardPbr: readEntry('default-standard-pbr.wgsl', 'forgeax::default-standard-pbr'),
     defaultStandardPbrSkin: readEntry('default-standard-pbr-skin.wgsl', 'forgeax::pbr-skin'),
     singleLayerMedium: readEntry('single-layer-medium.wgsl', 'forgeax::single-layer-medium'),
+    singleLayerWater: readEntry('single-layer-water.wgsl', 'forgeax::single-layer-water', {
+      WATER_WAVES_AVAILABLE: true,
+      MATERIAL_WATER_DEFORMATION_AVAILABLE: true,
+      WATER_ENABLE_WAVES: true,
+      WATER_USE_INFO: true,
+      WATER_USE_BAKED_SIMULATION: false,
+      WATER_USE_FIXED_VELOCITY: false,
+      WATER_USE_FIXED_HEIGHT: false,
+      WATER_USE_FIXED_DEPTH: false,
+      WATER_BAKED_HEIGHT_DEPTH_AVAILABLE: false,
+      WATER_HEIGHT_MAPPING_AVAILABLE: true,
+      WATER_USE_REFRACTION: true,
+      WATER_USE_REFLECTIONS: true,
+      WATER_USE_SSR: true,
+    }).then((file) => ({
+      ...file,
+      surfaceModel: 'single-layer-water' as const,
+      surfaceModule: 'forgeax_material::default_single_layer_water_surface',
+      deformation: {
+        module: 'forgeax_material::water_deformation_default',
+        version: WATER_DEFORMATION_VERSION,
+        inputs: WATER_DEFORMATION_INPUTS,
+      },
+    })),
+    waterInfoRasterWater: readEntry(
+      'water-info-raster-water.wgsl',
+      'forgeax::water-info-raster-water',
+    ).then((file) => ({
+      ...file,
+      program: {
+        module: 'forgeax_material::water_info_raster_water',
+        bindings: 'group-0' as const,
+      },
+    })),
+    waterMeshRaster: readEntry('water-mesh-raster.wgsl', 'forgeax::water-mesh-raster').then(
+      (file) => ({
+        ...file,
+        program: { module: 'forgeax_material::water_mesh_raster', bindings: 'group-0' as const },
+      }),
+    ),
+    waterMeshPrecise: readEntry('water-mesh-precise.wgsl', 'forgeax::water-mesh-precise'),
+    waterMeshPreciseMsaa: readEntry('water-mesh-precise.wgsl', 'forgeax::water-mesh-precise-msaa', {
+      WATER_PRECISE_MSAA: true,
+    }).then((file) => ({ ...file, id: `${file.id}#msaa` })),
+    waterInfoRasterGround: readEntry(
+      'water-info-raster-ground.wgsl',
+      'forgeax::water-info-raster-ground',
+    ).then((file) => ({
+      ...file,
+      program: {
+        module: 'forgeax_material::water_info_raster_ground',
+        bindings: 'group-0' as const,
+      },
+    })),
+    waterInfoRasterDilation: readEntry(
+      'water-info-raster-dilation.wgsl',
+      'forgeax::water-info-raster-dilation',
+    ).then((file) => ({
+      ...file,
+      program: {
+        module: 'forgeax_material::water_info_raster_dilation',
+        bindings: 'group-0' as const,
+      },
+    })),
     unlit: readEntry('unlit.wgsl', 'forgeax::default-unlit'),
     pointsLines: readEntry('points-lines.wgsl', 'forgeax::points-lines'),
     tonemap: readEntry('tonemap.wgsl'),
+    standardOutputV2: readEntry('standard-output-v2.wgsl', 'forgeax::standard-output-v2'),
     analyticFog: readEntry('analytic-fog.wgsl', 'forgeax::analytic-fog'),
     cloudLayer: readEntry('cloud.wgsl'),
+    cloudAnalytic: readEntry('cloud/analytic-view.wgsl', 'forgeax::cloud-analytic-view'),
+    cloudShadowFilter: readEntry('cloud/shadow-filter.wgsl', 'forgeax::cloud-shadow-filter'),
+    cloudMode0Reconstruct: readEntry(
+      'cloud/mode0-reconstruct.wgsl',
+      'forgeax::cloud-mode0-reconstruct',
+    ),
+    cloudMode0Compose: readEntry('cloud/mode0-compose.wgsl', 'forgeax::cloud-mode0-compose'),
     taaResolve: readEntry('taa-resolve.wgsl'),
     motionBlur: readEntry('motion-blur.wgsl'),
     depthOfField: readEntry('depth-of-field.wgsl'),
@@ -179,8 +326,8 @@ export async function loadEngineShaderEntries() {
     atmosphereCompose: readEntry('atmosphere-compose.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
-    hdrpSsao: readEntry('hdrp-ssao.wgsl'),
-    hdrpGtaoCompute: readEntry('hdrp-gtao-compute.wgsl'),
+    hdrpSsao: readGBufferEntry('hdrp-ssao.wgsl'),
+    hdrpGtaoCompute: readGBufferEntry('hdrp-gtao-compute.wgsl'),
     lightTextureResampleCompute: readEntry(
       'light-texture-resample-compute.wgsl',
       'forgeax::engine-light-texture-resample-compute',
@@ -205,29 +352,35 @@ export async function loadEngineShaderEntries() {
       'depth-pyramid-reduce.wgsl',
       'forgeax::depth-pyramid-reduce-fragment',
     ),
-    ssrTrace: readEntry('ssr-trace.wgsl'),
-    ssrTemporal: readEntry('ssr-temporal.wgsl'),
-    ssrTraceFragment: readFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
-    ssrTemporalFragment: readFragmentEntry('ssr-temporal.wgsl', 'forgeax::ssr-temporal-fragment'),
-    ssrCompose: readEntry('ssr-compose.wgsl'),
-    ssrComposeFragment: readFragmentEntry('ssr-compose.wgsl', 'forgeax::ssr-compose-fragment'),
+    ssrTrace: readGBufferEntry('ssr-trace.wgsl'),
+    ssrTemporal: readGBufferEntry('ssr-temporal.wgsl'),
+    ssrTraceFragment: readGBufferFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
+    ssrTemporalFragment: readGBufferFragmentEntry(
+      'ssr-temporal.wgsl',
+      'forgeax::ssr-temporal-fragment',
+    ),
+    ssrCompose: readGBufferEntry('ssr-compose.wgsl'),
+    ssrComposeFragment: readGBufferFragmentEntry(
+      'ssr-compose.wgsl',
+      'forgeax::ssr-compose-fragment',
+    ),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
-    rayRasterSource: readEntry('ray-raster-source.wgsl'),
-    rayProbePlacement: readEntry('ray-probe-placement.wgsl'),
-    rayDiffuseComposite: readEntry('ray-diffuse-composite.wgsl'),
-    rayDiffuseReconstruct: readEntry('ray-diffuse-reconstruct.wgsl'),
-    rayIrradianceField: readEntry('ray-irradiance-field.wgsl', undefined, {
+    rayRasterSource: readGBufferEntry('ray-raster-source.wgsl'),
+    rayProbePlacement: readGBufferEntry('ray-probe-placement.wgsl'),
+    rayDiffuseComposite: readGBufferEntry('ray-diffuse-composite.wgsl'),
+    rayDiffuseReconstruct: readGBufferEntry('ray-diffuse-reconstruct.wgsl'),
+    rayIrradianceField: readGBufferEntry('ray-irradiance-field.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
     }),
-    rayBakedField: readEntry('ray-irradiance-field.wgsl', undefined, {
+    rayBakedField: readGBufferEntry('ray-irradiance-field.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: false,
     }).then((file) => ({ ...file, id: `${file.id}?baked` })),
-    rayScreenProbe: readEntry('ray-screen-probe.wgsl', undefined, {
+    rayScreenProbe: readGBufferEntry('ray-screen-probe.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
     }),
-    rayReflectionComposite: readEntry('ray-reflection-composite.wgsl'),
-    standardDeferred: readEntry(
+    rayReflectionComposite: readGBufferEntry('ray-reflection-composite.wgsl'),
+    standardDeferred: readGBufferEntry(
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
     ),
@@ -241,9 +394,9 @@ export async function loadEngineShaderEntries() {
       'forgeax::engine-forward-contact-shadow',
     ),
     shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
-    decalProject: readEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
-    decalApply: readEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
-    subsurfaceDiffusion: readEntry(
+    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
+    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
+    subsurfaceDiffusion: readGBufferEntry(
       'subsurface-diffusion.wgsl',
       'forgeax::engine-subsurface-diffusion',
     ),
@@ -287,6 +440,7 @@ export async function loadEngineShaderEntries() {
     'forgeax_pbr::ibl_sampling': readSource('ibl-sampling.wgsl'),
     'forgeax_pbr::pmrem': readSource('ibl-pmrem.wgsl'),
     'forgeax_pbr::tbn': readSource('tbn.wgsl'),
+    'forgeax_geometry::tangent_frame32': readSource('tangent-frame32.wgsl'),
     'forgeax_pbr::lighting_directional': readSource('lighting-directional.wgsl'),
     'forgeax_pbr::lighting_punctual': readSource('lighting-punctual.wgsl'),
     'forgeax_pbr::lighting_spot_modifiers': readSource('lighting-spot-modifiers.wgsl'),
@@ -308,6 +462,18 @@ export async function loadEngineShaderEntries() {
     'forgeax_atmosphere::optics': readSource('atmosphere-optics.wgsl'),
     'forgeax_atmosphere::coordinates': readSource('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::table_kernels': readSource('atmosphere-table-kernels.wgsl'),
+    'forgeax_cloud::coordinates': density.then(
+      ({ imports }) => imports['forgeax_cloud::coordinates'],
+    ),
+    'forgeax_cloud::geometry': readSource('cloud/geometry.wgsl'),
+    'forgeax_cloud::lighting': readSource('cloud/lighting.wgsl'),
+    'forgeax_cloud::shadow': readSource('cloud/shadow.wgsl'),
+    'forgeax_cloud::depth_minmax': readSource('cloud/depth-minmax.wgsl'),
+    'forgeax_cloud::reconstruct': readSource('cloud/reconstruct.wgsl'),
+    'forgeax_cloud::compose': readSource('cloud/compose.wgsl'),
+    'forgeax_cloud::aerial': readSource('cloud/aerial.wgsl'),
+    'forgeax_cloud::medium': density.then(({ imports }) => imports['forgeax_cloud::medium']),
+    'forgeax_cloud::trace': readSource('cloud/trace.wgsl'),
     'forgeax_hdrp::ssao': readSource('hdrp-ssao.wgsl'),
     'forgeax_pbr::standard_lighting': readSource('standard-lighting.wgsl'),
     'forgeax_pbr::gbuffer': readSource('standard-gbuffer.wgsl'),
@@ -321,6 +487,20 @@ export async function loadEngineShaderEntries() {
     'forgeax_material::alpha_hash': readSource('alpha-hash.wgsl'),
     'forgeax_material::oit': readSource('oit.wgsl'),
     'forgeax_material::surface_v1': readSource('surface_v1.wgsl'),
+    'forgeax_material::water_waves': readSource('water-waves.wgsl'),
+    'forgeax_material::water_transition_continuity': readSource('water-transition-continuity.wgsl'),
+    'forgeax_material::water_deformation_v1': Promise.resolve(waterDeformationAbiSource()),
+    'forgeax_material::water_deformation_default': readSource('water-deformation-default.wgsl'),
+    'forgeax_material::water_deformation_input': readSource('water-deformation-input.wgsl'),
+    'forgeax_material::single_layer_water_surface_v1': readSource(
+      'single-layer-water-surface_v1.wgsl',
+    ),
+    'forgeax_material::default_single_layer_water_surface': readSource(
+      'default_single_layer_water_surface.wgsl',
+    ),
+    'forgeax_material::water_surface': readSource('water-surface.wgsl'),
+    'forgeax_material::water_fluid': readSource('water-fluid.wgsl'),
+    'forgeax_material::water_underwater': readSource('water-underwater.wgsl'),
     'forgeax_material::single_layer_medium_surface_v1': readSource(
       'single-layer-medium-surface_v1.wgsl',
     ),
@@ -338,7 +518,13 @@ export async function loadEngineShaderEntries() {
     resolveEntries(imports),
   ]);
   return {
-    cloudAtmosphere: cloudAtmosphereEntries(),
+    cloudAtmosphere: [
+      resolvedEntries.cloudAnalytic,
+      resolvedEntries.cloudShadowFilter,
+      resolvedEntries.cloudMode0Reconstruct,
+      resolvedEntries.cloudMode0Compose,
+      ...(await cloudSampled),
+    ],
     terrain: await terrainEntries,
     ...resolvedEntries,
     imports: resolvedImports,

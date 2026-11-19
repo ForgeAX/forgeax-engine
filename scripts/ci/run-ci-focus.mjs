@@ -3,7 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
+import {
+  runnerResources,
+  shaderCompileWorkers,
+  shaderSourceCompileWorkers,
+} from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { selectDawnGroups } from './run-dawn-gate.mjs';
 import {
@@ -19,12 +23,49 @@ import {
 import {
   allProjectNames,
   buildGroupArgs,
+  coverageGroupEnvironment,
   coverageGroupMaxWorkers,
   coverageGroups,
+  packageOnlyNodeAppProjects,
 } from './run-split-vitest-coverage.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
+// Pure CPU owners consume their own inputs and package outputs, not Engine profiles.
+const packageOnlyUnitOwners = new Set([
+  '@forgeax/engine-content',
+  '@forgeax/engine-naga',
+  '@forgeax/engine-shader-compiler',
+  '@forgeax/engine-modeling',
+  ...packageOnlyNodeAppProjects,
+]);
+// These exact CPU fixtures own their complete publication/registry inputs.
+// Other shader tests still consume the prepared Engine profile.
+const packageOnlyUnitFiles = new Set([
+  'packages/pack/src/__tests__/runtime-publication.unit.test.ts',
+  'packages/devkit/src/tools/__tests__/model-render-target.unit.test.ts',
+  ...[
+    'manifest-reflection-sharing',
+    'manifest-publication',
+    'shader-registry-publication-sharing',
+    'shader-registry-transaction',
+    'native-manifest',
+    'shader-manifest-transmission',
+  ].map((name) => `packages/shader/src/__tests__/${name}.unit.test.ts`),
+]);
+
+// These planner tests exercise source scripts and their own fixtures without
+// importing generated Engine packages or invoking the Engine toolchain.
+const sourceOnlyNodeFiles = new Set([
+  'scripts/ci/__tests__/browser-work.test.mjs',
+  'scripts/ci/__tests__/ci-focus.test.mjs',
+  'scripts/ci/__tests__/core-validation.test.mjs',
+  'scripts/ci/__tests__/download-artifact-with-retry.test.mjs',
+  'scripts/ci/__tests__/prepare-ci-inputs.test.mjs',
+  'scripts/ci/__tests__/recover-repair-shader-inputs.test.mjs',
+  'scripts/ci/__tests__/run-split-vitest-browser.test.mjs',
+  'scripts/ci/__tests__/view-diagnostic-workload.test.mjs',
+]);
 
 function nodeFocusPlan(selector) {
   if (
@@ -33,7 +74,10 @@ function nodeFocusPlan(selector) {
     !existsSync(join(root, selector))
   )
     throw new Error(`unknown Node test file: ${selector}`);
-  return { args: ['--test', selector] };
+  return {
+    args: ['--test', selector],
+    ...(sourceOnlyNodeFiles.has(selector) ? { sourceOnly: true } : { packagesOnly: true }),
+  };
 }
 
 function unitFocusPlan(kind, selector) {
@@ -41,6 +85,7 @@ function unitFocusPlan(kind, selector) {
   const projects = allProjectNames();
   if (projects.includes(selector))
     return {
+      ...(packageOnlyUnitOwners.has(selector) ? { packagesOnly: true } : {}),
       args: [
         vitest,
         'run',
@@ -69,6 +114,9 @@ function unitFocusPlan(kind, selector) {
     ? ['--project', owner]
     : ['--project=@forgeax/*', '--project=unit'];
   return {
+    ...(packageOnlyUnitOwners.has(owner) || packageOnlyUnitFiles.has(selector)
+      ? { packagesOnly: true }
+      : {}),
     args: [
       vitest,
       'run',
@@ -82,11 +130,34 @@ function unitFocusPlan(kind, selector) {
 }
 
 function performanceFocusPlan(selector) {
+  if (selector === 'ecs-ratios' || selector === 'render-ratios')
+    return {
+      packagesOnly: true,
+      args: [
+        'scripts/ci/run-with-runner-cpu-affinity.mjs',
+        '--',
+        process.execPath,
+        vitest,
+        'run',
+        '--maxWorkers=1',
+        `--project=${selector === 'ecs-ratios' ? 'ecs-perf' : 'render-perf'}`,
+        '--coverage.enabled=false',
+        '--typecheck.enabled=false',
+        '--passWithNoTests=false',
+      ],
+      env:
+        selector === 'render-ratios'
+          ? { FORGEAX_RENDER_PERF_LIGHTWEIGHT: '1', FORGEAX_CI_CPU_TIME_DIAGNOSTICS: '1' }
+          : {},
+    };
   if (!['hello-lod-occlusion', 'hello-lod-occlusion-profile'].includes(selector))
     throw new Error(`unknown performance selector: ${selector}`);
   return {
     apps: ['apps/hello/lod-occlusion'],
     args: [
+      'scripts/ci/run-with-runner-cpu-affinity.mjs',
+      '--',
+      process.execPath,
       'scripts/ci/run-lod-performance-with-retry.mjs',
       '--',
       'pnpm',
@@ -95,7 +166,10 @@ function performanceFocusPlan(selector) {
       'bench:json',
     ],
     gpuLease: true,
-    ...(selector.endsWith('-profile') ? { env: { FORGEAX_LOD_PROFILE: '1' } } : {}),
+    env: {
+      NODE_OPTIONS: process.env.NODE_OPTIONS ?? '--max-old-space-size=10240',
+      ...(selector.endsWith('-profile') ? { FORGEAX_LOD_PROFILE: '1' } : {}),
+    },
   };
 }
 
@@ -104,6 +178,24 @@ function compatibilityFocusPlan(selector) {
   return {
     args: ['scripts/ci/run-webgpu-compatibility.mjs'],
     env: { FORGEAX_COMPAT_BROWSER: 'stable' },
+  };
+}
+
+function coverageFocusEnvironment(group, resources, maxWorkers) {
+  const workers = group.sourceCompilation
+    ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+    : shaderCompileWorkers(
+        resources,
+        process.env.FORGEAX_SHADER_COMPILE_WORKERS,
+        (group.files.length > 0 ? 1 : 2) * maxWorkers,
+      );
+  const environment =
+    group.sourceCompilation && process.env.NODE_OPTIONS !== undefined
+      ? { NODE_OPTIONS: process.env.NODE_OPTIONS }
+      : {};
+  return {
+    ...coverageGroupEnvironment(group, resources, workers, environment),
+    NODE_DISABLE_COMPILE_CACHE: '1',
   };
 }
 
@@ -127,15 +219,8 @@ export function focusPlan(
       2,
     );
     return {
-      env: {
-        FORGEAX_SHADER_COMPILE_WORKERS: String(
-          shaderCompileWorkers(
-            resources,
-            process.env.FORGEAX_SHADER_COMPILE_WORKERS,
-            (selected[0].files.length > 0 ? 1 : 2) * maxWorkers,
-          ),
-        ),
-      },
+      packagesOnly: selected[0].packagesOnly === true,
+      env: coverageFocusEnvironment(selected[0], resources, maxWorkers),
       gpuLease: selected[0].gpuLease,
       args: [
         ...buildGroupArgs({
@@ -214,13 +299,39 @@ export function focusPlan(
   throw new Error(`unknown focus kind: ${kind}`);
 }
 
+/** Use the semantic build for owners that consume generated outputs. */
+export function focusBuildArgs(plan, assetsSourceRoot) {
+  if (plan.sourceOnly) return undefined;
+  return [
+    'scripts/build.mjs',
+    plan.packagesOnly ? '--packages-only' : '--engine',
+    ...(assetsSourceRoot === undefined ? [] : ['--assets-source-root', resolve(assetsSourceRoot)]),
+  ];
+}
+
+async function prepareFocus(plan, assetsSourceRoot, run) {
+  const buildArgs = focusBuildArgs(plan, assetsSourceRoot);
+  if (buildArgs === undefined) return;
+  // Semantic receipts validate current inputs and every generated output.
+  for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
+    await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
+  await run(buildArgs);
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const options = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--dry-run') options.dryRun = true;
     else if (
-      ['--kind', '--select', '--frames', '--shard-index', '--shard-count'].includes(arg) &&
+      [
+        '--kind',
+        '--select',
+        '--frames',
+        '--shard-index',
+        '--shard-count',
+        '--assets-source-root',
+      ].includes(arg) &&
       argv[i + 1]
     )
       options[arg.slice(2)] = argv[++i];
@@ -271,11 +382,7 @@ export async function main(argv = process.argv.slice(2)) {
   let status = 'failed';
   let smoke;
   try {
-    // Existing semantic build receipts validate changed code and output bytes.
-    // Every invocation checks them; no unchecked --skip-build path can use old dist.
-    for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
-      await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
-    await run(['scripts/build.mjs', '--engine']);
+    await prepareFocus(plan, options['assets-source-root'], run);
     if (options.kind === 'compatibility')
       await run([
         'scripts/forgeax/prepare-shader-release-inputs.mjs',
@@ -334,7 +441,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally {
     writeFileSync(
       output,
-      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, status, smoke }, null, 2)}\n`,
+      `${JSON.stringify({ scope: 'diagnostic', head, dirty, kind: options.kind, selector: options.select, buildMode: plan.sourceOnly ? 'source-only' : plan.packagesOnly ? 'packages-only' : 'engine', status, smoke }, null, 2)}\n`,
     );
     console.log(`[ci-focus] ${status}; this selected run does not replace complete PR CI`);
   }

@@ -9,7 +9,7 @@ interface RecordedBinding {
   lane: DynamicGeometryRecordStageLane;
   generation: number;
 }
-interface WorldBindings {
+interface SourceBindings {
   readonly values: Map<number, RecordedBinding>;
   active: number;
 }
@@ -18,22 +18,28 @@ interface WorldBindings {
 class FrameBindings {
   private generation = 1;
   private frameToken: object = {};
-  private current = new WeakMap<RenderResourceScope, WorldBindings>();
-  private previous = new WeakMap<RenderResourceScope, WorldBindings>();
-  private latestWorld: RenderResourceScope | undefined;
-  private latestTable: WorldBindings | undefined;
+  private source: WeakRef<RenderResourceScope> | undefined;
+  // One weak epoch cell allows its entity table to retire with the source.
+  private current = new WeakMap<RenderResourceScope, SourceBindings>();
+  private previousSource: WeakRef<RenderResourceScope> | undefined;
+  private previous: WeakMap<RenderResourceScope, SourceBindings> | undefined;
+  private hotTable: SourceBindings | undefined;
 
   begin(): void {
-    // Unread scopes disappear without enumerating their entities or retaining Worlds.
-    this.previous = this.generation === 0x3fffffff ? new WeakMap() : this.current;
+    // Recycle only the previous source epoch; cold entities need no per-frame sweep.
+    this.previousSource = this.source;
+    this.previous = this.generation === 0x3fffffff ? undefined : this.current;
+    this.source = undefined;
     this.current = new WeakMap();
     this.seal();
     this.generation = this.generation === 0x3fffffff ? 1 : this.generation + 1;
   }
 
   clear(): void {
+    this.source = undefined;
     this.current = new WeakMap();
-    this.previous = new WeakMap();
+    this.previousSource = undefined;
+    this.previous = undefined;
     this.seal();
     this.generation = 1;
   }
@@ -41,8 +47,7 @@ class FrameBindings {
   /** Submitted facts stay readable, but callbacks and strong lookup hints end here. */
   seal(): void {
     this.frameToken = {};
-    this.latestWorld = undefined;
-    this.latestTable = undefined;
+    this.hotTable = undefined;
   }
 
   get token(): object {
@@ -59,18 +64,20 @@ class FrameBindings {
     // A callback from an older use must never write into the recycled pending side.
     if (token !== this.frameToken) return;
     const generation = this.generation;
-    let table = world === this.latestWorld ? this.latestTable : undefined;
+    let table =
+      world === this.source?.deref() ? (this.hotTable ?? this.current.get(world)) : undefined;
     if (table === undefined) {
-      table = this.current.get(world);
-      if (table === undefined) {
-        table = this.previous.get(world) ?? { values: new Map(), active: 0 };
-        // Geometric rebuilding removes cold entity cells without a per-frame sweep.
-        if (table.values.size > table.active * 2) table.values.clear();
-        table.active = 0;
-        this.current.set(world, table);
-      }
-      this.latestWorld = world;
-      this.latestTable = table;
+      table = (world === this.previousSource?.deref() ? this.previous?.get(world) : undefined) ?? {
+        values: new Map(),
+        active: 0,
+      };
+      if (table.values.size > table.active * 2) table.values.clear();
+      table.active = 0;
+      this.source = new WeakRef(world);
+      this.current = new WeakMap([[world, table]]);
+      this.hotTable = table;
+      this.previousSource = undefined;
+      this.previous = undefined;
     }
     let binding = table.values.get(entity);
     if (binding === undefined) {
@@ -89,31 +96,32 @@ class FrameBindings {
   }
 
   get(world: RenderResourceScope, entity: number): RecordedBinding | undefined {
-    const binding = this.current.get(world)?.values.get(entity);
+    const binding =
+      this.source?.deref() === world ? this.current.get(world)?.values.get(entity) : undefined;
     return binding?.generation === this.generation ? binding : undefined;
   }
 }
 
 /** Capture the render-stage mesh binding used by the current submitted frame. */
 function createDynamicGeometryConsumptionRecorder(
-  worlds: readonly RenderResourceScope[],
+  sourceScope: RenderResourceScope,
   bindings: FrameBindings,
 ): DynamicGeometryDrawRecorder {
   const token = bindings.token;
   return (entry, lane = 'cpu') => {
     const renderable = entry.source;
     if (renderable.assetHandle === undefined) return;
-    const world = worlds[renderable.worldId];
+    const world = sourceScope;
     if (world !== undefined)
       bindings.record(world, renderable.entityKey, renderable.assetHandle, lane, token);
   };
 }
 
 /** Rows a submitted GPU selection draws, answered per query instead of per frame row. */
-type GpuOwnedDraws = (worldId: number, entity: number, meshHandle: number) => boolean;
+type GpuOwnedDraws = (entity: number, meshHandle: number) => boolean;
 
 interface GpuOwnedFrameDraws {
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly owns: GpuOwnedDraws;
 }
 
@@ -134,14 +142,14 @@ export class DynamicGeometryReceipt {
   private submittedGpu: GpuOwnedFrameDraws | undefined;
   private pendingGpu: GpuOwnedFrameDraws | undefined;
 
-  onRenderableDraw(worlds: readonly RenderResourceScope[]): DynamicGeometryDrawRecorder {
+  onRenderableDraw(sourceScope: RenderResourceScope): DynamicGeometryDrawRecorder {
     this.pendingGpu = undefined;
-    return createDynamicGeometryConsumptionRecorder(worlds, this.pending);
+    return createDynamicGeometryConsumptionRecorder(sourceScope, this.pending);
   }
 
   /** GPU-owned rows that received no per-row receipt in this attempt. */
-  onGpuOwnedDraws(worlds: readonly RenderResourceScope[], owns: GpuOwnedDraws): void {
-    this.pendingGpu = { worlds, owns };
+  onGpuOwnedDraws(sourceScope: RenderResourceScope, owns: GpuOwnedDraws): void {
+    this.pendingGpu = { sourceScope, owns };
   }
 
   /** The accepted attempt's draws become the submitted receipt. */
@@ -175,11 +183,9 @@ export class DynamicGeometryReceipt {
     if (!Number.isInteger(entity) || meshHandle === undefined) return undefined;
     const binding = this.submitted.get(world, entity);
     const cpu = binding?.meshHandle === meshHandle ? binding.lane : undefined;
-    const worldId = this.submittedGpu?.worlds.indexOf(world) ?? -1;
+    const sameSource = this.submittedGpu?.sourceScope === world;
     const gpu =
-      worldId >= 0 && this.submittedGpu?.owns(worldId, entity, meshHandle) === true
-        ? 'gpu'
-        : undefined;
+      sameSource && this.submittedGpu?.owns(entity, meshHandle) === true ? 'gpu' : undefined;
     if (cpu === undefined) return gpu;
     return gpu === undefined || cpu === gpu ? cpu : 'mixed';
   }

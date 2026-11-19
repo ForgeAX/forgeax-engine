@@ -16,6 +16,17 @@ export const GlobalTransform = defineComponent(
 );
 
 /**
+ * Marker flagged changed on a changed Transform's tree, from the entity up to
+ * its root. Propagation enters only flagged roots and skips unflagged subtrees
+ * under an unchanged parent.
+ */
+export const TransformTreeChanged = defineComponent(
+  'TransformTreeChanged',
+  {},
+  { transient: true },
+);
+
+/**
  * Authored local position, rotation and scale columns.
  *
  * The ECS `requires` declaration is the generic structural invariant: callers
@@ -28,8 +39,6 @@ export const Transform = defineComponent(
     // Component order [x, y, z, w] is shared with glTF.
     quat: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
     scale: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
-    /** Dimensionless XY, XZ, YZ shear; local matrix is T * R * H * S. */
-    shear: { type: 'array<f32, 3>', default: new Float32Array([0, 0, 0]) },
   },
-  { requires: [GlobalTransform] },
+  { requires: [GlobalTransform, TransformTreeChanged] },
 );

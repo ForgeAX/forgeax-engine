@@ -382,11 +382,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
+  const frameRequest = { source: worldAttachment1.value };
 
   const materialModule = rootReady.record.resolved.passes[0]?.program.module;
   if (typeof materialModule !== 'string') {

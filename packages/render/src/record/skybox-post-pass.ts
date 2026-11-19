@@ -1,11 +1,14 @@
-import type { ResolveContext } from '@forgeax/engine-render-graph';
+﻿import type { ResolveContext } from '@forgeax/engine-render-graph';
 import { RhiError, type RhiRenderPassEncoder, type TextureView } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { BLOOM_UNIFORM_PARAMS_STRIDE_BYTES } from '../assembly/webgpu-ready-contract';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { isFxaaAntialias } from '../components/camera';
+import { RendererContractFailureError } from '../errors/render';
 import { buildBeginRenderPassDescriptor } from '../pipeline-spec';
 import { FXAA_POST_PROCESS_ID } from '../render-contract';
 import { resolveOutputDither } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { BloomFrameReceipts } from './frame-snapshot';
 import { getOrCreateFromChain } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
@@ -19,6 +22,8 @@ import { VIEW_UNIFORM_BYTES } from './view-ubo';
 export function encodeSkyboxPass(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
+  depthFormat?: GPUTextureFormat,
+  colorFormat: GPUTextureFormat = 'rgba16float',
 ): void {
   if (!c.skyboxActive) return;
   const skyboxSnapshot = c.skybox;
@@ -28,14 +33,27 @@ export function encodeSkyboxPass(
 
   // Guard: pipeline resources must exist (null when manifest has no
   // skybox entry -- legacy manifests continue to boot)
-  const skyboxPipeline = c.msaaActive
-    ? pipelineState.perPassResources.skyboxPipelineMsaa
-    : pipelineState.perPassResources.skyboxPipeline;
+  if (depthFormat !== undefined && pipelineState.perPassResources.skyboxScenePipeline === undefined)
+    throw new RendererContractFailureError(
+      'draw',
+      'a scene sky requires its depth-compatible pipeline producer',
+    );
+  const skyboxPipeline =
+    depthFormat !== undefined
+      ? pipelineState.perPassResources.skyboxScenePipeline?.(
+          c.msaaActive ? 4 : 1,
+          depthFormat,
+          colorFormat,
+        )
+      : c.msaaActive
+        ? pipelineState.perPassResources.skyboxPipelineMsaa
+        : pipelineState.perPassResources.skyboxPipeline;
   const skyboxBgl = pipelineState.perPassResources.skyboxBindGroupLayout;
   const skyboxSampler = pipelineState.perPassResources.skyboxSampler;
   const skyboxRotationBuffer = pipelineState.perPassResources.skyboxRotationBuffer;
   if (
     skyboxPipeline === null ||
+    skyboxPipeline === undefined ||
     skyboxBgl === null ||
     skyboxSampler === null ||
     skyboxRotationBuffer === null
@@ -55,10 +73,13 @@ export function encodeSkyboxPass(
   // progress). In that case, degradation to main pass loadOp:'clear'
   // is handled by the passCtx.skyboxActive gate above -- if the
   // cubemap isn't ready, skyboxActive is already false (see w18).
-  const cubemapView = store.getCubemapGpuView(
-    skyboxSnapshot.equirectHandle as AssetHandle<'equirect'>,
-    c.world,
-  );
+  const featureSource = skyboxSnapshot.featureEnvironment;
+  const cubemapView = featureSource
+    ? recordContext(runtime).sharedFeatureGpuWork?.resolveTextureCube(
+        featureSource.feature,
+        featureSource.sky,
+      )
+    : store.getCubemapGpuView(skyboxSnapshot.equirectHandle as AssetHandle<'equirect'>, c.world);
   if (cubemapView === undefined) return;
 
   // Identity-cached skybox BindGroup keyed on the cubemap GpuView. The only
@@ -374,7 +395,7 @@ export function recordFxaaPass(
   // FXAA samples the graph-owned LDR target and writes the current surface.
   // The surface is an output attachment only: no COPY_SRC usage, no
   // copyTextureToTexture, and no backend-specific surface sampling path.
-  const fxaaActive = camera.antialias === 'fxaa';
+  const fxaaActive = isFxaaAntialias(camera.antialias);
   if (
     fxaaActive &&
     pipelineState.perPassResources.fxaaPipeline !== null &&

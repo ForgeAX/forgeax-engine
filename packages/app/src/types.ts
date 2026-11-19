@@ -76,26 +76,8 @@ export type { AppError, AppErrorCode };
  */
 export type AppDispatchError = AppError | RenderError;
 
-/**
- * Per-frame draw description pulled from the host each frame
- * (feat-20260709-editor-world-partition-editorworld-super-composite / M2 / D-3).
- *
- *   - `worlds`       — the exact world list to render this frame, in draw order.
- *   - `cameraOwner`  — index into `worlds` whose cameras drive the frame.
- *   - `resourceOwner`— index into `worlds` whose singleton render resources
- *                      (skylight / skybox / postProcessParams) drive the frame.
- *
- * The two owners are independent (M1 owner-split): an editor can render a scene
- * world's geometry through an editor world's camera while sourcing lighting from
- * a third. `cameraOwner === resourceOwner` is the single-owner degenerate case.
- *
- * @see {@link DrawSource}
- */
-export interface DrawSourceResult {
-  readonly worlds: readonly World[];
-  readonly cameraOwner: number;
-  readonly resourceOwner: number;
-}
+/** Whether the current frame admits the App's source scene or only its screen UI. */
+export type SceneAdmission = 'scene' | 'ui-only';
 
 /**
  * Stable frame-loop phase vocabulary for opt-in performance diagnostics.
@@ -106,41 +88,14 @@ export interface DrawSourceResult {
  */
 export const APP_PHASE_CATALOG = [
   'frame-total',
-  'draw-source',
+  'scene-admission',
   'world-update-primary',
-  'world-update-injected',
   'renderer-draw',
   'host-frame',
   'engine-update',
   'kernel-wait',
   'host-audio',
 ] as const;
-
-/**
- * Optional per-frame draw-source injection seam
- * (feat-20260709-editor-world-partition-editorworld-super-composite / M2 / D-3).
- *
- * The frame-loop invokes this callback once per frame (a "pull"). It lets a host
- * (e.g. the editor) decide, each frame, WHICH worlds to render and which owner
- * indices to use — without the engine knowing anything about editor world
- * partitioning.
- *
- *   - Returns `undefined` → the frame-loop degrades to the single-world path,
- *     byte-identical to `renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })` where `world` is
- *     the App's own world (the single-world AI-user default). A host that wires
- *     the seam but has nothing multi-world to inject this frame returns
- *     `undefined`.
- *   - Returns `null` -> no scene is admitted. The Renderer presents its configured
- *     screen UI with a pending receipt while the primary World keeps updating.
- *   - Returns a {@link DrawSourceResult} → the frame-loop runs `world.update(1 / 60).unwrap()`
- *     on EVERY returned world (so transform propagation writes each world's
- *     derived `GlobalTransform.world` mat4 before extract reads it — no stale matrix),
- *     then calls `renderer.draw(worlds, { cameraOwner, resourceOwner })`.
- *
- * When omitted entirely, the App never consults a seam and always renders its
- * own single world (legacy behaviour unchanged).
- */
-export type DrawSource = () => DrawSourceResult | null | undefined;
 
 /**
  * Options for createApp({ platform, renderer, world, ... }).
@@ -175,13 +130,8 @@ export interface AppAssembleArgs {
   /** Unified plugin list (M1 feat-20260623-plugin-system-unify-build-world-protocol). */
   readonly plugins?: readonly Plugin[];
   readonly silenceUnhandledErrors?: boolean;
-  /**
-   * Per-frame draw-source injection seam (M2 / D-3). When supplied, the
-   * frame-loop pulls it each frame to decide which worlds to render + which
-   * owner indices to use; when omitted the App renders its own single world
-   * (legacy behaviour). See {@link DrawSource}.
-   */
-  readonly drawSource?: DrawSource;
+  /** Source-realm admission, sampled after update; UI-only preserves pending scene edits. */
+  readonly sceneAdmission?: () => SceneAdmission;
   /** Explicit profiler capability shared by the host and renderer. */
   readonly profiler?: Profiler;
   /** Host recorder capability paired with the supplied renderer's instrumentation. */
@@ -211,6 +161,8 @@ export interface CanvasDrawingBufferSize {
  * default noise, but reachable when the AI user scrolls the type).
  */
 export interface CreateAppOptions extends InputAttachOptions {
+  /** Project configuration, resolved before sizing, worker selection or native construction. */
+  readonly configuration?: import('./configuration-types').EngineConfigurationDefinition;
   /** Host facts and scheduling for local execution. */
   readonly platform?: Platform;
   /** Canvas drawing-buffer pixels per CSS pixel. Omitted: mobile short side 720, desktop 1; explicit values override the default. */
@@ -244,6 +196,8 @@ export interface CreateAppOptions extends InputAttachOptions {
    * structured report in `renderer.inspect().output.colorSpace` when the canvas cannot present it.
    */
   readonly outputColorSpace?: OutputColorSpace;
+  /** Renderer backend preference; see `RendererOptions.renderBackend`. Crosses Worker realms. */
+  readonly renderBackend?: import('@forgeax/engine-render').RendererOptions['renderBackend'];
   /** Captured exact pipeline recipes, prepared before renderer initialization completes. */
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /**
@@ -252,14 +206,27 @@ export interface CreateAppOptions extends InputAttachOptions {
    * a failure never fails the App and affected pipelines compile on first use.
    */
   readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  /**
+   * Outstanding native requests while `backgroundPipelineLibrary` compiles: integer 1..4.
+   * Omission keeps the hardware-based default; raise it only when the lane is too slow.
+   */
+  readonly backgroundPipelineLibraryConcurrency?: number;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  /** Explicit aggregate budget for receipt-bound feature texture readbacks. */
+  readonly featureTextureReadbackBudgetBytes?: number;
   /**
    * Content byte budget of each Engine-created AssetRegistry serving the App World
    * (meshes, textures and other runtime records). Positive safe integer; default 4 GiB.
    * It guards against runaway growth; raise it for scenes with more resident content.
    */
   readonly assetBudgetBytes?: number;
+  /**
+   * Leading packed mip levels the GPU copy drops from textures that declare
+   * `skippableMips: true` (integer 0-32; default 0 keeps every authored level).
+   * A per-quality texture memory knob; other textures keep their full chain.
+   */
+  readonly textureMipSkip?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
   /**
@@ -319,15 +286,12 @@ export interface CreateAppOptions extends InputAttachOptions {
    * `INPUT_MAP_KEY` Resource directly.
    */
   readonly inputMap?: readonly ActionConfig[] | undefined;
-  /**
-   * Per-frame draw-source injection seam (M2 / D-3). When supplied, the
-   * frame-loop pulls it each frame to decide which worlds to render + which
-   * owner indices to use; when omitted the canvas-form App renders its own
-   * single world (legacy behaviour unchanged). See {@link DrawSource}.
-   */
-  readonly drawSource?: DrawSource;
+  /** Source-realm admission, sampled after update; UI-only preserves pending scene edits. */
+  readonly sceneAdmission?: () => SceneAdmission;
   /** Explicit profiler capability shared by the host and renderer. */
   readonly profiler?: Profiler;
+  /** Canvas-form projection after the matching receipt completion callback. */
+  readonly onFrameCompleted?: import('./app-assembly').BuildAppArgs['onFrameCompleted'];
 }
 
 export type BundlerOptions = RenderBundlerOptions;
@@ -342,6 +306,12 @@ export interface BrowserRemoteBridgeAdapter {
 
 /** Host facts and optional tooling capabilities accepted by browser createApp. */
 export interface AppHostAdapter extends BundlerOptions {
+  /** Explicit Host facts and user persistence for engine startup configuration. */
+  readonly configurationHost?: import('./configuration-host').EngineConfigurationHost;
+  /** Host-only audio owner, constructed after configuration in every execution placement. */
+  readonly createHostAudio?: (
+    options?: import('@forgeax/engine-audio-webaudio').HostAudioConsumerOptions,
+  ) => import('@forgeax/engine-audio-webaudio').HostAudioConsumer;
   /** Create and attach the optional browser RHI recorder when the host enables it. */
   readonly attachRhiRecorder?: (rendererOptions: RendererOptions) => Promise<RecorderAttachment>;
   /** Optional browser-to-relay bridge supplied by a development host. */
@@ -360,6 +330,8 @@ export interface AppHostAdapter extends BundlerOptions {
  * machine + idempotent transitions land in M2 (plan-strategy section 7).
  */
 export interface App {
+  /** Immutable constructor intent; domain inspection proves actual adoption. */
+  readonly configuration?: import('./configuration-control').EngineConfigurationControl;
   /** Caller-owned Renderer (reference equality with the assemble input). */
   readonly renderer: Renderer;
   /** Host-owned AssetRegistry paired with this App realm, when available. */
@@ -442,13 +414,6 @@ export interface App {
    */
   onError(cb: (err: AppDispatchError) => void): () => void;
   /**
-   * Replace the per-frame world routing pull. `undefined` restores the
-   * single-world path; an injected result updates every returned secondary
-   * World before drawing it with the declared owners. This changes routing,
-   * not scheduling or time ownership.
-   */
-  setDrawSource(drawSource: DrawSource | undefined): void;
-  /**
    * Most recent dispatched error retained for host self-inspection without
    * requiring an onError listener up front.
    */
@@ -485,6 +450,7 @@ export interface AppStepFrameOptions {
 export type ExecutionApp = Pick<
   App,
   | 'execution'
+  | 'configuration'
   | 'input'
   | 'audio'
   | 'start'
@@ -538,4 +504,7 @@ export type AssembleAppError = AppError | RhiError | AssetRuntimeAssemblyError;
  *
  * The canvas form adds renderer construction failures.
  */
-export type CanvasAppError = AssembleAppError | EngineEnvironmentError;
+export type CanvasAppError =
+  | AssembleAppError
+  | EngineEnvironmentError
+  | import('./configuration-error').EngineConfigurationError;

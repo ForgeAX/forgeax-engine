@@ -1,6 +1,8 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
-import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildCustomMeshWorld, makeCustomMeshTexture, stepCustomMesh } from './generate-custom-mesh.js';
 
@@ -22,17 +24,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const texture = makeCustomMeshTexture();
   const textureHandle = assets.create(texture).unwrap();
   const state = buildCustomMeshWorld(app.world, assets, textureHandle);
-  app.world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'bevy-generate-custom-mesh-input',
-    after: [FRAME_START_SCAN_SYSTEM_NAME],
+    after: [InputFrameStartScan],
     queries: [],
     fn: (world) => stepCustomMesh(
       world,
       assets,
       state,
-      world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY),
+      world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY),
     ),
   });
+app.world.addSystem(Update, systemToken1);
   const started = app.start();
   if (!started.ok) console.error('[generate-custom-mesh] app.start() failed:', started.error);
   const evidenceGlobal = globalThis as EvidenceGlobal;

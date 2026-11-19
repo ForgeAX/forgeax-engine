@@ -1,5 +1,4 @@
-import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import type { RenderResourceScope } from '../publication/resource-scope';
+import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
@@ -8,20 +7,17 @@ import {
   type ViewTopologyFailureCode,
   type ViewTopologyOutcome,
 } from '../record/view-topology';
+import {
+  RenderStandardLightingOrder,
+  RenderViewFrameOrder,
+  RenderViewTopologyOrder,
+} from '../system-order';
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission, renderWorldFor } from './render-world';
-import {
-  RENDER_STANDARD_LIGHTING_SYSTEM,
-  viewStandardLightingOf,
-} from './standard-lighting-systems';
+import { viewStandardLightingOf } from './standard-lighting-systems';
 import { readViewField, requireViewField } from './view-field';
-import {
-  RENDER_VIEW_FRAME_SYSTEM,
-  stagedViewInputs,
-  ViewFrame,
-  type ViewFrameState,
-} from './view-frame-systems';
+import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
@@ -51,7 +47,7 @@ function prepareViewTopology(
   } catch (cause) {
     return { kind: 'failed', code: 'view-not-staged', cause };
   }
-  const { frame, mode, cameras, scopes, composition } = staged;
+  const { frame, mode, cameras, source: resourceWorld } = staged;
   const lights = viewLightsOf(world, entity);
   if (lights === undefined)
     return {
@@ -65,8 +61,8 @@ function prepareViewTopology(
   return planViewTopology({
     internals,
     frameState: owner.frameState,
-    world: scopes[composition.owners.resourceOwner] as RenderResourceScope,
-    worlds: scopes,
+    world: resourceWorld,
+    sourceScope: resourceWorld,
     // No Camera records the internal fallback snapshot, as recording does.
     camera: cameras[0] ?? makeZeroCameraFallbackSnapshot(),
     lights,
@@ -130,48 +126,48 @@ export function consumeViewTopology(
  * rethrows it.
  */
 export function registerViewTopologySystem(world: World): void {
-  world
-    .addSystem(RenderPrepare, {
-      commands: 'none',
-      name: RENDER_VIEW_TOPOLOGY_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_STANDARD_LIGHTING_SYSTEM],
-      queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewTopologyInputs] }],
-      fn: (world, [rows]) => {
-        const frame = renderSubmission(world).frame;
-        const first: { entity: EntityHandle; state: ViewTopologyState }[] = [];
+  const systemToken1 = defineSystem({
+    sets: [RenderViewTopologyOrder],
+    commands: 'none',
+    name: RENDER_VIEW_TOPOLOGY_SYSTEM,
+    after: [RenderViewFrameOrder, RenderStandardLightingOrder],
+    queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewTopologyInputs] }],
+    fn: (world, [rows]) => {
+      const frame = renderSubmission(world).frame;
+      const first: { entity: EntityHandle; state: ViewTopologyState }[] = [];
 
-        rows.forEach((row) => {
-          const entity = row.entity;
+      rows.forEach((row) => {
+        const entity = row.entity;
 
-          const staged = world
-            .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-            .unwrap();
-          if (staged.frame !== frame || staged.result?.ok !== true) return;
-          if (viewStandardLightingOf(world, entity)?.kind !== 'prepared') return;
-          const outcome = prepareViewTopology(
-            world,
-            entity,
-            staged,
-            ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
-          );
-          const stored = readViewField(world, entity, ViewTopologyInputs, 'state');
-          if (stored === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
-            return;
-          }
-          const state = world.resolveUniqueRef<ViewTopologyState>(stored).unwrap();
-          state.frame = frame;
-          state.outcome = outcome;
-        });
-        // A view's first topology attaches its component after the iteration.
-        for (const { entity, state } of first)
-          world
-            .addComponent(entity, {
-              component: ViewTopologyInputs,
-              data: { state: world.allocUniqueRef('ViewTopologyInputs', state) },
-            })
-            .unwrap();
-      },
-    })
-    .unwrap();
+        const staged = world
+          .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
+          .unwrap();
+        if (staged.frame !== frame || staged.result?.ok !== true) return;
+        if (viewStandardLightingOf(world, entity)?.kind !== 'prepared') return;
+        const outcome = prepareViewTopology(
+          world,
+          entity,
+          staged,
+          ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
+        );
+        const stored = readViewField(world, entity, ViewTopologyInputs, 'state');
+        if (stored === undefined) {
+          first.push({ entity: entity, state: { frame, outcome } });
+          return;
+        }
+        const state = world.resolveUniqueRef<ViewTopologyState>(stored).unwrap();
+        state.frame = frame;
+        state.outcome = outcome;
+      });
+      // A view's first topology attaches its component after the iteration.
+      for (const { entity, state } of first)
+        world
+          .addComponent(entity, {
+            component: ViewTopologyInputs,
+            data: { state: world.allocUniqueRef('ViewTopologyInputs', state) },
+          })
+          .unwrap();
+    },
+  });
+  world.addSystem(RenderPrepare, systemToken1).unwrap();
 }

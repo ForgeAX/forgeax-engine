@@ -15,8 +15,8 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
-import { probeLocalization } from '../../../templates/game-3d/scripts/localization-probe.mjs';
-import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
+import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 import { serializeBrowserConsoleValue } from './serialize-browser-console-value.mjs';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { decodeCatalogWire } from '@forgeax/engine/pack';
@@ -69,9 +69,10 @@ const TEMPLATE_SETTLE_FRAMES = CI_LIGHTWEIGHT
   : 10;
 // The headed lavapipe path can advance a healthy fixed-step simulation at
 // roughly 6 ticks/s when the heavy runner is contended.  Keep this finite, but
-// give the 48-tick witness more than 2x the observed wall-clock budget.
+// give the 60-tick witness more than 2x the observed wall-clock budget.
 const GAME3D_FIXED_TICK_PROGRESS_TIMEOUT_MS = 60_000;
 const GAME3D_FIXED_TICK_STALL_TIMEOUT_MS = 20_000;
+const GAME3D_COLLISION_SPHERE_CENTER_Z = 2.4;
 const GAME3D_MIN_LUMA_RANGE = 8;
 const GAME3D_NON_BLACK_FLOOR = 8;
 const CHROME_ARGS = [
@@ -163,8 +164,14 @@ async function prepareTemplateSmokeProject(slug) {
       recursive: true,
       filter: (path) => !['node_modules', '.forgeax', 'dist', '.git'].includes(path.split(sep).at(-1)),
     });
-    await symlink(resolve(sourceRoot, 'node_modules'), resolve(root, 'node_modules'), 'dir');
-    await reduceTestProject(root);
+    await symlink(
+      resolve(sourceRoot, 'node_modules'),
+      resolve(root, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    if (CI_LIGHTWEIGHT) await reduceTestProject(root);
+    // The starter template ships without the runtime-pack demo; smoke installs it.
+    if (slug === 'game-3d') await installRuntimeVase(root);
     return root;
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -1242,35 +1249,46 @@ async function smokeGame3dCollision(evidence) {
     // enough time to advance the same fixed-step path.
     collisionApproach = await waitForGame3dFixedTicks(
       collisionStart.simulation.fixedTick,
-      48,
+      60,
       'game-3d collision approach',
     );
-    if (movementProjection(collisionStart, collisionApproach, 0).forward <= 3) {
+    const collisionTravel = movementProjection(collisionStart, collisionApproach, 0).forward;
+    if (collisionTravel <= 3) {
       throw new Error(`game-3d collision approach did not advance: ${JSON.stringify({ collisionStart, collisionApproach })}`);
     }
     const approachTick = collisionApproach.simulation?.fixedTick ?? 0;
+    // Hold forward long enough to prove the sphere prevents direct passage. The
+    // controller can slide tangentially while pressed, so release before measuring
+    // whether the collision response settles.
     collisionLate = await waitForGame3dFixedTicks(
       approachTick,
-      48,
+      96,
       'game-3d collision continued simulation',
-    );
-    const lateTick = collisionLate.simulation?.fixedTick ?? approachTick;
-    collisionSettled = await waitForGame3dFixedTicks(
-      lateTick,
-      24,
-      'game-3d collision settling simulation',
     );
   } finally {
     await page.keyboard.up('KeyW');
   }
+  const lateTick = collisionLate.simulation?.fixedTick ?? collisionApproach.simulation?.fixedTick ?? 0;
+  collisionSettled = await waitForGame3dFixedTicks(
+    lateTick,
+    24,
+    'game-3d collision settling simulation',
+  );
   const collisionTravel = movementProjection(collisionStart, collisionApproach, 0).forward;
   const collisionLateStep = Math.hypot(
     (collisionSettled.position[0] ?? 0) - (collisionLate.position[0] ?? 0),
     (collisionSettled.position[2] ?? 0) - (collisionLate.position[2] ?? 0),
   );
-  if (collisionTravel < 3 || collisionLateStep > 0.45 || collisionSettled.grounded !== true) {
+  const collisionForwardClearance =
+    (collisionSettled.position[2] ?? 0) - GAME3D_COLLISION_SPHERE_CENTER_Z;
+  if (
+    collisionTravel < 3 ||
+    collisionForwardClearance < 0.25 ||
+    collisionLateStep > 0.45 ||
+    collisionSettled.grounded !== true
+  ) {
     throw new Error(
-      `game-3d collision did not settle: ${JSON.stringify({ collisionStart, collisionApproach, collisionLate, collisionSettled, collisionTravel, collisionLateStep })}`,
+      `game-3d collision did not settle: ${JSON.stringify({ collisionStart, collisionApproach, collisionLate, collisionSettled, collisionTravel, collisionForwardClearance, collisionLateStep })}`,
     );
   }
   await page.keyboard.press('Escape');
@@ -1282,6 +1300,7 @@ async function smokeGame3dCollision(evidence) {
     collisionLate,
     collisionSettled,
     collisionTravel,
+    collisionForwardClearance,
     collisionLateStep,
   };
 }
@@ -1309,8 +1328,6 @@ async function smokeGame3d(evidence) {
   ) {
     throw new Error(`game-3d UI asset is incomplete: ${JSON.stringify(ui)}`);
   }
-
-  evidence.localization = await probeLocalization(page, ARTIFACT_DIR);
 
   evidence.runtimeVase = await probeRuntimeVase(page, async () => {
     const result = await page.evaluate(() => globalThis.__forgeaxPreviewInspection.read('game-3d.runtime-vase'));
@@ -1349,7 +1366,8 @@ async function smokeGame3d(evidence) {
   if (
     !uiLocked.lockedClass
     || uiLocked.lockText !== 'Camera locked · mouse look active'
-    || uiLocked.crosshairDisplay !== 'block'
+    // The starter keeps its crosshair off unless `ui.pack.ts` opts in with `crosshair: true`.
+    || uiLocked.crosshairDisplay !== 'none'
   ) {
     throw new Error(`game-3d locked UI state is incomplete: ${JSON.stringify(uiLocked)}`);
   }
@@ -1610,9 +1628,9 @@ try {
       sequence: 0,
     };
     templateEvidence.push(evidence);
-    if (CI_LIGHTWEIGHT) {
+    if (CI_LIGHTWEIGHT || template.slug === 'game-3d') {
       templateSmokeRoot = await prepareTemplateSmokeProject(template.slug);
-      evidence.shadowMapSize = testQuality.shadowMapSize;
+      if (CI_LIGHTWEIGHT) evidence.shadowMapSize = testQuality.shadowMapSize;
     }
     startServer(template.slug);
     await waitForServerReady();

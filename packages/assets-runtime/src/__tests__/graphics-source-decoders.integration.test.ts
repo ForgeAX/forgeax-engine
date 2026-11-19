@@ -219,6 +219,16 @@ it('loads Font source GUIDs and rejects malformed metrics without replacing acce
   old.dispose();
 });
 
+it('opens a shared Pack once for the whole closure of one load', async () => {
+  const f = fixture('font');
+  f.publish(font(), [ATLAS, SAMPLER]);
+  (await f.assets.load(ROOT, 'font')).unwrap();
+  // Root, atlas and sampler live in one Pack; the load owns it after the first read.
+  expect(
+    f.fetcher.mock.calls.filter(([input]) => String(input).endsWith('/pack.json')),
+  ).toHaveLength(1);
+});
+
 it('requires Font atlas and sampler to belong to its declared source closure', async () => {
   const f = fixture('font');
   f.publish(font(), [ATLAS, SAMPLER]);

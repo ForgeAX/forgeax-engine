@@ -205,7 +205,9 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
             },
           ],
           materialProgramKeys: { shadow: SHADER },
-          ...(entryPoints === undefined ? {} : { materialEntryPoints: { shadow: entryPoints } }),
+          ...(entryPoints === undefined
+            ? {}
+            : { materialProgramInputs: { shadow: { entryPoints } } }),
         }) as MaterialSnapshot,
     );
     const rows = materials.map((material, renderableIndex) => {
@@ -215,7 +217,6 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
       const source = {
         assetHandle: 7,
         entityKey: renderableIndex + 1,
-        worldId: 0,
         material: resource,
         materials: [resource],
         materialBindingSources: ['renderer-override'],
@@ -300,7 +301,7 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
         source: RenderableSnapshot,
         out: import('@forgeax/engine-math').box3.Box3,
       ) => {
-        const slot = scene.slot(source.worldId, source.entityKey);
+        const slot = scene.slot(source.entityKey);
         return slot !== undefined && scene.writeCullingWorldBoundsAt(slot, out);
       },
       dispatch,
@@ -387,7 +388,7 @@ async function depth(
   side: -1 | 0 | 1,
   selections?: readonly GpuDrawSelection[],
   reflected = false,
-  terrainReceiver?: { readonly worldId: number; readonly entityKey: number },
+  terrainReceiver?: { readonly entityKey: number },
   geometry = false,
   passKind = 'forward',
   retained = false,
@@ -530,7 +531,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
         ),
       ),
     ).toEqual([0.25, 0.75]);
-    const leftSlot = defined(f.scene.slot(0, left.source.entityKey));
+    const leftSlot = defined(f.scene.slot(left.source.entityKey));
     const selected = new GpuDrawSelection(
       f.topology
         .query(f.topology.sourcePlan(), undefined)
@@ -792,7 +793,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
           select: (binding) =>
             rightDirect && binding.drawItemIndex === 2 ? right.source.material.snapshot : undefined,
           meshes: nativeMeshes,
-          worlds: [c.world],
+          sourceScope: c.world,
           shadow: true,
           materials: undefined,
           prepareUnbatched: () => {
@@ -810,8 +811,8 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     }
     const wrongGeneration = {
       ...c,
-      shadowSlotForEntity: (world: number, entity: number) => {
-        const slot = f.scene.slot(world, entity);
+      shadowSlotForEntity: (entity: number) => {
+        const slot = f.scene.slot(entity);
         return slot === undefined ? undefined : { ...slot, generation: slot.generation + 1 };
       },
     };
@@ -911,10 +912,10 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     expect(sample(await depth(f, swapped, 0))).toEqual([0.75, 0.25]);
 
     // Retiring and reusing a slot cannot make the old view suppress a new entity.
-    f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: left.source.entityKey }]);
+    f.scene.apply([{ kind: 'remove', entityKey: left.source.entityKey }]);
     const replacement = { ...left, source: { ...left.source, entityKey: 3 } };
-    f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 3, snapshot: replacement.source }]);
-    expect(defined(f.scene.slot(0, 3)).generation).not.toBe(leftSlot.generation);
+    f.scene.apply([{ kind: 'update', entityKey: 3, snapshot: replacement.source }]);
+    expect(defined(f.scene.slot(3)).generation).not.toBe(leftSlot.generation);
     expect(
       sample(
         await depth(f, { ...multipass, validatedOrdered: [replacement, right] }, 0, [selected]),
@@ -962,8 +963,8 @@ export async function verifyManagedShadowCache(
       const decision = prepareDirectionalShadowCache(
         internals,
         state,
-        [world].map(worldRenderResources),
-        [lease],
+        worldRenderResources(world),
+        lease,
         lights as never,
         32,
         { reads, epoch: changes.epoch, change: 'quiet' },
@@ -1104,8 +1105,8 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
     const decision = prepareDirectionalShadowCache(
       internals,
       state,
-      [world].map(worldRenderResources),
-      [lease],
+      worldRenderResources(world),
+      lease,
       {
         cascades: {
           cascadeCount: 1,
@@ -1156,9 +1157,7 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
     }
     expect(f.pipelineRequests).toHaveLength(requests);
     world.spawn({ component: Transform, data: {} }).unwrap();
-    f.scene.apply([
-      { kind: 'update', worldId: 0, entityKey: next.source.entityKey, snapshot: next.source },
-    ]);
+    f.scene.apply([{ kind: 'update', entityKey: next.source.entityKey, snapshot: next.source }]);
     c.validatedOrdered = [first, next];
     expect(await render()).toEqual({ miss: 'content-changed', pixels: [0.25, 0.75] });
     expect(f.pipelineRequests.length).toBeGreaterThan(requests);
@@ -1234,9 +1233,9 @@ export async function verifyMixedSkinPassRecording(): Promise<void> {
     const demand = () => tasks.demand(shared.first);
     shared.frames.discardFrame();
     shared.matrix[12] = 0.5;
-    shared.skin.joint(0, 19, shared.matrix);
+    shared.skin.joint(19, shared.matrix);
     for (const missing of [false, true]) {
-      if (missing) shared.skin.joint(0, 19, undefined);
+      if (missing) shared.skin.joint(19, undefined);
       const frame = defined(shared.frames.prepareFrame(shared.scene.slotsSnapshot()));
       tasks.begin(frame);
       for (const reverse of [false, true]) {

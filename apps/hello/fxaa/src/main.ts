@@ -1,5 +1,7 @@
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import { Update } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 // apps/hello/fxaa -- FXAA real-time comparison demo
 // (feat-20260529-fxaa-demo-real-antialiasing-comparison-runtime-tog / M2).
 //
@@ -51,6 +53,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   DARK_GRADIENT_FIXTURE,
+  isDarkGradientFxaaGraph,
   resolveDarkGradientBrowserBackend,
   type DarkGradientBackend,
   type DarkGradientRhiBackendKind,
@@ -154,10 +157,7 @@ function publishDarkGradientObservation(
       missingFacts.push('webkit-raw-only-surface-profile');
     }
     if (observation.rgba16floatRenderable !== true) missingFacts.push('rgba16float-renderable');
-    if (!passNames.includes('output-transform')) missingFacts.push('output-transform-pass');
-    if (!passNames.includes('fxaa')) missingFacts.push('fxaa-pass');
-    if (standardOutputColor?.format !== 'rgba16float') missingFacts.push('standard-output-color-format');
-    if (standardOutputColor?.domain !== 'display-encoded') missingFacts.push('standard-output-color-domain');
+    if (!isDarkGradientFxaaGraph({ passNames, ...(standardOutputColor === undefined ? {} : { standardOutputColor }) })) missingFacts.push('fxaa-output-graph');
   }
   const ready = missingFacts.length === 0;
   const result: DarkGradientBrowserObservation = {
@@ -490,12 +490,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // the Camera.antialias value so AI users can read state from DOM.
   const hudEl = document.getElementById('fxaa-hud');
 
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'fxaa-space-toggle',
-    after: ['input-frame-start-scan'],
+    after: [InputFrameStartScan],
     queries: [],
     fn: () => {
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (snap === undefined) return;
 
       // InputSnapshot.keyboard matches KeyboardEvent.key (browser backend
@@ -522,11 +522,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       prevSpace = cur;
     },
   });
+world.addSystem(Update, systemToken1);
 
   if (darkGradientLane !== undefined) {
-    world.addSystem(Update, {
+    const systemToken2 = defineSystem({
       name: 'dark-gradient-observation-publish',
-      after: ['fxaa-space-toggle'],
+      after: [systemToken1],
       queries: [],
       fn: () => {
         const phase: DarkGradientPhase = currentAntialias === ANTIALIAS_FXAA ? 'fxaa' : 'none';
@@ -542,6 +543,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         }
       },
     });
+world.addSystem(Update, systemToken2);
   }
 
   // Step 8: arm the rAF loop.

@@ -24,6 +24,8 @@ import {
   type VfxValueType,
 } from '@forgeax/engine-vfx';
 import { VFX_FORCE_FIELDS_WGSL } from './force-fields.js';
+import { GPU_EVENT_OUTPUT_RUNTIME_WGSL } from './gpu-event-output.js';
+import { createGpuSlotAllocatorRuntime, GPU_SLOT_ALLOCATOR_ENTRY } from './gpu-slot-allocator.js';
 import {
   createVfxInstanceComputeProgram,
   VFX_INSTANCE_COMPUTE_COMPILER_SOURCE,
@@ -42,13 +44,14 @@ import {
   type VfxReflectionError,
 } from './reflection.js';
 import { SCENE_SDF_RUNTIME_WGSL } from './scene-sdf.js';
+import { WATER_SURFACE_RUNTIME_WGSL } from './water-surface.js';
 
 // Build-host lifetime, bounded by the shared compiler's 128-entry / 16 MiB budget.
 // Every cook still validates source metadata and derives a fresh artifact.
 const compileParticleShader = createShaderProgramCompiler();
 
 /** The single public cooked-program ABI. */
-export const PARTICLE_CODE_PROGRAM_FORMAT = 'forgeax-vfx-program-4' as const;
+export const PARTICLE_CODE_PROGRAM_FORMAT = 'forgeax-vfx-program-5' as const;
 export const PARTICLE_CODE_PROGRAM_ARTIFACT_KEY = 'particle-effect/program.json' as const;
 
 export const PARTICLE_CODE_PRELUDE_MODULE_ID = 'forgeax_vfx::prelude' as const;
@@ -160,8 +163,14 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
 }`;
 
 const PARTICLE_CODE_DATA_INTERFACE_MODULES: Readonly<Record<string, string>> = {
+  'forgeax_vfx::data::gpu_events': '#define_import_path forgeax_vfx::data::gpu_events\n',
+  'forgeax_vfx::data::water_displacement':
+    '#define_import_path forgeax_vfx::data::water_displacement\n',
+  'forgeax_vfx::data::water_hull': '#define_import_path forgeax_vfx::data::water_hull\n',
+  'forgeax_vfx::data::water_config': '#define_import_path forgeax_vfx::data::water_config\n',
   'forgeax_vfx::data::scene_sdf': '#define_import_path forgeax_vfx::data::scene_sdf\n',
   'forgeax_vfx::data::force_fields': '#define_import_path forgeax_vfx::data::force_fields\n',
+  'forgeax_vfx::data::water_surface': '#define_import_path forgeax_vfx::data::water_surface\n',
   'forgeax_vfx::data::camera': `#define_import_path forgeax_vfx::data::camera
 struct VfxCameraData {
   view_projection: mat4x4<f32>,
@@ -331,6 +340,7 @@ struct ForgeaxVfxCounters {
   eventConsumed: atomic<u32>,
   eventDropped: atomic<u32>,
   eventOverflow: atomic<u32>,
+  gridEmissionCount: atomic<u32>,
 }
 
 struct ForgeaxVfxIndirect {
@@ -349,13 +359,46 @@ struct ForgeaxVfxIndirect {
 @group(0) @binding(5) var<storage, read_write> forgeax_vfx_scratch: array<u32>;
 @group(0) @binding(6) var<storage, read_write> forgeax_vfx_billboard_instances: array<f32>;
 
+// Replaced by the Water-grid implementation only for emitters that declare
+// waterGridEmission. The zero-count stub preserves the ordinary spawn ABI.
+fn forgeax_vfx_water_spawn_count() -> u32 {
+  return atomicLoad(&forgeax_vfx_counters.gridEmissionCount);
+}
+fn forgeax_vfx_water_initialize_particle(
+  particle: ptr<function, VfxParticle>,
+  isGridSpawn: bool,
+  spawnRank: u32,
+  ctx: VfxSpawnContext,
+) {
+  _ = particle;
+  _ = isGridSpawn;
+  _ = spawnRank;
+  _ = ctx;
+}
+fn forgeax_vfx_water_update_particle(
+  particle: ptr<function, VfxParticle>,
+) {
+  _ = particle;
+}
+fn forgeax_vfx_water_apply_acceleration(
+  particle: ptr<function, VfxParticle>,
+  ctx: VfxUpdateContext,
+) {
+  _ = particle;
+  _ = ctx;
+}
+
 @compute @workgroup_size(256)
 fn forgeax_vfx_spawn_main(@builtin(global_invocation_id) invocation: vec3<u32>) {
   let index = invocation.x;
   if (index >= forgeax_vfx_runtime.capacity) { return; }
   if (forgeax_vfx_scratch[index] == 0u) {
     let deadRank = index - forgeax_vfx_scratch[forgeax_vfx_runtime.capacity + index];
-    if (deadRank < forgeax_vfx_runtime.spawnCount) {
+    let waterSpawnCount = forgeax_vfx_water_spawn_count();
+    let totalSpawnCount = forgeax_vfx_runtime.spawnCount + waterSpawnCount;
+    if (deadRank < totalSpawnCount) {
+      let isGridSpawn = deadRank >= forgeax_vfx_runtime.spawnCount;
+      let spawnRank = select(deadRank, deadRank - forgeax_vfx_runtime.spawnCount, isGridSpawn);
       var particle = VfxParticle(
         vec3<f32>(0.0),
         0.0,
@@ -376,7 +419,11 @@ fn forgeax_vfx_spawn_main(@builtin(global_invocation_id) invocation: vec3<u32>) 
         forgeax_vfx_runtime.tick,
         forgeax_vfx_runtime.seed,
         forgeax_vfx_runtime.playCycle,
-        particle.id,
+        select(
+          particle.id,
+          forgeax_vfx_runtime.firstParticleId + forgeax_vfx_runtime.spawnCount + spawnRank,
+          isGridSpawn,
+        ),
         f32(forgeax_vfx_runtime.timeWhole) + forgeax_vfx_runtime.timeFract,
         forgeax_vfx_runtime.timeWhole,
         forgeax_vfx_runtime.timeFract,
@@ -384,6 +431,7 @@ fn forgeax_vfx_spawn_main(@builtin(global_invocation_id) invocation: vec3<u32>) 
         forgeax_vfx_runtime.worldTimeWhole,
         forgeax_vfx_runtime.worldTimeFract,
       );
+      particle.id = ctx.particleId;
       vfx_spawn(ctx, &particle);
       forgeax_vfx_particles[index] = particle;
       forgeax_vfx_scratch[index] = 1u;
@@ -391,9 +439,10 @@ fn forgeax_vfx_spawn_main(@builtin(global_invocation_id) invocation: vec3<u32>) 
   }
   if (index == 0u) {
     let freeCount = forgeax_vfx_runtime.capacity - atomicLoad(&forgeax_vfx_counters.aliveCount);
+    let totalSpawnCount = forgeax_vfx_runtime.spawnCount + forgeax_vfx_water_spawn_count();
     atomicAdd(
       &forgeax_vfx_counters.droppedCount,
-      forgeax_vfx_runtime.spawnCount - min(forgeax_vfx_runtime.spawnCount, freeCount),
+      totalSpawnCount - min(totalSpawnCount, freeCount),
     );
   }
 }
@@ -417,8 +466,10 @@ fn forgeax_vfx_update_main(@builtin(global_invocation_id) invocation: vec3<u32>)
     forgeax_vfx_runtime.worldTimeWhole,
     forgeax_vfx_runtime.worldTimeFract,
   );
+  forgeax_vfx_water_apply_acceleration(&particle, ctx);
   vfx_update(ctx, &particle);
   particle.age += forgeax_vfx_runtime.delta;
+  forgeax_vfx_water_update_particle(&particle);
   if (particle.age >= particle.lifetime) {
     particle.alive = 0u;
   }
@@ -912,6 +963,10 @@ function createParticleDataInterfaceRuntimeV3(
 ): string {
   const kinds = new Set(requirements.map((requirement) => requirement.kind));
   return [
+    kinds.has('water-config') && kinds.has('water-hull') && kinds.has('water-displacement')
+      ? WATER_SURFACE_RUNTIME_WGSL
+      : '',
+    kinds.has('gpu-events') ? GPU_EVENT_OUTPUT_RUNTIME_WGSL : '',
     kinds.has('force-fields') ? VFX_FORCE_FIELDS_WGSL : '',
     kinds.has('camera')
       ? '@group(0) @binding(12) var<uniform> forgeax_vfx_camera: mat4x4<f32>;'
@@ -921,6 +976,68 @@ function createParticleDataInterfaceRuntimeV3(
       : '',
     kinds.has('noise') ? '@group(0) @binding(14) var forgeax_vfx_noise: texture_2d<f32>;' : '',
     kinds.has('scene-sdf') ? SCENE_SDF_RUNTIME_WGSL : '',
+    kinds.has('water-surface')
+      ? `@group(0) @binding(18) var forgeax_vfx_water_grid: texture_2d<f32>;
+@group(0) @binding(19) var forgeax_vfx_water_solver_normal: texture_2d<f32>;
+struct VfxWaterSurfaceDomain {
+  origin: vec4<f32>,
+  spacing_resolution: vec4<f32>,
+  rotation: vec4<f32>,
+}
+@group(0) @binding(20) var<uniform> forgeax_vfx_water_surface_domain: VfxWaterSurfaceDomain;
+fn vfx_water_surface_resolution() -> vec2<u32> {
+  return vec2<u32>(forgeax_vfx_water_surface_domain.spacing_resolution.zw);
+}
+fn vfx_water_surface_grid_cell(cell: vec2<i32>) -> vec4<f32> {
+  let size = vec2<i32>(vfx_water_surface_resolution());
+  return textureLoad(forgeax_vfx_water_grid, clamp(cell, vec2<i32>(0), size - 1), 0);
+}
+fn vfx_water_surface_solver_normal_cell(cell: vec2<i32>) -> vec3<f32> {
+  let size = vec2<i32>(vfx_water_surface_resolution());
+  return textureLoad(forgeax_vfx_water_solver_normal, clamp(cell, vec2<i32>(0), size - 1), 0).xyz;
+}
+fn vfx_water_surface_grid(uv: vec2<f32>) -> vec4<f32> {
+  let size = vec2<i32>(textureDimensions(forgeax_vfx_water_grid));
+  let coordinate = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
+  return textureLoad(forgeax_vfx_water_grid, coordinate, 0);
+}
+fn vfx_water_surface_solver_normal(uv: vec2<f32>) -> vec3<f32> {
+  let size = vec2<i32>(textureDimensions(forgeax_vfx_water_solver_normal));
+  let coordinate = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
+  return textureLoad(forgeax_vfx_water_solver_normal, coordinate, 0).xyz;
+}
+fn vfx_water_surface_world_xz(cell: vec2<f32>) -> vec2<f32> {
+  let local = cell * forgeax_vfx_water_surface_domain.spacing_resolution.xy;
+  let cosine = forgeax_vfx_water_surface_domain.rotation.y;
+  let sine = forgeax_vfx_water_surface_domain.rotation.z;
+  let rotated = vec2<f32>(cosine * local.x - sine * local.y, sine * local.x + cosine * local.y);
+  return forgeax_vfx_water_surface_domain.origin.xz + rotated;
+}
+fn vfx_water_surface_normal_world(cell: vec2<i32>) -> vec3<f32> {
+  let local = vfx_water_surface_solver_normal_cell(cell);
+  let cosine = forgeax_vfx_water_surface_domain.rotation.y;
+  let sine = forgeax_vfx_water_surface_domain.rotation.z;
+  let horizontal = vec2<f32>(cosine * local.x - sine * local.y, sine * local.x + cosine * local.y);
+  return normalize(vec3<f32>(horizontal.x, local.z, horizontal.y));
+}`
+      : '',
+    requirements.some((entry) => entry.waterEmissionBinding !== undefined)
+      ? `struct VfxWaterEmissionSettings {
+  limits: vec4<u32>,
+  emission: vec4<f32>,
+  restrictions: vec4<f32>,
+  curvature: vec4<f32>,
+  vorticity: vec4<f32>,
+  flowSpeed: vec4<f32>,
+  velocityOffsetDepthDifference: vec4<f32>,
+  particle: vec4<f32>,
+  sizeRange: vec4<f32>,
+  acceleration: vec4<f32>,
+  alphaCurve: array<vec4<f32>, 27>,
+  sizeCurve: array<vec4<f32>, 25>,
+}
+@group(0) @binding(21) var<uniform> forgeax_vfx_water_emission: VfxWaterEmissionSettings;`
+      : '',
   ]
     .filter((line) => line.length > 0)
     .join('\n');
@@ -1220,12 +1337,377 @@ fn forgeax_vfx_update_compact_main(
   );
 }
 
+const WATER_GRID_EMISSION_SCAN_WGSL = `
+struct ForgeaxVfxWaterCell {
+  position: vec3<f32>,
+  flow: vec2<f32>,
+  normal: vec3<f32>,
+  count: u32,
+}
+
+var<workgroup> forgeax_vfx_water_scan_scratch: array<u32, 256>;
+
+fn forgeax_vfx_water_smoothstep(minimum: f32, maximum: f32, value: f32) -> f32 {
+  if (maximum <= minimum) { return select(0.0, 1.0, value >= maximum); }
+  return smoothstep(minimum, maximum, value);
+}
+
+fn forgeax_vfx_water_counts_base() -> u32 {
+  return forgeax_vfx_runtime.capacity * 2u +
+    (forgeax_vfx_runtime.capacity + 255u) / 256u;
+}
+fn forgeax_vfx_water_prefix_base() -> u32 {
+  return forgeax_vfx_water_counts_base() + forgeax_vfx_water_emission.limits.x;
+}
+fn forgeax_vfx_water_block_base() -> u32 {
+  return forgeax_vfx_water_prefix_base() + forgeax_vfx_water_emission.limits.x;
+}
+fn forgeax_vfx_water_candidate_base() -> u32 {
+  return forgeax_vfx_water_block_base() +
+    (forgeax_vfx_water_emission.limits.x + 255u) / 256u;
+}
+fn forgeax_vfx_water_candidate_store(rank: u32, cell: ForgeaxVfxWaterCell) {
+  let base = forgeax_vfx_water_candidate_base() + rank * 12u;
+  forgeax_vfx_scratch[base] = bitcast<u32>(cell.position.x);
+  forgeax_vfx_scratch[base + 1u] = bitcast<u32>(cell.position.y);
+  forgeax_vfx_scratch[base + 2u] = bitcast<u32>(cell.position.z);
+  forgeax_vfx_scratch[base + 3u] = 0u;
+  forgeax_vfx_scratch[base + 4u] = bitcast<u32>(cell.flow.x);
+  forgeax_vfx_scratch[base + 5u] = bitcast<u32>(cell.flow.y);
+  forgeax_vfx_scratch[base + 6u] = 0u;
+  forgeax_vfx_scratch[base + 7u] = 0u;
+  forgeax_vfx_scratch[base + 8u] = bitcast<u32>(cell.normal.x);
+  forgeax_vfx_scratch[base + 9u] = bitcast<u32>(cell.normal.y);
+  forgeax_vfx_scratch[base + 10u] = bitcast<u32>(cell.normal.z);
+  forgeax_vfx_scratch[base + 11u] = 0u;
+}
+
+fn forgeax_vfx_water_measure_cell(index: u32) -> ForgeaxVfxWaterCell {
+  let empty = ForgeaxVfxWaterCell(
+    vec3<f32>(0.0), vec2<f32>(0.0), vec3<f32>(0.0, 1.0, 0.0), 0u,
+  );
+  let resolution = vfx_water_surface_resolution();
+  if (resolution.x == 0u || resolution.y == 0u || index >= resolution.x * resolution.y) {
+    return empty;
+  }
+  let cell = vec2<i32>(i32(index % resolution.x), i32(index / resolution.x));
+  let unitDx = vec2<f32>(1.0) / vec2<f32>(resolution);
+  let unit = (vec2<f32>(cell) + vec2<f32>(0.5)) * unitDx;
+  let validRange = 2.0 * unitDx;
+  if (!(unit.x > validRange.x && unit.x < 1.0 - validRange.x &&
+        unit.y > validRange.y && unit.y < 1.0 - validRange.y)) {
+    return empty;
+  }
+  let center = vfx_water_surface_grid_cell(cell);
+  if (center.y <= forgeax_vfx_water_emission.emission.x) { return empty; }
+
+  // Preserve the exported cross-axis component and neighbor ordering.
+  let vxPlus = vfx_water_surface_grid_cell(cell + vec2<i32>(0, 1)).z;
+  let vxMinus = vfx_water_surface_grid_cell(cell + vec2<i32>(0, -1)).z;
+  let vyPlus = vfx_water_surface_grid_cell(cell + vec2<i32>(1, 0)).w;
+  let vyMinus = vfx_water_surface_grid_cell(cell + vec2<i32>(-1, 0)).w;
+  let spacing = forgeax_vfx_water_surface_domain.spacing_resolution.xy;
+  let simDx = max(spacing.x, spacing.y);
+  let curl = abs(((vxPlus - vxMinus) - (vyPlus - vyMinus)) / (2.0 * simDx));
+  let flow = vec2<f32>(0.5 * (vxPlus + vxMinus), 0.5 * (vyPlus + vyMinus));
+
+  let normal = vfx_water_surface_solver_normal_cell(cell);
+  let normalRight = vfx_water_surface_solver_normal_cell(cell + vec2<i32>(1, 0));
+  let normalUp = vfx_water_surface_solver_normal_cell(cell + vec2<i32>(0, 1));
+  let curvature = abs(((1.0 - dot(normal, normalRight)) +
+    (1.0 - dot(normal, normalUp))) * 0.5);
+  let cosine = forgeax_vfx_water_surface_domain.rotation.y;
+  let sine = forgeax_vfx_water_surface_domain.rotation.z;
+  let flowLocal = vec2<f32>(
+    cosine * flow.x + sine * flow.y,
+    -sine * flow.x + cosine * flow.y,
+  );
+  let advectedUnit = unit + flowLocal * forgeax_vfx_runtime.delta * unitDx / simDx;
+  let advectedCell = vec2<i32>(advectedUnit * vec2<f32>(resolution));
+  let advected = vfx_water_surface_grid_cell(advectedCell);
+  let depthDifference = advected.y - center.y;
+  let speed = length(flow);
+
+  let curvatureAmount = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.curvature.x,
+    forgeax_vfx_water_emission.curvature.y,
+    curvature,
+  ) * forgeax_vfx_water_emission.curvature.z;
+  let curlAmount = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.vorticity.x,
+    forgeax_vfx_water_emission.vorticity.y,
+    curl,
+  ) * forgeax_vfx_water_emission.vorticity.z;
+  let speedAmount = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.flowSpeed.x,
+    forgeax_vfx_water_emission.flowSpeed.y,
+    speed,
+  ) * forgeax_vfx_water_emission.flowSpeed.z;
+  let depthDeltaAmount = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.velocityOffsetDepthDifference.x,
+    forgeax_vfx_water_emission.velocityOffsetDepthDifference.y,
+    depthDifference,
+  ) * forgeax_vfx_water_emission.velocityOffsetDepthDifference.z;
+  let depthRestriction = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.restrictions.x,
+    forgeax_vfx_water_emission.restrictions.y,
+    center.y,
+  );
+  let speedRestriction = forgeax_vfx_water_smoothstep(
+    forgeax_vfx_water_emission.restrictions.z,
+    forgeax_vfx_water_emission.restrictions.w,
+    speed,
+  );
+  let emissionAmount = clamp(
+    max(max(curvatureAmount, curlAmount), max(speedAmount, depthDeltaAmount)) *
+      forgeax_vfx_water_emission.emission.z * depthRestriction * speedRestriction,
+    0.0,
+    forgeax_vfx_water_emission.emission.w,
+  );
+  var count = 0u;
+  if (emissionAmount >= forgeax_vfx_water_emission.emission.y && emissionAmount > 0.0) {
+    if (emissionAmount < 1.0) {
+      let randomValue = vfx_random_words(
+        forgeax_vfx_runtime.seed,
+        index,
+        forgeax_vfx_runtime.tick,
+        0x57415452u,
+      );
+      count = select(0u, 1u, randomValue < emissionAmount);
+    } else {
+      count = u32(emissionAmount);
+    }
+  }
+  return ForgeaxVfxWaterCell(
+    vec3<f32>(
+      vfx_water_surface_world_xz(vec2<f32>(cell)).x,
+      forgeax_vfx_water_surface_domain.origin.y + center.x,
+      vfx_water_surface_world_xz(vec2<f32>(cell)).y,
+    ),
+    flow,
+    vfx_water_surface_normal_world(cell),
+    count,
+  );
+}
+
+@compute @workgroup_size(256)
+fn forgeax_vfx_water_emission_cells_main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  let index = invocation.x;
+  if (index >= forgeax_vfx_water_emission.limits.x) { return; }
+  let cell = forgeax_vfx_water_measure_cell(index);
+  forgeax_vfx_scratch[forgeax_vfx_water_counts_base() + index] = cell.count;
+}
+
+@compute @workgroup_size(256)
+fn forgeax_vfx_water_emission_scan_blocks_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(local_invocation_id) local: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+) {
+  let index = invocation.x;
+  let lane = local.x;
+  var flag = 0u;
+  if (index < forgeax_vfx_water_emission.limits.x) {
+    flag = forgeax_vfx_scratch[forgeax_vfx_water_counts_base() + index];
+  }
+  forgeax_vfx_water_scan_scratch[lane] = flag;
+  workgroupBarrier();
+  var offset = 1u;
+  loop {
+    if (offset >= 256u) { break; }
+    var addend = 0u;
+    if (lane >= offset) { addend = forgeax_vfx_water_scan_scratch[lane - offset]; }
+    workgroupBarrier();
+    forgeax_vfx_water_scan_scratch[lane] += addend;
+    workgroupBarrier();
+    offset *= 2u;
+  }
+  if (index < forgeax_vfx_water_emission.limits.x) {
+    forgeax_vfx_scratch[forgeax_vfx_water_prefix_base() + index] =
+      forgeax_vfx_water_scan_scratch[lane] - flag;
+  }
+  if (lane == 255u) {
+    forgeax_vfx_scratch[forgeax_vfx_water_block_base() + group.x] =
+      forgeax_vfx_water_scan_scratch[lane];
+  }
+}
+
+@compute @workgroup_size(1)
+fn forgeax_vfx_water_emission_scan_block_offsets_main() {
+  let blockCount = (forgeax_vfx_water_emission.limits.x + 255u) / 256u;
+  var sum = 0u;
+  var block = 0u;
+  loop {
+    if (block >= blockCount) { break; }
+    let offsetIndex = forgeax_vfx_water_block_base() + block;
+    let blockSum = forgeax_vfx_scratch[offsetIndex];
+    forgeax_vfx_scratch[offsetIndex] = sum;
+    sum += blockSum;
+    block += 1u;
+  }
+}
+
+@compute @workgroup_size(256)
+fn forgeax_vfx_water_emission_add_offsets_main(
+  @builtin(global_invocation_id) invocation: vec3<u32>,
+  @builtin(workgroup_id) group: vec3<u32>,
+) {
+  let index = invocation.x;
+  if (index >= forgeax_vfx_water_emission.limits.x) { return; }
+  forgeax_vfx_scratch[forgeax_vfx_water_prefix_base() + index] +=
+    forgeax_vfx_scratch[forgeax_vfx_water_block_base() + group.x];
+}
+
+@compute @workgroup_size(256)
+fn forgeax_vfx_water_emission_append_main(@builtin(global_invocation_id) invocation: vec3<u32>) {
+  let index = invocation.x;
+  let scanCapacity = forgeax_vfx_water_emission.limits.x;
+  if (index == 0u) {
+    let last = scanCapacity - 1u;
+    let total = forgeax_vfx_scratch[forgeax_vfx_water_prefix_base() + last] +
+      forgeax_vfx_scratch[forgeax_vfx_water_counts_base() + last];
+    atomicStore(
+      &forgeax_vfx_counters.gridEmissionCount,
+      min(total, forgeax_vfx_water_emission.limits.y),
+    );
+  }
+  if (index >= scanCapacity) { return; }
+  let count = forgeax_vfx_scratch[forgeax_vfx_water_counts_base() + index];
+  let first = forgeax_vfx_scratch[forgeax_vfx_water_prefix_base() + index];
+  let cell = forgeax_vfx_water_measure_cell(index);
+  var ordinal = 0u;
+  loop {
+    if (ordinal >= count) { break; }
+    let rank = first + ordinal;
+    if (rank < forgeax_vfx_water_emission.limits.y) {
+      forgeax_vfx_water_candidate_store(rank, cell);
+    }
+    ordinal += 1u;
+  }
+}
+`;
+
+const WATER_GRID_PARTICLE_INITIALIZATION_WGSL = `fn forgeax_vfx_water_initialize_particle(
+  particle: ptr<function, VfxParticle>,
+  isGridSpawn: bool,
+  spawnRank: u32,
+  ctx: VfxSpawnContext,
+) {
+  let resolution = vfx_water_surface_resolution();
+  let cellCount = max(1u, resolution.x * resolution.y);
+  var position = (*particle).position;
+  var flow = vec2<f32>(0.0);
+  var normal = vec3<f32>(0.0, 1.0, 0.0);
+  if (isGridSpawn) {
+    let candidate = forgeax_vfx_water_candidate_base() + spawnRank * 12u;
+    position = vec3<f32>(
+      bitcast<f32>(forgeax_vfx_scratch[candidate]),
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 1u]),
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 2u]),
+    );
+    flow = vec2<f32>(
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 4u]),
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 5u]),
+    );
+    normal = normalize(vec3<f32>(
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 8u]),
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 9u]),
+      bitcast<f32>(forgeax_vfx_scratch[candidate + 10u]),
+    ));
+  } else {
+    let randomIndex = min(
+      u32(vfx_random_spawn(ctx, 0x42555253u) * f32(cellCount)),
+      cellCount - 1u,
+    );
+    let cell = vec2<i32>(i32(randomIndex % resolution.x), i32(randomIndex / resolution.x));
+    let grid = vfx_water_surface_grid_cell(cell);
+    let worldXZ = vfx_water_surface_world_xz(vec2<f32>(cell));
+    position = vec3<f32>(
+      worldXZ.x,
+      forgeax_vfx_water_surface_domain.origin.y + grid.x,
+      worldXZ.y,
+    );
+    flow = grid.zw;
+    normal = normalize(vfx_water_surface_normal_world(cell));
+  }
+  let flowWorld = vec3<f32>(flow.x, 0.0, flow.y);
+  let tangentFlow = flowWorld - normal * dot(flowWorld, normal);
+  let randomDirection = vec3<f32>(
+    vfx_random_spawn(ctx, 0x52414e31u) * 2.0 - 1.0,
+    vfx_random_spawn(ctx, 0x52414e32u) * 2.0 - 1.0,
+    vfx_random_spawn(ctx, 0x52414e33u) * 2.0 - 1.0,
+  );
+  let randomVelocity = select(
+    vec3<f32>(0.0),
+    normalize(randomDirection) * forgeax_vfx_water_emission.particle.y,
+    length(randomDirection) > 0.000001,
+  );
+  let randomSize = mix(
+    forgeax_vfx_water_emission.sizeRange.x,
+    forgeax_vfx_water_emission.sizeRange.y,
+    vfx_random_spawn(ctx, 0x53495a45u),
+  ) * forgeax_vfx_water_emission.particle.w;
+  (*particle).position = position;
+  (*particle).velocity = tangentFlow + normal * forgeax_vfx_water_emission.particle.x + randomVelocity;
+  (*particle).age = 0.0;
+  (*particle).lifetime = forgeax_vfx_water_emission.particle.z;
+  (*particle).sprite_size = vec2<f32>(randomSize);
+  (*particle).material_random = randomSize;
+  (*particle).color.w = 1.0;
+}`;
+
+const WATER_GRID_PARTICLE_ACCELERATION_WGSL = `fn forgeax_vfx_water_apply_acceleration(
+  particle: ptr<function, VfxParticle>,
+  ctx: VfxUpdateContext,
+) {
+  (*particle).velocity += forgeax_vfx_water_emission.acceleration.xyz * ctx.delta;
+}`;
+
+const WATER_GRID_PARTICLE_UPDATE_WGSL = `fn forgeax_vfx_water_curve_sample(
+  value: f32,
+  sampleCount: u32,
+  curve: u32,
+) -> f32 {
+  let position = clamp(value, 0.0, 1.0) * f32(sampleCount - 1u);
+  let lower = min(u32(floor(position)), sampleCount - 1u);
+  let upper = min(lower + 1u, sampleCount - 1u);
+  let fraction = position - f32(lower);
+  var a = 0.0;
+  var b = 0.0;
+  if (curve == 0u) {
+    a = forgeax_vfx_water_emission.alphaCurve[lower / 4u][lower % 4u];
+    b = forgeax_vfx_water_emission.alphaCurve[upper / 4u][upper % 4u];
+  } else {
+    a = forgeax_vfx_water_emission.sizeCurve[lower / 4u][lower % 4u];
+    b = forgeax_vfx_water_emission.sizeCurve[upper / 4u][upper % 4u];
+  }
+  return mix(a, b, fraction);
+}
+
+fn forgeax_vfx_water_update_particle(
+  particle: ptr<function, VfxParticle>,
+) {
+  let normalizedAge = clamp((*particle).age / (*particle).lifetime, 0.0, 1.0);
+  (*particle).color.w = forgeax_vfx_water_curve_sample(
+    normalizedAge,
+    forgeax_vfx_water_emission.limits.z,
+    0u,
+  );
+  let scale = forgeax_vfx_water_curve_sample(
+    normalizedAge,
+    forgeax_vfx_water_emission.limits.w,
+    1u,
+  );
+  (*particle).sprite_size = vec2<f32>((*particle).material_random * scale);
+}`;
+
 function createParticleManagedRuntimeV3(options: {
   readonly capacity: number;
   readonly custom: import('@forgeax/engine-vfx').VfxCustomLayout | undefined;
   readonly parameters: boolean;
   readonly customHook: boolean;
   readonly renderers: readonly VfxGpuRendererReflection[];
+  readonly waterGridEmission: boolean;
 }): string {
   const custom = options.custom;
   const materialInputs = createParticleMaterialInputRuntime(custom, options.renderers);
@@ -1277,6 +1759,26 @@ function createParticleManagedRuntimeV3(options: {
     `fn forgeax_vfx_custom_sort_key(index: u32) -> f32 {\n  // The generated emitter runtime replaces this implementation when a\n  // renderer declares a reflected VfxCustom sort key. Keeping a valid default\n  // lets emitters without Custom storage share the same managed program.\n  _ = index;\n  return 0.0;\n}`,
     `fn forgeax_vfx_custom_sort_key(index: u32) -> f32 {\n  return forgeax_vfx_renderer_sort(index);\n}`,
   );
+  if (options.waterGridEmission) {
+    runtime = runtime
+      .replace(
+        'fn forgeax_vfx_water_initialize_particle(\n  particle: ptr<function, VfxParticle>,\n  isGridSpawn: bool,\n  spawnRank: u32,\n  ctx: VfxSpawnContext,\n) {\n  _ = particle;\n  _ = isGridSpawn;\n  _ = spawnRank;\n  _ = ctx;\n}',
+        WATER_GRID_PARTICLE_INITIALIZATION_WGSL,
+      )
+      .replace(
+        'fn forgeax_vfx_water_update_particle(\n  particle: ptr<function, VfxParticle>,\n) {\n  _ = particle;\n}',
+        WATER_GRID_PARTICLE_UPDATE_WGSL,
+      )
+      .replace(
+        'fn forgeax_vfx_water_apply_acceleration(\n  particle: ptr<function, VfxParticle>,\n  ctx: VfxUpdateContext,\n) {\n  _ = particle;\n  _ = ctx;\n}',
+        WATER_GRID_PARTICLE_ACCELERATION_WGSL,
+      );
+    runtime = runtime.replace(
+      '      forgeax_vfx_particles[index] = particle;',
+      '      forgeax_vfx_water_initialize_particle(&particle, isGridSpawn, spawnRank, ctx);\n      forgeax_vfx_particles[index] = particle;',
+    );
+    runtime = `${WATER_GRID_EMISSION_SCAN_WGSL}\n${runtime}`;
+  }
   runtime = replaceParticleMaterialWrites(runtime, materialInputs.maxLanes, 31);
   runtime = replaceParticleMaterialWrites(runtime, materialInputs.maxLanes, 18);
   runtime = replaceParticleMaterialWrites(runtime, materialInputs.maxLanes, 12);
@@ -1528,32 +2030,39 @@ async function compileEmitterV3(
   const spawnCustomHook = hookSignature('vfx_spawn').includes('VfxCustom');
   const updateCustomHook = hookSignature('vfx_update').includes('VfxCustom');
   const customHook = spawnCustomHook && updateCustomHook;
-  if (!spawnValid || (customRequested && !spawnCustomHook)) {
-    return err(
-      compileError(
-        entryCode.includes('vfx_spawn') ? 'vfx-hook-invalid' : 'vfx-hook-missing',
-        emitter.id,
-        customRequested
-          ? 'fn vfx_spawn(ctx, particle, custom) with VfxCustom ptr'
-          : 'fn vfx_spawn(ctx: VfxSpawnContext, particle: ptr<function, VfxParticle>)',
-        'add the exact v3 vfx_spawn hook signature and recook',
-        { hook: 'vfx_spawn', module: moduleId },
-      ),
-    );
-  }
-  if (!updateValid || (customRequested && !updateCustomHook)) {
-    return err(
-      compileError(
-        entryCode.includes('vfx_update') ? 'vfx-hook-invalid' : 'vfx-hook-missing',
-        emitter.id,
-        customRequested
-          ? 'fn vfx_update(ctx, particle, custom) with VfxCustom ptr'
-          : 'fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>)',
-        'add the exact v3 vfx_update hook signature and recook',
-        { hook: 'vfx_update', module: moduleId },
-      ),
-    );
-  }
+  const validateHookSignatures = () => {
+    if (!spawnValid || (customRequested && !spawnCustomHook)) {
+      return err(
+        compileError(
+          entryCode.includes('vfx_spawn') ? 'vfx-hook-invalid' : 'vfx-hook-missing',
+          emitter.id,
+          customRequested
+            ? 'fn vfx_spawn(ctx, particle, custom) with VfxCustom ptr'
+            : 'fn vfx_spawn(ctx: VfxSpawnContext, particle: ptr<function, VfxParticle>)',
+          'add the exact v3 vfx_spawn hook signature and recook',
+          { hook: 'vfx_spawn', module: moduleId },
+        ),
+      );
+    }
+    if (!updateValid || (customRequested && !updateCustomHook)) {
+      return err(
+        compileError(
+          entryCode.includes('vfx_update') ? 'vfx-hook-invalid' : 'vfx-hook-missing',
+          emitter.id,
+          customRequested
+            ? 'fn vfx_update(ctx, particle, custom) with VfxCustom ptr'
+            : 'fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>)',
+          'add the exact v3 vfx_update hook signature and recook',
+          { hook: 'vfx_update', module: moduleId },
+        ),
+      );
+    }
+
+    return undefined;
+  };
+  const validateHookSignaturesFailure = validateHookSignatures();
+  if (validateHookSignaturesFailure !== undefined) return validateHookSignaturesFailure;
+
   const stagePlan = buildParticleStagePlan(authoredEntryCode);
   if (!stagePlan.ok) return stagePlan;
   const layout = reflectVfxLayout(
@@ -1564,7 +2073,34 @@ async function compileEmitterV3(
   if (!layout.ok) return layout;
   const renderers = reflectVfxRendererV3(emitter.renderers, materials, layout.value);
   if (!renderers.ok) return renderers;
-  const dataInterfaces = layout.value.dataInterfaces ?? [];
+  const authoredDataInterfaces = layout.value.dataInterfaces ?? [];
+  const validateWaterEmissionInterface = () => {
+    if (
+      emitter.waterGridEmission !== undefined &&
+      !authoredDataInterfaces.some((entry) => entry.kind === 'water-surface')
+    ) {
+      return err(
+        compileError(
+          'vfx-shader-invalid',
+          emitter.id,
+          'a vfx:water-surface Data Interface import for waterGridEmission',
+          'add #import forgeax_vfx::data::water_surface to the emitter module and recook',
+          { module: moduleId },
+        ),
+      );
+    }
+
+    return undefined;
+  };
+  const validateWaterEmissionInterfaceFailure = validateWaterEmissionInterface();
+  if (validateWaterEmissionInterfaceFailure !== undefined)
+    return validateWaterEmissionInterfaceFailure;
+
+  const dataInterfaces = authoredDataInterfaces.map((entry) =>
+    entry.kind === 'water-surface' && emitter.waterGridEmission !== undefined
+      ? { ...entry, waterEmissionBinding: 21 }
+      : entry,
+  );
   if (
     dataInterfaces.some((entry) => entry.kind === 'force-fields') !==
     (emitter.forceFields !== undefined)
@@ -1589,7 +2125,12 @@ async function compileEmitterV3(
           name.endsWith('scene_depth') ||
           name.endsWith('noise') ||
           name.endsWith('scene_sdf') ||
-          name.endsWith('force_fields'),
+          name.endsWith('force_fields') ||
+          name.endsWith('water_surface') ||
+          name.endsWith('water_displacement') ||
+          name.endsWith('water_hull') ||
+          name.endsWith('water_config') ||
+          name.endsWith('gpu_events'),
       ),
     ),
   };
@@ -1599,9 +2140,14 @@ async function compileEmitterV3(
     custom: layout.value.customLayout,
     customHook,
     renderers: renderers.value,
+    waterGridEmission: emitter.waterGridEmission !== undefined,
   });
   const hasEvents = (emitter.channels?.length ?? 0) > 0 || (emitter.events?.length ?? 0) > 0;
   const custom = layout.value.customLayout;
+  const managedImports =
+    emitter.waterGridEmission === undefined
+      ? ''
+      : '#import forgeax_vfx::prelude::{vfx_hash, vfx_random_words}\n';
   const eventRuntime = !hasEvents
     ? ''
     : custom === undefined || custom.stride === 0
@@ -1610,8 +2156,42 @@ async function compileEmitterV3(
           '    forgeax_vfx_particles[childParticleIndex] = child;',
           `    forgeax_vfx_particles[childParticleIndex] = child;\n    forgeax_vfx_custom[childParticleIndex] = VfxCustom(${custom.fields.map((field) => wgslDefault(field.type)).join(', ')});`,
         );
+  let poolRuntime = '';
+  const validatePoolHooks = () => {
+    if (emitter.pool) {
+      const customFields = layout.value.customLayout?.fields ?? [];
+      const parameterFields = layout.value.parameters.fields;
+      const validState = Object.values(emitter.pool.state).every((name) =>
+        customFields.some((field) => field.name === name && field.type === 'f32'),
+      );
+      const validCommands = emitter.pool.commands.every((command) =>
+        [command.sequence, command.count].every((name) =>
+          parameterFields.some((field) => field.name === name && field.type === 'f32'),
+        ),
+      );
+      const validHooks = [emitter.pool.acquire, emitter.pool.control]
+        .filter((name): name is string => name !== undefined)
+        .every((name) => new RegExp(`\\bfn\\s+${name}\\s*\\(`).test(entryCode));
+      if (!customHook || !validState || !validCommands || !validHooks)
+        return err(
+          compileError(
+            'vfx-shader-invalid',
+            emitter.id,
+            'authored pool hooks, persistent custom f32 state and declared command parameters',
+            'Declare and implement the pool acquire/control hooks and their bounded state',
+            { module: moduleId },
+          ),
+        );
+      poolRuntime = createGpuSlotAllocatorRuntime(emitter.pool, emitter.capacity);
+    }
+
+    return undefined;
+  };
+  const validatePoolHooksFailure = validatePoolHooks();
+  if (validatePoolHooksFailure !== undefined) return validatePoolHooksFailure;
   const compiled = await compileParticleShader(
-    `${authoredEntryCode}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}`,
+    `${managedImports}${authoredEntryCode}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}\n${poolRuntime}`,
+
     {
       id: `forgeax_vfx_effect_v3::${emitter.id}`,
       imports: imports as Record<string, string>,
@@ -1638,25 +2218,32 @@ async function compileEmitterV3(
       ),
     );
   }
-  if (emitter.forceFields !== undefined) {
-    const storageBindings = compiled.value.bindings
-      .flatMap((group) => group.entries)
-      .filter(
-        (entry) =>
-          (entry.visibility & 4) !== 0 &&
-          (entry.buffer?.type === 'storage' || entry.buffer?.type === 'read-only-storage'),
-      ).length;
-    if (storageBindings > 8)
-      return err(
-        compileError(
-          'vfx-shader-invalid',
-          emitter.id,
-          'at most eight compute storage bindings on the portable managed field path',
-          'split custom/event work into another emitter rather than exceeding the guaranteed WebGPU limit',
-          { module: moduleId, cause: { storageBindings } },
-        ),
-      );
-  }
+  const validateForceFieldBindings = () => {
+    if (emitter.forceFields !== undefined) {
+      const storageBindings = compiled.value.bindings
+        .flatMap((group) => group.entries)
+        .filter(
+          (entry) =>
+            (entry.visibility & 4) !== 0 &&
+            (entry.buffer?.type === 'storage' || entry.buffer?.type === 'read-only-storage'),
+        ).length;
+      if (storageBindings > 8)
+        return err(
+          compileError(
+            'vfx-shader-invalid',
+            emitter.id,
+            'at most eight compute storage bindings on the portable managed field path',
+            'split custom/event work into another emitter rather than exceeding the guaranteed WebGPU limit',
+            { module: moduleId, cause: { storageBindings } },
+          ),
+        );
+    }
+
+    return undefined;
+  };
+  const validateForceFieldBindingsFailure = validateForceFieldBindings();
+  if (validateForceFieldBindingsFailure !== undefined) return validateForceFieldBindingsFailure;
+
   const resources = [
     'particles',
     'runtime',
@@ -1670,57 +2257,76 @@ async function compileEmitterV3(
       ? []
       : ['custom']),
     ...(dataInterfaces.length > 0 ? dataInterfaces.map((entry) => entry.kind) : []),
+    ...(emitter.waterGridEmission === undefined ? [] : ['water-grid-emission']),
     ...(hasEvents ? ['eventBuffer'] : []),
   ];
-  const program: VfxGpuEmitterProgram = {
-    id: emitter.id,
-    module: moduleId,
-    capacity: emitter.capacity,
-    backend: emitter.backend,
-    space: emitter.space,
-    ...(emitter.forceFields === undefined ? {} : { forceFields: emitter.forceFields }),
-    schedule: emitter.schedule,
-    bounds: emitter.bounds,
-    renderers: emitter.renderers,
-    channels: Object.freeze([...(emitter.channels ?? [])]),
-    events: Object.freeze([...(emitter.events ?? [])]),
-    simulationWhenCulled: emitter.simulationWhenCulled ?? 'continue',
-    wgsl: compiled.value.wgsl,
-    reflection: {
-      hooks: ['vfx_spawn', 'vfx_update'],
-      imports: Object.freeze([...compiled.value.deps].sort()),
-      resources: Object.freeze(resources),
-      entryPoints: [
-        'forgeax_vfx_spawn_main',
-        'forgeax_vfx_update_main',
-        'forgeax_vfx_scan_blocks_main',
-        'forgeax_vfx_scan_block_offsets_main',
-        'forgeax_vfx_add_offsets_main',
-        'forgeax_vfx_compact_main',
-        'forgeax_vfx_sort_main',
-        ...(emitter.capacity <= 256
-          ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
-          : []),
-        ...(hasEvents ? ['forgeax_vfx_event_main'] : []),
-        'forgeax_vfx_billboard_main',
-        'forgeax_vfx_mesh_main',
-        'forgeax_vfx_ribbon_main',
-        'forgeax_vfx_trail_history_main',
-        'forgeax_vfx_trail_offsets_main',
-        'forgeax_vfx_trail_main',
-        'forgeax_vfx_beam_main',
-        ...stagePlan.value.stages.map((stage) => stage.entryPoint),
-      ],
-      bindings: compiled.value.bindings,
-      layout: layout.value,
-      dataInterfaces,
-      eventChannels: Object.freeze([...(emitter.channels ?? [])]),
+  const publishEmitterProgram = (): VfxGpuEmitterProgram => {
+    const program: VfxGpuEmitterProgram = {
+      id: emitter.id,
+      module: moduleId,
+      capacity: emitter.capacity,
+      backend: emitter.backend,
+      space: emitter.space,
+      ...(emitter.forceFields === undefined ? {} : { forceFields: emitter.forceFields }),
+      ...(emitter.waterGridEmission === undefined
+        ? {}
+        : { waterGridEmission: emitter.waterGridEmission }),
+      schedule: emitter.schedule,
+      bounds: emitter.bounds,
+      renderers: emitter.renderers,
+      channels: Object.freeze([...(emitter.channels ?? [])]),
+
       events: Object.freeze([...(emitter.events ?? [])]),
-      eventEntryPoint: 'forgeax_vfx_event_main',
-      stages: Object.freeze(stagePlan.value.stages),
-      renderers: renderers.value,
-    },
+      simulationWhenCulled: emitter.simulationWhenCulled ?? 'continue',
+      wgsl: compiled.value.wgsl,
+      reflection: {
+        hooks: ['vfx_spawn', 'vfx_update'],
+        imports: Object.freeze([...compiled.value.deps].sort()),
+        resources: Object.freeze(resources),
+        entryPoints: [
+          'forgeax_vfx_spawn_main',
+          'forgeax_vfx_update_main',
+          ...(emitter.pool ? [GPU_SLOT_ALLOCATOR_ENTRY] : []),
+          'forgeax_vfx_scan_blocks_main',
+          'forgeax_vfx_scan_block_offsets_main',
+          'forgeax_vfx_add_offsets_main',
+          'forgeax_vfx_compact_main',
+          'forgeax_vfx_sort_main',
+          ...(emitter.capacity <= 256
+            ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
+            : []),
+          ...(hasEvents ? ['forgeax_vfx_event_main'] : []),
+          'forgeax_vfx_billboard_main',
+          'forgeax_vfx_mesh_main',
+          'forgeax_vfx_ribbon_main',
+          'forgeax_vfx_trail_history_main',
+          'forgeax_vfx_trail_offsets_main',
+          'forgeax_vfx_trail_main',
+          'forgeax_vfx_beam_main',
+          ...(emitter.waterGridEmission === undefined
+            ? []
+            : [
+                'forgeax_vfx_water_emission_cells_main',
+                'forgeax_vfx_water_emission_scan_blocks_main',
+                'forgeax_vfx_water_emission_scan_block_offsets_main',
+                'forgeax_vfx_water_emission_add_offsets_main',
+                'forgeax_vfx_water_emission_append_main',
+              ]),
+          ...stagePlan.value.stages.map((stage) => stage.entryPoint),
+        ],
+        bindings: compiled.value.bindings,
+        layout: layout.value,
+        dataInterfaces,
+        eventChannels: Object.freeze([...(emitter.channels ?? [])]),
+        events: Object.freeze([...(emitter.events ?? [])]),
+        eventEntryPoint: 'forgeax_vfx_event_main',
+        stages: Object.freeze(stagePlan.value.stages),
+        renderers: renderers.value,
+      },
+    };
+    return program;
   };
+  const program = publishEmitterProgram();
   // The base ABI permits arbitrary hook reads. A multi-instance contract only
   // follows hooks that cannot name the managed storage/runtime namespace;
   // shader immutability or a matching reflection alone does not prove that.
@@ -1729,7 +2335,11 @@ async function compileEmitterV3(
     Object.values(module.imports ?? {}).every(
       (source) => !/\bforgeax_vfx_/.test(stripWgslComments(source)),
     );
-  const instanceCompute = instanceIsolated ? createVfxInstanceComputeProgram(program) : undefined;
+  const buildIsolatedInstanceProgram = () =>
+    instanceIsolated && emitter.pool === undefined
+      ? createVfxInstanceComputeProgram(program)
+      : undefined;
+  const instanceCompute = buildIsolatedInstanceProgram();
   if (instanceCompute === undefined) return ok(program);
   const validatedBatch = await compileParticleShader(instanceCompute.wgsl, {
     id: `forgeax_vfx_instance_v1::${emitter.id}`,

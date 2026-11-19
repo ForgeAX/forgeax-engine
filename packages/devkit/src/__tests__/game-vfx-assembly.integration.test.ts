@@ -3,14 +3,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { EngineConfigurationError, withEngineSettings } from '@forgeax/engine-app';
 import { AssetRegistry, assetsPlugin } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
+import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { transformWithOxc } from 'vite';
 import { expect, it } from 'vitest';
-import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../vfx/src/index.js';
-import { createVfxRuntimeHost } from '../../../vfx-render/src/index.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
@@ -215,8 +216,21 @@ it.each([
         { lang: 'ts' },
       )
     ).code;
+    const featureSource = await readFile(resolve(generated, 'game-render-features.ts'), 'utf8');
+    const featureCode = (
+      await transformWithOxc(
+        featureSource.replace(/^import .*;$/gm, '').replace('export function', 'function'),
+        'game-render-features.ts',
+        { lang: 'ts' },
+      )
+    ).code;
+    const createGameRenderFeatures = runInNewContext(
+      `${featureCode}\ncreateGameRenderFeatures`,
+      {},
+    );
     const bootstrap = runInNewContext(`${bootstrapCode}\nexecutionBootstrap`, {
       createGameVfx,
+      createGameRenderFeatures,
       createRuntimePackOptions: async () => ({}),
       runtimeBinding: { scopeId: 'fixture' },
       createPrograms: () => ({}),
@@ -250,15 +264,21 @@ it.each([
     expect(diagnostics).toBeDefined();
     const diagnosticsStart = page.indexOf('const gpuPassTiming =');
     const diagnosticsEnd = page.indexOf('const profiler =', diagnosticsStart);
+    const animationSelection = page.match(/^const animation = .*;$/m)?.[0];
+    const workersSelection = page.match(/^const executionWorkers = .*;$/m)?.[0];
     expect(diagnosticsStart).toBeGreaterThan(0);
     expect(diagnosticsEnd).toBeGreaterThan(diagnosticsStart);
+    expect(animationSelection).toBeDefined();
+    expect(workersSelection).toBeDefined();
     const executionDiagnostics = runInNewContext(
-      `const query = new URLSearchParams(location.search); ${page.slice(diagnosticsStart, diagnosticsEnd)}\n(${diagnostics})`.replaceAll(
+      `const query = new URLSearchParams(location.search); ${animationSelection}\n${workersSelection}\n${page.slice(diagnosticsStart, diagnosticsEnd)}\n(${diagnostics})`.replaceAll(
         'import.meta.env.DEV',
         'false',
       ),
       {
         URLSearchParams,
+        EngineConfigurationError,
+        withEngineSettings,
         location: { search },
       },
     );
@@ -295,16 +315,19 @@ it.each([
       expect(options.isolateViewGraph).toBe(isolateViewGraph ? true : undefined);
     }
     const singleThreadCall = page.match(
-      /\? (createGameVfx\(\{ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources \}\)) : undefined;/,
+      /\? (createGameVfx\(\{ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources,[^\n]*?\}\)) : undefined;/,
     )?.[1];
     const previewFactory = page.match(/function makeVfxRuntimeHost\(\) \{[\s\S]*?\n\}/)?.[0];
     expect(singleThreadCall).toBeDefined();
+    expect(singleThreadCall).toContain('providers: gameFeatures.vfxProviders');
+    expect(singleThreadCall).toContain('providersForWorld: gameFeatures.vfxProvidersForWorld');
     expect(previewFactory).toBeDefined();
     const pageContext = {
       location: { search },
       URLSearchParams,
       createGameVfx,
       createVfxRuntimeHost: captureRuntimeHost,
+      gameFeatures: createGameRenderFeatures(),
     };
     const singleThread = runInNewContext(`${selection}\n${singleThreadCall}`, { ...pageContext });
     expect(capturedOptions.at(-1)?.instanceArenas).toBe(instanceArenas);
@@ -341,26 +364,23 @@ it.each([
       };
       const frame = source.features[0]
         .extract({
-          worlds: [world],
-          owner: 0,
+          world,
           frameNumber: 1,
           views: [{ identity: 'main', selectedView }],
         })
         .unwrap();
-      expect(frame.worlds).toHaveLength(1);
-      expect(frame.worlds[0].camera).toBe(selectedView);
-      expect(frame.worlds[0].intents).toEqual([]);
+      expect(frame.source).toBeDefined();
+      expect(frame.source.camera).toBe(selectedView);
+      expect(frame.source.intents).toEqual([]);
       expect(
-        source.features[0]
-          .extract({ worlds: [world], owner: 0, frameNumber: 2, views: [] })
-          .unwrap().worlds,
-      ).toEqual([]);
+        source.features[0].extract({ world, frameNumber: 2, views: [] }).unwrap().source,
+      ).toBeUndefined();
     } finally {
       await context.fiber.dispose();
       expect(world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(false);
     }
     expect(page).toContain(
-      'createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources })',
+      'createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: [], providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld })',
     );
     expect(page).toContain('...(isolateVfxViewGraph ? { isolateViewGraph: true } : {})');
     expect(page).toContain('gameVfx.plugin');

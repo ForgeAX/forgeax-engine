@@ -37,7 +37,7 @@ export async function compressShaderGroups(entries: readonly ShaderGroupEntry[])
       offset += entry.bytes.byteLength;
       return { identity: entry.identity, decodedRange };
     });
-    const compressed = await compressZstd(bytes);
+    const compressed = await compressZstd(bytes, { level: 19 });
     if (!compressed.ok)
       throw new Error(`shader group compression failed: ${compressed.error.code}`);
     output.push({ bytes: compressed.value, members: windows });

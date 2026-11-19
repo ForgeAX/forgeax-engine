@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "composite": true, "declaration": true, "declarationMap": true, "outDir": "dist", "rootDir": "src", "tsBuildInfoFile": "dist/.tsbuildinfo", "ignoreDeprecations": "6.0" },
   "include": ["src/**/*"],
-  "references": [{ "path": "../ecs" }, { "path": "../plugin" }, { "path": "../types" }]
+  "references": [{ "path": "../ecs" }, { "path": "../geometry" }, { "path": "../plugin" }, { "path": "../types" }]
 }

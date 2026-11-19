@@ -52,6 +52,16 @@ function defineFeatureVertexBuffer(spec: FeatureVertexBufferSpec): GPUVertexBuff
   };
 }
 
+export const CLIP_POSITION_COLOR_VERTEX_BUFFERS: readonly GPUVertexBufferLayout[] = Object.freeze([
+  defineFeatureVertexBuffer({
+    stepMode: 'vertex',
+    attributes: [
+      { shaderLocation: 0, format: 'float32x4' },
+      { shaderLocation: 1, format: 'float32x4' },
+    ],
+  }),
+]);
+
 const POSITION_SIZE_COLOR_INSTANCE_SPEC = {
   stepMode: 'instance',
   attributes: [
@@ -98,6 +108,14 @@ const MESH_GEOMETRY_MATERIAL_INSTANCE_SPEC = {
   ],
 } as const satisfies FeatureVertexBufferSpec;
 
+const WATER_INFO_POSITION_FLOW_SPEC = {
+  stepMode: 'vertex',
+  attributes: [
+    { shaderLocation: 0, format: 'float32x4' },
+    { shaderLocation: 1, format: 'float32x2' },
+  ],
+} as const satisfies FeatureVertexBufferSpec;
+
 /** Geometry-owned maps retained here only as feature-pipeline aliases. */
 export const PREPARED_INSTANCE_VERTEX_ATTRS = buildMeshAttributeMapForUvSets(2);
 export const PREPARED_MATERIAL_INSTANCE_VERTEX_ATTRS = SKIN_VERTEX_ATTRIBUTE_MAP;
@@ -122,6 +140,10 @@ export const TOPOLOGY_SEGMENT_INSTANCE_VERTEX_BUFFERS = [
 export const MESH_GEOMETRY_MATERIAL_INSTANCE_VERTEX_BUFFERS = [
   PARTICLE_MESH_VERTEX_BUFFER,
   defineFeatureVertexBuffer(MESH_GEOMETRY_MATERIAL_INSTANCE_SPEC),
+] satisfies readonly GPUVertexBufferLayout[];
+
+export const WATER_INFO_POSITION_FLOW_VERTEX_BUFFERS = [
+  defineFeatureVertexBuffer(WATER_INFO_POSITION_FLOW_SPEC),
 ] satisfies readonly GPUVertexBufferLayout[];
 
 const PREPARED_MATERIAL_VERTEX_LAYOUTS: ReadonlySet<string> = new Set([
@@ -199,6 +221,7 @@ function toGpuVertexFormat(
     case 'float32x3':
     case 'float32x4':
     case 'uint16x4':
+    case 'uint32':
       return format;
     default:
       throw new Error(`Unsupported geometry vertex format: ${format}`);
@@ -228,16 +251,10 @@ export function resolveWebGPUVertexBufferLayouts(options: {
   meshAttributes: VertexAttributeMap | undefined;
   particleInputLanes: number | undefined;
 }): readonly GPUVertexBufferLayout[] {
-  const {
-    vertexInputContract,
-    vertexLayout,
-    vertexLayoutProjection,
-    resolvedUvSetCount,
-    layoutKind,
-    meshAttributes,
-    particleInputLanes,
-  } = options;
+  const { vertexInputContract, vertexLayout, particleInputLanes } = options;
   const inputVertexBuffers = particleMaterialInputVertexBuffers(vertexLayout, particleInputLanes);
+  if (vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.clipPositionColor)
+    return CLIP_POSITION_COLOR_VERTEX_BUFFERS;
   return vertexInputContract === 'none'
     ? []
     : inputVertexBuffers !== undefined
@@ -250,37 +267,42 @@ export function resolveWebGPUVertexBufferLayouts(options: {
             ? TOPOLOGY_SEGMENT_INSTANCE_VERTEX_BUFFERS
             : vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.meshGeometryMaterialInstance
               ? MESH_GEOMETRY_MATERIAL_INSTANCE_VERTEX_BUFFERS
-              : vertexLayoutProjection !== undefined
-                ? toGpuVertexBufferLayouts(
-                    deriveVertexBufferLayoutFromProjection(
-                      vertexLayoutProjection,
-                      resolvedUvSetCount !== undefined
-                        ? { shaderUvSetCount: resolvedUvSetCount }
-                        : undefined,
-                    ),
-                  )
-                : layoutKind === 'pbr-skin' || layoutKind === 'gpu-driven-cluster-skin'
-                  ? toGpuVertexBufferLayouts(
-                      deriveVertexBufferLayout(
-                        meshAttributes ?? SKIN_VERTEX_ATTRIBUTE_MAP,
-                        resolvedUvSetCount !== undefined
-                          ? { shaderUvSetCount: resolvedUvSetCount }
-                          : undefined,
-                      ),
-                    )
-                  : meshAttributes !== undefined ||
-                      (resolvedUvSetCount !== undefined && resolvedUvSetCount > 1)
-                    ? toGpuVertexBufferLayouts(
-                        deriveVertexBufferLayout(
-                          meshAttributes ?? DEFAULT_VERTEX_ATTRIBUTE_MAP,
-                          resolvedUvSetCount !== undefined && resolvedUvSetCount > 1
-                            ? { shaderUvSetCount: resolvedUvSetCount }
-                            : undefined,
-                        ),
-                      )
-                    : toGpuVertexBufferLayouts(
-                        deriveVertexBufferLayout(DEFAULT_VERTEX_ATTRIBUTE_MAP),
-                      );
+              : vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.waterInfoPositionFlow
+                ? WATER_INFO_POSITION_FLOW_VERTEX_BUFFERS
+                : resolveGeometryVertexBufferLayouts(options);
+}
+
+function resolveGeometryVertexBufferLayouts(options: {
+  vertexLayoutProjection: VertexLayoutProjection | undefined;
+  resolvedUvSetCount: number | undefined;
+  layoutKind: string;
+  meshAttributes: VertexAttributeMap | undefined;
+}): readonly GPUVertexBufferLayout[] {
+  const { vertexLayoutProjection, resolvedUvSetCount, layoutKind, meshAttributes } = options;
+  return vertexLayoutProjection !== undefined
+    ? toGpuVertexBufferLayouts(
+        deriveVertexBufferLayoutFromProjection(
+          vertexLayoutProjection,
+          resolvedUvSetCount !== undefined ? { shaderUvSetCount: resolvedUvSetCount } : undefined,
+        ),
+      )
+    : layoutKind === 'pbr-skin' || layoutKind === 'gpu-driven-cluster-skin'
+      ? toGpuVertexBufferLayouts(
+          deriveVertexBufferLayout(
+            meshAttributes ?? SKIN_VERTEX_ATTRIBUTE_MAP,
+            resolvedUvSetCount !== undefined ? { shaderUvSetCount: resolvedUvSetCount } : undefined,
+          ),
+        )
+      : meshAttributes !== undefined || (resolvedUvSetCount !== undefined && resolvedUvSetCount > 1)
+        ? toGpuVertexBufferLayouts(
+            deriveVertexBufferLayout(
+              meshAttributes ?? DEFAULT_VERTEX_ATTRIBUTE_MAP,
+              resolvedUvSetCount !== undefined && resolvedUvSetCount > 1
+                ? { shaderUvSetCount: resolvedUvSetCount }
+                : undefined,
+            ),
+          )
+        : toGpuVertexBufferLayouts(deriveVertexBufferLayout(DEFAULT_VERTEX_ATTRIBUTE_MAP));
 }
 
 const colorAttributes = new WeakMap<object, boolean>();

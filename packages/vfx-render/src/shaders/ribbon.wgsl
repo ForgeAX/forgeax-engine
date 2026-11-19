@@ -2,7 +2,7 @@
 #pragma variant_axis ATMOSPHERE_AVAILABLE
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #import forgeax_view::common::{View, view}
-#import forgeax_view::fog::{translucent_fog, ndc_world}
+#import forgeax_view::fog::{forward_fog, vertex_height_fog, ndc_world}
 
 struct SegmentInput {
   @location(0) start: vec3<f32>,
@@ -14,7 +14,7 @@ struct SegmentInput {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
-  @location(1) clip_position: vec3<f32>,
+  @location(1) clip_position: vec4<f32>,
 }
 
 @vertex
@@ -31,7 +31,7 @@ fn vs_main(input: SegmentInput, @builtin(vertex_index) vertexIndex: u32) -> Vert
   var output: VertexOutput;
   output.position = vec4<f32>(clipPosition, 1.0);
   output.color = input.color;
-  output.clip_position = clipPosition;
+  output.clip_position = vec4<f32>(clipPosition, vertex_height_fog(view, ndc_world(view, clipPosition)));
   return output;
 }
 
@@ -39,6 +39,6 @@ fn vs_main(input: SegmentInput, @builtin(vertex_index) vertexIndex: u32) -> Vert
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let base = vec4<f32>(0.2, 0.7, 1.0, 0.9);
   let alpha = base.a * input.color.a;
-  let fogged = translucent_fog(view, ndc_world(view, input.clip_position), base.rgb * input.color.rgb * alpha, alpha);
+  let fogged = forward_fog(view, ndc_world(view, input.clip_position.xyz), input.clip_position.w, base.rgb * input.color.rgb * alpha, alpha);
   return vec4<f32>(fogged, alpha);
 }

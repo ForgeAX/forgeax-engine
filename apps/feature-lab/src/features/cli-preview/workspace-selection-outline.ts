@@ -1,7 +1,7 @@
 import { engineWorkspaceTargetToolsPlugin } from '@forgeax/engine/app';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
-import { Outline, setActiveCamera } from '@forgeax/engine/render';
+import { Outline, readEditorAssistance, setActiveCamera } from '@forgeax/engine/render';
 import { ChildOf, Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
@@ -11,9 +11,9 @@ export default defineFeature({
   catalog: 'Workspace selection outline',
   kind: 'visual',
   summary:
-    'engineWorkspaceTargetTools.highlight({ entityId }) projects the selected entity and its descendants into the active camera Outline (width 4 when unauthored); clearing removes only the members it added (#3408).',
+    'engineWorkspaceTargetTools.highlight({ entityId }) projects the selected entity and its descendants through the independent editor Outline; authored camera Outline remains unchanged.',
   expect:
-    'ON: all nine grey cubes under the selected parent get a bright outline. OFF: highlight({}) clears the selection and the camera Outline disappears; materials never change.',
+    'ON: all nine grey cubes under the selected parent get a bright outline. OFF: highlight({}) clears the selection and the editor Outline disappears; materials never change.',
   async setup({ app, world, canvas, frames }) {
     const primitiveAssets = world.assets;
     if (!(primitiveAssets instanceof AssetRegistry))
@@ -52,16 +52,24 @@ export default defineFeature({
         checks.ok('highlight capability present', tools?.highlight !== undefined);
         select(true);
         await frames(2);
-        const outline = world.get(camera, Outline);
-        checks.equal(
-          'outline covers parent and nine descendants',
-          outline.ok ? outline.value.entities.length : 0,
-          10,
+        const input = readEditorAssistance(world)?.snapshot();
+        checks.equal('selection retains the full parent handle', input?.selected, [parent]);
+        checks.equal('editor width is 4', input?.outline.width, 4);
+        checks.ok('author camera Outline remains absent', !world.get(camera, Outline).ok);
+        checks.ok(
+          'native editor outline passes run',
+          app.renderer
+            .inspect()
+            .perFramePassNames.some((name) => name.startsWith('editor-outline')),
         );
-        checks.equal('unauthored width is 4', outline.ok ? outline.value.width : 0, 4);
         select(false);
         await frames(2);
-        checks.ok('clearing removes the tool-added Outline', !world.get(camera, Outline).ok);
+        checks.equal(
+          'clearing releases only editor selection',
+          readEditorAssistance(world)?.snapshot()?.selected,
+          [],
+        );
+        checks.ok('clearing leaves authored camera unchanged', !world.get(camera, Outline).ok);
         select(true);
         await frames(1);
         return checks.items;

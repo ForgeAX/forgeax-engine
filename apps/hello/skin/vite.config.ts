@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -14,7 +15,6 @@ import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { pluginPack, reloadAssetHost } from '@forgeax/engine-vite-plugin-pack';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { defineConfig } from 'vite';
-import { optionalAssetPack } from '../../shared/src/optional-asset-pack.js';
 
 // hello-skin vite config (tweak-20260611-skin-fox-3clip-and-kb-sample-assets M6).
 //
@@ -30,8 +30,9 @@ import { optionalAssetPack } from '../../shared/src/optional-asset-pack.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
+const foxAssetRoot = resolve(monorepoRoot, 'forgeax-engine-assets/khronos-gltf-samples/Fox');
 const assetRoots = [
-  resolve(monorepoRoot, 'forgeax-engine-assets/khronos-gltf-samples/Fox'),
+  ...(existsSync(foxAssetRoot) ? [foxAssetRoot] : []),
   resolve(here, 'assets/skeletal-motion.pack.ts'),
 ];
 const runtimeBinding = createStandaloneRuntimeAssetBinding('hello-skin');
@@ -53,7 +54,7 @@ export default defineConfig(async () => {
     plugins: [
       forgeaxShader() as never,
       executionWorkerEntries([]),
-      ...optionalAssetPack(assetRoots, () => pack),
+      pack,
       pluginRuntimeProjection(here, inventory.sourceInputs),
       pluginProgramsBuild({
         projectRoot: here,

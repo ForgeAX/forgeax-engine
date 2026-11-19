@@ -72,6 +72,7 @@ export interface FogCandidate {
   readonly far: number;
   /** Scale of the fog opacity on background pixels under an Atmosphere, in [0, 1]. */
   readonly skyOpacity: number;
+  readonly sunScatter?: number;
 }
 
 export type EnvironmentSource =
@@ -185,6 +186,8 @@ function validateFogScalars(candidate: FogCandidate): FogParameterIssue | undefi
     };
   }
   if (
+    !Number.isFinite(candidate.sunScatter ?? 0) ||
+    (candidate.sunScatter ?? 0) < 0 ||
     !Number.isFinite(candidate.skyOpacity) ||
     candidate.skyOpacity < 0 ||
     candidate.skyOpacity > 1
@@ -205,13 +208,6 @@ function validateFogLaw(candidate: FogCandidate): FogParameterIssue | undefined 
       field: 'mode',
       value: Number.NaN,
       expected: 'a known FogModeValue label: exp, exp2 or linear',
-    };
-  }
-  if (candidate.mode !== 'exp' && candidate.heightFalloff !== 0) {
-    return {
-      field: 'heightFalloff',
-      value: candidate.heightFalloff,
-      expected: '0 outside mode exp (exp2 and linear follow the Three.js laws)',
     };
   }
   if (candidate.mode !== 'linear') return undefined;

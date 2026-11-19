@@ -11,6 +11,8 @@ import sampling from '../../../shader/src/atmosphere-sampling.wgsl?raw';
 import tableAccess from '../../../shader/src/atmosphere-table-access.wgsl?raw';
 import tableKernels from '../../../shader/src/atmosphere-table-kernels.wgsl?raw';
 import visibility from '../../../shader/src/atmosphere-visibility.wgsl?raw';
+import cloudGeometry from '../../../shader/src/cloud/geometry.wgsl?raw';
+import cloudShadow from '../../../shader/src/cloud/shadow.wgsl?raw';
 import cloud from '../../../shader/src/cloud.wgsl?raw';
 import common from '../../../shader/src/common.wgsl?raw';
 import fogModule from '../../../shader/src/fog.wgsl?raw';
@@ -59,7 +61,6 @@ function viewPayload(color: readonly [number, number, number]): Float32Array {
   const s = Math.sin(PITCH);
   const camera: CameraSnapshot = {
     entityKey: 1,
-    worldId: 0,
     historyVersion: 0,
     position: vec3.create(0, 2, 0),
     world: new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 2, 0, 1]),
@@ -124,6 +125,8 @@ async function compose(entry: string, opticsSource: string): Promise<string> {
       'forgeax_view::common': common,
       'forgeax_view::fog': fog,
       'forgeax_cloud::layer': cloud,
+      'forgeax_cloud::geometry': cloudGeometry,
+      'forgeax_cloud::shadow': cloudShadow,
       'forgeax_pbr::shadow_pcf': shadowPcf,
       'forgeax_atmosphere::visibility': visibility,
       'forgeax_atmosphere::table_access': tableAccess,

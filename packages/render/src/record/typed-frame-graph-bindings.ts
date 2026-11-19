@@ -12,13 +12,22 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  type AssetHandle,
+  err,
+  MATERIAL_POST_PROCESS_SCENE_INPUTS,
+  ok,
+  type Result,
+  type TextureAsset,
+} from '@forgeax/engine-types';
 import {
   type AtmosphereViews,
   atmosphereBindings,
   atmosphereMaterialVisibilityBindings,
 } from '../environment/bindings';
 import { atmosphereVolumeViews, type GraphAtmosphere } from '../environment/luts';
+import { CloudLayerResourceFailureError } from '../errors/cloud';
+import { RendererContractFailureError, RenderFeatureStageFailedError } from '../errors/render';
 import type { RenderFeatureResolvedGpuBuffer } from '../features/prepared-gpu-work';
 import type { RenderFeatureBindingsDescriptor } from '../features/prepared-graphics';
 import type {
@@ -32,6 +41,8 @@ import {
   createFullscreenBindGroup,
   isTemporalFullscreenBinding,
 } from '../fullscreen-post-process-pass';
+import { waterProgramEntryPoints } from '../material-program-inputs';
+import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import type { PreparedGraphicsResolvedResource } from '../prepare/prepared-graphics-resolver';
 import type {
   RenderPipelineFeatureTarget,
@@ -45,11 +56,21 @@ import {
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   sceneDataTargetOwner,
 } from '../temporal/scene-data';
+import {
+  requireWaterMaterialBakedSources,
+  waterMaterialBodyIndex,
+  waterMaterialFrameBindGroupEntries,
+  waterMaterialFrameDynamicOffsets,
+} from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
-import { buildPerFrameBindGroups } from './frame-lighting';
+import { buildPerFrameBindGroups, buildViewBindGroup } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
-import { translucentViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
+import {
+  materialFogViewOffset,
+  POST_PROCESS_VIEW_UNIFORM_OFFSET,
+  VIEW_UNIFORM_BYTES,
+} from './view-ubo';
 
 /** Build semantic sampled views without changing the graph's attachment views. */
 export function projectSceneDataSampledViews(
@@ -210,6 +231,8 @@ export function resolveTargetBindings(
   input: TargetBindingsInput,
   featurePostProcessEntries?: ReadonlyMap<string, PostProcessShaderEntry>,
   atmosphere?: GraphAtmosphere,
+  waterInfoTargets?: WaterInfoGraphTargets,
+  postProcessView?: 'unjittered',
 ): RenderFeatureGraphBindingsResolution | undefined {
   const frame = input.frame as _InternalRenderPipelineContext;
   const atmosphereViews = atmosphereVolumeViews(input.resources, atmosphere);
@@ -219,55 +242,281 @@ export function resolveTargetBindings(
   const pipeline = input.binding.pipeline as LayoutPipeline | undefined;
   const sceneDepth = descriptor?.values.sceneDepth;
   if (pipeline === undefined) return undefined;
-  // Blended feature draws (particles) read the View copy for their blend so
-  // they fog themselves at their own depth over the already-fogged scene.
-  const viewOffset =
-    input.binding.fogComposition === undefined
-      ? 0
-      : translucentViewOffset(input.binding.fogComposition);
-  if (descriptor?.values.view === true) {
-    return perFrameViewBindings(frame, atmosphereViews, directionalShadow, cloudShadow, viewOffset);
+  if (descriptor?.values.bufferBindings !== undefined) {
+    const layout = pipeline.getBindGroupLayout?.(Number(descriptor.values.group ?? 0));
+    if (layout === undefined) return undefined;
+    const entries: import('@forgeax/engine-rhi').BindGroupEntry[] =
+      descriptor.values.bufferBindings.map((binding) => {
+        const buffer = input.resolveGpuResource?.(binding.resource);
+        if (buffer === undefined)
+          throw new RenderFeatureStageFailedError(
+            'graphics-storage-bindings',
+            -1,
+            'record',
+            'next-frame',
+            { resource: binding.resource },
+          );
+        return {
+          binding: binding.binding,
+          resource: {
+            kind: 'buffer' as const,
+            value: { buffer: buffer.buffer, size: buffer.size },
+          },
+        };
+      });
+    if (
+      descriptor.values.sceneDepth !== undefined &&
+      typeof descriptor.values.sceneDepthBinding === 'number'
+    ) {
+      const depth = input.resolveTarget(descriptor.values.sceneDepth as never);
+      const view = depth === undefined ? undefined : depthOnlyViewOf(frame, input.resources, depth);
+      if (view === undefined) return undefined;
+      entries.push({
+        binding: descriptor.values.sceneDepthBinding,
+        resource: { kind: 'textureView', value: view },
+      });
+    }
+    return frame.runtime.device.createBindGroup({ layout, entries }).unwrap();
   }
-  // Generic fullscreen producers (for example the CloudLayer scene pass)
-  // share the renderer-owned post-process bind-group contract without opting
-  // into the temporal two-input path below. Their input/depth aliases are
-  // resolved from the active typed graph, so they cannot accidentally sample
-  // a stale surface view or manufacture a second resource owner.
-  if (descriptor?.values.fullscreen === true) {
-    return isTemporalFullscreenBinding(descriptor.values)
-      ? resolveTemporalFullscreenBindings(
-          input,
-          frame,
-          pipeline,
-          descriptor.values,
-          featurePostProcessEntries,
-        )
-      : resolveFullscreenBindings(
-          input,
-          frame,
-          pipeline,
-          descriptor.values,
-          featurePostProcessEntries,
+  if (descriptor?.values.waterMaterial !== undefined) {
+    const resolveFeatureWaterMaterialBindings = () => {
+      const selected = descriptor.values.waterMaterial as {
+        readonly bodyKey: string;
+        readonly viewIdentity: string;
+        readonly bodyGeneration: number;
+        readonly zoneGeneration: number;
+        readonly programInputs: import('../material-program-inputs').MaterialProgramInputs;
+      };
+      const expected = {
+        viewIdentity: selected.viewIdentity,
+        bodyGeneration: selected.bodyGeneration,
+        zoneGeneration: selected.zoneGeneration,
+        deviceGeneration: frame.runtime.deviceGeneration ?? 0,
+        frameGeneration: frame.runtime.rendererFrameNumber ?? -1,
+      };
+      const views = new Map<string, TextureView>();
+      for (const [name, target] of waterInfoTargets ?? [])
+        views.set(name, input.resources.textureView(target.view).unwrap());
+      const [viewX, viewY, viewZ] = frame.camera.position;
+      if (viewX === undefined || viewY === undefined || viewZ === undefined)
+        throw new RenderFeatureStageFailedError(
+          'water-frame-system-input',
+          -1,
+          'record',
+          'next-frame',
+          {
+            reason: 'view-origin-unavailable',
+          },
         );
+      const bindings = frame.runtime.getWaterMaterialFrameBindings?.({
+        ...expected,
+        viewOriginM: [viewX, viewY, viewZ],
+        waterInfoTextureViews: views,
+        waterMeshDraws: [],
+      });
+      const resources = [...(bindings?.values() ?? [])].find(
+        (candidate) =>
+          candidate.bodyTargetNames.get(selected.bodyKey) === candidate.waterInfoTargetName,
+      );
+      const index =
+        resources === undefined
+          ? undefined
+          : waterMaterialBodyIndex(resources, selected.bodyKey, expected);
+      const layout = pipeline.getBindGroupLayout?.(2);
+      if (resources === undefined || index?.ok !== true || layout === undefined)
+        throw new RenderFeatureStageFailedError(
+          'water-frame-system-input',
+          -1,
+          'record',
+          'next-frame',
+          {
+            reason: 'selected-water-frame-unavailable',
+            selected,
+            expected,
+            ...(index?.ok === false ? { cause: index.error } : {}),
+          },
+        );
+      const infoOffset = resources.waterInfoDescriptorDynamicOffsets.get(selected.bodyKey);
+      const drawOffset = resources.bodyIndexDynamicOffsets.get(selected.bodyKey);
+      if (drawOffset === undefined) return undefined;
+      const entryPoints = waterProgramEntryPoints(selected.programInputs);
+      if (entryPoints === undefined)
+        throw new RenderFeatureStageFailedError(
+          'water-frame-system-input',
+          -1,
+          'record',
+          'next-frame',
+          {
+            reason: 'selected-water-frame-program-uncertified',
+            selected,
+          },
+        );
+      requireWaterMaterialBakedSources(resources, [index.value], selected.programInputs);
+      return {
+        handle: frame.runtime.device
+          .createBindGroup({
+            layout,
+            entries: waterMaterialFrameBindGroupEntries(resources, 16, entryPoints),
+          })
+          .unwrap(),
+        dynamicOffsets: waterMaterialFrameDynamicOffsets(
+          {
+            ...(infoOffset === undefined ? {} : { waterInfo: infoOffset }),
+            body: drawOffset,
+            mesh: 0,
+          },
+          entryPoints,
+          resources.waterInfoTextureView !== undefined,
+        ),
+      };
+    };
+    return resolveFeatureWaterMaterialBindings();
   }
-  if (descriptor?.values.sceneDepthBinding === 1) {
-    return resolveViewDepthBindings(
-      input,
-      frame,
-      pipeline,
-      sceneDepth,
-      viewOffset,
-      atmosphereViews,
-      directionalShadow,
-      cloudShadow,
+  if (descriptor?.values.postProcess === true) {
+    const resolveFeaturePostProcessBindings = () => {
+      const color = input.resolveTarget(descriptor.values.sceneColor as never);
+      const depth = input.resolveTarget(descriptor.values.sceneDepth as never);
+      const inputName = descriptor.values.passInputBuffer;
+      const passInputs =
+        typeof inputName === 'string' ? input.resolveGpuResource?.(inputName) : undefined;
+      const layout = pipeline.getBindGroupLayout?.(0);
+      if (
+        color === undefined ||
+        depth === undefined ||
+        passInputs === undefined ||
+        layout === undefined
+      )
+        return undefined;
+      const colorView = input.resources.textureView(color.view).unwrap();
+      const depthView = depthOnlyViewOf(frame, input.resources, depth);
+      if (depthView === undefined) return undefined;
+      return frame.runtime.device
+        .createBindGroup({
+          layout,
+          entries: [
+            {
+              binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.view,
+              resource: {
+                kind: 'buffer',
+                value: {
+                  buffer: frame.pipelineState.viewUniformBuffer,
+                  offset: postProcessView === 'unjittered' ? POST_PROCESS_VIEW_UNIFORM_OFFSET : 0,
+                  size: VIEW_UNIFORM_BYTES,
+                },
+              },
+            },
+            {
+              binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.color,
+              resource: { kind: 'textureView', value: colorView },
+            },
+            {
+              binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.depth,
+              resource: { kind: 'textureView', value: depthView },
+            },
+            {
+              binding: MATERIAL_POST_PROCESS_SCENE_INPUTS.passInputs,
+              resource: {
+                kind: 'buffer',
+                value: { buffer: passInputs.buffer, size: passInputs.size },
+              },
+            },
+          ],
+        })
+        .unwrap();
+    };
+    return resolveFeaturePostProcessBindings();
+  }
+  const resolveFeatureSceneViewBindings = () => {
+    // Blended feature draws (particles) read the View copy for their blend so
+    // they fog themselves at their own depth over the already-fogged scene.
+    const viewOffset = materialFogViewOffset(
+      0,
+      frame.vertexHeightFog === true,
+      input.binding.fog,
+      input.binding.fogComposition,
     );
-  }
-  if (sceneDepth === undefined) {
-    // This callback is reached only for an actual feature draw. A scene
-    // containing only particles still needs the pipeline's View/light ABI.
-    return perFrameViewBindings(frame, atmosphereViews, directionalShadow, cloudShadow, viewOffset);
-  }
-  return resolveSceneDepthBindings(input, frame, pipeline, sceneDepth, descriptor?.values.group);
+    if (
+      descriptor?.values.fullscreen !== true &&
+      frame.vertexHeightFog === true &&
+      input.binding.fog !== false &&
+      input.binding.forwardFog !== 'height-vertex/1'
+    )
+      throw new RendererContractFailureError(
+        'draw',
+        'Forward material feature must declare forwardFog: height-vertex/1 or renderState.fog: false',
+      );
+    if (descriptor?.values.view === true) {
+      return perFrameViewBindings(
+        frame,
+        atmosphereViews,
+        directionalShadow,
+        cloudShadow,
+        viewOffset,
+      );
+    }
+    // Generic fullscreen producers (for example the CloudLayer scene pass)
+    // share the renderer-owned post-process bind-group contract without opting
+    // into the temporal two-input path below. Their input/depth aliases are
+    // resolved from the active typed graph, so they cannot accidentally sample
+    // a stale surface view or manufacture a second resource owner.
+    if (descriptor?.values.fullscreen === true) {
+      return isTemporalFullscreenBinding(descriptor.values)
+        ? resolveTemporalFullscreenBindings(
+            input,
+            frame,
+            pipeline,
+            descriptor.values,
+            featurePostProcessEntries,
+          )
+        : resolveFullscreenBindings(
+            input,
+            frame,
+            pipeline,
+            descriptor.values,
+            featurePostProcessEntries,
+          );
+    }
+    if (
+      input.binding.bindingContract === 'view-and-scene-depth' ||
+      input.binding.bindingContract === 'render-material-and-scene-depth'
+    ) {
+      return resolveViewDepthBindings(
+        input,
+        frame,
+        pipeline,
+        sceneDepth,
+        viewOffset,
+        atmosphereViews,
+        directionalShadow,
+        cloudShadow,
+      );
+    }
+    if (input.binding.bindingContract === 'render-standard-material-and-scene-depth') {
+      return resolveStandardViewDepthBindings(
+        input,
+        frame,
+        pipeline,
+        sceneDepth,
+        viewOffset,
+        atmosphereViews,
+        directionalShadow,
+        cloudShadow,
+      );
+    }
+    if (sceneDepth === undefined) {
+      // This callback is reached only for an actual feature draw. A scene
+      // containing only particles still needs the pipeline's View/light ABI.
+      return perFrameViewBindings(
+        frame,
+        atmosphereViews,
+        directionalShadow,
+        cloudShadow,
+        viewOffset,
+      );
+    }
+    return resolveSceneDepthBindings(input, frame, pipeline, sceneDepth, descriptor?.values.group);
+  };
+  return resolveFeatureSceneViewBindings();
 }
 
 function cloudShadowViewOf(
@@ -387,6 +636,7 @@ function fullscreenDepthView(
 
 /** Named extra color inputs; undefined when any declared input is unavailable. */
 function fullscreenAdditionalViews(
+  frame: _InternalRenderPipelineContext,
   input: TargetBindingsInput,
   values: BindingValues,
   fullscreen: FullscreenPass,
@@ -395,16 +645,81 @@ function fullscreenAdditionalViews(
   const additionalNames = values.additionalTextures;
   if (!Array.isArray(additionalNames)) return additionalViews;
   for (const [index, value] of additionalNames.entries()) {
+    const assetCount = Array.isArray(values.assetTextures) ? values.assetTextures.length : 0;
+    const binding = fullscreen.extraColorBindings[assetCount + index];
+    if (binding === undefined) return undefined;
+    if (value === false) {
+      additionalViews.push({ binding, view: frame.pipelineState.defaultWhiteTextureView });
+      continue;
+    }
     if (typeof value !== 'string') return undefined;
     const target = input.resolveTarget(value);
     if (target === undefined) return undefined;
     const view = input.resources.textureView(target.view);
     if (!view.ok) return undefined;
-    const binding = fullscreen.extraColorBindings[index];
-    if (binding === undefined) return undefined;
     additionalViews.push({ binding, view: view.value });
   }
   return additionalViews;
+}
+
+/** Exact published cloud texture versions; the ordinary residency cache owns views and lifetimes. */
+function fullscreenAssetViews(
+  frame: _InternalRenderPipelineContext,
+  facts: BindingValues[string],
+  fullscreen: FullscreenPass,
+  additionalCount = 0,
+): readonly { readonly binding: number; readonly view: TextureView }[] {
+  const fail = (cause: string): never => {
+    throw new CloudLayerResourceFailureError({
+      stage: 'view',
+      generation: recordContext(frame.runtime).deviceScope.generation,
+      cause,
+    });
+  };
+  if (
+    !Array.isArray(facts) ||
+    facts.length + additionalCount !== fullscreen.extraColorBindings.length
+  )
+    return fail('The published cloud texture roster does not match the prepared bind group.');
+  return facts.map((fact: unknown, index) => {
+    if (
+      fact === null ||
+      typeof fact !== 'object' ||
+      !('handle' in fact) ||
+      typeof fact.handle !== 'number' ||
+      !('revision' in fact) ||
+      typeof fact.revision !== 'number' ||
+      !('guid' in fact) ||
+      typeof fact.guid !== 'string' ||
+      !('dimension' in fact) ||
+      (fact.dimension !== '2d' && fact.dimension !== '3d')
+    )
+      return fail('Invalid published cloud texture fact.');
+    const binding = fullscreen.extraColorBindings[index];
+    const handle = fact.handle as AssetHandle<'texture'>;
+    const scope = frame.world;
+    if (
+      binding === undefined ||
+      scope.assetRevision(handle) !== fact.revision ||
+      scope.sourceForAsset(handle)?.guid !== fact.guid
+    )
+      return fail(
+        `Cloud texture ${fact.guid} has no accepted publication for revision ${fact.revision}.`,
+      );
+    // The active publication/version was checked immediately above. Local
+    // Worlds expose this same current snapshot without a historical pin.
+    const resolved = scope.resolveAsset<TextureAsset>(handle);
+    if (
+      !resolved.ok ||
+      resolved.value.kind !== 'texture' ||
+      resolved.value.shape.viewDimension !== fact.dimension
+    )
+      return fail(`Cloud texture ${fact.guid} does not match its cooked view dimension.`);
+    const resident = frame.store.ensureResident(handle, resolved.value, scope);
+    if (!resident.ok)
+      return fail(`Cloud texture ${fact.guid} could not become resident: ${resident.error.code}.`);
+    return { binding, view: resident.value.view };
+  });
 }
 
 function fullscreenStorageBindings(
@@ -464,8 +779,15 @@ function resolveFullscreenBindings(
   if (depthTarget !== undefined && (depthView === undefined || fullscreen.depthSampler === null)) {
     return undefined;
   }
-  const additionalViews = fullscreenAdditionalViews(input, values, fullscreen);
-  if (additionalViews === undefined) return undefined;
+  const logicalViews = fullscreenAdditionalViews(frame, input, values, fullscreen);
+  if (logicalViews === undefined) return undefined;
+  const additionalViews =
+    values.assetTextures === undefined
+      ? logicalViews
+      : [
+          ...fullscreenAssetViews(frame, values.assetTextures, fullscreen, logicalViews.length),
+          ...logicalViews,
+        ];
   const layout = pipeline.getBindGroupLayout?.(1);
   if (layout === undefined) return undefined;
   const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
@@ -625,6 +947,56 @@ function resolveViewDepthBindings(
   );
   if (!created.ok) throw created.error;
   return created.value;
+}
+
+/** Full Standard View resources plus the prepared material's scene depth. */
+function resolveStandardViewDepthBindings(
+  input: TargetBindingsInput,
+  frame: _InternalRenderPipelineContext,
+  pipeline: LayoutPipeline,
+  sceneDepth: BindingValues['sceneDepth'],
+  viewOffset: number,
+  atmosphereViews: AtmosphereViews | undefined,
+  directionalShadow: TextureView | undefined,
+  cloudShadow: TextureView | undefined,
+): RenderFeatureGraphBindingsResolution | undefined {
+  const target = sceneDepth === undefined ? undefined : input.resolveTarget(sceneDepth);
+  const texture = target === undefined ? undefined : input.resources.texture(target.texture);
+  if (texture !== undefined && !texture.ok) throw texture.error;
+  const getLayout = pipeline.getBindGroupLayout;
+  const layout = getLayout?.call(pipeline, 0);
+  if (getLayout === undefined || layout === undefined) {
+    // Preserve depth-view failure reporting even for a pipeline that cannot
+    // supply this layout; this branch never publishes a cached binding.
+    if (texture !== undefined) {
+      const view = frame.runtime.device.createTextureView(texture.value as Texture, {
+        aspect: 'depth-only',
+        dimension: '2d',
+      });
+      if (!view.ok) throw view.error;
+    }
+    return undefined;
+  }
+  const viewBindGroup = buildViewBindGroup(
+    frame.runtime as RenderSystemInternals,
+    frame.frameState,
+    frame.pipelineState,
+    frame.bindGroupCounts,
+    {
+      atmosphere: atmosphereViews,
+      directionalShadow,
+      cloudShadow,
+      spotShadow: frame.frameState.frameOutputs.spotShadowView ?? undefined,
+      viewBindGroupLayout: layout,
+      viewLayoutIdentity: [pipeline, getLayout],
+      ...(texture === undefined
+        ? { sceneDepth: frame.pipelineState.shadowFallbackTextureView }
+        : { sceneDepthTexture: texture.value as Texture }),
+    },
+  );
+  return viewBindGroup === null
+    ? undefined
+    : { handle: viewBindGroup, dynamicOffsets: [viewOffset, 0] };
 }
 
 /** A standalone scene-depth group at the declared group index. */

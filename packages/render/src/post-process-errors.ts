@@ -194,7 +194,7 @@ const POST_PROCESS_POLICY = {
     expected:
       'valid AO algorithm, quality, finite non-negative thickness/exponent/intensity, falloff in [0, 1] and resolutionScale in [0.25, 1]',
     hint: () =>
-      'Inspect detail.paramName; use algorithm gtao or ssao, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1]. For a camera companion, use the AMBIENT_OCCLUSION_* constants or remove AmbientOcclusion; for a Standard profile, correct config.ssao.<paramName> or disable AO with config.ssao = false.',
+      'Inspect detail.paramName; use algorithm gtao, ssao or spiral-ssao, application lighting/scene-color, sceneColorStrength in [0, 1], explicit sampleCount integer 1..64, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1]. For a camera companion, use the AMBIENT_OCCLUSION_* constants or remove AmbientOcclusion; for a Standard profile, correct config.ssao.<paramName> or disable AO with config.ssao = false.',
   },
   'ssao-radius-non-positive': {
     expected: 'SSAO radius must be > 0',

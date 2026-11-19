@@ -209,6 +209,23 @@ export const InspectorAssetNavigation: Story = {
   render: () => <NavigableAssetFields />,
 };
 
+function ReadOnlyAssetReferences() {
+  const [action, setAction] = useState('');
+  return <div style={{ width: '100%', maxWidth: 380, display: 'grid', gap: 8 }}>
+    <AssetReferenceField readOnly value={{ guid: 'cloud-reference', name: 'Reference Cloud', kind: 'cloud-material' }}
+      thumbnail={{ state: 'unsupported' }} onOpen={() => setAction('Opened Reference Cloud')}
+      onReveal={() => setAction('Located Reference Cloud')} />
+    <AssetReferenceField readOnly value={{ guid: 'missing-reference', name: 'Missing material', kind: 'cloud-material', missing: true }} />
+    <AssetReferenceField readOnly value={{ name: 'Unresolved material', kind: 'cloud-material' }} />
+    <output aria-live="polite">{action}</output>
+  </div>;
+}
+
+export const ReadOnlyAssetNavigation: Story = {
+  parameters: { docs: { description: { story: 'Read-only references retain thumbnail and external-link opening, one Content Browser reveal action, and GUID copying. Use Selection and Clear are absent. Missing or unresolved identities keep navigation disabled; the default reference mode retains its authoring controls.' } } },
+  render: () => <ReadOnlyAssetReferences />,
+};
+
 function AssetPreviewFields() {
   const [opened, setOpened] = useState('');
   return <div style={{ width: '100%', maxWidth: 380, display: 'grid', gap: 8 }}>

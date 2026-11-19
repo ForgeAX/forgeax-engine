@@ -1,5 +1,5 @@
 #define_import_path forgeax_atmosphere::sampling
-#import forgeax_view::common::{View}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled}
 #import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_integrate, atmosphere_sun_luminance}
 #import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray}
 
@@ -41,7 +41,7 @@ struct AtmosphereAerialCoordinate {
 };
 
 // One geometry authority serves native 3D filtering and packed trilinear reads.
-fn atmosphere_aerial_coordinate(v:View, worldPosition:vec3<f32>, slices:f32)->AtmosphereAerialCoordinate {
+fn atmosphere_aerial_coordinate(v:View, worldPosition:vec3<f32>, dimensions:vec3<f32>)->AtmosphereAerialCoordinate {
   let clip=v.worldViewProj*vec4<f32>(worldPosition,1.0);
   let uv=clip.xy/clip.w*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
   let ray=atmosphere_view_ray(v,uv);
@@ -49,12 +49,23 @@ fn atmosphere_aerial_coordinate(v:View, worldPosition:vec3<f32>, slices:f32)->At
   let start=v.atmosphere.geometry.z;
   let origin=atmosphere_observer(v.atmosphere,ray.origin);
   let range=v.atmosphereControl.z;
-  let first=start+range*pow(0.5/slices,2.0);
-  let last=start+range*pow(1.0-0.5/slices,2.0);
+  let first=start+range*pow(0.5/dimensions.z,2.0);
+  let last=start+range*pow(1.0-0.5/dimensions.z,2.0);
   let inside=all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0));
   var exactWeight=0.0;
   if distance>last {exactWeight=smoothstep(last,start+range,distance);}
   if v.atmosphereControl.x>0.0 || v.temporalProjection.z>0.5 || length(origin)>=v.atmosphere.originRadius.w+v.atmosphere.geometry.x || !inside || distance>=start+range {exactWeight=1.0;}
+  // Adjacent AP texels can straddle the planet and have different clipped paths.
+  // Blend to the existing exact transport over the actual angular texel footprint.
+  let radius=length(origin);
+  let up=origin/radius;
+  let horizonCos=-sqrt(max(0.0,1.0-pow(v.atmosphere.originRadius.w/radius,2.0)));
+  let dx=atmosphere_view_ray(v,uv+vec2<f32>(1.0/dimensions.x,0.0)).direction;
+  let dy=atmosphere_view_ray(v,uv+vec2<f32>(0.0,1.0/dimensions.y)).direction;
+  let footprint=max(length(dx-ray.direction),length(dy-ray.direction));
+  if footprint>0.0 {
+    exactWeight=max(exactWeight,1.0-smoothstep(footprint,2.0*footprint,abs(dot(up,ray.direction)-horizonCos)));
+  }
   return AtmosphereAerialCoordinate(origin,ray.direction,vec3<f32>(uv,sqrt(max((distance-start)/range,0.0))),distance,min(1.0,(distance-start)/(first-start)),exactWeight);
 }
 fn atmosphere_aerial_finish(v:View, point:AtmosphereAerialCoordinate, sampled:AtmosphereTransport, exact:AtmosphereTransport)->AtmosphereTransport {
@@ -83,8 +94,8 @@ texture_2d<f32>
 #endif
 #endif
 , luminance:texture_3d<f32>, extinction:texture_3d<f32>, filtering:sampler)->AtmosphereTransport {
-  if v.atmosphereControl.w<0.5 {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
-  let point=atmosphere_aerial_coordinate(v,worldPosition,f32(textureDimensions(luminance).z));
+  if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  let point=atmosphere_aerial_coordinate(v,worldPosition,vec3<f32>(textureDimensions(luminance)));
   if point.distance<=v.atmosphere.geometry.z {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
   var exact=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
   if point.exactWeight>0.0 {exact=atmosphere_aerial_integrate(v,point.origin,point.direction,point.distance,transmittance,multiple,filtering,u32(max(64.0,v.atmosphereControl.x)));}
@@ -131,8 +142,8 @@ texture_2d<f32>
 #endif
 #endif
 , lut:texture_2d<u32>, filtering:sampler)->AtmosphereTransport {
-  if v.atmosphereControl.w<0.5 {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
-  let point=atmosphere_aerial_coordinate(v,worldPosition,32.0);
+  if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  let point=atmosphere_aerial_coordinate(v,worldPosition,vec3<f32>(32.0));
   if point.distance<=v.atmosphere.geometry.z {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
   var exact=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
   if point.exactWeight>0.0 {exact=atmosphere_aerial_integrate(v,point.origin,point.direction,point.distance,transmittance,multiple,filtering,u32(max(64.0,v.atmosphereControl.x)));}

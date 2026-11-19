@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, meshAttributeWindow } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -141,7 +141,11 @@ it('moves owned mesh buffers without detaching source or recycled receiver resid
     const resident = accepted.resources.resolveAsset<MeshAsset>(handle).unwrap();
     expect(resident.vertices).toEqual(sourceBytes);
     expect(resident.attributes.position).toBeInstanceOf(Float32Array);
-    expect(resident.attributes.position).toEqual(resident.vertices);
+    expect(resident.attributes.position?.byteLength).toBe(0);
+    expect(resident.attributeStorage).toBe('interleaved');
+    const position = meshAttributeWindow(resident, 'position');
+    expect(position?.data).toEqual(resident.vertices);
+    expect(position?.data.buffer).toBe(resident.vertices.buffer);
     expect((resident.attributes.position as Float32Array).buffer).not.toBe(mesh.vertices.buffer);
     const returned = structuredClone(renderPublicationTransfers(encodeRenderPublication(packet)), {
       transfer: renderPublicationTransfers(encodeRenderPublication(packet)),

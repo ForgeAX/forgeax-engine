@@ -180,7 +180,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
   }));
   const input = (frameNumber: number) => ({
     views: views.map((view) => ({ ...view, frame: { frameNumber } })),
-    resolveAsset: (_index: number, handle: number, revision: number) =>
+    resolveAsset: (handle: number, revision: number) =>
       runtimeAssets(world.assets).resolveAsset(handle, revision),
     caps: {} as never,
     frame: { frameNumber },
@@ -203,8 +203,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       states = nextStates;
       const extracted = source
         .extract({
-          worlds: [world],
-          owner: 0,
+          world: world,
           frameNumber,
           views: views.map(({ identity, render, selectedView }) => ({
             identity,

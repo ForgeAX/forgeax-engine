@@ -12,7 +12,7 @@ import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
 it('keeps the ordinary guide inert while keyboard users enter slow Reload and fatal recovery', async () => {
-  const template = new URL('../../../../templates/game-3d/assets/', import.meta.url);
+  const template = new URL('../../../ui/test-fixtures/game-guide/', import.meta.url);
   const [html, css, localization, bundled] = await Promise.all([
     readFile(new URL('guide.ui.html', template), 'utf8'),
     readFile(new URL('guide.ui.css', template), 'utf8'),
@@ -23,7 +23,7 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
       build: {
         write: false,
         lib: {
-          entry: fileURLToPath(new URL('ui/guide-controller.ts', template)),
+          entry: fileURLToPath(new URL('guide-controller.ts', template)),
           formats: ['iife'],
           name: 'fixtureGuideController',
         },
@@ -342,6 +342,14 @@ it('enters the generated game after its canvas is replaced during startup', asyn
       chromiumSandbox: true,
     });
     const page = await browser.newPage();
+    // Match the HTTP carrier while the adopted Play remains hidden and opaque.
+    await page.route('http://forgeax.test/', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body></body></html>',
+      }),
+    );
+    await page.goto('http://forgeax.test/');
     record('hidden-document-bootstrap');
     // Stop can hide an adopted Play before its document arrives. Its generated
     // module entry must still initialize so the owner can acknowledge cleanup.
@@ -365,6 +373,12 @@ it('enters the generated game after its canvas is replaced during startup', asyn
         page.frameLocator('#preparing-play').locator('html').getAttribute('data-entry-imported'),
       )
       .toBe('true');
+    expect(
+      await page
+        .frameLocator('#preparing-play')
+        .locator('html')
+        .evaluate(() => globalThis.origin),
+    ).toBe('null');
     await page.locator('#preparing-play').evaluate((frame) => frame.remove());
     // Run the actual generated startup owner. Renderer/device qualification
     // remains in the unchanged generated-worker-game and browser/Dawn gates.

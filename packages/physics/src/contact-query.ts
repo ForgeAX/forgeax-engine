@@ -1,5 +1,13 @@
 import type { PhysicsVector } from './derived-physics.js';
 
+/** Native surface-point velocities before the last CCD substep's constraint response. */
+export interface PhysicsContactPointVelocities {
+  /** World-space velocity of the queried body's own contact surface. */
+  readonly body: PhysicsVector;
+  /** World-space velocity of the other body's own contact surface. */
+  readonly other: PhysicsVector;
+}
+
 /** One native solver manifold, including a merged compound contact cluster. */
 export interface PhysicsContactManifold {
   readonly other: number;
@@ -9,6 +17,15 @@ export interface PhysicsContactManifold {
   readonly normal: PhysicsVector;
   /** All world-space solver points belonging to this manifold. */
   readonly points: readonly PhysicsVector[];
+  /** Same solver-contact order as points; null without active solver work.
+   * These are native pre-solve observations, not current body velocity reads.
+   * Each body is sampled on its own surface, including angular motion about its CoM.
+   */
+  readonly preSolveVelocities: readonly (PhysicsContactPointVelocities | null)[];
+  /** Current-step native normal impulse per solver point, in the same order as points.
+   * Null without an awake dynamic participant; excludes friction and warm-start seed.
+   */
+  readonly normalImpulses: readonly (number | null)[];
   /** Current-step normal impulse in N s; null when the pair has no awake dynamic body. */
   readonly normalImpulse: number | null;
 }

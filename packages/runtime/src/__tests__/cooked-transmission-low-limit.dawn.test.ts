@@ -26,6 +26,7 @@ it('renders a cooked transmission material at a 16 sampled-texture limit', {
   timeout: 240_000,
 }, async () => {
   process.env.FORGEAX_SURFACE_ONLY = '1';
+  process.env.FORGEAX_WORKSPACE_TIMING = '1';
   const loaded = await loadConfigFromFile(
     { command: 'serve', mode: 'test' },
     resolve('apps/preview/vite.config.ts'),
@@ -146,12 +147,7 @@ it('renders a cooked transmission material at a 16 sampled-texture limit', {
     const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    for (let i = 0; i < 4; i++)
-      await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
-      });
+    for (let i = 0; i < 4; i++) await drawReadyFrame(renderer, { source: lease });
     expect(observed?.limits.maxSampledTexturesPerShaderStage).toBe(16);
     expect(errors).toEqual([]);
     expect(nativeErrors).toEqual([]);

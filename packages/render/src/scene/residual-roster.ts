@@ -22,7 +22,6 @@ export interface ResidualRosterWork {
 type CoverageBatches = Map<number, GpuDrivenBatch>;
 type CoverageDraws = Map<number, CoverageBatches>;
 type CoverageMeshes = Map<number, CoverageDraws>;
-type CoverageWorlds = Map<number, CoverageMeshes>;
 
 /**
  * The residual rows of one view: unbatched geometry and members of batches the
@@ -39,7 +38,7 @@ export class ResidualRoster {
   readonly #counted = new Map<number, GpuDrivenBatch>();
   /** Residual contributions per slot: one per counted batch member, one for unbatched. */
   /** Existing source-batch dependencies, indexed by the selection coverage route. */
-  readonly #coverage = new Map<ReturnType<typeof gpuDrawCoverageKey>, CoverageWorlds>();
+  readonly #coverage = new Map<ReturnType<typeof gpuDrawCoverageKey>, CoverageMeshes>();
   readonly #affected = new Set<GpuDrivenBatch>();
   readonly #references = new Map<number, number>();
   #slots = new FrameSet();
@@ -113,7 +112,6 @@ export class ResidualRoster {
   #route(binding: GpuDrivenBatchBinding): CoverageBatches | undefined {
     return this.#coverage
       .get(gpuDrawCoverageKey(binding))
-      ?.get(binding.worldId)
       ?.get(binding.assetHandle)
       ?.get(binding.drawItemIndex);
   }
@@ -121,27 +119,25 @@ export class ResidualRoster {
   #index(batch: GpuDrivenBatch, add: boolean): void {
     const binding = batch.binding;
     if (binding === undefined) return;
+    if (binding.source === undefined) this.#indexBinding(batch, binding, add);
+    else for (const draw of binding.source.draws) this.#indexBinding(batch, draw.binding, add);
+  }
+
+  #indexBinding(batch: GpuDrivenBatch, binding: GpuDrivenBatchBinding, add: boolean): void {
     const key = gpuDrawCoverageKey(binding);
-    let worlds = this.#coverage.get(key);
+    let meshes = this.#coverage.get(key);
     if (!add) {
-      const meshes = worlds?.get(binding.worldId);
       const draws = meshes?.get(binding.assetHandle);
       const batches = draws?.get(binding.drawItemIndex);
       batches?.delete(batch.batchId);
       if (batches?.size === 0) draws?.delete(binding.drawItemIndex);
       if (draws?.size === 0) meshes?.delete(binding.assetHandle);
-      if (meshes?.size === 0) worlds?.delete(binding.worldId);
-      if (worlds?.size === 0) this.#coverage.delete(key);
+      if (meshes?.size === 0) this.#coverage.delete(key);
       return;
     }
-    if (worlds === undefined) {
-      worlds = new Map();
-      this.#coverage.set(key, worlds);
-    }
-    let meshes = worlds.get(binding.worldId);
     if (meshes === undefined) {
       meshes = new Map();
-      worlds.set(binding.worldId, meshes);
+      this.#coverage.set(key, meshes);
     }
     let draws = meshes.get(binding.assetHandle);
     if (draws === undefined) {

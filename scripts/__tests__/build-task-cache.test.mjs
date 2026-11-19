@@ -24,6 +24,29 @@ import {
   writeReceipt,
 } from '../build-task-cache.mjs';
 
+test('package dependency fingerprints ignore incremental type state but retain declarations and runtime bytes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-package-type-state-'));
+  try {
+    const pkg = join(root, 'packages/render');
+    const dist = join(pkg, 'dist');
+    mkdirSync(dist, { recursive: true });
+    writeFileSync(join(dist, 'index.mjs'), 'export const value = 1;');
+    writeFileSync(join(dist, 'index.d.ts'), 'export declare const value: 1;');
+    writeFileSync(join(dist, '.tsbuildinfo'), 'first type checking state');
+    const output = inventory(dist);
+    const before = packageOutputFingerprint(root, pkg, output);
+    writeFileSync(join(dist, '.tsbuildinfo'), 'later type checking state');
+    assert.equal(packageOutputFingerprint(root, pkg, output), before);
+    writeFileSync(join(dist, 'index.d.ts'), 'export declare const value: 2;');
+    assert.notEqual(packageOutputFingerprint(root, pkg, output), before);
+    writeFileSync(join(dist, 'index.d.ts'), 'export declare const value: 1;');
+    writeFileSync(join(dist, 'index.mjs'), 'export const value = 2;');
+    assert.notEqual(packageOutputFingerprint(root, pkg, output), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Rapier package fingerprints include the shared native producer without invalidating other owners', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-build-task-cache-'));
   try {

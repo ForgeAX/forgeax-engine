@@ -24,7 +24,20 @@ describe('CanvasInputBoundary', () => {
     const source: InputBackend = { sample: () => sample(['w']), detach() {} };
     const boundary = createCanvasInputBoundary(source);
 
-    expect(boundary.game.sample()).toEqual(createEmptyInputBackendSample());
+    expect(boundary.game.sample()).toEqual({ ...createEmptyInputBackendSample(), focused: false });
+  });
+
+  it('publishes each ownership reset once per consumer, including a source without clear', () => {
+    const source: InputBackend = { sample: () => sample(['w']), detach() {} };
+    const boundary = createCanvasInputBoundary(source);
+    boundary.grantGame();
+    expect(boundary.game.sample()).toMatchObject({ focused: true, focusReset: true });
+    expect(boundary.game.sample().focusReset).not.toBe(true);
+    expect(boundary.preview.sample()).toMatchObject({ focused: false, focusReset: true });
+    expect(boundary.preview.sample().focusReset).not.toBe(true);
+    boundary.revokeGame();
+    expect(boundary.game.sample()).toMatchObject({ focused: false, focusReset: true });
+    expect(boundary.preview.sample()).toMatchObject({ focused: true, focusReset: true });
   });
 
   it('routes each browser frame only to the leased consumer', () => {

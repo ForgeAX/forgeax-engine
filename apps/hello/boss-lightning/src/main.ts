@@ -4,10 +4,11 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { createWorldContext, World, type EntityHandle } from '@forgeax/engine-ecs';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Context } from '@forgeax/engine-plugin';
-import { Camera, type RenderWorldLease } from '@forgeax/engine-render';
+import { Camera, type Renderer, type RenderWorldLease } from '@forgeax/engine-render';
 import { GlobalTransform, Transform, scenePlugin } from '@forgeax/engine-scene';
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { createRenderer } from '@forgeax/engine-runtime';
 import {
   createVfxEffectContract,
   loadVfxGpuEffect,
@@ -16,7 +17,6 @@ import {
   type VfxEffectReflection,
   type VfxGpuEffectAsset,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  type VfxGpuRuntime,
 } from '@forgeax/engine-vfx';
 import {
   createCameraProvider,
@@ -225,6 +225,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   let m35Context: Context | undefined;
   let mainLease: RenderWorldLease | undefined;
   let m35Lease: RenderWorldLease | undefined;
+  let m35Renderer: Renderer | undefined;
   if (m35Mode) {
     const attachedMainRendererWorld = renderer.attach(world);
     if (!attachedMainRendererWorld.ok) throw attachedMainRendererWorld.error;
@@ -251,7 +252,19 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       )
       .unwrap();
     m35Context = await createWorldContext(m35World, [scenePlugin()]);
-    const attachedM35RendererWorld = renderer.attach(m35World);
+    const m35Canvas = document.createElement('canvas');
+    m35Canvas.width = target.width;
+    m35Canvas.height = target.height;
+    m35Renderer = (
+      await createRenderer(
+        m35Canvas,
+        {
+          features: [host.createRenderFeature()],
+        },
+        forgeaxBundlerAdapter(),
+      )
+    ).unwrap();
+    const attachedM35RendererWorld = m35Renderer.attach(m35World);
     if (!attachedM35RendererWorld.ok) throw attachedM35RendererWorld.error;
     m35Lease = attachedM35RendererWorld.value;
     const attachedM35HostWorld = await host.attachWorld({ world: m35World, assets });
@@ -277,14 +290,11 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
             if (!siblingUpdate.ok || !affectedUpdate.ok) {
               return { siblingUpdate, affectedUpdate, draw: undefined };
             }
-            if (mainLease === undefined || m35Lease === undefined) {
+            if (mainLease === undefined || m35Lease === undefined || m35Renderer === undefined) {
               throw new Error('boss-lightning: M35 render leases unavailable');
             }
-            const draw = renderer.draw({
-              leases: [mainLease, m35Lease],
-              camera: { lease: mainLease },
-              environment: { lease: mainLease },
-            });
+            const siblingDraw = renderer.draw({ source: mainLease });
+            const draw = siblingDraw.ok ? m35Renderer.draw({ source: m35Lease }) : siblingDraw;
             return { siblingUpdate, affectedUpdate, draw };
           },
           cleanup: async () => {
@@ -297,6 +307,8 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
             const detachSiblingAgain = await host.detachWorld({ world });
             m35Lease?.dispose();
             mainLease?.dispose();
+            await m35Renderer?.dispose();
+            await m35Renderer?.dispose();
             await renderer.dispose();
             await renderer.dispose();
             return {
@@ -314,12 +326,13 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       app: appResult.value,
       world,
       player: scene.player,
+      vfx: world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY),
       renderer,
       feature: host.feature,
       effectAsset,
       scene,
       status: () => {
-        const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+        const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
         const eventCounters = runtime.eventCounters(scene.player);
         const stage = stageEvidence(effectAsset, falsifyMode, runtime.hasPlayer(scene.player));
         return {
@@ -338,7 +351,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       },
       inspect: () => host.inspect(world),
       visualEvidence: () => {
-        const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+        const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
         const status = runtime.eventCounters(scene.player);
         const committed = runtime.lastCommitted(scene.player);
         const stage = stageEvidence(effectAsset, falsifyMode, runtime.hasPlayer(scene.player));
@@ -393,7 +406,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
       m35,
       m11: {
         holdStaleInstance: () => {
-          const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+          const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
           const instance = runtime.getInstance(scene.player);
           Object.assign(globalThis, { __forgeaxBossLightningM11Stale: instance });
           return instance === undefined ? { ok: false, reason: 'instance-unavailable' } : { ok: true };
@@ -405,7 +418,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
           return instance?.patch({ intensity: 1.75 });
         },
         patchCurrentInstance: () => {
-          const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+          const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
           return runtime.getInstance(scene.player)?.patch({ intensity: 1.5 });
         },
       },

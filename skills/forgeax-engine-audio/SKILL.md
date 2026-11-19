@@ -12,8 +12,8 @@ description: >-
 ## Takeoff
 
 ```ts
-import { createApp } from '@forgeax/engine-app';
-import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
+import { createApp } from '@forgeax/engine-app/browser';
+import { createHostAudioConsumer } from '@forgeax/engine-audio-webaudio';
 import {
   AUDIO_ENGINE_RESOURCE_KEY,
   AudioListener,
@@ -23,7 +23,9 @@ import {
   type AudioClipAsset,
 } from '@forgeax/engine-audio';
 
-const created = await createApp(canvas, { plugins: [webAudioPlugin(), audioPlugin()] });
+const created = await createApp(canvas, { plugins: [audioPlugin()] }, {
+  createHostAudio: options => createHostAudioConsumer(undefined, options),
+});
 if (!created.ok) throw created.error;
 const app = created.value;
 
@@ -43,7 +45,7 @@ app.world.spawn({
   },
 }).unwrap();
 
-const backend = app.world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
+const backend = app.world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 backend.setBusVolume('music', 0.3);
 app.start().unwrap();
 ```
@@ -117,7 +119,7 @@ Use `webAudioPlugin(engine)` with one Host `WebAudioEngine` for native user filt
 
 Declare one acyclic parent/send graph with `AudioBackend.configureBuses`, then route source `bus` IDs through it. Install shared native chains on the Host with `WebAudioEngine.setBusEffects`; read its Result and the backend state before accepting the graph. Use source Meta `importSettings.playback: 'stream'` for supported PCM16 WAV and load the ordinary GUID. Verify Range hosting, `getStreamState` and `AudioState.streaming`; a play request or active-source count alone is not output evidence. Follow [the Host contract](../../packages/audio-webaudio/README.md#long-audio-through-source-meta-and-guid) for bounds, formats and recovery.
 
-For execution bootstrap apps, install the shared Host graph through `execution.createHostAudio`; return a fresh consumer per rebuild. Keep `audioPlugin()` in the gameplay bootstrap and follow [the assembly contract](../../packages/audio-webaudio/README.md#app-host-effect-assembly).
+Install the shared Host graph through `AppHostAdapter.createHostAudio`, including local Apps without a bootstrap. Forward the resolved options into `createHostAudioConsumer(engine, options)` and return a fresh consumer per rebuild. Keep `audioPlugin()` in gameplay; generated `GameHost.audio` refers to that same consumer's engine. The legacy execution field expires in 0.7; both fields together are rejected. Follow [the assembly contract](../../packages/audio-webaudio/README.md#app-host-effect-assembly).
 
 ## Quantized layered music
 

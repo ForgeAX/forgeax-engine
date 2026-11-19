@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
-import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
+import { subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // bevy-ssao headless Dawn smoke (receipt-bound structural + pixel falsifier).
 // The same occlusion-heavy scene is rendered with Standard SSAO disabled and
 // enabled. The readbacks must differ and both runs must complete the 60-frame
 // gate without renderer errors.
-
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -91,7 +92,7 @@ const mockCanvas = {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+const manifestUrl = processShaderManifestUrl(manifestPath);
 const { World } = await import('@forgeax/engine-ecs');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
@@ -187,20 +188,13 @@ async function runVariant(ssao, label) {
   let latestReceipt;
   for (let i = 0; i < targetFrames; i += 1) {
     world.update().unwrap();
-    const result = renderer.draw({
-      leases: [attached.value],
-      camera: { lease: attached.value },
-      environment: { lease: attached.value },
-    });
-    if (!result.ok) {
+    try {
+      // Preparation submissions are not scene pictures. Keep the World fixed
+      // while the maintained driver waits for the same frame to be ready.
+      latestReceipt = await drawReadyFrame(renderer, { source: attached.value });
+    } catch (error) {
       drawErrors += 1;
-      throw new Error(`${label} frame ${framesObserved}: ${JSON.stringify({ error: result.error, events: errors })}`);
-    } else {
-      latestReceipt = result.value;
-      // A receipt acknowledges submission. Fence every measured frame so this
-      // fixed-frame carrier cannot queue 300 frames of retained GPU resources.
-      const completed = await result.value.completed;
-      if (!completed.ok) throw new Error(`${label} completion: ${JSON.stringify(completed.error)}`);
+      throw new Error(`${label} frame ${framesObserved}: ${JSON.stringify({ events: errors })}`, { cause: error });
     }
     framesObserved += 1;
   }
@@ -212,7 +206,8 @@ async function runVariant(ssao, label) {
   if (entry === undefined) throw new Error(`${label} render target was not configured`);
   const pixels = await capturePixels(entry);
   attached.value.dispose();
-  renderer.dispose();
+  const disposed = await renderer.dispose();
+  if (!disposed.ok) throw disposed.error;
   return { pixels, errors, drawErrors, framesObserved, observed: observed.value, inspection };
 }
 
@@ -228,6 +223,10 @@ const offPng = resolve(artifactDir, 'ssao-off.png');
 const onPng = resolve(artifactDir, 'ssao-on.png');
 writeFileSync(offPng, encodePng(WIDTH, HEIGHT, ssaoOffPixels));
 writeFileSync(onPng, encodePng(WIDTH, HEIGHT, ssaoOnPixels));
+writeFileSync(resolve(artifactDir, 'ssao-state.json'), JSON.stringify({
+  off: { frames: off.framesObserved, observation: off.observed, inspection: off.inspection },
+  on: { frames: on.framesObserved, observation: on.observed, inspection: on.inspection },
+}, null, 2));
 
 console.log(`[smoke] frames observed=${off.framesObserved + on.framesObserved} ssaoDiffMean=${diff.mean.toFixed(4)} changedPixels=${diff.changedPixels} receiptFrames=${off.observed.frameId},${on.observed.frameId} off=${offPng} on=${onPng}`);
 

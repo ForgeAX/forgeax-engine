@@ -79,10 +79,18 @@ async function response(server, path, signal) {
   signal.throwIfAborted();
   const url = new URL(path, server.resolvedUrls.local[0]);
   console.log('[browser-optimizer-owner] HTTP', url.href);
-  const response = await fetch(url, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-  });
-  const body = await response.text();
+  let response, body;
+  try {
+    response = await fetch(url, {
+      // The Host can finish optimizing after the Renderer connection has
+      // expired. Probe the current server with an independent connection.
+      headers: { connection: 'close' },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    });
+    body = await response.text();
+  } catch (error) {
+    throw new Error(`${url}: HTTP transport failed: ${error.cause ?? error}`, { cause: error });
+  }
   assert.equal(response.status, 200, `${url}: HTTP ${response.status}: ${body.slice(0, 500)}`);
 }
 

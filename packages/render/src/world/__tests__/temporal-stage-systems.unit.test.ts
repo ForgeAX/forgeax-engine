@@ -1,6 +1,14 @@
 import type { World } from '@forgeax/engine-ecs';
+import { defineSystem } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import type { RenderSystemInternals } from '../../record/render-context';
+import {
+  RenderCascadeFitOrder,
+  RenderStandardLightingOrder,
+  RenderViewFrameOrder,
+} from '../../system-order';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import { ViewCascadeFit } from '../render-lights';
 import { RenderViewFrameSource, RenderViewInput, ViewRecorder } from '../render-views';
@@ -62,8 +70,16 @@ function setup(
     new RenderViewFrameSource({ canvas: { width: 8, height: 8 } }),
   );
   // Stand-ins for the systems the stage systems order after.
-  for (const name of [RENDER_CASCADE_FIT_SYSTEM, RENDER_STANDARD_LIGHTING_SYSTEM])
-    world.addSystem(RenderPrepare, { name, queries: [], fn: () => undefined }).unwrap();
+  for (const [name, phase] of [
+    [RENDER_CASCADE_FIT_SYSTEM, RenderCascadeFitOrder],
+    [RENDER_STANDARD_LIGHTING_SYSTEM, RenderStandardLightingOrder],
+  ] as const)
+    world
+      .addSystem(
+        RenderPrepare,
+        defineSystem({ name, sets: [phase], queries: [], fn: () => undefined }),
+      )
+      .unwrap();
   registerTemporalStageSystems(world);
   const stage = vi.fn(() => {
     if (options.stageThrows) throw new Error('stage exploded');
@@ -86,46 +102,41 @@ function setup(
       },
     })
     .unwrap();
-  world
-    .addSystem(RenderExtract, {
-      name: RENDER_VIEW_RECORDERS_SYSTEM,
-      queries: [],
-      fn: (world: World) => {
-        stageViewFrame(
-          world,
-          view,
-          { cameraOwner: 0, resourceOwner: 0 } as never,
-          options.mode ?? true,
-        );
-        const staged = world
-          .resolveUniqueRef<ViewFrameState>(world.get(view, ViewFrame).unwrap().state)
-          .unwrap();
-        staged.result = {
-          ok: true,
-          value: { cameras: options.cameras ?? [IDENTITY_CAMERA] } as never,
-        };
-        staged.publication = { resources: { time: { delta: 0.016 } } } as never;
-        if (world.hasComponent(view, ViewStandardLighting)) return;
-        world
-          .addComponent(view, {
-            component: ViewStandardLighting,
-            data: {
-              state: world.allocUniqueRef('ViewStandardLighting', {
-                frame: 1,
-                outcome: { kind: options.lighting ?? 'prepared' },
-              }),
-            },
-          })
-          .unwrap();
-        world
-          .addComponent(view, {
-            component: ViewCascadeFit,
-            data: { fit: world.allocUniqueRef('ViewCascadeFit', { lights: {} }) },
-          })
-          .unwrap();
-      },
-    })
-    .unwrap();
+  const systemToken1 = defineSystem({
+    name: RENDER_VIEW_RECORDERS_SYSTEM,
+    sets: [RenderViewFrameOrder],
+    queries: [],
+    fn: (world: World) => {
+      stageViewFrame(world, view, {} as never, options.mode ?? true);
+      const staged = world
+        .resolveUniqueRef<ViewFrameState>(world.get(view, ViewFrame).unwrap().state)
+        .unwrap();
+      staged.result = {
+        ok: true,
+        value: { cameras: options.cameras ?? [IDENTITY_CAMERA] } as never,
+      };
+      staged.publication = { resources: { time: { delta: 0.016 } } } as never;
+      if (world.hasComponent(view, ViewStandardLighting)) return;
+      world
+        .addComponent(view, {
+          component: ViewStandardLighting,
+          data: {
+            state: world.allocUniqueRef('ViewStandardLighting', {
+              frame: 1,
+              outcome: { kind: options.lighting ?? 'prepared' },
+            }),
+          },
+        })
+        .unwrap();
+      world
+        .addComponent(view, {
+          component: ViewCascadeFit,
+          data: { fit: world.allocUniqueRef('ViewCascadeFit', { lights: {} }) },
+        })
+        .unwrap();
+    },
+  });
+  world.addSystem(RenderExtract, systemToken1).unwrap();
   const internals = { renderWorld: world, viewEntity: view } as unknown as RenderSystemInternals;
   const run = (frame: number) => {
     beginRenderFrame(world, frame);
@@ -141,7 +152,7 @@ describe('render-temporal-stage system', () => {
     for (const name of [RENDER_TEMPORAL_STAGE_SYSTEM, RENDER_STANDARD_OUTPUT_STAGE_SYSTEM]) {
       const system = prepare?.systems.find((entry) => entry.name === name);
       expect(system?.queries[0]?.read).toEqual(['ViewRecorder', 'ViewFrame']);
-      expect(prepare?.dependencies).toContainEqual([RENDER_STANDARD_LIGHTING_SYSTEM, name]);
+      expect(dependencyNames(prepare)).toContainEqual([RENDER_STANDARD_LIGHTING_SYSTEM, name]);
     }
   });
 
@@ -205,7 +216,12 @@ describe('render-temporal-stage system', () => {
 
   it('stages nothing once the system is removed', () => {
     const { world, view, stage, run } = setup();
-    expect(world.removeSystem(RenderPrepare, RENDER_TEMPORAL_STAGE_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(
+        RenderPrepare,
+        registeredSystem(world, RenderPrepare, 'render-temporal-stage'),
+      ).ok,
+    ).toBe(true);
     run(1);
     expect(stage).not.toHaveBeenCalled();
     expect(viewTemporalStageOf(world, view)).toBeUndefined();
@@ -247,7 +263,12 @@ describe('render-standard-output-stage system', () => {
 
   it('fails the recording naming the system once it is removed', () => {
     const { world, run, internals } = setup();
-    expect(world.removeSystem(RenderPrepare, RENDER_STANDARD_OUTPUT_STAGE_SYSTEM).ok).toBe(true);
+    expect(
+      world.removeSystem(
+        RenderPrepare,
+        registeredSystem(world, RenderPrepare, 'render-standard-output-stage'),
+      ).ok,
+    ).toBe(true);
     run(1);
     expect(() => consumeViewStandardOutput(internals)).toThrow(RENDER_STANDARD_OUTPUT_STAGE_SYSTEM);
   });

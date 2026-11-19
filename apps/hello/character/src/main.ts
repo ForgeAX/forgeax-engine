@@ -1,3 +1,4 @@
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
 // apps/hello/character — Kinematic character controller demo.
 //
 // Drives a capsule character with PhysicsWorld.moveAndSlide (feat-20260617 G-2):
@@ -13,10 +14,11 @@
 // resource to appear before issuing moveAndSlide. Until then the character
 // holds its spawn pose.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update, type World } from '@forgeax/engine-ecs';
-import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
+import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { vec3 } from '@forgeax/engine-math';
 import { CharacterController,
   Collider,
@@ -167,8 +169,7 @@ function driveCharacter(
   const hud = document.querySelector<HTMLPreElement>('#hud');
   let verticalVel = 0; // accumulated jump/gravity velocity (units/sec)
 
-  app.world
-    .addSystem(Update, {
+  const systemToken1 = defineSystem({
       name: 'character-drive',
       queries: [],
       fn: () => {
@@ -177,7 +178,7 @@ function driveCharacter(
     // Wait for the async Rapier WASM to insert the PhysicsWorld resource.
     let pw: PhysicsWorld;
     try {
-      pw = app.world.getResource<PhysicsWorld>('PhysicsWorld');
+      pw = app.world.getResource(PhysicsWorldResource);
     } catch {
       return;
     }
@@ -188,7 +189,7 @@ function driveCharacter(
     // integrate gravity or read position during this window.
     if (!pw.hasBody(character)) return;
 
-    const snap = app.world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+    const snap = app.world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
     let dx = 0;
     let dz = 0;
     if (snap) {
@@ -229,7 +230,9 @@ function driveCharacter(
       hud.textContent = `WASD move - Space jump\npos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\ngrounded ${groundedNow}`;
     }
       },
-    })
+    });
+app.world
+    .addSystem(Update, systemToken1)
     .unwrap();
 }
 

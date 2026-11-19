@@ -59,7 +59,6 @@ import { createIblKernelCache, type IblKernelCache } from './kernel-cache';
 export {
   createIblKernelCache,
   type IblKernelCache,
-  resetIblKernelCaches,
 } from './kernel-cache';
 
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
@@ -560,7 +559,7 @@ export interface RunIblPrecomputeOptions {
   /** Device-wide pipelines remain shared when a source owns a child scope. */
   readonly pipelineScope?: DeviceScope;
   readonly device: IblRhiOwner;
-  readonly equirectView: TextureView;
+  readonly equirectView?: TextureView;
   readonly cubeView: TextureView;
   readonly cubeFaceViews: ReadonlyArray<TextureView>;
   readonly faceUniformsBuffer: Buffer;
@@ -630,6 +629,15 @@ function yieldToRenderOpportunity(): Promise<void> {
  * underlying device lacks queue.submit or one of the 4 pipelines was not
  * created (createIblPipelines must run first).
  */
+function hasIblPrecomputePipelines(cache: IblPipelineCache): boolean {
+  return (
+    cache.equirectToCubePipeline !== undefined &&
+    cache.irradiancePipeline !== undefined &&
+    cache.prefilterPipeline !== undefined &&
+    cache.brdfLutPipeline !== undefined
+  );
+}
+
 export async function runIblPrecompute(
   opts: RunIblPrecomputeOptions,
 ): Promise<Result<IblPrecomputeOutput, IblPrecomputeError>> {
@@ -645,12 +653,7 @@ export async function runIblPrecompute(
     return Promise.resolve(err(badAlloc(stage, cause)));
   };
 
-  if (
-    cache.equirectToCubePipeline === undefined ||
-    cache.irradiancePipeline === undefined ||
-    cache.prefilterPipeline === undefined ||
-    cache.brdfLutPipeline === undefined
-  ) {
+  if (!hasIblPrecomputePipelines(cache)) {
     return err({
       code: 'ibl-precompute-not-dispatched',
       expected: '4 IBL pipelines created via createIblPipelines',
@@ -833,52 +836,54 @@ export async function runIblPrecompute(
       return fail('ibl-cache-resources');
     }
 
-    // Bind group: equirect group(1).
-    const equirectBgResult = device.createBindGroup({
-      label: 'ibl-equirect-bg',
-      layout: equirectGroup1Bgl,
-      entries: [
-        { binding: 0, resource: { kind: 'textureView', value: opts.equirectView } },
-        { binding: 1, resource: { kind: 'sampler', value: sampler } },
-      ],
-    });
-    if (!equirectBgResult.ok) return fail('equirect-bg', equirectBgResult.error);
-    const equirectBg: BindGroup = equirectBgResult.value;
-
-    // (a) equirect-to-cube: 6 face draws.
-    const cubeFaceViews = opts.cubeFaceViews;
-    for (let face = 0; face < 6; face++) {
-      const cubeFaceView = cubeFaceViews[face];
-      if (cubeFaceView === undefined) return fail('cube-face-view');
-      const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-        label: 'ibl-equirect-to-cube',
-        colorAttachments: [
-          {
-            view: cubeFaceView,
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
+    if (opts.equirectView !== undefined) {
+      // Bind group: equirect group(1).
+      const equirectBgResult = device.createBindGroup({
+        label: 'ibl-equirect-bg',
+        layout: equirectGroup1Bgl,
+        entries: [
+          { binding: 0, resource: { kind: 'textureView', value: opts.equirectView } },
+          { binding: 1, resource: { kind: 'sampler', value: sampler } },
         ],
       });
-      const faceBgResult = device.createBindGroup({
-        label: `ibl-face-bg-${face}`,
-        layout: faceUniformsBgl,
-        entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
-      });
-      if (!faceBgResult.ok) return fail('face-bg', faceBgResult.error);
-      pass.setPipeline(equirectPipeline);
-      pass.setBindGroup(0, faceBgResult.value);
-      pass.setBindGroup(1, equirectBg);
-      pass.setVertexBuffer(0, opts.cubeVertexBuffer);
-      pass.draw(6, 1, face * 6, 0);
-      pass.end();
-    }
+      if (!equirectBgResult.ok) return fail('equirect-bg', equirectBgResult.error);
+      const equirectBg: BindGroup = equirectBgResult.value;
 
-    const cubeStage = await submitStage('equirect-to-cube', true);
-    if (!cubeStage.ok) return err(cubeStage.error);
-    const cubeOpportunity = await yieldBetweenBatches('equirect-to-cube');
-    if (!cubeOpportunity.ok) return err(cubeOpportunity.error);
+      // (a) equirect-to-cube: 6 face draws.
+      const cubeFaceViews = opts.cubeFaceViews;
+      for (let face = 0; face < 6; face++) {
+        const cubeFaceView = cubeFaceViews[face];
+        if (cubeFaceView === undefined) return fail('cube-face-view');
+        const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
+          label: 'ibl-equirect-to-cube',
+          colorAttachments: [
+            {
+              view: cubeFaceView,
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              loadOp: 'clear',
+              storeOp: 'store',
+            },
+          ],
+        });
+        const faceBgResult = device.createBindGroup({
+          label: `ibl-face-bg-${face}`,
+          layout: faceUniformsBgl,
+          entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
+        });
+        if (!faceBgResult.ok) return fail('face-bg', faceBgResult.error);
+        pass.setPipeline(equirectPipeline);
+        pass.setBindGroup(0, faceBgResult.value);
+        pass.setBindGroup(1, equirectBg);
+        pass.setVertexBuffer(0, opts.cubeVertexBuffer);
+        pass.draw(6, 1, face * 6, 0);
+        pass.end();
+      }
+
+      const cubeStage = await submitStage('equirect-to-cube', true);
+      if (!cubeStage.ok) return err(cubeStage.error);
+      const cubeOpportunity = await yieldBetweenBatches('equirect-to-cube');
+      if (!cubeOpportunity.ok) return err(cubeOpportunity.error);
+    }
 
     // (b) PMREM prefilter: progressive GGX levels into the CubeUV atlas.
     const prefilterInputs = device.createBindGroup({

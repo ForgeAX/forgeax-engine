@@ -102,7 +102,12 @@ export function TextureControls({ client, target, surface }: Props) {
       if (!current || !element) return;
       event.preventDefault();
       const options = current.options;
-      const dimensions = current.options.projection === 'cross' ? [current.width, current.width * 0.75] : current.options.projection === 'face' ? [current.height, current.height] : [Math.max(1, current.width >> options.mip), Math.max(1, current.height >> options.mip)];
+      const width = Math.max(1, current.width >> options.mip), height = Math.max(1, current.height >> options.mip);
+      const depth = Math.max(1, current.depth >> options.mip);
+      const columns = 2 ** Math.ceil(Math.log2(Math.ceil(Math.sqrt(depth))));
+      const dimensions = options.projection === 'atlas' ? [width * columns, height * Math.ceil(depth / columns)]
+        : options.projection === 'volume' ? [Math.max(width, height), Math.max(width, height)]
+        : options.projection === 'cross' ? [current.width, current.width * 0.75] : options.projection === 'face' ? [current.height, current.height] : [width, height];
       const dpr = element.ownerDocument.defaultView?.devicePixelRatio ?? 1;
       const fit = options.projection === 'environment' ? 1 : 0.9 * Math.min(element.clientWidth * dpr / dimensions[0]!, element.clientHeight * dpr / dimensions[1]!);
       const zoom = Math.max(0.03125, Math.min(1024, (options.zoom === 'fit' ? fit : options.zoom) * Math.exp(-event.deltaY * 0.0015)));
@@ -131,6 +136,9 @@ export function TextureControls({ client, target, surface }: Props) {
   const layers = info.dimension === '3d' ? Math.max(1, info.depth >> options.mip) : info.depth;
   return <>
     <div className="fx-texture-toolbar" role="toolbar" aria-label={t('texture.controls')}>
+      {info.generator && <label>{t('texture.output')}<select aria-label={t('texture.output')} value={options.output} onChange={e => set({ output: e.target.value, mip: 0, layer: 0 })}>
+        {info.generator.outputs.map(output => <option key={output} value={output}>{output}</option>)}
+      </select></label>}
       <div className="fx-texture-channels" role="group" aria-label={t('texture.channels')}>
         {['R', 'G', 'B', 'A'].map((channel, index) => <button key={channel} type="button" aria-label={t('texture.channel', { channel })} aria-pressed={options.channels[index]} data-channel={channel} onClick={() => {
           const channels: [boolean, boolean, boolean, boolean] = [...options.channels]; channels[index] = !channels[index]; set({ channels });
@@ -139,7 +147,10 @@ export function TextureControls({ client, target, surface }: Props) {
       <label>{t('texture.mip')}<select aria-label={t('texture.mip')} value={options.mip} disabled={info.mipCount === 1} onChange={e => set({ mip: Number(e.target.value), layer: 0 })}>
         {Array.from({ length: info.mipCount }, (_, mip) => <option key={mip} value={mip}>{mip} · {Math.max(1, info.width >> mip)} × {Math.max(1, info.height >> mip)}</option>)}
       </select></label>
-      {info.dimension !== '2d' && <label>{t('texture.slice')}<input aria-label={t('texture.slice')} type="number" min={0} max={layers - 1} value={options.layer} onChange={e => { const layer = Number(e.target.value); if (Number.isInteger(layer) && layer >= 0 && layer < layers) set({ layer }); }} /></label>}
+      {info.dimension === '3d' && <label>{t('texture.projection')}<select aria-label={t('texture.projection')} value={options.projection} onChange={e => set({ projection: e.target.value as TextureViewOptions['projection'], pan: [0, 0], zoom: 'fit' })}>
+        {(['atlas', 'flat', 'volume'] as const).map(mode => <option key={mode} value={mode}>{t('texture.' + (mode === 'flat' ? 'slice' : mode))}</option>)}
+      </select></label>}
+      {info.dimension !== '2d' && options.projection === 'flat' && <label>{t('texture.slice')}<input aria-label={t('texture.slice')} type="number" min={0} max={layers - 1} value={options.layer} onChange={e => { const layer = Number(e.target.value); if (Number.isInteger(layer) && layer >= 0 && layer < layers) set({ layer }); }} /></label>}
       {info.kind === 'equirect' && <label>{t('texture.projection')}<select aria-label={t('texture.projection')} value={options.projection} onChange={e => set({ projection: e.target.value as TextureViewOptions['projection'], pan: [0, 0], zoom: 'fit' })}>
         {(['environment', 'flat', 'cross', 'face'] as const).map(mode => <option key={mode} value={mode}>{t('texture.' + mode)}</option>)}
       </select></label>}
@@ -158,7 +169,7 @@ export function TextureControls({ client, target, surface }: Props) {
       <button type="button" aria-pressed={options.desaturate} onClick={() => set({ desaturate: !options.desaturate })}>{t('texture.grayscale')}</button>
     </div>
     <div className="fx-texture-status" role="status">
-      {error ? <span role="alert">{error}</span> : <><span>{info.width} × {info.height}{info.depth > 1 ? ` × ${info.depth}` : ''} · {info.format} · {info.colorSpace} · {info.mipCount} Mip · {(info.sourceBytes / 1024).toFixed(1)} KiB</span><span>{t(options.projection === 'environment' ? 'texture.rotateHint' : 'texture.panHint')}</span></>}
+      {error || info.generator?.error ? <span role="alert">{error ?? info.generator?.error}</span> : <><span>{info.generator?.status && <>{t('texture.status.' + info.generator.status)} · </>}{info.width} × {info.height}{info.depth > 1 ? ` × ${info.depth}` : ''} · {info.format} · {info.colorSpace} · {info.mipCount} Mip · {info.storage === 'gpu-generated' ? t('texture.gpuGenerated') : `${(info.sourceBytes / 1024).toFixed(1)} KiB`}</span><span>{t(options.projection === 'environment' ? 'texture.rotateHint' : 'texture.panHint')}</span></>}
     </div>
   </>;
 }

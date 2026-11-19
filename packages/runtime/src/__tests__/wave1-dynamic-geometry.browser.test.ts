@@ -5,7 +5,7 @@ import {
   meshFromInterleaved,
 } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
-import { RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
+import { PhysicsWorldResource, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import {
   createRapier3DPhysicsWorld,
   loadRapier3D,
@@ -145,7 +145,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
   stage = 'setup:load-rapier:done';
   if ('code' in rapier) throw rapier;
   const physics = createRapier3DPhysicsWorld(rapier);
-  world.insertResource('PhysicsWorld', physics);
+  world.insertResource(PhysicsWorldResource, physics);
   const releasePhysics = registerPhysicsSystems(world);
   try {
     const material = testAssets(world)
@@ -248,9 +248,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       propagateTransforms(world).unwrap();
       stage = `${label}:draw-ready:pending`;
       const receipt = await drawReadyFrame(renderer, {
-        leases: [lease],
-        camera: { lease },
-        environment: { lease },
+        source: lease,
         ...(geometryLane === undefined ? {} : { geometryLane }),
       });
       lastReadyReceipt = receipt;
@@ -317,9 +315,10 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
           });
           if (!result.ok) return err(result.error);
           accepted = result.value;
-          expect(
-            renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-          ).toMatchObject({ ok: false, error: { code: 'frame-input-invalid' } });
+          expect(renderer.draw({ source: lease })).toMatchObject({
+            ok: false,
+            error: { code: 'frame-input-invalid' },
+          });
           expect(renderer.dynamicGeometryReceipt(candidate)).toBeUndefined();
           return ok(undefined);
         },
@@ -603,9 +602,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     world.update(1 / 60).unwrap();
     expect(physics.getDerivedRecoveryState()).toBe('rebuild-required');
     expect(() => parentHit()).toThrow();
-    expect(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    ).toMatchObject({
+    expect(renderer.draw({ source: lease })).toMatchObject({
       ok: false,
       error: { code: 'frame-input-invalid' },
     });

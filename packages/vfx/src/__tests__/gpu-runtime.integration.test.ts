@@ -112,7 +112,7 @@ describe('GPU VFX frame-tick intents', () => {
         .unwrap(),
     );
     const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     try {
       world.update(1 / 60).unwrap();
       const query = vi.spyOn(world, 'query');
@@ -214,7 +214,7 @@ describe('GPU VFX frame-tick intents', () => {
       .spawn({ component: ParticleEffectPlayer, data: { effect: handle } })
       .unwrap();
     const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     const fieldValue = (intent: import('../gpu-runtime').VfxGpuTickIntent) => {
       const bytes = required(runtime.fieldTextureVersions(required(intent.forceFields).unwrap())[0])
         .value.data;
@@ -258,7 +258,7 @@ describe('GPU VFX frame-tick intents', () => {
       .spawn({ component: ParticleEffectPlayer, data: { effect: handle } })
       .unwrap();
     const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     try {
       world.update(1 / 60).unwrap();
       const old = runtime.snapshot()[0];
@@ -319,7 +319,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 60).unwrap();
     const first = runtime.snapshot()[0];
@@ -363,7 +363,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     world.update(1 / 60).unwrap();
     const queued = runtime.snapshot()[0];
     expect(queued?.reset).toBe(true);
@@ -395,7 +395,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 30).unwrap();
     const firstIntents = [...runtime.snapshot()];
@@ -456,7 +456,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 30).unwrap();
     const firstIntents = [...runtime.snapshot()];
@@ -529,7 +529,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 2 })]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     world.update(1 / 60).unwrap();
     const instance = runtime.getInstance(player);
     expect(instance).toBeDefined();
@@ -573,7 +573,7 @@ describe('GPU VFX frame-tick intents', () => {
     });
     const instance = new ParticleEffectInstance(contract);
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     runtime.attachInstance(player, instance);
     expect(instance.patch({}).ok).toBe(true);
     expect(instance.patch({}).ok).toBe(true);
@@ -601,7 +601,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 60).unwrap();
     const stale = runtime.getInstance(player);
@@ -641,7 +641,7 @@ describe('GPU VFX frame-tick intents', () => {
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 2 })]);
 
     expect(world.update(1 / 60).ok).toBe(true);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     expect(runtime.snapshot()).toHaveLength(1);
     expect(runtime.snapshot()[0]).toMatchObject({ reset: true, spawnCount: 8, firstParticleId: 0 });
     commitSnapshot(runtime, 1);
@@ -685,7 +685,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     runtime.setEmitterSessionEnabled(player, 'delayed', false);
 
     world.update(1 / 60).unwrap();
@@ -715,7 +715,7 @@ describe('GPU VFX frame-tick intents', () => {
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     expect(runtime.snapshot()).toHaveLength(0);
 
     runtime.replay(player);
@@ -751,7 +751,7 @@ describe('GPU VFX frame-tick intents', () => {
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 1 })]);
     world.update(1 / 60).unwrap();
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     expect(runtime.snapshot()).toHaveLength(1);
     expect(runtime.diagnostics()).toHaveLength(0);
     commitSnapshot(runtime, 1);
@@ -775,7 +775,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 1 })]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 60).unwrap();
     commitSnapshot(runtime, 1);
@@ -834,7 +834,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 1 })]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 60).unwrap();
     commitSnapshot(runtime, 1);
@@ -875,7 +875,7 @@ describe('GPU VFX frame-tick intents', () => {
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin({ maxQueuedTicks: 1 })]);
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     expect(runtime.snapshot()).toHaveLength(2);
     expect(runtime.snapshot().map((intent) => intent.player)).toContain(first);
   });
@@ -919,7 +919,7 @@ describe('GPU VFX frame-tick intents', () => {
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     expect(runtime.inspectPlayers()).toEqual([
       expect.objectContaining({
@@ -973,7 +973,7 @@ describe('GPU VFX frame-tick intents', () => {
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
 
     world.update(1 / 60).unwrap();
     expect(runtime.diagnostics().map((diagnostic) => diagnostic.code)).toEqual([
@@ -1004,7 +1004,7 @@ describe('GPU VFX frame-tick intents', () => {
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     commitSnapshot(runtime, 1);
 
     runtime.setEmitterCameraVisibility(player, 'sparks', false);
@@ -1033,7 +1033,7 @@ describe('GPU VFX frame-tick intents', () => {
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
     world.update(1 / 60).unwrap();
-    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
     commitSnapshot(runtime, 1);
 
     runtime.setEmitterSessionEnabled(player, 'sparks', false);
@@ -1071,7 +1071,7 @@ it('keeps paused stable frames idle but executes zero-time reset and replay', as
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   try {
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()[0]).toMatchObject({ reset: true, delta: 0, phaseTick: 0 });
@@ -1114,7 +1114,7 @@ it('admits a new player without consuming later frame patches or replay', async 
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   try {
     runtime.forEachEmitterSource(world, () => {});
     expect(runtime.snapshot()).toHaveLength(1);
@@ -1184,7 +1184,7 @@ it('advances every frame by its own Time delta and recovers the cycle from varia
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+  const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
   try {
     // Uneven presentation frames, a zero-time frame, and a host hitch that
     // World Time bounds to TimePolicy.maxDeltaSeconds (0.1 s by default).

@@ -55,7 +55,6 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
     material,
     materials: [material],
     materialBindingSources: ['engine-default'],
-    worldId: 0,
     entityKey,
   };
 }
@@ -63,7 +62,6 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
 function updateSnapshot(value: RenderableSnapshot) {
   return {
     kind: 'update' as const,
-    worldId: value.worldId,
     entityKey: value.entityKey,
     snapshot: value,
   };

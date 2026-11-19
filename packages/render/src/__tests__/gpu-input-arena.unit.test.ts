@@ -297,11 +297,7 @@ it('retires all independent Scene owners exactly once after one Version release 
     projection = new RenderScene(),
     source = receiptRow().source;
   scene
-    .sync(
-      projection.apply([
-        { kind: 'update', worldId: 0, entityKey: source.entityKey, snapshot: source },
-      ]),
-    )
+    .sync(projection.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]))
     .unwrap();
   const descriptor = scene.materialIndexForResource(source.material);
   if (descriptor === undefined) throw new Error('Missing live material Version');

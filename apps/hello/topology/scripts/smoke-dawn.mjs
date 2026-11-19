@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // hello-topology Dawn smoke: public geometry factories, 60 frames, and
 // intentionally red topology/degenerate/threshold falsifiers.
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { readFileSync } from 'node:fs';
+
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -112,7 +112,8 @@ const { Transform } = await import('@forgeax/engine-scene');
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 let manifestUrl;
 try {
-  manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+  manifestUrl = URL.createObjectURL(new Blob([readShaderManifestText(manifestPath)], { type: 'application/json' }));
+  process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 } catch (error) {
   console.error(`[smoke] FAIL - missing built manifest at ${manifestPath}: ${errorMessage(error)}`);
   console.error('  run pnpm --filter @forgeax/hello-topology build first');
@@ -273,11 +274,7 @@ renderer.subscribe((event) => {
   if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
 });
 
-const frameRequest = {
-  leases: [attached.value],
-  camera: { lease: attached.value },
-  environment: { lease: attached.value },
-};
+const frameRequest = { source: attached.value };
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update().unwrap();
   await drawReadyFrame(renderer, frameRequest);

@@ -169,11 +169,7 @@ async function steadyFrames(moved: number) {
     .unwrap();
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
-  const input = {
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  };
+  const input = { source: attached.value };
   const frame = async (tick: number): Promise<string> => {
     for (let index = 0; index < moved; index++) {
       const entity = entities[(tick * 7 + index) % ENTITIES] as EntityHandle;

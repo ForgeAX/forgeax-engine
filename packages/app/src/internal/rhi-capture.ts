@@ -68,7 +68,7 @@ export function uploadRhiTape(
 }
 
 type CaptureResult = Result<EncodedTape, RhiDebugError>;
-type CaptureFrameDriver = Pick<FrameLoopHandle, 'getState' | 'pause' | 'resume' | 'stepFrame'> & {
+type CaptureFrameDriver = Pick<FrameLoopHandle, 'getState' | 'suspendScheduling' | 'stepFrame'> & {
   readonly subscribeSubmitted?: (listener: (receipt: FrameReceipt) => void) => () => void;
 };
 
@@ -149,16 +149,18 @@ async function captureWithAppFrame(
   if (options?.signal?.aborted) return captureAttachment(attachment, options);
 
   const resumeAfter = state === 'running';
+  let resumeScheduling: (() => ReturnType<FrameLoopHandle['resume']>) | undefined;
   if (resumeAfter) {
-    const paused = driver.pause();
-    if (!paused.ok) {
+    const suspended = driver.suspendScheduling();
+    if (!suspended.ok) {
       return err(
         createRhiDebugError('capture-unavailable', {
           stage: 'capture',
-          cause: `App capture could not pause the frame loop: ${describeFailure(paused.error)}`,
+          cause: `App capture could not suspend frame scheduling: ${describeFailure(suspended.error)}`,
         }),
       );
     }
+    resumeScheduling = suspended.value;
   }
 
   const controller = new AbortController();
@@ -172,7 +174,7 @@ async function captureWithAppFrame(
     });
   } catch (cause: unknown) {
     options?.signal?.removeEventListener('abort', abortFromUser);
-    if (resumeAfter && driver.getState() === 'paused') driver.resume();
+    resumeScheduling?.();
     return err(
       createRhiDebugError('capture-unavailable', {
         stage: 'capture',
@@ -186,7 +188,6 @@ async function captureWithAppFrame(
   let unsubscribe: (() => void) | undefined;
   let result: CaptureResult | undefined;
   let transactionError: RhiDebugError | undefined;
-  let resumedForCapture = false;
   try {
     const snapshot = await attachment.frameBoundary();
     const recording = snapshot.ok && attachment.isRecordingCapture(captureGeneration);
@@ -204,19 +205,26 @@ async function captureWithAppFrame(
       // A running App must contribute its next ordinary frame to the tape.
       // `stepFrame(0)` would execute an artificial zero-delta update, which
       // may skip FixedUpdate/VFX work and makes the capture unrepresentative.
-      // resume() resets the loop clock, so the next credit-admitted rAF owns
-      // the normal measured delta and its existing frame-boundary callback
-      // finalizes this one-frame capture.
-      const resumed = driver.resume();
+      // Release only the snapshot's scheduling suspension. The loop preserves
+      // its accepted temporal baseline and excludes the snapshot wait from its
+      // normal measured delta; public pause/resume remains a lifecycle reset.
+      const resumed = resumeScheduling?.() ?? ok(undefined);
+      resumeScheduling = undefined;
       if (!resumed.ok) {
         transactionError = createRhiDebugError('capture-unavailable', {
           stage: 'capture',
-          cause: `App capture could not resume the frame loop: ${describeFailure(resumed.error)}`,
+          cause: `App capture could not restore frame scheduling: ${describeFailure(resumed.error)}`,
         });
         controller.abort();
         result = await captureResult;
+      } else if (driver.getState() === 'running') {
+        result = await captureResult;
       } else {
-        resumedForCapture = true;
+        transactionError = createRhiDebugError('capture-unavailable', {
+          stage: 'capture',
+          cause: 'App lifecycle changed while the capture snapshot was pending',
+        });
+        controller.abort();
         result = await captureResult;
       }
     } else {
@@ -242,12 +250,12 @@ async function captureWithAppFrame(
   } finally {
     unsubscribe?.();
     options?.signal?.removeEventListener('abort', abortFromUser);
-    if (resumeAfter && !resumedForCapture && driver.getState() === 'paused') {
-      const resumed = driver.resume();
+    if (resumeScheduling !== undefined) {
+      const resumed = resumeScheduling();
       if (!resumed.ok && transactionError === undefined) {
         transactionError = createRhiDebugError('capture-unavailable', {
           stage: 'capture',
-          cause: `App capture could not resume the frame loop: ${describeFailure(resumed.error)}`,
+          cause: `App capture could not restore frame scheduling: ${describeFailure(resumed.error)}`,
         });
       }
     }

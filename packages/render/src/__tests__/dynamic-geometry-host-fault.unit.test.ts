@@ -1,13 +1,13 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
+import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
+import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { createRapier3DPhysicsWorld, loadRapier3D } from '@forgeax/engine-physics-rapier3d';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type MeshAsset, ok } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRapier3DPhysicsWorld } from '../../../physics-rapier3d/src/rapier-physics-world-3d';
-import { loadRapier3D } from '../../../physics-rapier3d/src/wasm-loader';
 import { createDynamicGeometryHost } from '../assembly/dynamic-geometry-host';
 import { dynamicGeometryFrameError } from '../assembly/webgpu-renderer-guards';
 import { MeshFilter } from '../components/mesh-filter';
@@ -163,7 +163,7 @@ function record(name: string, f: Awaited<ReturnType<typeof fixture>>, extra: obj
     snapshot: f.snapshot(),
     extra,
     fault: f.host.dynamicGeometryFault(f.world),
-    guard: dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+    guard: dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
   }).toMatchObject({ fault: expect.anything(), guard: expect.anything() });
 }
 
@@ -207,13 +207,13 @@ it('refuses stale accepted credentials while generation cleanup holds their fenc
     .acceptDynamicGeometry(f.prepareOne(0, 1).unwrap(), { world: f.world, fixedStep: 0 })
     .unwrap();
   f.setGeneration(2);
-  expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 2 })).toEqual([]);
+  expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 2 }, f.world)).toEqual([]);
   const before = f.snapshot([accepted]);
   expect(f.host.cancelDynamicGeometry(accepted).ok).toBe(false);
   expect(f.snapshot([accepted])).toEqual(before);
   complete();
   await settle();
-  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 2 });
+  f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 2 }, f.world);
   expect(f.lifecycle.inspect().meshBytes).toBe(0);
   expect(f.lifecycle.inspect().generation).toBe(2);
   f.store.destroyAll();
@@ -266,7 +266,7 @@ describe('dynamic geometry host fault ownership', () => {
         'cancel exception must latch the exact World',
       ).toBeDefined();
       expect(
-        dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+        dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
       ).toBeDefined();
       expect(laterAcceptOk).toBe(false);
     } finally {
@@ -326,7 +326,7 @@ describe('dynamic geometry host fault ownership', () => {
         'native cancellation failure must fence stale residency',
       ).toBeDefined();
       expect(
-        dynamicGeometryFrameError([f.world], (world) => f.host.dynamicGeometryFault(world)),
+        dynamicGeometryFrameError(f.world, (world) => f.host.dynamicGeometryFault(world)),
       ).toBeDefined();
       expect(reusableAcceptOk).toBe(false);
     } finally {
@@ -422,7 +422,7 @@ describe('dynamic geometry host fault ownership', () => {
     const accepted = f.host
       .acceptDynamicGeometry(f.prepareOne(0, 1).unwrap(), { world: f.world, fixedStep: 0 })
       .unwrap();
-    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 });
+    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1 }, f.world);
     f.world.set(required(f.entities[0]), MeshFilter, { assetHandle: old }).unwrap();
     const before = f.snapshot([accepted]);
     const release = runtimeAssets(f.world.assets).release.bind(runtimeAssets(f.world.assets));
@@ -462,7 +462,7 @@ describe('dynamic geometry host fault ownership', () => {
     const physics = createRapier3DPhysicsWorld(RAPIER);
     physics.setGravity(vec3.create(0, 0, 0));
     physics.setMoveContext(f.world, Transform);
-    f.world.insertResource('PhysicsWorld', physics);
+    f.world.insertResource(PhysicsWorldResource, physics);
     const entity = required(f.entities[0]);
     physics.ensureBody(
       Number(entity),
@@ -474,9 +474,8 @@ describe('dynamic geometry host fault ownership', () => {
       { type: 1, mass: 1, linearDamping: 0, angularDamping: 0, gravityScale: 0, ccdEnabled: 0 },
       undefined,
     );
-    f.world
-      .addSystem(FixedUpdate, { name: 'independent-clock', queries: [], fn: () => {} })
-      .unwrap();
+    const systemToken1 = defineSystem({ name: 'independent-clock', queries: [], fn: () => {} });
+    f.world.addSystem(FixedUpdate, systemToken1).unwrap();
     f.world.update(1 / 60).unwrap();
     interceptLease(f.store, (lease) => {
       return {
@@ -630,7 +629,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     });
     expect(f.host.dynamicGeometryFault(replacement.world)).toBeUndefined();
     expect(
-      dynamicGeometryFrameError([replacement.world], (world) => f.host.dynamicGeometryFault(world)),
+      dynamicGeometryFrameError(replacement.world, (world) => f.host.dynamicGeometryFault(world)),
     ).toBeUndefined();
     expect(f.lifecycle.inspect().meshBytes).toBe(
       prepared.meshBytes + replacement.prepared.meshBytes,
@@ -642,12 +641,10 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
       .acceptDynamicGeometry(replacement.prepared, { world: replacement.world, fixedStep: 0 })
       .unwrap();
     expect(
-      f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 }, [replacement.world]),
+      f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 }, replacement.world),
     ).toHaveLength(1);
     expect(f.host.dynamicGeometryReceipt(accepted)).toBeDefined();
-    expect(f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, [f.world])).toEqual(
-      [],
-    );
+    expect(f.host.publishDynamicGeometry({ frameId: 3, deviceGeneration: 1 }, f.world)).toEqual([]);
     // Detached admission rejects before the attached-World fault guard.
     expect(f.host.acceptDynamicGeometry(prepared, { world: f.world, fixedStep: 0 }).ok).toBe(false);
     f.store.destroyAll();
@@ -663,7 +660,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     const completed = new Promise<void>((resolve) => {
       complete = resolve;
     });
-    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed });
+    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed }, f.world);
     const native = f.store.getMeshGpuHandles(
       required(accepted.meshHandle),
       worldRenderResources(f.world),
@@ -724,7 +721,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     expect(() => f.host.cancelDynamicGeometry(prepared)).toThrow();
     f.host.invalidateDynamicGeometryWorld(f.world);
     f.setGeneration(2);
-    expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 2 })).toEqual([]);
+    expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 2 }, f.world)).toEqual([]);
     record('failed-cleanup-generation-budget', f, { before, attempts });
     expect(f.lifecycle.inspect().generation).toBe(1);
     expect(f.lifecycle.inspect().meshBytes).toBe(prepared.meshBytes);
@@ -803,7 +800,7 @@ describe('dynamic geometry terminal cleanup boundaries', () => {
     record('post-write-refusal-is-fault', f);
     expect(f.lifecycle.inspect().accepted).toBe(1);
     expect(f.lifecycle.inspect().meshBytes).toBe(accepted.meshBytes);
-    expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 })).toEqual([]);
+    expect(f.host.publishDynamicGeometry({ frameId: 2, deviceGeneration: 1 }, f.world)).toEqual([]);
     expect(() =>
       f.host.acceptDynamicGeometry(accepted, { world: f.world, fixedStep: 0 }),
     ).toThrow();
@@ -880,7 +877,7 @@ describe('submitted frame failure ownership', () => {
     const completed = new Promise<void>((_, fail) => {
       reject = fail;
     });
-    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed });
+    f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed }, f.world);
     f.world.set(required(f.entities[0]), MeshFilter, { assetHandle: old }).unwrap();
     f.host.retireDynamicGeometry(accepted).unwrap();
     const replacement = replacementWorld(f);
@@ -918,11 +915,14 @@ describe('submitted frame failure ownership', () => {
       .acceptDynamicGeometry(f.prepareOne(0, 1).unwrap(), { world: f.world, fixedStep: 0 })
       .unwrap();
     expect(() =>
-      f.host.publishDynamicGeometry({
-        frameId: 1,
-        deviceGeneration: 1,
-        completed: Promise.resolve(),
-      }),
+      f.host.publishDynamicGeometry(
+        {
+          frameId: 1,
+          deviceGeneration: 1,
+          completed: Promise.resolve(),
+        },
+        f.world,
+      ),
     ).toThrow();
     await settle();
     f.host.invalidateDynamicGeometryWorld(f.world);
@@ -943,7 +943,7 @@ it('preserves the published owner when submitted failure is observed before deta
   const completed = new Promise<void>((_, fail) => {
     reject = fail;
   });
-  f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed });
+  f.host.publishDynamicGeometry({ frameId: 1, deviceGeneration: 1, completed }, f.world);
   reject(new Error('submitted fence failed before detach'));
   await settle();
   const before = f.snapshot([accepted]);

@@ -17,6 +17,7 @@ import {
   openReplay,
   type RecorderAttachment,
   replayDeviceRequest,
+  summarizePasses,
   type V7RhiCallEvent,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
@@ -116,7 +117,7 @@ export async function verifyOutline(
     world.update(1 / 60).unwrap();
     return drawReadyFrame(
       renderer,
-      { leases: [lease], camera: { lease }, environment: { lease } },
+      { source: lease },
       observe ? ['final-display', 'linear-ldr'] : undefined,
     );
   };
@@ -347,13 +348,19 @@ export async function verifyOutline(
       await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
     ).unwrap();
     try {
+      const passes = summarizePasses(model);
       const stages = [
-        ['depth', 'let bits = bitcast<u32>(z)'],
-        ['classify', 'let selected = bitcast<f32>'],
-        ['horizontal', 'p + vec2<i32>(x, 0)'],
-      ].map(([stage, marker]) => {
-        const stageWork = model.works.find((item) =>
-          item.pipeline.shaders.some((shader) => shader.source?.includes(marker ?? '')),
+        ['depth', 'outline-depth-copy', 'let bits = bitcast<u32>(z)'],
+        ['classify', 'outline-classify', 'let selected = bitcast<f32>'],
+        ['horizontal', 'outline-horizontal', 'p + vec2<i32>(x, 0)'],
+      ].map(([stage, label, marker]) => {
+        // The distance-field path shares the depth-copy shader. Select this
+        // fixture's actual ordinary Outline pass, never the first same-source draw.
+        const pass = passes.find((candidate) => candidate.label === label);
+        const stageWork = model.works.find(
+          (item) =>
+            item.passIndex === pass?.passIndex &&
+            item.pipeline.shaders.some((shader) => shader.source?.includes(marker ?? '')),
         );
         if (stageWork === undefined) throw new Error(`missing Outline ${stage} work`);
         return { stage, work: stageWork };

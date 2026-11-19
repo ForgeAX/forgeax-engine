@@ -7,12 +7,12 @@ import { Camera } from './components/camera';
 import { CameraView } from './components/camera-view';
 import { CapsuleShadow } from './components/capsule-shadow';
 import { ClippingPlanes } from './components/clipping-planes';
-import { CloudLayer } from './components/cloud-layer';
 import { CubeCamera } from './components/cube-camera';
 import { DepthOfField } from './components/depth-of-field';
 import { DirectionalLight } from './components/directional-light';
 import { DynamicResolution } from './components/dynamic-resolution';
 import { Fog } from './components/fog';
+import { GpuMeshVertexSource } from './components/gpu-mesh-vertex-source';
 import { Instances } from './components/instances';
 import { Layer } from './components/layer';
 import { LensEffects } from './components/lens-effects';
@@ -30,6 +30,8 @@ import { Points } from './components/points';
 import { PostProcessParams } from './components/post-process-params';
 import { RectAreaLight } from './components/rect-area-light';
 import { ReflectionProbe } from './components/reflection-probe';
+import { RenderFeatureEnvironment } from './components/render-feature-environment';
+import { RenderTargetEnvironment } from './components/render-target-environment';
 import { SceneInstance } from './components/scene-instance';
 import { ScreenSpaceReflection } from './components/screen-space-reflection';
 import { ShadowParticipation } from './components/shadow-participation';
@@ -43,6 +45,7 @@ import { SpriteRegionOverride } from './components/sprite-region-override';
 import { StereoCamera } from './components/stereo-camera';
 import { Tilemap } from './components/tilemap';
 import { Visibility } from './components/visibility';
+import { VolumetricCloudLayer } from './components/volumetric-cloud-layer';
 import { ProjectedDecal } from './decals/component';
 import { VolumetricFog } from './volume/component';
 
@@ -60,12 +63,13 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   CapsuleShadow,
   ShadowParticipation,
   PlanarReflection,
-  CloudLayer,
+  VolumetricCloudLayer,
   CubeCamera,
   DirectionalLight,
   DynamicResolution,
   DepthOfField,
   Fog,
+  GpuMeshVertexSource,
   Instances,
   Layer,
   LightProbe,
@@ -80,6 +84,8 @@ export const RENDER_COMPONENTS: readonly Component[] = [
   PostProcessParams,
   RectAreaLight,
   ReflectionProbe,
+  RenderFeatureEnvironment,
+  RenderTargetEnvironment,
   SceneInstance,
   ScreenSpaceReflection,
   SkyboxBackground,

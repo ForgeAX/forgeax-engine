@@ -1,5 +1,6 @@
 // Reproduce Bevy's `gltf/update_gltf_scene` through a real SceneAsset hierarchy.
 
+import { defineSystem } from "@forgeax/engine-ecs";
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
@@ -111,7 +112,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 16 / 9 }) },
   );
   world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.4, -1, -0.3], intensity: 5 } });
-  world.addSystem(Update, {
+  const systemToken1 = defineSystem({
     name: 'update-gltf-scene-descendants',
     queries: [],
     fn: (world) => {
@@ -119,6 +120,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       stepUpdateGltfScene(world, time.elapsed);
     },
   });
+world.addSystem(Update, systemToken1);
 
   const started = app.start();
   if (!started.ok) {

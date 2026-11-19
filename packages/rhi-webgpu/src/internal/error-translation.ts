@@ -41,7 +41,7 @@
 
 /// <reference types="@webgpu/types" />
 
-import { err, type Result, RhiError } from '@forgeax/engine-rhi';
+import { err, type ResultErr, RhiError } from '@forgeax/engine-rhi';
 
 /** Translate a spec async-dispatch error event into a closed-union RhiError.
  *
@@ -58,7 +58,7 @@ import { err, type Result, RhiError } from '@forgeax/engine-rhi';
  */
 export function translateErrorEventToRhiError(
   event: GPUUncapturedErrorEvent | GPUDeviceLostInfo | unknown,
-): Result<never, RhiError> {
+): ResultErr<RhiError> {
   // (d) device-lost branch — GPUDeviceLostInfo shape has `.reason` enum.
   if (
     typeof event === 'object' &&

@@ -7,7 +7,40 @@ description: >-
 
 # forgeax-engine-assets
 
+## Engine Content textures
+
+Author procedural textures as ordinary ScriptablePack sources returning
+`TextureAsset` outputs, following Content's checker texture. Fixed seeds and
+source parameters own the pixels; the standard Pack producer owns cooking,
+content identity, caching and publication. Water textures use this same route.
+Publish their Pack sources and imported source modules through the normal
+Content package source closure.
+
+Preserve declared GUIDs, dimensions, color spaces, mip policies and sampler
+contracts when editing texture fields. Review generated appearance and decoded
+pixel changes through ordinary Pack cooking. Do not introduce a Water-specific
+prebuild generator, raw-image staging step, SDK resource whitelist or fallback
+asset loader. See the [Content contract](../../packages/content/README.md).
+
+## River Bake Publication
+
+River Bake uses `prepareWaterRiverBake` to derive ordinary Pack
+recipe/texture outputs from a completed current GPU capture. Admit/replace and
+persist the complete Runtime Pack publication before decoding and publishing
+its query grid for the current Body generation. Keep stable source keys/GUIDs,
+content identity, failed-replacement retention and cold-reload recovery in the
+existing asset owner. See the [Water entry](../../packages/water/README.md#advanced-simulation-entry).
+
 ## Procedural content
+
+For a finite same-kind startup roster, use `assets.loadMany(guids, kind, { signal })`.
+It preserves serial asset admission while sharing Pack verification within that
+operation; the read scope ends on success, failure or cancellation. Own each
+returned handle grant, including duplicate entries. Keep ordinary `load` for
+independent reads. Use the awaited `onProgress(completed, total)` option for
+bounded host task yields during long cached rosters; keep the read scope open
+while publication and cancellation messages advance. Do not add a global document cache or raise decode concurrency
+to compensate for repeatedly parsing one Pack.
 
 Choose the owner by when the content is known, not by how it is computed:
 
@@ -17,12 +50,14 @@ Choose the owner by when the content is known, not by how it is computed:
 | During play: debris, growth, deforming water | `assets.create(meshAsset)` in a plugin; no Pack declaration, GUID or saved file | The returned handle; release it after the ECS binding takes its own reference | `writeRange` keeps vertex/index counts (per frame); `replace` changes topology |
 
 - A Pack `build` is a pure function of its source and `values`: derive randomness from a
-  seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), never
+  seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), in place of
   `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
   playthroughs and tests reproduce.
 - Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
-- Attribute presence maps such as `DEFAULT_VERTEX_ATTRIBUTE_MAP` describe layout; empty lane placeholders do not supply nonempty runtime geometry. Use builder output or `unpackInterleavedVertexAttributes` with the canonical layout projection for existing packed vertices. Retain channel cardinality and submesh validation; do not copy handwritten stride tables.
+- Mesh authoring inputs carry complete matching channels; runtime admission and decoding keep only `vertices` with `attributeStorage: 'interleaved'` and empty typed layout declarations. Use `meshAttributeWindow` for zero-copy CPU reads; take cardinality from its count or the canonical stride. `copyMeshAttribute` and uncached `meshAttributeChannels` are explicit temporary conversions, not retained mirrors. Producers with validated packed rows can use `interleavedMesh` or construct the marked form; never unpack merely to discard channels again. See the geometry README for validation and mixed integer skin lanes.
+- For compact Standard terrain, `packMeshTangentFrame32(validatedMesh)` replaces normal/tangent with one `uint32` and retains UV bits. Raster reads packed rows directly. `meshAttributeWindow(mesh, 'tangentFrame')` exposes physical words; `copyMeshAttribute(mesh, 'normal' | 'tangent')` explicitly decodes temporary CPU channels. See the geometry README for the versioned format and custom-entry requirement.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
+- For runtime GPU textures, declare `texture-generator` and independent `gpu-texture` outputs (`GpuTextureAsset`) with `gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`. Build prepares programs; Renderer generates pixels and mips. Reuse prepared `programs` in a Runtime Pack; do not cook raw WGSL or read pixels back implicitly. Open either kind in View's native texture preview. See the [Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
 - Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
 - Compiled recipes: procedural props and runtime meshes.
 
@@ -90,8 +125,8 @@ Use the App/Engine `assets` owner. `assets.create(content)` and
 `await assets.load(guid, kind)` return caller-owned `AssetHandle` references;
 bind those directly to ECS `asset(kind)` fields. A standalone World uses
 `new World({ assets })`. `assets.read(handle)` returns detached content.
-Commit changes through `update`, `replace`, or `writeRange`; do not mutate a read
-or keep a caller-managed revision. Release the caller reference after a successful
+Commit changes through `update`, `replace`, or `writeRange`; treat a read as immutable
+and leave revisions to the runtime. Release the caller reference after a successful
 binding; ECS retains its own reference.
 
 Built-in kinds use literals such as `'mesh'`, `'material'`, and `'scene'`.
@@ -112,6 +147,21 @@ identity, Worker publication and tangent facts are in
 
 ## Engine Content library
 
+The same mount also publishes the ordinary Water root/child material family
+and its texture sources through `EngineContent.water`. Body slot GUIDs come
+from `waterMaterialFamilySlots`; a Zone's far material is a Zone dependency,
+not copied Body state. Read the [Water material entry](../../packages/water/README.md#material-family)
+for the source and binding contracts. Distribute their Pack and helper sources
+under Content's Apache-2.0 license.
+
+Local fluid recipes use the same ordinary closure: `impulseNoiseGuid` is a
+required texture reference, including cold Pack/Catalog loading. Reference
+`EngineContent.water.textures['impulse-noise']` for the default producer.
+Its ordinary Pack generates the seeded grayscale field, applies gamma/brightness
+and publishes the complete packed mip chain as a `TextureAsset`. Pixel hashes
+and mip contracts are covered by Content's tests. See the
+[Content contract](../../packages/content/README.md#guids).
+
 Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
 `plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker
 texture/sampler and a default Standard material are ordinary Pack assets in
@@ -126,6 +176,18 @@ specifier) and `project-asset-library-invalid` (package has no
 `forgeax.library.assetRoot`). In code, `createPrimitiveMesh(kind)` plus
 `assets.create` still produces an unregistered runtime mesh. See the
 [content contract](../../packages/content/README.md).
+
+## Volumetric cloud assets
+
+Use `VolumetricCloudLayer` with a loaded `cloud-material` and optional
+`cloud-material-instance`. In a ScriptablePack, return each cloud output with
+`execution: 'cooked'` and its authored `source`; ordinary DevKit dev/build registers
+the producers and supplies the compiler and renderer modules. A program model's
+WGSL file stays beside its Pack and participates in recooking after edits.
+`project check` dry-cooks authored JSON cloud rows; ScriptablePacks retain their
+normal build validation. Start with the [copyable cloud Pack and WGSL](../forgeax-engine-render-pipeline/SKILL.md#volumetric-clouds).
+The [cloud authoring contract](../../packages/render/README.md#volumetric-cloud-authoring-and-transport)
+covers uniform samples, program parameters, instances and runtime bounds.
 
 ## Lighting asset route
 
@@ -170,7 +232,7 @@ projection or binding must build its own scoped envelopes.
 
 Start with [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json) and its gate [`check-asset-authority-audit.mjs`](../../scripts/forgeax/check-asset-authority-audit.mjs). Pack or external source plus Meta is author authority. Import and native cook produce validated outputs. DDC is disposable cache evidence, Catalog is a projection, and runtime only reads the validated projection. Editor writes go through the asset-authoring gateway.
 
-For any category, inspect the `subject`, `execution`, `lifecycle`, `lastKnownGood`, and `sourceKey` fields before choosing recovery. The AI path is `inspect` -> `rebuild` or `cold-cook`; `preview-LKG` is read-only, while `override`, `promote`, and `stop-publish` are explicit gateway or publication operations. Do not infer identity from a suffix, path, cache hit, or message text.
+For any category, inspect the `subject`, `execution`, `lifecycle`, `lastKnownGood`, and `sourceKey` fields before choosing recovery. The AI path is `inspect` -> `rebuild` or `cold-cook`; `preview-LKG` is read-only, while `override`, `promote`, and `stop-publish` are explicit gateway or publication operations. Take identity from those fields, not a suffix, path, cache hit, or message text.
 
 For repeated production Meta imports, inspect the host's sealed producer identity
 and existing Pack product DDC before proposing another cache. Follow the
@@ -199,8 +261,7 @@ enumeration. A producer-supplied `storedName` is authoritative for
 an authored entry regardless of whether its package currently has one member or
 many. When no stored name is available, a packaged asset falls back to the
 package path basename; an asset without a package resolves to the empty string.
-Keep this projection in the Pack owner and do not reimplement cardinality rules
-in Editor or other consumers.
+Keep this projection in the Pack owner and let Editor and other consumers call it for cardinality rules.
 
 ### Catalog source and evidence
 
@@ -248,8 +309,8 @@ native cooked assets:
 2. **Repair** the named importer, native cooker, source, or Meta declaration.
    The source package plus Meta is author authority; the producer owns output.
 3. **Rebuild or cold-cook** through the producer. Remove invalid DDC evidence
-   only as part of that producer-owned recovery, never by editing a generated
-   Pack product into a substitute.
+   only as part of that producer-owned recovery, leaving generated
+   Pack products as the producer emits them.
 4. **Verify** GUID closure, receipt freshness, DDC integrity, Pack artifacts,
    and the Catalog lifecycle.
 5. **Retry** the same GUID after verification. `lastKnownGood` is a read-only
@@ -290,7 +351,7 @@ producer, outside asset loading and the ECS frame.
 | Save and recover runtime content | Host stores `snapshot()` or versioned `exportSource()` results; `restore()` re-admits fixed content into the new scope |
 
 > [!IMPORTANT]
-> `build` must not create GUIDs, write source, publish packages, or mutate a live World. A missing or extra output key, undeclared read/ref GUID, unused external declaration, or kind mismatch is a structured failure; repair the source contract and rebuild the same identity.
+> `build` stays pure: it creates no GUIDs, writes no source, publishes no packages, and leaves the live World alone. A missing or extra output key, undeclared read/ref GUID, unused external declaration, or kind mismatch is a structured failure; repair the source contract and rebuild the same identity.
 
 > [!NOTE]
 > The filesystem Pack gateway's `asset.inspect` with a source path returns
@@ -343,7 +404,7 @@ Player packaging groups complete WGSL programs into bounded Zstd streams without
 removing backend or capability variants. An artifact's stored `byteRange` locates
 its group; optional `decodedRange` selects its original bytes after decompression.
 Individual lengths and hashes remain authoritative. Use ordinary build/package,
-load and asset verification; do not rewrite program identities or source bytes.
+load and asset verification; keep program identities and source bytes as built.
 
 | Task | Load |
 |:--|:--|

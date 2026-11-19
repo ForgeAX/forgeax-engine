@@ -1,6 +1,7 @@
 export type GpuDrivenPreparationErrorCode =
   | 'missing-material-receipt'
   | 'material-abi-not-executable'
+  | 'material-resolution-failed'
   | 'missing-uv'
   | 'reflection-mismatch'
   | 'vertex-input-mismatch'
@@ -18,6 +19,8 @@ export type GpuDrivenPreparationReason =
   | 'vertex-semantic-mismatch'
   | 'alpha-mask-receipt-missing'
   | 'material-resource-missing'
+  | 'material-resolution-failed'
+  | 'water-mesh-publication-missing'
   | 'generation-stale'
   | 'skin-address-missing'
   | 'skin-inputs-missing'
@@ -38,6 +41,7 @@ export interface GpuDrivenPreparationErrorDetail {
   readonly actual?: string;
   readonly expectedGeneration?: number;
   readonly actualGeneration?: number;
+  readonly cause?: unknown;
   readonly recovery?: GpuDrivenRecoveryAction;
 }
 
@@ -60,6 +64,11 @@ const ERROR_POLICY: Readonly<
     expected: 'the published material ABI fits the GPU Scene submission layout',
     hint: 'recook the material with a scene-index ABI supported by the GPU-driven owner or keep it on its authored lane',
     recovery: 'route-cpu-lane',
+  },
+  'material-resolution-failed': {
+    expected: 'a valid WaterMesh material snapshot can be resolved',
+    hint: 'repair the material content or its cooked program before publishing the WaterMesh owner',
+    recovery: 'rebuild-producer',
   },
   'missing-uv': {
     expected: 'the geometry exposes every UV set named by the material receipt',

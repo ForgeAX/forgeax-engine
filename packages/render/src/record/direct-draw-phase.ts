@@ -7,6 +7,7 @@ import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
+import { cameraAdmitsLayers } from '../render-layers';
 import type {
   CameraAdmission,
   DispatchEntry,
@@ -29,7 +30,7 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_YZ,
 } from '../systems/transparent-sort-config';
-import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
+import type { ValidatedRenderable } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
 import {
   MaterialBindingIndex,
@@ -54,7 +55,7 @@ function invalid(expected: string): never {
 
 export type DirectDrawScene = Pick<
   PersistentGpuDrivenState,
-  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots'
+  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots' | 'skin'
 > &
   Partial<Pick<PersistentGpuDrivenState, 'slots' | 'draws'>>;
 
@@ -81,7 +82,7 @@ export interface DirectDrawInput {
   readonly gpu?: GpuDrawSelection | undefined;
   readonly select: (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined;
   readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
-  readonly worlds: readonly RenderResourceScope[];
+  readonly sourceScope: RenderResourceScope;
   readonly shadow: boolean;
   /** Accepted material versions the rows read; changed versions requeue their readers. */
   readonly materials: MaterialFrame | undefined;
@@ -102,6 +103,8 @@ export interface DirectDrawInput {
     | undefined;
   /** Camera admission; its fixed evidence names every row whose answer may differ. */
   readonly visible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  /** Camera geometry mask; absent for shadow consumers. */
+  readonly cullMask?: number;
   readonly admission?: CameraAdmission | undefined;
   /** Camera-dependent row projection (CPU LOD); a changed `lodCamera` re-projects LOD rows. */
   readonly lod: (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
@@ -181,14 +184,17 @@ interface Member {
   record: RenderSceneSlot | undefined;
   row: MutableRow | undefined;
   /** The row after camera-dependent projection. */
-  drawn: MutableRow | undefined;
+  drawn: ValidatedRenderable | undefined;
+  /** Addressed publication, retained until projection, overlay or compact address changes. */
+  published: ValidatedRenderable | undefined;
+  overlay: DispatchEntry | undefined;
   materials: readonly MaterialResource[];
   meshKey: number | undefined;
   lod: boolean;
   items: readonly DrawItem[];
   materialPasses: MemberMaterialPasses | undefined;
   /** The projected row, material frame and Pass selector the current items were placed from. */
-  placed: MutableRow | undefined;
+  placed: ValidatedRenderable | undefined;
   placedMaterials: MaterialFrame | undefined;
   placedSelector: PassSelector | undefined;
   emitted: number;
@@ -207,9 +213,8 @@ const UNBATCHED_BIN = -1;
 const VIEW_BIN = -2;
 const ROW_ENTRIES = 64;
 const BULK_QUEUE = 256;
-const MAX_SORT_WORLD = 2 ** 15;
 const EMPTY_SLOTS: ReadonlySet<number> = new FrameSet();
-const meshKeyOf = (worldId: number, handle: number) => worldId * 4294967296 + handle;
+const meshKeyOf = (handle: number) => handle;
 
 function sortedEntry(entry: DispatchEntry, all: boolean): boolean {
   return all || entry.queue === RenderQueue.Transparent || entry.renderState?.blend !== undefined;
@@ -229,7 +234,7 @@ function sameIndices(
 }
 
 /** Whether `place` reads the same entries and bins from both rows. */
-function samePlacedFacts(before: MutableRow, after: MutableRow): boolean {
+function samePlacedFacts(before: ValidatedRenderable, after: ValidatedRenderable): boolean {
   const a = before.source;
   const b = after.source;
   return (
@@ -237,7 +242,6 @@ function samePlacedFacts(before: MutableRow, after: MutableRow): boolean {
     sameIndices(before.submeshIndices, after.submeshIndices) &&
     a.material === b.material &&
     sameTokens(a.materials, b.materials) &&
-    a.worldId === b.worldId &&
     a.entityKey === b.entityKey &&
     (a.layer ?? 0) === (b.layer ?? 0) &&
     (a.shadowCaster === false) === (b.shadowCaster === false)
@@ -249,7 +253,6 @@ function sameReads(before: RenderableSnapshot, after: RenderableSnapshot): boole
   return (
     before.material === after.material &&
     sameTokens(before.materials, after.materials) &&
-    before.worldId === after.worldId &&
     before.assetHandle === after.assetHandle &&
     (before.lods?.length ?? 0) > 0 === (after.lods?.length ?? 0) > 0
   );
@@ -263,6 +266,13 @@ function equalDistanceTerms(left: Float32Array, right: Float32Array, eye: Float6
     if (a * a !== b * b) return false;
   }
   return true;
+}
+
+function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): boolean {
+  return (
+    (input.cullMask === undefined || cameraAdmitsLayers(input, source)) &&
+    input.visible?.(source) !== false
+  );
 }
 
 /**
@@ -307,6 +317,7 @@ export class DirectDrawPhase {
   private materialPassGroupsEnabled = false;
   private visibility: ((source: RenderableSnapshot) => boolean) | undefined;
   private admission: CameraAdmission | undefined;
+  private cullMask: number | undefined;
   private viewDraws: FrameList<RenderableSnapshot> | undefined;
   private lodCamera: readonly unknown[] = [];
   private geometry: readonly unknown[] = [];
@@ -472,10 +483,8 @@ export class DirectDrawPhase {
         if (tokens[index] !== token) same = false;
         tokens[index++] = token;
       }
-      for (const world of input.worlds) {
-        if (tokens[index] !== world) same = false;
-        tokens[index++] = world;
-      }
+      if (tokens[index] !== input.sourceScope) same = false;
+      tokens[index++] = input.sourceScope;
     } catch (cause) {
       // A throwing iterator must not let a partial snapshot prove reuse.
       tokens.length = 0;
@@ -590,7 +599,7 @@ export class DirectDrawPhase {
     const base = input.meshes.get(binding) ?? invalid('resident geometry for a direct batch');
     const mesh = input.prepareGeometry?.(base, material) ?? base;
     const derived = mesh !== base;
-    const world = input.worlds[binding.worldId] ?? invalid('the asset scope of a direct batch');
+    const world = input.sourceScope ?? invalid('the asset scope of a direct batch');
     const previous = this.selected.get(batch.batchId);
     // Equal facts keep the retained selection, so judge() sees no change.
     return previous !== undefined &&
@@ -675,9 +684,8 @@ export class DirectDrawPhase {
         const member = this.members.get(slot);
         if (member !== undefined) dirty.add(member);
       },
-      mesh: (worldId, handle) => {
-        for (const member of this.meshReaders.get(meshKeyOf(worldId, handle)) ?? [])
-          dirty.add(member);
+      mesh: (handle) => {
+        for (const member of this.meshReaders.get(meshKeyOf(handle)) ?? []) dirty.add(member);
       },
     });
     if (!linked) {
@@ -695,6 +703,10 @@ export class DirectDrawPhase {
   }
 
   private syncAdmission(input: DirectDrawInput, dirty: Set<Member>): void {
+    if (input.cullMask !== this.cullMask) {
+      this.cullMask = input.cullMask;
+      for (const member of this.members.values()) dirty.add(member);
+    }
     const visible = input.visible;
     const admission = input.admission;
     const previousVisible = this.visibility;
@@ -762,6 +774,8 @@ export class DirectDrawPhase {
         record: undefined,
         row: undefined,
         drawn: undefined,
+        published: undefined,
+        overlay: undefined,
         materials: [],
         meshKey: undefined,
         lod: false,
@@ -882,7 +896,8 @@ export class DirectDrawPhase {
     const drawn = input.lod(built.map((member) => member.row as MutableRow));
     for (let index = 0; index < built.length; index++) {
       const member = built[index] as Member;
-      member.drawn = (drawn[index] ?? member.row) as MutableRow;
+      member.drawn = drawn[index] ?? member.row;
+      member.published = undefined;
     }
   }
 
@@ -912,22 +927,22 @@ export class DirectDrawPhase {
     const drawn = input.lod(members.map((member) => member.row as MutableRow));
     for (let index = 0; index < members.length; index++) {
       const member = members[index] as Member;
-      const next = (drawn[index] ?? member.row) as MutableRow;
+      const next = drawn[index] ?? member.row;
       if (next === member.drawn) continue;
       // A level changes geometry only; entries and bins keep their identity.
       member.drawn = next;
+      member.published = undefined;
       this.emittedRevision = -1;
     }
   }
 
   /** The member's current source, or undefined when it draws nothing in this consumer. */
   private candidate(member: Member, input: DirectDrawInput): RenderableSnapshot | undefined {
-    const visible = input.visible;
     if (member.slot === undefined) {
       const source = member.view;
       if (
         source === undefined ||
-        visible?.(source) === false ||
+        !sourceVisible(input, source) ||
         source.authorVisible === false ||
         (input.shadow && source.shadowCaster === false)
       )
@@ -938,32 +953,43 @@ export class DirectDrawPhase {
     const record = scene.slotAt(member.slot);
     member.record = record;
     member.version = record?.version ?? 0;
-    for (const contribution of member.contributions.values())
-      if (
-        record === undefined ||
-        record.generation !== contribution.generation ||
-        record.entityKey !== contribution.entityKey
-      )
-        invalid('a live generation for each direct batch member');
+    const validateDirectMemberContributions = () => {
+      for (const contribution of member.contributions.values())
+        if (
+          record === undefined ||
+          record.generation !== contribution.generation ||
+          record.entityKey !== contribution.entityKey
+        )
+          invalid('a live generation for each direct batch member');
+    };
+    validateDirectMemberContributions();
     if (record === undefined) {
       if (member.unbatched) invalid('a live unbatched Scene slot');
       return undefined;
     }
     const snapshotAt = scene.drawSnapshotAt ?? invalid('the Scene-owned direct draw projection');
     const source = snapshotAt(member.slot);
-    if (source === undefined || visible?.(source) === false) return undefined;
-    if (source.authorVisible === false || (input.shadow && source.shadowCaster === false))
-      return undefined;
-    // Native view owners have already projected these roots into actual draw geometry.
-    if (
-      member.contributions.size === 0 &&
-      (source.terrain !== undefined ||
-        source.glyph !== undefined ||
-        source.tilemap !== undefined ||
-        source.instances?.instanceCount === 0)
-    )
-      return undefined;
-    return source;
+    if (source === undefined || !sourceVisible(input, source)) return undefined;
+    const selectDirectSourceCandidate = (source: RenderableSnapshot) => {
+      if (source.authorVisible === false || (input.shadow && source.shadowCaster === false))
+        return undefined;
+      // Native view owners have already projected these roots into actual draw geometry.
+      if (
+        member.contributions.size === 0 &&
+        (source.terrain !== undefined ||
+          source.glyph !== undefined ||
+          source.tilemap !== undefined ||
+          (source.waterMeshSource !== undefined &&
+            source.assetHandle === undefined &&
+            source.generatedMesh === undefined &&
+            source.terrainSection === undefined &&
+            source.nativeDraw === undefined) ||
+          source.instances?.instanceCount === 0)
+      )
+        return undefined;
+      return source;
+    };
+    return selectDirectSourceCandidate(source);
   }
 
   private batchedRow(
@@ -977,7 +1003,7 @@ export class DirectDrawPhase {
       if (contribution.instanceCount === 0) continue;
       const batch = this.selected.get(batchId) ?? invalid('a selected batch for each contribution');
       const binding = contribution.binding;
-      if (source.worldId !== binding.worldId || source.assetHandle !== binding.assetHandle)
+      if (source.assetHandle !== binding.assetHandle)
         invalid('matching source and resident mesh identities');
       if (batch.mesh.submeshes[binding.drawItemIndex] === undefined)
         invalid('the source submesh addressed by the direct batch');
@@ -1019,7 +1045,7 @@ export class DirectDrawPhase {
       readers.add(member);
     }
     if (source.assetHandle !== undefined) {
-      const key = meshKeyOf(source.worldId, source.assetHandle);
+      const key = meshKeyOf(source.assetHandle);
       member.meshKey = key;
       let readers = this.meshReaders.get(key);
       if (readers === undefined) {
@@ -1103,6 +1129,8 @@ export class DirectDrawPhase {
     member.placedSelector = input.entries?.selector;
     if (row === undefined) {
       member.drawn = undefined;
+      member.published = undefined;
+      member.overlay = undefined;
       member.items = [];
       return [];
     }
@@ -1127,7 +1155,7 @@ export class DirectDrawPhase {
       placements.push({ key, major: key < 0 ? -key : 0, minor: key, item });
     } else {
       const source = row.source;
-      const identity = worldEntityKey(source.worldId, source.entityKey);
+      const identity = source.entityKey;
       const drawMaterials = [...(row.submeshIndices ?? row.mesh.submeshes.keys())].map((index) => {
         const submesh = row.mesh.submeshes[index];
         if (submesh === undefined) throw new Error('Direct draw has no selected submesh');
@@ -1193,8 +1221,8 @@ export class DirectDrawPhase {
   }
 
   private sortKey(source: RenderableSnapshot, ordinal: number): number | undefined {
-    if (source.worldId >= MAX_SORT_WORLD || ordinal >= ROW_ENTRIES) return undefined;
-    let key = worldEntityKey(source.worldId, source.entityKey) * ROW_ENTRIES + ordinal;
+    if (ordinal >= ROW_ENTRIES) return undefined;
+    let key = source.entityKey * ROW_ENTRIES + ordinal;
     // View-owned draws can share an entity: each takes its own free key.
     while (this.sort.idOf(key) >= 0) key += 1;
     return key;
@@ -1387,7 +1415,7 @@ export class DirectDrawPhase {
     this.work.emitted += 1;
     const epoch = ++this.epoch;
     const items: DrawItem[] = [];
-    const rows: MutableRow[] = [];
+    const rows: Member[] = [];
     for (const bin of this.bins.orderedBins())
       for (const item of bin.items) {
         if (item.entry !== undefined) {
@@ -1397,7 +1425,8 @@ export class DirectDrawPhase {
         const owner = item.owner;
         if (owner.emitted === epoch) continue;
         owner.emitted = epoch;
-        rows.push(owner.drawn as MutableRow);
+        owner.overlay = undefined;
+        rows.push(owner);
       }
     this.order(items);
     this.output = this.emitOrdered(items, rows, epoch, offset);
@@ -1410,7 +1439,7 @@ export class DirectDrawPhase {
   /** Publish ordered items and their rows, retaining only an equal fixed dispatch key. */
   private emitOrdered(
     items: readonly DrawItem[],
-    rows: MutableRow[],
+    members: Member[],
     epoch: number,
     offset: number,
   ): DirectDrawOutput {
@@ -1420,32 +1449,30 @@ export class DirectDrawPhase {
     // already consumed dispatch array when its actual order and indices agree.
     if (this.materials === undefined || this.materials.hasBorrowedValues) nextDispatch = [];
     let dispatchCount = 0;
-    const entryRows: ValidatedRenderable[] = [];
     for (const item of items) {
       const owner = item.owner;
       const entry = item.entry as MutableEntry;
-      const row = owner.drawn as MutableRow;
       if (nextDispatch === undefined && previousDispatch[dispatchCount] !== entry)
         nextDispatch = previousDispatch.slice(0, dispatchCount);
       nextDispatch?.push(entry);
       dispatchCount += 1;
-      entryRows.push(row);
       // The last entry of a row owns its overlay (render state, stencil, variant).
-      row.renderState = entry.renderState;
-      row.stencilReference = entry.stencilReference;
-      row.variantSet = variantSetFromDefines(entry.defines);
+      owner.overlay = entry;
       if (entry.tags.LightMode !== 'ShadowCaster' && owner.emitted !== epoch) {
         owner.emitted = epoch;
-        rows.push(row);
+        members.push(owner);
       }
     }
     // Rows without a view entry follow in member order.
     for (const member of this.members.values())
       if (member.drawn !== undefined && member.emitted !== epoch) {
         member.emitted = epoch;
-        rows.push(member.drawn);
+        if (member.items.length === 0) member.overlay = undefined;
+        members.push(member);
       }
-    const materialRows = this.addressRows(rows, offset);
+    const rows = members.map((member, index) => this.publishRow(member, offset + index));
+    const entryRows = items.map((item) => item.owner.published as ValidatedRenderable);
+    const materialRows = this.addressRows(rows);
     if (nextDispatch === undefined && dispatchCount !== previousDispatch.length)
       nextDispatch = previousDispatch.slice(0, dispatchCount);
     let dispatch = nextDispatch ?? previousDispatch;
@@ -1462,17 +1489,33 @@ export class DirectDrawPhase {
     return { rows, dispatch, entryRows, materialPasses, materialRows };
   }
 
-  /** Compact addresses and persistent binding relations follow the same emitted row order. */
-  private addressRows(
-    rows: readonly MutableRow[],
-    offset: number,
-  ): MaterialRelationFrame | undefined {
+  /** Never mutate a borrowed LOD row or a publication sealed by a downstream owner. */
+  private publishRow(member: Member, renderableIndex: number): ValidatedRenderable {
+    const projected = member.drawn as ValidatedRenderable;
+    const row = member.published ?? projected;
+    const overlay = member.overlay;
+    const renderState = overlay === undefined ? projected.renderState : overlay.renderState;
+    const stencilReference =
+      overlay === undefined ? projected.stencilReference : overlay.stencilReference;
+    const variantSet =
+      overlay === undefined ? projected.variantSet : variantSetFromDefines(overlay.defines);
+    member.published =
+      row.renderableIndex === renderableIndex &&
+      row.renderState === renderState &&
+      row.stencilReference === stencilReference &&
+      row.variantSet === variantSet
+        ? row
+        : { ...row, renderableIndex, renderState, stencilReference, variantSet };
+    return member.published;
+  }
+
+  /** Persistent binding relations follow the same immutable emitted row order. */
+  private addressRows(rows: readonly ValidatedRenderable[]): MaterialRelationFrame | undefined {
     const ownedMaterials = this.retainBindings;
     if (ownedMaterials) this.materialRows.begin(this.materials as MaterialFrame);
     else this.materialRows.clear();
     for (let index = 0; index < rows.length; index++) {
-      const row = rows[index] as MutableRow;
-      row.renderableIndex = offset + index;
+      const row = rows[index] as ValidatedRenderable;
       if (ownedMaterials) this.materialRows.write(index, row);
     }
     return ownedMaterials ? this.materialRows.finish(rows.length) : undefined;
@@ -1499,7 +1542,7 @@ export class DirectDrawPhase {
     const groups: (MaterialPasses | undefined)[] = [];
     let size = 0;
     for (const item of items) {
-      const index = (item.owner.drawn as MutableRow).renderableIndex - offset;
+      const index = (item.owner.published as ValidatedRenderable).renderableIndex - offset;
       if (groups[index] !== undefined) continue;
       const group = item.owner.materialPasses?.finish(epoch, this.temporalMaterialPasses);
       if (group === undefined) invalid('the emitted member material groups');

@@ -30,8 +30,8 @@ import { SDF_INSTANCE_STRIDE, type SdfMeshInstance } from './sdf-query';
 
 export interface ProbeGlobalSource {
   readonly scene: PersistentGpuDrivenState;
-  readonly worlds: readonly RenderResourceScope[];
-  readonly leases: readonly RenderReadLease[] | undefined;
+  readonly sourceScope: RenderResourceScope;
+  readonly lease: RenderReadLease | undefined;
 }
 export interface ProbeGlobalRegion {
   readonly retained: NonNullable<PersistentGpuDrivenState['retained']>;
@@ -140,8 +140,7 @@ export function probeGlobalRegionCurrent(
     retained.identity === region.retained.identity &&
     fieldRevision === region.fieldRevision &&
     retained.isCurrent() &&
-    source.worlds.length === retained.worlds.length &&
-    source.worlds.every((world, i) => world === retained.worlds[i]) &&
+    source.sourceScope === retained.source &&
     (region.cards === undefined || region.cards.current())
   );
 }
@@ -149,31 +148,33 @@ export function probeGlobalRegionCurrent(
 /** Conservative frame-attempt fence over existing owner versions. It is never
  * the reusable region key and therefore cannot starve async preparation. */
 export function probeGlobalAttemptCurrent(source: ProbeGlobalSource): () => boolean {
-  const versions = source.worlds.map((world, index) => {
-    if (world.world === undefined) {
-      if (!Number.isSafeInteger(world.revision) || (world.revision ?? 0) < 1)
-        throw new Error('probe Global source has no accepted receiver revision');
-      const revision = world.revision;
-      return () => world.revision === revision;
-    }
-    const lease = source.leases?.[index];
+  const world = source.sourceScope;
+  let versionCurrent: () => boolean;
+  if (world.world === undefined) {
+    if (!Number.isSafeInteger(world.revision) || (world.revision ?? 0) < 1)
+      throw new Error('probe Global source has no accepted receiver revision');
+    const revision = world.revision;
+    versionCurrent = () => world.revision === revision;
+  } else {
+    const lease = source.lease;
     if (lease === undefined || lease.worldIdentity !== world.identity)
       throw new Error('probe Global source requires its current Renderer World lease');
     const captured = lease.captureVersion();
-    return () => {
+    versionCurrent = () => {
       const current = lease.captureVersion();
       return (
         current.mutationEpoch === captured.mutationEpoch &&
         current.structureEpoch === captured.structureEpoch
       );
     };
-  });
+  }
+
   return () => {
     try {
       return (
         source.scene.retained?.isCurrent() === true &&
         source.scene.retained.isSourceCurrent() &&
-        versions.every((current) => current())
+        versionCurrent()
       );
     } catch {
       return false;
@@ -198,11 +199,10 @@ export async function prepareProbeGlobalRegion(
   if (
     retained === undefined ||
     !retained.isSourceCurrent() ||
-    source.worlds.length !== retained.worlds.length ||
-    source.worlds.some((world, i) => world !== retained.worlds[i])
+    source.sourceScope !== retained.source
   )
     throw new Error('probe Global source requires the complete current retained composition');
-  const projected = fields.update(retained, source.worlds, profile, runtime.assets).unwrap();
+  const projected = fields.update(retained, source.sourceScope, profile, runtime.assets).unwrap();
   const fieldRevision = fields.revision;
   if (!retained.isSourceCurrent())
     throw new Error('probe Global source changed during synchronous resource admission');

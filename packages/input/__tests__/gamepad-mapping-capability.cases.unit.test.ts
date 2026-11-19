@@ -1,3 +1,4 @@
+import { INPUT_BACKEND_KEY, INPUT_SNAPSHOT_RESOURCE_KEY } from '../src/resources';
 import { Update } from '@forgeax/engine-ecs';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
@@ -33,16 +34,7 @@ import type {
   PointerPhaseEvent,
   VirtualJoystickConfig,
 } from '../src/input-snapshot';
-import {
-  createInputSnapshot,
-  INPUT_BACKEND_KEY,
-  INPUT_SNAPSHOT_RESOURCE_KEY,
-  type InputBackend,
-  InputFrameStartScan,
-  type InputSnapshot,
-  type PointerType,
-  snapshotFromSample,
-} from '../src/index';
+import { createInputSnapshot, type InputBackend, InputFrameStartScan, type InputSnapshot, type PointerType, snapshotFromSample } from '../src/index';
 import { diffGamepadFrame, type RawGamepadStub } from '../src/gamepad-frame';
 import {
   deriveVirtualAxes,
@@ -174,7 +166,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       world.insertResource(INPUT_BACKEND_KEY, backend);
       world.addSystem(Update, InputFrameStartScan);
       world.update(1 / 60).unwrap();
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (!snap) throw new Error('snap missing');
       const g = snap.gamepad(0);
       // must report connected (not lie as disconnected)
@@ -196,7 +188,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       world.insertResource(INPUT_BACKEND_KEY, backend);
       world.addSystem(Update, InputFrameStartScan);
       world.update(1 / 60).unwrap();
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (!snap) throw new Error('snap missing');
       expect(snap.capabilities.gamepad).toBe(false);
     });
@@ -207,7 +199,7 @@ type __MergedKeep = ActionConfig | ActionState | BindState | Capabilities | Fake
       world.insertResource(INPUT_BACKEND_KEY, backend);
       world.addSystem(Update, InputFrameStartScan);
       world.update(1 / 60).unwrap();
-      const snap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
+      const snap = world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY);
       if (!snap) throw new Error('snap missing');
       // All gamepad readpoints must be empty signal, no throw.
       expect(snap.gamepad(0).connected).toBe(false);

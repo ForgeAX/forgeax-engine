@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // LearnOpenGL framebuffers Dawn smoke through the Standard host.
-
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const MIN_FRAMES = smokeFrameBudget();
@@ -90,7 +90,8 @@ if (!existsSync(manifest)) {
   originalConsoleError(`[smoke] FAIL - shader manifest missing at ${manifest}`);
   process.exit(1);
 }
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifest, 'utf8'))}`;
+const manifestUrl = URL.createObjectURL(new Blob([readShaderManifestText(manifest)], { type: 'application/json' }));
+process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 
 const { World } = await import('@forgeax/engine-ecs');
 const { Transform } = await import('@forgeax/engine-scene');
@@ -204,7 +205,7 @@ async function drawFrames(count) {
   let frames = 0;
   for (let index = 0; index < count; index++) {
     world.update(1 / 60).unwrap();
-    const frame = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    const frame = await drawReadyFrame(renderer, { source: lease });
     const observed = await renderer.observe(frame, { include: ['draws'] });
     if (!observed.ok) throw observed.error;
     frames++;

@@ -61,7 +61,11 @@ test('root workspace installation admits the tracked View revision, not a cached
     const newer = git(source, 'rev-parse', 'HEAD');
     writeFileSync(
       join(engine, 'package.json'),
-      JSON.stringify({ name: 'view-pin-fixture', private: true, packageManager: 'pnpm@11.7.0' }),
+      JSON.stringify({
+        name: 'view-pin-fixture',
+        private: true,
+        packageManager: JSON.parse(readFileSync(resolve('package.json'), 'utf8')).packageManager,
+      }),
     );
     writeFileSync(join(engine, '.gitignore'), 'node_modules/\n');
     // Only manifest admission is under test; local workspace dependencies keep
@@ -93,12 +97,12 @@ test('root workspace installation admits the tracked View revision, not a cached
     assert.deepEqual(readFileSync(join(engine, 'pnpm-lock.yaml')), lock);
 
     const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
-    const producer = workflow.split('\n  shared-app-inputs:\n')[1].split(/\n(?= {2}[\w-]+:\n)/)[0];
+    const producer = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[\w-]+:\n)/)[0];
     const pinAt = producer.indexOf(viewPinAction);
     assert.ok(
       pinAt >= 0 &&
         pinAt < producer.indexOf('node scripts/ci/prepare-pnpm-workspace.mjs --install'),
-      'shared producer must admit its View gitlink before workspace installation',
+      'combined producer must admit its View gitlink before workspace installation',
     );
     checked(engine, 'git', ['submodule', 'update', '--init', '--depth=1', '--', 'tools/view']);
     assert.equal(git(view, 'rev-parse', 'HEAD'), pin);

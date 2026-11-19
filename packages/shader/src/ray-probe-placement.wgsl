@@ -1,6 +1,6 @@
 #define_import_path forgeax_ray::probe_placement
 #import forgeax_view::common::View
-#import forgeax_pbr::gbuffer::decodeStandardNormalRoughness
+#import forgeax_pbr::gbuffer::{decodeStandardNormalRoughness, decodeStandardGBufferNormal, standardGBufferValid}
 #import forgeax_scene_temporal::sceneViewZ
 
 struct PlacementProbe { baseCell: vec4f, key: vec4u }
@@ -61,7 +61,9 @@ fn placementContribution(probe: PlacementProbe, old: PlacementState, lane: u32) 
   if (!(surfaceDepth > 0.0 && centerDepth > surfaceDepth - 0.05 * cell)) { return vec4u(0u); }
   let toCamera = view.cameraPos - world;
   if (!(dot(toCamera, toCamera) > 1e-20)) { return vec4u(0u); }
-  let ns = decodeStandardNormalRoughness(textureLoad(normal, pixel, 0).x).xyz;
+  let packedNormal = textureLoad(normal, pixel, 0).rg;
+  if (!standardGBufferValid(packedNormal)) { return vec4u(0u); }
+  let ns = decodeStandardGBufferNormal(packedNormal).xyz;
   let ideal = world + (0.2 * ns + 0.8 * normalize(toCamera)) * (0.1875 * cell) - probe.baseCell.xyz;
   if (!all(abs(ideal) < vec3f(0.25 * cell))) { return vec4u(0u); }
   let quantized = vec3u(clamp(round(ideal * (64.0 / cell) + 64.0), vec3f(0.0), vec3f(128.0)));

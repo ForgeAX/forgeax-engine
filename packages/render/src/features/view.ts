@@ -18,6 +18,7 @@ export function renderFeatureCameraView(camera: CameraSnapshot): RenderFeatureEx
     render: camera.view?.enabled ?? true,
     selectedCamera: camera,
     selectedView: {
+      cullMask: camera.cullMask ?? 0xffffffff,
       position: new Float32Array(camera.position),
       right: vec3.create(camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0),
       up: vec3.create(camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0),

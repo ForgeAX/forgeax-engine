@@ -17,6 +17,11 @@ import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs'
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d';
 import { loadRapier3D, type Rapier3DModule } from '../wasm-loader';
 
+function requiredFixtureValue<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null) throw new Error('Required fixture value is missing');
+  return value;
+}
+
 function compoundCandidate(entity: number, revision: number, worldIdentity?: object) {
   return {
     entity,
@@ -48,6 +53,24 @@ function compoundCandidate(entity: number, revision: number, worldIdentity?: obj
     },
     velocityPolicy: 'preserve' as const,
     constraints: [],
+  };
+}
+
+function sourceOwnedCandidate(entity: number, revision: number, sceneMatrix: readonly number[]) {
+  return {
+    entity,
+    revision,
+    sourceKey: `river:${entity}`,
+    bodyType: 'static' as const,
+    sourceTransform: { sceneMatrix },
+    shapes: [
+      {
+        id: 'river-surface',
+        revision,
+        kind: 'convex-compound' as const,
+        pieces: [boxPoints([-1, 0, 0], [1, 1, 1])],
+      },
+    ],
   };
 }
 
@@ -329,6 +352,88 @@ function rapierWithCreationCounter(RAPIER: Rapier3DModule) {
 }
 
 describe('Rapier 3D derived convex candidates', () => {
+  it('retires exact derived source resources immediately while preserving its ordinary native body and collider', async () => {
+    const module = await loadRapier3D();
+    if ('code' in module) throw module;
+    const physics = createRapier3DPhysicsWorld(module);
+    try {
+      addBody(physics, 7, [0, 0, 0]);
+      const ordinary = physics.raw.getRigidBody(0);
+      const ordinaryHandle = ordinary.collider(0).handle;
+      const ordinaryMass = ordinary.mass();
+      const token = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 1)).unwrap();
+      physics.admitDerivedShapeCandidate(token).unwrap();
+      physics.step(1 / 60);
+      const publication = requiredFixtureValue(physics.getDerivedPublication(7));
+      expect(physics.raw.colliders.len()).toBeGreaterThan(1);
+      const replacement = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 2)).unwrap();
+      physics.admitDerivedShapeCandidate(replacement).unwrap();
+      expect((await physics.retireDerivedSource({ ...publication })).ok).toBe(false);
+      (await physics.retireDerivedSource(publication)).unwrap();
+      expect(physics.getDerivedPublication(7)).toBeUndefined();
+      expect(physics.getDerivedCollisionReceipt(7)).toBeUndefined();
+      expect(physics.hasBody(7)).toBe(true);
+      expect(physics.raw.getRigidBody(ordinary.handle)).toBe(ordinary);
+      expect(physics.raw.colliders.contains(ordinaryHandle)).toBe(true);
+      expect(physics.raw.colliders.len()).toBe(1);
+      expect(ordinary.mass()).toBeCloseTo(ordinaryMass, 6);
+      physics.step(1 / 60);
+      expect(physics.getDerivedPublication(7)).toBeUndefined();
+      expect((await physics.retireDerivedSource(publication)).ok).toBe(false);
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('cancels the first uncommitted candidate without a native tick, and refuses a replaced credential', async () => {
+    const module = await loadRapier3D();
+    if ('code' in module) throw module;
+    const physics = createRapier3DPhysicsWorld(module);
+    try {
+      addBody(physics, 7, [0, 0, 0]);
+      const first = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 1)).unwrap();
+      physics.admitDerivedShapeCandidate(first).unwrap();
+      (await physics.retireDerivedSource(first)).unwrap();
+      expect(physics.raw.colliders.len()).toBe(1);
+      physics.step(1 / 60);
+      expect(physics.getDerivedPublication(7)).toBeUndefined();
+      const second = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 2)).unwrap();
+      physics.admitDerivedShapeCandidate(second).unwrap();
+      physics.step(1 / 60);
+      const old = requiredFixtureValue(physics.getDerivedPublication(7));
+      const third = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 3)).unwrap();
+      physics.admitDerivedShapeCandidate(third).unwrap();
+      physics.step(1 / 60);
+      const current = requiredFixtureValue(physics.getDerivedPublication(7));
+      expect((await physics.retireDerivedSource(old)).ok).toBe(false);
+      expect(physics.getDerivedPublication(7)).toBe(current);
+      (await physics.retireDerivedSource(current)).unwrap();
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('reports incomplete native retirement as a backend failure and blocks mixed state', async () => {
+    const module = await loadRapier3D();
+    if ('code' in module) throw module;
+    const physics = createRapier3DPhysicsWorld(module);
+    try {
+      addBody(physics, 7, [0, 0, 0]);
+      const token = physics.prepareDerivedShapeCandidate(compoundCandidate(7, 1)).unwrap();
+      physics.admitDerivedShapeCandidate(token).unwrap();
+      physics.step(1 / 60);
+      const remove = vi.spyOn(physics.raw, 'removeCollider').mockImplementation(() => undefined);
+      const result = await physics.retireDerivedSource(
+        requiredFixtureValue(physics.getDerivedPublication(7)),
+      );
+      expect(result).toMatchObject({ ok: false, error: { code: 'derived-backend-failed' } });
+      expect(physics.getDerivedPublication(7)).toBeUndefined();
+      remove.mockRestore();
+    } finally {
+      physics.dispose();
+    }
+  });
+
   it.each([
     false,
     true,
@@ -1271,6 +1376,104 @@ describe('Rapier 3D derived convex candidates', () => {
     expect(pw.getDerivedPublication(7)).toBeUndefined();
     expect(pw.raycast(vec3.create(0.5, 0.5, 3), vec3.create(0, 0, -1), 5)).toBeUndefined();
     pw.dispose();
+  });
+
+  it('rejects conflicting pose motion and restores source-owned affine geometry from its receipt', async () => {
+    const RAPIER = await loadRapier3D();
+    if ('code' in RAPIER) throw RAPIER;
+    const pw = createRapier3DPhysicsWorld(RAPIER);
+    const sceneMatrix = [1, 0, 0, 0, 0.5, 2, 0, 0, 0.25, 0.3, 3, 0, 4, 5, 6, 1];
+    const nativeSceneMatrix = sceneMatrix.map(Math.fround);
+    const sourceInput = sourceOwnedCandidate(47, 1, sceneMatrix);
+    addBody(pw, 47, [0, 0, 0]);
+    try {
+      expect(
+        pw.prepareDerivedShapeCandidate({
+          ...sourceInput,
+          motion: {
+            centerOfMass: [20, 30, 40],
+            linearVelocity: [1, 0, 0],
+            angularVelocity: [0, 1, 0],
+            rotation: [0, Math.SQRT1_2, 0, Math.SQRT1_2],
+          },
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'derived-candidate-invalid' } });
+
+      pw.admitDerivedShapeCandidate(pw.prepareDerivedShapeCandidate(sourceInput).unwrap()).unwrap();
+      pw.step(1 / 60);
+
+      const publication = pw.getDerivedPublication(47);
+      expect(publication).toMatchObject({ revision: 1, shapeIds: ['river-surface'] });
+      const receipt = pw.getDerivedCollisionReceipt(47);
+      expect(receipt?.sourceTransform?.sceneMatrix).toEqual(nativeSceneMatrix);
+      expect(receipt?.shapes[0]).toMatchObject({ kind: 'convex-compound', id: 'river-surface' });
+      if (receipt?.shapes[0]?.kind !== 'convex-compound') throw new Error('missing source receipt');
+      expect(receipt.shapes[0].pieces[0]).toEqual(
+        Array.from(requiredFixtureValue(requiredFixtureValue(sourceInput.shapes[0]).pieces[0])),
+      );
+
+      const beforeMotion = pw.getBodyMotion(47).unwrap();
+      const beforePrimitives = pw.getCommittedColliderPrimitives(47).unwrap();
+      expect(() => pw.teleport(47, vec3.create(20, 30, 40))).toThrowError(
+        expect.objectContaining({ code: 'invalid-body-config' }),
+      );
+      expect(
+        pw.setBodyMotion(47, {
+          position: [20, 30, 40],
+          rotation: [0, Math.SQRT1_2, 0, Math.SQRT1_2],
+          linearVelocity: [5, 0, 0],
+          angularVelocity: [0, 1, 0],
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'managed-joint-invalid' } });
+      expect(pw.getDerivedCollisionReceipt(47)).toBe(receipt);
+      expect(pw.getBodyMotion(47).unwrap()).toEqual(beforeMotion);
+      expect(pw.getCommittedColliderPrimitives(47).unwrap()).toMatchObject({
+        motionDiscontinuity: beforePrimitives.motionDiscontinuity,
+        positionM: beforePrimitives.positionM,
+        rotation: beforePrimitives.rotation,
+      });
+
+      const sourcePublication = pw.getDerivedPublication(47);
+      if (!sourcePublication) throw new Error('missing accepted source publication');
+      const retainedStatic = pw
+        .prepareDerivedBodyTypeCandidates([{ publication: sourcePublication, bodyType: 'static' }])
+        .unwrap();
+      pw.admitDerivedShapeCandidates(retainedStatic).unwrap();
+      pw.step(1 / 60);
+      const retainedPublication = pw.getDerivedPublication(47);
+      if (!retainedPublication) throw new Error('missing type-only publication');
+      expect(pw.getDerivedBodyType(47)).toBe('static');
+      expect(pw.getDerivedCollisionReceipt(47)?.sourceTransform?.sceneMatrix).toEqual(
+        nativeSceneMatrix,
+      );
+      expect(
+        pw.prepareDerivedBodyTypeCandidates([
+          { publication: retainedPublication, bodyType: 'dynamic' },
+        ]).ok,
+      ).toBe(false);
+
+      const ray = () => pw.raycast(vec3.create(4.375, 12, 7.5), vec3.create(0, -1, 0), 10);
+      expect(ray()?.entity).toBe(47);
+      expect(ray()?.point[1]).toBeCloseTo(7.15, 4);
+
+      const snapshot = pw.captureDerivedPhysicsState();
+      expect(snapshot.bodies[0]?.sourceTransform?.sceneMatrix).toEqual(nativeSceneMatrix);
+      // The matrix is the complete pose snapshot for this static source.
+      expect(snapshot.bodies[0]?.motion).toBeUndefined();
+
+      pw.removeEntity(47);
+      addBody(pw, 47, [0, 0, 0]);
+      pw.restoreDerivedPhysicsState(snapshot).unwrap();
+      pw.step(1 / 60);
+      expect(pw.getDerivedBodyType(47)).toBe('static');
+      expect(pw.getDerivedCollisionReceipt(47)?.sourceTransform?.sceneMatrix).toEqual(
+        nativeSceneMatrix,
+      );
+      expect(ray()?.entity).toBe(47);
+      expect(ray()?.point[1]).toBeCloseTo(7.15, 4);
+    } finally {
+      pw.dispose();
+    }
   });
 
   it('carries a successor world orientation through admission, rollback and snapshot recovery', async () => {

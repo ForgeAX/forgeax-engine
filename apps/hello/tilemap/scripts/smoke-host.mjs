@@ -16,7 +16,7 @@ export async function createTilemapSmoke(shaderManifestUrl, width = 256, height 
     configure(desc) {
       device = desc.device;
       format = desc.format;
-      device.addEventListener('uncapturederror', event => errors.push(event.error.message));
+      device.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
       target = device.createTexture({ size: [width, height], format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
         viewFormats: desc.viewFormats ?? [] });
@@ -25,10 +25,11 @@ export async function createTilemapSmoke(shaderManifestUrl, width = 256, height 
     unconfigure() {},
   };
   const initialized = await constructRuntimeRendererHost(
-    { width, height, getContext: kind => kind === 'webgpu' ? context : null }, {}, { shaderManifestUrl });
+    { width, height, getContext: (kind) => ( kind === 'webgpu' ? context : null) }, {}, { shaderManifestUrl },
+  );
   if (!initialized.ok) throw initialized.error;
   const { renderer, assets } = initialized.value;
-  renderer.subscribe(event => { if (event.kind === 'error') errors.push(event.error); });
+  renderer.subscribe((event) => { if (event.kind === 'error') errors.push(event.error); });
   const world = new World({ assets });
   registerPropagateTransforms(world);
   const attached = renderer.attach(world);
@@ -41,7 +42,7 @@ export async function createTilemapSmoke(shaderManifestUrl, width = 256, height 
       for (let i = 0; i < count; i++) {
         world.update(1 / 60).unwrap();
         await completeReadyFrame(() => {
-          const receipt = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
+          const receipt = renderer.draw({ source: lease });
           if (!receipt.ok) throw receipt.error;
           return receipt.value;
         });
@@ -50,7 +51,7 @@ export async function createTilemapSmoke(shaderManifestUrl, width = 256, height 
     },
     async sample(points) {
       assert(device && target);
-      const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
+      const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
       const buffer = device.createBuffer({ size: height * bytesPerRow, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
       const encoder = device.createCommandEncoder();
       encoder.copyTextureToBuffer({ texture: target }, { buffer, bytesPerRow }, [width, height]);

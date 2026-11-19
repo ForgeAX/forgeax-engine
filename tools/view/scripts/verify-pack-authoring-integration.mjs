@@ -8,6 +8,7 @@ import { runUnifiedCli } from '@forgeax/engine/devkit';
 import { parseImage } from '@forgeax/engine/image/parse-image';
 import { connectViewWorkspace } from '../dist/modules/workspace/resident.mjs';
 import { writeProofGameAssets } from './fixtures/plugin-assets.mjs';
+import { projectDocument } from './project-document.mjs';
 
 process.env.FORGEAX_ENGINE_RHI_DEBUG = '1';
 const checkout = resolve(import.meta.dirname, '../../..');
@@ -44,7 +45,7 @@ const command = async (...args) => {
 };
 await command('project','engine','use-local',checkout);
 await command('backend','start','--host-pack',join(view,'host.pack.json'));
-const start = await command('view','start','--input',JSON.stringify({ root, frontendConfig:{layout:{responsiveAutoTuck:false}} }));
+const start = await command('view','start','--input',JSON.stringify({ project:root, frontendConfig:{layout:{responsiveAutoTuck:false}} }));
 await writeFile(join(output,'entry.json'),JSON.stringify({url:start.url,root},null,2));
 console.log('View URL',start.url);
 const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap',start.url)).then(r=>r.json());
@@ -58,6 +59,7 @@ const browser = await chromium.launch({ ...launch, headless:true,
 const page = await browser.newPage({viewport:{width:1680,height:1200}});
 const errors=[];
 let failureDraft;
+let project;
 const staleInspections=[];
 const readCounts = new Map();
 page.on('websocket', socket => socket.on('framesent', frame => {
@@ -73,7 +75,8 @@ await page.addInitScript(()=>{try{localStorage.setItem('forgeax.view.locale','en
 try {
  page.on('websocket', socket => socket.on('framereceived', frame => { const value=String(frame.payload); try { const parsed=JSON.parse(value); if(parsed.ok===false) { console.error('WIRE FAILURE',JSON.stringify(parsed.error)); if(JSON.stringify(parsed.error).includes('view-workspace-reference-stale')) staleInspections.push(parsed.error); } } catch {} }));
  await page.goto(start.url);
- await page.waitForURL(url=>url.searchParams.has('forgeaxWorkspaceTarget'),{timeout:120000});
+ project=await projectDocument(page,120000);
+ assert.equal(page.url(),new URL(start.url).href);
  await page.waitForFunction(()=>{
    const failure = document.querySelector('#forgeax-fatal-details')?.textContent;
    if (failure) throw new Error(failure);
@@ -363,9 +366,10 @@ try {
   draft,workspace:await client.getState().catch(cause=>({error:String(cause)})),
   dom:await page.locator('body').textContent().catch(cause=>String(cause)),
  },null,2));
- const observed=await page.evaluate(()=>JSON.parse(JSON.stringify({renderer:globalThis.__forgeaxGameInspection?.renderer(),globals:Object.keys(globalThis.__forgeax??{})},(_key,value)=>value instanceof Error?{...value,message:value.message}:value))).catch(cause=>({error:String(cause)}));
+ const document=project&&!project.isDetached()?project:page;
+ const observed=await document.evaluate(()=>JSON.parse(JSON.stringify({renderer:globalThis.__forgeaxGameInspection?.renderer(),globals:Object.keys(globalThis.__forgeax??{})},(_key,value)=>value instanceof Error?{...value,message:value.message}:value))).catch(cause=>({error:String(cause)}));
  await writeFile(join(output,'render-failure.json'),JSON.stringify(observed,null,2));
- const tape=await page.evaluate(async()=>{
+ const tape=await document.evaluate(async()=>{
   if(!globalThis.__forgeax?.captureFrame)return {ok:false,error:{code:'capture-unavailable'}};
   let timer;
   const result=await Promise.race([globalThis.__forgeax.captureFrame({snapshotTimeoutMs:5000}),new Promise(resolve=>{timer=setTimeout(()=>resolve({ok:false,error:{code:'capture-timeout'}}),10000);})]).finally(()=>clearTimeout(timer));
@@ -375,7 +379,7 @@ try {
  }).catch(cause=>({ok:false,error:String(cause)}));
  if(tape.ok){
   const chunks=[];
-  for(;;){const part=await page.evaluate(()=>{const result=globalThis.__packFailureTape.next();if(result.done)return null;let binary='';for(const byte of result.value.bytes)binary+=String.fromCharCode(byte);return btoa(binary);});if(part===null)break;chunks.push(Buffer.from(part,'base64'));}
+  for(;;){const part=await document.evaluate(()=>{const result=globalThis.__packFailureTape.next();if(result.done)return null;let binary='';for(const byte of result.value.bytes)binary+=String.fromCharCode(byte);return btoa(binary);});if(part===null)break;chunks.push(Buffer.from(part,'base64'));}
   await writeFile(join(output,'failing-frame.rhitape'),Buffer.concat(chunks));
   const {decodeTape,buildFrameModel}=await import('@forgeax/engine/rhi-debug');
   const model=buildFrameModel(decodeTape(Buffer.concat(chunks)).unwrap());

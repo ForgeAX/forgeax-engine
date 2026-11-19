@@ -54,7 +54,10 @@ describe('SceneAsset preview artifact retention', () => {
     fixtures.runtime.openProject.mockResolvedValue({
       project: { id: 'fixture' },
       handle: { id: 'handle' },
-      target: { url: 'http://127.0.0.1:4173/' },
+      status: {
+        phase: 'running',
+        document: { url: 'http://127.0.0.1:4173/' },
+      },
     });
     fixtures.runtime.listAssets.mockResolvedValue([{ kind: 'scene', guid: fixtures.guid }]);
     fixtures.runtime.openPreview.mockResolvedValue({

@@ -30,7 +30,6 @@ function mesh(generation = 1, segments = 2): MeshAsset {
 
 function snapshot(meshGeneration = 1, materialGeneration = 1) {
   return createPointsLinesSnapshot({
-    worldId: 0,
     entityKey: 4,
     component: 'Lines',
     meshHandle: 9,

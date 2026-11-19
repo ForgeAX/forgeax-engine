@@ -98,6 +98,7 @@ test('the VFX pack references the material and package the TypeScript pack deriv
 const PARTICLE_DRIVER = `
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { World } from '@forgeax/engine/ecs';
+import { copyMeshAttribute } from '@forgeax/engine/geometry';
 import { Materials, MeshFilter } from '@forgeax/engine/render';
 import { installParticles } from './particles.mjs';
 import { fire, smoke } from './particles-fire-smoke.mjs';
@@ -128,12 +129,12 @@ export function run() {
     const stop = emit(preset, [0, 0, 0]);
     report[name] = { before: undefined, after: undefined, alpha: 0 };
     const read = () => assets.read(world.get(entity, MeshFilter).unwrap().assetHandle).unwrap();
-    report[name].before = Array.from(read().attributes.position.slice(0, 3));
+    report[name].before = Array.from(copyMeshAttribute(read(), 'position').slice(0, 3));
     for (let frame = 0; frame < 10; frame++) world.update(1 / 60).unwrap();
     const mesh = read();
-    report[name].after = Array.from(mesh.attributes.position.slice(0, 3));
+    report[name].after = Array.from(copyMeshAttribute(mesh, 'position').slice(0, 3));
     // Streaks (rain) are Lines over positions only; sprites also carry colour and size.
-    const color = mesh.attributes.color ?? new Float32Array([0, 0, 0, 1]);
+    const color = copyMeshAttribute(mesh, 'color') ?? new Float32Array([0, 0, 0, 1]);
     report[name].alpha = Math.max(...color.filter((_, i) => i % 4 === 3));
     report[name].topology = mesh.submeshes[0].topology;
     stop();

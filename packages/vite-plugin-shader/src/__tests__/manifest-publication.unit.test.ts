@@ -3,7 +3,11 @@ import {
   readShaderManifestPublication,
 } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
-import { mergeShaderManifestPublications, publishShaderManifest } from '../manifest-publication.js';
+import {
+  createShaderManifestPublisher,
+  mergeShaderManifestPublications,
+  publishShaderManifest,
+} from '../manifest-publication.js';
 
 function withPublishedSourceDigests(
   manifest: {
@@ -38,6 +42,37 @@ function withPublishedSourceDigests(
 }
 
 describe('shared shader source publication', () => {
+  it('publishes incrementally admitted rows with exactly the ordinary wire bytes', () => {
+    const common = 'fn common() {}\n\n';
+    const reflection = { boundGlobals: [{ group: 0, binding: 0, kind: 'uniform-buffer' }] };
+    const reads = [{ name: 'main', stage: 'fragment', bindings: [] }];
+    const entries = [
+      { hash: 'engine', wgsl: `${common}fn main() {}`, reflection, entryPoints: reads },
+    ];
+    const variants = [false, true].map((enabled) => ({
+      definesKey: `FEATURE=${enabled}`,
+      defines: { FEATURE: enabled },
+      composedWgsl: `${common}fn feature_${enabled}() {}`,
+      reflection,
+      entryPoints: reads,
+    }));
+    const material = {
+      identifier: 'material',
+      composedWgsl: entries[0]?.wgsl ?? '',
+      reflection,
+      entryPoints: reads,
+      variants,
+    };
+    const ordinary = publishShaderManifest(entries, [material]);
+    const publisher = createShaderManifestPublisher();
+    const programs = entries.map((entry) => publisher.entry(entry, 'engine'));
+    const { variants: _variants, ...header } = material;
+    const root = publisher.variant(header, 'material');
+    const admitted = variants.map((variant) => publisher.variant(variant, variant.definesKey));
+    const incremental = publisher.finish(programs, [{ ...root, variants: admitted }]);
+    expect(JSON.stringify(incremental)).toBe(JSON.stringify(ordinary));
+    expect(incremental.fragments.filter((fragment) => fragment === common)).toHaveLength(1);
+  });
   it.each([
     'source',
     'merge',
@@ -81,7 +116,7 @@ describe('shared shader source publication', () => {
     } finally {
       stringify.mockRestore();
     }
-    expect(counts).toEqual([1, 1, 1]);
+    expect(counts).toEqual([0, 1, 1]);
     expect(JSON.stringify(actual)).toBe(expectedBytes);
 
     // A new publication owns its own interning. Changed caller facts are
@@ -415,7 +450,7 @@ describe('shared shader source publication', () => {
       ],
     };
     const published = publishShaderManifest(original.entries, original.materialShaders);
-    expect(published.schemaVersion).toBe('5.0.0');
+    expect(published.schemaVersion).toBe('6.0.0');
     expect(published.entries[0]).toMatchObject({
       hash: 'primary',
       sourceDigest: published.materialShaders[0]?.sourceDigest,
@@ -429,4 +464,116 @@ describe('shared shader source publication', () => {
     );
     expect(JSON.stringify(published).length).toBeLessThan(JSON.stringify(original).length);
   });
+});
+
+it('publishes shared reflection bindings and entry reads once across distinct variants and merges', async () => {
+  const binding = {
+    group: 0,
+    binding: 0,
+    addressSpace: 'handle',
+    resourceKind: 'sampler',
+    visibility: 2,
+    samplerType: 'filtering',
+    resourceAccess: 'read-only',
+    name: 'surfaceSampler',
+  };
+  const reads = [{ name: 'main', stage: 'fragment', bindings: [{ group: 0, binding: 0 }] }];
+  const reflection = (uvSetCount: number) => ({
+    schemaVersion: 'shader-reflection/3',
+    boundGlobals: [structuredClone(binding)],
+    uvSetCount,
+    entryPoints: structuredClone(reads),
+  });
+  const entry = (hash: string, uvSetCount: number) => ({
+    hash,
+    glsl: '',
+    wgsl: `fn ${hash}() {}`,
+    entryPoints: structuredClone(reads),
+    reflection: reflection(uvSetCount),
+  });
+  const entries = [entry('first', 0), entry('second', 1)];
+  const full = publishShaderManifest(entries, []);
+  expect(full.schemaVersion).toBe('6.0.0');
+  expect(Reflect.get(full, 'reflectionBindings')).toEqual([binding]);
+  expect(full.entryPoints).toEqual([reads]);
+  expect(full.reflections).toEqual(
+    [0, 1].map((uvSetCount) => ({
+      schemaVersion: 'shader-reflection/3',
+      uvSetCount,
+      bindingIndices: [0],
+      entryPointsIndex: 0,
+    })),
+  );
+  const decoded = (await readShaderManifestPublication(full)) as { entries: typeof entries };
+  expect(decoded).toEqual(withPublishedSourceDigests({ entries, materialShaders: [] }, full));
+  expect(decoded.entries[0]?.reflection.boundGlobals[0]).toBe(
+    decoded.entries[1]?.reflection.boundGlobals[0],
+  );
+  expect(decoded.entries[0]?.reflection.entryPoints).toBe(decoded.entries[0]?.entryPoints);
+  const merged = mergeShaderManifestPublications(
+    publishShaderManifest(entries.slice(0, 1), []),
+    publishShaderManifest(entries.slice(1), []),
+    new Set(['first']),
+  );
+  expect(JSON.stringify(merged)).toBe(JSON.stringify(full));
+  for (const malformed of [
+    { ...full, reflectionBindings: [...Reflect.get(full, 'reflectionBindings'), binding] },
+    {
+      ...full,
+      reflections: [
+        { ...(full.reflections[0] as Record<string, unknown>), bindingIndices: [-1] },
+        full.reflections[1],
+      ],
+    },
+    {
+      ...full,
+      reflections: [
+        { ...(full.reflections[0] as Record<string, unknown>), entryPointsIndex: 100 },
+        full.reflections[1],
+      ],
+    },
+    {
+      ...full,
+      reflections: [
+        { ...(full.reflections[0] as Record<string, unknown>), boundGlobals: [] },
+        full.reflections[1],
+      ],
+    },
+  ])
+    await expect(readShaderManifestPublication(malformed)).rejects.toThrow();
+});
+
+it('keeps reflection-only reads, optional absence and borrowed ownership through v6 transport', async () => {
+  const reads = [{ name: 'main', stage: 'fragment', bindings: [] }];
+  const reflection = { schemaVersion: 'shader-reflection/3', uvSetCount: 0, boundGlobals: [] };
+  const entries = [
+    { wgsl: 'fn first() {}', reflection },
+    { wgsl: 'fn second() {}', reflection: { ...reflection, entryPoints: [] } },
+    { wgsl: 'fn third() {}', reflection: { ...reflection, entryPoints: reads } },
+  ];
+  const publication = publishShaderManifest(entries, []);
+  const pending = readShaderManifestPublication(publication);
+  const firstRead = reads[0];
+  if (firstRead === undefined) throw new Error('Missing entry read');
+  firstRead.name = 'changed';
+  const decoded = (await pending) as { entries: { reflection: Record<string, unknown> }[] };
+  expect(Object.hasOwn(decoded.entries[0]?.reflection ?? {}, 'entryPoints')).toBe(false);
+  expect(decoded.entries[1]?.reflection.entryPoints).toEqual([]);
+  expect(decoded.entries[2]?.reflection.entryPoints).toEqual([
+    { name: 'main', stage: 'fragment', bindings: [] },
+  ]);
+  const owned = expandShaderManifestPublication(JSON.parse(JSON.stringify(publication)), {
+    deferReflections: true,
+  }).manifest as typeof decoded;
+  expect(owned.entries[2]?.reflection.entryPoints).toEqual([
+    { name: 'changed', stage: 'fragment', bindings: [] },
+  ]);
+  const invalid = JSON.parse(JSON.stringify(publication));
+  invalid.reflections[0].uvSetCount = -1;
+  await expect(readShaderManifestPublication(invalid)).rejects.toThrow(
+    'Invalid shader manifest publication',
+  );
+  const deferred = expandShaderManifestPublication(invalid, { deferReflections: true })
+    .manifest as typeof decoded;
+  expect(() => deferred.entries[0]?.reflection).toThrow('Invalid shader manifest publication');
 });

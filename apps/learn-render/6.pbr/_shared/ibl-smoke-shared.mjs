@@ -105,11 +105,7 @@ export async function runIblSmoke(opts) {
   const world = new World({ assets: assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
-  const frameRequest = {
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  };
+  const frameRequest = { source: worldAttachment1.value };
   console.log(`[${demoId}] loadByGuid<EquirectAsset> OK (format=${equirectPod.format} ${equirectPod.width}x${equirectPod.height})`);
   await buildIblScene(world, demoKind, demoId, equirect);
 

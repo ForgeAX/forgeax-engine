@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { componentId, defineComponent } from '../component';
+import type { EntityHandle } from '../entity-handle';
 import { ChangeEpochExhaustedError } from '../errors';
 import { getDerivedWriter } from '../internal';
 import { createStateProjection } from '../projection/state-projection';
@@ -8,6 +9,7 @@ import {
   endDerivedRangeAllocationTrace,
 } from '../query/derived-range-writer';
 import type { Query } from '../query/query';
+import { readComponentChanged } from '../storage/change-detection';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
@@ -32,7 +34,51 @@ function fixture(): {
 }
 
 describe('package-internal derived range writer contract', () => {
-  it('rejects nested writers on the same World without overwriting deferred runs', () => {
+  it('locates binding zero and new tables across migration without changing failed cursors', () => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    let entity: EntityHandle | undefined;
+    for (const row of query) {
+      entity = row.entity;
+      break;
+    }
+    if (entity === undefined) throw new Error('missing fixture entity');
+    const cursor = { bindingIndex: -1, row: -1 };
+    expect(writer.locateEntity(entity, cursor)).toBe(true);
+    expect(cursor.bindingIndex).toBe(0);
+    const first = writer.bindings[0];
+    if (first === undefined) throw new Error('missing first binding');
+    expect(writer.bindingOfTable(first.tableId)).toBe(0);
+
+    const Extra = defineComponent('DerivedLocatedExtra', {});
+    world.addComponent(entity, { component: Extra, data: {} }).unwrap();
+    expect(writer.locateEntity(entity, cursor)).toBe(true);
+    expect(cursor.bindingIndex).toBe(1);
+    expect(writer.bindings[0]).toBe(first);
+    const second = writer.bindings[1];
+    if (second === undefined) throw new Error('missing new table binding');
+    expect(writer.bindingOfTable(second.tableId)).toBe(1);
+
+    const unmatched = world.spawn().unwrap();
+    const retained = { ...cursor };
+    expect(writer.locateEntity(unmatched, cursor)).toBe(false);
+    expect(cursor).toEqual(retained);
+    world.removeComponent(entity, Extra).unwrap();
+    expect(writer.locateEntity(entity, cursor)).toBe(true);
+    expect(cursor.bindingIndex).toBe(0);
+
+    world.despawn(entity).unwrap();
+    const replacement = world
+      .spawn({ component: Input, data: {} }, { component: Value, data: {} })
+      .unwrap();
+    const beforeStale = { ...cursor };
+    expect(writer.locateEntity(entity, cursor)).toBe(false);
+    expect(cursor).toEqual(beforeStale);
+    expect(writer.locateEntity(replacement, cursor)).toBe(true);
+    expect(cursor.bindingIndex).toBe(0);
+  });
+
+  it('rejects nested writers on the same World without overwriting pending row publication', () => {
     const { world, query } = fixture();
     const writer = getDerivedWriter(query, Value).unwrap();
     const other = getDerivedWriter(
@@ -42,33 +88,26 @@ describe('package-internal derived range writer contract', () => {
     const projection = createStateProjection(world, [Value]);
     projection.read().accept();
     let nestedCalled = false;
-    const result = writer.probeAndCommitRange(
-      0,
-      0,
-      0,
-      4,
-      (_binding, row) => row === 0 || row === 2,
-      (binding, row) => {
-        binding.write.value[row] = row + 10;
-        if (row === 2) {
-          for (const nested of [writer, other]) {
-            const rejected = nested.writeRange(
-              0,
-              0,
-              3,
-              1,
-              () => {
-                nestedCalled = true;
-              },
-              undefined,
-            );
-            expect(rejected.ok).toBe(false);
-            if (!rejected.ok) expect(rejected.error.code).toBe('derived-write-active');
-          }
-        }
-      },
-      undefined,
-    );
+    const binding = writer.bindings[0];
+    if (!binding) throw new Error('expected a fixture binding');
+    const result = writer.writeRows([0, 0, 0, 2], () => {
+      binding.write.value[0] = 10;
+      for (const nested of [writer, other]) {
+        const rejected = nested.writeRange(
+          0,
+          0,
+          3,
+          1,
+          () => {
+            nestedCalled = true;
+          },
+          undefined,
+        );
+        expect(rejected.ok).toBe(false);
+        if (!rejected.ok) expect(rejected.error.code).toBe('derived-write-active');
+      }
+      binding.write.value[2] = 12;
+    });
     expect(result.ok).toBe(true);
     expect(nestedCalled).toBe(false);
     expect(world.execution.health).toBe('healthy');
@@ -248,8 +287,14 @@ describe('package-internal derived range writer contract', () => {
     expect(candidate.scannedRows).toBe(2);
     expect(candidate.checkedBlocks).toBe(0);
 
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
+    const changedAt = (slot: number) =>
+      readComponentChanged(
+        world[worldInternal].graph,
+        world[worldInternal].records,
+        slot,
+        componentId(Value),
+      ) ?? 0;
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
     expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, beforeEpoch + 1, beforeEpoch + 1, 4]));
   });
 
@@ -274,174 +319,97 @@ describe('package-internal derived range writer contract', () => {
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
   });
 
-  it('probes each row once and commits only the exact changed runs', () => {
+  it('publishes contiguous and isolated row pairs with one epoch', () => {
     const { world, query } = fixture();
     const writer = getDerivedWriter(query, Value).unwrap();
     const beforeEpoch = world[worldInternal].getMutationEpoch();
-    let probes = 0;
-    let commits = 0;
-    const result = writer.probeAndCommitRange(
-      0,
-      0,
-      0,
-      4,
-      (_binding, row) => {
-        probes += 1;
-        return row === 1 || row === 3;
-      },
-      (binding, row) => {
-        commits += 1;
-        binding.write.value[row] = row + 10;
-      },
-      undefined,
-    );
-    expect(result).toEqual({ ok: true, value: undefined });
-    expect(probes).toBe(4);
-    expect(commits).toBe(2);
+    const binding = writer.bindings[0];
+    if (!binding) throw new Error('expected a fixture binding');
+    const result = writer.writeRows([0, 0, 0, 1, 0, 3], () => {
+      for (const row of [0, 1, 3]) binding.write.value[row] = row + 10;
+    });
+    expect(result).toEqual({ ok: true, value: 2 });
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch + 1);
     const values: number[] = [];
     for (const row of world.query({ read: [Value] }).unwrap()) values.push(row.get(Value).value);
-    expect(values).toEqual([0, 11, 2, 13]);
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
-    expect(epochs?.[1]).toBe(beforeEpoch + 1);
-    expect(epochs?.[3]).toBe(beforeEpoch + 1);
-  });
-
-  it('poisons the World when a changed-row commit fails after partial output', () => {
-    const { world, query } = fixture();
-    const writer = getDerivedWriter(query, Value).unwrap();
-    const failed = writer.probeAndCommitRange(
-      0,
-      0,
-      0,
-      2,
-      () => true,
-      (binding, row) => {
-        binding.write.value[row] = 31;
-        if (row === 1) throw new Error('partial row commit failure');
-      },
-      undefined,
+    expect(values).toEqual([10, 11, 2, 13]);
+    const changedAt = (slot: number) =>
+      readComponentChanged(
+        world[worldInternal].graph,
+        world[worldInternal].records,
+        slot,
+        componentId(Value),
+      ) ?? 0;
+    const epochs = Float64Array.from({ length: 4 }, (_, slot) => changedAt(slot));
+    expect(epochs).toEqual(
+      new Float64Array([beforeEpoch + 1, beforeEpoch + 1, 3, beforeEpoch + 1]),
     );
-    expect(failed.ok).toBe(false);
-    expect(world.execution.health).toBe('poisoned');
-    expect(
-      writer.probeAndCommitRange(
-        0,
-        0,
-        0,
-        1,
-        () => false,
-        () => undefined,
-        undefined,
-      ).ok,
-    ).toBe(false);
   });
 
-  it('keeps the World healthy when the initial epoch reservation is exhausted', () => {
+  it('leaves the epoch untouched when the producer has no row pairs', () => {
     const { world, query } = fixture();
     const writer = getDerivedWriter(query, Value).unwrap();
-    const rows = query[Symbol.iterator]();
-    const first = rows.next();
-    const firstEntity = first.done ? undefined : first.value.entity;
-    rows.return?.();
-    if (firstEntity === undefined) throw new Error('expected a fixture entity');
-    const beforeEpoch = world[worldInternal].getMutationEpoch();
-    const originalNextEpoch = world[worldInternal].nextMutationEpoch;
-    Object.defineProperty(world[worldInternal], 'nextMutationEpoch', {
-      configurable: true,
-      value: () => {
-        throw new ChangeEpochExhaustedError(Number.MAX_SAFE_INTEGER);
-      },
+    const owner = world[worldInternal];
+    const beforeEpoch = owner.getMutationEpoch();
+    expect(
+      writer
+        .writeRows([], () => {
+          expect(owner.getMutationEpoch()).toBe(beforeEpoch);
+        })
+        .unwrap(),
+    ).toBe(0);
+    expect(owner.getMutationEpoch()).toBe(beforeEpoch);
+  });
+
+  it('publishes a later binding without republishing the earlier row pairs', () => {
+    const { world, query } = fixture();
+    const Extra = defineComponent('DerivedRowPairsExtra', {});
+    for (let row = 0; row < 4; row++)
+      world
+        .spawn(
+          { component: Input, data: {} },
+          { component: Value, data: {} },
+          { component: Extra, data: {} },
+        )
+        .unwrap();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const projection = createStateProjection(world, [Value]);
+    projection.read().accept();
+    const [firstBinding, secondBinding] = writer.bindings;
+    if (!firstBinding || !secondBinding) throw new Error('expected two bindings');
+    writer
+      .writeRows([0, 0, 0, 2], () => {
+        firstBinding.write.value[0] = 10;
+        firstBinding.write.value[2] = 10;
+      })
+      .unwrap();
+    const first = projection.read();
+    expect(first.indices).toEqual([0, 2]);
+    first.accept();
+    writer
+      .writeRows([1, 2], () => {
+        secondBinding.write.value[2] = 10;
+      })
+      .unwrap();
+    expect(projection.read().indices).toEqual([6]);
+  });
+
+  it('poisons without publishing when a row producer fails after touching output', () => {
+    const { world, query } = fixture();
+    const writer = getDerivedWriter(query, Value).unwrap();
+    const owner = world[worldInternal];
+    const beforeEpoch = owner.getMutationEpoch();
+    const binding = writer.bindings[0];
+    if (!binding) throw new Error('expected a fixture binding');
+    const failed = writer.writeRows([0, 0], () => {
+      binding.write.value[0] = 31;
+      throw new Error('partial row write');
     });
-    try {
-      let commits = 0;
-      const failed = writer.probeAndCommitRange(
-        0,
-        0,
-        0,
-        2,
-        (_binding, row) => row === 0,
-        (binding, row) => {
-          commits += 1;
-          binding.write.value[row] = 10;
-        },
-        undefined,
-      );
-      expect(failed.ok).toBe(false);
-      if (!failed.ok) expect(failed.error.code).toBe('change-epoch-exhausted');
-      expect(commits).toBe(0);
-      expect(world.execution.health).toBe('healthy');
-      expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
-      expect(world.get(firstEntity, Value).unwrap().value).toBe(0);
-      const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-      const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
-      expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
-    } finally {
-      Object.defineProperty(world[worldInternal], 'nextMutationEpoch', {
-        configurable: true,
-        value: originalNextEpoch,
-      });
-    }
-
-    const retried = writer.probeAndCommitRange(
-      0,
-      0,
-      0,
-      2,
-      () => true,
-      (binding, row) => {
-        binding.write.value[row] = 10;
-      },
-      undefined,
-    );
-    expect(retried.ok).toBe(true);
-    expect(world.execution.health).toBe('healthy');
-    expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch + 1);
-    expect(world.get(firstEntity, Value).unwrap().value).toBe(10);
-  });
-
-  it('poisons and restores the epoch when a later sparse probe fails', () => {
-    const { world, query } = fixture();
-    const writer = getDerivedWriter(query, Value).unwrap();
-    const rows = query[Symbol.iterator]();
-    const first = rows.next();
-    const firstEntity = first.done ? undefined : first.value.entity;
-    rows.return?.();
-    if (firstEntity === undefined) throw new Error('expected a fixture entity');
-    const beforeEpoch = world[worldInternal].getMutationEpoch();
-    const failed = writer.probeAndCommitRange(
-      0,
-      0,
-      0,
-      3,
-      (_binding, row) => {
-        if (row === 2) throw new Error('later sparse probe failure');
-        return row === 0;
-      },
-      (binding, row) => {
-        binding.write.value[row] = row + 10;
-      },
-      undefined,
-    );
     expect(failed.ok).toBe(false);
     expect(world.execution.health).toBe('poisoned');
-    expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
-    expect(world.get(firstEntity, Value).unwrap().value).toBe(10);
-    const index = world[worldInternal].getComponentChangeIndex(componentId(Value));
-    const epochs = Float64Array.from({ length: 4 }, (_, slot) => index?.get(slot) ?? 0);
-    expect(epochs?.slice(0, 4)).toEqual(new Float64Array([1, 2, 3, 4]));
-    expect(
-      writer.probeAndCommitRange(
-        0,
-        0,
-        0,
-        1,
-        () => false,
-        () => undefined,
-        undefined,
-      ).ok,
-    ).toBe(false);
+    expect(owner.getMutationEpoch()).toBe(beforeEpoch);
+    expect(readComponentChanged(owner.graph, owner.records, 0, componentId(Value))).toBe(1);
+    expect(writer.writeRows([], () => {}).ok).toBe(false);
   });
 
   it('rejects an out-of-bounds range before the kernel and permits same-cursor retry', () => {
@@ -502,11 +470,27 @@ describe('package-internal derived range writer contract', () => {
       undefined,
     );
     expect(exhausted.ok).toBe(false);
+    if (!exhausted.ok) expect(exhausted.error.code).toBe('change-epoch-exhausted');
+    expect(world.execution.health).toBe('healthy');
     expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch);
     Object.defineProperty(world[worldInternal], 'nextMutationEpoch', {
       configurable: true,
       value: originalNextEpoch,
     });
+
+    expect(
+      writer.writeRange(
+        0,
+        0,
+        1,
+        1,
+        (binding) => {
+          binding.write.value[1] = 11;
+        },
+        undefined,
+      ).ok,
+    ).toBe(true);
+    expect(world[worldInternal].getMutationEpoch()).toBe(beforeEpoch + 1);
 
     const partial = writer.writeRange(
       0,
@@ -521,6 +505,9 @@ describe('package-internal derived range writer contract', () => {
     );
     expect(partial.ok).toBe(false);
     expect(world.execution.health).toBe('poisoned');
+    const owner = world[worldInternal];
+    expect(owner.getMutationEpoch()).toBe(beforeEpoch + 1);
+    expect(readComponentChanged(owner.graph, owner.records, 0, componentId(Value))).toBe(1);
     expect(writer.writeRange(0, 0, 0, 1, () => undefined, undefined).ok).toBe(false);
   });
 });

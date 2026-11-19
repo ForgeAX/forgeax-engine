@@ -7,7 +7,7 @@ import {
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { createMaterialPackCooker } from '../pack-cooker.js';
+import { captureMaterialSourceSnapshot, createMaterialPackCooker } from '../pack-cooker.js';
 import { projectMaterial } from '../project.js';
 
 const parameters: readonly MaterialParameter[] = standardSurfaceParameters([
@@ -100,31 +100,57 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       expect(source).not.toContain(`${parameter.name}Coordinates`);
     }
   }, 30_000);
-  // Dedicated anisotropy, specular-color and foliage cases below cover these
-  // maps; the physical-root case also checks the exact clearcoat bindings.
-  // Keep the other 19 independent declarations and all-textures-absent control.
-  it.each(
-    STANDARD_MATERIAL_PARAM_SCHEMA.filter(
-      (parameter) =>
-        parameter.type === 'texture2d' &&
-        ![
-          'anisotropyTexture',
-          'specularColorTexture',
-          'diffuseTransmissionTexture',
-          'clearcoatTexture',
-          'clearcoatNormalTexture',
-        ].includes(parameter.name),
-    ),
-  )('retains only the declared $name sampling path', async ({ name }) => {
+  // Separate competing normal/bump and packed/separate metallic routes. Each
+  // map is checked both present and absent without cooking every map alone.
+  it.each([
+    {
+      name: 'packed base and alpha',
+      textures: [
+        'baseColorTexture',
+        'metallicRoughnessTexture',
+        'normalTexture',
+        'alphaTexture',
+        'occlusionTexture',
+      ],
+    },
+    {
+      name: 'separate base and height',
+      textures: [
+        'bumpTexture',
+        'metallicTexture',
+        'roughnessTexture',
+        'emissiveTexture',
+        'displacementTexture',
+      ],
+    },
+    {
+      name: 'transmission and thickness',
+      textures: [
+        'transmissionTexture',
+        'thicknessTexture',
+        'sheenColorTexture',
+        'iridescenceThicknessTexture',
+        'diffuseTransmissionColorTexture',
+      ],
+    },
+    {
+      name: 'physical lobes',
+      textures: [
+        'clearcoatRoughnessTexture',
+        'sheenRoughnessTexture',
+        'iridescenceTexture',
+        'specularTexture',
+      ],
+    },
+  ])('retains only the declared $name sampling paths', async ({ name, textures }) => {
     const names = new Set(
       STANDARD_MATERIAL_PARAM_SCHEMA.filter((parameter) => parameter.type !== 'texture2d').map(
         (parameter) => parameter.name,
       ),
     );
-    names.add(name);
-    const guid = `standard-only-${name.toLowerCase()}`;
+    for (const texture of textures) names.add(texture);
     const cooked = await createMaterialPackCooker().cook({
-      guid,
+      guid: `standard-textures-${name.replaceAll(' ', '-')}`,
       source: {
         kind: 'material',
         staticSwitches: {
@@ -147,7 +173,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       (parameter) => parameter.type === 'texture2d',
     )) {
       const pattern = new RegExp(`\\b${parameter.name}\\b`);
-      if (parameter.name === name) expect(source).toMatch(pattern);
+      if (textures.includes(parameter.name)) expect(source).toMatch(pattern);
       else expect(source).not.toMatch(pattern);
     }
   }, 30_000);
@@ -217,7 +243,10 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       { name: 'anisotropyStrength', type: 'f32' },
       { name: 'anisotropyRotation', type: 'f32' },
     ];
-    const cooker = createMaterialPackCooker();
+    // Both publications own one immutable source set inside the original cold clock.
+    const cooker = createMaterialPackCooker([], {
+      sourceSnapshot: await captureMaterialSourceSnapshot([]),
+    });
     const cook = async (parameters: readonly MaterialParameter[]) =>
       cooker.cook({
         guid: `anisotropy-${parameters.some((parameter) => parameter.name === 'anisotropyTexture') ? 'map' : 'scalar'}`,
@@ -237,8 +266,11 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         },
       });
 
-    const scalar = await cook(baseParameters);
-    const mapped = await cook([...baseParameters, { name: 'anisotropyTexture', type: 'texture' }]);
+    // Independent contracts use the existing process-wide bounded material pool.
+    const [scalar, mapped] = await Promise.all([
+      cook(baseParameters),
+      cook([...baseParameters, { name: 'anisotropyTexture', type: 'texture' }]),
+    ]);
     const scalarArtifact = Object.values(scalar.artifacts)[0];
     const mappedArtifact = Object.values(mapped.artifacts)[0];
     expect(scalarArtifact).toBeDefined();

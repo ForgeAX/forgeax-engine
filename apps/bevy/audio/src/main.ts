@@ -1,9 +1,12 @@
+import { AUDIO_ENGINE_RESOURCE_KEY } from '@forgeax/engine-audio';
+import { InputFrameStartScan } from "@forgeax/engine-input";
+import { defineSystem } from "@forgeax/engine-ecs";
 import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `audio` example.
 
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
-import { type AudioState, AudioSource, type AudioBackend, audioPlugin } from '@forgeax/engine-audio';
+import { type AudioState, AudioSource, audioPlugin } from '@forgeax/engine-audio';
 import { webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -32,7 +35,7 @@ const scene = buildAudioWorld(world, canvas.width / Math.max(canvas.height, 1));
 const assets = app.assets;
 if (assets === undefined) throw new Error('bevy-audio: assets unavailable');
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-const audio = world.getResource<AudioBackend>('AudioEngine');
+const audio = world.getResource(AUDIO_ENGINE_RESOURCE_KEY);
 if (!audio) throw new Error('bevy-audio: AudioEngine resource missing');
 
 let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
@@ -48,15 +51,16 @@ if (clipResult.ok) {
   console.error('[bevy-audio] loadByGuid failed:', clipResult.error.code, clipResult.error.hint);
 }
 
-world.addSystem(Update, {
+const systemToken1 = defineSystem({
   name: 'audio-status-overlay',
-  after: ['input-frame-start-scan'],
+  after: [InputFrameStartScan],
   queries: [],
   fn: () => {
     const state = audio.getState();
     audioStatus.textContent = `audio=${state.contextState} | active=${state.activeSourceCount} | loaded=${loaded ? 1 : 0} | playing=${loaded ? 1 : 0}`;
   },
 });
+world.addSystem(Update, systemToken1);
 
 const started = app.start();
 if (!started.ok) throw new Error(`bevy-audio: app.start failed: ${started.error.code}`);

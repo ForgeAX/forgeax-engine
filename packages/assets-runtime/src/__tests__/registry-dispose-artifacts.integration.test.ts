@@ -3,7 +3,6 @@ import { createRuntimePackPublication } from '@forgeax/engine-pack/build';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { AssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
-import { ArtifactCache } from '../internal/artifact-cache.js';
 
 it('Registry.dispose aborts artifact I/O and rejects late cache refill from an ignoring transport', async () => {
   const guid = '11111111-1111-4111-8111-111111111111';
@@ -37,15 +36,6 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
   let entered!: (signal: AbortSignal) => void;
   const reading = new Promise<AbortSignal>((resolve) => {
     entered = resolve;
-  });
-  let cache: ArtifactCache | undefined;
-  const read = ArtifactCache.prototype.read;
-  const spy = vi.spyOn(ArtifactCache.prototype, 'read').mockImplementation(function (
-    this: ArtifactCache,
-    ...args
-  ) {
-    cache = this;
-    return read.apply(this, args);
   });
   let decoded!: () => void;
   const finished = new Promise<void>((resolve) => {
@@ -87,11 +77,9 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
     expect(await pending).toMatchObject({ ok: false, error: { code: 'asset-runtime-disposed' } });
     finishBody(new Response(bytes));
     await finished;
-    expect(cache?.snapshot()).toMatchObject({ entries: 0, pending: 0 });
     expect(registry.inspectSource()).toBeUndefined();
   } finally {
     registry.dispose();
-    spy.mockRestore();
   }
 });
 

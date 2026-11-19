@@ -1,4 +1,6 @@
 import type { GraphTextureDescriptor } from '@forgeax/engine-render-graph';
+import { ok } from '@forgeax/engine-types';
+import { standardBloomAdmitted } from '../bloom-admission';
 import type {
   RenderPipeline,
   RenderPipelineBuildContext,
@@ -6,7 +8,8 @@ import type {
   RenderPipelineTarget,
   RenderPipelineTopology,
 } from '../render-pipeline';
-import { buildStandard } from './standard-pipeline';
+import { buildStandard, standardPipeline } from './standard-pipeline';
+import { addStandardBloom } from './standard-post';
 
 /** Replace only Forward's color target and finishing graph; all scene work stays shared. */
 export interface StandardForwardOutput {
@@ -21,8 +24,11 @@ export interface StandardForwardOutput {
   ): ReturnType<RenderPipeline['build']>;
 }
 
-export function createStandardForwardPipeline(output: StandardForwardOutput): RenderPipeline {
+export function createStandardForwardPipeline(
+  output: StandardForwardOutput,
+): typeof standardPipeline {
   return {
+    identity: standardPipeline.identity,
     build(context, topology) {
       return buildStandard(
         { ...context, forwardOutput: output },
@@ -31,4 +37,15 @@ export function createStandardForwardPipeline(output: StandardForwardOutput): Re
       );
     },
   };
+}
+
+/** Give custom Forward outputs the Standard HDR Bloom stage before output encoding. */
+export function addForwardOutputBloom(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  color: RenderPipelineTarget,
+) {
+  return standardBloomAdmitted(topology.camera)
+    ? addStandardBloom(context, topology, color)
+    : ok(color);
 }

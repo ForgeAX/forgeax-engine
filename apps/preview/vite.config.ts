@@ -10,7 +10,10 @@ import { fbxImporter } from '@forgeax/engine-fbx';
 import { gltfImporter } from '@forgeax/engine-gltf';
 import { fontImporter } from '@forgeax/engine-font/font-importer';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import {
+  createMaterialPackCooker,
+  createTextureGeneratorPackCooker,
+} from '@forgeax/engine-shader-compiler';
 import { parseProducerReadiness } from '@forgeax/engine-import';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import vitePluginRhiDebug from '@forgeax/engine-vite-plugin-rhi-debug';
@@ -19,6 +22,7 @@ import { defineConfig } from 'vite';
 import { targetProfileImporter } from '../../apps/game-capability-lab/assets/plugins/target-profile-importer';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { resolveProjectPort } from '@forgeax/engine-devkit';
+import { loadPreviewProjectCookers } from './src/project-cookers.ts';
 import {
   collectAssetDeclarationRoots,
   gameCapabilityAssetRoots,
@@ -31,7 +35,6 @@ const monorepoRoot = resolve(here, '..', '..');
 const previewPort = resolveProjectPort(undefined);
 const templatesDir = resolve(monorepoRoot, 'templates');
 const smokeRoot = process.env.FORGEAX_TEMPLATE_SMOKE === '1'
-  && process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
   && process.env.FORGEAX_TEMPLATE_SMOKE_ROOT
   ? resolve(process.env.FORGEAX_TEMPLATE_SMOKE_ROOT)
   : undefined;
@@ -53,9 +56,14 @@ const previewUiAuthoringMetaPath = resolve(
 );
 const surfaceEvidencePackRoot = resolve(here, 'assets', 'surface-standard-evidence.pack.ts');
 const surfaceOnly = process.env.FORGEAX_SURFACE_ONLY === '1';
+const waterRecipePackRoots = [
+  resolve(here, 'assets', 'water-r0-recipes.pack.ts'),
+  resolve(here, 'assets', 'water-r0-base-terrain.pack.ts'),
+];
 const surfacePackRoots = [
   resolve(templatesDir, 'game-3d', 'assets', 'materials.pack.ts'),
   surfaceEvidencePackRoot,
+  ...waterRecipePackRoots,
   resolve(here, 'assets', 'surface-water-splash.pack.json'),
   resolve(here, 'assets', 'surface-water-splash-material.pack.json'),
 ];
@@ -66,7 +74,7 @@ const surfacePackRoots = [
 // relying on a directory-name convention.
 const gameCapabilityPackRoots = gameCapabilityAssetRoots(templateAssetRoot);
 const selectedTemplateSlugs = parseTemplateSmokeSlugs(process.env.FORGEAX_TEMPLATE_SMOKE_SLUGS);
-const materialPackages = selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')
+const materialPackages = surfaceOnly || selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')
   ? []
   : [
       resolve(templateAssetRoot, 'animated-target-material.pack.json'),
@@ -190,7 +198,7 @@ const packRoots = surfaceOnly
       ...templatePackRoots,
       ...(selectedTemplateSlugs.length > 0 || process.env.FORGEAX_TEMPLATE_SMOKE === '1'
         ? []
-        : [surfaceEvidencePackRoot, previewUiAuthoringMetaPath]),
+        : [surfaceEvidencePackRoot, ...waterRecipePackRoots, previewUiAuthoringMetaPath]),
     ];
 const particleSourceRoots = surfaceOnly ? [resolve(here, 'assets')] : selectTemplateAssetRoots(
   [
@@ -205,6 +213,13 @@ export default defineConfig(async ({ command }) => {
     throw Object.assign(new Error(`${readiness.error.code}: ${readiness.error.hint}`), readiness.error);
   }
   const runtimeBinding = createStandaloneRuntimeAssetBinding('preview');
+  const convoyCookers = [];
+  let projectCookers: Awaited<ReturnType<typeof loadPreviewProjectCookers>> | undefined;
+  if (packRoots.includes(resolve(game3dRoot, 'assets', 'player', 'character.pack.ts'))) {
+    projectCookers = await loadPreviewProjectCookers(game3dRoot, resolve(monorepoRoot, 'shared-build-inputs', 'ddc'));
+    convoyCookers.push(...projectCookers.session.cookers);
+  }
+  try {
   const pack = pluginPack({
       runtimeBinding,
       producerReadiness: readiness.value,
@@ -224,7 +239,13 @@ export default defineConfig(async ({ command }) => {
         targetProfileImporter(),
       ],
       cookers: [
+        ...convoyCookers,
         createMaterialPackCooker([
+          resolve(game3dRoot, 'assets', 'shaders'),
+          resolve(here, 'assets', 'shaders'),
+          resolve(templateAssetRoot),
+        ]),
+        createTextureGeneratorPackCooker([
           resolve(game3dRoot, 'assets', 'shaders'),
           resolve(here, 'assets', 'shaders'),
           resolve(templateAssetRoot),
@@ -265,6 +286,7 @@ export default defineConfig(async ({ command }) => {
         } }
       : {}),
   plugins: [
+    ...(projectCookers === undefined ? [] : [projectCookers.plugin]),
     executionWorkerEntries(),
     forgeaxShader({
       // game-default custom materials are authored packs: the pack owns the
@@ -306,4 +328,9 @@ export default defineConfig(async ({ command }) => {
     },
   },
 });
+  } catch (cause) {
+    // Session cleanup must not replace the configuration failure.
+    await projectCookers?.session.dispose().catch(() => undefined);
+    throw cause;
+  }
 });

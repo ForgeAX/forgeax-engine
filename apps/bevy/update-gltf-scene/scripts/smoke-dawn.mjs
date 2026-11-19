@@ -5,6 +5,7 @@ import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErr
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..', '..', '..');
@@ -49,7 +50,7 @@ const canvas = {
   removeEventListener() {},
 };
 
-const manifest = readFileSync(resolve(appRoot, 'dist', 'shaders', 'manifest.json'), 'utf8');
+
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, perspective, renderComponentsPlugin } = await import('@forgeax/engine-render');
@@ -59,7 +60,7 @@ const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { gltfDocToSceneAsset, meshIrToMeshAsset, parseGltf, toMaterialAsset } = await import('@forgeax/engine-gltf');
 const { MovedScene, sceneDescendants, stepUpdateGltfScene } = await import(resolve(appRoot, 'src', 'update-gltf-scene.ts'));
 
-const constructed = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+const constructed = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: processShaderManifestUrl(resolve(appRoot, 'dist', 'shaders', 'manifest.json')) });
 if (!constructed.ok) throw constructed.error;
 const { renderer, assets } = constructed.value;
 subscribeSmokeErrors(renderer, (error) => errors.push(error));

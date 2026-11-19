@@ -137,7 +137,6 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   const scope = worldRenderResources(world);
   let slots = [
     {
-      worldId: 0,
       entityKey: 7,
       slot: 0,
       generation: 0,
@@ -155,14 +154,14 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
     immediateShaderModuleFactory: { createShaderModule: () => ok(module) },
   } as unknown as RenderSystemInternals;
   const materials = new MaterialFrame(undefined);
-  const meshes = new MeshFrame().with(0, meshHandle, mesh);
+  const meshes = new MeshFrame().with(meshHandle, mesh);
   /** A changed composition publishes new rows under a new revision. */
   const changeSource = () => {
     slots = slots.map((slot) => ({ ...slot }));
     revision++;
   };
   const source = () => ({
-    scopes: [scope] as never,
+    sourceScope: scope as never,
     retained: {
       identity: scope,
       revision,
@@ -177,7 +176,6 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   const request = {
     kind: 'scene-sdf' as const,
     name: 'collision',
-    world: 0,
     descriptor: {
       origin: [-4, -4, -4] as const,
       dimensions: [65, 97, 65] as const,

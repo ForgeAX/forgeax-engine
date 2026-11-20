@@ -79,6 +79,8 @@ import type { RenderExtent } from './pipeline/render-extent.js';
 import type {
   PreparedPublishedMeshResidency,
   PublishedMeshPreparation,
+  PublishedMeshPreparationOptions,
+  PublishedMeshTransferReservation,
   PublishedRenderFrameInput,
   RenderPublicationError,
   RenderPublicationIdentity,
@@ -394,15 +396,7 @@ interface RenderPipelineRuntime {
       ) => void)
     | undefined;
   /** Runtime-owned shader module factory used by built-in graph producers. */
-  readonly shaderModuleFactory?: {
-    createShaderModule(input: {
-      readonly code: string;
-      readonly label?: string | undefined;
-    }): import('@forgeax/engine-types').Result<
-      import('@forgeax/engine-rhi').ShaderModule,
-      RhiError
-    >;
-  };
+  readonly shaderModuleFactory?: import('./pipeline-builder').PipelineBuilderShaderModuleFactory;
   /** Immediate factory used by same-frame built-in producers after runtime warm-up. */
   readonly immediateShaderModuleFactory?: {
     createShaderModule(input: {
@@ -549,6 +543,7 @@ export interface DepthPyramidShaderSources {
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
   readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
+  readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
   readonly composeFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly traceFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly temporalFragment?: string | import('@forgeax/engine-types').ShaderSource;
@@ -675,15 +670,19 @@ export interface Renderer {
   prepareDynamicGeometryCandidates(
     inputs: readonly DynamicGeometryPrepareInput[],
   ): Result<readonly DynamicGeometryCandidate[], DynamicGeometryError>;
+  /** Reserve receiver bytes before the sender transfers private Mesh buffers. */
+  reservePublishedMeshTransfer(
+    bytes: number,
+  ): Result<PublishedMeshTransferReservation, RenderPublicationError | MeshResidencyError>;
   /**
-   * Prepare source-namespaced Mesh buffers and wait for physical queue completion.
+   * Prepare source-namespaced Mesh buffers for a later draw.
    * Default inputs are borrowed and copied. `received` consumes a native-message
    * Mesh POD: the caller must retain no mutable aliases. Shared buffers still copy.
    */
   preparePublishedMeshResidency(
     input: PublishedMeshPreparation,
     inputOwnership?: 'received',
-    options?: { readonly signal?: AbortSignal },
+    options?: PublishedMeshPreparationOptions,
   ): Promise<Result<PreparedPublishedMeshResidency, RenderPublicationError | MeshResidencyError>>;
   /** Prepare a live MeshAsset's GPU buffers before its first rendered frame. */
   prepareMeshResidency(
@@ -1350,6 +1349,21 @@ export interface RenderInspection {
   readonly instanceCollections: readonly InstanceCollectionInspection[];
   /** Standard MeshAsset dynamic-candidate lifecycle facts. */
   readonly dynamicGeometry?: DynamicGeometryInspection;
+  readonly meshResidency?: {
+    /** Publication Mesh storage charged to this receiver's byte budget, including metadata. */
+    readonly publication?: {
+      readonly preparedBytes: number;
+      /** Reserved before handoff and held until receipt or cancellation. */
+      readonly reservedTransferBytes: number;
+      readonly peakBudgetBytes: number;
+      readonly limitBytes: number;
+    };
+    /** Unique logical vertex/index capacity, exclusive retiring allocations listed separately. */
+    readonly gpuBuffers: {
+      readonly activeBytes: number;
+      readonly retiringBytes: number;
+    };
+  };
   readonly textureGeneration?: import('./device/texture-generators').TextureGeneratorInspection;
   readonly renderScene: RenderSceneInspection;
   /** Detached logical allocation facts for graph-created render targets. */

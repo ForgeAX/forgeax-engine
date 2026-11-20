@@ -9,6 +9,9 @@ import { executionWorkerEntries } from '../execution-workers';
 
 it.each([
   [{}, ['engine', 'render', 'task']],
+  [{ kernels: false }, ['engine', 'render', 'task']],
+  [{ engine: true, render: false, kernels: false }, ['engine', 'task']],
+  [{ engine: false, render: false }, []],
   [{ engine: false, render: false, kernels: false }, []],
   [{ engine: false, kernels: false }, ['render']],
   [{ engine: false, render: false, kernels: false }, ['engine', 'render', 'task'], 'consumer'],
@@ -66,7 +69,7 @@ it.each([
     for (const kind of ['engine', 'render', 'task']) {
       if (!expected.some((published) => published === kind))
         expect(() => factories[kind]()).toThrow(
-          `Execution Worker disabled by build policy: ${kind === 'task' ? 'kernels' : kind}`,
+          `Execution Worker disabled by build policy: ${kind === 'task' ? 'engine' : kind}`,
         );
     }
     expect(Worker).not.toHaveBeenCalled();

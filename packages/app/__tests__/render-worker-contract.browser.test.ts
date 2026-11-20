@@ -108,6 +108,7 @@ it('submits and executes two frames before the oldest receipt retires without ad
       .poll(() => f.app.execution?.report().frame.completed, { timeout: 30_000 })
       .toBeGreaterThan(2);
     expect(f.app.execution?.report().render).toMatchObject({ submittedFrame: 2, completedFrame: 0 });
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual([1, 2]);
     expect(f.app.execution?.report().frame.highWater).toBe(2);
     expect(f.messages.filter((row) => row.kind === 'sealed').map((row) => row.tick)).toEqual([
       1, 2,
@@ -147,7 +148,10 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     f.channel.port1.postMessage('mutate-sealed-source');
     await expect.poll(() => f.messages.some((row) => row.kind === 'mutated')).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 2100));
-    expect(f.app.execution?.report().frame.completed).toBeGreaterThan(2);
+    const stalled = f.app.execution?.report();
+    expect(stalled?.frame.completed).toBeGreaterThan(2);
+    expect(stalled?.render?.submittedFrame).toBe(2);
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual([1, 2]);
     expect(f.messages.filter((row) => row.kind === 'sealed').map((row) => row.tick)).toEqual([
       1, 2,
     ]);
@@ -181,11 +185,17 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
         timeout: Math.max(1, resumeDeadline - performance.now()),
       })
       .toBe(true);
-    const pictureCount = f.messages.filter((row) => row.kind === 'sealed').length;
+    const sealed = f.messages.flatMap((row) =>
+      row.kind === 'sealed' && row.tick !== undefined ? [row.tick] : [],
+    );
+    const retiredFrame = f.app.execution?.report().render?.completedFrame;
+    if (retiredFrame === undefined) throw new Error('Missing Render Worker report');
+    expect(sealed.filter((frameId) => frameId > retiredFrame).length).toBeLessThanOrEqual(2);
     await expect
       .poll(() => f.completed.length, { timeout: Math.max(1, resumeDeadline - performance.now()) })
-      .toBe(pictureCount);
-    expect(f.completed.map((frame) => frame.frameId)).toEqual(f.submitted.map((frame) => frame.frameId));
+      .toBe(sealed.length);
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual(sealed);
+    expect(f.completed.map((frame) => frame.frameId)).toEqual(sealed);
     if (f.app.remoteEval === undefined) throw new Error('Missing public eval owner');
     const pending = f.app.remoteEval('await new Promise(() => {})');
     const rejected = pending.catch((cause: unknown) => cause);

@@ -13,7 +13,7 @@ fn tsrCachedScene(p: vec2<i32>, origin: vec2<i32>) -> vec4<f32> {
   return textureLoad(scene, p, 0);
 }
 fn tsrInputGeometry(center: vec2<i32>, origin: vec2<i32>) -> TsrGeometry {
-  return tsrClosestTemporalAt(sceneTemporal, center, 1);
+  return tsrClosestSceneTemporalAt(center, 1);
 }
 fn tsrCoverageGeometry(center: vec2<i32>, radius: i32, origin: vec2<i32>, column: u32) -> TsrGeometry {
   return tsrClosestTemporalAt(coverage, center, radius);

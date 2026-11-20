@@ -692,6 +692,7 @@ export interface ShaderColorTargetContract {
 export interface ShaderProgramContract {
   readonly schemaVersion: 'shader-program-contract/1';
   readonly gbuffer?: import('./material-program-abi.js').MaterialGBufferLayout;
+  readonly compactGbuffer?: import('./material-program-abi.js').CompactGBufferLayout;
   readonly colorTargets?: readonly ShaderColorTargetContract[];
   readonly publicationFormat?: string;
   readonly numerical?: {
@@ -762,6 +763,8 @@ export function isShaderProgramContract(value: unknown): value is ShaderProgramC
   )
     return false;
   if (value.gbuffer !== undefined && value.gbuffer !== 'standard-gbuffer/2') return false;
+  if (value.compactGbuffer !== undefined && value.compactGbuffer !== 'standard-gbuffer/4')
+    return false;
   if (value.colorTargets !== undefined && !isShaderColorTargets(value.colorTargets)) return false;
   if (value.numerical !== undefined && !isShaderNumericalContract(value.numerical)) return false;
   return true;

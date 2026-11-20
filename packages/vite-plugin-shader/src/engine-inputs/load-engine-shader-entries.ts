@@ -149,14 +149,20 @@ export async function loadEngineShaderEntries(readText = readShaderText) {
       ...file,
       id: `${file.id}?portable-fragment`,
     }));
-  const gbufferEntry = (file: EngineShaderFile): EngineShaderFile => ({
+  const gbufferEntry = (
+    file: EngineShaderFile,
+    compactGbuffer?: ShaderProgramContract['compactGbuffer'],
+  ): EngineShaderFile => ({
     ...file,
     programContract: {
       ...file.programContract,
       schemaVersion: 'shader-program-contract/1',
       gbuffer: 'standard-gbuffer/2',
+      ...(compactGbuffer === undefined ? {} : { compactGbuffer }),
     },
   });
+  const compactGbufferEntry = (file: EngineShaderFile): EngineShaderFile =>
+    gbufferEntry(file, 'standard-gbuffer/4');
   const readGBufferEntry = (...args: Parameters<typeof readEntry>) =>
     readEntry(...args).then(gbufferEntry);
   const readGBufferFragmentEntry = (...args: Parameters<typeof readFragmentEntry>) =>
@@ -326,7 +332,7 @@ const CLOUD_DETAIL: bool = ${detail};
     atmosphereCompose: readEntry('atmosphere-compose.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
-    hdrpSsao: readGBufferEntry('hdrp-ssao.wgsl'),
+    hdrpSsao: readEntry('hdrp-ssao.wgsl').then((file) => gbufferEntry(file, 'standard-gbuffer/4')),
     hdrpGtaoCompute: readGBufferEntry('hdrp-gtao-compute.wgsl'),
     lightTextureResampleCompute: readEntry(
       'light-texture-resample-compute.wgsl',
@@ -352,18 +358,21 @@ const CLOUD_DETAIL: bool = ${detail};
       'depth-pyramid-reduce.wgsl',
       'forgeax::depth-pyramid-reduce-fragment',
     ),
-    ssrTrace: readGBufferEntry('ssr-trace.wgsl'),
-    ssrTemporal: readGBufferEntry('ssr-temporal.wgsl'),
-    ssrTraceFragment: readGBufferFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
+    ssrTrace: readGBufferEntry('ssr-trace.wgsl').then(compactGbufferEntry),
+    ssrTemporal: readGBufferEntry('ssr-temporal.wgsl').then(compactGbufferEntry),
+    ssrTraceFragment: readGBufferFragmentEntry(
+      'ssr-trace.wgsl',
+      'forgeax::ssr-trace-fragment',
+    ).then(compactGbufferEntry),
     ssrTemporalFragment: readGBufferFragmentEntry(
       'ssr-temporal.wgsl',
       'forgeax::ssr-temporal-fragment',
-    ),
-    ssrCompose: readGBufferEntry('ssr-compose.wgsl'),
+    ).then(compactGbufferEntry),
+    ssrCompose: readGBufferEntry('ssr-compose.wgsl').then(compactGbufferEntry),
     ssrComposeFragment: readGBufferFragmentEntry(
       'ssr-compose.wgsl',
       'forgeax::ssr-compose-fragment',
-    ),
+    ).then(compactGbufferEntry),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
     rayRasterSource: readGBufferEntry('ray-raster-source.wgsl'),
@@ -383,6 +392,15 @@ const CLOUD_DETAIL: bool = ${detail};
     standardDeferred: readGBufferEntry(
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
+    ).then(
+      (file): EngineShaderFile => ({
+        ...file,
+        programContract: {
+          ...file.programContract,
+          schemaVersion: 'shader-program-contract/1',
+          compactGbuffer: 'standard-gbuffer/4',
+        },
+      }),
     ),
     forwardScreenCompose: readEntry(
       'forward-screen-compose.wgsl',
@@ -394,8 +412,12 @@ const CLOUD_DETAIL: bool = ${detail};
       'forgeax::engine-forward-contact-shadow',
     ),
     shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
-    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
-    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
+    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project').then(
+      compactGbufferEntry,
+    ),
+    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply').then(
+      compactGbufferEntry,
+    ),
     subsurfaceDiffusion: readGBufferEntry(
       'subsurface-diffusion.wgsl',
       'forgeax::engine-subsurface-diffusion',

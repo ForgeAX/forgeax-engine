@@ -253,21 +253,14 @@ export async function verifySubsurface(
     const hdr = observed.observations?.find((attachment) => attachment.domain === 'linear-hdr');
     if (!hdr) throw new Error('Missing real HDR observation');
     const passes = renderer.inspect().perFramePassNames;
-    expect(hdr.metadata.format).toBe(
-      passes.includes('subsurface-diffusion') ? 'rgba32float' : 'rgba16float',
-    );
+    expect(hdr.metadata.format).toBe('rgba16float');
     expect(errors).toEqual([]);
     return {
       bytes: hdr.bytes,
-      pixels:
-        hdr.metadata.format === 'rgba32float'
-          ? Array.from(
-              new Float32Array(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.length / 4),
-            )
-          : Array.from(
-              new Uint16Array(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.length / 2),
-              halfFloat.f16ToF32,
-            ),
+      pixels: Array.from(
+        new Uint16Array(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.length / 2),
+        halfFloat.f16ToF32,
+      ),
       passes,
     };
   };
@@ -277,8 +270,8 @@ export async function verifySubsurface(
       disabled = await sample(6, 0),
       active = await sample(6, 1);
     expect(equalBytes(disabled.bytes, baseline.bytes)).toBe(true);
-    expect(baseline.passes).not.toContain('subsurface-diffusion');
-    expect(active.passes).toContain('subsurface-diffusion');
+    expect(baseline.passes).not.toContain('subsurface-vertical');
+    expect(active.passes).toContain('subsurface-vertical');
     let spread = 0;
     let emissionError = 0;
     for (let index = 0; index < active.pixels.length; index += 4) {
@@ -310,7 +303,7 @@ export async function verifySubsurface(
         .set(light, DirectionalLight, { direction: [0, 0, 1], intensity: 3, castShadow: false })
         .unwrap();
       const transmitted = await sample(0, 1);
-      expect(transmitted.passes).not.toContain('subsurface-diffusion');
+      expect(transmitted.passes).not.toContain('subsurface-vertical');
       expect(
         Math.max(...transmitted.pixels.filter((_value, index) => index % 4 === 0)),
         'cooked thin-transmission contract produces a real backlit red lobe',
@@ -439,7 +432,7 @@ export async function verifySubsurface(
     });
     world.despawn(probe).unwrap();
     errors.length = 0;
-    expect((await sample(0, 1)).passes).not.toContain('subsurface-diffusion');
+    expect((await sample(0, 1)).passes).not.toContain('subsurface-vertical');
     if (kind === 'rigid') {
       const profileMesh = testAssets(world).create(geometry).unwrap();
       const roster = Array.from({ length: 17 }, (_, index) =>
@@ -485,7 +478,7 @@ export async function verifySubsurface(
       });
       for (const item of roster) world.despawn(item).unwrap();
       errors.length = 0;
-      expect((await sample(0, 1)).passes).not.toContain('subsurface-diffusion');
+      expect((await sample(0, 1)).passes).not.toContain('subsurface-vertical');
     }
   } finally {
     unsubscribe();

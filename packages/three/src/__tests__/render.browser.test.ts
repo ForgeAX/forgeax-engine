@@ -47,10 +47,13 @@ it('runs 60 native frames, matches original Three and replays its actual GPU cap
   await expect(renderer.init()).rejects.toMatchObject({ code: 'renderer-disposed' });
 });
 
-it('disposes safely while initialization is still pending', { timeout: 30000 }, async () => {
+it('disposes safely while an authored publication is pending', { timeout: 30000 }, async () => {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;
-  const renderer = new WebGPURenderer({ canvas });
+  const renderer = new WebGPURenderer({
+    canvas,
+    forgeax: { materialPrograms: new Promise<readonly string[]>(() => {}) },
+  });
   await renderer.dispose();
   await expect(renderer.init()).rejects.toMatchObject({ code: 'renderer-disposed' });
   await renderer.dispose();

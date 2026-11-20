@@ -74,8 +74,12 @@ fn environmentMultiScattering(single: vec3<f32>, missingEnergy: f32, F0: vec3<f3
   return single * favg * missingEnergy / max(vec3<f32>(1.0) - missingEnergy * favg, vec3<f32>(1e-6));
 }
 
+fn environmentSingleScatteringFromDfg(ab: vec2<f32>, F0: vec3<f32>, F90: f32) -> vec3<f32> {
+  return F0 * ab.r + ab.g * F90;
+}
+
 fn environmentScatteringFromDfg(ab: vec2<f32>, F0: vec3<f32>, F90: f32) -> EnvironmentScattering {
-  let single = F0 * ab.r + ab.g * F90;
+  let single = environmentSingleScatteringFromDfg(ab, F0, F90);
   let ems = clamp(1.0 - ab.r - ab.g, 0.0, 1.0);
   let multi = environmentMultiScattering(single, ems, F0);
   return EnvironmentScattering(single, multi, ems);
@@ -176,6 +180,11 @@ fn box_project(
   return normalize(localPosition + direction * max(travel, 0.0));
 }
 
+fn reflectionProbeBoundaryWeight(worldPosition: vec3<f32>, center: vec3<f32>, extents: vec3<f32>) -> f32 {
+  let relative = abs(worldPosition - center) / max(extents, vec3<f32>(0.0001));
+  return smoothstep(0.0, 0.1, 1.0 - max(relative.x, max(relative.y, relative.z)));
+}
+
 // Split-sum probe sample. The probe texture is supplied by the caller so a
 // missing scene candidate can keep using sampleIblSpecular with the Skylight
 // resources already present in the Standard material layout.
@@ -197,8 +206,7 @@ fn sampleReflectionProbeRadiance(
   // Selection is per draw, but a receiver can extend beyond that probe's box.
   // Only the interior admits parallax correction. Keep global specular IBL
   // resident and blend the outer 10% of the box into its real Skylight source.
-  let relative = abs(worldPosition - boxCenter) / max(boxExtents, vec3<f32>(0.0001));
-  let weight = smoothstep(0.0, 0.1, 1.0 - max(relative.x, max(relative.y, relative.z)));
+  let weight = reflectionProbeBoundaryWeight(worldPosition, boxCenter, boxExtents);
   var sky = vec3<f32>(0.0);
   if (weight < 1.0) {
     sky = sampleIblRadiance(reflectionDirection, roughness, skylightRotation, skylightMap, probeSampler) * skylightScale;

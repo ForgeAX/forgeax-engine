@@ -19,18 +19,22 @@ import { type MaterialShaderArtifactRequest, resolveMaterialShaderArtifact } fro
 type MaterialArtifactRegistry = Pick<
   ShaderRegistry,
   'findMaterialArtifact' | 'materialProgram' | 'materialShaderManifestEntry'
->;
+> &
+  Partial<
+    Pick<ShaderRegistry, 'isSourceBackedMaterialArtifact' | 'materialVariantArtifactIdentifier'>
+  >;
 
 export function resolveRendererMaterialShaderArtifact(
   materialShaderId: string,
   shader: MaterialArtifactRegistry,
   programs: ReadonlyMap<string, GpuDrivenPbrProgram> | undefined,
   options: MaterialShaderArtifactRequest | boolean = {},
+  prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {
   if (typeof options === 'boolean') {
     return resolveStandardPbrProgram(programs, materialShaderId, options)?.artifact;
   }
-  const resolved = resolveMaterialShaderArtifact(materialShaderId, shader, options);
+  const resolved = resolveMaterialShaderArtifact(materialShaderId, shader, options, prepare);
   if (resolved !== undefined) return resolved;
   // Legacy callers without geometry facts may reuse a prewarmed Standard
   // program; geometry-specific requests remain fail-closed.

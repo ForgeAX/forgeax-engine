@@ -5,7 +5,9 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parentPort } from 'node:worker_threads';
 import ts from 'typescript';
-import type { PackAuthoringError } from './pack-authoring.js';
+import { AssetGuid } from './guid.js';
+import type { PackAuthoringError, PackOutputMap, ScriptablePackRuntime } from './pack-authoring.js';
+import { validatePhaseOutputs } from './pack-parameter-bindings.js';
 import { validatePluginAssetSource } from './plugin-asset.js';
 import { type CapturedJsonInputs, capturedJsonModule } from './scriptable-pack-json-input.js';
 import {
@@ -93,6 +95,7 @@ function undeclaredFields(value: object): Record<string, unknown> {
   return fields;
 }
 let definition: LoadedDefinition | undefined;
+let runtimeGenerator: ((context: unknown) => unknown) | undefined;
 let nextReadId = 0;
 const reads = new Map<number, (value: unknown) => void>();
 
@@ -474,6 +477,16 @@ function compileModuleClosure(
   return join(outputRoot, outputName(resolve(entryPath)));
 }
 
+function loadRuntimeExport(runtime: unknown, namespace: Readonly<Record<string, unknown>>) {
+  if (runtime === null || typeof runtime !== 'object' || !('export' in runtime)) return;
+  const named = runtime.export;
+  if (typeof named !== 'string') return;
+  const generator = namespace[named];
+  if (typeof generator !== 'function')
+    throw new TypeError(`Pack runtime export "${named}" must be a function`);
+  return generator as (context: unknown) => unknown;
+}
+
 async function loadDefinition(task: {
   readonly sourcePath: string;
   readonly compileRoot: string;
@@ -502,6 +515,7 @@ async function loadDefinition(task: {
   capturedTranspiles = task.transpiles;
   completedTranspiles = [];
   definition = undefined;
+  runtimeGenerator = undefined;
   reads.clear();
   try {
     const compiled = SCRIPTABLE_SOURCE_EXTENSIONS.includes(
@@ -511,11 +525,11 @@ async function loadDefinition(task: {
       const executablePath = compiled
         ? compileModuleClosure(task.sourcePath, task.compileRoot, loadKey, staticOnly)
         : task.sourcePath;
-      return (await import(`${pathToFileURL(executablePath).href}?load=${loadKey}`)) as {
-        readonly default?: unknown;
-      };
+      return (await import(`${pathToFileURL(executablePath).href}?load=${loadKey}`)) as Readonly<
+        Record<string, unknown>
+      >;
     };
-    let loaded: { readonly default?: unknown } | undefined;
+    let loaded: Readonly<Record<string, unknown>> | undefined;
     if (compiled && task.staticOnly === true) {
       const flags = globalThis as unknown as Record<symbol, unknown>;
       delete flags[DEFERRED_IMPORT_FLAG];
@@ -534,6 +548,7 @@ async function loadDefinition(task: {
       false,
     );
     definition = loaded.default as LoadedDefinition | undefined;
+    runtimeGenerator = loadRuntimeExport(definition?.runtime, loaded);
     // Preserve only Node's validated bytecode for the next fresh Worker. The
     // module graph and its retained values still die at the existing task fence.
     try {
@@ -589,6 +604,79 @@ function capturedLoadInputs(value: Record<string, unknown>) {
   };
 }
 
+async function cookDeclaredRuntimeOutputs(
+  built: unknown,
+  context: { readonly readByGuid: (guid: Uint8Array) => Promise<unknown> },
+): Promise<unknown> {
+  if (built === null || typeof built !== 'object' || !('ok' in built) || built.ok !== true)
+    return built;
+  const runtime = definition?.runtime as ScriptablePackRuntime | undefined;
+  const generate = runtimeGenerator;
+  if (runtime?.fallback !== 'build' || generate === undefined)
+    throw new TypeError('Offline generation requires a named Pack generator with fallback: build');
+  const builtOutputs = validatePhaseOutputs(
+    ('value' in built ? built.value : undefined) as PackOutputMap,
+    runtime.outputs,
+    'build',
+  );
+  if (!builtOutputs.ok) return builtOutputs;
+  const generated = await generate({
+    ...context,
+    readByGuid(guid: Parameters<typeof AssetGuid.format>[0]) {
+      if (!runtime.dependencies.includes(AssetGuid.format(guid)))
+        throw {
+          code: 'pack-parameter-invalid',
+          expected: 'a declared runtime generator asset dependency',
+          hint: 'declare the asset read in runtime.dependencies',
+          detail: { guid: AssetGuid.format(guid) },
+        } satisfies PackAuthoringError;
+      return context.readByGuid(guid);
+    },
+  });
+  if (
+    generated === null ||
+    typeof generated !== 'object' ||
+    !('ok' in generated) ||
+    typeof generated.ok !== 'boolean'
+  ) {
+    throw new TypeError('Pack runtime generator must return a structured Result');
+  }
+  if (!generated.ok) return generated;
+  const runtimeOutputs = validatePhaseOutputs(
+    ('value' in generated ? generated.value : undefined) as PackOutputMap,
+    runtime.outputs,
+    'runtime',
+  );
+  return runtimeOutputs.ok
+    ? { ok: true, value: { ...builtOutputs.value, ...runtimeOutputs.value } }
+    : runtimeOutputs;
+}
+
+function workerBuildContext(buildId: number, payload: unknown) {
+  const context =
+    payload !== null && typeof payload === 'object'
+      ? (payload as {
+          readonly packageId?: unknown;
+          readonly values?: unknown;
+          readonly cookRuntimeOutputs?: unknown;
+        })
+      : undefined;
+  return {
+    cookRuntimeOutputs: context?.cookRuntimeOutputs === true,
+    buildContext: {
+      ...(Array.isArray(context?.packageId)
+        ? { packageId: new Uint8Array(context.packageId as number[]) }
+        : {}),
+      ...(context?.values === undefined ? {} : { values: context.values }),
+      readByGuid(guid: Uint8Array): Promise<unknown> {
+        const readId = nextReadId++;
+        port.postMessage({ kind: 'asset-read', buildId, readId, guid });
+        return new Promise((resolve) => reads.set(readId, resolve));
+      },
+    },
+  };
+}
+
 async function handleMessage(message: unknown): Promise<void> {
   if (message === null || typeof message !== 'object') return;
   const value = message as Record<string, unknown>;
@@ -625,22 +713,11 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
   try {
-    const context =
-      value.context !== null && typeof value.context === 'object'
-        ? (value.context as { readonly packageId?: unknown; readonly values?: unknown })
-        : undefined;
-    const buildContext = {
-      ...(Array.isArray(context?.packageId)
-        ? { packageId: new Uint8Array(context.packageId as number[]) }
-        : {}),
-      ...(context?.values !== undefined ? { values: context.values } : {}),
-      readByGuid(guid: Uint8Array): Promise<unknown> {
-        const readId = nextReadId++;
-        port.postMessage({ kind: 'asset-read', buildId: value.buildId, readId, guid });
-        return new Promise((resolve) => reads.set(readId, resolve));
-      },
-    };
-    const result = await definition.build(buildContext);
+    const { cookRuntimeOutputs, buildContext } = workerBuildContext(value.buildId, value.context);
+    const built = await definition.build(buildContext);
+    const result = cookRuntimeOutputs
+      ? await cookDeclaredRuntimeOutputs(built, buildContext)
+      : built;
     if (
       result !== null &&
       typeof result === 'object' &&

@@ -1248,9 +1248,10 @@ texel sampling for backend stability. Endpoint comparisons allow four f32 roundi
 units scaled by local luminance, so mathematically equal endpoints terminate
 consistently across axes and backends. Output encoding belongs to the graph.
 
-`hdrp-ssao.wgsl` defaults to GTAO through the Render parameter owner: three slices,
-six steps per side, radius 0.25, thickness 1 and linear radial sampling. A shared
-raw visibility kernel serves the fragment and compute entries; the prepared
+When the project selects GTAO, `hdrp-ssao.wgsl` uses the Render owner's high
+quality defaults: three slices, six steps per side, radius 0.25, thickness 1 and
+linear radial sampling. A shared raw visibility kernel serves the fragment and
+compute entries; the prepared
 Renderer graph selects an eligible entry, then uses the same spatial filter and
 lighting consumer. Forward input preserves the selected material's evaluated
 normal and coverage. Visibility intensity is applied before the existing

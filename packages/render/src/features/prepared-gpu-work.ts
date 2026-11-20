@@ -1398,6 +1398,34 @@ function createRenderFeatureGpuWorkSession(input: {
     item.reference.generation === input.generation &&
     (bindings.get(item.name) ?? parkedBindings.get(item.name)?.item) === item;
 
+  function reuseActiveProgram(
+    name: string,
+    descriptor: RenderFeatureGpuProgramDescriptor,
+    complete: (item: ProgramItem) => boolean,
+  ): RenderFeatureGpuProgramRef | undefined {
+    const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
+    if (
+      prior === undefined ||
+      !complete(prior) ||
+      !sameProgramDescriptor(prior.descriptor, descriptor)
+    )
+      return undefined;
+    activateProgram(prior);
+    touchProgram(prior);
+    return prior.reference;
+  }
+
+  function hasPendingProgramCapacity(): boolean {
+    if (preparingPrograms.size < COMPILED_PROGRAM_CACHE_LIMIT) return true;
+    // Reclaim settled work left by a previous plan while retaining in-flight compiles.
+    for (const [key, state] of preparingPrograms) {
+      if (state.pending !== 0) continue;
+      preparingPrograms.delete(key);
+      break;
+    }
+    return preparingPrograms.size < COMPILED_PROGRAM_CACHE_LIMIT;
+  }
+
   const prepareProgram: RenderFeatureGpuPrepare['prepareProgram'] = (
     name,
     descriptor,
@@ -1406,16 +1434,8 @@ function createRenderFeatureGpuWorkSession(input: {
     const source = ownedProgramSources.get(descriptor);
     const createAsync = waitForCompletion ? input.device.createComputePipelineAsync : undefined;
     const complete = (item: ProgramItem) => createAsync === undefined || item.completionQualified;
-    const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
-    if (
-      prior !== undefined &&
-      complete(prior) &&
-      sameProgramDescriptor(prior.descriptor, descriptor)
-    ) {
-      activateProgram(prior);
-      touchProgram(prior);
-      return ok(prior.reference);
-    }
+    const active = reuseActiveProgram(name, descriptor, complete);
+    if (active !== undefined) return ok(active);
     const validatePreparedProgramDescriptor = () => {
       if (
         name.length === 0 ||
@@ -1471,6 +1491,8 @@ function createRenderFeatureGpuWorkSession(input: {
     ) => failure(input.featureIdentity, 'prepare-gpu-program', 'pipeline', name, reason, recovery);
     if (preparing?.error !== undefined) return err(preparing.error);
     if (preparing !== undefined && preparing.pending > 0)
+      return err(preparationFailure('rhi-not-available:pipeline-pending', 'next-frame'));
+    if (preparing === undefined && createAsync !== undefined && !hasPendingProgramCapacity())
       return err(preparationFailure('rhi-not-available:pipeline-pending', 'next-frame'));
     const module =
       preparing === undefined
@@ -1583,8 +1605,6 @@ function createRenderFeatureGpuWorkSession(input: {
     const pipelineMap = preparing?.pipelines ?? new Map<string, ComputePipeline>();
     const startPreparedProgramAsyncPipelines = () => {
       if (preparing === undefined && createAsync !== undefined) {
-        if (preparingPrograms.size >= COMPILED_PROGRAM_CACHE_LIMIT)
-          return err(preparationFailure('preparation-budget-exceeded'));
         const state: PreparingProgram = {
           module: module.value,
           ...(bindGroupLayout === undefined ? {} : { bindGroupLayout }),

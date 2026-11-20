@@ -5,6 +5,12 @@ import { DEPTH_PYRAMID_SHADER_MODULES, SSR_SHADER_MODULES } from '../index.js';
 
 interface CompileValue {
   readonly bindings: readonly Readonly<Record<string, unknown>>[];
+  readonly reflection: {
+    readonly entryPoints?: readonly {
+      readonly name: string;
+      readonly bindings: readonly { readonly group: number; readonly binding: number }[];
+    }[];
+  };
   readonly manifestEntry: { readonly hash: string; readonly bindings: string };
 }
 
@@ -106,7 +112,17 @@ describe('SSR built-in shader binding contract', () => {
     const value = await compile('trace');
     const reflected = entries(value);
     expect(reflected.map((entry) => entry.binding)).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    ]);
+    expect(reflected[14]).toMatchObject({
+      binding: 14,
+      texture: { sampleType: 'uint', viewDimension: '2d' },
+    });
+    const trace = (name: string) =>
+      value.reflection.entryPoints?.find((entry) => entry.name === name)?.bindings;
+    expect(trace('ssr_trace_compact')).toEqual([
+      ...(trace('ssr_trace') ?? []),
+      { group: 0, binding: 14 },
     ]);
     for (let binding = 0; binding < 4; binding += 1) {
       expect(reflected[binding]).toMatchObject({

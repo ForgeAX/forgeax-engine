@@ -254,7 +254,9 @@ it.each([
     const lease = unwrap(renderer.attach(world));
     const sample = async (castShadow: boolean, label: string): Promise<Float32Array> => {
       world.set(light, DirectionalLight, { castShadow }).unwrap();
-      unwrap(renderer.setProfile({ ...original, renderPath, ssao: false }));
+      unwrap(
+        renderer.setProfile({ ...original, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (let index = 0; ; index++) {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();

@@ -23,6 +23,7 @@ import {
   parsePackSourceJson,
   projectDirectPackJson,
   projectScriptablePackMeta,
+  projectScriptablePackRuntimeOutputs,
   resolvePackParameterInheritance,
   type ScriptablePackSourceMeta,
 } from './pack-authoring.js';
@@ -211,6 +212,16 @@ export function declarationPackageId(
   return packageId === undefined || typeof packageId === 'string'
     ? packageId
     : PackageId.format(packageId);
+}
+
+export function declaredRuntimePackGuids(
+  declarations: Iterable<ScanSourceDeclaration>,
+): readonly string[] {
+  return [...declarations].flatMap((declaration) =>
+    declaration.format === 'pack.ts'
+      ? projectScriptablePackRuntimeOutputs(declaration.definition).map(({ guid }) => guid)
+      : [],
+  );
 }
 
 export type ScriptablePackSourceDeclaration = Extract<

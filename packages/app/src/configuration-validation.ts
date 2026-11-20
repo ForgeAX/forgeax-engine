@@ -190,6 +190,7 @@ function validateDomainSettings(
     invalid('settings.rendering', 'legacy profile and rendering requirements cannot compete');
   const profile = legacy ?? renderProfileForRequirements(requirements);
   if (profile !== undefined) {
+    if (legacy !== undefined) migrateSavedProfileAo(legacy);
     if (profile.quality !== undefined || profile.configurationRevision !== undefined)
       invalid(
         'settings.rendering.profile',
@@ -198,4 +199,23 @@ function validateDomainSettings(
     const reason = validateRenderProfile(profile);
     if (reason !== undefined) invalid('settings.rendering.profile', reason);
   }
+}
+
+function migrateSavedProfileAo(profile: object): void {
+  if (!Object.hasOwn(profile, 'ssao')) return;
+  const owned = profile as Record<string, unknown>;
+  const path = 'settings.rendering.profile';
+  if (Object.hasOwn(owned, 'ambientOcclusion'))
+    invalid(path, 'multiple ambient occlusion settings');
+  const legacy = owned.ssao;
+  if (typeof legacy === 'boolean') {
+    owned.ambientOcclusion = { enabled: legacy, method: 'gtao' };
+  } else {
+    if (typeof legacy !== 'object' || legacy === null || Array.isArray(legacy))
+      invalid(path, 'invalid saved ssao settings');
+    const { algorithm, ...parameters } = legacy as Record<string, unknown>;
+    if (Object.hasOwn(parameters, 'method')) invalid(path, 'invalid saved ssao method');
+    owned.ambientOcclusion = { ...parameters, enabled: true, method: algorithm ?? 'gtao' };
+  }
+  delete owned.ssao;
 }

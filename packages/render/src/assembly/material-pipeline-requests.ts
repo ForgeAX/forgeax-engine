@@ -290,6 +290,22 @@ export function runBuildPipelineContext(
   return createMaterialPipelineContext();
 }
 
+function selectedMaterialPipelineVariant(
+  shaderId: string,
+  shader: import('@forgeax/engine-shader').ShaderRegistry,
+  variantSet: string | undefined,
+  hasVertexLayout: boolean,
+  requestedVariant: Parameters<typeof runBuildMaterialShaderPipeline>[5],
+): string | undefined {
+  const manifest = shader.materialShaderManifestEntry(shaderId);
+  return resolveMaterialPipelineVariantSet(
+    requestedVariant(variantSet, shaderId, manifest),
+    manifest,
+    shaderId,
+    hasVertexLayout,
+  );
+}
+
 export function runBuildMaterialShaderPipeline(
   currentPipelineState: () => import('../record/render-context').PipelineState | null,
   internals: import('./webgpu-renderer-contract').WebGPURendererInternals,
@@ -321,6 +337,7 @@ export function runBuildMaterialShaderPipeline(
     import('./material/prepared-pipeline-owner').PreparedRenderPipelineOwner
   >,
   materialPipelineBuildable: (cacheKey: string) => boolean,
+  prepareMaterialProgram: (id: string) => boolean,
   selectMaterialPipelineSource: (
     pipelineShaderId: string,
     effectiveVariantSet: string | undefined,
@@ -412,7 +429,21 @@ export function runBuildMaterialShaderPipeline(
     internals.device.caps.backendKind,
     assets.getMaterialArtifact(materialShaderIdForPass),
   );
-  const materialShaderEntry = getShader().findMaterialArtifact(pipelineShaderId);
+  const shader = getShader();
+  // Select the same source, layout and cache key before starting any source work.
+  const effectiveVariantSet = selectedMaterialPipelineVariant(
+    pipelineShaderId,
+    shader,
+    variantSet,
+    vertexLayoutProjection !== undefined,
+    requestedMaterialVariantSet,
+  );
+  const selectedArtifactId = shader.materialVariantArtifactIdentifier(
+    pipelineShaderId,
+    effectiveVariantSet,
+  );
+  if (!prepareMaterialProgram(selectedArtifactId)) return null;
+  const materialShaderEntry = shader.findMaterialArtifact(selectedArtifactId);
   const program = materialProgramSource(materialShaderEntry);
   // A custom ShadowCaster can share a Standard material's texture snapshot
   // without declaring its specialization ABI. Normalize before the PSO key
@@ -421,20 +452,9 @@ export function runBuildMaterialShaderPipeline(
   // Programs that predate fs_opaque keep their default forward entry.
   // `null` (vertex-only depth) needs no declared entry.
   fragmentEntry = declaredOrVertexOnlyFragmentEntry(fragmentEntry, materialShaderEntry);
-  const resolvedUvSetCount =
-    shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
-  const manifestEntry = getShader().materialShaderManifestEntry(pipelineShaderId);
-  // The record stage composes capability axes; plain custom shaders retain
-  // only manifest-declared axes so '' cannot select an HDRP mesh layout.
-  // A single-source manifest entry must stay on its canonical module key;
-  // otherwise a synthesized capability axis races the prewarmed module.
-  const effectiveVariantSet = resolveMaterialPipelineVariantSet(
-    requestedMaterialVariantSet(variantSet, pipelineShaderId, manifestEntry),
-    manifestEntry,
-    pipelineShaderId,
-    vertexLayoutProjection !== undefined,
-  );
   const createMaterialPipelineSpec = () => {
+    const resolvedUvSetCount =
+      shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
     const colorFormat: GPUTextureFormat | null =
       colorFormatOverride === null
         ? null
@@ -504,7 +524,8 @@ export function runBuildMaterialShaderPipeline(
     vertexLayout,
   );
   if (source === null) return null;
-  if (passKind === 'deferred') requireStandardGBufferReceipt(source.entry.receipt);
+  if (passKind === 'deferred')
+    requireStandardGBufferReceipt(source.entry.receipt, fragmentEntry === 'fs_gbuffer_compact');
   // Fallback sources compile a different program, so caller-selected
   // entry points and particle lanes belong only to the registered shader.
   const ownEntries = source.ownEntries;
@@ -614,7 +635,12 @@ export function runSelectMaterialPipelineSource(
   depthFormatOverride: GPUTextureFormat | null | undefined,
   vertexLayout: string | undefined,
 ): MaterialPipelineSource | null {
-  const lookup = getShader().findMaterialArtifact(pipelineShaderId);
+  const shader = getShader();
+  const selectedArtifactId = shader.materialVariantArtifactIdentifier(
+    pipelineShaderId,
+    effectiveVariantSet,
+  );
+  const lookup = shader.findMaterialArtifact(selectedArtifactId);
   if (!lookup.ok) {
     if (requiresPreparedMaterialShader(vertexLayout)) {
       // Only a registered shader can be warming up. Preserve a permanent
@@ -629,12 +655,10 @@ export function runSelectMaterialPipelineSource(
   // variant's composedWgsl; the pipeline layout itself is built by
   // buildPbrPipelineLayouts (M3 / w12). `''` is canonical all-true (HDRP)
   // and also enters the lookup; `undefined` keeps the boot-time entry.
-  const selectedEntry = manifestVariantShaderEntry(
-    getShader(),
-    pipelineShaderId,
-    effectiveVariantSet,
-    lookup.value,
-  );
+  const selectedEntry =
+    selectedArtifactId === pipelineShaderId
+      ? manifestVariantShaderEntry(shader, pipelineShaderId, effectiveVariantSet, lookup.value)
+      : lookup.value;
   const loweredEntry = prepareLowLimitMaterialShaderEntry(
     selectedEntry,
     currentBuildDevice().limits.maxSampledTexturesPerShaderStage,
@@ -788,6 +812,7 @@ export function runGetMaterialShaderPipelineFor(
   >,
   args: Parameters<typeof buildMaterialShaderPipeline>,
   lookupOnly = false,
+  requestedVariant: Parameters<typeof runBuildMaterialShaderPipeline>[5],
 ): RenderPipeline | null {
   const registry = getShader();
   const shaderId = resolveMaterialPipelineShaderId(args[0], args[6] ?? 'forward');
@@ -797,7 +822,19 @@ export function runGetMaterialShaderPipelineFor(
     internals.device.caps.backendKind,
     asset,
   );
-  const artifact = registry.findMaterialArtifact(artifactId);
+  let selectedArtifact = artifactId;
+  if (registry.isSourceBackedMaterialArtifact(artifactId)) {
+    const { variantSet } = applySurfaceDiscardAxis(args[5], args[21]);
+    const key = selectedMaterialPipelineVariant(
+      artifactId,
+      registry,
+      variantSet,
+      args[13] !== undefined,
+      requestedVariant,
+    );
+    selectedArtifact = registry.materialVariantArtifactIdentifier(artifactId, key);
+  }
+  const artifact = registry.findMaterialArtifact(selectedArtifact);
   // Missing artifacts and pending pipelines remain retryable.
   if (!artifact.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
   const owner = currentPipelineCacheState();

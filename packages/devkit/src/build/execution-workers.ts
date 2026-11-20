@@ -72,6 +72,13 @@ export async function runtimeDependencyEntries(
   return [...entries.values()].filter((entry) => entry !== undefined);
 }
 
+const staticPackTaskUrlPrefix = 'virtual:forgeax/static-pack-task-url:';
+export const staticPackEntryUrlPrefix = 'forgeax-pack-task:///';
+
+export function staticPackTaskUrlSpecifier(path: string): string {
+  return `${staticPackTaskUrlPrefix}${path}`;
+}
+
 /**
  * Keep runtime entries and URL-loaded project plugins in one module graph.
  *
@@ -106,6 +113,7 @@ export function executionWorkerEntries(
     hostPrefix !== undefined && normalizePath(filename).startsWith(hostPrefix);
   const facades = new Map<string, string>();
   const facadeModules = new Set<string>();
+  const staticPackTaskReferences = new Set<string>();
   const imports = new Map<string, string>();
   const admitDevelopmentModule = (id: string): void => {
     const file = id.split('?')[0];
@@ -126,6 +134,15 @@ export function executionWorkerEntries(
     imports.set(key, selected);
     admitDevelopmentModule(selected);
     return selected;
+  };
+  const developmentModuleUrl = (id: string): string => {
+    const file = id.split('?')[0] ?? id;
+    const query = id.slice(file.length);
+    const pathname = pathToFileURL(file).pathname;
+    const url = file.startsWith(`${root}/`)
+      ? `${base}${pathname.slice(pathToFileURL(`${root}/`).pathname.length)}`
+      : `${base}@fs${pathname}`;
+    return `new URL(${JSON.stringify(`${url}${query}`)}, globalThis.location.origin).href`;
   };
   const linkedEdges = new Map<string, { imports: string[]; dynamicImports: string[] }>();
   const owners = new Map<string, Promise<string | undefined>>();
@@ -159,9 +176,10 @@ export function executionWorkerEntries(
     id: string,
   ): Promise<ExecutionWorker | undefined> => {
     const kind = source.slice(2, source.indexOf('-worker-runtime'));
-    const worker = kind === 'task' ? 'kernels' : kind;
+    // The Engine Worker owns the task pool; shared kernels are one consumer.
+    const worker = kind === 'task' ? 'engine' : kind;
     if (
-      (worker === 'engine' || worker === 'render' || worker === 'kernels') &&
+      (worker === 'engine' || worker === 'render') &&
       workers[worker] === false &&
       (await ownerName(dirname(id.split('?')[0] ?? id))) === '@forgeax/engine-app'
     )
@@ -178,7 +196,7 @@ export function executionWorkerEntries(
       allowedFiles = config.command === 'serve' ? config.server.fs.allow : undefined;
     },
     async resolveId(id, importer, options) {
-      if (id === virtual) return `\0${virtual}`;
+      if (id === virtual || id.startsWith(staticPackTaskUrlPrefix)) return `\0${id}`;
       if (delivery === 'native') return null;
       if (id.startsWith(externalPrefix)) return { id, external: true };
       if (!importer || !/^@forgeax\/engine(?:$|[/-])/.test(id)) return null;
@@ -224,6 +242,20 @@ export function executionWorkerEntries(
       };
     },
     async load(id) {
+      if (id.startsWith(`\0${staticPackTaskUrlPrefix}`)) {
+        const path = id.slice(staticPackTaskUrlPrefix.length + 1);
+        if (!building) {
+          admitDevelopmentModule(path);
+          return `export default ${developmentModuleUrl(path)};`;
+        }
+        const reference = this.emitFile({
+          type: 'chunk',
+          id: normalizePath(path),
+          preserveSignature: 'strict',
+        });
+        staticPackTaskReferences.add(reference);
+        return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
+      }
       if (id !== `\0${virtual}`) return null;
       const identity =
         runtimeIdentity ||
@@ -263,15 +295,10 @@ export function executionWorkerEntries(
         ? `export default Object.freeze(${JSON.stringify(importTableMarker)});`
         : `export default { ${[...imports]
             .sort(([a], [b]) => a.localeCompare(b))
-            .map(([key, id]) => {
-              const file = id.split('?')[0] ?? id;
-              const query = id.slice(file.length);
-              const pathname = pathToFileURL(file).pathname;
-              const url = file.startsWith(`${root}/`)
-                ? `${base}${pathname.slice(pathToFileURL(`${root}/`).pathname.length)}`
-                : `${base}@fs${pathname}`;
-              return `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: new URL(${JSON.stringify(`${url}${query}`)}, globalThis.location.origin).href }`;
-            })
+            .map(
+              ([key, id]) =>
+                `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: ${developmentModuleUrl(id)} }`,
+            )
             .join(',')} };`;
       // Literal imports stay in the same native module graph as the game.
       // Embedded hosts receive these namespaces instead of bundled substitutes.
@@ -282,6 +309,13 @@ export function loadImport(specifier) {
   if (!load) throw new TypeError('Runtime program import unavailable: ' + specifier);
   return load();
 }`;
+    },
+    resolveFileUrl({ referenceId, fileName, relativePath }) {
+      if (!staticPackTaskReferences.has(referenceId)) return null;
+      // Single HTML closes this emitted entry before publishing its embedded URL.
+      return `(typeof globalThis.__forgeaxImport === 'function'
+        ? ${JSON.stringify(`${staticPackEntryUrlPrefix}${fileName}`)}
+        : new URL(${JSON.stringify(relativePath)}, import.meta.url).href)`;
     },
     renderChunk(code, chunk) {
       const output = new MagicString(code);

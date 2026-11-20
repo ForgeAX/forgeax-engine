@@ -4,6 +4,7 @@ import {
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
   AmbientOcclusion,
+  type AmbientOcclusionSettings,
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
   BLOOM_ENABLED,
@@ -81,8 +82,8 @@ export interface WebGPURendererParameters extends Omit<UpstreamParameters, 'canv
     readonly backend?: RecordableBackend;
     readonly renderer?: Omit<RendererOptions, 'rhi' | 'rhiInstrumentation' | 'pipeline'>;
     readonly bundler?: BundlerOptions;
-    /** Extra exact Physical texture variants, produced by three/build at build time. */
-    readonly materialPrograms?: readonly string[];
+    /** Build-produced publications. A pending load can overlap device initialization. */
+    readonly materialPrograms?: readonly string[] | PromiseLike<readonly string[]>;
   };
 }
 
@@ -216,6 +217,7 @@ export class WebGPURenderer {
   private disposed = false;
   private disposing: Promise<void> | undefined;
   private captureAbort: AbortController | undefined;
+  private cancelMaterialStartup: (() => void) | undefined;
   private canvasTarget: CanvasTarget;
   private readonly canvasSize = new Vector2();
   private readonly canvasRectangle = new Vector4();
@@ -227,6 +229,7 @@ export class WebGPURenderer {
   private loop: ((time: number) => void) | null = null;
   private animationRequest: number | undefined;
   private receipt: FrameReceipt | undefined;
+  private composerAoBase: AmbientOcclusionSettings | undefined;
 
   constructor(parameters: WebGPURendererParameters = {}) {
     if (parameters.forgeax?.renderer && 'pipeline' in parameters.forgeax.renderer)
@@ -284,6 +287,14 @@ export class WebGPURenderer {
   ): Promise<void> {
     let native: Renderer | undefined;
     let projection: SceneProjection | undefined;
+    const materialPrograms = Promise.race([
+      Promise.resolve(options?.materialPrograms),
+      new Promise<undefined>((resolve) => {
+        this.cancelMaterialStartup = () => resolve(undefined);
+      }),
+    ]);
+    // Material loading can fail while the native host still owns its startup.
+    void materialPrograms.catch(() => undefined);
     try {
       const host = value(
         await constructRuntimeRendererHost(
@@ -299,6 +310,7 @@ export class WebGPURenderer {
       );
       native = host.renderer;
       value(await host.initialization);
+      const publications = await materialPrograms;
       if (this.disposed) {
         value(await native.dispose());
         return;
@@ -308,7 +320,7 @@ export class WebGPURenderer {
       projection = new SceneProjection(
         host.assets,
         external,
-        await prepareMaterialPrograms(host.assets, options?.materialPrograms),
+        await prepareMaterialPrograms(host.assets, publications),
         { targets },
       );
       const lease = value(native.attach(projection.world));
@@ -322,6 +334,8 @@ export class WebGPURenderer {
         (await this.recorder.dispose()).unwrap();
       }
       throw error;
+    } finally {
+      this.cancelMaterialStartup = undefined;
     }
   }
 
@@ -778,6 +792,7 @@ export class WebGPURenderer {
     this.loop = null;
     if (this.animationRequest !== undefined) cancelAnimationFrame(this.animationRequest);
     this.captureAbort?.abort();
+    this.cancelMaterialStartup?.();
     this.disposing = (async () => {
       await this.initializing.catch(() => undefined);
       const runtime = this.runtime;
@@ -1278,6 +1293,16 @@ export class WebGPURenderer {
       },
     );
     this.projectCameraEffects(projection, entity, camera, post);
+    const composerUsesGtao = post?.ao !== undefined;
+    if (composerUsesGtao !== (this.composerAoBase !== undefined)) {
+      const { profile } = native.inspect({ fields: ['profile'] });
+      const ambientOcclusion = this.composerAoBase ?? {
+        ...profile.ambientOcclusion,
+        method: 'gtao' as const,
+      };
+      value(native.setProfile({ ...profile, ambientOcclusion }));
+      this.composerAoBase = composerUsesGtao ? profile.ambientOcclusion : undefined;
+    }
     return entity;
   }
 

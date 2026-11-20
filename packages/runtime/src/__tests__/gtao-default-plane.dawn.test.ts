@@ -82,7 +82,7 @@ it('default zero-bias GTAO leaves an unoccluded tilted receiver unchanged', asyn
     const baseline = await renderWorldResponse(renderer, planeWorld(), 'deferred');
     const profile = renderer.setProfile({
       ...renderer.inspect().profile,
-      ssao: { algorithm: 'gtao', quality: 'high' },
+      ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high' },
     });
     if (!profile.ok) throw profile.error;
     const actual = await renderWorldResponse(renderer, planeWorld(), 'deferred', async (draw) => {

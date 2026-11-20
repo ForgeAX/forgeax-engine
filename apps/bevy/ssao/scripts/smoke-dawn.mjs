@@ -126,7 +126,7 @@ async function createStandardRenderer(ssao, label) {
           standardProfile: {
             ...DEFAULT_STANDARD_PROFILE,
             renderPath: 'deferred',
-            ssao,
+            ambientOcclusion: { enabled: ssao },
         },
       },
       { shaderManifestUrl: manifestUrl },

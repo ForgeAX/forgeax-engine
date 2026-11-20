@@ -1172,13 +1172,13 @@ still cast. GI, IBL, baked light and volumetric scattering keep their existing
 policies. Use linear HDR and a light-off independent oracle, then RHI Debug to
 check actual light/receiver carriers and matching shader work.
 
-## Three r184 defaults
+## Screen-space AO
 
-`AmbientOcclusion {}` and `StandardProfile.ssao: true` both select GTAO. Its
-radius is 0.25, thickness 1, distanceExponent 1, distanceFallOff 1 and
-resolutionScale 1. High quality searches 36 depth candidates. Use
-`resolutionScale: 0.5` for less pixel work; select `algorithm: 'ssao'` explicitly
-for hemisphere sampling. Eligible WebGPU and `wgpu-WebGL2` devices support AO
+Project `settings.rendering.ambientOcclusion` or the Standard profile selects
+`enabled` and `method` separately. The method defaults to `ssao`. A camera's
+`AmbientOcclusion` component inherits that method and overrides enablement and
+view parameters. Set `method: 'gtao'` for GTAO. Use `resolutionScale: 0.5` to
+evaluate AO at half resolution in each dimension. Eligible WebGPU and `wgpu-WebGL2` devices support AO
 through Forward input as well as the existing Deferred route; AO alone does not
 force a Deferred profile. WebGPU uses the production raster route and exercises
 compute through the internal Renderer acceptance override. WebGL2 uses fragment

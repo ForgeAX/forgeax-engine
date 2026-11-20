@@ -87,6 +87,10 @@ export class DecoderRegistry {
     return this.dispatch.has(kind.kind);
   }
 
+  uses<P>(kind: string, decoder: AssetDecoder<P>): boolean {
+    return this.dispatch.get(kind)?.decoder === decoder;
+  }
+
   canPrepare(kind: string): boolean {
     return this.dispatch.get(kind)?.decoder.prepare !== undefined;
   }

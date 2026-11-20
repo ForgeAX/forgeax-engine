@@ -118,6 +118,7 @@ function collectVertexHits(
   // ── resolve entity's mesh asset ──
   const value = queryMesh(world, entity);
   if (value === undefined) return [];
+  if ('unavailable' in value) throw value.unavailable;
   const mesh = value.mesh;
 
   // VertexHit has no instance ordinal; explicit instances are untestable here.

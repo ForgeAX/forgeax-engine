@@ -304,7 +304,7 @@ function createProgramHost(fallback) {
     }
     if (!fallback) throw new TypeError('New program modules require runtime module delivery');
     return fallback.publish(program, bindings);
-  }, ...(nativeUrls ? { async importModule(url) {
+  }, ...(fallback?.publishForTask ? { publishForTask: (program, bindings) => fallback.publishForTask(program, bindings) } : {}), ...(nativeUrls ? { async importModule(url) {
     return nativeUrls.has(url) ? import(/* @vite-ignore */ url) : fallback.importModule(url);
   } } : {}) };
 }

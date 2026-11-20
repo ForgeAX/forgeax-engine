@@ -11,7 +11,7 @@ import {
 } from '../../features/surface-data-usage';
 import { needsSceneSurfaceAdmission } from '../feature-view-systems';
 
-const forward = { renderPath: 'forward' as const, ssao: false };
+const forward = { renderPath: 'forward' as const, ambientOcclusion: { enabled: false } };
 const unused = captureUnusedSurfaceData({
   identity: 'unused',
   extract: () => ok(undefined),
@@ -28,9 +28,14 @@ it('keeps unknown features, SSAO, Deferred, custom pipelines and conformance dia
   expect(needsSceneSurfaceAdmission(forward, true, undefined, host([{}]))).toBe(true);
   expect(needsSceneSurfaceAdmission(forward, true, undefined, undefined)).toBe(true);
   expect(needsSceneSurfaceAdmission(forward, true, true, host([unused]))).toBe(true);
-  expect(needsSceneSurfaceAdmission({ ...forward, ssao: true }, true, false, host([unused]))).toBe(
-    true,
-  );
+  expect(
+    needsSceneSurfaceAdmission(
+      { ...forward, ambientOcclusion: { enabled: true } },
+      true,
+      false,
+      host([unused]),
+    ),
+  ).toBe(true);
   expect(
     needsSceneSurfaceAdmission({ ...forward, renderPath: 'deferred' }, true, false, host([unused])),
   ).toBe(true);

@@ -192,11 +192,15 @@ export interface MaterialSurfaceProgramAbi {
 
 /** Complete immutable ABI projection for one material program family. */
 export const STANDARD_GBUFFER_V2_LAYOUT = 'standard-gbuffer/2' as const;
+export const STANDARD_GBUFFER_COMPACT_LAYOUT = 'standard-gbuffer/4' as const;
 export type MaterialGBufferLayout = typeof STANDARD_GBUFFER_V2_LAYOUT;
+export type CompactGBufferLayout = typeof STANDARD_GBUFFER_COMPACT_LAYOUT;
 
 export interface MaterialProgramAbi {
   /** Complete surface layout certified by this exact producer. */
   readonly gbuffer?: MaterialGBufferLayout;
+  /** Independently certified output of the compact fragment entry. */
+  readonly compactGbuffer?: CompactGBufferLayout;
   /** Producer-owned color-stage fog semantics; independent of the binding layout. */
   readonly forwardFog?: 'height-vertex/1';
   /** Certified template position = input + bounded Standard displacement,
@@ -496,6 +500,7 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
   const validProgramContracts = () =>
     (abi.gbuffer === undefined || abi.gbuffer === STANDARD_GBUFFER_V2_LAYOUT) &&
+    (abi.compactGbuffer === undefined || abi.compactGbuffer === STANDARD_GBUFFER_COMPACT_LAYOUT) &&
     (abi.forwardFog === undefined || abi.forwardFog === 'height-vertex/1') &&
     (abi.positionBounds === undefined || abi.positionBounds === 'standard-input') &&
     (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&

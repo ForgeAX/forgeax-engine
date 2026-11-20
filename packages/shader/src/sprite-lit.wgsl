@@ -8,7 +8,7 @@
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture, packSceneTemporal}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #import forgeax_view::fog::{forward_fog, vertex_height_fog}
-#import forgeax_scene_temporal::{packSceneTemporalV1WithValidity, sceneViewZ}
+#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity, sceneViewZ}
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #import forgeax_standard::cluster::{evaluateStandardClusterLights}
 #endif
@@ -291,14 +291,13 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_in
   return out;
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+fn spriteTemporalRejected(in : TemporalVsOut) -> bool {
   applyViewClipping(in.clippingPositionWS, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uvAtlas, material.baseColorTextureCoordinatesMetadata.zw);
-  let alpha = clamp(texel.a * material.colorTint.a, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    discard;
-  }
+  return clamp(texel.a * material.colorTint.a, 0.0, 1.0) <= 0.0;
+}
+
+fn materialTemporal(in : TemporalVsOut) -> vec4<f32> {
   var motionValid = true;
 #if STORAGE_BUFFER_AVAILABLE == true
   motionValid = meshMotionValid(meshes[0].temporal.y);
@@ -313,3 +312,16 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 // sprite-lit needs at least one light in the scene to be visible; for unlit
 // sprites use forgeax::sprite (1 string change in MaterialAsset).
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  if (spriteTemporalRejected(in)) { discard; }
+  return materialTemporal(in);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+  if (spriteTemporalRejected(in)) { discard; }
+  return encodeSceneVelocity(materialTemporal(in));
+}

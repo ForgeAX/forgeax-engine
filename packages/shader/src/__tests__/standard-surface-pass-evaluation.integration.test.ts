@@ -28,21 +28,21 @@ describe('Standard Surface pass evaluation', () => {
         const skinGBuffer = entry === 'fs_gbuffer' && shader.includes('fn skinGBuffer(');
         if (skinGBuffer) {
           expect(entryBody(shader, 'fs_gbuffer(')).toContain(
-            'return skinGBuffer(standardParallaxInput(in), frontFacing);',
+            'return skinGBuffer(standardParallaxInput(in), frontFacing, false).full;',
           );
           expect(entryBody(shader, 'fs_gbuffer_uncovered(')).toContain(
-            'skinGBuffer(standardParallaxInput(in), frontFacing)',
+            'skinGBuffer(standardParallaxInput(in), frontFacing, false).full',
           );
         }
         const owner =
           entry === 'fs_gbuffer'
             ? skinGBuffer
               ? 'skinGBuffer'
-              : entry
+              : 'standardGBuffer'
             : name === 'default-standard-pbr.wgsl'
               ? 'standardForwardLitSurface'
               : 'standardSkinForwardLit';
-        const body = entryBody(shader, owner);
+        const body = entryBody(shader, `${owner}(`);
         expect(body, `${name}:${owner} must exist`).toContain(`fn ${owner}`);
         const preparation = entryBody(shader, 'prepareStandardForwardSurface(');
         const evaluations = entry === 'fs_main' ? preparation : body;
@@ -74,6 +74,8 @@ describe('Standard Surface pass evaluation', () => {
         expect(body).toContain('surface.emissive');
         if (entry === 'fs_gbuffer') {
           expect(body).toContain('encodeStandardGBuffer(');
+          expect(body).toContain('encodeCompactStandardGBuffer(');
+          expect(entryBody(shader, 'fs_gbuffer_compact(')).toContain(`${owner}(`);
           expect(body).toContain('standardSurfaceSpecular(in, surface,');
           expect(body).not.toContain('evaluateStandardEnvironment(');
           expect(body).not.toContain('evaluateStandardDirect(');

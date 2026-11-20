@@ -20,7 +20,6 @@ import {
 } from '../pipeline/standard-lighting/topology';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
-import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from '../record/__tests__/main-pass-cpu-setup-fixture';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -280,8 +279,12 @@ describe('typed built-in pipeline topology', () => {
     'deferred',
   ] as const)('compiles native scene contribution through the real Standard %s pipeline', async (renderPath) => {
     const input = topology('forgeax::standard', {
-      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: true },
-      config: { ssao: { enabled: true } },
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath,
+        ambientOcclusion: { enabled: true },
+      },
+      config: { ambientOcclusion: { enabled: true } },
       camera: { antialias: 'taa' },
       shadow: {
         directional: { mapSize: 1024, cascadeCount: 3 },
@@ -335,11 +338,18 @@ describe('typed built-in pipeline topology', () => {
     expect(compiled.ok).toBe(true);
     if (compiled.ok) await compiled.value.retire();
   });
-  it('builds the actual Forward 4x normal producer with its own vertex and single-target depth contract', async () => {
+  it.each([
+    false,
+    true,
+  ])('prepares Forward Water motion only when demanded (%s)', async (motionBlur) => {
     let builtGraph: RenderGraphBuilder<RenderPipelineFrame> | undefined;
     const compiled = compile(
       standardPipeline,
-      topology('forgeax::standard', { camera: { antialias: 'msaa' }, water: true }),
+      topology('forgeax::standard', {
+        camera: { antialias: 'msaa' },
+        water: true,
+        temporal: { taa: false, motionBlur },
+      }),
       undefined,
       (graph) => {
         builtGraph = graph;
@@ -369,60 +379,26 @@ describe('typed built-in pipeline topology', () => {
     Object.assign(fixture.c, { pipelinePreparationEntries: [entry] });
     fixture.acceptMaterials();
     const lookup = vi.spyOn(fixture.c.runtime, 'getMaterialShaderPipelineEntry');
-    const descriptors: import('@forgeax/engine-rhi').RenderPipelineDescriptor[] = [];
     try {
       for (const prepare of scenePipelinePreparations(builtGraph)) prepare(fixture.c, new Map());
-      const request = lookup.mock.calls.find((args) => args[19] === 'fs_ao_input_msaa');
-      if (request === undefined) throw new Error('missing actual normal producer request');
-      const built = buildPipelineForMaterialShader(
-        request[0],
-        {
-          source: `
-            struct VsOut { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32> }
-            @vertex fn vs_main() -> VsOut { return VsOut(vec4<f32>(0.0), vec3<f32>(0.0, 1.0, 0.0)); }
-            @vertex fn vs_temporal() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }
-            @fragment fn fs_temporal() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }
-            @fragment fn fs_ao_input_msaa(input: VsOut) -> @location(0) vec4<u32> { return vec4<u32>(vec3<u32>(input.normal), 1u); }
-          `,
-          paramSchema: [],
-        },
-        {
-          device,
-          createRenderPipeline: (descriptor) => {
-            descriptors.push(descriptor);
-            return device.createRenderPipeline(descriptor);
-          },
-          shaderModuleFactory: { createShaderModule: () => ok(module) },
-          pipelineLayout: device.createPipelineLayout({ bindGroupLayouts: [] }).unwrap(),
-          colorFormat: request[9] ?? 'rgba8uint',
-          colorFormats: [request[9] ?? 'rgba8uint', ...(request[17] ?? [])],
-          depthFormat: 'depth32float-stencil8',
-          vertexBuffers: [],
-        },
-        request[2],
-        undefined,
-        request[18],
-        request[19],
-        undefined,
-        request[6],
-        request[8],
+      expect(lookup.mock.calls.some((args) => args[6] === 'temporal')).toBe(motionBlur);
+      expect(lookup.mock.calls.some((args) => args[19] === 'fs_ao_input_msaa')).toBe(false);
+      const inspection = compiled.inspect();
+      const resources = inspection.resources.map(({ label }) => label);
+      expect(resources.includes('water-opaque-temporal-msaa')).toBe(motionBlur);
+      expect(resources.includes('standard-scene-temporal')).toBe(motionBlur);
+      const resolve = inspection.passes.find(
+        ({ name }) => name === 'water-opaque-msaa-surface-resolve',
       );
-      expect(built.ok, built.ok ? undefined : built.error.message).toBe(true);
-      expect(request[6]).toBe('forward');
-      expect(descriptors).toEqual([
-        expect.objectContaining({
-          vertex: expect.objectContaining({ entryPoint: 'vs_main' }),
-          fragment: expect.objectContaining({
-            entryPoint: 'fs_ao_input_msaa',
-            targets: [{ format: 'rgba8uint', writeMask: 15 }],
-          }),
-          depthStencil: expect.objectContaining({
-            depthWriteEnabled: false,
-            depthCompare: 'greater-equal',
-          }),
-          multisample: { count: 4 },
-        }),
-      ]);
+      expect(
+        resolve?.accesses
+          .filter(({ usage }) => usage === 'color-attachment')
+          .map(({ resource }) => resource),
+      ).toEqual(
+        motionBlur
+          ? ['water-opaque-selected-sample', 'standard-scene-temporal', 'water-opaque-raw-depth']
+          : ['water-opaque-selected-sample', 'water-opaque-raw-depth'],
+      );
     } finally {
       lookup.mockRestore();
       fixture.dispose();
@@ -477,22 +453,14 @@ describe('typed built-in pipeline topology', () => {
     const names = info.passes.map((pass) => pass.name);
     const pass = (name: string) => info.passes.find((entry) => entry.name === name);
     const resource = (label: string) => info.resources.find((entry) => entry.label === label);
-    for (const label of [
-      'scene-color-msaa',
-      'scene-depth',
-      'water-opaque-normal-msaa',
-      'water-opaque-temporal-msaa',
-    ]) {
+    for (const label of ['scene-color-msaa', 'scene-depth', 'water-opaque-temporal-msaa']) {
       expect(resource(label)?.descriptor).toMatchObject({ sampleCount: 4 });
     }
-    expect(resource('water-opaque-normal-msaa')?.descriptor).toMatchObject({
-      format: 'rgba8uint',
-      sampleCount: 4,
-    });
-    expect(resource('water-opaque-normal')?.descriptor).toMatchObject({ format: 'r32uint' });
+    expect(names).not.toContain('water-opaque-normal-msaa');
+    expect(resource('water-opaque-normal-msaa')).toBeUndefined();
+    expect(resource('water-opaque-normal')).toBeUndefined();
     for (const label of [
       'water-opaque-selected-sample',
-      'water-opaque-normal',
       'standard-scene-temporal',
       'water-opaque-raw-depth',
       'water-opaque-depth',
@@ -519,7 +487,6 @@ describe('typed built-in pipeline topology', () => {
     expect(pass('water-opaque-msaa-surface-resolve')?.accesses).toEqual(
       expect.arrayContaining([
         { resource: 'scene-depth', usage: 'sampled-read' },
-        { resource: 'water-opaque-normal-msaa', usage: 'sampled-read' },
         { resource: 'water-opaque-temporal-msaa', usage: 'sampled-read' },
         { resource: 'water-opaque-depth', usage: 'depth-stencil-write' },
       ]),
@@ -575,12 +542,12 @@ describe('typed built-in pipeline topology', () => {
       usage: 'sampled-read',
     });
     expect(names).toContain('water-ssr-trace');
-    expect(pass('water-ssr-trace')?.accesses).toContainEqual({
-      resource: 'water-opaque-normal',
+    expect(pass('water-ssr-trace')?.accesses).not.toContainEqual({
+      resource: 'water-no-water-depth',
       usage: 'sampled-read',
     });
     expect(pass('water-ssr-trace')?.accesses).toContainEqual({
-      resource: 'water-no-water-depth',
+      resource: 'water-normal-roughness',
       usage: 'sampled-read',
     });
   });
@@ -1037,7 +1004,11 @@ describe('typed built-in pipeline topology', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: true },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'deferred',
+          ambientOcclusion: { enabled: true },
+        },
       }),
     );
     expect(compiled.ok).toBe(true);
@@ -1092,7 +1063,11 @@ describe('typed built-in pipeline topology', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: true },
+        },
         lane: {
           compute: false,
           storageBuffer: false,
@@ -1170,11 +1145,16 @@ describe('typed built-in pipeline topology', () => {
           })
         : undefined;
     if (ssr !== undefined) expect(ssr.status).toBe('admitted');
+    const ambientOcclusion = { enabled: true, method: 'gtao' } as const;
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
-        config: { ssao: { enabled: true } },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion,
+        },
+        config: { ambientOcclusion },
         ...(reader === 'contact' ? { forwardContactShadows: true } : {}),
         ...(reader === 'capsules' ? { forwardCapsuleShadows: true } : {}),
         ...(reader === 'decals' ? { projectedDecals: [[]] } : {}),
@@ -1237,7 +1217,11 @@ describe('typed built-in pipeline topology', () => {
     const msaa = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: true },
+        },
         camera: { antialias: 'msaa' },
       }),
     );
@@ -1258,7 +1242,11 @@ describe('typed built-in pipeline topology', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: false },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: false },
+        },
         camera: { antialias },
       }),
     );
@@ -1283,7 +1271,11 @@ describe('typed built-in pipeline topology', () => {
     const compiled = compile(
       standardPipeline,
       topology('forgeax::standard', {
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: true },
+        },
         camera: { antialias: 'msaa' },
       }),
     );
@@ -1306,7 +1298,11 @@ describe('typed built-in pipeline topology', () => {
       const compiled = compile(
         standardPipeline,
         topology('forgeax::standard', {
-          standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+          standardProfile: {
+            ...DEFAULT_STANDARD_PROFILE,
+            renderPath: 'forward',
+            ambientOcclusion: { enabled: true },
+          },
           camera: { antialias },
         }),
       );
@@ -1332,7 +1328,7 @@ describe('typed built-in pipeline topology', () => {
       standardPipeline,
       topology('forgeax::standard', {
         standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
-        config: { ssao: { enabled: false } },
+        config: { ambientOcclusion: { enabled: false } },
         lane: {
           compute: false,
           storageBuffer: true,
@@ -1581,7 +1577,11 @@ describe('typed built-in pipeline topology', () => {
     ]);
   });
 
-  it('feeds the SSR source-reactivity producer to final TAA without a second mask resource', () => {
+  it.each([
+    { compactGbuffer: undefined, decals: false, label: 'full' },
+    { compactGbuffer: 'standard-gbuffer/4', decals: false, label: 'Default' },
+    { compactGbuffer: 'standard-gbuffer/4', decals: true, label: 'Default with decals' },
+  ] as const)('feeds SSR source reactivity to TAA ($label)', ({ compactGbuffer, decals }) => {
     const ssr = admitSsrSpatial({
       camera: {
         projection: 'perspective',
@@ -1613,16 +1613,41 @@ describe('typed built-in pipeline topology', () => {
       topology('forgeax::standard', {
         standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
         camera: { tonemap: 'aces-filmic', antialias: 'taa', bloom: 'off' },
+        ...(compactGbuffer === undefined ? {} : { compactGbuffer }),
+        ...(decals ? { projectedDecals: [[]] } : {}),
         reflectionFallback: { enabled: true },
         ssr,
       }),
     ).unwrap();
     const info = compiled.inspect();
+    expect(info.resources.some((resource) => resource.label === 'deferred-reflection-table')).toBe(
+      false,
+    );
     expect(info.resources.filter((r) => r.label === 'ssr-hit-reactivity')).toHaveLength(1);
     expect(info.passes.find((p) => p.name === 'ssr-trace')?.accesses).toContainEqual({
       resource: 'ssr-hit-reactivity',
       usage: 'storage-write',
     });
+    if (compactGbuffer !== undefined) {
+      expect(info.passes.find((p) => p.name === 'ssr-scene-temporal')?.accesses).toContainEqual({
+        resource: 'scene-velocity',
+        usage: 'sampled-read',
+      });
+      for (const name of ['ssr-trace', 'ssr-compose']) {
+        expect(info.passes.find((p) => p.name === name)?.accesses).toContainEqual({
+          resource: decals ? 'decal-surface-f0' : 'gbuffer-b',
+          usage: 'sampled-read',
+        });
+      }
+    }
+    if (decals) {
+      const apply = info.passes.find((p) => p.name === 'decal-apply');
+      expect(apply?.accesses).toContainEqual({ resource: 'gbuffer-b', usage: 'sampled-read' });
+      expect(info.passes.find((p) => p.name === 'lighting')?.accesses).toContainEqual({
+        resource: 'decal-surface-f0',
+        usage: 'sampled-read',
+      });
+    }
     // The separable footprint max reads the producer once; TAA samples its rows.
     expect(
       info.passes.find((p) => p.name === 'taa-secondary-reactivity-rows')?.accesses,
@@ -1888,8 +1913,12 @@ describe('Standard two-phase GPU occlusion topology', () => {
     const names = passNames(
       topology('forgeax::standard', {
         camera: { antialias },
-        config: { ssao: { enabled: true } },
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        config: { ambientOcclusion: { enabled: true } },
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: true },
+        },
       }),
       requests,
     );
@@ -1954,9 +1983,12 @@ describe('Standard two-phase GPU occlusion topology', () => {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'forward',
-          ssao: consumer === 'ao',
+          ambientOcclusion: { enabled: consumer === 'ao' },
         },
-        config: { gpuOcclusion: true, ...(consumer === 'ao' ? { ssao: { enabled: true } } : {}) },
+        config: {
+          gpuOcclusion: true,
+          ...(consumer === 'ao' ? { ambientOcclusion: { enabled: true } } : {}),
+        },
         ...(consumer === 'contact' ? { forwardContactShadows: true } : {}),
         ...(consumer === 'capsules' ? { forwardCapsuleShadows: true } : {}),
         ...(consumer === 'decals' ? { projectedDecals: [[]] } : {}),

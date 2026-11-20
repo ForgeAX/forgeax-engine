@@ -14,7 +14,7 @@
 #endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
-#import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity}
 #import forgeax_material::alpha_hash::{alphaHashThreshold, alphaCoverageValue, materialOutputAlpha, materialOutputColor}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{forward_fog}
@@ -588,8 +588,12 @@ fn temporalVertexColor(in : TemporalVsOut) -> vec4<f32> {
 #endif
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+struct UnlitTemporalCoverage {
+  opacity : f32,
+  rejected : bool,
+}
+
+fn unlitTemporalCoverage(in : TemporalVsOut) -> UnlitTemporalCoverage {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   selectSceneMaterial(in.materialAddress);
 #endif
@@ -598,7 +602,10 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
   let coverage = unlitCoverageValue(texSample.a, vertexColor.a, mappedAlpha);
   let test = unlitCoverageTest(in.positionOS, material.alphaToCoverage, unlitAlphaHash());
-  if (unlitCoverageRejected(coverage, test)) { discard; }
+  return UnlitTemporalCoverage(coverage, unlitCoverageRejected(coverage, test));
+}
+
+fn materialTemporal(in : TemporalVsOut, coverage : f32) -> vec4<f32> {
   applyUnlitClipping(in.clippingPositionWS, in.clip.xy, false);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
 #ifdef COVERAGE_ONLY
@@ -630,4 +637,19 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
     reactive,
     motionValid,
   );
+}
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return materialTemporal(in, coverage.opacity);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return encodeSceneVelocity(materialTemporal(in, coverage.opacity));
 }

@@ -186,7 +186,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     renderPath: 'deferred' as const,
     visibleSurface: true,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   };
   let seeds = [{ id: 7, generation: 1, position: [0, 0, -3] as const, cellSize: 2, traced: true }];
   const submit = () => renderer.draw({ source: lease, geometryLane: 'automatic' });

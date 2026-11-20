@@ -10,6 +10,7 @@
 // `game-default` and may be overridden via `?game=<slug>`.
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import templateRuntimePacks from 'virtual:forgeax/preview-runtime-packs';
 import {
   configureRuntimeAssetCatalog,
   createRuntimeAssetImportTransport,
@@ -110,7 +111,8 @@ const templates: Record<
     host: () => import('virtual:forgeax/plugin-programs/game-3d/frontend'),
   },
 };
-const selected = templates[slug === 'game-default' ? 'game-capability-lab' : slug];
+const templateSlug = slug === 'game-default' ? 'game-capability-lab' : slug;
+const selected = templates[templateSlug];
 if (!selected) throw new Error(`preview: unknown project ${slug}`);
 const previewStartupTraceStartedAt = performance.now();
 const previewStartupTrace: { readonly stage: string; readonly elapsedMs: number }[] = [];
@@ -127,17 +129,17 @@ const [engine, host] = surfaceEvidenceMode
   ? [undefined, undefined]
   : await Promise.all([selected.engine(), selected.host()]);
 tracePreviewStartup('template-programs:ready');
-if (slug === 'game-3d' && runtimeBinding === undefined) {
-  throw new Error('preview: runtime vase requires the Pack runtime binding');
-}
-const runtimeProgramHost =
-  engine !== undefined && slug === 'game-3d'
-    ? createBrowserPackProgramHost(
-        await prepareBrowserPackProgramScope(
-          new URL('forgeax-pack-program-worker.js', document.baseURI).href,
-        ),
-      )
-    : undefined;
+const authoredPacks = templateRuntimePacks[templateSlug] ?? [];
+const usesRuntimePacks = engine !== undefined && (slug === 'game-3d' || authoredPacks.length > 0);
+if (usesRuntimePacks && runtimeBinding === undefined)
+  throw new Error('Preview Runtime Packs require the Pack runtime binding');
+const runtimeProgramHost = usesRuntimePacks
+  ? createBrowserPackProgramHost(
+      await prepareBrowserPackProgramScope(
+        new URL('forgeax-pack-program-worker.js', document.baseURI).href,
+      ),
+    )
+  : undefined;
 const enginePrograms = engine?.createPrograms(
   crypto.randomUUID(),
   `preview:${slug}:engine`,
@@ -158,8 +160,8 @@ const app = await createApp(
   {
     uiRoot: previewRun.uiRoot,
     assetDecoders: [uiAssetContribution],
-    ...(slug === 'game-3d' && runtimeBinding !== undefined
-      ? { runtimePacks: { scopeId: runtimeBinding.scopeId } }
+    ...(usesRuntimePacks && runtimeBinding !== undefined
+      ? { runtimePacks: { scopeId: runtimeBinding.scopeId, authored: authoredPacks } }
       : {}),
     plugins: previewPlugins,
     ...(enginePrograms === undefined ? {} : { pluginPrograms: enginePrograms }),

@@ -901,9 +901,10 @@ Pure expressions are canonicalized by typed content, so upstream constant
 interning does not affect a host-neutral recipe's identity. Distinct mutable
 inputs retain separate reflected slots.
 A missing cooked program or unmatched recipe fails explicitly.
-Install publications for all structural revisions in `forgeax.materialPrograms`
-before renderer initialization. A new recipe requires the producer to cook its
-publication and the player to load it; binding never invokes a runtime compiler.
+Provide publications for all structural revisions through `forgeax.materialPrograms`.
+A promise for the publications lets loading overlap device startup. Await
+`renderer.init()` before drawing. The producer cooks new recipes, and the player
+loads the resulting publications before binding them.
 
 A supplied root replaces its ordinary parameter/map; absent roots retain the
 normal Standard parameters, maps and default normal path. Color texture RGB is

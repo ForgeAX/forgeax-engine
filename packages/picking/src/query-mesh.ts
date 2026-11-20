@@ -10,7 +10,7 @@ import {
 } from '@forgeax/engine-render';
 import { GlyphText, Tilemap } from '@forgeax/engine-render/authoring';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetError, AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { readWorldMatrix, type ScreenRay } from './pick-core';
 
 export function* meshQueryEntities(world: World): Generator<EntityHandle> {
@@ -33,6 +33,7 @@ export function queryMesh(
       readonly mesh: MeshAsset;
       readonly assetHandle?: AssetHandle<'mesh'>;
     }
+  | { readonly bounds: MeshAsset['aabb']; readonly unavailable: AssetError }
   | undefined {
   if (world.hasComponent(entity, Tilemap)) {
     const mesh = tilemapGeometry(world, entity);
@@ -44,8 +45,13 @@ export function queryMesh(
   }
   const binding = world.get(entity, MeshFilter);
   if (!binding.ok || binding.value.assetHandle === 0) return undefined;
-  const resolved = runtimeAssets(world.assets).resolveAsset<MeshAsset>(binding.value.assetHandle);
-  return resolved.ok ? { mesh: resolved.value, assetHandle: binding.value.assetHandle } : undefined;
+  const records = runtimeAssets(world.assets);
+  const handle = binding.value.assetHandle;
+  const resolved = records.resolveAsset<MeshAsset>(handle);
+  if (resolved.ok) return { mesh: resolved.value, assetHandle: handle };
+  if (resolved.error.code !== 'asset-cpu-data-unavailable') return undefined;
+  const draw = records.meshDraw(handle).unwrap();
+  return { bounds: draw.aabb, unavailable: resolved.error };
 }
 
 /** Same look-at billboard basis as msdf-text.wgsl; label rotation/scale do not deform glyphs. */

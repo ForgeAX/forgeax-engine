@@ -229,7 +229,9 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       (await frameStats(planar ? 'game' : 'none', material, direct)).count;
     const profile = renderer.inspect().profile;
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...profile, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const direct of [true, false]) {
         const label = `${renderPath}/${direct ? 'direct' : 'gpu-driven'}`;
         const box = await frame(false, mirror, direct);

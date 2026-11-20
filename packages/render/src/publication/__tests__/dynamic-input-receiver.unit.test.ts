@@ -70,6 +70,14 @@ it('retains a valid page, refreshes device addresses and clears the owned lifeti
     recovered.page.upload().unwrap();
     expect(recovered.page.consume(firstRange, 2).ok).toBe(false);
     expect(recovered.page.consume(recoveredRange, 2).ok).toBe(true);
+    const remapped = owner.restore(capture(), 8, 'render-source:1').unwrap();
+    assert(remapped);
+    expect(remapped.ranges?.[0]?.member.worldIdentity).toBe('render-source:1');
+    expect(capture().ranges?.[0]?.member.worldIdentity).toBe('water');
+    const retained = owner.restore(capture(), 8, 'render-source:1').unwrap();
+    expect(retained?.ranges).toBe(remapped.ranges);
+    const newSource = owner.restore(capture(), 8, 'render-source:2').unwrap();
+    expect(newSource?.ranges?.[0]?.member.worldIdentity).toBe('render-source:2');
     const replaced = owner.restore(capture(2), 8).unwrap();
     assert(replaced);
     expect(replaced.page).not.toBe(first.page);

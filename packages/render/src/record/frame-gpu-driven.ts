@@ -93,6 +93,10 @@ export function collectFrameGpuDrivenArtifacts(
     probeBlend: (scene?.probeBlend?.records.length ?? 0) > 0,
     programs,
     resolve: internals.getMaterialShaderArtifact,
+    canAwaitSource: (id) =>
+      (
+        internals.shaderRegistry ?? internals.assets.shaderRegistry
+      ).isMaterialArtifactPreparationPending(id),
     clustered: clusteredLightingActive(standard),
     reflectionFallback: reflectionFallbackDemandOf(internals),
     shadowViews,
@@ -245,6 +249,7 @@ export function gpuDrivenPrepareRequest(
   return {
     scene,
     batchExecutions: artifacts.batchExecutions,
+    materialShaderRegistry: internals.shaderRegistry ?? internals.assets.shaderRegistry,
     materialArtifactResolver: (shader, request) =>
       internals.getMaterialShaderArtifact?.(shader, {
         ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),

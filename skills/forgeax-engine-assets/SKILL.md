@@ -434,6 +434,12 @@ as metadata; mounting it without membership in the current target's tools map fa
 
 ### Runtime Pack validation route
 
+For a generator that can run in a separate realm, declare
+`runtime: { dependencies, execution: 'task-worker' }`. Use the App Engine
+Worker's task pool and yield through `context.task` in long loops. All asset
+reads must belong to the fixed dependency closure. See the
+[Runtime Pack execution contract](../../packages/import/README.md#runtime-pack-production-and-durable-content).
+
 Run `pnpm --filter @forgeax/engine-devkit test:runtime-browser` under an owned
 Xvfb display for the real Worker JS/TS x dev/build paths. The same gate belongs
 to `pnpm test:browser` and Actions browser shard 1. Keep the full hello/learn

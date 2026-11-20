@@ -45,7 +45,7 @@ function matrixPayload(source: CameraSnapshot): Float32Array {
 
 describe('SSAO matrix scratch ownership', () => {
   it('publishes the spiral estimator budget and scale without changing Cluster offsets', () => {
-    const config = { enabled: true, algorithm: 'spiral-ssao' as const, resolutionScale: 0.5 };
+    const config = { enabled: true, method: 'spiral-ssao' as const, resolutionScale: 0.5 };
     const payload = buildSsaoUniformPayload(camera(), config, {
       originX: 7,
       originY: 9,

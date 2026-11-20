@@ -47,6 +47,10 @@ import type {
   ReflectedDirectLightSlotLayout,
   StandardClusterReflectedAbi,
 } from '../light-buffer-layout';
+import {
+  DEFERRED_CHANNEL_MAPPING_MASK,
+  prepareDeferredLightingChannels,
+} from '../pipeline/standard-lighting/deferred-channels';
 import type { StandardLocalLightInput } from '../pipeline/standard-lighting/light-frame';
 import {
   type PreparedStandardLighting,
@@ -766,6 +770,7 @@ export function prepareFrameLighting(
     | 'pbrPipelineLayout'
   >,
   renderables?: FrameList<RenderableSnapshot>,
+  receiverDomain = renderables,
 ): Result<
   {
     light: DirectionalLightSnapshot;
@@ -805,6 +810,7 @@ export function prepareFrameLighting(
     directionalLight,
     pipelineState,
     renderables,
+    receiverDomain,
   );
   if (!standard.ok) return standard;
   return ok({
@@ -1026,7 +1032,7 @@ function standardScreenTransportDemand(
     !environment.atmosphere.backgroundOnly
   )
     return true;
-  if (frameState.installedPipelineConfig?.ssao?.enabled === true) return true;
+  if (frameState.installedPipelineConfig?.ambientOcclusion?.enabled === true) return true;
   if ((frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath === 'deferred')
     return false;
   return (
@@ -1086,6 +1092,7 @@ function prepareStandardLightingTopology(
       >
     | undefined,
   renderables?: FrameList<RenderableSnapshot>,
+  receiverDomain = renderables,
 ): Result<StandardTopologyInputValue, RenderError> {
   const clusterGrid = frameState.installedPipelineConfig?.clusterGrid ?? DEFAULT_CLUSTER_GRID;
   const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
@@ -1121,6 +1128,16 @@ function prepareStandardLightingTopology(
     );
   }
   const viewCamera = camera ?? makeZeroCameraFallbackSnapshot();
+  const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const renderPath = profile?.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
+  const deferredChannelProjection =
+    camera !== undefined &&
+    receiverDomain !== undefined &&
+    renderPath === 'deferred' &&
+    profile?.gbufferFormat !== 'default' &&
+    profile?.deferredDirectionalShadowReceiver === 'projected'
+      ? prepareDeferredLightingChannels(receiverDomain, local, directionalLight)
+      : 0;
   const prepared = prepareStandardLighting(
     {
       directional: directionalLight,
@@ -1132,9 +1149,8 @@ function prepareStandardLightingTopology(
       grid: clusterGrid,
       lightCount,
       ...(droppedLocalLights === 0 ? {} : { droppedLocalLights }),
-      renderPath:
-        (frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath ??
-        DEFAULT_STANDARD_PROFILE.renderPath,
+      renderPath,
+      ...(deferredChannelProjection === 0 ? {} : { deferredChannelProjection }),
     },
     reflectedAbi?.directLightSlot.capacity,
     frameState.hdrpClusterBinScratch,
@@ -1641,7 +1657,7 @@ function buildClusterUniformPayload(
   hdrpBuffers: HdrpBuffers,
   reflectedAbi: StandardClusterReflectedAbi,
 ): Uint8Array {
-  const clusterSsaoConfig = frameState.installedPipelineConfig?.ssao;
+  const clusterSsaoConfig = frameState.installedPipelineConfig?.ambientOcclusion;
   const clusterSsaoIntensity = ssaoUsesLighting(clusterSsaoConfig)
     ? (clusterSsaoConfig?.intensity ?? 1.0)
     : 0;
@@ -1729,6 +1745,7 @@ export function writeHdrpClusterAndSsaoBuffers(
   // (and so materialize) the host copy, before any falsify edit below.
   const lightIndexListBuf = gpuMembership ? undefined : prepared.lightIndexList;
   const lightIndexCount = prepared.membershipEntryCount;
+  const channelMapping = (prepared.deferredChannelProjection ?? 0) & DEFERRED_CHANNEL_MAPPING_MASK;
 
   if (prepared.local.some((local) => local.source === undefined)) {
     return err(
@@ -1763,6 +1780,7 @@ export function writeHdrpClusterAndSsaoBuffers(
           layout: hdrpBuffers.layout,
           local: prepared.local,
           projectorSlot: projectorLightSlotIndex,
+          channelMapping,
           clusterGrid: clusterGridBuf,
           lightIndices: lightIndexListBuf ?? prepared.lightIndexList,
           lightIndexCount,
@@ -1785,7 +1803,11 @@ export function writeHdrpClusterAndSsaoBuffers(
         if (!upload.ok) return err(mapClusterUploadFailure('integer-texture', upload.error));
       } else {
         const lightTable = lightTableOf(internals, hdrpBuffers, reflectedAbi.directLightSlot);
-        const lightDataUpload = lightTable.write(prepared.local, projectorLightSlotIndex);
+        const lightDataUpload = lightTable.write(
+          prepared.local,
+          projectorLightSlotIndex,
+          channelMapping,
+        );
         if (frameState.standardClusterWorkConformance?.enabled) {
           const tableInspection = lightTable.inspect();
           captureClusterTableWork(internals, frameState, camera, {
@@ -1849,12 +1871,13 @@ export function writeHdrpClusterAndSsaoBuffers(
     profilePhase,
     'record/scene-state/hdrp-cluster/buffer-upload',
     (): Result<void, RenderError> => {
-      if (frameState.installedPipelineConfig?.ssao?.enabled !== true) return ok(undefined);
+      if (frameState.installedPipelineConfig?.ambientOcclusion?.enabled !== true)
+        return ok(undefined);
       const ssaoBufs = getOrCreateSsaoBuffers(internals);
       if (ssaoBufs === null) return ok(undefined);
       const ssaoUniformPayload = buildSsaoUniformPayload(
         camera,
-        frameState.installedPipelineConfig?.ssao,
+        frameState.installedPipelineConfig?.ambientOcclusion,
       );
 
       const ssaoUniformRes = internals.device.queue.writeBuffer(

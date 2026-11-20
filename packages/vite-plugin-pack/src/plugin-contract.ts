@@ -1,4 +1,5 @@
 import type { ProducerReadiness } from '@forgeax/engine-import';
+import type { PackageFinalizePolicy } from '@forgeax/engine-pack/build';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { Importer, PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
@@ -62,7 +63,7 @@ export type PluginPack = Plugin & {
 };
 
 /** Public plugin inputs; execution owners remain in engine-pack/import/ddc. */
-export interface PluginPackOptions {
+export interface PluginPackOptions extends Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
   readonly onProgress?: ((event: PluginPackProgress) => void) | undefined;
   /** Explicit host-selected public Engine package root for isolated authored source execution. */
   readonly enginePackageRoot?: string | undefined;
@@ -89,6 +90,8 @@ export interface PluginPackOptions {
   readonly ddc?: PluginPackDdcOptions;
   /** Sealed build-program graph, including its resolved native import identities. */
   readonly producerIdentity?: string | undefined;
+  /** Target admission has selected offline generation for these authored package IDs. */
+  readonly cookedRuntimePacks?: ReadonlySet<string>;
 }
 
 export interface PluginPackDdcOptions {

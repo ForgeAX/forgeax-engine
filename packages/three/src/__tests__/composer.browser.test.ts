@@ -75,7 +75,7 @@ it('submits the Three composer GTAO and Bloom passes and retires them when disab
     for (let i = 0; i < 60; i++) await completedFrame();
     const lighting = () => renderer.inspect().renderer.standardLighting?.ambientOcclusion;
     const bloomState = () => renderer.inspect().renderer.bloom;
-    expect(lighting()?.status).toBe('active');
+    expect(lighting()).toMatchObject({ status: 'active', algorithm: 'gtao' });
     expect(bloomState()).toMatchObject({ state: 'active', passCount: 11, encodeCount: 11 });
 
     gtao.enabled = false;
@@ -85,7 +85,7 @@ it('submits the Three composer GTAO and Bloom passes and retires them when disab
     gtao.enabled = true;
     bloom.enabled = false;
     await completedFrame();
-    expect(lighting()?.status).toBe('active');
+    expect(lighting()).toMatchObject({ status: 'active', algorithm: 'gtao' });
     expect(bloomState().enabled).toBe(false);
 
     const custom = new Pass();

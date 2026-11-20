@@ -1,6 +1,8 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { ok } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { sha256 } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
@@ -78,12 +80,25 @@ it.each([
     throw Error('sync fallback must not qualify preparation');
   });
   const prepare = vi.fn<Factory>(() => (released ? { pipeline, group2Contract: 'mesh' } : null));
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const material = inputs.materialArtifact;
+  if (material === undefined) throw Error('Missing fixture material');
+  const body = new TextEncoder().encode('synthetic');
+  const compile = Promise.withResolvers<ReturnType<typeof ok<Uint8Array>>>();
+  shaders.installMaterialArtifactSource(material.material, {
+    digest: `sha256:${sha256(body)}`,
+    paramSchema: [],
+    prepare: () => compile.promise,
+  });
   try {
     const prepared = production
       .prepare({
         ...inputs,
         batchExecutions: selected.batchExecutions,
         materialArtifacts: selected.materialArtifacts,
+        materialShaderRegistry: shaders,
+        materialArtifactResolver: (id) =>
+          shaders.prepareMaterialArtifact(id).unwrap() ? material : undefined,
         ...(hidden ? { activeEntityKeys: new Set<number>() } : {}),
         materialPipelineFactory: ordinary,
         materialPipelinePreparationFactory: prepare,
@@ -140,6 +155,24 @@ it.each([
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(prepare.mock.calls[1]).toEqual(prepare.mock.calls[0]);
     expect(ordinary).not.toHaveBeenCalled();
+    if (hidden) {
+      const candidate = {
+        source: { ...preparedSnapshot(3, 3), authorVisible: false },
+        mesh: mesh(device),
+        renderableIndex: 0,
+        meshSlot: 0,
+        renderState: undefined,
+        stencilReference: undefined,
+      };
+      pending.mockClear();
+      expect(projected.preparePipelines?.([candidate], undefined, pending)).toBe(false);
+      expect(pending).toHaveBeenCalledWith(expect.objectContaining({ shader: material.material }));
+      const completion = shaders.pendingMaterialPreparations();
+      expect(completion).toBeDefined();
+      compile.resolve(ok(body));
+      expect(await completion).toMatchObject({ ok: true });
+      expect(projected.preparePipelines?.([candidate], undefined, pending)).toBe(true);
+    }
   } finally {
     production.dispose();
     available.scene.dispose();

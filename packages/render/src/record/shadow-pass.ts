@@ -2471,6 +2471,12 @@ export function prepareHiddenShadowMaterialPipelines(
         c.materialFrame,
         'shadow',
         c.runtime.getMaterialShaderArtifact,
+        (identifier) => {
+          if (c.runtime.shaderRegistry?.isMaterialArtifactPreparationPending(identifier) !== true)
+            return false;
+          markHiddenShadowPending(c, entry, identifier);
+          return true;
+        },
       )) {
         if (execution.route !== 'gpu') continue;
         const { prepared, material, artifact } = execution;

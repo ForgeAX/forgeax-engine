@@ -1,10 +1,10 @@
 import { World } from '@forgeax/engine-ecs';
 import { createProfiler } from '@forgeax/engine-profiler';
 import {
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AmbientOcclusion,
   Camera,
+  DEFAULT_STANDARD_PROFILE,
   type FrameReceipt,
   Materials,
   MeshRenderer,
@@ -343,6 +343,10 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
   const surfaceConsumer = createForwardGtaoSceneDataConsumer(width, height);
   const assembly = value(
     await constructRuntimeRendererHost(canvas, {
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        ambientOcclusion: { enabled: false, method: 'gtao' },
+      },
       rhi: recorder.backend.rhi,
       profiler,
       features: [surfaceConsumer.feature],
@@ -381,7 +385,6 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       {
         component: AmbientOcclusion,
         data: {
-          algorithm: AMBIENT_OCCLUSION_GTAO,
           directLightingStrength: 0,
           radius: 1.25,
           bias: 0,

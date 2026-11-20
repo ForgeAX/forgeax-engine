@@ -53,7 +53,7 @@ async function scanBuildInventory(
       metadataOnly: true,
       ...(context.opts.enginePackageRoot === undefined
         ? {}
-        : { enginePackageRoot: context.opts.enginePackageRoot }),
+        : { packageBinding: { name: '@forgeax/engine', root: context.opts.enginePackageRoot } }),
       sourceSnapshot,
     },
     ...(context.opts.ignorePath === undefined ? {} : { ignorePath: context.opts.ignorePath }),
@@ -92,10 +92,16 @@ async function buildProduction(
     cwd: process.cwd(),
     basePrefix,
     generation: 1,
+    ...(context.opts.cookedRuntimePacks === undefined
+      ? {}
+      : { cookedRuntimePacks: context.opts.cookedRuntimePacks }),
     ...(context.opts.enginePackageRoot === undefined
       ? {}
       : { enginePackageRoot: context.opts.enginePackageRoot }),
     cookers: context.opts.cookers ?? [],
+    ...(context.opts.materialProgramTransport === undefined
+      ? {}
+      : { materialProgramTransport: context.opts.materialProgramTransport }),
     importerRegistry: context.importerRegistry,
     fsForImport: context.fsForImport,
     ...(context.opts.producerIdentity === undefined

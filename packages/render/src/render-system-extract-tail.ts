@@ -1,4 +1,4 @@
-﻿import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
@@ -10,7 +10,9 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   deriveVertexCount,
   deriveVertexLayoutProjection,
+  describeMeshDraw,
   isFiniteAabb,
+  type MeshDrawDescription,
 } from '@forgeax/engine-geometry';
 import { box3, frustum } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -48,6 +50,7 @@ import {
   createWaterMeshLayoutReceipt,
   waterZoneMeshViewForRenderer,
 } from '@forgeax/engine-water/internal';
+import { materialRasterSourceFacts } from './assembly/material/assembly';
 import { buildCameraFrusta } from './camera-frusta';
 import { setPlanarCaptureDemand } from './capture/planar-material';
 import {
@@ -106,7 +109,7 @@ import { isStandardPbrSkinMaterialShader } from './pbr-pipeline';
 import { expandPointsLinesBounds } from './points-lines/bounds';
 import type { PointsLinesRetainedSnapshot, PointsLinesStyle } from './points-lines/snapshot';
 import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
-import { renderAsset, worldRenderResources } from './publication/resource-scope';
+import { worldRenderResources } from './publication/resource-scope';
 import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
   DispatchEntry,
@@ -2067,7 +2070,7 @@ interface EntityMaterialBindings {
   readonly handles: readonly number[];
   readonly sources: readonly MeshMaterialBindingSource[];
   readonly diagnostics: readonly MeshMaterialBindingDiagnostic[];
-  readonly mesh: MeshAsset | undefined;
+  readonly mesh: MeshDrawDescription | undefined;
 }
 
 /** The entity's resolved materials; `primary` (slot 0) owns entity-level shading dispatch. */
@@ -2093,13 +2096,24 @@ function resolveEntityMesh(
   return resolved.ok && resolved.value.kind === 'mesh' ? (resolved.value as MeshAsset) : undefined;
 }
 
+function resolveEntityMeshDraw(
+  scope: WorldExtraction,
+  read: MeshRendererRowRead,
+): MeshDrawDescription | undefined {
+  const handle = Math.round(read.meshHandle ?? 0);
+  if (handle === 0) return undefined;
+  if (read.preparationMesh !== undefined) return describeMeshDraw(read.preparationMesh.mesh);
+  const result = runtimeAssets(scope.world.assets).meshDraw(handle);
+  return result.ok ? result.value : undefined;
+}
+
 /** `undefined` means a routed slot failure rejected the entity. */
 function resolveEntityMaterialBindings(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   materialsView: Uint32Array | undefined,
 ): EntityMaterialBindings | undefined {
-  const mesh = scope.assets == null ? undefined : resolveEntityMesh(scope, read);
+  const mesh = scope.assets == null ? undefined : resolveEntityMeshDraw(scope, read);
   const bindings =
     mesh === undefined
       ? rendererMaterialBindings(materialsView)
@@ -2127,10 +2141,10 @@ function rendererMaterialBindings(materialsView: Uint32Array | undefined): Entit
 function resolveMeshSlotBindings(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   materialsView: Uint32Array | undefined,
 ): EntityMaterialBindings | undefined {
-  const guid = (mesh as { guid?: string }).guid ?? '<no-guid>';
+  const guid = mesh.guid ?? '<no-guid>';
   const resolved = resolveMeshMaterialBindings(
     mesh,
     materialsView ?? [],
@@ -2169,7 +2183,7 @@ function resolveMeshSlotBindings(
 
 function meshBindingDiagnosticDetail(
   diagnostic: MeshMaterialBindingDiagnostic,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   materialCount: number,
   guid: string,
 ) {
@@ -2189,7 +2203,7 @@ function meshBindingDiagnosticDetail(
 function routeMeshSlotFailure(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   guid: string,
   failure: Extract<ResolveMeshMaterialBindingsResult, { readonly ok: false }>,
 ): void {
@@ -2198,7 +2212,7 @@ function routeMeshSlotFailure(
       new AssetError({
         code: 'load-failed',
         expected: 'every MeshAsset producer supplies materialSlots[]',
-        hint: `fix the MeshAsset producer; renderer inheritance never guesses slot topology (mesh=${guid}, entity=${entity}, vertices=${mesh.vertices.length}, indices=${mesh.indices?.length ?? 0})`,
+        hint: `fix the MeshAsset producer; renderer inheritance never guesses slot topology (mesh=${guid}, entity=${entity}, vertices=${mesh.vertexWordCount}, indices=${mesh.indexCount})`,
         detail: {
           referencedByGuid: guid,
           referencedByKind: 'mesh',
@@ -2236,9 +2250,9 @@ function routeMeshSlotFailure(
 function materialLaneFor(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
 ): MaterialLane {
-  const vertexColorAvailable = mesh?.attributes.color !== undefined;
+  const vertexColorAvailable = mesh?.layout.attributes.some(({ key }) => key === 'color') === true;
   const geometry: MaterialCookRasterContext['geometry'] =
     read.skinSkeleton !== undefined
       ? 'skinned'
@@ -2326,7 +2340,7 @@ function resolveFreshMaterial(
   lane: MaterialLane,
   handle: number,
   assets: AssetRegistry,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
   pending: DispatchEntry[],
 ): MaterialSelection | undefined {
   const resolved = runtimeAssets(scope.world.assets).resolveAsset(
@@ -2413,7 +2427,7 @@ function rejectsUncookedSkinProgram(
   material: MaterialAsset,
   assets: AssetRegistry,
   lane: MaterialLane,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
   error: unknown,
 ): boolean {
   const materialContext = lane.materialContext;
@@ -2438,9 +2452,11 @@ function rejectsUncookedSkinProgram(
   }
 }
 
-function missingSkinAttributes(mesh: MeshAsset): 'both' | 'skinIndex' | 'skinWeight' | undefined {
-  const indices = mesh.attributes.skinIndex !== undefined;
-  const weights = mesh.attributes.skinWeight !== undefined;
+function missingSkinAttributes(
+  mesh: MeshDrawDescription,
+): 'both' | 'skinIndex' | 'skinWeight' | undefined {
+  const indices = mesh.layout.attributes.some(({ key }) => key === 'skinIndex');
+  const weights = mesh.layout.attributes.some(({ key }) => key === 'skinWeight');
   if (indices && weights) return undefined;
   if (!indices && !weights) return 'both';
   return !indices ? 'skinIndex' : 'skinWeight';
@@ -2450,7 +2466,7 @@ function missingSkinAttributes(mesh: MeshAsset): 'both' | 'skinIndex' | 'skinWei
 function routeMissingSkinAttributes(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
 ): boolean {
   const missing = missingSkinAttributes(mesh);
   if (missing === undefined) return false;
@@ -2480,9 +2496,7 @@ function admitSkinMaterial(
     return false;
   }
   if (!wantsSkin || read.meshHandle === undefined || read.meshHandle === 0) return true;
-  const current = runtimeAssets(scope.world.assets).resolveAsset<MeshAsset>(
-    read.meshHandle as AssetHandle<'mesh'>,
-  );
+  const current = runtimeAssets(scope.world.assets).meshDraw(read.meshHandle);
   return !current.ok || !routeMissingSkinAttributes(scope, read.entity, current.value);
 }
 
@@ -2710,9 +2724,10 @@ function resolveRenderableGeometry(
 ) {
   const spriteInstances = resolveSpriteInstances(scope, read, materials.primary.snapshot);
   if (spriteInstances === false) return undefined;
-  const mesh = resolveEntityMesh(scope, read);
-  const morph = mesh === undefined ? undefined : morphSnapshotFor(mesh, read.morphWeights);
-  const localAabb = renderableLocalAabb(read, mesh, morph, submeshMaterials);
+  const cpuMesh = read.morphWeights === undefined ? undefined : resolveEntityMesh(scope, read);
+  const mesh = scope.assets == null ? resolveEntityMeshDraw(scope, read) : materials.bindings.mesh;
+  const morph = cpuMesh === undefined ? undefined : morphSnapshotFor(cpuMesh, read.morphWeights);
+  const localAabb = renderableLocalAabb(read, mesh, cpuMesh, morph, submeshMaterials);
   const pointsLinesStyle = pointsLinesStyleOf(scope, read);
   const cullingLocalAabb = expandPointsLinesBounds(localAabb ?? [], pointsLinesStyle);
   const instances = resolveInstancesSnapshot(scope, read);
@@ -2738,16 +2753,17 @@ type RenderableGeometry = NonNullable<ReturnType<typeof resolveRenderableGeometr
  */
 function renderableLocalAabb(
   read: MeshRendererRowRead,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
+  cpuMesh: MeshAsset | undefined,
   morph: MorphSnapshot | undefined,
   submeshMaterials: readonly MaterialSnapshot[],
 ): Float32Array | undefined {
   const meshAabb = read.skinSkeleton !== undefined ? undefined : mesh?.aabb;
   const authored = !isFiniteAabb(meshAabb)
     ? undefined
-    : morph === undefined || mesh === undefined
+    : morph === undefined || cpuMesh === undefined
       ? sharedAabb(meshAabb)
-      : morphLocalAabb(meshAabb, mesh, morph);
+      : morphLocalAabb(meshAabb, cpuMesh, morph);
   const displacementRadius = standardDisplacementRadius(submeshMaterials);
   const expanded = expandDisplacementBounds(authored, displacementRadius);
   return read.skinSkeleton !== undefined && displacementRadius > 0 ? undefined : expanded;
@@ -3081,13 +3097,25 @@ function gpuDrivenRenderableFields(
     materials: submeshMaterials,
     fallbackMaterial: materials.primary.snapshot,
     deformation: skinBinding === undefined ? 'rigid' : 'skin',
-    ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
+    ...(getMaterialShaderArtifact === undefined
+      ? {}
+      : {
+          getMaterialShaderArtifact: (id, request) =>
+            scope.assets?.shaderRegistry.isSourceBackedMaterialArtifact(id) === true
+              ? materialRasterSourceFacts(scope.assets.shaderRegistry, id, request)
+              : getMaterialShaderArtifact(id, request),
+        }),
     ...(lods === undefined
       ? {}
       : {
           lodMeshes: lods.map((lod) => {
-            const lower = renderAsset(worldRenderResources(scope.world), lod.mesh);
-            return lower?.kind === 'mesh' ? lower : undefined;
+            const handle =
+              typeof lod.mesh === 'number'
+                ? lod.mesh
+                : worldRenderResources(scope.world).handleForGuid(AssetGuid.format(lod.mesh));
+            if (handle === undefined) return undefined;
+            const lower = runtimeAssets(scope.world.assets).meshDraw(handle);
+            return lower.ok ? lower.value : undefined;
           }),
         }),
   });

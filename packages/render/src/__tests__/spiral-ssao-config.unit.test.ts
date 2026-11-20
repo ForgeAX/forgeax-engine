@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getSsaoParameters, resolveSsaoParameters, type SsaoParameterConfig } from '../ssao-config';
 
-const spiral = 'spiral-ssao' as NonNullable<SsaoParameterConfig['algorithm']>;
+const spiral = 'spiral-ssao' as NonNullable<SsaoParameterConfig['method']>;
 
 describe('spiral SSAO sampling budget', () => {
   it.each([
@@ -9,20 +9,20 @@ describe('spiral SSAO sampling budget', () => {
     ['medium', 12],
     ['high', 12],
   ] as const)('admits the original %s budget of %i depth candidates', (quality, sampleCount) => {
-    expect(resolveSsaoParameters({ algorithm: spiral, quality })).toMatchObject({
+    expect(resolveSsaoParameters({ method: spiral, quality })).toMatchObject({
       ok: true,
-      value: { algorithm: spiral, sampleCount },
+      value: { method: spiral, sampleCount },
     });
   });
 
   it('permits an explicit 16-candidate ultra budget without changing other estimators', () => {
     expect(
-      resolveSsaoParameters({ algorithm: spiral, sampleCount: 16 } as SsaoParameterConfig),
+      resolveSsaoParameters({ method: spiral, sampleCount: 16 } as SsaoParameterConfig),
     ).toMatchObject({ ok: true, value: { sampleCount: 16 } });
-    expect(getSsaoParameters({ algorithm: 'ssao', quality: 'high' })).toMatchObject({
+    expect(getSsaoParameters({ method: 'ssao', quality: 'high' })).toMatchObject({
       sampleCount: 64,
     });
-    expect(getSsaoParameters({ algorithm: 'gtao', quality: 'high' })).toMatchObject({
+    expect(getSsaoParameters({ method: 'gtao', quality: 'high' })).toMatchObject({
       sampleCount: 16,
     });
   });
@@ -36,7 +36,7 @@ describe('spiral SSAO sampling budget', () => {
     Infinity,
   ])('rejects an invalid explicit budget %s', (sampleCount) => {
     expect(
-      resolveSsaoParameters({ algorithm: spiral, sampleCount } as SsaoParameterConfig),
+      resolveSsaoParameters({ method: spiral, sampleCount } as SsaoParameterConfig),
     ).toMatchObject({
       ok: false,
       error: { code: 'ssao-parameter-invalid', detail: { paramName: 'sampleCount' } },
@@ -51,7 +51,7 @@ it('keeps lighting AO as the default and admits explicit scene-color strength', 
   });
   expect(
     resolveSsaoParameters({
-      algorithm: spiral,
+      method: spiral,
       application: 'scene-color',
       sceneColorStrength: 0.8,
     } as SsaoParameterConfig),

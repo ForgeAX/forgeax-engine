@@ -397,6 +397,43 @@ it('keeps adopted runtime content when its source disappears and reports the fai
   expect(f.registry.sourceOf(root)).toEqual(before);
 });
 
+it('retires only the cache-owned source identity and can load a fresh one later', async () => {
+  const f = fixture();
+  f.publish(1);
+  const root = (await f.registry.load(ROOT, 'material')).unwrap();
+  const texture = (await f.registry.load(TEXTURE, 'texture')).unwrap();
+  expect(f.registry.unload(ROOT).unwrap()).toBe(false);
+  f.registry.release(texture).unwrap();
+  expect(f.registry.unload(TEXTURE).unwrap()).toBe(false);
+  f.registry.release(root).unwrap();
+  expect(f.registry.unload(ROOT).unwrap()).toBe(true);
+  expect(f.registry.validate(root).ok).toBe(false);
+  expect(f.registry.guidOf(root)).toBeUndefined();
+  expect(f.registry.unload(ROOT).unwrap()).toBe(false);
+  expect(f.registry.unload(TEXTURE).unwrap()).toBe(true);
+  expect(f.registry.validate(texture).ok).toBe(false);
+  f.publish(2);
+  const next = (await f.registry.load(ROOT, 'material')).unwrap();
+  expect(next).not.toBe(root);
+  expect(f.registry.read(next).unwrap().values?.roughness).toBe(0.2);
+  f.registry.release(next).unwrap();
+});
+
+it('fences a pending reload when its runtime identity is unloaded', async () => {
+  const f = fixture();
+  f.publish(1);
+  const root = (await f.registry.load(ROOT, 'material')).unwrap();
+  f.publish(2);
+  const gate = f.pause();
+  const reload = f.registry.reload(root, { conflict: 'overwrite' });
+  await gate.started;
+  f.registry.release(root).unwrap();
+  expect(f.registry.unload(ROOT).unwrap()).toBe(true);
+  gate.release();
+  expect(await reload).toMatchObject({ ok: false, error: { code: 'asset-invalidated' } });
+  expect(f.registry.inspect().assets.some(({ guid }) => guid === ROOT)).toBe(false);
+});
+
 it('explicit reload refreshes only the requested producer closure without a hot subscription', async () => {
   const f = fixture(false, false);
   f.publish(1);

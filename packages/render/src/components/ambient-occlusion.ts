@@ -19,8 +19,6 @@ import {
   type SsaoParameterConfig,
 } from '../ssao-config';
 
-/** Closed f32 encodings for `AmbientOcclusion.algorithm`. */
-export const AMBIENT_OCCLUSION_ALGORITHMS = ['ssao', 'gtao', 'spiral-ssao'] as const;
 /** Closed f32 encodings for the application domain. */
 export const AMBIENT_OCCLUSION_APPLICATIONS = ['lighting', 'scene-color'] as const;
 export const AMBIENT_OCCLUSION_LIGHTING = 0;
@@ -28,15 +26,12 @@ export const AMBIENT_OCCLUSION_SCENE_COLOR = 1;
 /** Closed f32 encodings for `AmbientOcclusion.quality`. */
 export const AMBIENT_OCCLUSION_QUALITIES = ['low', 'medium', 'high'] as const;
 
-export const AMBIENT_OCCLUSION_SSAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('ssao');
-export const AMBIENT_OCCLUSION_SPIRAL_SSAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('spiral-ssao');
-export const AMBIENT_OCCLUSION_GTAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('gtao');
 export const AMBIENT_OCCLUSION_QUALITY_LOW = AMBIENT_OCCLUSION_QUALITIES.indexOf('low');
 export const AMBIENT_OCCLUSION_QUALITY_MEDIUM = AMBIENT_OCCLUSION_QUALITIES.indexOf('medium');
 export const AMBIENT_OCCLUSION_QUALITY_HIGH = AMBIENT_OCCLUSION_QUALITIES.indexOf('high');
 
 export const AmbientOcclusion = defineComponent('AmbientOcclusion', {
-  algorithm: { type: 'f32', default: AMBIENT_OCCLUSION_GTAO },
+  enabled: { type: 'bool', default: true },
   application: { type: 'f32', default: AMBIENT_OCCLUSION_LIGHTING },
   sceneColorStrength: { type: 'f32', default: 0.95 },
   sampleCount: { type: 'f32', default: 0 },
@@ -60,16 +55,7 @@ export type AmbientOcclusionData = ShapeOf<SchemaOf<typeof AmbientOcclusion>>;
  */
 export function ambientOcclusionParameters(
   data: AmbientOcclusionData,
-): Result<SsaoParameterConfig, PostProcessError> {
-  const algorithm = AMBIENT_OCCLUSION_ALGORITHMS[data.algorithm];
-  if (algorithm === undefined) {
-    return err(
-      new PostProcessError({
-        code: 'ssao-parameter-invalid',
-        detail: { paramName: 'algorithm', value: data.algorithm },
-      }),
-    );
-  }
+): Result<Omit<SsaoParameterConfig, 'method'>, PostProcessError> {
   const application = AMBIENT_OCCLUSION_APPLICATIONS[data.application];
   if (application === undefined) {
     return err(
@@ -88,8 +74,7 @@ export function ambientOcclusionParameters(
       }),
     );
   }
-  const config: SsaoParameterConfig = {
-    algorithm,
+  const config: Omit<SsaoParameterConfig, 'method'> = {
     application,
     sceneColorStrength: data.sceneColorStrength,
     ...(data.sampleCount === 0 ? {} : { sampleCount: data.sampleCount }),

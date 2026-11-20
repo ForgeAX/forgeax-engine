@@ -32,7 +32,7 @@ function topology(
   return {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: DEFAULT_STANDARD_PROFILE,
-    config: { ssao: { enabled: false } },
+    config: { ambientOcclusion: { enabled: false } },
     surface: {
       width: 640,
       height: 360,

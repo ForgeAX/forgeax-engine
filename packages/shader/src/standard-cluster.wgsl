@@ -446,6 +446,7 @@ fn evaluateStandardClusterLobes(
   flat_2d    : bool,
   receive_shadows : bool,
   receiver_channels : u32,
+  projected_channels : bool,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -515,7 +516,7 @@ fn evaluateStandardClusterLobes(
 #else
     let light = load_cluster_light(load_cluster_word(list_word_offset + list_offset + i));
 #endif
-    if (!lightingChannelsMatch(light.channels.x, receiver_channels)) { continue; }
+    if (!lightingChannelsMatch(select(light.channels.x, light.channels.z, projected_channels), receiver_channels)) { continue; }
     let contribution = evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
       transmission, flat_2d, receive_shadows,
@@ -536,7 +537,7 @@ fn evaluateStandardClusterLobes(
 #else
     let light = load_cluster_light(binned_count + d);
 #endif
-    if (!lightingChannelsMatch(light.channels.x, receiver_channels)) { continue; }
+    if (!lightingChannelsMatch(select(light.channels.x, light.channels.z, projected_channels), receiver_channels)) { continue; }
     let contribution = evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
       transmission, flat_2d, receive_shadows,
@@ -574,7 +575,7 @@ fn evaluateStandardClusterLights(
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> vec3<f32> {
-  return directLobesRadiance(evaluateStandardClusterLobes(ndc, pixel, view_z, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission, flat_2d, receive_shadows, receiver_channels, useDirectDfgLut,
+  return directLobesRadiance(evaluateStandardClusterLobes(ndc, pixel, view_z, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission, flat_2d, receive_shadows, receiver_channels, false, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif

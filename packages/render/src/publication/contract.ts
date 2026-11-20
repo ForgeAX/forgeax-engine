@@ -4,7 +4,13 @@ import type {
   MaterialShaderByteEntry,
   MaterialShaderEntry,
 } from '@forgeax/engine-shader';
-import type { Asset, AssetHandle, MeshAsset, Result } from '@forgeax/engine-types';
+import type {
+  Asset,
+  AssetHandle,
+  MaterialRasterSourceRecipe,
+  MeshAsset,
+  Result,
+} from '@forgeax/engine-types';
 import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import type { RenderFeatureCompletion, RenderFeatureSubmission } from '../features/types';
 import type { FrameReceipt, RenderFrameInput } from '../render-contract';
@@ -27,6 +33,19 @@ export interface PublishedMeshPreparation extends RenderPublicationIdentity {
   readonly mesh: MeshAsset;
   /** Actual candidate draw facts; absent for standalone mesh-buffer residency. */
   readonly pipelinePreparation?: MeshPipelinePreparation;
+}
+
+/** Receiver-owned byte credit held while a private Mesh payload is in transit. */
+export interface PublishedMeshTransferReservation {
+  readonly bytes: number;
+  release(): void;
+}
+
+export interface PublishedMeshPreparationOptions {
+  readonly signal?: AbortSignal;
+  readonly reservation?: PublishedMeshTransferReservation;
+  /** The receiver invalidated this preparation. Release still owns the physical fence. */
+  readonly onRetired?: (deviceGeneration: number) => void;
 }
 
 /** Same producer snapshot/program vocabulary as a scene publication, without scene admission. */
@@ -130,6 +149,15 @@ export interface RenderPublication extends RenderPublicationIdentity {
         >;
         readonly artifact: MaterialRuntimeArtifact;
       }
+    | {
+        readonly key: string;
+        readonly shader: { readonly sourceEncoding: 'raster-source' } & Omit<
+          MaterialShaderByteEntry,
+          'bytes' | 'digest'
+        >;
+        readonly recipe: MaterialRasterSourceRecipe;
+        readonly artifact?: never;
+      }
   )[];
   /** entity, template index pairs. A publication source owns one World. */
   readonly upserts: Uint32Array;
@@ -165,18 +193,24 @@ export interface RenderPublication extends RenderPublicationIdentity {
     readonly sourceKey?: string;
   }[];
   /** Fixed versions used by queued work, independent of the current asset rows. */
-  readonly assetVersions?: readonly {
+  readonly assetVersions?: readonly ({
     readonly handle: number;
     readonly revision: number;
-    readonly value: Asset;
-  }[];
+  } & (
+    | { readonly value: Asset; readonly preparedRevision?: never }
+    /** The fixed closure version uses the receiver's exact prepared Mesh content revision. */
+    | { readonly preparedRevision: number; readonly value?: never }
+  ))[];
   readonly retiredAssetVersions?: readonly { readonly handle: number; readonly revision: number }[];
   readonly assetPatches: readonly PublishedAssetPatch[];
   readonly retiredAssets: readonly number[];
 }
 
 /** Exact CPU content in a publication namespace, independent of participation. */
-export type PublishedAssetVersion = NonNullable<RenderPublication['assetVersions']>[number];
+export type PublishedAssetVersion = Extract<
+  NonNullable<RenderPublication['assetVersions']>[number],
+  { readonly value: Asset }
+>;
 
 /** One owned static row chunk. Materials and template indices are chunk-local. */
 export type RenderPublicationRows = Pick<

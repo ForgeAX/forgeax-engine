@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
@@ -42,7 +42,7 @@ export async function createLiveSyncProjectDirectory(prefix, sourceRoot, manifes
       depth = Math.max(depth, parents);
     }
   }
-  const temporaryRoot = await mkdtemp(resolve(tmpdir(), prefix));
+  const temporaryRoot = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   const root = resolve(temporaryRoot, ...Array(depth).fill('project'));
   await mkdir(root, {recursive:true});
   return {root, temporaryRoot};

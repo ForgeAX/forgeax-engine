@@ -169,7 +169,9 @@ export async function verifyNormalBump(
   const replayDevices: GPUDevice[] = [];
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...original, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...original, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const entry of cases) {
         const authored = Materials.standard({
           baseColor: [0.5, 0.5, 0.5, 1],

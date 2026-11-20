@@ -16,6 +16,7 @@ export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly maxLights: number;
   /** Point/spot/rect lights dropped over the limit; `local` holds the rest. */
   readonly droppedLocalLights: number;
+  readonly deferredChannelProjection?: number;
   /** Camera terms the membership was derived with; read by on-demand inspection. */
   readonly camera?: Pick<StandardLightFrame, 'view' | 'projection' | 'near' | 'far'>;
 }
@@ -51,6 +52,9 @@ export function prepareStandardLighting(
     renderPath: frame.renderPath,
     maxLights: frame.lightCount,
     droppedLocalLights: frame.droppedLocalLights ?? 0,
+    ...(frame.deferredChannelProjection === undefined
+      ? {}
+      : { deferredChannelProjection: frame.deferredChannelProjection }),
     camera: { view: frame.view, projection: frame.projection, near: frame.near, far: frame.far },
   });
 }

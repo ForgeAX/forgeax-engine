@@ -32,6 +32,8 @@ export interface CatalogSource {
   subscribe(listener: CatalogListener): () => void;
   /** Bind one immutable publication through Pack, artifacts and decode. The closure owns its bytes. */
   openPackage?(packageUrl: string): PackageFetcher | undefined;
+  /** Retain just this immutable artifact through publication replacement or withdrawal. */
+  retainArtifact?(packageUrl: string, artifactPath: string): PackageFetcher | undefined;
   /** Same-domain immutable data; ordinary Registry domain/reference checks still apply. */
   /** Canonical transport authority when this source is URL-backed. */
   readonly url?: string;

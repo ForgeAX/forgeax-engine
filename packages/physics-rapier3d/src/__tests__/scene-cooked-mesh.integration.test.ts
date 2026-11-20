@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import { componentSchema } from '@forgeax/engine-ecs/internal';
 import { buildMeshCollision, createBoxGeometry } from '@forgeax/engine-geometry';
@@ -20,10 +21,15 @@ import {
   Transform,
   worldDespawnScene,
 } from '@forgeax/engine-scene';
+import { type AssetHandle, ok } from '@forgeax/engine-types';
 import { expect, test } from 'vitest';
 import { importedSource } from '../../../import/src/__tests__/fixtures/runtime-import';
 
-test('Pack JSON Scene and binary Mesh retain the exact Collider source through native collision', async () => {
+test.each([
+  'cooked',
+  'ordinary',
+  'promoted',
+] as const)('Pack JSON Scene and %s Mesh retain the exact Collider source through native collision', async (usage) => {
   const rapier = await loadRapier3D();
   if ('code' in rapier) throw rapier;
   const registry = new AssetRegistry({ scopeId: 'import-fixture' });
@@ -40,7 +46,8 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
   const meshGuid = '11111111-1111-4111-8111-111111111111';
   const sceneGuid = '22222222-2222-4222-8222-222222222222';
   const mesh = createBoxGeometry(3, 2, 4).unwrap();
-  const source = { ...mesh, collision: buildMeshCollision(mesh).unwrap() };
+  const source =
+    usage === 'cooked' ? { ...mesh, collision: buildMeshCollision(mesh).unwrap() } : mesh;
   const cooked = externalizeSceneAsset(
     {
       kind: 'scene',
@@ -86,8 +93,27 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
     },
     registry,
   );
-  const accepted = (await registry.load(meshGuid, 'mesh')).unwrap();
+  let visual: AssetHandle<'mesh'> | undefined;
+  if (usage === 'promoted') {
+    runtimeAssets(registry).bindMeshPresenter(async () =>
+      ok({
+        isCurrent: () => true,
+        release: () => {},
+      }),
+    );
+    visual = (await registry.load(meshGuid, 'mesh', { usage: 'render' })).unwrap();
+    expect(registry.read(visual)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-cpu-data-unavailable' },
+    });
+  }
   const handle = (await registry.load(sceneGuid, 'scene')).unwrap();
+  if (visual !== undefined) expect(registry.read(visual).ok).toBe(true);
+  const accepted = (await registry.load(meshGuid, 'mesh')).unwrap();
+  if (visual !== undefined) {
+    expect(accepted).toBe(visual);
+    registry.release(visual).unwrap();
+  }
   const root = registry.instantiate(handle, world).unwrap();
   const ground = [...world.iterDescendants(root)].find((e) => world.hasComponent(e, Collider));
   if (ground === undefined) throw new Error('missing ground Collider');
@@ -114,6 +140,7 @@ test('Pack JSON Scene and binary Mesh retain the exact Collider source through n
     world.despawn(ball).unwrap();
     worldDespawnScene(world, root).unwrap();
     registry.release(handle).unwrap();
+    registry.release(accepted).unwrap();
   }
   registry.dispose();
 });

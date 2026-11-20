@@ -18,7 +18,15 @@ async function fixture({ connected = true, busy = false, restoring = false, erro
   projectId = 'template-game-3d', targetId = 'target-ready', phase = 'running', label = 'Restoring project' } = {}) {
   const page = await browser.newPage();
   await page.setContent(`<iframe id="view" srcdoc='<span role="status" style="display:inline-block;width:12px;height:12px" aria-label="${label}"></span>'></iframe>`);
+  const view = page.frameLocator('#view');
+  await view.owner().waitFor({ state: 'attached', timeout: 5_000 });
   const frame = page.frames().find(frame => frame !== page.mainFrame());
+  assert.ok(frame);
+  // Attach Playwright's observers before measuring the retained project state.
+  // The iframe can load even when the project fixture is deliberately blocked.
+  const loaded = await frame.waitForFunction(() => document.readyState === 'complete', undefined,
+    { polling: 25, timeout: 5_000 });
+  await loaded.dispose();
   await frame.evaluate(({ connected, busy, restoring, error, projectId, targetId, phase }) => {
     globalThis.__projectState = { busy, restoring, error,
       snapshot: { project: { id: projectId }, projectPhase: phase,
@@ -27,7 +35,7 @@ async function fixture({ connected = true, busy = false, restoring = false, erro
     globalThis.__forgeaxViewReady = { mounted: { transport: { connected },
       frontendHost: { context: { get: () => ({ projectSession: { getSnapshot: () => globalThis.__projectState } }) } } } };
   }, { connected, busy, restoring, error, projectId, targetId, phase });
-  return { page, frame, view: page.frameLocator('#view') };
+  return { page, frame, view };
 }
 
 test('accepts the ready native project while the presentation still shows restoration', async () => {

@@ -98,6 +98,7 @@ it('IBL separates reflected single scattering from diffuse multiple scattering',
     ${kernel('ibl-sampling', 'EnvironmentScattering')}
     ${kernel('brdf', 'specularF90')}
     ${kernel('ibl-sampling', 'environmentMultiScattering')}
+    ${kernel('ibl-sampling', 'environmentSingleScatteringFromDfg')}
     ${kernel('ibl-sampling', 'environmentScatteringFromDfg')}
     ${defaultKernel('ibl-sampling', 'environmentDfg')}
     ${kernel('ibl-sampling', 'environmentScattering')}

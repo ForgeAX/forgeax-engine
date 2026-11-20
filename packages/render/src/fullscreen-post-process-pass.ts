@@ -106,6 +106,8 @@ export interface PostProcessShaderEntry {
    * (texture@0 + sampler@1 + buffer@2). feat-20260621 M-A2 / D-2.
    */
   readonly params?: PostProcessParamsSchema | undefined;
+  /** @internal Frame-local uniform bytes supplied by the admitted Feature. */
+  readonly frameParams?: Uint8Array | undefined;
   /**
    * Graph resource keys this post-process reads (as input textures).
    * The primitive binds the first read as its input texture at @group(1)

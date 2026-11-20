@@ -8,6 +8,7 @@
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { ShaderReflection, ShaderReflectionBoundGlobal } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
+import { projectDeferredLightingMask } from './pipeline/standard-lighting/deferred-channels';
 import type {
   DirectionalLightSnapshot,
   PointLightSnapshot,
@@ -389,8 +390,10 @@ export function packDirectLightSlot(
   snapshot: DirectLightSnapshot,
   layout: ReflectedDirectLightSlotLayout,
   projectorSelected?: boolean,
+  channelMapping = 0,
 ): Float32Array {
-  if (snapshot.kind === 'directional') return packDirectionalLightSlot(snapshot, layout);
+  if (snapshot.kind === 'directional')
+    return packDirectionalLightSlot(snapshot, layout, channelMapping);
   const out = new Float32Array(layout.floatCount);
   const view = new DataView(out.buffer);
   const writeFloat = (offset: number, value: number) => view.setFloat32(offset, value, true);
@@ -458,8 +461,13 @@ export function packDirectLightSlot(
         ? undefined
         : snapshot.cookieSlice,
   );
-  metadata[layout.lightingChannelsByteOffset / 4] =
-    snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  const rawChannels = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  metadata[layout.lightingChannelsByteOffset / 4] = rawChannels;
+  if (channelMapping !== 0)
+    metadata[layout.lightingChannelsByteOffset / 4 + 2] = projectDeferredLightingMask(
+      rawChannels,
+      channelMapping,
+    );
   return out;
 }
 
@@ -467,6 +475,7 @@ export function packDirectLightSlot(
 function packDirectionalLightSlot(
   snapshot: DirectionalLightSnapshot,
   layout: ReflectedDirectLightSlotLayout,
+  channelMapping: number,
 ): Float32Array {
   const out = new Float32Array(layout.floatCount);
   const view = new DataView(out.buffer);
@@ -485,11 +494,14 @@ function packDirectionalLightSlot(
     layout.cookieByteOffset,
   ])
     view.setUint32(offset, DIRECT_LIGHT_SLOT_METADATA_SENTINEL, true);
-  view.setUint32(
-    layout.lightingChannelsByteOffset,
-    snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT,
-    true,
-  );
+  const rawChannels = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  view.setUint32(layout.lightingChannelsByteOffset, rawChannels, true);
+  if (channelMapping !== 0)
+    view.setUint32(
+      layout.lightingChannelsByteOffset + 8,
+      projectDeferredLightingMask(rawChannels, channelMapping),
+      true,
+    );
   return out;
 }
 

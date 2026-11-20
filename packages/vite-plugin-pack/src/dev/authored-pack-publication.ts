@@ -19,6 +19,7 @@ import {
 import { createRuntimePackPublication, packageTransportRevision } from '@forgeax/engine-pack/build';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import {
+  declaredRuntimePackGuids,
   resolvePackSourceSubjects,
   type ScanSourceDeclaration,
   type ScriptablePackSourceDeclaration,
@@ -453,6 +454,18 @@ async function publishWithExecutors(
         /[^a-zA-Z0-9._-]/g,
         '-',
       );
+      const runtimePublication = createRuntimePackPublication({
+        pack: { assets: finalized.pack.assets },
+        scopeId: context.scopeId ?? 'asset-runtime',
+        sourcePath: publication.sourcePath,
+        sourceRevision: publication.sourceRevision,
+        packageUrl: finalized.packageUrl,
+        inputFingerprint: publication.receipt.inputFingerprint,
+        digest: finalized.digest,
+        generation: publication.generation,
+        outputs: facts.outputs,
+        externalEvidence: publication.externalEvidence,
+      });
       const receiptUrls = await materializePreparedScriptablePack(
         prepared,
         {
@@ -475,22 +488,7 @@ async function publishWithExecutors(
             });
           },
         },
-      );
-      const runtimePublication = createRuntimePackPublication({
-        pack: { assets: finalized.pack.assets },
-        scopeId: context.scopeId ?? 'asset-runtime',
-        sourcePath: publication.sourcePath,
-        sourceRevision: publication.sourceRevision,
-        packageUrl: finalized.packageUrl,
-        inputFingerprint: publication.receipt.inputFingerprint,
-        digest: finalized.digest,
-        generation: publication.generation,
-        outputs: facts.outputs,
-        externalEvidence: publication.externalEvidence,
-      });
-      stagedPackBodies.set(
-        finalized.packageUrl,
-        JSON.stringify(projectMaterialPackTransport(runtimePublication.pack)),
+        runtimePublication.pack,
       );
       const accepted = context.publicationStore.stage(input.displaySourcePath, {
         envelope: publication,
@@ -561,6 +559,7 @@ async function publishWithExecutors(
         availableGuids: new Set([
           ...availableGuids,
           ...dynamicPackEntries.map((candidate) => candidate.guid),
+          ...declaredRuntimePackGuids(context.sourceDeclarations.values()),
         ]),
         ...(context.opts.cookers === undefined ? {} : { cookers: context.opts.cookers }),
         policy: {

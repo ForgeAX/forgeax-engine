@@ -8,6 +8,7 @@ import { isStandardRootModule } from '@forgeax/engine-pack';
 import {
   collectMaterialCookRefs,
   type MaterialCookWasmProvenance,
+  materialProgramContextForPass,
   materialProgramContextKey,
 } from '@forgeax/engine-pack/material-cook';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
@@ -15,6 +16,7 @@ import { admitRayMaterial } from '@forgeax/engine-shader';
 import {
   type MaterialAsset,
   type MaterialTable,
+  materialPassLightMode,
   resolveMaterialAsset,
 } from '@forgeax/engine-types';
 import type {
@@ -39,6 +41,10 @@ import {
 import { cookedRecord, materialPrograms, rayMaterialProgram } from './publication.js';
 import type { CookedRayMaterial } from './ray-material.js';
 import { buildMaterialSourceCatalog } from './source-catalog.js';
+import {
+  MATERIAL_RASTER_SOURCES_PATH,
+  publishMaterialRasterSources,
+} from './source-publication.js';
 import { terrainProgramSource } from './terrain-program.js';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from './variant-context.js';
 
@@ -427,6 +433,8 @@ export function createMaterialPackCooker(
   options: {
     readonly profile?: MaterialPackCookProfile;
     readonly sourceSnapshot?: MaterialSourceSnapshot;
+    /** Publish original raster modules paired with this Engine source library. */
+    readonly rasterSourceDigests?: readonly string[];
   } = {},
 ): NativeCooker {
   if (
@@ -436,6 +444,16 @@ export function createMaterialPackCooker(
   )
     throw new Error('material profile must be webgpu-storage or webgpu-storage-ray when provided');
   const storageOnly = options.profile !== undefined;
+  const rasterSourceDigests =
+    options.rasterSourceDigests === undefined
+      ? undefined
+      : [...new Set(options.rasterSourceDigests)].sort();
+  const rasterLibrary =
+    rasterSourceDigests === undefined ? undefined : new Set(rasterSourceDigests);
+  const rasterLibraryIdentity =
+    rasterSourceDigests === undefined
+      ? undefined
+      : createHash('sha256').update(JSON.stringify(rasterSourceDigests)).digest('hex');
   const snapshot =
     options.sourceSnapshot === undefined ? undefined : ownSourceSnapshot(options.sourceSnapshot);
   const cookRoots = snapshot === undefined ? roots : [...roots];
@@ -480,6 +498,8 @@ export function createMaterialPackCooker(
       ];
       const hash = createHash('sha256').update('material-pack-cooker/7');
       if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
+      if (rasterLibraryIdentity !== undefined)
+        hash.update(`\0material-raster-sources/1:${rasterLibraryIdentity}`);
       const native = await getCompilerFingerprint();
       if (!native.ok) throw native.error;
       hash.update(native.value).update('\0');
@@ -659,7 +679,18 @@ export function createMaterialPackCooker(
           ),
         );
         const earlyVariants: MaterialCookRequest[] = [];
-        if (visiblePasses !== undefined && visiblePasses.length > 0) {
+        const visibleContext = { ...context, visibleSurface: true as const };
+        // Depth and shadow strip visibleSurface during pass selection. A
+        // depth-only material would compile this candidate just to discard it.
+        if (
+          visiblePasses?.some(
+            (pass) =>
+              materialProgramContextForPass(
+                visibleContext,
+                String(materialPassLightMode(pass) ?? pass.name),
+              ).visibleSurface === true,
+          )
+        ) {
           earlyVariants.push({
             material: normalizedInput.guid,
             table: {
@@ -669,7 +700,7 @@ export function createMaterialPackCooker(
               },
             },
             sources: catalog.value,
-            context: { ...context, visibleSurface: true },
+            context: visibleContext,
           });
         }
         // Ordinary non-Sprite raster geometry must survive a device without
@@ -898,7 +929,7 @@ export function createMaterialPackCooker(
         }
       };
       appendMaterialColoredVariantPasses();
-      const programs = [...materialPrograms(passes, normalizedInput)];
+      const rayPrograms: ReturnType<typeof rayMaterialProgram>[] = [];
       const derivatives: CookedRayMaterial[] = [];
       for (const rayContext of options.profile === 'webgpu-storage' ||
       context.geometry === 'terrain'
@@ -922,9 +953,15 @@ export function createMaterialPackCooker(
         const pass = resolvedAsset.passes?.find((pass) => pass.name.toLowerCase() === 'forward');
         if (pass === undefined) throw new Error('admitted Surface lost its authored forward pass');
         derivatives.push(cooked.value);
-        programs.push(rayMaterialProgram(cooked.value.program, pass.name, normalizedInput));
+        rayPrograms.push(rayMaterialProgram(cooked.value.program, pass.name, normalizedInput));
       }
       const completeMaterialCookPublication = () => {
+        const sourceVertexColorOverrides =
+          rasterLibrary === undefined ? undefined : new Map<string, boolean>();
+        const programs = [
+          ...materialPrograms(passes, normalizedInput, sourceVertexColorOverrides),
+          ...rayPrograms,
+        ];
         const sourceClosure = unique([
           ...(normalizedInput.sourcePath === undefined
             ? []
@@ -956,10 +993,20 @@ export function createMaterialPackCooker(
           fingerprint,
           cooked.value.layerPlan.identity,
         );
+        const rasterSources =
+          rasterLibrary === undefined || sourceVertexColorOverrides === undefined
+            ? undefined
+            : publishMaterialRasterSources(
+                catalog.value,
+                passes,
+                record,
+                sourceVertexColorOverrides,
+                rasterLibrary,
+              ).unwrap();
         // Native ABI/reflection changes must invalidate transport even when source bytes stay equal.
         const producerFingerprint = `sha256:${createHash('sha256')
           .update(
-            `material-raster-variants/7:${record.receipt.identity.cookIdentity}${options.profile === undefined ? '' : `:${options.profile}`}`,
+            `material-raster-variants/7:${record.receipt.identity.cookIdentity}${options.profile === undefined ? '' : `:${options.profile}`}${rasterLibraryIdentity === undefined ? '' : `:material-raster-sources/1:${rasterLibraryIdentity}`}`,
           )
           .digest('hex')}`;
         const authoredRefs = collectMaterialCookRefs(resolved.value.asset);
@@ -985,12 +1032,22 @@ export function createMaterialPackCooker(
             ...record.refs.textures,
             ...record.refs.samplers,
           ]),
-          artifacts: Object.fromEntries(
-            record.programs.map(({ artifact }) => [
-              artifact.path,
-              { mediaType: artifact.mediaType, bytes: artifact.bytes },
-            ]),
-          ),
+          artifacts: {
+            ...Object.fromEntries(
+              record.programs.map(({ artifact }) => [
+                artifact.path,
+                { mediaType: artifact.mediaType, bytes: artifact.bytes },
+              ]),
+            ),
+            ...(rasterSources === undefined
+              ? {}
+              : {
+                  [MATERIAL_RASTER_SOURCES_PATH]: {
+                    mediaType: 'application/json',
+                    bytes: new TextEncoder().encode(JSON.stringify(rasterSources)),
+                  },
+                }),
+          },
           inputFingerprint: producerFingerprint,
           sourceDependencies: unique(
             sourceClosure.flatMap((source) => {
@@ -1004,5 +1061,5 @@ export function createMaterialPackCooker(
       return completeMaterialCookPublication();
     },
   };
-  return withNodeMaterialWorkers(cooker, cookRoots, options.profile, snapshot);
+  return withNodeMaterialWorkers(cooker, cookRoots, options.profile, snapshot, rasterSourceDigests);
 }

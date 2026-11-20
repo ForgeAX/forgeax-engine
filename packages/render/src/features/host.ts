@@ -930,6 +930,7 @@ function prepareComputePrograms(
   ownerName: (name: string) => string,
   maps: PreparedResourceMaps,
 ): RenderError | undefined {
+  let pending: RenderError | undefined;
   for (const resource of resources) {
     const prepared = gpu?.prepareProgram(
       ownerName(resource.name),
@@ -937,10 +938,16 @@ function prepareComputePrograms(
       resource.preparePipelines,
     );
     if (prepared === undefined) return planFailure(slot);
-    if (!prepared.ok) return prepared.error;
+    if (!prepared.ok) {
+      if (!isRetryableGpuPreparationFailure(prepared.error)) return prepared.error;
+      // Compute recipes are independent. Queue later recipes before withholding
+      // this plan from the lanes that need all of its programs.
+      pending ??= prepared.error;
+      continue;
+    }
     maps.computePrograms.set(resource.name, prepared.value);
   }
-  return undefined;
+  return pending;
 }
 
 function prepareGraphicsPrograms(
@@ -2699,20 +2706,26 @@ class FeatureFramePreparation {
     const inputs = this.batch.inputs;
     const views = this.batch.planViews;
     const planned: RenderFeaturePlanView[] = [];
+    const scenePlacement = this.feature.placement === 'scene';
     for (let index = 0; index < views.length; index++) {
-      if (!this.admitsView(inputs[index] as RenderFeatureFrameInput)) continue;
+      // The batch constructs plan views from these same indexed input rows.
+      const input = inputs[index] as RenderFeatureFrameInput;
+      if (!this.admitsView(input)) continue;
       const view = views[index] as (typeof views)[number];
-      planned.push({
-        ...view,
-        render: view.render && this.postScopeEnabled({ view: view.identity }),
+      const row: {
+        -readonly [Field in keyof RenderFeaturePlanView]: RenderFeaturePlanView[Field];
+      } = {
+        identity: view.identity,
+        render: view.render && (scenePlacement || input.selectedCamera?.postProcessing !== false),
+        frame: view.frame,
+        targets: view.targets,
         sceneData:
-          (inputs[index] as RenderFeatureFrameInput).sceneData ??
-          this.sceneData(
-            view,
-            (inputs[index] as RenderFeatureFrameInput).surfaceAdmission,
-            (inputs[index] as RenderFeatureFrameInput).deviceGeneration,
-          ),
-      });
+          input.sceneData ?? this.sceneData(view, input.surfaceAdmission, input.deviceGeneration),
+      };
+      if (view.graphResources !== undefined) row.graphResources = view.graphResources;
+      if (view.selectedView !== undefined) row.selectedView = view.selectedView;
+      if (view.motionBlur !== undefined) row.motionBlur = view.motionBlur;
+      planned.push(row);
     }
     return planned;
   }
@@ -3697,7 +3710,9 @@ function fullscreenProgramEffects(
   const effects = new Map<string, PostProcessShaderEntry>();
   for (const resource of plan.resources) {
     if (resource.kind !== 'fullscreen-program') continue;
-    const { kind: _kind, name, ...entry } = resource;
+    const { kind: _kind, name, frameParams, ...shader } = resource;
+    const entry =
+      frameParams === undefined ? shader : { ...shader, frameParams: frameParams.slice() };
     effects.set(name, entry);
     if (standaloneIdentity !== undefined && !effects.has(standaloneIdentity))
       effects.set(standaloneIdentity, entry);

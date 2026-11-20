@@ -28,10 +28,7 @@ export function configureViewStandard(
       ? config
       : {
           clusterGrid: DEFAULT_CLUSTER_GRID,
-          ssao: {
-            enabled: profileConfig.ssao !== false,
-            ...(typeof profileConfig.ssao === 'object' ? profileConfig.ssao : {}),
-          },
+          ambientOcclusion: profileConfig.ambientOcclusion,
           ...(profileConfig.gpuOcclusion === undefined
             ? {}
             : { gpuOcclusion: profileConfig.gpuOcclusion }),
@@ -44,8 +41,8 @@ export function configureViewStandard(
     const gridResult = validateClusterGrid(resolvedConfig.clusterGrid);
     if (!gridResult.ok) throw gridResult.error;
   }
-  if (resolvedConfig?.ssao?.enabled === true) {
-    const ssaoResult = resolveSsaoParameters(resolvedConfig.ssao);
+  if (resolvedConfig?.ambientOcclusion?.enabled === true) {
+    const ssaoResult = resolveSsaoParameters(resolvedConfig.ambientOcclusion);
     if (!ssaoResult.ok) throw ssaoResult.error;
   }
   // Install is a rare boot/swap event: a monotonic epoch forces the next
@@ -57,7 +54,7 @@ export function configureViewStandard(
   frameState.standardInstall.cameraSignature = JSON.stringify([
     profileConfig?.renderPath,
     ssaoStructuralIdentity(
-      resolvedConfig?.ssao,
+      resolvedConfig?.ambientOcclusion,
       profileConfig?.pipelineId === STANDARD_PIPELINE_ID,
     ),
   ]);

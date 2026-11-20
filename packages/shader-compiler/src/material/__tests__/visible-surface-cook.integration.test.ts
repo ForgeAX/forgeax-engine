@@ -1,7 +1,7 @@
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { compileShader } from '../../index';
+import { createNodeMaterialProgramCompiler, mapMaterialVariants } from '../node-program-compiler';
 import { createMaterialPackCooker } from '../pack-cooker';
 
 it('publishes eight-target visible surfaces alongside ordinary cooked Standard passes', async () => {
@@ -64,33 +64,45 @@ it('publishes eight-target visible surfaces alongside ordinary cooked Standard p
         ]);
       }
   }
-  const validated = new Set<string>();
+  const validationInputs = new Map<string, (typeof allVisible)[number]>();
   for (const { program, selection } of allVisible) {
     // Pass labels may share identical bytes and entry contracts. Validate each
     // distinct native input once, retaining every LOD/clipping/output case.
     const key = JSON.stringify([program.artifact.digest, selection.entry]);
-    if (validated.has(key)) continue;
-    validated.add(key);
-    const source = new TextDecoder().decode(program.artifact.bytes);
-    expect(source).toContain('enable primitive_index;');
-    const compiled = await compileShader(source, {
-      id: 'visible-surface-cooked-validation',
-      renderEntries: {
-        vertex: selection.entry ?? 'vs_main',
-        fragment: 'fs_gbuffer',
-        colorFormats: [
-          'rgba16float',
-          'r32uint',
-          'r32uint',
-          'r32uint',
-          'r32uint',
-          'r32uint',
-          'rgba32uint',
-          'rgba16float',
-        ],
+    if (!validationInputs.has(key)) validationInputs.set(key, { program, selection });
+  }
+  // The cook has drained its jobs. Use the admitted Node compiler workers
+  // for independent native entry checks, with an inline fallback for one CPU.
+  const compiler = createNodeMaterialProgramCompiler();
+  try {
+    await mapMaterialVariants(
+      [...validationInputs.values()],
+      compiler.concurrency,
+      async ({ program, selection }) => {
+        const source = new TextDecoder().decode(program.artifact.bytes);
+        expect(source).toContain('enable primitive_index;');
+        const compiled = await compiler.compile(source, {
+          id: 'visible-surface-cooked-validation',
+          renderEntries: {
+            vertex: selection.entry ?? 'vs_main',
+            fragment: 'fs_gbuffer',
+            colorFormats: [
+              'rgba16float',
+              'r32uint',
+              'r32uint',
+              'r32uint',
+              'r32uint',
+              'r32uint',
+              'rgba32uint',
+              'rgba16float',
+            ],
+          },
+        });
+        expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
       },
-    });
-    expect(compiled.ok, compiled.ok ? '' : compiled.error.message).toBe(true);
+    );
+  } finally {
+    await compiler.close();
   }
   const ordinary = record.programs.filter((program) =>
     program.selections.some(

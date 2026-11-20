@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   discoverPluginAssets,
-  executionWorkerEntries,
   pluginProgramsBuild,
   pluginRuntimeProjection,
   publishedPluginInventory,
@@ -13,6 +12,7 @@ import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { pluginPack, reloadAssetHost } from '@forgeax/engine-vite-plugin-pack';
 import { defineConfig } from 'vite';
+import { previewRuntimePacks } from './preview-runtime-packs';
 import { collectAssetDeclarationRoots } from './src/template-asset-roots';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -82,7 +82,7 @@ export default defineConfig(async () => {
       include: ['@forgeax/engine-ui/authoring', '@forgeax/engine-ui/importer'],
     },
     plugins: [
-      executionWorkerEntries(),
+      ...previewRuntimePacks(),
       // The app entry imports this virtual module even when the renderer falls
       // back. Keep the canonical shader plugin as its producer, but skip the
       // eager engine shader suite and authored material scan for this focused

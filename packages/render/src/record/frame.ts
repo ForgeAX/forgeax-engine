@@ -1356,6 +1356,19 @@ function writePlanarReflectionUniform(
 }
 
 /** Prepare the compiled graph's scene and shadow pipelines; pending work defers the picture. */
+function prepareFramePipelineSources(
+  frameState: RenderFrameState,
+  graph: CompiledFrameGraph,
+  runtime: RenderSystemInternals,
+  validatedOrdered: readonly ValidatedRenderable[],
+): void {
+  const installed = frameState.compiledFrameGraph;
+  if (installed?.graph !== graph) return;
+  for (const prepare of installed.scenePipelinePreparations ?? []) {
+    prepare.prepareSource?.({ frameState, runtime, validatedOrdered });
+  }
+}
+
 function prepareFramePipelines(
   frameState: RenderFrameState,
   preflightGraph: CompiledFrameGraph,
@@ -1403,6 +1416,8 @@ function prepareFramePipelines(
         ? frameState.compiledFrameGraph.requiresShadowPipelinePreparation
         : undefined,
     );
+  if (passCtx.assets.shaderRegistry.hasPendingMaterialPreparations())
+    markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
 }
 
 function stageReflectionFallbackReadback(
@@ -1500,7 +1515,7 @@ function submittedFrameInspection(
           },
         }),
     standardLighting: inspectStandardLighting(standard, {
-      config: frameState.installedPipelineConfig?.ssao,
+      config: frameState.installedPipelineConfig?.ambientOcclusion,
       graph: frameState.compiledFrameGraph?.graph.inspect(),
       installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
       deviceGeneration: recordContext(internals).deviceScope.generation,
@@ -1911,7 +1926,7 @@ export function prepareFrameGraphInputs(
     standard,
     pipelineState,
   );
-  if (consumedGpuDriven === undefined) return { kind: 'rejected' as const };
+  if (consumedGpuDriven.kind !== 'ready') return { ...consumedGpuDriven, featurePlan };
   gpuDriven = consumedGpuDriven.input;
   const frameGpuDriven = consumedGpuDriven.frame;
   const gpuInput = consumedGpuDriven.gpuInput;
@@ -1992,6 +2007,7 @@ export function prepareFrameGraphInputs(
     return { kind: 'rejected' as const };
   }
   const ssrAdmission = ssr.admission;
+  frameState.compactSubsurfaceProfiles = subsurface.value?.compactProfiles;
   const { visibleSurface } = gpuInput;
   if (frameGpuDriven !== undefined) {
     const gpuShadowViews = gpuInput.shadowViews;
@@ -2299,7 +2315,7 @@ function standardClusterTextureExtentForGraph(
       : { width: atlas.size.width / 2, height: atlas.size.height / 2 };
   const ao =
     !internals.device.caps.storageBuffer &&
-    frameState.installedPipelineConfig?.ssao?.enabled === true
+    frameState.installedPipelineConfig?.ambientOcclusion?.enabled === true
       ? installedGraph.targets.getColorTargetDescriptor('ssao-raw')
       : undefined;
   if (ao === undefined && screen === undefined && !atmosphere) return undefined;
@@ -2526,6 +2542,7 @@ export function sealFrameGraph(
     ),
   );
   const validatedOrdered = dispatchPlan.validatedOrdered;
+  prepareFramePipelineSources(frameState, preflightGraph, internals, validatedOrdered);
   const waterMaterialDrawClosure = finalizeWaterMaterialAdmissionDraws(validatedOrdered);
   const shadowValidatedOrdered = dispatchPlan.shadowValidatedOrdered;
   const scenePassWork = sceneWork?.finish(dispatchPlan);
@@ -2595,6 +2612,8 @@ export function sealFrameGraph(
         clock.elapsedSeconds,
         { width: targetW, height: targetH },
         internals.standardProfile?.quality?.ssr,
+        captureOnly ? 0 : standard.prepared.deferredChannelProjection,
+        frameState.compactSubsurfaceProfiles,
       );
       if (pipelineState.pointsLinesViewBuffer !== undefined) {
         writePointsLinesViewUbo(
@@ -2678,6 +2697,7 @@ export function sealFrameGraph(
     temporalView,
     targetH,
     submittedBarrelMapping,
+    getRenderFeatureGraphState(internals).fullscreenEffects,
   );
 
   observePreparedResourceGeneration(frameState, attempt.preparedGpuDriven);

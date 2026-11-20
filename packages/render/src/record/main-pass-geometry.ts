@@ -1711,7 +1711,9 @@ export function recordGeometryDraws(
     const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;
     let fragmentEntry =
       passKind === 'temporal'
-        ? undefined
+        ? fragmentEntryPoint === 'fs_scene_velocity'
+          ? fragmentEntryPoint
+          : undefined
         : selectStandardForwardScreenEntry(fragmentEntryPoint, selectedPass?.fragmentEntry);
     const selectedShaderId =
       selectedPass === undefined ? submeshMaterial.materialShaderId : selectedPass.materialShaderId;

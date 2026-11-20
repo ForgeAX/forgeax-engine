@@ -5,7 +5,7 @@ import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { isTriangleTopology, ok } from '@forgeax/engine-types';
 import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
 import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
-import { computeScreenRay, rayHitsMeshBounds, type ScreenRay } from './pick-core';
+import { computeScreenRay, meshBoundsEntry, rayHitsMeshBounds, type ScreenRay } from './pick-core';
 import { meshQueryEntities, queryMesh, queryMeshMatrix } from './query-mesh';
 
 // pick-triangle.ts — precise screen ray / triangle query.
@@ -82,18 +82,20 @@ function drawWorldMatrix(
   );
 }
 
-function intersectsCpuUnavailableBounds(
+function cpuUnavailableBoundsEntry(
   origin: ray.Ray,
-  mesh: MeshAsset,
+  bounds: MeshAsset['aabb'],
   entityWorldMatrix: mat4.Mat4Like,
   instances: MeshInstances,
-): boolean {
+): number {
   const [transforms, count] = instances;
+  let first = Number.POSITIVE_INFINITY;
   for (let instanceIndex = 0; instanceIndex < count; instanceIndex += 1) {
     const drawWorld = drawWorldMatrix(entityWorldMatrix, transforms, instanceIndex);
-    if (rayHitsMeshBounds(origin, mesh.aabb, drawWorld)) return true;
+    const distance = meshBoundsEntry(origin, bounds, drawWorld);
+    if (distance !== undefined) first = Math.min(first, distance);
   }
-  return false;
+  return first;
 }
 
 /**
@@ -132,12 +134,12 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
   let best: TriangleHit | undefined;
   let unsupportedReason: TrianglePickUnavailableReason | undefined;
   const unsupportedEntities: EntityHandle[] = [];
+  const withoutCpu: { entity: EntityHandle; distance: number }[] = [];
 
   for (const entity of meshQueryEntities(world)) {
     const value = queryMesh(world, entity);
     if (value === undefined) continue;
-    const { mesh, assetHandle } = value;
-    const entityWorldMatrix = queryMeshMatrix(world, entity, screen);
+    const entityWorldMatrix = queryMeshMatrix(world, entity, screen) as mat4.Mat4Like | undefined;
     if (entityWorldMatrix === undefined) continue;
     const instances = queryInstances(world, entity);
     if (instances === undefined) {
@@ -146,7 +148,18 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
       continue;
     }
     const [instanceTransforms, instanceCount] = instances;
+    if ('unavailable' in value) {
+      const distance = cpuUnavailableBoundsEntry(
+        origin,
+        value.bounds,
+        entityWorldMatrix,
+        instances,
+      );
+      if (Number.isFinite(distance)) withoutCpu.push({ entity, distance });
+      continue;
+    }
 
+    const { mesh, assetHandle } = value;
     const pose = currentMeshPositions(world, entity, mesh, world.frameArena);
     if ('reason' in pose) {
       if (pose.reason !== 'cpu-geometry-unavailable') {
@@ -154,17 +167,8 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
         unsupportedEntities.push(entity);
         continue;
       }
-      if (
-        !intersectsCpuUnavailableBounds(
-          origin,
-          mesh,
-          entityWorldMatrix as unknown as mat4.Mat4Like,
-          instances,
-        )
-      )
-        continue;
-      unsupportedReason ??= 'cpu-geometry-unavailable';
-      unsupportedEntities.push(entity);
+      const distance = cpuUnavailableBoundsEntry(origin, mesh.aabb, entityWorldMatrix, instances);
+      if (Number.isFinite(distance)) withoutCpu.push({ entity, distance });
       continue;
     }
 
@@ -178,7 +182,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
     } = pose;
     for (let instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1) {
       const drawWorld = drawWorldMatrix(
-        entityWorldMatrix as unknown as mat4.Mat4Like,
+        entityWorldMatrix,
         instanceTransforms,
         instanceIndex,
         worldSpace,
@@ -234,6 +238,20 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
     }
   }
 
+  return finishTrianglePick(best, unsupportedReason, unsupportedEntities, withoutCpu);
+}
+
+function finishTrianglePick(
+  best: TriangleHit | undefined,
+  unsupportedReason: TrianglePickUnavailableReason | undefined,
+  unsupportedEntities: EntityHandle[],
+  withoutCpu: readonly { entity: EntityHandle; distance: number }[],
+): TrianglePickResult {
+  for (const { entity, distance } of withoutCpu) {
+    if (best !== undefined && distance > best.distance) continue;
+    unsupportedReason ??= 'cpu-geometry-unavailable';
+    unsupportedEntities.push(entity);
+  }
   if (unsupportedReason !== undefined) {
     return {
       status: 'unavailable',

@@ -1,9 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
 import { createProfiler } from '@forgeax/engine-profiler';
 import {
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AmbientOcclusion,
+  DEFAULT_STANDARD_PROFILE,
 } from '@forgeax/engine-render';
 import type {
   RendererHostAssembly,
@@ -151,11 +151,19 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
   const assemblyResult =
     backendKind === 'webgpu'
       ? await constructRuntimeRendererHost(canvas, {
+          standardProfile: {
+            ...DEFAULT_STANDARD_PROFILE,
+            ambientOcclusion: { enabled: false, method: 'gtao' },
+          },
           rhi: recorder.backend.rhi,
           captureGpuTimings: true,
           profiler,
         })
       : await constructRuntimeRendererHost(canvas, {
+          standardProfile: {
+            ...DEFAULT_STANDARD_PROFILE,
+            ambientOcclusion: { enabled: false, method: 'gtao' },
+          },
           rhi: recorder.backend.rhi,
           captureGpuTimings: true,
           profiler,
@@ -190,7 +198,6 @@ async function captureFragment(backendKind: FragmentCapture['backend']): Promise
     .addComponent(camera, {
       component: AmbientOcclusion,
       data: {
-        algorithm: AMBIENT_OCCLUSION_GTAO,
         directLightingStrength: 0,
         radius: FORWARD_GTAO_FIXTURE.radius,
         bias: FORWARD_GTAO_FIXTURE.bias,

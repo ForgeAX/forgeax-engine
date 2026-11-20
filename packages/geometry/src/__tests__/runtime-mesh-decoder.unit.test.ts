@@ -1,5 +1,6 @@
 import { cookMeshDistanceFieldProduct } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { MESH_BIN_HEADER_BYTES } from '@forgeax/engine-pack/mesh-bin-contract';
 import {
   type ArtifactDescriptor,
   type AssetRuntimeArtifactDescriptor,
@@ -8,6 +9,7 @@ import {
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { meshAssetDecoder } from '../assets/mesh-decoder';
+import { unpackMeshBin } from '../assets/unpack-mesh-bin';
 import { createBoxGeometry } from '../box';
 import { withMeshAabb } from '../mesh-aabb';
 import { buildMeshCollision } from '../mesh-collision';
@@ -237,6 +239,21 @@ describe('Geometry runtime decoder', () => {
     });
     expect(Array.from(restored.indices ?? [])).toEqual(Array.from(mesh.indices ?? []));
     expect((await decode({ ...mesh, collision: { positions: [], indices: [] } })).ok).toBe(false);
+  });
+
+  it('rejects non-finite packed positions through standalone unpacking and Mesh assembly', async () => {
+    const mesh = createBoxGeometry(1, 2, 3).unwrap();
+    const bytes = packMeshBin(mesh, 'mesh').unwrap();
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    data.setFloat32(MESH_BIN_HEADER_BYTES, Number.NaN, true);
+    expect(unpackMeshBin(bytes, 'mesh', 'interleaved')).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'payload-non-finite' } },
+    });
+    expect(await decode({}, meshBody(bytes))).toMatchObject({
+      ok: false,
+      error: { code: 'asset-package-invalid' },
+    });
   });
 
   it('rejects two geometry sources, corrupt binaries and malformed inline attributes instead of dropping them', async () => {

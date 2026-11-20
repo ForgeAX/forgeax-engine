@@ -31,7 +31,9 @@ export const SSR_SHADER_STAGES = [
   ['trace', 'ssr_trace', 'ssr_trace', 'forgeax_ssr::trace'],
   ['temporal', 'ssr_temporal', 'ssr_temporal', 'forgeax_ssr::temporal'],
   ['compose', 'ssr_compose', 'vs_ssr_compose', 'forgeax_ssr::compose'],
-] as const satisfies readonly UtilityShaderStage<Exclude<keyof SsrShaderSources, 'gbuffer'>>[];
+] as const satisfies readonly UtilityShaderStage<
+  Exclude<keyof SsrShaderSources, 'gbuffer' | 'compactGbuffer'>
+>[];
 
 const DEPTH_PYRAMID_FRAGMENT_STAGES = [
   [
@@ -147,7 +149,18 @@ export async function prewarmSsrWithDepthPyramid(
     ([, , entryPoint, id]) =>
       utilityEntry(entries, entryPoint, id)?.programContract?.gbuffer === 'standard-gbuffer/2',
   );
-  const admittedSsr = { ...ssr, ...(compatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}) };
+  const compactCompatible =
+    compatible &&
+    required.every(
+      ([, , entryPoint, id]) =>
+        utilityEntry(entries, entryPoint, id)?.programContract?.compactGbuffer ===
+        'standard-gbuffer/4',
+    );
+  const admittedSsr = {
+    ...ssr,
+    ...(compatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
+    ...(compactCompatible ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
+  };
 
   if (pyramid === undefined) {
     throw new RhiError({

@@ -28,15 +28,18 @@ import { createWaterFluidFeature, type WaterFluidFeatureFrame } from '../../wate
 import type { ViewLights } from '../../world/render-lights';
 import type { RenderFrameState } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { buildFramePostProcessParams } from '../frame-temporal';
 import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
 import {
   compileViewGraph,
   ensureShadowDepthLayers,
   getRenderFeatureGraphInspection,
+  getRenderFeatureGraphState,
   mutableFeatureGraphInspection,
   promoteGraphCandidate,
   rollbackGraphCandidate,
+  settleFeatureGraphState,
 } from '../typed-frame-graph';
 
 async function harness(retainBuildBinding = false) {
@@ -119,6 +122,60 @@ async function harness(retainBuildBinding = false) {
 }
 
 type Harness = Awaited<ReturnType<typeof harness>>;
+
+it('uses current fullscreen uniforms across graph reuse and retains accepted uniforms on rejection', async () => {
+  const h = await harness();
+  const id = 'test-ray';
+  const defaults = new Uint8Array(16);
+  const candidate = (value: number) => ({
+    plans: [],
+    fullscreenEffects: new Map([
+      [
+        id,
+        {
+          source: 'fn fs_main() -> vec4f { return vec4f(1); }',
+          params: { byteSize: 16, defaultValue: defaults },
+          frameParams: new Uint8Array(16).fill(value),
+        },
+      ],
+    ]),
+  });
+  const currentParams = (explicit = new Map<string, Uint8Array>()) =>
+    buildFramePostProcessParams(
+      h.internals,
+      h.frameState,
+      h.input().camera,
+      explicit,
+      false,
+      0,
+      { historyValid: false } as never,
+      1,
+      undefined,
+      getRenderFeatureGraphState(h.internals).fullscreenEffects,
+    ).get(id);
+  const firstInput = { ...h.input(), featurePlan: { candidate: candidate(1) } };
+  const graph = compileAndAdoptViewGraph(firstInput);
+  if (!graph) throw new Error('missing view graph');
+  try {
+    h.accept();
+    settleFeatureGraphState(h.internals, true);
+    expect(currentParams()?.[0]).toBe(1);
+    const secondInput = { ...h.input(), featurePlan: { candidate: candidate(2) } };
+    expect(compileViewGraph(secondInput).kind).toBe('reused');
+    expect(compileAndAdoptViewGraph(secondInput)).toBe(graph);
+    expect(currentParams()?.[0]).toBe(2);
+    expect(currentParams(new Map([[id, new Uint8Array(16).fill(7)]]))?.[0]).toBe(7);
+    h.accept();
+    settleFeatureGraphState(h.internals, true);
+    h.setFail(true);
+    const rejectedInput = { ...h.input(2), featurePlan: { candidate: candidate(3) } };
+    expect(compileViewGraph(rejectedInput).kind).toBe('retained');
+    expect(compileAndAdoptViewGraph(rejectedInput)).toBe(graph);
+    expect(currentParams()?.[0]).toBe(2);
+  } finally {
+    await graph.retire();
+  }
+});
 
 it('rejects a failed capsule-consumer switch instead of recording a graph with the old caster policy', async () => {
   const h = await harness();

@@ -548,16 +548,16 @@ describe('detectCycle DFS + tri-colour (white/gray/black)', () => {
 describe('scanDefineConflicts TS-layer #define collision scan', () => {
   it('(a) no conflict -> empty array (happy path)', () => {
     const modules = {
-      'forgeax_pbr::brdf': '#define_import_path forgeax_pbr::brdf\nfn a() {}\n',
-      'forgeax_view::common': '#define_import_path forgeax_view::common\nstruct V {}\n',
+      'forgeax_pbr::brdf': ['#define_import_path forgeax_pbr::brdf'],
+      'forgeax_view::common': ['#define_import_path forgeax_view::common'],
     };
     expect(scanDefineConflicts(modules)).toEqual([]);
   });
 
   it('(b) `#define FOO` appears in 2 modules -> sites.length === 2 (AC-07 fixture)', () => {
     const modules = {
-      mod1: '#define FOO\nfn a() {}\n',
-      mod2: '#define FOO\nfn b() {}\n',
+      mod1: ['#define FOO'],
+      mod2: ['#define FOO'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(1);
@@ -571,15 +571,15 @@ describe('scanDefineConflicts TS-layer #define collision scan', () => {
 
   it('(c) idempotent: `#define FOO` twice in the same module is NOT a conflict', () => {
     const modules = {
-      mod1: '#define FOO\n#define FOO\nfn a() {}\n',
+      mod1: ['#define FOO', '#define FOO'],
     };
     expect(scanDefineConflicts(modules)).toEqual([]);
   });
 
   it('(d) multiple defines each conflicting independently -> >=2 entries', () => {
     const modules = {
-      mod1: '#define FOO\n#define BAR\n',
-      mod2: '#define FOO\n#define BAR\n',
+      mod1: ['#define FOO', '#define BAR'],
+      mod2: ['#define FOO', '#define BAR'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(2);
@@ -589,8 +589,8 @@ describe('scanDefineConflicts TS-layer #define collision scan', () => {
 
   it('handles leading whitespace (`  #define FOO`) same as flush-left', () => {
     const modules = {
-      mod1: '  #define FOO\n',
-      mod2: '#define FOO\n',
+      mod1: ['  #define FOO'],
+      mod2: ['#define FOO'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(1);

@@ -262,11 +262,7 @@ function standardTopology(
 ): RenderPipelineTopology {
   const config = {
     ...(topology.config ?? {}),
-    ssao: {
-      ...(topology.config?.ssao ?? {}),
-      ...(typeof profile.ssao === 'object' ? profile.ssao : {}),
-      enabled: profile.ssao !== false,
-    },
+    ambientOcclusion: topology.config?.ambientOcclusion ?? profile.ambientOcclusion,
   };
   return {
     ...topology,

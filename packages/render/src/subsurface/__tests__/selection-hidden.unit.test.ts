@@ -45,7 +45,7 @@ it('does not fail on a hidden row whose material the dispatch has not admitted',
   // Once the row gains demand, adoption counts the accepted version.
   const admitted = EMPTY.with(resource);
   selection.adopt(admitted);
-  expect(selection.demand).toBe(1);
+  expect(selection.demand).toHaveLength(1);
   // Losing it again returns to no demand, not to a missing material.
   selection.adopt(EMPTY);
   expect(selection.demand).toBe(0);

@@ -49,6 +49,8 @@ export interface StandardLightFrame {
   readonly lightCount: StandardLightCount;
   /** Point/spot/rect lights the view's Cluster dropped before `local` was built. */
   readonly droppedLocalLights?: number;
+  /** Packed proof shared by the View and local-light slot uploads. */
+  readonly deferredChannelProjection?: number;
   /** Graph path carried into inspection from the active Standard profile. */
   readonly renderPath: 'forward' | 'deferred';
 }

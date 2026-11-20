@@ -10,6 +10,7 @@ export const RENDERING_REQUIREMENT_KEYS = [
   'renderPath',
   'pbr',
   'ibl',
+  'ambientOcclusion',
   'lightCount',
   'visibleSurface',
   'diffuseGi',
@@ -165,13 +166,12 @@ export function renderProfileForQuality(
   return {
     ...source,
     quality,
-    ssao:
-      source.ssao === false
-        ? false
-        : applyAmbientOcclusionQuality(
-            typeof source.ssao === 'object' ? source.ssao : {},
-            quality.ambientOcclusion,
-          ),
+    ambientOcclusion: source.ambientOcclusion.enabled
+      ? {
+          ...applyAmbientOcclusionQuality(source.ambientOcclusion, quality.ambientOcclusion),
+          enabled: true,
+        }
+      : source.ambientOcclusion,
     subsurfaceQuality:
       source.subsurfaceQuality === 'low' || groups.shading === 'low' ? 'low' : 'high',
     volumetricFog: {

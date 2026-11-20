@@ -45,9 +45,16 @@ export interface MeshResidencyFailure {
 
 export type MeshResidencyRequest =
   | {
+      readonly kind: 'mesh-reserve';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly bytes: number;
+    }
+  | {
       readonly kind: 'mesh-prepare';
       readonly requestId: number;
       readonly input: PublishedMeshPreparation;
+      readonly reserved?: true;
       readonly entity?: number;
     }
   | {
@@ -57,7 +64,7 @@ export type MeshResidencyRequest =
       readonly evict: boolean;
     };
 export type MeshResidencyResponse = {
-  readonly kind: 'mesh-ready' | 'mesh-released';
+  readonly kind: 'mesh-reserved' | 'mesh-ready' | 'mesh-retired' | 'mesh-released';
   readonly requestId: number;
   readonly identity: RenderPublicationIdentity;
   readonly result:

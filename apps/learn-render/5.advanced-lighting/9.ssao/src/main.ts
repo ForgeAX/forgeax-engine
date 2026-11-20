@@ -41,7 +41,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'deferred',
-          ssao: enabled ? { algorithm, radius: 0.5, bias: 0.025, intensity: 1, quality: 'high' } : false,
+          ambientOcclusion: enabled ? { enabled: true, method: algorithm, radius: 0.5, bias: 0.025, intensity: 1, quality: 'high' } : { enabled: false },
         },
       },
       forgeaxBundlerAdapter(),
@@ -96,7 +96,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const controls = document.createElement('aside');
   controls.innerHTML = `<nav><a href="?">Plane + cube</a> · <a href="?scene=room">Room</a></nav><strong>${room ? "Room: AO + soft shadows" : "Plane + cube"}</strong>
     <label><input id="ao-enabled" type="checkbox" ${enabled ? 'checked' : ''}> Ambient occlusion</label>
-    <label>Algorithm <select id="ao-algorithm"><option value="ssao" ${algorithm === 'ssao' ? 'selected' : ''}>SSAO</option><option value="gtao" ${algorithm === 'gtao' ? 'selected' : ''}>GTAO</option></select></label>
+    <label>Method <select id="ao-algorithm"><option value="ssao" ${algorithm === 'ssao' ? 'selected' : ''}>SSAO</option><option value="gtao" ${algorithm === 'gtao' ? 'selected' : ''}>GTAO</option></select></label>
     <label>Quality <select id="ao-quality"><option>low</option><option>medium</option><option selected>high</option></select></label>
     <label>Radius <input id="ao-radius" type="range" min="0.1" max="1.5" step="0.05" value="0.5"></label>
     <label>Strength <input id="ao-strength" type="range" min="0" max="3" step="0.1" value="1"></label>
@@ -119,14 +119,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       .unwrap();
     const result = app.renderer.setProfile({
       ...app.renderer.inspect().profile,
-      ssao: input('ao-enabled').checked
-        ? {
-            algorithm: controls.querySelector<HTMLSelectElement>('#ao-algorithm')?.value === 'gtao' ? 'gtao' : 'ssao',
+      ambientOcclusion: input('ao-enabled').checked
+        ? { enabled: true,
+            method: controls.querySelector<HTMLSelectElement>('#ao-algorithm')?.value === 'gtao' ? 'gtao' : 'ssao',
             radius: Number(input('ao-radius').value),
             intensity: Number(input('ao-strength').value),
             quality,
           }
-        : false,
+        : { enabled: false },
     });
     if (!result.ok) reportAppError(result.error);
     if (room) {

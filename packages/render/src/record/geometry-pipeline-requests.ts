@@ -280,6 +280,8 @@ export function geometryRenderStateForPass(
       depthCompare: compare === 'less' ? 'less-equal' : 'greater-equal',
     }));
   }
+  if (passKind === 'temporal' && fragmentEntry === 'fs_scene_velocity')
+    return derivedRenderState(base, 'temporal-depth-prepass', temporalDepthPrepassState);
   return derivedRenderState(
     base,
     coverageOnly ? 'temporal-coverage' : 'temporal',
@@ -325,6 +327,11 @@ function temporalPassState(base: GeometryRenderState, coverageOnly: boolean): Ge
 }
 const temporalState = (base: GeometryRenderState) => temporalPassState(base, false);
 const temporalCoverageState = (base: GeometryRenderState) => temporalPassState(base, true);
+const temporalDepthPrepassState = (base: GeometryRenderState): GeometryRenderState => ({
+  ...temporalPassState(base, false),
+  depthWriteEnabled: base?.depthWriteEnabled ?? true,
+  depthCompare: base?.depthCompare ?? 'less',
+});
 const msaaNormalState = (base: GeometryRenderState): GeometryRenderState => {
   const state = { ...base };
   delete state.blend;
@@ -656,8 +663,11 @@ export function createGeometryPipelineRequests(
       c.visibleSurface &&
       passKind === 'deferred' &&
       isStandardPbrSkinMaterialShader(materialShaderId) &&
-      (fragmentEntry === undefined || fragmentEntry === 'fs_gbuffer');
-    if (skinnedVisibleSurface) fragmentEntry = SKIN_UNCOVERED_GBUFFER_ENTRY;
+      (fragmentEntry === undefined ||
+        fragmentEntry === 'fs_gbuffer' ||
+        fragmentEntry === 'fs_gbuffer_compact');
+    if (skinnedVisibleSurface && fragmentEntry !== 'fs_gbuffer_compact')
+      fragmentEntry = SKIN_UNCOVERED_GBUFFER_ENTRY;
     const generalVariantSet =
       !c.visibleSurface || skinnedVisibleSurface
         ? baseVariantSet
@@ -994,10 +1004,15 @@ export function createGeometryPipelineRequests(
         shaderArtifact?.receipt?.forwardFog ??
         materialPipelineEntry?.program?.forwardFog;
       if (contract === undefined) {
-        const registered = runtime.shaderRegistry?.findMaterialArtifact(
-          smMaterialShaderId ?? 'forgeax::default-unlit',
-        );
-        if (registered?.ok) contract = registered.value.program.forwardFog;
+        const registry = runtime.shaderRegistry;
+        const key = smMaterialShaderId ?? 'forgeax::default-unlit';
+        const declaration = registry?.materialArtifactDeclaration(key);
+        if (declaration?.kind === 'source') {
+          contract = declaration.forwardFog ?? declaration.receipt?.forwardFog;
+        } else {
+          const registered = registry?.findMaterialArtifact(key);
+          if (registered?.ok) contract = registered.value.program.forwardFog;
+        }
       }
       if (contract !== 'height-vertex/1')
         throw new RendererContractFailureError(
@@ -1113,7 +1128,7 @@ export function createGeometryPipelineRequests(
       opaqueDepthPrimed,
     );
     const projectDepthAndWaterRenderState = () => {
-      if (depthPrepass)
+      if (depthPrepass && passKind !== 'temporal')
         pipelineRenderState = derivedRenderState(pipelineRenderState, 'opaque-depth', (state) => ({
           ...state,
           colorWriteMask: 0,
@@ -1401,7 +1416,9 @@ export function prepareGeometryPipelineRequests(
   ): void => {
     let fragmentEntry =
       passKind === 'temporal'
-        ? undefined
+        ? fragmentEntryPoint === 'fs_scene_velocity'
+          ? fragmentEntryPoint
+          : undefined
         : selectStandardForwardScreenEntry(fragmentEntryPoint, selectedPass.fragmentEntry);
     let accumulate = false;
     if (oit !== undefined) {

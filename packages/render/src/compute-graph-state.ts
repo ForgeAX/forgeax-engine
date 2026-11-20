@@ -10,6 +10,7 @@ import type {
   Buffer,
   ComputePipeline,
   RhiDevice,
+  Sampler,
   ShaderModule,
   TextureView,
 } from '@forgeax/engine-rhi';
@@ -48,12 +49,18 @@ export function createComputeStatePreparation(
   return (frame: RenderGraphFrame): ComputeState | undefined => {
     const selected = source(frame);
     if (selected === undefined) return undefined;
-    const runtime = (frame as RenderPipelineFrame).runtime;
+    const { runtime, frameState } = frame as _InternalRenderPipelineContext;
     if (current === undefined || current.device !== runtime.device || current.source !== selected) {
       const factory = runtime.shaderModuleFactory;
       if (factory === undefined) throw computePipelineError(`${label} shader module`);
       const module = factory.createShaderModule(shaderSourceDescriptor(selected, label));
-      if (!module.ok) throw module.error;
+      if (!module.ok) {
+        if (factory.isPending?.(module.error) !== true) throw module.error;
+        markPipelinePreparationPending(frameState, {
+          code: 'scene-pipeline-preparation',
+        });
+        return undefined;
+      }
       const prepared = computeStateDescriptor(
         runtime.device,
         module.value,
@@ -94,7 +101,7 @@ export function createComputeStatePreparation(
       } else flight.result = result;
     }
     if (current.result === undefined) {
-      markPipelinePreparationPending((frame as _InternalRenderPipelineContext).frameState, {
+      markPipelinePreparationPending(frameState, {
         code: 'scene-pipeline-preparation',
       });
       return undefined;
@@ -118,6 +125,10 @@ type ComputeBinding =
   | {
       readonly binding: number;
       readonly resource: { readonly kind: 'textureView'; readonly value: TextureView };
+    }
+  | {
+      readonly binding: number;
+      readonly resource: { readonly kind: 'sampler'; readonly value: Sampler };
     }
   | {
       readonly binding: number;

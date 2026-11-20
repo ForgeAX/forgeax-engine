@@ -1,10 +1,13 @@
+import { validateAssetPublication } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
   createMeshBuilder,
   meshFromInterleaved,
 } from '@forgeax/engine-geometry';
+import { prepareRuntimePackContent, RuntimePackProducer } from '@forgeax/engine-import';
 import { vec3 } from '@forgeax/engine-math';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { PhysicsWorldResource, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import {
   createRapier3DPhysicsWorld,
@@ -12,8 +15,11 @@ import {
   registerPhysicsSystems,
 } from '@forgeax/engine-physics-rapier3d';
 import {
+  ANTIALIAS_NONE,
   ANTIALIAS_TAA,
+  BLOOM_DISABLED,
   Camera,
+  createAsyncDynamicGeometryHost,
   DirectionalLight,
   type DynamicGeometryCandidate,
   Materials,
@@ -22,7 +28,7 @@ import {
   PointLight,
 } from '@forgeax/engine-render';
 import { ChildOf, propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
-import { err, type MeshAsset, ok } from '@forgeax/engine-types';
+import { type AssetHandle, err, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, onTestFailed, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
@@ -620,5 +626,247 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     pipelines.mockRestore();
     modules.mockRestore();
     stage = 'cleanup:done';
+  }
+}, 60000);
+
+it('adopts Runtime Pack mesh siblings and their colliders in the same fixed step', async () => {
+  let stage = 'setup';
+  onTestFailed(() => console.error(`[runtime-pack-scene-group] ${stage}`));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  document.body.appendChild(canvas);
+  const renderer = (
+    await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' })
+  ).unwrap();
+  const world = new World();
+  const scene = await createWorldContext(world, [scenePlugin()]);
+  const rapier = await loadRapier3D();
+  if ('code' in rapier) throw rapier;
+  const physics = createRapier3DPhysicsWorld(rapier);
+  world.insertResource(PhysicsWorldResource, physics);
+  const releasePhysics = registerPhysicsSystems(world);
+  const assets = testAssets(world);
+  const producer = new RuntimePackProducer({
+    scopeId: 'wave1-scene-replacement',
+    validate: (state, fetcher, dependencies) =>
+      validateAssetPublication(state.rows, fetcher, undefined, {
+        registry: assets,
+        pack: state.publication?.pack,
+        retainProducerArtifacts: true,
+        dependencies,
+      }),
+  });
+  const buildMesh = (width: number) => createBoxGeometry(width, 1, 0.5).unwrap();
+  const members = [
+    { x: -1.3, mesh: assets.create(buildMesh(0.6)).unwrap() },
+    { x: 1.3, mesh: assets.create(buildMesh(0.6)).unwrap() },
+  ] as const;
+  const initialMeshes = members.map(({ mesh }) => mesh);
+  let generated: readonly AssetHandle<'mesh'>[] = [];
+  try {
+    const material = assets.create(Materials.unlit([0.14, 0.68, 0.22, 1])).unwrap();
+    const entities = members.map(({ x, mesh }) =>
+      world
+        .spawn(
+          { component: Transform, data: { pos: [x, 0, 0] } },
+          { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
+          { component: MeshRenderer, data: { materials: [material] } },
+        )
+        .unwrap(),
+    );
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 5] } },
+        {
+          component: Camera,
+          data: {
+            fov: Math.PI / 3,
+            aspect: 1,
+            near: 0.1,
+            far: 20,
+            antialias: ANTIALIAS_NONE,
+            bloom: BLOOM_DISABLED,
+            tonemap: 0,
+            clearColor: [0, 0, 0, 1],
+          },
+        },
+      )
+      .unwrap();
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const source = attached.value;
+    const render = () => drawReadyFrame(renderer, { source });
+    const screenshot = async () => {
+      const value = await page.elementLocator(canvas).screenshot({ base64: true });
+      return typeof value === 'string' ? value : value.base64;
+    };
+    const bindings = () =>
+      entities.map((entity) => world.get(entity, MeshFilter).unwrap().assetHandle);
+    const castNearEdges = () =>
+      members.map(
+        ({ x }) => physics.raycast(vec3.create(x + 0.63, 0, 4), vec3.create(0, 0, -1), 8)?.entity,
+      );
+    const prepareShapes = (revision: number, width: number) =>
+      physics
+        .prepareDerivedShapeCandidates(
+          entities.map((entity) => ({
+            entity,
+            revision,
+            sourceKey: `runtime-pack:scene-group:${entity}`,
+            worldIdentity: world,
+            bodyType: 'static' as const,
+            shapes: [
+              {
+                id: 'surface',
+                revision,
+                kind: 'convex-compound' as const,
+                pieces: [boxPoints([-width / 2, -0.5, -0.25], [width / 2, 0.5, 0.25])],
+              },
+            ],
+          })),
+        )
+        .unwrap();
+
+    world.update(1 / 60).unwrap();
+    physics.admitDerivedShapeCandidates(prepareShapes(1, 0.6), () => ok(undefined)).unwrap();
+    world.update(1 / 60).unwrap();
+    stage = 'old group draw';
+    await render();
+    const oldPixels = await screenshot();
+    expect(castNearEdges()).toEqual([undefined, undefined]);
+
+    stage = 'Runtime Pack commit and load';
+    const id = '01900000-0000-7000-8000-ffffff000109';
+    const namespace = PackageId.parse(id);
+    if (!namespace.ok) throw namespace.error;
+    assets.setCatalogSource(producer.catalog, producer.fetch);
+    const wide = 1.6;
+    const contents = (
+      await prepareRuntimePackContent(id, {
+        left: buildMesh(wide),
+        right: buildMesh(wide),
+      })
+    ).unwrap();
+    const receipt = (await producer.admit(contents)).unwrap();
+    const publication = receipt.publication;
+    if (publication === undefined) throw new Error('Missing Runtime Pack publication');
+    expect(receipt.rows).toHaveLength(2);
+    generated = (
+      await assets.loadMany(
+        [AssetGuid.derive(namespace.value, 'left'), AssetGuid.derive(namespace.value, 'right')],
+        'mesh',
+      )
+    ).unwrap();
+    expect(generated).toHaveLength(2);
+    for (const mesh of generated) {
+      expect(assets.source(mesh).unwrap()?.publication).toMatchObject({
+        digest: publication.digest,
+        generation: publication.generation,
+        outputSetDigest: publication.outputSetDigest,
+      });
+    }
+
+    const geometry = createAsyncDynamicGeometryHost(renderer);
+    const prepareGeometry = async (meshes: readonly AssetHandle<'mesh'>[], revision: number) => {
+      const accepted = bindings();
+      const controller = new AbortController();
+      const pending = geometry.prepareDynamicGeometryCandidates(
+        entities.map((entity, index) => {
+          const meshHandle = meshes[index];
+          if (meshHandle === undefined) throw new Error('Missing scene group Mesh');
+          return { world, entity, physicsEntity: entity, meshHandle, revision };
+        }),
+        { signal: controller.signal },
+      );
+      let settled = false;
+      const settle = () => {
+        settled = true;
+      };
+      void pending.then(settle, settle);
+      try {
+        do {
+          // The manual frame owner keeps running Record while candidate PSOs warm.
+          await render();
+          expect(bindings()).toEqual(accepted);
+        } while (!settled);
+        return (await pending).unwrap();
+      } finally {
+        controller.abort();
+        await Promise.allSettled([pending]);
+      }
+    };
+    let adopted: readonly DynamicGeometryCandidate[] = [];
+    let adoptedStep: number | undefined;
+    const stageCommit = (
+      candidates: readonly DynamicGeometryCandidate[],
+      revision: number,
+      width: number,
+    ) => {
+      physics
+        .admitDerivedShapeCandidates(prepareShapes(revision, width), () => {
+          const fixedStep = world.getResource(FixedTime).tick;
+          const result = geometry.acceptDynamicGeometryCandidates(candidates, { world, fixedStep });
+          if (!result.ok) return err(result.error);
+          adopted = result.value;
+          adoptedStep = fixedStep;
+          return ok(undefined);
+        })
+        .unwrap();
+    };
+
+    stage = 'new group pipelines';
+    const prepared = await prepareGeometry(generated, 2);
+    stageCommit(prepared, 2, wide);
+    world.update(0).unwrap();
+    expect(adopted).toHaveLength(0);
+    expect(bindings()).toEqual(initialMeshes);
+    expect(castNearEdges()).toEqual([undefined, undefined]);
+    await render();
+    expect(await screenshot()).toBe(oldPixels);
+
+    stage = 'new group fixed step and first frame';
+    world.update(1 / 60).unwrap();
+    expect(adopted).toHaveLength(2);
+    expect(adoptedStep).toBe(world.getResource(FixedTime).tick);
+    expect(bindings()).toEqual(generated);
+    expect(castNearEdges()).toEqual(entities);
+    const first = await render();
+    for (const candidate of adopted)
+      expect(geometry.dynamicGeometryReceipt(candidate)).toMatchObject({
+        fixedStep: adoptedStep,
+        frameId: first.frameId,
+        recordStageConsumed: true,
+      });
+    stage = '60 completed group frames';
+    for (let frame = 1; frame < 60; frame++) await render();
+    const newPixels = await screenshot();
+    expect(newPixels).not.toBe(oldPixels);
+
+    stage = 'reject stale candidate and preserve adopted group';
+    const stale = await prepareGeometry(initialMeshes, 3);
+    assets.replace(members[0].mesh, buildMesh(0.7)).unwrap();
+    stageCommit(stale, 3, 0.6);
+    world.update(1 / 60).unwrap();
+    for (const entity of entities) {
+      expect(physics.getDerivedPublication(entity)?.revision).toBe(2);
+      expect(physics.getDerivedFailure(entity)?.recovery).toBe('old-state-retained');
+    }
+    expect(bindings()).toEqual(generated);
+    expect(castNearEdges()).toEqual(entities);
+    await render();
+    expect(await screenshot()).toBe(newPixels);
+  } finally {
+    await renderer.dispose();
+    releasePhysics();
+    const entities = [...world.query({ read: [Transform] }).unwrap()].map((row) => row.entity);
+    for (const entity of entities.reverse()) world.despawn(entity).unwrap();
+    for (const mesh of generated) assets.release(mesh).unwrap();
+    for (const mesh of initialMeshes) assets.release(mesh).unwrap();
+    assets.clearCatalogSource();
+    producer.dispose();
+    await scene.fiber.dispose();
+    physics.dispose();
+    canvas.remove();
   }
 }, 60000);

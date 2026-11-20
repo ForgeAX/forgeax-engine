@@ -126,7 +126,9 @@ fn fs_temporal_probe() -> @location(0) vec4<f32> {
         'if (material.alphaHash > 0.5) { reactive = temporal.reactive; }',
       );
       const surfaceIndex = entry.indexOf(surfaceLine);
-      const packIndex = entry.indexOf('output.scene_temporal = packSceneTemporalV1WithValidity(');
+      const packIndex = entry.indexOf(
+        'output.full.scene_temporal = packSceneTemporalV1WithValidity(',
+      );
       expect(entry.split(surfaceLine)).toHaveLength(2);
       expect(hashIndex).toBeGreaterThanOrEqual(0);
       expect(surfaceIndex).toBeGreaterThan(hashIndex);

@@ -49,7 +49,7 @@ import type { RecordProfileRunner } from '../record/render-context';
 import type { Renderer, RenderRecordPhase } from '../render-contract';
 
 /** Only detached snapshot storage is transferred; retained version data stays with assets. */
-function meshTransfers(mesh: MeshAsset): ArrayBuffer[] {
+export function meshTransfers(mesh: MeshAsset): ArrayBuffer[] {
   const buffers = new Set<ArrayBuffer>();
   for (const value of [mesh.vertices, mesh.indices, mesh.aabb, ...Object.values(mesh.attributes)]) {
     const buffer = value instanceof ArrayBuffer ? value : value?.buffer;

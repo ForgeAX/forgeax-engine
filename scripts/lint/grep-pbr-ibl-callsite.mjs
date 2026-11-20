@@ -49,19 +49,26 @@ if (countCallSites(lighting, 'environmentScatteringFromDfg') !== 2) {
   );
 }
 
+// The Forward wrapper and Deferred both reach the same scattering owner.
+if (countCallSites(lighting, 'evaluateStandardEnvironmentFromRadiance') !== 2) {
+  failures.push(
+    'standard-lighting.wgsl must define and call the shared environment scattering owner',
+  );
+}
 for (const entry of [
   'default-standard-pbr.wgsl',
   'default-standard-pbr-skin.wgsl',
   'standard-deferred-lighting.wgsl',
 ]) {
   const source = readFileSync(resolve(shaderRoot, entry), 'utf8');
-  // Deferred lighting needs split diffuse/specular, so it calls the shared
-  // evaluateStandardDirectSplit; Forward entries call evaluateStandardDirect.
-  const direct =
-    entry === 'standard-deferred-lighting.wgsl'
-      ? 'evaluateStandardDirectSplit'
-      : 'evaluateStandardDirect';
-  for (const helper of ['evaluateStandardEnvironment', direct]) {
+  // Deferred selects standalone or array-layer radiance before shared
+  // scattering and requests diffuse separately for subsurface diffusion.
+  const deferred = entry === 'standard-deferred-lighting.wgsl';
+  const environment = deferred
+    ? 'evaluateStandardEnvironmentFromRadiance'
+    : 'evaluateStandardEnvironment';
+  const direct = deferred ? 'evaluateStandardDirectSplit' : 'evaluateStandardDirect';
+  for (const helper of [environment, direct]) {
     if (
       !source.includes('#import forgeax_pbr::standard_lighting::') ||
       countCallSites(source, helper) !== 1 ||
@@ -80,10 +87,7 @@ for (const entry of [
     if (countCallSites(source, helper) !== 0)
       failures.push(`${entry} duplicates base lighting through ${helper}`);
   }
-  if (
-    entry !== 'standard-deferred-lighting.wgsl' &&
-    countCallSites(source, 'encodeStandardGBuffer') !== 1
-  )
+  if (!deferred && countCallSites(source, 'encodeStandardGBuffer') !== 1)
     failures.push(`${entry} must use the shared Standard G-buffer encoder exactly once`);
 }
 

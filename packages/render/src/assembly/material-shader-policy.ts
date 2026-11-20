@@ -561,16 +561,70 @@ export async function prepareMaterialShaders(
     throw loaded.error;
   }
 
-  // ── Step 1b: material shader variant resolution + registration ───────────
-  // feat-20260609-hdrp-cluster-fragment-ggx M1 / w7: the boot resolver selects
-  // the non-clustered variant; clustered Standard activation resolves its own
-  // variant later at record time.
+  installBootMaterialShaderVariants(registry, rhiDevice, {
+    storageBufferCapable,
+    webgl2Downlevel,
+    extendedLightingShaderAvailable,
+    projectorAvailable,
+    materialShaderUvSetCounts,
+  });
+
+  // ── Step 1c: register forgeax::default-shadow-caster from its manifest identity ──
+  // feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat M3 / T-007:
+  // The reserved material-shader identifier is the SSOT. Content heuristics are
+  // invalid here: a game-authored vertex-only shader can legitimately expose
+  // position without normal (billboards and procedural VFX commonly do), and
+  // must never be mistaken for the engine shadow caster merely because it is
+  // encountered first in the flat manifest.
+  const shadowCasterIdentifier = 'forgeax::default-shadow-caster';
+  if (!registry.findMaterialArtifact(shadowCasterIdentifier).ok) {
+    const manifestEntry = Array.from(registry.materialShaderManifestEntries()).find(
+      (candidate) => candidate.identifier === shadowCasterIdentifier,
+    );
+    if (manifestEntry !== undefined) {
+      // shadow_caster evaluates the same default Surface as Standard. Keep
+      // its generated MaterialParameters contract aligned with the Standard
+      // pipeline even when a legacy manifest omitted the material entry.
+      const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
+      registry.installMaterialArtifact(shadowCasterIdentifier, {
+        source: manifestEntry.composedWgsl,
+        sourceReference: materialShaderSource(manifestEntry),
+        ...(entryPoints === undefined ? {} : { entryPoints }),
+        paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+        ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
+      });
+    }
+  }
+}
+
+/** Admit each boot-selected material variant without visiting Pack-owned program families. */
+function installBootMaterialShaderVariants(
+  registry: ShaderCatalog,
+  rhiDevice: RhiDevice,
+  {
+    storageBufferCapable,
+    webgl2Downlevel,
+    extendedLightingShaderAvailable,
+    projectorAvailable,
+    materialShaderUvSetCounts,
+  }: {
+    readonly storageBufferCapable: boolean;
+    readonly webgl2Downlevel: boolean;
+    readonly extendedLightingShaderAvailable: boolean;
+    readonly projectorAvailable: boolean;
+    readonly materialShaderUvSetCounts: Map<string, number>;
+  },
+): void {
   for (const msEntry of registry.materialShaderManifestEntries()) {
     // bug-20260610: skip synthetic non-material engine entries piggy-backing
     // on the materialShaders channel for variant surfacing (shadow_caster).
     // They use the `forgeax::engine-` prefix and are consumed by Step 2's
     // engine-entry compile path, NOT by installMaterialArtifact.
-    if (msEntry.identifier.startsWith('forgeax::engine-')) continue;
+    if (
+      msEntry.identifier.startsWith('forgeax::engine-') ||
+      registry.isSourceBackedMaterialArtifact(msEntry.identifier)
+    )
+      continue;
     // The same closed resolver drives every manifest axis at boot. This keeps
     // registration aligned with record-time capability/feature selection and
     // supplies explicit defaults for opt-in axes such as shadow alpha-mask and
@@ -621,15 +675,14 @@ export async function prepareMaterialShaders(
         chosen?.receipt?.entryPoints ??
         msEntry.entryPoints ??
         msEntry.receipt?.entryPoints;
+      const receipt = chosen?.receipt ?? msEntry.receipt;
       registry.installMaterialArtifact(msEntry.identifier, {
         forwardFog: selected.forwardFog ?? selected.receipt?.forwardFog,
         source: wgsl,
         sourceReference: materialShaderSource(selected),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema,
-        ...(chosen?.receipt === undefined && msEntry.receipt === undefined
-          ? {}
-          : { receipt: chosen?.receipt ?? msEntry.receipt }),
+        ...(receipt === undefined ? {} : { receipt }),
       });
       // feat-20260629 M4: store uvSetCount from naga reflection for
       // auto-fill in getMaterialShaderPipeline clamp-to-last alias.
@@ -640,33 +693,6 @@ export async function prepareMaterialShaders(
       // (charter P3 explicit failure). The derived output is discarded; the
       // SSOT consumer is buildPbrPipelineLayouts later.
       derive(paramSchema);
-    }
-  }
-
-  // ── Step 1c: register forgeax::default-shadow-caster from its manifest identity ──
-  // feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat M3 / T-007:
-  // The reserved material-shader identifier is the SSOT. Content heuristics are
-  // invalid here: a game-authored vertex-only shader can legitimately expose
-  // position without normal (billboards and procedural VFX commonly do), and
-  // must never be mistaken for the engine shadow caster merely because it is
-  // encountered first in the flat manifest.
-  const shadowCasterIdentifier = 'forgeax::default-shadow-caster';
-  if (!registry.findMaterialArtifact(shadowCasterIdentifier).ok) {
-    const manifestEntry = Array.from(registry.materialShaderManifestEntries()).find(
-      (candidate) => candidate.identifier === shadowCasterIdentifier,
-    );
-    if (manifestEntry !== undefined) {
-      // shadow_caster evaluates the same default Surface as Standard. Keep
-      // its generated MaterialParameters contract aligned with the Standard
-      // pipeline even when a legacy manifest omitted the material entry.
-      const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
-      registry.installMaterialArtifact(shadowCasterIdentifier, {
-        source: manifestEntry.composedWgsl,
-        sourceReference: materialShaderSource(manifestEntry),
-        ...(entryPoints === undefined ? {} : { entryPoints }),
-        paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
-        ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
-      });
     }
   }
 }

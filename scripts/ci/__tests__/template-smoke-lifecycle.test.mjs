@@ -55,6 +55,28 @@ test('template console admission rejects camera-free errors and admits only expl
   ]);
 });
 
+test('the Preview probe admits the main CI Catalog startup allowance', () => {
+  const workflow = readFileSync(
+    new URL('../../../.github/workflows/ci.yml', import.meta.url),
+    'utf8',
+  );
+  const configured = /^\s*FORGEAX_TEMPLATE_SMOKE_SERVER_STARTUP_TIMEOUT_MS: '(\d+)'$/m.exec(
+    workflow,
+  )?.[1];
+  assert.ok(configured);
+  const startupBudget = functionSource(
+    'const DEFAULT_SERVER_STARTUP_TIMEOUT_MS =',
+    'const CHROME_CHANNEL =',
+  );
+  const applied = (value) =>
+    runInNewContext(`${startupBudget} SERVER_STARTUP_TIMEOUT_MS;`, {
+      process: { env: { FORGEAX_TEMPLATE_SMOKE_SERVER_STARTUP_TIMEOUT_MS: value } },
+    });
+  assert.equal(applied(undefined), 90_000);
+  assert.equal(applied('180000'), 180_000);
+  assert.equal(applied(configured), Number(configured));
+});
+
 test('template readiness bounds startup and GPU completion independently and rejects stalls', async () => {
   for (const outcome of ['completed', 'startup-stalled', 'gpu-stalled']) {
     const waits = [];

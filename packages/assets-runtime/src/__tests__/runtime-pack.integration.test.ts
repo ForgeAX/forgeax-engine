@@ -6,6 +6,7 @@ import {
   encodeMeshDistanceField,
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
   meshAssetContribution,
+  packMeshBin,
 } from '@forgeax/engine-geometry';
 import { decodePackBlob, preparePackProgram } from '@forgeax/engine-pack/runtime';
 import {
@@ -24,6 +25,7 @@ import {
   type RuntimePackContent,
   RuntimePackProducer,
   type RuntimePackProducerOptions,
+  runtimePackTaskKinds,
 } from '../../../import/src/runtime-pack.js';
 import { parseRuntimePackSnapshot } from '../../../import/src/runtime-pack-content.js';
 import { scriptablePackFingerprint } from '../../../import/src/scriptable-pack-fingerprint.js';
@@ -106,6 +108,84 @@ function generator(delay = ''): RuntimePackContent {
 function outputGuid(packageId: string) {
   return AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
 }
+
+it('returns a standalone static Mesh artifact with the Task Worker transfer', async () => {
+  const build = generator();
+  const task = runtimePackTaskKinds['runtime-pack.build'].load();
+  if (!('program' in build.source) || !build.programs) throw new Error('expected a generator');
+  const built = await task.run(
+    {
+      packageId: id,
+      source: build.source,
+      programs: build.programs,
+      values: { width: 2 },
+      imports: {
+        geometry: { identity: 'test-engine', url: import.meta.resolve('@forgeax/engine-geometry') },
+      },
+      dependencies: new Map(),
+    },
+    { aborted: false, async yield() {} },
+  );
+  if (!('assets' in built.value.source)) throw new Error('expected a direct output');
+  const box = defined(built.value.source.assets.box);
+  expect(box.payload).toEqual({ kind: 'mesh' });
+  expect(box.artifacts?.body).toMatchObject({ assetCodec: { name: 'mesh-binary' } });
+  const [bytes] = Object.values(built.value.blobs ?? {});
+  if (!(bytes instanceof Uint8Array)) throw new Error('expected a private binary body');
+  expect(bytes).toEqual(packMeshBin(createBoxGeometry(2, 2, 3).unwrap(), 'box').unwrap());
+  expect(built.transfer).toEqual([bytes.buffer]);
+  const delivered = structuredClone(built.value, { transfer: [bytes.buffer] });
+  expect(bytes.byteLength).toBe(0);
+  expect(Object.values(delivered.blobs ?? {})[0]).toBeInstanceOf(Uint8Array);
+});
+
+it('fails a Task Worker generator with no pool before evaluating its program in Engine', async () => {
+  const root = generator('throw new Error("generator must not run in Engine");');
+  if (!('program' in root.source)) throw new Error('expected a generator');
+  const source = producer();
+  try {
+    (
+      await source.admit({
+        ...root,
+        source: { ...root.source, runtime: { dependencies: [], execution: 'task-worker' } },
+      })
+    ).unwrap();
+    expect(await source.generate(instance(id, 2))).toMatchObject({
+      ok: false,
+      error: {
+        code: 'runtime-pack-execution-failed',
+        detail: { cause: { message: 'Runtime Pack generation requires a Task Worker' } },
+      },
+    });
+    expect(source.rows()).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
+it('rejects a restored instance whose generator does not reproduce the saved output set', async () => {
+  const source = producer();
+  const restored = producer(undefined, undefined, {
+    publish: async () => 'https://fixed.invalid/runtime/generator.js',
+    importModule: async () => ({
+      build: () => ok({ box: createBoxGeometry(4, 2, 3).unwrap() }),
+    }),
+  });
+  try {
+    (await source.admit(generator())).unwrap();
+    (await source.generate(instance(id, 2))).unwrap();
+    const saved = JSON.parse(JSON.stringify(source.snapshot()));
+    const result = await restored.restore(saved);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'runtime-pack-dependency-unavailable' },
+    });
+    expect(restored.rows()).toEqual([]);
+  } finally {
+    source.dispose();
+    restored.dispose();
+  }
+});
 
 it('loads a selected output while a sibling requires a decoder owned by another realm', async () => {
   const source = producer();
@@ -1372,7 +1452,8 @@ it('saves only reachable dependency recipes and restores the pinned version afte
   const saved = JSON.parse(JSON.stringify(source.snapshot()));
   expect(saved.packs).toHaveLength(1);
   expect(Object.values(saved.closure.contents)).toHaveLength(1);
-  expect(Object.values(saved.closure.recipes)).toHaveLength(1);
+  expect(Object.values(saved.closure.recipes)).toHaveLength(2);
+  expect(saved.recipeRoots).toHaveLength(1);
   expect(JSON.stringify(saved.closure)).not.toContain('blobs');
   source.dispose();
   const restored = producer();

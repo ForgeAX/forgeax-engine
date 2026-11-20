@@ -60,6 +60,38 @@ test('the original source coverage owner receives parallel compilation and one f
   );
 });
 
+for (const file of [
+  'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
+  'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+])
+  test(`serial material coverage uses the ordinary heap and spare program capacity for ${file}`, () => {
+    const group = coverageGroups(allProjectNames(), 8).find(({ files }) => files.includes(file));
+    assert.ok(group?.sourceCompilation);
+    assert.equal(
+      coverageGroupMaxWorkers(group, { coverage: true, maxWorkers: 2 }, resources, 2),
+      1,
+    );
+    const native = coverageGroupEnvironment(group, resources, undefined, {});
+    assert.equal(native.NODE_OPTIONS, '--max-old-space-size=4096');
+    assert.equal(native.FORGEAX_SHADER_COMPILE_WORKERS, '7');
+    assert.equal(
+      coverageGroupEnvironment(group, resources, 4, {}).FORGEAX_SHADER_COMPILE_WORKERS,
+      '4',
+    );
+    const constrained = { cpus: 8, memoryBytes: 8 * 1024 ** 3 };
+    assert.equal(
+      coverageGroupEnvironment(group, constrained, 7, {}).FORGEAX_SHADER_COMPILE_WORKERS,
+      '2',
+    );
+    const focus = focusPlan('coverage', file, { resources });
+    assert.equal(focus.env.NODE_OPTIONS?.split(' ').at(-1), native.NODE_OPTIONS);
+    assert.equal(
+      focus.env.FORGEAX_SHADER_COMPILE_WORKERS,
+      coverageGroupEnvironment(group, resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS, {})
+        .FORGEAX_SHADER_COMPILE_WORKERS,
+    );
+  });
+
 test('source coverage focus matches the exclusive compiler and heap admission', () => {
   const prior = process.env.FORGEAX_SHADER_COMPILE_WORKERS;
   const priorNodeOptions = process.env.NODE_OPTIONS;

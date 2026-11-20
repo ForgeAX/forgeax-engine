@@ -232,7 +232,7 @@ function makeDispatchSpyCtx(
     meshBindGroup: null,
     frameState: {
       compiledFrameGraph: { targets: mockGraphTargets },
-      installedPipelineConfig: { ssao: { enabled: true, intensity: 1.0 } },
+      installedPipelineConfig: { ambientOcclusion: { enabled: true, intensity: 1.0 } },
       // Post-process bind group identity cache (bloom / fxaa / ssao). Keyed on
       // the graph-resolved views so resize rebuilds automatically.
       postProcessBgCache: new WeakMap(),
@@ -644,7 +644,7 @@ describe('recordSsaoCalcPass per-frame intensity write (M8 / w46 — RED)', () =
     expect(data[48]).toBe(1.0);
     expect(data[49]).toBe(0.25);
     expect(data[50]).toBe(0);
-    expect(data[51]).toBe(16); // Default GTAO nominal sample budget.
+    expect(data[51]).toBe(64); // Default SSAO high quality sample count.
   });
 
   it('(p) calc pass writeBuffer count is 1 per frame (single 256B transaction)', () => {

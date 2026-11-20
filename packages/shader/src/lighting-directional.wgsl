@@ -491,6 +491,91 @@ fn evalDirectionalNoShadow(
 
 // Surface callers supply the actual receiver plane normal, independently of
 // their BRDF normal. Volume receivers use the separate normal-free path.
+fn _directionalCascadeBlend(layer: u32, count: u32, viewDepth: f32) -> f32 {
+  let split = view.splitPlanes[layer].x;
+  let width = split * view.cascadeBlend;
+  if (layer + 1u >= count || !(width > 0.0)) { return 0.0; }
+  return clamp(1.0 - (split - viewDepth) / width, 0.0, 1.0);
+}
+
+#ifdef DIRECTIONAL_PCSS_AVAILABLE
+fn _projectedDirectionalTap(
+  position: vec2<f32>, lastTexel: vec2<i32>, layer: i32, depth: f32, scale: f32,
+) -> f32 {
+  let base = vec2<i32>(floor(position));
+  let lo = clamp(base, vec2<i32>(0), lastTexel);
+  let hi = clamp(base + vec2<i32>(1), vec2<i32>(0), lastTexel);
+  let stored = vec4<f32>(
+    textureLoad(shadowMap, lo, layer, 0),
+    textureLoad(shadowMap, vec2<i32>(hi.x, lo.y), layer, 0),
+    textureLoad(shadowMap, vec2<i32>(lo.x, hi.y), layer, 0),
+    textureLoad(shadowMap, hi, layer, 0));
+  // Apply the reverse-Z transition before interpolation. Lit coverage is
+  // interpolated, never blocker depth.
+  let visibility = clamp(1.0 + (vec4<f32>(depth) - stored) * scale, vec4<f32>(0.0), vec4<f32>(1.0));
+  let phase = fract(position);
+  let rows = mix(visibility.xz, visibility.yw, phase.x);
+  return mix(rows.x, rows.y, phase.y);
+}
+
+fn _sampleProjectedDirectionalCascade(
+  worldPos: vec3<f32>, layer: u32, layerBase: u32, nDotL: f32, rotation: vec2<f32>,
+) -> f32 {
+  let clip = _cascadeLightViewProj(layer) * vec4<f32>(worldPos, 1.0);
+  let projection = clip.xyz / clip.w;
+  let uv = projection.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  if (!all(uv >= vec2<f32>(0.0)) || !all(uv <= vec2<f32>(1.0)) ||
+      !(projection.z >= 0.0 && projection.z <= 1.0)) { return 1.0; }
+
+  let size = vec2<f32>(textureDimensions(shadowMap));
+  let aspect = select(1.0, view.splitPlanes[3].w, view.splitPlanes[3].w > 0.0);
+  let viewport = size * vec2<f32>(min(1.0, aspect), min(1.0, 1.0 / aspect));
+  let lastTexel = max(vec2<i32>(viewport) - vec2<i32>(1), vec2<i32>(0));
+  let position = uv * viewport - vec2<f32>(0.5);
+  let radius = max(1.0 + view.splitPlanes[2].w, 0.0) * vec2<f32>(1.0, 1.0 / aspect);
+  let cascade = view.splitPlanes[layer];
+  // The transition follows the cascade texel size in normalized light depth.
+  // Grazing shading normals receive a wider transition, with a bounded slope.
+  let transition = max(0.00001, 2.5 * cascade.y / max(cascade.z, 0.00001));
+  let scale = mix(0.1, 1.0, clamp(nDotL, 0.0, 1.0)) / transition;
+  let depth = max(0.0, projection.z + view.depthBias);
+  var sum = 0.0;
+  for (var i = 0u; i < 5u; i++) {
+    let tap = SHADOW_VOGEL_OFFSETS[i];
+    let offset = vec2<f32>(dot(tap, vec2<f32>(rotation.x, -rotation.y)),
+      dot(tap, rotation.yx));
+    sum += _projectedDirectionalTap(position + offset * radius, lastTexel, i32(layer + layerBase), depth, scale);
+  }
+  return sum * 0.2;
+}
+
+fn canUseProjectedDirectionalPcf() -> bool {
+  // Admission for the whole-scene, automatic-bias Vogel caster only.
+  return view.directionalShadowFilter.x == 6.0 && view.normalBias == 0.0 &&
+    view.splitPlanes[0].w == 0.0 && shadowCasterCascade.clampNear != 0u;
+}
+
+fn evalProjectedDirectionalShadow(
+  worldPos: vec3<f32>, viewZ: f32, layerBase: u32, pixel: vec2<f32>, nDotL: f32,
+) -> f32 {
+  if (view.cascadeCount < 1.0) { return 1.0; }
+  let count = u32(view.cascadeCount);
+  let viewDepth = -viewZ;
+  if (viewDepth > view.splitPlanes[count - 1u].x) { return 1.0; }
+  let layer = _pickCascadeLayer(viewDepth, count);
+  let blend = _directionalCascadeBlend(layer, count, viewDepth);
+  let rotation = shadow_vogel_rotation(pixel);
+  let sampleCount = select(1u, 2u, blend > 0.0);
+  var visibility = 0.0;
+  for (var sample = 0u; sample < sampleCount; sample++) {
+    let weight = select(1.0 - blend, blend, sample != 0u);
+    visibility += weight * _sampleProjectedDirectionalCascade(worldPos, layer + sample,
+      layerBase, nDotL, rotation);
+  }
+  return mix(1.0, visibility, 1.0 - view.splitPlanes[1].w);
+}
+#endif
+
 fn evalDirectionalShadowFactorAtPixel(
   normal   : vec3<f32>,
   worldPos : vec3<f32>,
@@ -522,15 +607,7 @@ fn evalDirectionalShadowFactorAtPixel(
   let layer = _pickCascadeLayer(viewDepth, count);
   // normalBias is a world-space distance, independent of cascade depth span.
   let receiverPosition = worldPos + normal * view.normalBias;
-  var blend = 0.0;
-  if (view.cascadeBlend > 0.0 && layer + 1u < count) {
-    let spCurr = view.splitPlanes[layer].x;
-    let blendWidth = spCurr * view.cascadeBlend;
-    if (blendWidth > 0.0) {
-      let dist = spCurr - viewDepth;
-      blend = clamp(1.0 - dist / blendWidth, 0.0, 1.0);
-    }
-  }
+  let blend = _directionalCascadeBlend(layer, count, viewDepth);
   // Keep one native filter call site. Duplicating the complete receiver for
   // cascade blending can crash Metal code generation in composed medium shaders.
   // The uniform bound still samples only the current and, when needed, next layer.

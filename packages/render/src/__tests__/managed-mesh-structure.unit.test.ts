@@ -1,4 +1,4 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, describeMeshDraw } from '@forgeax/engine-geometry';
 import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
@@ -49,7 +49,7 @@ function setup(count = 10000) {
     transform: { world: mat4.identity(mat4.create()) },
     localAabb: Float32Array.of(-1, -1, -1, 1, 1, 1),
     gpuDrivenDraws: buildGpuDrivenDraws({
-      mesh,
+      mesh: describeMeshDraw(mesh),
       materials: [a.snapshot],
       fallbackMaterial: a.snapshot,
       deformation: 'rigid',

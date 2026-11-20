@@ -1,4 +1,5 @@
-import { ok } from '@forgeax/engine-types';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type AssetContentCapture, AssetRecords } from '../internal/asset-records';
 
@@ -16,6 +17,32 @@ function drain(capture: AssetContentCapture) {
 }
 
 describe('incremental exact-closure content capture', () => {
+  it('keeps CPU Mesh data through a pending copy and rejects capture of a render-only Mesh', () => {
+    const records = new AssetRecords();
+    const mesh = createBoxGeometry(1, 2, 3).unwrap();
+    const handle = records.create('mesh', mesh).unwrap();
+    const revision = records.version(handle).unwrap();
+    const presentation = {
+      bytes: 128,
+      storage: 'retained-bytes' as const,
+      read: async () => createBoxGeometry(1, 2, 3).unwrap(),
+      lease: { isCurrent: () => true, release() {} },
+      release() {},
+    };
+    const capture = records.beginContentCapture(handle).unwrap();
+    expect(records.retainMeshPresentation(handle, revision, presentation)).toBe(false);
+    const fixed = capture.step(1).unwrap();
+    expect(fixed?.read<MeshAsset>(handle).unwrap()).toEqual(mesh);
+    expect(records.retainMeshPresentation(handle, revision, presentation)).toBe(true);
+    expect(records.beginContentCapture(handle)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-cpu-data-unavailable' },
+    });
+    expect(fixed?.read<MeshAsset>(handle).unwrap()).toEqual(mesh);
+    drain(capture);
+    records.release(handle).unwrap();
+  });
+
   it('reserves without copying, limits each step, and publishes only the complete fixed lease', () => {
     const { records, leaf, root } = fixture();
     const capture = records.beginContentCapture(root).unwrap();

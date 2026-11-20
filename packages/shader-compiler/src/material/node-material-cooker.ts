@@ -38,6 +38,7 @@ interface Job {
   readonly roots: readonly string[];
   readonly profile: MaterialPackCookProfile | undefined;
   readonly sourceSnapshot: MaterialSourceSnapshot | undefined;
+  readonly rasterSourceDigests: readonly string[] | undefined;
   readonly input: unknown;
   readonly resolve: (draft: NativeCookDraft) => void;
   readonly reject: (error: unknown) => void;
@@ -59,14 +60,14 @@ const workerSource = `
 import('node:worker_threads').then(({ parentPort }) => {
 const api = import(${JSON.stringify(compilerModule)});
 let key, cooker, capturedSnapshot;
-parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceSnapshotIdentity }) => {
+parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceSnapshotIdentity, rasterSourceDigests }) => {
   try {
     const { createMaterialPackCooker } = await api;
     if (sourceSnapshot !== undefined) capturedSnapshot = sourceSnapshot;
     if (sourceSnapshotIdentity === undefined) capturedSnapshot = undefined;
-    const nextKey = JSON.stringify([roots, profile, sourceSnapshotIdentity]);
+    const nextKey = JSON.stringify([roots, profile, sourceSnapshotIdentity, rasterSourceDigests]);
     if (nextKey !== key) {
-      cooker = createMaterialPackCooker(roots, { ...(profile === undefined ? {} : { profile }), ...(capturedSnapshot === undefined ? {} : {sourceSnapshot: capturedSnapshot}) });
+      cooker = createMaterialPackCooker(roots, { ...(profile === undefined ? {} : { profile }), ...(capturedSnapshot === undefined ? {} : {sourceSnapshot: capturedSnapshot}), ...(rasterSourceDigests === undefined ? {} : { rasterSourceDigests }) });
       key = nextKey;
     }
     const draft = await cooker.cook(input);
@@ -228,6 +229,7 @@ class MaterialCookPool {
         profile: job.profile,
         input: job.input,
         sourceSnapshotIdentity: job.sourceSnapshot?.identity,
+        rasterSourceDigests: job.rasterSourceDigests,
         ...(lane.sourceSnapshotIdentity === job.sourceSnapshot?.identity
           ? {}
           : { sourceSnapshot: job.sourceSnapshot }),
@@ -302,6 +304,7 @@ export function withNodeMaterialWorkers(
   roots: readonly string[],
   profile?: MaterialPackCookProfile,
   sourceSnapshot?: MaterialSourceSnapshot,
+  rasterSourceDigests?: readonly string[],
 ): NativeCooker {
   const budget = workerBudget();
   if (budget.materials === 1) return cooker;
@@ -328,6 +331,7 @@ export function withNodeMaterialWorkers(
           roots: capturedRoots,
           profile,
           sourceSnapshot,
+          rasterSourceDigests,
           input: captured,
           resolve,
           reject,

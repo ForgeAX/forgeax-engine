@@ -592,7 +592,7 @@ export function packClusterUniform(input: {
  * scope-amend-webgl2-ubo: dedicated @binding(9) intensity UBO removed).
  *
  * The HDRP unified BGL always declares 7 entries (cluster 5 + ssao 2); the
- * caller supplies one of two shapes depending on `config.ssao?.enabled`:
+ * caller supplies one of two shapes depending on `config.ambientOcclusion?.enabled`:
  *
  *   { enabled: true, ssaoBlurredView }
  *     -> binding 7 = real ssaoBlurred view

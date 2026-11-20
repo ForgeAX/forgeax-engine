@@ -61,6 +61,10 @@ export const SOURCE_ASSET_PRODUCERS = new Map([
     'Render tsup text loader owns Terrain WGSL inlining',
   ],
   ['packages/shader/src/auto-exposure-source.ts', 'Shader tsup text loader owns WGSL inlining'],
+  [
+    'packages/shader/src/scene-velocity-source.ts',
+    'Shader tsup text loader owns velocity WGSL inlining',
+  ],
   ['packages/shader/src/tsr-source.ts', 'Shader tsup text loader owns TSR WGSL inlining'],
 ]);
 

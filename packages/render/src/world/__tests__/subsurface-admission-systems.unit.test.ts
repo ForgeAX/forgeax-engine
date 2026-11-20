@@ -20,16 +20,21 @@ import {
 } from '../subsurface-admission-systems';
 
 const device = {
-  caps: { compute: true, storageTexture: true, float32Filterable: true },
-  features: new Set(['float32-blendable']),
-  limits: { maxComputeWorkgroupStorageSize: 32768 },
+  caps: {
+    compute: true,
+    storageTexture: true,
+    storageBuffer: true,
+    indirectDrawing: true,
+    rgba16floatStorage: true,
+  },
+  limits: { maxStorageTexturesPerShaderStage: 4, maxStorageBuffersPerShaderStage: 8 },
 } as unknown as RhiDevice;
 const deferred = { renderPath: 'deferred' } as SubsurfaceAdmissionInput['profile'];
 
 function subsurface(rest: Partial<SubsurfaceAdmissionInput> = {}): SubsurfaceAdmissionInput {
   return {
     renderableCount: 1,
-    projection: { source: 3, authorVisible: 2, admitted: 1 },
+    projection: { source: [1, 2, 3], authorVisible: [1, 2], admitted: [1] },
     manualDemand: undefined,
     profile: deferred,
     msaa: false,
@@ -140,7 +145,7 @@ describe('render-subsurface-admission system', () => {
     expect(subsurfaceCaptureClass(undefined, false)).toBe('none');
     expect(subsurfaceCaptureClass(capture({ state }), true)).toBe('unsupported');
     expect(subsurfaceCaptureClass(capture({ state: { work: [1] } }), false)).toBe('unsupported');
-    expect(subsurfaceCaptureClass(capture({ state, subsurfaceDemand: 2 }), false)).toBe(
+    expect(subsurfaceCaptureClass(capture({ state, subsurfaceDemand: [1, 2] }), false)).toBe(
       'consumers',
     );
   });

@@ -3,7 +3,13 @@ import {
   createFullscreenRenderFeature,
   fullscreenRenderFeatureDeclaration,
 } from '../features/fullscreen';
-import { validateRenderFeaturePlan } from '../features/plan';
+import {
+  cloneRenderFeaturePlanSignatureSnapshot,
+  type RenderFeatureFullscreenProgramDeclaration,
+  renderFeaturePlanSignature,
+  renderFeaturePlanSignatureSnapshotEquals,
+  validateRenderFeaturePlan,
+} from '../features/plan';
 import {
   type PostProcessShaderEntry,
   postProcessShaderEntrySignature,
@@ -12,6 +18,48 @@ import {
 } from '../fullscreen-post-process-pass';
 
 describe('fullscreen RenderFeature plan', () => {
+  it('validates frame uniforms without including them in graph or shader identity', () => {
+    const source = 'fn fs_main() -> vec4f { return vec4f(1); }';
+    const defaults = new Uint8Array(16);
+    const program = {
+      kind: 'fullscreen-program',
+      chain: true,
+      name: 'test-ray',
+      source,
+      params: { byteSize: 16, defaultValue: defaults },
+    } as const;
+    const plan = (program: RenderFeatureFullscreenProgramDeclaration) => ({
+      resources: [program],
+      passes: [],
+    });
+    const first = { ...program, frameParams: new Uint8Array(16).fill(1) };
+    const second = { ...program, frameParams: new Uint8Array(16).fill(2) };
+    const snapshot = cloneRenderFeaturePlanSignatureSnapshot(plan(first));
+    expect(validateRenderFeaturePlan('rays', plan(first), []).ok).toBe(true);
+    expect(validateRenderFeaturePlan('rays', plan(second), []).ok).toBe(true);
+    expect(
+      validateRenderFeaturePlan('rays', plan({ ...second, frameParams: new Uint8Array(4) }), []).ok,
+    ).toBe(false);
+    expect(
+      validateRenderFeaturePlan(
+        'rays',
+        plan({
+          ...second,
+          chain: undefined,
+        } as unknown as RenderFeatureFullscreenProgramDeclaration),
+        [],
+      ).ok,
+    ).toBe(false);
+    expect(renderFeaturePlanSignatureSnapshotEquals(plan(second), snapshot)).toBe(true);
+    expect(renderFeaturePlanSignatureSnapshotEquals(plan(program), snapshot)).toBe(true);
+    expect(renderFeaturePlanSignature(plan(first))).toBe(renderFeaturePlanSignature(plan(second)));
+    expect(postProcessShaderEntrySignature(first)).toBe(postProcessShaderEntrySignature(second));
+    const changedDefaults = {
+      ...second,
+      params: { byteSize: 16, defaultValue: second.frameParams },
+    };
+    expect(renderFeaturePlanSignatureSnapshotEquals(plan(changedDefaults), snapshot)).toBe(false);
+  });
   it('preserves a scene effect stage through the frozen Worker declaration and plan', () => {
     const feature = createFullscreenRenderFeature({
       identity: 'test::temporal-depth',

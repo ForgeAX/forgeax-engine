@@ -26,6 +26,22 @@ it('publishes a detached fixed ownership fact without repeated metadata inspecti
   expect(source.immutableValues).toBeUndefined();
 });
 
+it('shares only fully frozen program facts across value-only captures', () => {
+  const base = defaultMaterialSnapshot();
+  const frozen = Object.freeze({ forward: 'shader/a' });
+  const passes = Object.freeze([]) as typeof base.passes;
+  const captured = captureMaterialSnapshot({ ...base, passes, materialProgramKeys: frozen });
+  const updated = captureMaterialSnapshot({ ...captured, roughness: 0.2 });
+  expect(updated.passes).toBe(passes);
+  expect(updated.materialProgramKeys).toBe(frozen);
+
+  const key = { forward: 'shader/b' };
+  const borrowed = captureMaterialSnapshot({ ...base, passes, materialProgramKeys: key });
+  key.forward = 'shader/c';
+  expect(borrowed.materialProgramKeys?.forward).toBe('shader/b');
+  expect(borrowed.materialProgramKeys).not.toBe(key);
+});
+
 it('keeps proxy inspection live even when its target was captured by the producer', () => {
   const captured = captureMaterialSnapshot(defaultMaterialSnapshot());
   const descriptor = vi.fn(Reflect.getOwnPropertyDescriptor);

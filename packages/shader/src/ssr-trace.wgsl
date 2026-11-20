@@ -1,5 +1,5 @@
 #define_import_path forgeax_ssr::trace
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardNormalRoughness, loadStandardSceneSurfaceValid}
+#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, decodeStandardNormalRoughness, loadStandardSceneSurfaceValid, loadCompactGBufferRoughness}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
 #import forgeax_depth_pyramid::sample::{
   DEPTH_PYRAMID_EMPTY_DEPTH,
@@ -18,6 +18,7 @@ const SSR_TRACE_MAX_LINEAR_ITERATIONS : u32 = 1024u;
 
 @group(0) @binding(0) var sceneDepth : texture_depth_2d;
 @group(0) @binding(1) var sceneNormal : texture_2d<u32>;
+@group(0) @binding(14) var defaultGBufferB : texture_2d<u32>;
 @group(0) @binding(2) var sceneColor : texture_2d<f32>;
 @group(0) @binding(3) var depthPyramid : texture_2d<f32>;
 #if !PORTABLE_FRAGMENT
@@ -56,7 +57,7 @@ fn ssrDepthPyramidLevelCount() -> u32 {
 }
 
 #if !PORTABLE_FRAGMENT
-// Water owns receiver facts; sceneDepth/sceneNormal retain the opaque hit scene.
+// Water owns receiver facts. Its hit hierarchy comes from opaque depth.
 @group(0) @binding(9) var waterOriginDepth : texture_depth_2d;
 @group(0) @binding(10) var waterOriginNormal : texture_2d<u32>;
 @group(0) @binding(11) var waterOriginCoverage : texture_2d<f32>;
@@ -861,7 +862,7 @@ fn ssrLuminanceWeight(rgb : vec3<f32>) -> vec3<f32> {
   return rgb / (1.0 + max(0.0, ssrLuminance(rgb)));
 }
 
-fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
+fn evaluateSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : bool) -> SsrTraceOutput {
   var output = SsrTraceOutput(vec4<f32>(0.0), 0.0);
   let fullSize = textureDimensions(sceneColor, 0);
   let traceScale = select(1.0, view.ssrQuality.x, view.ssrQuality.x > 0.0);
@@ -877,7 +878,8 @@ fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
   let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);
   let coarsestPixel = min(globalId.xy, coarsestSize - vec2<u32>(1u));
   let depth = textureLoad(sceneDepth, vec2<i32>(fullPixel), 0);
-  let normalData = loadStandardNormalRoughness(sceneNormal, vec2<i32>(fullPixel));
+  var normalData = loadStandardNormalRoughness(sceneNormal, vec2<i32>(fullPixel));
+  if (compact) { normalData.w = loadCompactGBufferRoughness(context, vec2<i32>(fullPixel)); }
   let coverage = textureLoad(reflectionFallback, vec2<i32>(fullPixel), 0).a;
   let normalUnnormalized = normalData.xyz;
   let normalLength = length(normalUnnormalized);
@@ -968,15 +970,25 @@ fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
   return vec4<f32>(positions[index], 0.0, 1.0);
 }
 @fragment fn ssr_trace_fragment(@builtin(position) position : vec4<f32>) -> SsrTraceOutput {
-  return evaluateSsrTrace(vec3<u32>(vec2<u32>(position.xy), 0u));
+  return evaluateSsrTrace(vec3<u32>(vec2<u32>(position.xy), 0u), sceneNormal, false);
+}
+@fragment fn ssr_trace_fragment_compact(@builtin(position) position : vec4<f32>) -> SsrTraceOutput {
+  return evaluateSsrTrace(vec3<u32>(vec2<u32>(position.xy), 0u), defaultGBufferB, true);
 }
 #else
-@compute @workgroup_size(8, 8, 1)
-fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
+fn storeOpaqueSsrTrace(globalId : vec3<u32>, context : texture_2d<u32>, compact : bool) {
   if (any(globalId.xy >= textureDimensions(traceOutput))) { return; }
-  let output = evaluateSsrTrace(globalId);
+  let output = evaluateSsrTrace(globalId, context, compact);
   textureStore(traceOutput, vec2<i32>(globalId.xy), output.color);
   textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(output.reactivity));
+}
+@compute @workgroup_size(8, 8, 1)
+fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  storeOpaqueSsrTrace(globalId, sceneNormal, false);
+}
+@compute @workgroup_size(8, 8, 1)
+fn ssr_trace_compact(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  storeOpaqueSsrTrace(globalId, defaultGBufferB, true);
 }
 #endif
 

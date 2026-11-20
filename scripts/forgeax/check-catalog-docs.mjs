@@ -402,18 +402,14 @@ async function checkAuthorityAuditContract(root) {
 
 async function checkScriptablePackMatrix(root) {
   const failures = [];
-  const matrixSource = await readFile(
-    resolve(root, 'packages/pack/src/scriptable-pack.ts'),
-    'utf8',
-  );
+  const matrixPath = 'packages/pack/src/scriptable-pack-kinds.ts';
+  const matrixSource = await readFile(resolve(root, matrixPath), 'utf8');
   const matrixBody = matrixSource.match(
     /SCRIPTABLE_PACK_ASSET_KINDS\s*=\s*\[([\s\S]*?)\]\s+as const/,
   )?.[1];
   const kinds = [...(matrixBody?.matchAll(/'([^']+)'/g) ?? [])].map((match) => match[1]);
   if (kinds.length === 0) {
-    failures.push(
-      'engine/packages/pack/src/scriptable-pack.ts: could not read SCRIPTABLE_PACK_ASSET_KINDS',
-    );
+    failures.push(`engine/${matrixPath}: could not read SCRIPTABLE_PACK_ASSET_KINDS`);
     return failures;
   }
   const matrixDocuments = [

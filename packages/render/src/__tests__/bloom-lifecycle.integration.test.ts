@@ -26,7 +26,7 @@ function build(bloom: 'off' | 'on', tonemap: 'none' | 'aces-filmic' = 'aces-film
   const topology: RenderPipelineTopology = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: DEFAULT_STANDARD_PROFILE,
-    config: { ssao: { enabled: false } },
+    config: { ambientOcclusion: { enabled: false } },
     surface: {
       width: 320,
       height: 180,

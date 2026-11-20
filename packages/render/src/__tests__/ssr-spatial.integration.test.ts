@@ -82,6 +82,56 @@ function createDevice(queue: RecordingNullQueue): RhiNullDevice {
   );
 }
 
+it.each([
+  false,
+  true,
+])('reads only the scene inputs Water SSR uses (color history: %s)', (history) => {
+  const graph = new RenderGraphBuilder<Frame>();
+  const passes = vi.spyOn(graph, 'addComputePass');
+  const depth = input(graph, 'opaque-depth', 'r32float');
+  const motion = input(graph, 'opaque-motion', 'rgba16float');
+  const scene = input(graph, 'scene-color', 'rgba16float');
+  const previousColor = input(graph, 'previous-color', 'rgba16float');
+  const pyramid = addDepthPyramidPasses(graph, {
+    depth,
+    width: WIDTH,
+    height: HEIGHT,
+    reduction: 'furthest',
+  }).unwrap();
+  const origin = {
+    depth: input(graph, 'water-depth', 'r32float'),
+    normal: input(graph, 'water-normal', 'r32uint'),
+    coverage: input(graph, 'water-coverage', 'r32float'),
+    temporal: input(graph, 'water-motion', 'rgba16float'),
+    ...(history ? { sceneColorHistory: previousColor } : {}),
+  };
+  addSsrSpatialPasses(graph, {
+    admission: admittedAdmission(),
+    label: 'water-ssr',
+    width: WIDTH,
+    height: HEIGHT,
+    scene,
+    ...(history ? { depth, currentTemporal: motion } : {}),
+    origin,
+    depthPyramid: pyramid.pyramid,
+  }).unwrap();
+  const sampled = passes.mock.calls
+    .find(([name]) => name === 'water-ssr-trace')?.[1]
+    .accesses.filter(({ usage }) => usage === 'sampled-read')
+    .map(({ resource }) => resource);
+  expect(sampled).toHaveLength(history ? 8 : 5);
+  expect(sampled).toEqual(
+    expect.arrayContaining([
+      scene,
+      pyramid.pyramid.pyramid,
+      origin.depth,
+      origin.normal,
+      origin.coverage,
+      ...(history ? [depth, motion, previousColor] : []),
+    ]),
+  );
+});
+
 it('prepares the declared SSR trace and temporal programs before either compute encode', async () => {
   const graph = new RenderGraphBuilder<Frame>();
   const passes = vi.spyOn(graph, 'addComputePass');

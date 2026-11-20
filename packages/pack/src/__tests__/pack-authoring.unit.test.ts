@@ -48,6 +48,37 @@ describe('ScriptablePack and Pack authoring', () => {
     for (const plugins of [false, 'true', 1, null])
       expect(validatePackDefinition({ ...definition, plugins }).ok).toBe(false);
   });
+  it('projects ordinary runtime outputs and the named Task Worker export', () => {
+    const outputs = { 'mesh/sphere': 'mesh' } as const;
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId: definePackageId('01900000-0000-7000-8000-000000000075'),
+      runtime: { export: 'generateSphere', outputs, dependencies: [] },
+      build: () => ok({}),
+    });
+    expect(definition.runtime?.outputs).not.toBe(outputs);
+    expect(Object.isFrozen(definition.runtime?.outputs)).toBe(true);
+    expect(projectScriptablePackMeta(definition, 'geometry.pack.ts').runtime).toEqual({
+      export: 'generateSphere',
+      outputs,
+      execution: 'task-worker',
+      dependencies: [],
+    });
+    for (const runtime of [
+      { export: 'generateSphere', dependencies: [] },
+      { outputs, dependencies: [] },
+      { export: 'default', outputs, dependencies: [] },
+      { export: 'generateSphere', outputs: {}, dependencies: [] },
+      { export: 'generateSphere', outputs: { '../sphere': 'mesh' }, dependencies: [] },
+      { export: 'generateSphere', outputs: { 'plugin/main': 'plugin' }, dependencies: [] },
+    ]) {
+      expect(validatePackDefinition({ ...definition, runtime })).toMatchObject({
+        ok: false,
+        error: { code: 'pack-parameter-invalid' },
+      });
+    }
+  });
+
   it('preserves explicit runtime capability without evaluating its build', () => {
     const dependency = '01900000-0000-7000-8000-000000000033';
     const dependencies = [dependency];

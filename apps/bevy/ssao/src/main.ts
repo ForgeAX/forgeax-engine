@@ -13,7 +13,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       standardProfile: {
         ...DEFAULT_STANDARD_PROFILE,
         renderPath: 'deferred',
-        ssao: true,
+        ambientOcclusion: { enabled: true },
       },
     },
     forgeaxBundlerAdapter(),

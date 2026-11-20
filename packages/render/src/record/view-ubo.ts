@@ -30,7 +30,7 @@ import type { TemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
-export const VIEW_UNIFORM_BYTES = 1312;
+export const VIEW_UNIFORM_BYTES = 1376;
 /** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
 export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
@@ -290,7 +290,7 @@ let writingViewUbo = false;
  *   [280..283] clippingControl, [284..287] fogColorDensity,
  *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time),
  *   [292..315] atmosphere medium, [316..319] atmosphereControl,
- *   [320..323] fogSky (skyOpacity, vertex route, camera height density, reserved).
+ *   [320..323] fogSky (skyOpacity, vertex route, camera height density, Deferred channel proof).
  *
  * @internal
  */
@@ -311,6 +311,8 @@ export function writeViewUbo(
   frameTimeSeconds?: number,
   viewport?: { readonly width: number; readonly height: number },
   ssrQuality?: import('../quality').RenderQualityBudgets['ssr'],
+  deferredChannelProjection = 0,
+  subsurfaceProfiles?: readonly number[],
 ): void {
   // Borrow ordinary staging once; raw getter/queue callback reentry owns an
   // independent invocation and cannot overwrite the caller's pending upload.
@@ -327,6 +329,9 @@ export function writeViewUbo(
     const viewPayload = scratch.payload;
     viewPayload.fill(0);
     writeSsrQualityLanes(viewPayload, ssrQuality);
+    // Packed 20-bit integer, exactly representable in a regular f32 lane.
+    viewPayload[323] = deferredChannelProjection;
+    if (subsurfaceProfiles !== undefined) scratch.words.set(subsurfaceProfiles, 328);
     const projMatrix = computeProjectionMatrix(camera, scratch.projection);
     const viewMatrix = computeViewMatrix(camera, scratch.view);
     // The payload owns its matrix storage. Publish unjittered temporal lanes

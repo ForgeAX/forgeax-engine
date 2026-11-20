@@ -580,10 +580,17 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
   );
   const mostReserved = nativeLoads.indexOf(Math.max(...nativeLoads));
   const leastReserved = nativeLoads.indexOf(Math.min(...nativeLoads));
+  // Historical owners backfill around native reserves before new owners enter
+  // the remaining capacity at their full conservative forecast.
+  const measuredBackfill = configuredPartitions.map((partition) =>
+    partition.reduce((sum, specification) => {
+      const file = relative(root, specification.moduleId).replaceAll('\\', '/');
+      return sum + (timings.planningFiles[file] === undefined ? 0 : fileCost(file));
+    }, 0),
+  );
   assert.ok(
-    loads[mostReserved] - nativeLoads[mostReserved] <
-      loads[leastReserved] - nativeLoads[leastReserved],
-    `ordinary backfill must compensate for unequal complete native-owner reserves; native=${nativeLoads.join(', ')} total=${loads.join(', ')}`,
+    measuredBackfill[mostReserved] < measuredBackfill[leastReserved],
+    `measured backfill must compensate for unequal native-owner reserves; native=${nativeLoads.join(', ')} backfill=${measuredBackfill.join(', ')}`,
   );
   assert.ok(
     Math.max(...loads) - Math.min(...loads) <= largest + 1e-6,

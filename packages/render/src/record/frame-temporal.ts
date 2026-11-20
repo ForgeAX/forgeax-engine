@@ -25,6 +25,7 @@ import {
   motionBlurSampleDelta,
   motionBlurTemporalDemand,
 } from '../features/motion-blur/motion-blur-params';
+import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { OUTPUT_GAMUT_CODE } from '../output-color-space';
 import type { RenderExtent } from '../pipeline/render-extent';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -347,8 +348,12 @@ export function buildFramePostProcessParams(
   temporalView: TemporalView,
   targetH: number,
   barrelMapping: ReturnType<typeof resolveSubmittedBarrelMapping>,
+  featureEffects: ReadonlyMap<string, PostProcessShaderEntry>,
 ): Map<string, Uint8Array> {
   const params = new Map(postProcessParams);
+  for (const [id, effect] of featureEffects) {
+    if (effect.frameParams !== undefined && !params.has(id)) params.set(id, effect.frameParams);
+  }
   stampOutputGamut(internals, postProcessParams, params);
   if (camera.motionBlur !== undefined && motionBlurDemand) {
     params.set(

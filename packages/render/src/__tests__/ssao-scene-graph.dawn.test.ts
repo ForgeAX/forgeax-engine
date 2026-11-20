@@ -37,9 +37,9 @@ it('executes native AO depth and composite with distinct per-view parameters in 
     (descriptor) => device.createBuffer(descriptor),
   );
   const config = {
-    ssao: {
+    ambientOcclusion: {
       enabled: true,
-      algorithm: 'spiral-ssao' as const,
+      method: 'spiral-ssao' as const,
       application: 'scene-color' as const,
       resolutionScale: 0.5,
     },

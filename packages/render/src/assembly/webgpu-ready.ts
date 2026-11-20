@@ -123,11 +123,11 @@ import {
   emptyEngineShaderModules,
   findEngineManifestEntry,
   findMaterialShaderEntry,
+  prepareStandardSceneSources,
   prewarmAtmospherePrograms,
   prewarmFullscreenPostProcesses,
   prewarmPointsLinesProgram,
   prewarmShadowCasterModules,
-  prewarmStandardScenePrograms,
   publishIblPrograms,
   type ResolvedEngineManifestEntries,
   resolveEngineManifestEntries,
@@ -594,12 +594,11 @@ export async function buildReadyWebGPU(
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
     }
-    const scenePrograms = await prewarmStandardScenePrograms(
+    const scenePrograms = await prepareStandardSceneSources(
       registry,
       compileUtilityShader,
       seedShaderModule,
       caps,
-      immediateCreateShaderModule !== undefined,
     );
     if (scenePrograms !== undefined) setStandardSceneShaderSources(scenePrograms);
     const atmosphere = await prewarmAtmospherePrograms(
@@ -905,6 +904,7 @@ export async function buildReadyWebGPU(
       bloomComposite,
       ssao,
       ssaoGBufferV2: entries.ssao?.programContract?.gbuffer === 'standard-gbuffer/2',
+      ssaoCompactGBuffer: entries.ssao?.programContract?.compactGbuffer === 'standard-gbuffer/4',
       gtaoGBufferV2: entries.gtaoCompute?.programContract?.gbuffer === 'standard-gbuffer/2',
       gtaoCompute,
       gpuDrivenPbrPrograms: standard.gpuDrivenPbrPrograms,

@@ -11,19 +11,22 @@ import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
-import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
+import {
+  type SsrGBufferInput,
+  ssrGBufferConstants,
+  ssrShaderGBufferMismatch,
+} from './shader-layout';
 
 /** Material response is produced with the visible surface; composition never
  * redraws that surface, so equal-depth overlaps cannot apply the delta twice. */
 export function addSsrCompositionPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  input: {
+  input: SsrGBufferInput & {
     readonly scene: RenderPipelineTarget;
     readonly radiance: GraphTextureView;
     readonly fallback: GraphTextureView;
     readonly response: GraphTextureView;
     readonly normal: GraphTextureView;
-    readonly gbufferV2?: boolean;
     readonly view: GraphBuffer;
     readonly execution?: 'compute' | 'fragment';
     readonly mipLevelCount?: number;
@@ -58,20 +61,30 @@ export function addSsrCompositionPass(
         groups: WeakMap<object, unknown>;
       }
     | undefined;
-  const views = [input.radiance, input.fallback, input.response, input.normal];
+  const sampled = [
+    { binding: 0, view: input.radiance, sampleType: 'float' },
+    { binding: 1, view: input.fallback, sampleType: 'unfilterable-float' },
+    { binding: 2, view: input.response, sampleType: 'unfilterable-float' },
+    { binding: 3, view: input.normal, sampleType: 'uint' },
+    ...(input.compactMaterial === undefined
+      ? []
+      : [{ binding: 7, view: input.compactMaterial, sampleType: 'uint' as const }]),
+  ] as const;
+  const entry = fragment ? 'fs_ssr_compose_fragment' : 'fs_ssr_compose';
   return graph.addRasterPass('ssr-compose', {
     accesses: [
-      ...views.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+      ...sampled.map(({ view }) => ({ resource: view, usage: 'sampled-read' as const })),
       { resource: input.view, usage: 'uniform-read' },
       ...(mipBuffer === undefined ? [] : [{ resource: mipBuffer, usage: 'uniform-read' as const }]),
       { resource: input.scene.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: input.scene.view, loadOp: 'load', storeOp: 'store' }],
     encodeDirect: (pass, frame, resources) => {
-      if (input.gbufferV2 === true && frame.ssrShaders?.gbuffer !== 'standard-gbuffer/2')
+      const mismatch = ssrShaderGBufferMismatch(frame.ssrShaders, input);
+      if (mismatch !== undefined)
         throw new RhiError({
           code: 'shader-compile-failed',
-          expected: 'standard-gbuffer/2 SSR composition',
+          expected: `${mismatch.expected} SSR composition`,
           hint: 'Rebuild the Engine shader manifest.',
         });
       const source = fragment ? frame.ssrShaders?.composeFragment : frame.ssrShaders?.compose;
@@ -102,18 +115,10 @@ export function addSsrCompositionPass(
                     },
                   ]
                 : []),
-              ...views.map((_, binding) => ({
+              ...sampled.map(({ binding, sampleType }) => ({
                 binding,
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: {
-                  sampleType:
-                    binding === 0
-                      ? ('float' as const)
-                      : binding === 3
-                        ? ('uint' as const)
-                        : ('unfilterable-float' as const),
-                  viewDimension: '2d' as const,
-                },
+                texture: { sampleType, viewDimension: '2d' as const },
               })),
               {
                 binding: 4,
@@ -140,10 +145,8 @@ export function addSsrCompositionPass(
             },
             fragment: {
               module,
-              entryPoint: fragment ? 'fs_ssr_compose_fragment' : 'fs_ssr_compose',
-              ...(input.gbufferV2 === true
-                ? { constants: STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS }
-                : {}),
+              entryPoint: input.compactMaterial === undefined ? entry : `${entry}_compact`,
+              constants: ssrGBufferConstants(input),
               targets: [
                 {
                   format: input.scene.format,
@@ -168,7 +171,10 @@ export function addSsrCompositionPass(
           .unwrap();
         state = { pipeline, layout, sampler, groups: new WeakMap() };
       }
-      const textures = views.map((view) => resources.textureView(view).unwrap());
+      const textures = sampled.map(({ view, binding }) => ({
+        binding,
+        resource: { kind: 'textureView' as const, value: resources.textureView(view).unwrap() },
+      }));
       const viewBuffer = resources.buffer(input.view).unwrap();
       const countBuffer =
         mipBuffer === undefined ? undefined : resources.buffer(mipBuffer).unwrap();
@@ -176,7 +182,12 @@ export function addSsrCompositionPass(
       const sampler = state.sampler;
       const group = getOrCreateFromChain(
         state.groups,
-        [...textures, sampler, viewBuffer, ...(countBuffer === undefined ? [] : [countBuffer])],
+        [
+          ...textures.map(({ resource }) => resource.value),
+          sampler,
+          viewBuffer,
+          ...(countBuffer === undefined ? [] : [countBuffer]),
+        ],
         'ssr-compose',
         () =>
           device
@@ -191,10 +202,7 @@ export function addSsrCompositionPass(
                         resource: { kind: 'buffer' as const, value: { buffer: countBuffer } },
                       },
                     ]),
-                ...textures.map((value, binding) => ({
-                  binding,
-                  resource: { kind: 'textureView' as const, value },
-                })),
+                ...textures,
                 { binding: 4, resource: { kind: 'sampler' as const, value: sampler } },
                 {
                   binding: 5,

@@ -65,6 +65,7 @@ assets.release(material).unwrap();
 | `writeRange(handle, range)` | Commit a mesh attribute, texture pixel or Terrain height range |
 | `copy(handle)` | Create independently editable content and preserve its admitted domain contracts |
 | `snapshot(handle)` | Retain exact content and dependency versions; dispose when finished |
+| `unload(guid)` | Release the Registry's cached runtime identity if it is the sole holder. Returns `false` when unloaded or still held. A later load can adopt a fresh identity. |
 | `reload(handle, { conflict })` | Explicitly adopt a current source closure without silently discarding gameplay edits |
 | `source(handle)` / `sourceOf(handle)` | Read adopted provenance / adopted provenance with the modified flag |
 | `retain(handle)` / `release(handle)` | Transfer reference ownership independently of rendering |
@@ -72,6 +73,29 @@ assets.release(material).unwrap();
 Full signatures live in [AssetRegistry](src/asset-registry.ts). Mesh geometry
 factories belong to [Geometry](../geometry/README.md); there are no reserved
 built-in mesh handles or additional World payload registrations.
+
+`load(guid, 'mesh', { usage: 'render' })` allows a verified static Mesh to keep its
+draw metadata in Engine and its geometry in a split Render Worker. If preparation
+or exact recovery cannot be provided, the load keeps complete CPU content.
+The split Render Worker reserves bytes before the Registry captures a private
+transfer copy. Refusal leaves the adopted CPU Mesh readable.
+A second split Render receiver restores that revision into shared Engine CPU storage before
+it publishes its first scene. Each receiver then owns its own render resources.
+`meshCpuResidency(handle)` reports the current mode, the Registry bytes and the
+recovery artifact bytes. For CPU residents, `cpuRetentionReason` reports the
+ordinary CPU requirement, the receiver topology or the reason the current Mesh
+revision could not move to Render. Recovery artifact capacity and Render
+preparation have distinct budget reasons. The Render budget charges prepared
+Mesh content until its leases and release grace have ended. The storage field
+distinguishes a lease on the original publication from an independent copy.
+Producer caches and GPU allocations have separate owners.
+
+Use ordinary `load(guid, 'mesh')` before reading, copying, editing or building a
+collider. It restores complete CPU content for the same handle and revision.
+Concurrent loads share the restore. If every waiting load is cancelled before
+adoption, the Mesh keeps its visual residency.
+Until then, synchronous geometry operations return `asset-cpu-data-unavailable`
+and exact triangle picking can report `cpu-geometry-unavailable`.
 
 ## Content created during play
 

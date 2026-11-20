@@ -145,7 +145,9 @@ it('caps clipped closed Standard meshes in forward and deferred, direct and GPU-
     };
     const profile = renderer.inspect().profile;
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...profile, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const direct of [true, false]) {
         const open = await frame(false, direct);
         const capped = await frame(true, direct);

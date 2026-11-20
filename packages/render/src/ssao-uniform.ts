@@ -28,7 +28,7 @@ let buildingSsao = false;
 /** The early upload and graph pass observe the same sampled camera and SSAO parameters. */
 export function buildSsaoUniformPayload(
   camera: CameraSnapshot,
-  config: NonNullable<RenderPipelineAsset['config']>['ssao'],
+  config: NonNullable<RenderPipelineAsset['config']>['ambientOcclusion'],
   clusterPack?: {
     readonly originX: number;
     readonly originY: number;
@@ -52,11 +52,11 @@ export function buildSsaoUniformPayload(
     out[49] = parameters.radius;
     out[50] = parameters.bias;
     out[51] = parameters.sampleCount;
-    out[52] = parameters.algorithm === 'gtao' ? 1 : parameters.algorithm === 'spiral-ssao' ? 2 : 0;
+    out[52] = parameters.method === 'gtao' ? 1 : parameters.method === 'spiral-ssao' ? 2 : 0;
     const sceneColor = config?.enabled === true && parameters.application === 'scene-color';
     out[60] = sceneColor
       ? parameters.resolutionScale
-      : parameters.algorithm === 'spiral-ssao'
+      : parameters.method === 'spiral-ssao'
         ? parameters.resolutionScale
         : 0;
     if (sceneColor) {

@@ -472,8 +472,9 @@ describe('standard PBR transmission material contract', () => {
     expect(standard.composedWgsl).toMatch(/@fragment\s+fn\s+fs_main\s*\(/);
     expect(standard.receipt?.sceneIndexEntry).toBe('vs_scene_index');
     expect(standard.receipt?.gbuffer).toBe('standard-gbuffer/2');
+    expect(standard.receipt?.compactGbuffer).toBe('standard-gbuffer/4');
     expect(standard.receipt?.receiptIdentity).toBe(
-      `${standard.receipt?.reflection.layoutIdentity}/standard-gbuffer/2`,
+      `${standard.receipt?.reflection.layoutIdentity}/standard-gbuffer/2/standard-gbuffer/4`,
     );
   });
 

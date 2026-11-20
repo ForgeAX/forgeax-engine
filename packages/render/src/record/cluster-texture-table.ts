@@ -11,6 +11,7 @@ export class ClusterTextureTable {
   readonly words: Uint32Array;
   private readonly sources: (DirectLightSnapshot | undefined)[] = [];
   private readonly projector: (boolean | undefined)[] = [];
+  private readonly channelMappings: Uint32Array;
   private uploadValid = false;
   private packedLightSlots = 0;
   private uploadedBytes = 0;
@@ -21,6 +22,7 @@ export class ClusterTextureTable {
     this.words = new Uint32Array(width * height * 4);
     this.sources.length = lightSlotCount;
     this.projector.length = lightSlotCount;
+    this.channelMappings = new Uint32Array(lightSlotCount);
   }
 
   write(input: {
@@ -29,6 +31,7 @@ export class ClusterTextureTable {
     readonly layout: StandardClusterTextureLayout;
     readonly local: readonly { readonly source?: DirectLightSnapshot | undefined }[];
     readonly projectorSlot?: number | undefined;
+    readonly channelMapping?: number;
     readonly clusterGrid: Uint32Array;
     readonly lightIndices: Uint32Array;
     readonly lightIndexCount: number;
@@ -50,14 +53,23 @@ export class ClusterTextureTable {
       dirtyRows.fill(1, first, Math.min(end, dirtyRows.length));
     };
     const slotLayout = input.slotLayout;
+    const channelMapping = input.channelMapping ?? 0;
     for (let slot = 0; slot < input.local.length; slot += 1) {
       const source = input.local[slot]?.source;
       if (source === undefined) continue;
       const selected = input.projectorSlot === undefined ? undefined : input.projectorSlot === slot;
-      if (this.sources[slot] === source && this.projector[slot] === selected) continue;
+      if (
+        this.sources[slot] === source &&
+        this.projector[slot] === selected &&
+        this.channelMappings[slot] === channelMapping
+      )
+        continue;
       this.sources[slot] = source;
       this.projector[slot] = selected;
-      const packed = new Uint32Array(packDirectLightSlot(source, slotLayout, selected).buffer);
+      this.channelMappings[slot] = channelMapping;
+      const packed = new Uint32Array(
+        packDirectLightSlot(source, slotLayout, selected, channelMapping).buffer,
+      );
       const wordOffset = slot * slotLayout.floatCount;
       let changed = false;
       for (let index = 0; index < packed.length; index += 1) {

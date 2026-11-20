@@ -68,6 +68,7 @@ import type { VertexAttributeMap, VertexAttributePackDetail } from './media-cont
  */
 export type AssetErrorCode =
   | 'asset-reference-invalid'
+  | 'asset-cpu-data-unavailable'
   | 'asset-owner-closed'
   | 'asset-write-conflict'
   | 'asset-budget-exceeded'
@@ -203,6 +204,8 @@ export class AssetError extends Error {
  */
 export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
   'asset-not-ready': 'wait for the requested asset preparation and retry on the next frame',
+  'asset-cpu-data-unavailable':
+    'load the same Mesh GUID with ordinary assets.load before accessing CPU geometry',
   'asset-reference-invalid':
     'use a live reference created by this asset owner (assets.create or assets.load on the World asset registry; a World.allocSharedRef handle is not an asset reference); explicitly copy content between scopes',
   'asset-owner-closed':
@@ -532,6 +535,7 @@ export interface AssetMeshBinContractViolationDetail {
  *   indexCount, indexBufferLength, meshAssetGuid }`.
  */
 export type AssetErrorDetail =
+  | { readonly handle: number; readonly revision: number }
   | {
       readonly guid: string;
       readonly dependencyGuid: string;

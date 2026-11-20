@@ -37,13 +37,18 @@ export const MESH_PER_ENTITY_STRIDE = 256;
 // Current/previous mat4, temporal, surface and draw-local Sprite region. See common.wgsl::Mesh.
 export const MESH_SSBO_BYTES = 176;
 
-/** `Mesh.temporal.y` bit set: 1 = previous transform valid, 2 = shadow sampling off. */
+/** Mesh flags carry previous transform validity, receiver opt-out and compact shadow caster data. */
 export function meshSurfaceFlags(source: {
   readonly temporal?: { readonly motionValid?: boolean };
   readonly shadowReceiver?: false;
+  readonly shadowCaster?: false;
+  readonly capsuleShadowRequested?: true;
 }): number {
   return (
-    (source.temporal?.motionValid === false ? 0 : 1) | (source.shadowReceiver === false ? 2 : 0)
+    (source.temporal?.motionValid === false ? 0 : 1) |
+    (source.shadowReceiver === false ? 2 : 0) |
+    (source.shadowCaster === false ? 4 : 0) |
+    (source.capsuleShadowRequested === true ? 8 : 0)
   );
 }
 export const MESH_UBO_FULL_ARRAY_BYTES = 96 * 128;
@@ -535,7 +540,7 @@ function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
     candidate[26] = 1;
     candidate[31] = 1;
     candidate[32] = 1;
-    candidate[33] = 1;
+    candidate[33] = meshSurfaceFlags(entry.source);
     return;
   }
   const worldFromLocal = entry.source.transform.world;
@@ -639,7 +644,7 @@ function writeMeshSurfaceCandidate(
   candidateBits[surface + 1] =
     visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
   candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-  candidateBits[surface + 3] = storageBuffer ? 0 : meshSurfaceFlags(entry.source) & 2;
+  candidateBits[surface + 3] = storageBuffer ? 0 : meshSurfaceFlags(entry.source) & 14;
   const region = entry.source.spriteRegion;
   if (region !== undefined) {
     candidateBits[surface + 3] = (candidateBits[surface + 3] ?? 0) | 1;

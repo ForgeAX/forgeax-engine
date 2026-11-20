@@ -356,7 +356,7 @@ const renderer = await createRenderer(canvas, {}, bundler);
 - Provider: [`@forgeax/engine-shader-compiler`](../shader-compiler/README.md) supplies pure `compileShader` and `ShaderError` with five top-level fields.
 - Integration: [`apps/hello/triangle/vite.config.ts`](../../apps/hello/triangle/vite.config.ts), M2 injection verification (w15) and M3 fixture replacement with pbr.wgsl.
 
-SSAO is included by default, matching the runtime `StandardProfile.ssao` switch. `engineEntries.hdrpSsao: false` explicitly strips it for a producer that never supports AO; requesting AO with that manifest produces a renderer error.
+SSAO is included by default, matching the runtime `StandardProfile.ambientOcclusion.enabled` switch. `engineEntries.hdrpSsao: false` explicitly strips it for a producer that never supports AO; requesting AO with that manifest produces a renderer error.
 
 Workspace discovery constructs this plugin for unselected projects. It resolves
 Git revision only when the virtual bundler module loads, retaining explicit

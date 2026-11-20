@@ -1,5 +1,6 @@
 import { defineSystem } from '@forgeax/engine-ecs';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { EMPTY_GPU_DRAW_SELECTION, GpuDrawSelection } from '../../gpu-driven/draw-selection';
@@ -94,7 +95,11 @@ function setup(
     world.addComponent(view, { component: ViewStandardLighting, data: { state } }).unwrap();
   }
   viewPassPlanQueue(world, view).stage(input(probeFallbackDemand, gpuDrivenScene));
-  const internals = { renderWorld: world, viewEntity: view } as unknown as RenderSystemInternals;
+  const internals = {
+    renderWorld: world,
+    viewEntity: view,
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  } as unknown as RenderSystemInternals;
   return { world, view, internals };
 }
 

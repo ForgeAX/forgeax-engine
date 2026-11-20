@@ -62,7 +62,7 @@ it('light shadow settings: PCF1 collapses the PCSS penumbra and castShadow false
         shadowFilter: DirectionalShadowFilterValue[shadowFilter ?? 'pcf1'],
       })
       .unwrap();
-    unwrap(renderer.setProfile({ ...original, renderPath, ssao: false }));
+    unwrap(renderer.setProfile({ ...original, renderPath, ambientOcclusion: { enabled: false } }));
     let luminance: Float32Array | undefined;
     for (let index = 0; index < 6; index++) {
       world.update(1 / 60).unwrap();

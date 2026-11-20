@@ -7,7 +7,11 @@ import {
   type ShaderSource,
 } from '@forgeax/engine-types';
 import { err, manifestMalformed, ok, type Result, type ShaderError } from './errors.js';
-import { bindManifestShaderSource, boundManifestShaderSource } from './manifest-publication.js';
+import {
+  bindManifestShaderSource,
+  boundManifestShaderSource,
+  manifestShaderSourcePrepared,
+} from './manifest-publication.js';
 import {
   type AdmittedShaderProgramTemplate,
   readShaderProgramTemplates,
@@ -53,9 +57,16 @@ type Resolve = (
   program: string,
   selection: Readonly<Record<string, boolean>>,
 ) => Result<CompiledProgram, ShaderError>;
+type Prepare = (
+  program: string,
+  selection: Readonly<Record<string, boolean>>,
+) => Result<boolean, ShaderError>;
 const nativeRows = new WeakSet<object>();
 const preparedRows = new WeakSet<object>();
-const variantReaders = new WeakMap<object, () => CompiledProgram>();
+const variantReaders = new WeakMap<
+  object,
+  { readonly read: () => CompiledProgram; readonly prepare?: () => Result<boolean, ShaderError> }
+>();
 const familyReaders = new WeakMap<
   object,
   {
@@ -87,12 +98,19 @@ export function templateManifestVariantByDefines(
   return familyReaders.get(row)?.match(constraints);
 }
 
+/** Request CPU preparation for this selected row. Compiled publications are already ready. */
+export function prepareMaterialShaderTemplateVariant(
+  variant: MaterialShaderManifestVariant,
+): Result<boolean, ShaderError> {
+  return variantReaders.get(variant)?.prepare?.() ?? ok(true);
+}
+
 /** Preserve the selected source/reflection owner without reading the primary program. */
 export function shaderTemplateVariantEntry(
   entry: ManifestEntry,
   variant: MaterialShaderManifestVariant,
 ): ManifestEntry | undefined {
-  const read = variantReaders.get(variant);
+  const read = variantReaders.get(variant)?.read;
   if (!nativeRows.has(entry) || read === undefined) return undefined;
   const row = Object.freeze({
     ...(entry.identifier === undefined ? {} : { identifier: entry.identifier }),
@@ -226,6 +244,7 @@ function variantRow(
   program: string,
   defines: Readonly<Record<string, boolean>>,
   resolve: Resolve,
+  prepare: Prepare | undefined,
 ): MaterialShaderManifestVariant {
   let compiled: CompiledProgram | undefined;
   const read = (): CompiledProgram => {
@@ -267,7 +286,12 @@ function variantRow(
     },
   }) as MaterialShaderManifestVariant;
   nativeRows.add(row);
-  variantReaders.set(row, read);
+  variantReaders.set(row, {
+    read,
+    ...(prepare === undefined
+      ? {}
+      : { prepare: () => (compiled === undefined ? prepare(program, defines) : ok(true)) }),
+  });
   bindManifestShaderSource(row, () => read().program.sourceReference);
   return row;
 }
@@ -276,6 +300,7 @@ function variantRow(
 export function materializeShaderTemplateManifest(
   admitted: AdmittedShaderTemplateManifest,
   resolve: Resolve,
+  prepare?: Prepare,
 ): {
   readonly entries: readonly ManifestEntry[];
   readonly materialShaders: readonly MaterialShaderManifestEntry[];
@@ -335,7 +360,7 @@ export function materializeShaderTemplateManifest(
         const key = keyOf(defines);
         let selected = choices.get(key);
         if (selected === undefined) {
-          selected = variantRow(declaration.program, defines, resolve);
+          selected = variantRow(declaration.program, defines, resolve, prepare);
           choices.set(key, selected);
         }
         return selected;
@@ -425,5 +450,8 @@ export function materializeShaderTemplateManifest(
 export function materialShaderPreparedSourceRows(
   entry: MaterialShaderManifestEntry,
 ): readonly (MaterialShaderManifestEntry | MaterialShaderManifestVariant)[] {
-  return familyReaders.get(entry)?.prepared() ?? [entry, ...entry.variants];
+  return (
+    familyReaders.get(entry)?.prepared() ??
+    [entry, ...entry.variants].filter(manifestShaderSourcePrepared)
+  );
 }

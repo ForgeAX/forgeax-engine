@@ -1,5 +1,6 @@
 import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
 import type { PackOutput } from './pack-authoring.js';
+import { SCRIPTABLE_PACK_ASSET_KINDS } from './scriptable-pack-kinds.js';
 
 /**
  * Build-time Pack vocabulary shared by the source loader and output
@@ -11,42 +12,7 @@ export * from './pack-authoring.js';
 export * from './pack-parameter-bindings.js';
 export * from './plugin-asset.js';
 
-/** Closed ordinary kind vocabulary shared by Pack discovery and producers. */
-export type ScriptablePackAssetKind = Asset['kind'];
-
-export const SCRIPTABLE_PACK_ASSET_KINDS = [
-  'plugin',
-  'mesh',
-  'material',
-  'scene',
-  'texture',
-  'texture-generator',
-  'gpu-texture',
-  'equirect',
-  'sampler',
-  'font',
-  'render-pipeline',
-  'tileset',
-  'video',
-  'skeleton',
-  'skin',
-  'animation-clip',
-  'animation-graph',
-  'audio',
-  'particle-effect',
-  'ies-profile',
-  'terrain',
-  'navigation-mesh',
-  'water-body',
-  'water-zone',
-  'water-wave-set',
-  'water-brush-recipe',
-  'water-simulation-recipe',
-] as const satisfies readonly ScriptablePackAssetKind[];
-
-export function isScriptablePackAssetKind(value: string): value is ScriptablePackAssetKind {
-  return (SCRIPTABLE_PACK_ASSET_KINDS as readonly string[]).includes(value);
-}
+export * from './scriptable-pack-kinds.js';
 
 export const SCRIPTABLE_PACK_CAPABILITY_MANIFEST = {
   assetKinds: SCRIPTABLE_PACK_ASSET_KINDS,

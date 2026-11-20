@@ -217,7 +217,7 @@ export async function verifyRendererDiffuse(
     ...original,
     renderPath: 'deferred' as const,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     visibleSurface: true,
   };
   const settings = {

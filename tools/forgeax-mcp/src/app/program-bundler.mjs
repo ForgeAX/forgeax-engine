@@ -3,11 +3,26 @@ import { linkPackProgram, packProgramModuleIdentity, verifyPackProgram } from '@
 
 import { PROGRAM_IMPORTS_SLOT } from '../contract.ts';
 
-/** Compile only the admitted graph; never load files, network modules or replacement Engine copies. */
-export async function bundlePackProgram(input) {
+function verifiedProgram(input) {
   if (Buffer.byteLength(JSON.stringify(input)) > 4 * 1024 * 1024) throw new Error('Program transport byte bound exceeded');
   const program = verifyPackProgram(input.program).unwrap();
-  packProgramModuleIdentity(program, input.imports).unwrap();
+  const identity = packProgramModuleIdentity(program, input.imports).unwrap();
+  return { program, identity };
+}
+
+/** Offer the verified closure to the same admitted ESM bundler that prepares Workers. */
+export function taskPackProgramSources(input, allow) {
+  const { program, identity } = verifiedProgram(input);
+  const scope = allow(input.url);
+  for (const name of Object.keys(program.imports ?? {})) allow(input.imports[name].url);
+  const base = new URL(`/__forgeax-mcp-pack-program/${encodeURIComponent(identity)}/`, scope);
+  const { entryUrl, files } = linkPackProgram(program, base.href, input.imports).unwrap();
+  return { entryUrl, sources: new Map(files.map(({ url, source }) => [url, source])) };
+}
+
+/** Compile only the admitted graph; never load files, network modules or replacement Engine copies. */
+export async function bundlePackProgram(input) {
+  const { program } = verifiedProgram(input);
   const base = 'https://forgeax.program.invalid/';
   const bindings = Object.fromEntries(Object.entries(input.imports).map(([name, binding]) => [name,
     { ...binding, url: new URL(`imports/${encodeURIComponent(name)}.cjs`, base).href }]));

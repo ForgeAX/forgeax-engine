@@ -56,6 +56,8 @@ import {
 
 const NO_EXECUTION: BatchExecution = Object.freeze({ route: 'none' });
 
+import { isVelocityRasterEntry } from './raster-selection';
+
 export interface BatchExecutions {
   readonly forward: BatchExecution;
   readonly shadow: BatchExecution;
@@ -285,6 +287,21 @@ export class GpuDrivenMaterialExecutionRetention {
     this.prepared++;
     this.entries[kind].set(binding, entry);
   }
+
+  publish(input: NonNullable<GpuDrivenMaterialExecutionRetention['lastInputs']>) {
+    const { collected } = input;
+    const last = this.last;
+    const published =
+      last !== undefined &&
+      sameOrderedEntries(last.batchExecutions, collected.batchExecutions, sameBatchExecutions) &&
+      sameOrderedEntries(last.materialArtifacts, collected.materialArtifacts, Object.is) &&
+      sameOrderedEntries(last.shadowMaterialArtifacts, collected.shadowMaterialArtifacts, Object.is)
+        ? last
+        : collected;
+    this.last = published;
+    this.lastInputs = { ...input, collected: published };
+    return published;
+  }
 }
 
 const REQUEST_PASS_BITS = { forward: 0, shadow: 1, depth: 2 } as const;
@@ -307,6 +324,7 @@ const resolverRetention = new WeakMap<object, GpuDrivenMaterialExecutionRetentio
 export function collectGpuDrivenMaterialArtifacts({
   batches,
   resolve,
+  canAwaitSource,
   clustered,
   reflectionFallback,
   probeBlend,
@@ -316,6 +334,7 @@ export function collectGpuDrivenMaterialArtifacts({
 }: {
   readonly batches: Iterable<Pick<GpuDrivenBatch, 'binding'>>;
   readonly resolve: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly canAwaitSource?: (shaderId: string) => boolean;
   readonly clustered: boolean;
   readonly reflectionFallback: boolean;
   readonly probeBlend: boolean;
@@ -352,6 +371,7 @@ export function collectGpuDrivenMaterialArtifacts({
   const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
   const selectedArtifacts = new Map<string, Map<number, MaterialShaderArtifact | undefined>>();
   let firstSkinArtifact: MaterialShaderArtifact | undefined;
+  let sourcePreparationPending = false;
   for (const read of distinctReads) {
     let variants = selectedArtifacts.get(read.shader);
     if (variants === undefined) {
@@ -426,13 +446,14 @@ export function collectGpuDrivenMaterialArtifacts({
         reads.push({ shader, request, artifact });
         return artifact;
       });
-      retention.set(kind, binding, {
-        snapshot: accepted.snapshot,
-        passes: accepted[kind],
-        geometry: binding.geometry,
-        reads,
-        execution,
-      });
+      if (!sourcePreparationPending)
+        retention.set(kind, binding, {
+          snapshot: accepted.snapshot,
+          passes: accepted[kind],
+          geometry: binding.geometry,
+          reads,
+          execution,
+        });
       return execution;
     };
     const join = (
@@ -456,6 +477,14 @@ export function collectGpuDrivenMaterialArtifacts({
         selectArtifact,
       );
       if (!execution.ok) {
+        if (
+          execution.error.code === 'missing-material-receipt' &&
+          pass !== undefined &&
+          canAwaitSource?.(pass.sceneIndexProgramKey ?? pass.shaderId) === true
+        ) {
+          sourcePreparationPending = true;
+          return NO_EXECUTION;
+        }
         if (execution.error.detail.recovery !== 'route-cpu-lane' || pass === undefined)
           throw execution.error;
         return { route: 'direct', material: accepted.snapshot, pass, reason: execution.error };
@@ -500,35 +529,26 @@ export function collectGpuDrivenMaterialArtifacts({
     }
   }
   const firstArtifact = materialArtifacts.values().next().value;
-  const collected = {
+  const collected: CollectedMaterialArtifacts = {
     materialArtifacts,
     shadowMaterialArtifacts,
     firstArtifact,
     firstSkinArtifact,
     batchExecutions,
+    ...(sourcePreparationPending ? { sourcePreparationPending: true } : {}),
   };
-  if (retention === undefined) return collected;
-  const last = retention.last;
-  let published: CollectedMaterialArtifacts = collected;
-  if (
-    last !== undefined &&
-    sameOrderedEntries(last.batchExecutions, batchExecutions, sameBatchExecutions) &&
-    sameOrderedEntries(last.materialArtifacts, materialArtifacts, Object.is) &&
-    sameOrderedEntries(last.shadowMaterialArtifacts, shadowMaterialArtifacts, Object.is)
-  )
-    published = last;
-  retention.last = published;
-  retention.lastInputs = {
+  if (retention === undefined || sourcePreparationPending) return collected;
+  return retention.publish({
     batches,
     programs: programIdentity,
     flags,
     reads: distinctReads,
-    collected: published,
-  };
-  return published;
+    collected,
+  });
 }
 
 export interface CollectedMaterialArtifacts {
+  readonly sourcePreparationPending?: true;
   readonly materialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly shadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly firstArtifact: MaterialShaderArtifact | undefined;
@@ -571,6 +591,7 @@ export function* prepareHiddenMaterialExecutions(
   materials: MaterialFrame | undefined,
   pass: 'forward' | 'shadow',
   resolve: RenderSystemInternals['getMaterialShaderArtifact'],
+  canAwaitSource?: (identifier: string) => boolean,
 ) {
   // A validated source owns fixed geometry and bindings. Frame validation may
   // wrap that same source in a new entry. Do not recapture
@@ -601,6 +622,7 @@ export function* prepareHiddenMaterialExecutions(
   const collected = collectGpuDrivenMaterialArtifacts({
     batches: draws,
     resolve,
+    ...(canAwaitSource === undefined ? {} : { canAwaitSource }),
     programs,
     clustered: false,
     reflectionFallback: false,
@@ -629,7 +651,7 @@ function hiddenRenderState(
       ? seededDepthRenderState(state, artifactAlphaMask(selected.variantSet))
       : geometryRenderStateForPass(
           state,
-          selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+          isVelocityRasterEntry(selected.fragmentEntry) ? 'temporal' : 'forward',
           pass.coverageOnly,
           undefined,
           selected.fragmentEntry,
@@ -675,6 +697,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly entries: readonly ValidatedRenderable[];
   readonly materials?: MaterialFrame | undefined;
   readonly resolve?: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly shaders: RenderSystemInternals['shaderRegistry'];
   readonly artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   readonly factory: NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
   readonly formats: readonly TextureFormat[];
@@ -703,6 +726,17 @@ export function prepareHiddenGpuDrivenPipelines(input: {
       input.materials,
       'forward',
       input.resolve,
+      (identifier) => {
+        if (input.shaders?.isMaterialArtifactPreparationPending(identifier) !== true) return false;
+        ready = false;
+        input.onPending?.({
+          code: 'scene-pipeline-preparation',
+          entity: entry.source.entityKey,
+          pass: 'forward',
+          shader: identifier,
+        });
+        return true;
+      },
     )) {
       if (execution.route !== 'gpu') continue;
       const { prepared, material, artifact } = execution;
@@ -736,7 +770,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
           : {
               ...artifact,
               fragmentEntry: fragment,
-              ...(fragment === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+              ...(isVelocityRasterEntry(fragment) ? { vertexEntry: 'vs_temporal' } : {}),
               ...(input.coverageOnly
                 ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
                 : {}),
@@ -802,8 +836,9 @@ export function prepareHiddenGpuDrivenPipelines(input: {
 
 /** Reflection fact: the selected scene-index vertex entry reads @group(3) @binding(8). */
 function readsSceneMorphInputs(artifact: MaterialShaderArtifact): boolean {
-  const entry =
-    artifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : artifact.receipt?.sceneIndexEntry;
+  const entry = isVelocityRasterEntry(artifact.fragmentEntry)
+    ? 'vs_temporal'
+    : artifact.receipt?.sceneIndexEntry;
   const reads = artifact.program.entryPoints?.find(
     (point) => point.stage === 'vertex' && point.name === entry,
   );

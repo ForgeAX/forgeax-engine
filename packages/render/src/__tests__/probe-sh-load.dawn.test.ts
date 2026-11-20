@@ -42,6 +42,7 @@ const imports = Object.fromEntries(
     'lighting-spot-modifiers',
     'lighting-spot-projector',
     'shadow-pcf',
+    'standard-gbuffer',
     'standard-lighting',
     'cluster-texture-data',
     'standard-cluster',

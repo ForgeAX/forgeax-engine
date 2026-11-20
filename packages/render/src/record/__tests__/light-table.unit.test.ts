@@ -178,6 +178,31 @@ describe('LightTable', () => {
     expect(owner.uploadedBytes).toBe(2 * STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize);
   });
 
+  it('uploads changed channel projections while retaining raw channels and stable slot identity', async () => {
+    const { owner, writes } = await table();
+    const local = [{ source: { ...point(1), lightingChannels: 0x80000000 } }];
+    const lane = STANDARD_CLUSTER_TEST_ABI.directLightSlot.lightingChannelsByteOffset / 4;
+    const unpack = () => {
+      const data = writes.mock.calls.at(-1)?.[2];
+      if (!ArrayBuffer.isView(data)) throw new Error('Missing direct light slot upload');
+      return Array.from(
+        new Uint32Array(data.buffer, data.byteOffset, data.byteLength / 4).subarray(lane, lane + 4),
+      );
+    };
+
+    const highBitFirst = (1 << 15) | 31;
+    const highBitSecond = (2 << 15) | (31 << 5);
+    owner.write(local, undefined, highBitFirst).unwrap();
+    expect(unpack()).toEqual([0x80000000, 0, 1, 0]);
+    owner.write(local, undefined, highBitSecond).unwrap();
+    expect(unpack()).toEqual([0x80000000, 0, 2, 0]);
+    owner.write(local, undefined, highBitSecond).unwrap();
+    expect(owner.inspect()).toEqual({ packedSlots: 0, uploadedBytes: 0 });
+    owner.write(local, undefined).unwrap();
+    expect(unpack()).toEqual([0x80000000, 0, 0, 0]);
+    expect(writes).toHaveBeenCalledTimes(3);
+  });
+
   it('coalesces neighbouring changed slots into one range', async () => {
     const { owner, writes } = await table();
     const lights = Array.from({ length: 8 }, (_, index) => ({ source: point(index) }));

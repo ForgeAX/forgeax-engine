@@ -7,6 +7,19 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { AUTO_EXPOSURE_FRAGMENT_WGSL, AUTO_EXPOSURE_METER_WGSL } from '../auto-exposure-source.js';
+import {
+  TSR_ANALYZE_FRAGMENT_VELOCITY_WGSL,
+  TSR_ANALYZE_FRAGMENT_WGSL,
+  TSR_ANALYZE_VELOCITY_WGSL,
+  TSR_ANALYZE_WGSL,
+  TSR_OPAQUE_FRAGMENT_WGSL,
+  TSR_OPAQUE_WGSL,
+  TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
+  TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_VELOCITY_WGSL,
+  TSR_RECONSTRUCT_WGSL,
+} from '../tsr-source.js';
 
 interface Layout {
   readonly size: number;
@@ -53,7 +66,12 @@ function canonical(type: string): string {
 function createLayouter(source: string, modules: ReadonlyMap<string, string>) {
   const declarations = new Map<
     string,
-    { structs: Map<string, string[]>; aliases: Map<string, string>; imports: Map<string, string> }
+    {
+      structs: Map<string, string[]>;
+      aliases: Map<string, string>;
+      imports: Map<string, string>;
+      integerConstants: Map<string, number>;
+    }
   >();
   const parse = (owner: string) => {
     const existing = declarations.get(owner);
@@ -79,7 +97,11 @@ function createLayouter(source: string, modules: ReadonlyMap<string, string>) {
       for (const symbol of (match[2] ?? match[3] ?? '').split(',').map((value) => value.trim()))
         imports.set(symbol, module);
     }
-    const result = { structs, aliases, imports };
+    const integerConstants = new Map<string, number>();
+    for (const match of text.matchAll(/\bconst\s+(\w+)\s*(?::\s*[iu]32\s*)?=\s*(\d+)[iu]?\s*;/g)) {
+      integerConstants.set(match[1] ?? '', Number(match[2]));
+    }
+    const result = { structs, aliases, imports, integerConstants };
     declarations.set(owner, result);
     return result;
   };
@@ -99,11 +121,16 @@ function createLayouter(source: string, modules: ReadonlyMap<string, string>) {
       const column = layout(`vec${mat[2]}<f32>`, owner);
       return { size: Number(mat[1]) * roundUp(column.align, column.size), align: column.align };
     }
-    const array = /^array<(.+),\s*(\d+)u?>$/.exec(type);
+    const array = /^array<(.+),\s*(\d+[iu]?|\w+)>$/.exec(type);
     if (array) {
+      const count = array[2] ?? '';
+      const length = /^\d/.test(count)
+        ? Number.parseInt(count, 10)
+        : declared.integerConstants.get(count);
+      if (length === undefined) throw new Error(`unknown uniform array length ${count}`);
       const element = layout(array[1] ?? '', owner);
       return {
-        size: Number(array[2]) * roundUp(element.align, element.size),
+        size: length * roundUp(element.align, element.size),
         align: element.align,
       };
     }
@@ -129,35 +156,19 @@ function createLayouter(source: string, modules: ReadonlyMap<string, string>) {
   return layout;
 }
 
-function shaderCompositionSources(files: readonly string[], sources: readonly string[]): string[] {
-  const byFile = new Map(files.map((file, index) => [file, sources[index] ?? '']));
-  const composed = new Map<string, string>();
-  for (const sourceOwner of ['auto-exposure-source.ts', 'tsr-source.ts']) {
-    const owner = readFileSync(join(SRC, sourceOwner), 'utf8');
-    const imports = new Map<string, string>();
-    for (const match of owner.matchAll(/import\s+(\w+)\s+from\s+'([^']+)\?raw';/g)) {
-      const file = join(SRC, match[2] ?? '');
-      const source = byFile.get(file);
-      if (source === undefined) throw new Error(`missing composed shader ${file}`);
-      imports.set(match[1] ?? '', source);
-    }
-    for (const match of owner.matchAll(/export const \w+ = \x60([^\x60]+)\x60;/g)) {
-      const values = [...(match[1] ?? '').matchAll(/\$\{(\w+)\}/g)].map((part) => {
-        const name = part[1] ?? '';
-        const source = imports.get(name);
-        if (source !== undefined) return source;
-        if (name === 'sceneData') {
-          const temporal = imports.get('temporal');
-          if (temporal !== undefined) return temporal.replace(/^#define_import_path.*$/gm, '');
-        }
-        throw new Error(`unknown composed shader symbol ${name}`);
-      });
-      const complete = values.join('\n');
-      for (const value of values) composed.set(value, complete);
-    }
-  }
-  return sources.map((source) => composed.get(source) ?? source);
-}
+const composedStages: Readonly<Record<string, readonly string[]>> = {
+  'auto-exposure-fragment.wgsl': [AUTO_EXPOSURE_FRAGMENT_WGSL],
+  'auto-exposure-meter.wgsl': [AUTO_EXPOSURE_METER_WGSL],
+  'tsr-analyze.wgsl': [TSR_ANALYZE_WGSL, TSR_ANALYZE_VELOCITY_WGSL],
+  'tsr-analyze-fragment.wgsl': [TSR_ANALYZE_FRAGMENT_WGSL, TSR_ANALYZE_FRAGMENT_VELOCITY_WGSL],
+  'tsr-opaque.wgsl': [TSR_OPAQUE_WGSL],
+  'tsr-opaque-fragment.wgsl': [TSR_OPAQUE_FRAGMENT_WGSL],
+  'tsr-reconstruct.wgsl': [TSR_RECONSTRUCT_WGSL, TSR_RECONSTRUCT_VELOCITY_WGSL],
+  'tsr-reconstruct-fragment.wgsl': [
+    TSR_RECONSTRUCT_FRAGMENT_WGSL,
+    TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
+  ],
+};
 
 describe('built-in shaders on WebGL2', () => {
   it('sizes duplicate type names in their defining module and follows explicit imports', () => {
@@ -192,16 +203,17 @@ describe('built-in shaders on WebGL2', () => {
     );
     const bindings: string[] = [];
     const unaligned: string[] = [];
-    const compositionSources = shaderCompositionSources(files, sources);
     files.forEach((file, index) => {
-      const source = sources[index] ?? '';
-      const layout = createLayouter(compositionSources[index] ?? source, modules);
-      const text = stripNonCode(source);
-      for (const match of text.matchAll(/var<uniform>\s+(\w+)\s*:\s*([^;]+);/g)) {
-        const name = `${relative(SRC, file)} ${match[1]}`;
-        bindings.push(name);
-        const { size } = layout(match[2] ?? '');
-        if (size % 16 !== 0) unaligned.push(`${name}: ${match[2]} = ${size} bytes`);
+      const name = relative(SRC, file);
+      const stages = composedStages[name] ?? [sources[index] ?? ''];
+      for (const [variant, source] of stages.entries()) {
+        const layout = createLayouter(source, modules);
+        for (const match of stripNonCode(source).matchAll(/var<uniform>\s+(\w+)\s*:\s*([^;]+);/g)) {
+          const binding = `${name}[${variant}] ${match[1]}`;
+          bindings.push(binding);
+          const { size } = layout(match[2] ?? '');
+          if (size % 16 !== 0) unaligned.push(`${binding}: ${match[2]} = ${size} bytes`);
+        }
       }
     });
     expect(bindings.length).toBeGreaterThan(50);

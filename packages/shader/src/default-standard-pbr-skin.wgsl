@@ -6,12 +6,12 @@
 #endif
 #import forgeax_clipping::planes::{applyViewClipping, viewClippingRejected, applyLocalClipping}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
-#import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer, CompactGBufferOutput, StandardGBufferPassOutput, encodeCompactStandardGBuffer, encodeStandardReceiverContext, compactSubsurfaceCustomData}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardReceiverNormal}
 
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
-#import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, View, Mesh, meshMotionValid, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture}
+#import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, View, Mesh, meshMotionValid, meshGBufferObjectFlags, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture}
 #ifdef TRANSMISSION_AVAILABLE
 #import forgeax_view::fog::{forward_fog_transmission}
 #else
@@ -23,7 +23,7 @@
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
-#import forgeax_scene_temporal::{sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{encodeSceneVelocity, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_view::common::{spotModifierSampler, iesProfileTexture, cookieTexture, cookieMatrices}
 #endif
@@ -696,7 +696,7 @@ fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
   var out = vs_main_impl(
     in,
     visible.z,
-    vec3<u32>(visible.y | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe),
+    vec3<u32>(visible.y | (draw.gbufferObjectFlags << 29u) | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe),
     draw.temporal,
   );
   out.surfaceData.y = draw.lightingChannels;
@@ -716,6 +716,18 @@ fn standardMaterialRow(in : VsOut) -> u32 {
 
 // ShadowParticipation.receive: GPU-driven rows ride the flat material lane;
 // per-entity draws read the dynamic-offset Mesh slot directly.
+fn standardGBufferObjectFlags(in : VsOut) -> u32 {
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
+  return (standardMaterialRow(in) >> 29u) & 3u;
+#else
+#if STORAGE_BUFFER_AVAILABLE == true
+  return meshGBufferObjectFlags(u32(meshes[0].temporal.y));
+#else
+  return meshGBufferObjectFlags(meshes[0].surface.w);
+#endif
+#endif
+}
+
 fn standardReceivesShadows(in : VsOut) -> bool {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   return (standardMaterialRow(in) & STANDARD_NO_RECEIVE_BIT) == 0u;
@@ -780,10 +792,11 @@ fn vs_scene_index_packed(input : Frame32Input, @builtin(instance_index) idx : u3
 #endif
 
 const STANDARD_NO_RECEIVE_BIT : u32 = 0x80000000u;
+const STANDARD_MATERIAL_ROW_MASK : u32 = 0x1fffffffu;
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 fn selectedMaterial(index : u32) -> MaterialParameters {
-  return sceneMaterials[index & ~STANDARD_NO_RECEIVE_BIT];
+  return sceneMaterials[index & STANDARD_MATERIAL_ROW_MASK];
 }
 
 
@@ -1826,7 +1839,13 @@ fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> S
 @fragment
 fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool) -> GBufferOutput {
   standardPositionWS = standardFragmentPosition(in);
-  return skinGBuffer(standardParallaxInput(in), frontFacing);
+  return skinGBuffer(standardParallaxInput(in), frontFacing, false).full;
+}
+
+@fragment
+fn fs_gbuffer_compact(in : VsOut, @builtin(front_facing) frontFacing : bool) -> CompactGBufferOutput {
+  standardPositionWS = standardFragmentPosition(in);
+  return skinGBuffer(standardParallaxInput(in), frontFacing, true).compact;
 }
 
 // Forward AO sees the deformed, skinned and material-normal-mapped Surface.
@@ -1868,12 +1887,12 @@ struct SkinUncoveredGBufferOutput {
 @fragment
 fn fs_gbuffer_uncovered(in : VsOut, @builtin(front_facing) frontFacing : bool) -> SkinUncoveredGBufferOutput {
   standardPositionWS = standardFragmentPosition(in);
-  let g = skinGBuffer(standardParallaxInput(in), frontFacing);
+  let g = skinGBuffer(standardParallaxInput(in), frontFacing, false).full;
   return SkinUncoveredGBufferOutput(g.scene_color, g.normal_roughness, g.dielectric_specular,
     g.albedo_metallic, g.lighting_context, g.receiver_geometry, vec4<u32>(0u), g.scene_temporal);
 }
 
-fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
+fn skinGBuffer(in : VsOut, frontFacing : bool, compact : bool) -> StandardGBufferPassOutput {
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   let rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
@@ -1911,13 +1930,27 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   subsurface = vec4<f32>(material.subsurfaceRadius, material.subsurfaceWeight);
 #endif
   let specular = standardSurfaceSpecular(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
-  var output = encodeStandardGBuffer(surface.normalWS, receiverNormal,
-    specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread),
-    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), specular,
-    surface.occlusion, surface.emissive, materialOutputAlpha(surface.opacity, standardAlphaMode()), u32(skylight.diffuseScale.w), probeRow,
-    standardReceivesShadows(in), in.surfaceData.y, subsurface,
-    useDirectDfgLut,
-  );
+  let roughness = specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread);
+  let metallic = clamp(surface.metallic, 0.0, 1.0);
+  let opacity = materialOutputAlpha(surface.opacity, standardAlphaMode());
+  var output : StandardGBufferPassOutput;
+  if (compact) {
+    var customData = 0u;
+#ifdef SUBSURFACE_DIFFUSION_AVAILABLE
+    customData = compactSubsurfaceCustomData(subsurface, view.subsurfaceProfiles);
+#endif
+    output.compact = encodeCompactStandardGBuffer(surface.normalWS, roughness, surface.baseColor,
+      metallic, specular.x, surface.occlusion, surface.emissive, opacity,
+      vec4<u32>(in.surfaceData.y, encodeStandardReceiverContext(
+        u32(skylight.diffuseScale.w), probeRow, standardReceivesShadows(in)),
+        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u, 0u), customData, standardGBufferObjectFlags(in));
+    return output;
+  }
+  output.full = encodeStandardGBuffer(surface.normalWS, receiverNormal, roughness,
+      surface.baseColor, metallic, specular,
+      surface.occlusion, surface.emissive, opacity, u32(skylight.diffuseScale.w), probeRow,
+      standardReceivesShadows(in), in.surfaceData.y, subsurface,
+      useDirectDfgLut);
   // The vertex lane retains the canonical validity/reactivity encoding;
   // coverage and opacity come from the same evaluated surface as GBuffer.
   let temporal = unpackSceneTemporalV1(vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(in.surfaceData.x)));
@@ -1932,7 +1965,7 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   // Max-combined so instance, LOD and coverage reactivity are never reduced.
   reactive = max(reactive, surfaceTemporalReactive(surface.reactive));
   let currentClip = view.temporalCurrentViewProj * vec4<f32>(standardPositionWS, 1.0);
-  output.scene_temporal = packSceneTemporalV1WithValidity(
+  output.full.scene_temporal = packSceneTemporalV1WithValidity(
     currentClip, currentClip - in.clipDelta,
     view.temporalProjection, reactive, temporal.motionValid);
   return output;
@@ -2059,8 +2092,7 @@ fn standardAlphaMode() -> f32 {
 #endif
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+fn materialTemporal(in : TemporalVsOut) -> vec4<f32> {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   material = selectedMaterial(in.materialIndex);
 #endif
@@ -2127,4 +2159,15 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #else
   return temporal;
 #endif
+}
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  return materialTemporal(in);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+  return encodeSceneVelocity(materialTemporal(in));
 }

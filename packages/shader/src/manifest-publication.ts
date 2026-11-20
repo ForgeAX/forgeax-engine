@@ -4,14 +4,25 @@ import { sha256 } from '@noble/hashes/sha2.js';
 // Publication owns source readers for both template and fragment-backed rows.
 // Keeping this leaf independent of template admission also permits native Node
 // to read source publications without loading a compiler or a bundler resolver.
-const boundSourceReaders = new WeakMap<object, () => ShaderSource>();
+const boundSourceReaders = new WeakMap<
+  object,
+  { read: () => ShaderSource; prepared?: () => boolean }
+>();
 
-export function bindManifestShaderSource(row: object, read: () => ShaderSource): void {
-  boundSourceReaders.set(row, read);
+export function bindManifestShaderSource(
+  row: object,
+  read: () => ShaderSource,
+  prepared?: () => boolean,
+): void {
+  boundSourceReaders.set(row, prepared === undefined ? { read } : { read, prepared });
+}
+
+export function manifestShaderSourcePrepared(row: object): boolean {
+  return boundSourceReaders.get(row)?.prepared?.() ?? true;
 }
 
 export function boundManifestShaderSource(row: object): ShaderSource | undefined {
-  return boundSourceReaders.get(row)?.();
+  return boundSourceReaders.get(row)?.read();
 }
 
 const digestPattern = /^[a-f0-9]{64}$/;

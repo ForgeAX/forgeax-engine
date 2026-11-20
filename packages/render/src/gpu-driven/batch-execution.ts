@@ -77,7 +77,18 @@ export interface BatchPass {
   readonly fragmentEntry?: string;
 }
 
-export type BatchArtifactResolver = (
+export type BatchArtifactFacts = Pick<
+  MaterialShaderArtifact,
+  | 'material'
+  | 'layoutIdentity'
+  | 'uvSetCount'
+  | 'receipt'
+  | 'vertexEntry'
+  | 'fragmentEntry'
+  | 'specializationKey'
+>;
+
+export type BatchArtifactResolver<Artifact extends BatchArtifactFacts = MaterialShaderArtifact> = (
   shaderId: string,
   request: {
     readonly vertexColorAvailable: boolean;
@@ -90,9 +101,9 @@ export type BatchArtifactResolver = (
     readonly leanInputs: boolean;
     readonly tangentFrame32?: boolean;
   },
-) => MaterialShaderArtifact | undefined;
+) => Artifact | undefined;
 
-export type BatchExecution =
+export type BatchExecution<Artifact extends BatchArtifactFacts = MaterialShaderArtifact> =
   | { readonly route: 'none' }
   | {
       readonly route: 'direct';
@@ -104,7 +115,7 @@ export type BatchExecution =
       readonly route: 'gpu';
       readonly material: MaterialSnapshot;
       readonly pass: BatchPass;
-      readonly artifact: MaterialShaderArtifact;
+      readonly artifact: Artifact;
       readonly prepared: PreparedGpuDrivenDraw;
     };
 
@@ -135,10 +146,10 @@ function needsDirectRoute(material: MaterialSnapshot, pass: BatchPass): boolean 
 }
 
 /** Preserve the Pass's logical identity when selecting a physical specialization. */
-function projectBatchArtifact(
-  artifact: MaterialShaderArtifact,
+function projectBatchArtifact<Artifact extends BatchArtifactFacts>(
+  artifact: Artifact,
   pass: BatchPass,
-): MaterialShaderArtifact {
+): Artifact {
   return {
     ...artifact,
     ...(pass.sceneIndexProgramKey === undefined
@@ -153,16 +164,16 @@ function projectBatchArtifact(
 }
 
 /** This join cannot inspect candidates, slots or a representative entity. */
-export function prepareBatchExecution(
+export function prepareBatchExecution<Artifact extends BatchArtifactFacts>(
   geometry: BatchGeometry,
   material: MaterialSnapshot,
   pass: BatchPass | undefined,
-  resolve: BatchArtifactResolver,
-): Result<BatchExecution, GpuDrivenPreparationError> {
+  resolve: BatchArtifactResolver<Artifact>,
+): Result<BatchExecution<Artifact>, GpuDrivenPreparationError> {
   if (pass === undefined) return ok({ route: 'none' });
   if (pass.kind === 'shadow' && !isTriangleTopology(geometry.draw.topology))
     return ok({ route: 'none' });
-  const direct = (): Result<BatchExecution, GpuDrivenPreparationError> =>
+  const direct = (): Result<BatchExecution<Artifact>, GpuDrivenPreparationError> =>
     ok({ route: 'direct', material, pass });
   if (needsDirectRoute(material, pass)) return direct();
 

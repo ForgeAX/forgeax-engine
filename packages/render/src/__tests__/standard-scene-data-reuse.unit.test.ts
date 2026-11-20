@@ -462,7 +462,11 @@ it('adopts actual registry entry changes without changing held program observati
   let entryPoints = Object.freeze([
     { name: 'fs_ao_input', stage: 'fragment' as const, bindings: [] },
   ]);
-  const registry = { materialArtifact: () => ({ program: { entryPoints } }) };
+  const registry = {
+    materialArtifact: () => ({ program: { entryPoints } }),
+    materialParamSchemaProjection: () => undefined,
+    isSourceBackedMaterialArtifact: () => false,
+  };
   const rebind = () =>
     rebindPublicationMaterialSchemas(registry as never, { materialUpdates: [material] } as never);
   rebind();

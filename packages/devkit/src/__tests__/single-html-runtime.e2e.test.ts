@@ -552,6 +552,8 @@ worker.onmessage = (event) => { document.documentElement.dataset.workerData = JS
 worker.onmessage = (event) => {
   if (event.data?.kind === 'static-ready') {
     document.documentElement.dataset.staticGraphReady = JSON.stringify(event.data);
+  } else if (event.data?.kind === 'static-error') {
+    document.documentElement.dataset.staticGraphError = event.data.message;
   }
 };
 worker.onerror = (event) => {
@@ -562,23 +564,37 @@ worker.postMessage({ run: true });
         ),
         writeFile(
           resolve(dist, 'execution-bootstrap.js'),
-          `import { loadValue } from './assets/loader.js';
+          `import { loadTask, loadValue } from './assets/loader.js';
+import { singleton } from './assets/identity.js';
 self.onmessage = async (event) => {
-  if (event.data?.run) self.postMessage({ kind: 'static-ready', value: await loadValue() });
+  if (!event.data?.run) return;
+  try {
+    const [task, concurrent] = await Promise.all([loadTask(), loadTask()]);
+    self.postMessage({ kind: 'static-ready', value: await loadValue(), generated: task.generated(), shared: task === concurrent && task.singleton === singleton });
+  } catch (error) {
+    self.postMessage({ kind: 'static-error', message: String(error) });
+  }
 };
 `,
         ),
         writeFile(
           resolve(dist, 'assets/loader.js'),
-          `export { loadValue } from './re-export.js';
+          `export { loadTask, loadValue } from './re-export.js';
 `,
         ),
         writeFile(
           resolve(dist, 'assets/re-export.js'),
           `export const loadValue = async () => 41 + (await globalThis.__forgeaxImport('./lazy.js')).lazyValue;
+export const loadTask = () => import('forgeax-pack-task:///assets/task-program.js');
 `,
         ),
         writeFile(resolve(dist, 'assets/lazy.js'), 'export const lazyValue = 1;\n'),
+        writeFile(
+          resolve(dist, 'assets/task-program.js'),
+          "import { width } from './task-shape.js'; export { singleton } from './identity.js'; export const generated = () => [width, self.name];",
+        ),
+        writeFile(resolve(dist, 'assets/task-shape.js'), 'export const width = 3;'),
+        writeFile(resolve(dist, 'assets/identity.js'), 'export const singleton = {};'),
         writeFile(resolve(dist, 'decoy/loader.js'), 'export const loadValue = async () => 1000;\n'),
         writeFile(resolve(dist, 'decoy/lazy.js'), 'export const lazyValue = 99;\n'),
         writeFile(resolve(dist, 'forgeax-dist.json'), '{}\n'),
@@ -594,6 +610,9 @@ self.onmessage = async (event) => {
           'assets/loader.js',
           'assets/re-export.js',
           'assets/lazy.js',
+          'assets/task-program.js',
+          'assets/task-shape.js',
+          'assets/identity.js',
           'decoy/loader.js',
           'decoy/lazy.js',
         ].map((path) => ({ path, mediaType: 'text/javascript', bytes: 0, sha256: '' })),
@@ -609,6 +628,9 @@ self.onmessage = async (event) => {
             /(?:^|\/)execution-bootstrap(?:-[^/]+)?\.js$/i.test(path),
         ),
       ).toBe(true);
+      expect(bundle.value.artifacts.map(({ path }) => path)).toContain(
+        '__forgeax-bundle/assets/task-program.js',
+      );
       const packaged = await writeSingleHtml({
         distRoot: dist,
         output,
@@ -652,6 +674,8 @@ self.onmessage = async (event) => {
         expect(JSON.parse(result.staticGraphReady ?? '{}')).toEqual({
           kind: 'static-ready',
           value: 42,
+          generated: [3, ''],
+          shared: true,
         });
         expect(requests.filter((url) => /^https?:/i.test(url))).toEqual([]);
         expect(failed).toEqual([]);

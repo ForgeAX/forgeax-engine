@@ -76,7 +76,7 @@ const app = (
         ...DEFAULT_STANDARD_PROFILE,
         renderPath: 'deferred',
         ibl: false,
-        ssao: false,
+        ambientOcclusion: { enabled: false },
       },
     },
     {
@@ -164,7 +164,7 @@ function applyState() {
     ...profile,
     renderPath: 'deferred',
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     ...(diffuseGi === undefined
       ? {}
       : {

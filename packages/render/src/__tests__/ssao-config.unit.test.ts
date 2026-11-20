@@ -8,12 +8,6 @@ import {
   ambientOcclusionParameters,
 } from '../components/ambient-occlusion';
 import {
-  AMBIENT_OCCLUSION_ALGORITHMS,
-  AMBIENT_OCCLUSION_GTAO,
-  AMBIENT_OCCLUSION_SPIRAL_SSAO,
-  AMBIENT_OCCLUSION_SSAO,
-} from '../index';
-import {
   getSsaoParameters,
   resolveSsaoParameters,
   SSAO_DEFAULT_BIAS,
@@ -28,10 +22,10 @@ describe('SSAO parameter authority', () => {
       bias: SSAO_DEFAULT_BIAS,
       intensity: SSAO_DEFAULT_INTENSITY,
       quality: 'high',
-      algorithm: 'gtao',
+      method: 'ssao',
       application: 'lighting',
       sceneColorStrength: 0.95,
-      sampleCount: 16,
+      sampleCount: 64,
       directLightingStrength: 0,
       thickness: 1,
       distanceExponent: 1,
@@ -46,10 +40,10 @@ describe('SSAO parameter authority', () => {
       bias: 0.025,
       intensity: 1.4,
       quality: 'high',
-      algorithm: 'gtao',
+      method: 'ssao',
       application: 'lighting',
       sceneColorStrength: 0.95,
-      sampleCount: 16,
+      sampleCount: 64,
       directLightingStrength: 0,
       thickness: 1,
       distanceExponent: 1,
@@ -75,14 +69,14 @@ describe('SSAO parameter authority', () => {
 });
 
 it('selects GTAO and rejects unknown AO algorithms', () => {
-  expect(resolveSsaoParameters({ algorithm: 'gtao' })).toMatchObject({
+  expect(resolveSsaoParameters({ method: 'gtao' })).toMatchObject({
     ok: true,
-    value: { algorithm: 'gtao' },
+    value: { method: 'gtao' },
   });
-  const invalid = resolveSsaoParameters({ algorithm: 'unknown' as 'gtao' });
+  const invalid = resolveSsaoParameters({ method: 'unknown' as 'gtao' });
   expect(invalid).toMatchObject({
     ok: false,
-    error: { code: 'ssao-parameter-invalid', detail: { paramName: 'algorithm' } },
+    error: { code: 'ssao-parameter-invalid', detail: { paramName: 'method' } },
   });
 });
 
@@ -113,7 +107,8 @@ it('resolves component and profile authoring to the same AO defaults', () => {
   expect(getSsaoParameters(ambientOcclusionParameters(data).unwrap())).toEqual(
     getSsaoParameters({ sceneColorStrength: Math.fround(0.95) }),
   );
-  expect(getSsaoParameters({ algorithm: 'ssao' }).algorithm).toBe('ssao');
+  expect(data.enabled).toBe(true);
+  expect(ambientOcclusionParameters(data).unwrap()).not.toHaveProperty('method');
 });
 
 it.each([
@@ -128,24 +123,7 @@ it.each([
   });
 });
 
-describe('AmbientOcclusion public algorithm encodings', () => {
-  it('names every closed algorithm from the package entry', () => {
-    const named = {
-      ssao: AMBIENT_OCCLUSION_SSAO,
-      gtao: AMBIENT_OCCLUSION_GTAO,
-      'spiral-ssao': AMBIENT_OCCLUSION_SPIRAL_SSAO,
-    };
-    expect(Object.keys(named).sort()).toEqual([...AMBIENT_OCCLUSION_ALGORITHMS].sort());
-    const world = new World();
-    for (const [algorithm, encoded] of Object.entries(named)) {
-      const entity = world
-        .spawn({ component: AmbientOcclusion, data: { algorithm: encoded } })
-        .unwrap();
-      const data = world.get(entity, AmbientOcclusion).unwrap();
-      expect(ambientOcclusionParameters(data).unwrap().algorithm).toBe(algorithm);
-    }
-  });
-
+describe('AmbientOcclusion public encodings', () => {
   it('names each closed quality encoding used by the f32 component field', () => {
     expect({
       low: AMBIENT_OCCLUSION_QUALITY_LOW,

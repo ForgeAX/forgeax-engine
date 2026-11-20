@@ -7,7 +7,7 @@
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, meshes, instances, sampleMaterialTexture}
 #import forgeax_view::fog::{forward_fog, vertex_height_fog}
-#import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocity, packSceneTemporalV1WithValidity}
 
 // @forgeax/engine-shader - sprite.wgsl (feat-20260520-2d-sprite-layer-mvp /
 // M-3 / w19). 2D sprite material — third variant of the MaterialAsset
@@ -334,14 +334,13 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32, @builtin(vertex_in
   return out;
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+fn spriteTemporalRejected(in : TemporalVsOut) -> bool {
   applyViewClipping(in.clippingPositionWS, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uvAtlas, material.baseColorTextureCoordinatesMetadata.zw);
-  let alpha = clamp(texel.a * material.colorTint.a, 0.0, 1.0);
-  if (alpha <= 0.0) {
-    discard;
-  }
+  return clamp(texel.a * material.colorTint.a, 0.0, 1.0) <= 0.0;
+}
+
+fn materialTemporal(in : TemporalVsOut) -> vec4<f32> {
   var motionValid = true;
 #if STORAGE_BUFFER_AVAILABLE == true
   motionValid = meshMotionValid(meshes[0].temporal.y);
@@ -356,3 +355,16 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 }
 // sprite is unlit; do NOT read the directional-light fields of the View
 // UBO -- same SSOT hard rule as the header comment above; R5 mitigation.
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  if (spriteTemporalRejected(in)) { discard; }
+  return materialTemporal(in);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+  if (spriteTemporalRejected(in)) { discard; }
+  return encodeSceneVelocity(materialTemporal(in));
+}

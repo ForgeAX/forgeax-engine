@@ -6,11 +6,12 @@ export function serializeFrameGraphKey(input: object): string {
   return JSON.stringify(input);
 }
 
-/** Judge both retained caster policies from one parse of the existing graph key. */
+/** Check the retained caster policies and the configured GBuffer contract. */
 export function retainedFrameGraphPolicyMatches(
   topologyKey: string,
   directional: RenderPipelineTopology['shadow']['directional'],
   forwardCapsuleShadows: boolean,
+  compactGbuffer?: RenderPipelineTopology['compactGbuffer'],
 ): boolean {
   let topology: RenderPipelineTopology | undefined;
   try {
@@ -20,6 +21,7 @@ export function retainedFrameGraphPolicyMatches(
   }
   return (
     (topology?.forwardCapsuleShadows === true) === forwardCapsuleShadows &&
+    topology?.compactGbuffer === compactGbuffer &&
     terrainShadowLayoutMatches(topology?.shadow?.directional, directional)
   );
 }

@@ -305,7 +305,7 @@ export async function createIrradianceFieldHarness(options: {
     ...renderer.inspect().profile,
     renderPath: 'deferred' as const,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     visibleSurface: true,
   };
   const request = { source: lease, geometryLane: 'direct' as const };

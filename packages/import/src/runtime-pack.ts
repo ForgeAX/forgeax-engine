@@ -1,6 +1,7 @@
-import { withMeshAabb } from '@forgeax/engine-geometry';
+import { isStandaloneStaticMesh, withMeshAabb } from '@forgeax/engine-geometry';
 import {
   copyPackData,
+  copyPackOutputData,
   createPackageResponse,
   createRuntimePackPublication,
   decodePackBlob,
@@ -58,10 +59,17 @@ import {
   encodeBase64,
   err,
   ImportError,
+  type ImportedArtifactBody,
+  type MeshAsset,
   ok,
   type PackageFetcher,
   type PluginBuildTarget,
   type Result,
+  type TaskContext,
+  type TaskExecutor,
+  type TaskHandle,
+  type TaskModule,
+  taskAbortError,
 } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -186,6 +194,8 @@ export interface RuntimePackProducerOptions {
   readonly baseUrl?: string;
   readonly imports?: Readonly<Record<string, PackProgramImport>>;
   readonly programHost?: PackProgramHost;
+  /** Executes portable generators in the realm's existing Task Worker pool. */
+  readonly tasks?: TaskExecutor;
   readonly assetSource?: {
     /** The source owner exports the requested immutable version, including original programs and bytes. */
     exportSource?(
@@ -317,15 +327,44 @@ export function projectRuntimePackTools(
   return tools;
 }
 
+function stageRuntimeArtifactBody(
+  artifact: ImportedArtifactBody,
+  kind: Asset['kind'],
+  cookStaticMeshes: boolean,
+): Uint8Array<ArrayBuffer> {
+  const body = artifact.bytes;
+  const backing = body.buffer;
+  // The built-in Mesh encoder creates a private body from the isolated output.
+  return cookStaticMeshes &&
+    kind === 'mesh' &&
+    artifact.assetCodec?.name === 'mesh-binary' &&
+    backing instanceof ArrayBuffer
+    ? new Uint8Array(backing, body.byteOffset, body.byteLength)
+    : new Uint8Array(body);
+}
+
+function usesRuntimeMeshBody(asset: unknown): asset is MeshAsset {
+  return (
+    asset !== null &&
+    typeof asset === 'object' &&
+    'kind' in asset &&
+    asset.kind === 'mesh' &&
+    isStandaloneStaticMesh(asset as MeshAsset)
+  );
+}
+
 async function contentFromOutputs(
   packageId: string,
   submitted: PackOutputMap,
   programs?: RuntimePackContent['programs'],
   sceneComponents?: readonly ScriptablePackSceneComponentInput[],
+  cookStaticMeshes = false,
 ): Promise<RuntimePackContent> {
   // Take the entire output graph before the first producer can yield.
-  const owned = copyPackData(submitted) as PackOutputMap;
-  const producers = runtimeOutputProducers(programs, sceneComponents);
+  const owned = cookStaticMeshes
+    ? copyPackOutputData(submitted, usesRuntimeMeshBody)
+    : (copyPackData(submitted) as PackOutputMap);
+  const producers = runtimeOutputProducers(programs, sceneComponents, cookStaticMeshes);
   const assets: Record<string, DirectPackJson['assets'][string]> = {};
   const blobs: Record<string, PackBlob> = {};
   for (const [sourceKey, asset] of Object.entries(owned)) {
@@ -346,7 +385,7 @@ async function contentFromOutputs(
     const artifacts: Record<string, Record<string, unknown>> = {};
     for (const [key, artifact] of Object.entries(product.artifacts)) {
       const path = `${guid}/${key}`;
-      const bytes = new Uint8Array(artifact.bytes);
+      const bytes = stageRuntimeArtifactBody(artifact, asset.kind, cookStaticMeshes);
       blobs[path] = bytes;
       artifacts[key] = {
         path,
@@ -376,6 +415,121 @@ async function contentFromOutputs(
   parsePackSourceJson(content.source).unwrap();
   return content;
 }
+
+const RUNTIME_PACK_BUILD_TASK = 'runtime-pack.build';
+
+interface RuntimePackBuildSource {
+  readonly packageId: string;
+  readonly source: RuntimeScriptablePackSource;
+  readonly values: NonNullable<Parameters<typeof executePackBuild>[1]['values']>;
+  readonly programs: NonNullable<RuntimePackContent['programs']>;
+}
+
+interface RuntimePackBuildInput extends RuntimePackBuildSource {
+  readonly imports?: RuntimePackProducerOptions['imports'];
+  readonly moduleUrl?: string;
+  readonly dependencies: ReadonlyMap<string, Asset>;
+}
+
+function runtimeGeneratorValues(
+  metadata: ReturnType<typeof generatorDefinition>,
+  values: PackInstanceJson['values'],
+): RuntimePackBuildSource['values'] {
+  if ('parameters' in metadata) return resolvePackParameterValues(metadata, values).unwrap();
+  if (metadata.runtime?.outputs !== undefined && Object.keys(values).length === 0) return {};
+  throw new TypeError(
+    'instances require parameter capability or declared runtime outputs without values',
+  );
+}
+
+async function buildRuntimeContent(
+  input: RuntimePackBuildSource,
+  build: unknown,
+  readPinned: (guid: string) => Promise<Asset | undefined>,
+  task?: TaskContext,
+): Promise<RuntimePackContent> {
+  let dependencyFault: AssetError | undefined;
+  const definition = generatorDefinition(input.source, build);
+  const built = await executePackBuild(
+    definition,
+    {
+      packageId: definePackageId(input.packageId),
+      ...('parameters' in definition ? { values: input.values } : {}),
+      ...(task === undefined ? {} : { task }),
+      async readByGuid<TAsset = Asset>(guid: import('@forgeax/engine-types').AssetGuid) {
+        const asset = await readPinned(AssetGuid.format(guid));
+        if (asset !== undefined) return ok(structuredClone(asset) as TAsset);
+        dependencyFault = new AssetError({
+          code: 'asset-not-found',
+          expected: 'an explicitly declared, pinned dependency',
+          hint: 'add every parameter branch dependency to runtime.dependencies before admission',
+        });
+        return err(dependencyFault);
+      },
+    },
+    'runtime',
+  );
+  if (task?.aborted) throw taskAbortError();
+  if (!built || typeof built.ok !== 'boolean')
+    throw new TypeError('Pack build must return a Result');
+  if (!built.ok) throw built.error;
+  if (dependencyFault !== undefined) throw dependencyFault;
+  return contentFromOutputs(
+    input.packageId,
+    built.value,
+    input.programs,
+    input.source.sceneComponents,
+    task !== undefined,
+  );
+}
+
+/** Collect buffers only from the privately captured, validated Pack output graph. */
+function outputTransfers(value: unknown): ArrayBuffer[] {
+  const buffers = new Set<ArrayBuffer>();
+  const seen = new Set<object>();
+  const visit = (part: unknown): void => {
+    if (typeof part !== 'object' || part === null || seen.has(part)) return;
+    seen.add(part);
+    if (ArrayBuffer.isView(part)) {
+      if (part.buffer instanceof ArrayBuffer) buffers.add(part.buffer);
+      return;
+    }
+    for (const child of Object.values(part)) visit(child);
+  };
+  visit(value);
+  return [...buffers];
+}
+
+const runtimePackBuildTask: TaskModule<RuntimePackBuildInput, RuntimePackContent> = {
+  async run(input, context) {
+    const program = input.programs[input.source.program]?.artifact;
+    if (program === undefined) throw new TypeError('missing generator program');
+    // A native URL is issued by the host for the verified closure. Import that
+    // URL here so evaluating the generator never runs its top level in Engine.
+    const build =
+      input.moduleUrl === undefined
+        ? (await loadPackProgram(program, input.imports)).unwrap()
+        : (await import(/* @vite-ignore */ input.moduleUrl))[program.export];
+    if (context.aborted) throw taskAbortError();
+    const content = await buildRuntimeContent(
+      input,
+      build,
+      async (guid) => input.dependencies.get(guid),
+      context,
+    );
+    if (context.aborted) throw taskAbortError();
+    return { value: content, transfer: outputTransfers(content) };
+  },
+};
+
+/** App composes this registration into both ends of the existing Task Worker pool. */
+export const runtimePackTaskKinds = {
+  [RUNTIME_PACK_BUILD_TASK]: {
+    load: () => runtimePackBuildTask,
+    workerOnly: true,
+    maxInFlight: 1,
+  },
+};
 
 export function prepareRuntimePackAnchor(
   input: RuntimePackContent,
@@ -427,11 +581,25 @@ export function prepareRuntimePackAnchor(
 function runtimeOutputProducers(
   programs: RuntimePackContent['programs'],
   sceneComponents?: readonly ScriptablePackSceneComponentInput[],
+  cookStaticMeshes = false,
 ) {
   const outputs = createAssetOutputProducerRegistry(
     projectScriptablePackSceneComponents(sceneComponents),
   );
-  outputs.register(meshAssetDataProducer);
+  outputs.register(
+    cookStaticMeshes
+      ? {
+          kind: 'mesh',
+          version: `${meshAssetOutputProducer.version}+${meshAssetDataProducer.version}`,
+          produce(input) {
+            const producer = usesRuntimeMeshBody(input.asset)
+              ? meshAssetOutputProducer
+              : meshAssetDataProducer;
+            return producer.produce(input);
+          },
+        }
+      : meshAssetDataProducer,
+  );
   outputs.register({
     kind: 'plugin',
     version: 'plugin-definition/1',
@@ -500,6 +668,7 @@ export class RuntimePackProducer {
   private readonly bodies = new Map<string, ReadonlyMap<string, RuntimeBody>>();
   private readonly programs = new Map<string, RuntimePackProgram>();
   private readonly loadedPrograms = new Map<string, ReturnType<typeof loadPackProgram>>();
+  private readonly workerBuilds = new Map<string, TaskHandle<RuntimePackContent>>();
   private readonly snapshots = new Map<string, RuntimePackPinnedAsset>();
   private readonly admissions = new Map<string, AbortController>();
   private closed = false;
@@ -529,6 +698,11 @@ export class RuntimePackProducer {
         const bodies = this.bodies.get(packageUrl);
         return bodies === undefined ? undefined : bodyFetcher(bodies);
       },
+      retainArtifact: (packageUrl: string, path: string): PackageFetcher | undefined => {
+        const url = new URL(path, packageUrl).href;
+        const body = this.bodies.get(packageUrl)?.get(url);
+        return body === undefined ? undefined : bodyFetcher(new Map([[url, body]]));
+      },
       enumerate: async (): Promise<
         Result<readonly CatalogEntry[], AssetError> & {
           readonly revisions: readonly CatalogRevisionPoint[];
@@ -546,7 +720,8 @@ export class RuntimePackProducer {
     };
   }
   rows(): readonly CatalogEntry[] {
-    return json([...this.published.values()].flatMap((value) => value.rows));
+    // Keep each Pack's shared publication table shared in the detached snapshot.
+    return structuredClone([...this.published.values()].flatMap((value) => value.rows));
   }
   inspect(): {
     /** Public module identities supported by this Host; transport URLs remain Host-owned. */
@@ -580,7 +755,9 @@ export class RuntimePackProducer {
         [
           ...new Set(
             [...this.snapshots.values()].flatMap((pin) =>
-              pin.recipe && 'fixed' in pin.recipe ? [pin.recipe] : [],
+              pin.recipe && ('fixed' in pin.recipe || pin.recipe.instance !== undefined)
+                ? [pin.recipe]
+                : [],
             ),
           ),
         ],
@@ -848,7 +1025,7 @@ export class RuntimePackProducer {
     const sourcePath = `runtime/${packageId}`;
     for (const [path, values] of Object.entries(content.blobs ?? {})) {
       bodies.set(new URL(path, packageUrl).href, {
-        bytes: decodePackBlob(values),
+        bytes: values instanceof Uint8Array ? values : decodePackBlob(values),
         mediaType: 'application/octet-stream',
       });
     }
@@ -1203,7 +1380,8 @@ export class RuntimePackProducer {
     };
     for (const listener of this.listeners) {
       try {
-        listener(json(delta));
+        // Each listener owns its copy. Shared publication evidence is cloned once per delta.
+        listener(structuredClone(delta));
       } catch {
         /* An observer cannot roll back a producer commit. */
       }
@@ -1420,6 +1598,7 @@ export class RuntimePackProducer {
     const request = ++this.request;
     let instance: PackInstanceJson;
     let old: RuntimePackExecution | undefined;
+    let requestCancelled: (() => boolean) | undefined;
     try {
       instance = parseRuntimePackInstance(input);
       id = instance.packageId;
@@ -1432,6 +1611,7 @@ export class RuntimePackProducer {
       const beginInstanceGeneration = () => {
         if (old && old.instance.parent !== instance.parent)
           return err(failure('runtime-pack-conflict', id, 'instance parent cannot change'));
+        this.workerBuilds.get(id)?.cancel();
         this.executions.set(id, {
           instance,
           request,
@@ -1450,15 +1630,19 @@ export class RuntimePackProducer {
         signal?.aborted === true ||
         this.executions.get(id)?.request !== request ||
         this.executions.get(id)?.status === 'withdrawn';
+      requestCancelled = cancelled;
       if (cancelled()) return this.cancelled(id, request, 'generation cancelled');
       const source = owner.content.source;
       const metadata = generatorDefinition(source, () => ok({}));
-      if (!('parameters' in metadata))
-        throw new TypeError('instances require a parameter capability');
-      const values = resolvePackParameterValues(metadata, instance.values).unwrap();
+      const values = runtimeGeneratorValues(metadata, instance.values);
       const program = owner.content.programs?.[source.program]?.artifact;
       if (!program) throw new TypeError(`missing admitted generator program ${source.program}`);
-      const outputs = runtimeOutputProducers(owner.content.programs, source.sceneComponents);
+      const workerBuild = metadata.runtime?.execution === 'task-worker';
+      const outputs = runtimeOutputProducers(
+        owner.content.programs,
+        source.sceneComponents,
+        workerBuild,
+      );
       const key = fingerprint({
         sourceRevision: owner.digest,
         packageId: id,
@@ -1490,55 +1674,20 @@ export class RuntimePackProducer {
           content = undefined;
         }
       }
-      let dependencyFault: unknown;
       if (!content) {
-        const moduleKey = `${packProgramModuleIdentity(program, this.options.imports).unwrap()}/${program.entry}#${program.export}`;
-        let loading = this.loadedPrograms.get(moduleKey);
-        if (!loading) {
-          loading = loadPackProgram(program, this.options.imports, this.options.programHost);
-          this.loadedPrograms.set(moduleKey, loading);
-        }
-        const loaded = await loading;
-        if (!loaded.ok) this.loadedPrograms.delete(moduleKey);
-        if (!loaded.ok) throw loaded.error;
-        if (cancelled()) return this.cancelled(id, request, 'program loaded after cancellation');
-        const definition = generatorDefinition(source, loaded.value);
-        const readByGuid = async <TAsset = Asset>(
-          guid: import('@forgeax/engine-types').AssetGuid,
-        ): Promise<Result<TAsset, unknown>> => {
-          const value = owner.dependencies.get(AssetGuid.format(guid));
-          if (value)
-            return ok(
-              structuredClone(
-                typeof value.asset === 'function' ? await value.asset() : value.asset,
-              ) as TAsset,
-            );
-          const error = new AssetError({
-            code: 'asset-not-found',
-            expected: 'an explicitly declared, pinned dependency',
-            hint: 'add every parameter branch dependency to runtime.dependencies before admission',
-          });
-          dependencyFault = error;
-          return err(error);
+        const programs = owner.content.programs ?? {};
+        const buildInput = { packageId: id, source, values, programs };
+        const readPinned = async (guid: string): Promise<Asset | undefined> => {
+          const asset = owner.dependencies.get(guid)?.asset;
+          return typeof asset === 'function' ? await asset() : asset;
         };
-        const built = await executePackBuild(definition, {
-          packageId: definePackageId(instance.packageId),
-          values,
-          readByGuid,
-        });
-        if (!built || typeof built.ok !== 'boolean')
-          throw new TypeError('Pack build must return a Result');
-        if (!built.ok) throw built.error;
-        if (dependencyFault !== undefined) throw dependencyFault;
-        content = {
-          ...(await contentFromOutputs(
-            id,
-            built.value,
-            owner.content.programs,
-            source.sceneComponents,
-          )),
-          dependencies: owner.content.dependencies ?? {},
+        const assertCurrent = () => {
+          if (cancelled()) throw taskAbortError('generation request is no longer current');
         };
+        content = workerBuild
+          ? await this.runWorkerBuild(buildInput, program, readPinned, assertCurrent, signal)
+          : await this.runLocalBuild(buildInput, program, readPinned, assertCurrent);
+        content = { ...content, dependencies: owner.content.dependencies ?? {} };
       }
       if (content.source.packageId !== id || isGenerator(content.source))
         throw new TypeError('cache does not belong to this instance');
@@ -1574,8 +1723,12 @@ export class RuntimePackProducer {
       if (cachedContent) this.options.cache?.set(key, cachedContent);
       return ok(reply);
     } catch (cause) {
-      if (cause instanceof RuntimePackCommitInterrupted)
-        return this.cancelled(id, request, cause.message);
+      if (signal?.aborted || requestCancelled?.() || cause instanceof RuntimePackCommitInterrupted)
+        return this.cancelled(
+          id,
+          request,
+          cause instanceof Error ? cause.message : 'generation cancelled',
+        );
       const error = failure('runtime-pack-execution-failed', id, cause);
       const current = this.executions.get(id);
       if (current?.request === request && current.status !== 'withdrawn')
@@ -1583,6 +1736,64 @@ export class RuntimePackProducer {
       return err(error);
     }
   }
+  private async runLocalBuild(
+    input: RuntimePackBuildSource,
+    program: PackProgram,
+    readPinned: (guid: string) => Promise<Asset | undefined>,
+    assertCurrent: () => void,
+  ): Promise<RuntimePackContent> {
+    const moduleKey = `${packProgramModuleIdentity(program, this.options.imports).unwrap()}/${program.entry}#${program.export}`;
+    let loading = this.loadedPrograms.get(moduleKey);
+    if (!loading) {
+      loading = loadPackProgram(program, this.options.imports, this.options.programHost);
+      this.loadedPrograms.set(moduleKey, loading);
+    }
+    const loaded = await loading;
+    if (!loaded.ok) this.loadedPrograms.delete(moduleKey);
+    if (!loaded.ok) throw loaded.error;
+    assertCurrent();
+    return buildRuntimeContent(input, loaded.value, readPinned);
+  }
+
+  private async runWorkerBuild(
+    input: RuntimePackBuildSource,
+    program: PackProgram,
+    readPinned: (guid: string) => Promise<Asset | undefined>,
+    assertCurrent: () => void,
+    signal?: AbortSignal,
+  ): Promise<RuntimePackContent> {
+    const { tasks, imports, programHost } = this.options;
+    if (tasks === undefined) throw new Error('Runtime Pack generation requires a Task Worker');
+    packProgramModuleIdentity(program, imports).unwrap();
+    // Publication must not evaluate the program in this realm. Native package
+    // hosts can supply a Worker-loadable locator separately from local loading.
+    const moduleUrl = programHost?.publishForTask
+      ? await programHost.publishForTask(program, imports ?? {})
+      : programHost && !programHost.importModule
+        ? await programHost.publish(program, imports ?? {})
+        : undefined;
+    const dependencies = new Map<string, Asset>();
+    for (const guid of input.source.runtime?.dependencies ?? []) {
+      assertCurrent();
+      const asset = await readPinned(guid);
+      if (asset === undefined) throw new TypeError(`missing pinned dependency ${guid}`);
+      dependencies.set(guid, asset);
+    }
+    assertCurrent();
+    const id = input.packageId;
+    const build = tasks.submit<RuntimePackBuildInput, RuntimePackContent>(
+      RUNTIME_PACK_BUILD_TASK,
+      { ...input, imports, ...(moduleUrl === undefined ? {} : { moduleUrl }), dependencies },
+      { priority: 'background', ...(signal === undefined ? {} : { signal }), debugName: id },
+    );
+    this.workerBuilds.set(id, build);
+    try {
+      return await build.result;
+    } finally {
+      if (this.workerBuilds.get(id) === build) this.workerBuilds.delete(id);
+    }
+  }
+
   private cancelled(id: string, request: number, cause: string): Result<never, RuntimePackError> {
     const error = failure('runtime-pack-cancelled', id, cause);
     const current = this.executions.get(id);
@@ -1608,6 +1819,8 @@ export class RuntimePackProducer {
     this.mutationRevision++;
     this.admissions.get(packageId)?.abort();
     this.admissions.delete(packageId);
+    this.workerBuilds.get(packageId)?.cancel();
+    this.workerBuilds.delete(packageId);
     const pack = this.packs.get(packageId);
     this.packs.delete(packageId);
     if (pack) {

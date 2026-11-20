@@ -336,10 +336,13 @@ export function engineMaterialArtifactReceipt(
   if (!result.ok || result.value === undefined) return result;
   const gbuffer = engineMaterialGBuffer(file);
   if (gbuffer === undefined) return result;
+  const compact =
+    compiled.reflection.entryPoints?.some(({ name }) => name === 'fs_gbuffer_compact') === true;
   return ok({
     ...result.value,
     gbuffer,
-    receiptIdentity: `${result.value.receiptIdentity}/${gbuffer}`,
+    ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
+    receiptIdentity: `${result.value.receiptIdentity}/${gbuffer}${compact ? '/standard-gbuffer/4' : ''}`,
     generation: result.value.generation + 1,
   });
 }

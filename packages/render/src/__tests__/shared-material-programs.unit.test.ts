@@ -2,13 +2,16 @@ import { vec3 } from '@forgeax/engine-math';
 import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
+  ShaderRegistry,
 } from '@forgeax/engine-shader';
+import { ok, sha256 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
   collectGpuDrivenMaterialArtifacts,
   GpuDrivenMaterialExecutionRetention,
   GpuDrivenMaterialProgramProjection,
+  prepareHiddenGpuDrivenPipelines,
   prepareHiddenMaterialExecutions,
 } from '../gpu-driven/material-artifacts';
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
@@ -165,6 +168,62 @@ function fixture(count = 1) {
     rows,
   };
 }
+
+it('waits for the selected hidden GPU scene source before requesting its pipeline', async () => {
+  const f = fixture();
+  const row = f.rows[0];
+  if (row === undefined) throw Error('Expected a hidden row');
+  const key = 'game::surface-scene';
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const bytes = new TextEncoder().encode('fixture');
+  const build = Promise.withResolvers<ReturnType<typeof ok<Uint8Array>>>();
+  shaders.installMaterialArtifactSource(key, {
+    digest: `sha256:${sha256(bytes)}`,
+    paramSchema: [],
+    receipt: f.artifact.receipt,
+    prepare: () => build.promise,
+  });
+  const resolve = (id: string) => {
+    if (id !== key) return undefined;
+    return shaders.prepareMaterialArtifact(id).unwrap() ? f.artifact : undefined;
+  };
+  const entry: ValidatedRenderable = {
+    ...row,
+    source: { ...row.source, authorVisible: false },
+    meshSlot: 0,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderState: undefined,
+    stencilReference: undefined,
+  };
+  const onPending = vi.fn();
+  const factory = vi.fn(() => null);
+  const prepare = () =>
+    prepareHiddenGpuDrivenPipelines({
+      entries: [entry],
+      materials: f.owner.materials(),
+      shaders,
+      resolve,
+      artifacts: undefined,
+      factory,
+      formats: ['rgba16float'],
+      sampleCount: 1,
+      shaderUvSetCount: 0,
+      filter: undefined,
+      fragmentEntry: undefined,
+      coverageOnly: false,
+      visibleSurface: false,
+      onPending,
+    });
+  expect(prepare()).toBe(false);
+  expect(onPending).toHaveBeenCalledWith(expect.objectContaining({ shader: key }));
+  expect(factory).not.toHaveBeenCalled();
+  const completion = shaders.pendingMaterialPreparations();
+  expect(completion).toBeDefined();
+  build.resolve(ok(bytes));
+  expect(await completion).toMatchObject({ ok: true });
+  prepare();
+  expect(factory).toHaveBeenCalled();
+});
 
 it('retains hidden preparation joins across rows and passes, but rechecks accepted inputs', () => {
   const f = fixture(2);

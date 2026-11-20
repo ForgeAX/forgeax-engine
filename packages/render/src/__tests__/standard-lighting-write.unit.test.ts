@@ -246,10 +246,10 @@ describe('Standard Cluster upload ownership', () => {
       pointShadowSnapshots: [],
       spotShadowSnapshots: [],
       installedPipelineConfig: {
-        ssao: aoEnabled
+        ambientOcclusion: aoEnabled
           ? {
               enabled: true,
-              algorithm: 'gtao',
+              method: 'gtao',
               quality: 'low',
               radius: 2,
               bias: 0.1,
@@ -342,9 +342,9 @@ describe('Standard Cluster upload ownership', () => {
     const frameState = {
       hdrpClusterMembership: null,
       installedPipelineConfig: {
-        ssao: {
+        ambientOcclusion: {
           enabled: true,
-          algorithm: 'gtao',
+          method: 'gtao',
           quality: 'low',
           radius: 2,
           bias: 0.1,
@@ -393,8 +393,8 @@ describe('Standard Cluster upload ownership', () => {
     const uploadedStrengths: number[] = [];
     for (const strength of [0, 1, 0]) {
       frameState.installedPipelineConfig = {
-        ssao: {
-          ...frameState.installedPipelineConfig?.ssao,
+        ambientOcclusion: {
+          ...frameState.installedPipelineConfig?.ambientOcclusion,
           enabled: true,
           directLightingStrength: strength,
         },

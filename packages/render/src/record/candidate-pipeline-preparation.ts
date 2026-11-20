@@ -1,5 +1,7 @@
 import type { World } from '@forgeax/engine-ecs';
+import { describeMeshDraw } from '@forgeax/engine-geometry';
 import { err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
+import { materialRasterSourceFacts } from '../assembly/material/assembly';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { buildGpuDrivenDraws } from '../extract/gpu-driven';
@@ -263,6 +265,10 @@ export class CandidatePipelinePreparationOwner {
         });
         request.projection = projection;
         const { entry, artifacts } = projection;
+        if (artifacts.sourcePreparationPending === true) {
+          delete request.projection;
+          continue;
+        }
         const { materials } = request;
         const state = { ...context.frameState, pipelinePreparationPending: false };
         delete state.pipelinePreparationPendingReason;
@@ -327,13 +333,15 @@ export class CandidatePipelinePreparationOwner {
       clustered: boolean;
       reflectionFallback: boolean;
       shadowViews: boolean;
-      runtime: Pick<PipelineRequestRuntime, 'getMaterialShaderArtifact'>;
+      runtime: Pick<PipelineRequestRuntime, 'getMaterialShaderArtifact' | 'shaderRegistry'>;
     },
   ): NonNullable<Request['projection']> {
     const { input } = request;
     const { clustered, reflectionFallback, shadowViews, runtime } = facts;
     const { preparation } = input;
     const { resources, materials } = request;
+    const shaderRegistry = runtime.shaderRegistry;
+    const resolve = runtime.getMaterialShaderArtifact;
     const resourceFor = (id: number): MaterialResource => {
       const resource = resources.get(id);
       if (resource === undefined) throw new Error(`candidate material ${id} is absent`);
@@ -364,13 +372,18 @@ export class CandidatePipelinePreparationOwner {
     const source = {
       ...base,
       gpuDrivenDraws: buildGpuDrivenDraws({
-        mesh: input.asset,
+        mesh: describeMeshDraw(input.asset),
         materials: base.materials.map((resource) => resource.snapshot),
         fallbackMaterial: base.material.snapshot,
         deformation: base.skinBinding === undefined ? 'rigid' : 'skin',
-        ...(runtime.getMaterialShaderArtifact === undefined
+        ...(resolve === undefined
           ? {}
-          : { getMaterialShaderArtifact: runtime.getMaterialShaderArtifact }),
+          : {
+              getMaterialShaderArtifact: (id, options) =>
+                shaderRegistry?.isSourceBackedMaterialArtifact(id) === true
+                  ? materialRasterSourceFacts(shaderRegistry, id, options)
+                  : resolve(id, options),
+            }),
       }),
     };
     const entry: ValidatedRenderable = {
@@ -390,7 +403,8 @@ export class CandidatePipelinePreparationOwner {
       batches: eligibleGpuDrivenDraws(source),
       programs: new GpuDrivenMaterialProgramProjection().project(dispatch, materials),
       probeBlend: source.probeBlendRecord !== undefined,
-      resolve: runtime.getMaterialShaderArtifact,
+      resolve,
+      canAwaitSource: (id) => shaderRegistry?.isMaterialArtifactPreparationPending(id) === true,
       clustered,
       reflectionFallback,
       shadowViews,
@@ -451,6 +465,7 @@ export class CandidatePipelinePreparationOwner {
       device: original.device,
       errorRegistry: original.errorRegistry,
       metrics: original.metrics,
+      ...(original.shaderRegistry === undefined ? {} : { shaderRegistry: original.shaderRegistry }),
       ...(original.getMaterialArtifact === undefined
         ? {}
         : { getMaterialArtifact: original.getMaterialArtifact }),
@@ -468,6 +483,7 @@ export class CandidatePipelinePreparationOwner {
       shadowViews: view.hasShadowViews,
       runtime: lookup,
     });
+    if (projection.artifacts.sourcePreparationPending === true) return false;
     const frameState: {
       pipelinePreparationPending?: boolean;
       pipelinePreparationPendingReason?: import('../render-contract').FramePresentationPendingReason;

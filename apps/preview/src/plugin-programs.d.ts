@@ -6,3 +6,9 @@ declare module 'virtual:forgeax/plugin-programs/*' {
     sessionGeneration: number,
   ): import('@forgeax/engine-plugin').PluginPrograms;
 }
+declare module 'virtual:forgeax/preview-runtime-packs' {
+  import type { AuthoredRuntimePack } from '@forgeax/engine-app';
+
+  const packs: Readonly<Record<string, readonly AuthoredRuntimePack[]>>;
+  export default packs;
+}

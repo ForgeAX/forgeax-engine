@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  AMBIENT_OCCLUSION_GTAO,
-  AMBIENT_OCCLUSION_SPIRAL_SSAO,
-  AmbientOcclusion,
-} from '../components/ambient-occlusion';
+import { AmbientOcclusion } from '../components/ambient-occlusion';
 import { MaterialResource } from '../material-resource';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
 import { resolveStandardGtaoExecution } from '../pipeline/standard-build-context';
@@ -13,7 +9,7 @@ import { MaterialFrame } from '../scene/material-dispatch';
 
 const lane = { storageBuffer: true, maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 72 };
 const ao = {
-  algorithm: AMBIENT_OCCLUSION_GTAO,
+  enabled: true,
   application: 0,
   sceneColorStrength: 0.95,
   sampleCount: 0,
@@ -29,7 +25,7 @@ const ao = {
 };
 const base = Object.freeze({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' as const });
 const config = Object.freeze({
-  ssao: Object.freeze({ enabled: false, radius: 0.2 }),
+  ambientOcclusion: Object.freeze({ enabled: false, method: 'gtao' as const, radius: 0.2 }),
   outputDither: false,
 });
 const derive = (camera: Parameters<typeof deriveCameraStandardConfiguration>[2]) => {
@@ -128,17 +124,15 @@ describe('selected-view Standard projection', () => {
   });
   it('preserves an explicit spiral budget across camera configuration projection', () => {
     expect(
-      derive({
-        ambientOcclusion: {
-          ...ao,
-          algorithm: AMBIENT_OCCLUSION_SPIRAL_SSAO,
-          sampleCount: 16,
-          resolutionScale: 0.5,
-        },
-      }).config?.ssao,
+      deriveCameraStandardConfiguration(
+        base,
+        { ambientOcclusion: { enabled: false, method: 'spiral-ssao' } },
+        { ambientOcclusion: { ...ao, sampleCount: 16, resolutionScale: 0.5 } },
+        lane,
+      ).unwrap().config?.ambientOcclusion,
     ).toMatchObject({
       enabled: true,
-      algorithm: 'spiral-ssao',
+      method: 'spiral-ssao',
       sampleCount: 16,
       resolutionScale: 0.5,
     });
@@ -148,9 +142,9 @@ describe('selected-view Standard projection', () => {
       profile: { renderPath: 'forward' },
       config: {
         outputDither: false,
-        ssao: {
+        ambientOcclusion: {
           enabled: true,
-          algorithm: 'gtao',
+          method: 'gtao',
           radius: 0.8,
           directLightingStrength: 0.6,
           quality: 'high',
@@ -158,12 +152,25 @@ describe('selected-view Standard projection', () => {
       },
     });
     expect(base.renderPath).toBe('forward');
-    expect(config.ssao).toEqual({ enabled: false, radius: 0.2 });
+    expect(config.ambientOcclusion).toEqual({ enabled: false, method: 'gtao', radius: 0.2 });
+  });
+  it('lets a camera disable inherited AO while retaining the project method', () => {
+    const inherited = { ambientOcclusion: { enabled: true, method: 'gtao' as const } };
+    const selected = deriveCameraStandardConfiguration(
+      base,
+      inherited,
+      { ambientOcclusion: { ...ao, enabled: false } },
+      lane,
+    ).unwrap();
+    expect(selected.config?.ambientOcclusion).toEqual({ enabled: false, method: 'gtao' });
+    expect(deriveCameraStandardConfiguration(base, inherited, {}, lane).unwrap().config).toBe(
+      inherited,
+    );
   });
   it('keeps two views independent through toggles and capture snapshots without companions', () => {
     const left = derive({ ambientOcclusion: ao });
     const right = derive({ screenSpaceReflection: {} });
-    expect(left.config?.ssao?.enabled).toBe(true);
+    expect(left.config?.ambientOcclusion?.enabled).toBe(true);
     expect(right.config).toBe(config);
     expect(right.profile?.renderPath).toBe('deferred');
     const removed = derive({});
@@ -171,7 +178,7 @@ describe('selected-view Standard projection', () => {
     expect(removed.profile).toBe(base);
     expect(removed.config).toBe(config);
     expect(capture.config).toBe(config);
-    expect(left.config?.ssao?.enabled).toBe(true);
+    expect(left.config?.ambientOcclusion?.enabled).toBe(true);
   });
   it.each([
     { storageBuffer: false, maxColorAttachments: 8 },
@@ -182,8 +189,8 @@ describe('selected-view Standard projection', () => {
     ).toMatchObject({
       ok: true,
       value: {
-        profile: { renderPath: 'forward', ssao: { algorithm: 'gtao' } },
-        config: { ssao: { enabled: true, algorithm: 'gtao' } },
+        profile: { renderPath: 'forward', ambientOcclusion: { enabled: true, method: 'gtao' } },
+        config: { ambientOcclusion: { enabled: true, method: 'gtao' } },
       },
     });
   });

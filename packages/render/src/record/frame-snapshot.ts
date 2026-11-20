@@ -506,6 +506,7 @@ export interface InstalledFrameGraph {
  * lifetime).
  */
 export interface RenderFrameState {
+  compactSubsurfaceProfiles?: readonly number[] | undefined;
   /** Opaque identity of this recorder's graph allocation domain. */
   readonly graphResourceOwner: object;
   /** Graph-owned light-texture preparation queued by this view for its shared frame encoder. */

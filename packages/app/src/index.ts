@@ -284,6 +284,7 @@ export type {
   LoadGameErrorDetailFor,
 } from './load-game-errors';
 export {
+  type AuthoredRuntimePack,
   assembleRuntimePacks,
   type RuntimePackAssembly,
   type RuntimePackOptions,

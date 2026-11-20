@@ -280,7 +280,9 @@ async function runGraph(
   } as unknown as PerPassResources;
   const errorRegistry = new RhiErrorListenerRegistry();
   const frameState = {
-    installedPipelineConfig: { ssao: { enabled: true, algorithm: 'gtao', quality: 'medium' } },
+    installedPipelineConfig: {
+      ambientOcclusion: { enabled: true, method: 'gtao', quality: 'medium' },
+    },
     postProcessBgCache: new WeakMap<object, unknown>(),
   };
   const runtime = { device, errorRegistry };

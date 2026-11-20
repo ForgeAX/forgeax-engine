@@ -14,7 +14,10 @@ import {
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialUniformRecording } from '../record/material-uniforms';
-import { MATERIAL_UNIFORM_BYTES } from '../record/render-context';
+import {
+  MATERIAL_UNIFORM_BYTES,
+  type PipelinePreparationCompletion,
+} from '../record/render-context';
 import {
   directionalShadowCasterOffset,
   spotShadowCasterOffset,
@@ -151,7 +154,7 @@ function* prepareShadowProgram(
   for (;;) {
     if (!current()) throw invalid('the actual current shadow program demand');
     let pipeline: RenderPipeline | null | undefined;
-    const pending = new Set<Promise<import('@forgeax/engine-rhi').Result<void, RhiError>>>();
+    const pending = new Set<PipelinePreparationCompletion>();
     const runtime = owner.internals;
     const prepare = () => {
       pipeline = requestGpuDrivenShadowPipeline(

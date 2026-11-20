@@ -41,27 +41,41 @@ describe('stock frame graph identity', () => {
       ...topology,
       pipelineId: STANDARD_PIPELINE_ID,
       config: {
-        ssao: {
+        ambientOcclusion: {
           enabled: true,
-          algorithm: 'gtao',
+          method: 'gtao',
           directLightingStrength: 0,
           resolutionScale: 0.5,
         },
       },
       standardProfile: {
         pipelineId: STANDARD_PIPELINE_ID,
-        ssao: { algorithm: 'gtao', directLightingStrength: 0, resolutionScale: 0.5 },
+        ambientOcclusion: {
+          enabled: true,
+          method: 'gtao',
+          directLightingStrength: 0,
+          resolutionScale: 0.5,
+        },
       },
     } as RenderPipelineTopology;
     const withStrength = {
       ...aoTopology,
       config: {
         ...aoTopology.config,
-        ssao: { ...aoTopology.config?.ssao, directLightingStrength: 1 },
+        ambientOcclusion: {
+          enabled: true,
+          ...aoTopology.config?.ambientOcclusion,
+          directLightingStrength: 1,
+        },
       },
       standardProfile: {
         ...aoTopology.standardProfile,
-        ssao: { algorithm: 'gtao', directLightingStrength: 1, resolutionScale: 0.5 },
+        ambientOcclusion: {
+          enabled: true,
+          method: 'gtao',
+          directLightingStrength: 1,
+          resolutionScale: 0.5,
+        },
       },
     } as RenderPipelineTopology;
 
@@ -72,7 +86,11 @@ describe('stock frame graph identity', () => {
         ...withStrength,
         config: {
           ...withStrength.config,
-          ssao: { ...withStrength.config?.ssao, enabled: true, resolutionScale: 1 },
+          ambientOcclusion: {
+            ...withStrength.config?.ambientOcclusion,
+            enabled: true,
+            resolutionScale: 1,
+          },
         },
       }),
     ).not.toBe(key(withStrength));
@@ -81,7 +99,11 @@ describe('stock frame graph identity', () => {
         ...withStrength,
         config: {
           ...withStrength.config,
-          ssao: { ...withStrength.config?.ssao, enabled: true, algorithm: 'ssao' },
+          ambientOcclusion: {
+            ...withStrength.config?.ambientOcclusion,
+            enabled: true,
+            method: 'ssao',
+          },
         },
       }),
     ).not.toBe(key(withStrength));

@@ -28,6 +28,7 @@ function fixture(screenAo: boolean, strength: number | undefined) {
     graph as unknown as Parameters<typeof addStandardDeferredLighting>[0],
     {
       color: target,
+      localProbes: true,
       gbuffer: [],
       receiverGeometry: target,
       depth: {},
@@ -44,7 +45,9 @@ function fixture(screenAo: boolean, strength: number | undefined) {
   );
   const frame = {
     frameState: {
-      installedPipelineConfig: { ssao: { intensity: 1.4, directLightingStrength: strength } },
+      installedPipelineConfig: {
+        ambientOcclusion: { enabled: true, intensity: 1.4, directLightingStrength: strength },
+      },
     },
     camera: {},
     runtime: { device: { queue: { writeBuffer } } },
@@ -61,7 +64,7 @@ describe('actual deferred direct AO uniform owners', () => {
     const f = fixture(true, 0);
     const strengths: number[] = [];
     for (const strength of [0, 1, 0] as const) {
-      f.frame.frameState.installedPipelineConfig.ssao.directLightingStrength = strength;
+      f.frame.frameState.installedPipelineConfig.ambientOcclusion.directLightingStrength = strength;
       f.encodeCopy();
       const payload = f.writeBuffer.mock.calls.at(-1)?.[2] as Float32Array | undefined;
       if (payload === undefined) throw new Error('Deferred lighting parameter upload is missing');

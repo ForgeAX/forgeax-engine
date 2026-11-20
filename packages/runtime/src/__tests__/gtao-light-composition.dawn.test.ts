@@ -18,7 +18,7 @@ import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
 import { testAssets } from './helpers/runtime-assets';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { shaderManifestUrl, shaderPublicationUrl } from './shader-manifest-url.fixture';
 import { RESPONSE_SIZE, renderWorldResponse } from './skylight-response.fixture';
 import { unwrap } from './specular-aa.fixture';
 
@@ -119,7 +119,10 @@ async function expectSingleIntensityExponent(
     unwrap(
       renderer.setProfile({
         ...renderer.inspect().profile,
-        ssao: ssao === false ? false : { algorithm: 'gtao', quality: 'high', ...ssao },
+        ambientOcclusion:
+          ssao === false
+            ? { enabled: false }
+            : { enabled: true, method: 'gtao', quality: 'high', ...ssao },
       }),
     );
     return renderWorldResponse(
@@ -169,7 +172,7 @@ it('GTAO weights environment once with one intensity exponent and leaves direct 
         unwrap(
           renderer.setProfile({
             ...renderer.inspect().profile,
-            ssao: { algorithm: 'gtao', quality: 'high' },
+            ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high' },
           }),
         );
       for (const [environment, direct] of [
@@ -231,6 +234,65 @@ it('GTAO weights environment once with one intensity exponent and leaves direct 
     // the same frame must not raise it again: intensity 3 is visibility^3.
     await expectSingleIntensityExponent(renderer, directory, 'deferred');
     await expectSingleIntensityExponent(renderer, directory, 'forward-overlay');
+  } finally {
+    unwrap(await renderer.dispose());
+    surface.destroy();
+  }
+}, 120_000);
+
+it.each([
+  'ssao',
+  'gtao',
+] as const)('applies %s to indirect light with the Default GBuffer', async (algorithm) => {
+  const surface = offscreenCanvas(RESPONSE_SIZE);
+  const { renderer } = unwrap(
+    await constructRuntimeRendererHost(
+      surface.canvas as unknown as HTMLCanvasElement,
+      { rhi: webgpu.rhi },
+      { shaderManifestUrl: shaderPublicationUrl(await buildEngineShaderTemplateManifest()) },
+    ),
+  );
+  try {
+    const render = (environment: boolean, direct: boolean) =>
+      renderWorldResponse(renderer, contactWorld(environment, direct), 'deferred');
+    const profile = {
+      ...renderer.inspect().profile,
+      renderPath: 'deferred' as const,
+      gbufferFormat: 'default' as const,
+    };
+    unwrap(renderer.setProfile({ ...profile, ambientOcclusion: { enabled: false } }));
+    const open = await render(true, false);
+    const direct = await render(false, true);
+    unwrap(
+      renderer.setProfile({
+        ...profile,
+        ambientOcclusion: {
+          enabled: true,
+          ...(algorithm === 'ssao' ? {} : { method: algorithm }),
+          radius: 0.5,
+        },
+      }),
+    );
+    const indirectAo = await render(true, false);
+    const directAo = await render(false, true);
+    expect(renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
+      status: 'active',
+      algorithm,
+      input: {
+        normalEncoding: algorithm === 'ssao' ? 'xyz10' : 'depth-reconstructed',
+        additionalBytes: 0,
+      },
+    });
+    let affected = 0;
+    let directError = 0;
+    for (let y = 16; y < RESPONSE_SIZE - 16; y++)
+      for (let x = 16; x < RESPONSE_SIZE - 16; x++) {
+        const i = (y * RESPONSE_SIZE + x) * 3;
+        if ((indirectAo[i] ?? NaN) < 0.95 * (open[i] ?? NaN)) affected++;
+        directError = Math.max(directError, Math.abs((directAo[i] ?? NaN) - (direct[i] ?? NaN)));
+      }
+    expect(affected).toBeGreaterThan(50);
+    expect(directError).toBeLessThan(0.002);
   } finally {
     unwrap(await renderer.dispose());
     surface.destroy();

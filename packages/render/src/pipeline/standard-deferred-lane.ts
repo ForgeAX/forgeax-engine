@@ -17,6 +17,7 @@ import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
 } from '../gpu-texture-usage';
+import { addRayReceiverNormalProjection } from '../raytracing/ray-graph-shared';
 import type {
   RenderPipeline,
   RenderPipelineBuildError,
@@ -35,6 +36,8 @@ import { getSsaoParameters, ssaoUsesLighting } from '../ssao-config';
 import { addSsrCompositionPass } from '../ssr/compose';
 import { addSsrSpatialPasses, type SsrSpatialGraphProjection } from '../ssr/graph';
 import {
+  COMPACT_DEFERRED_ATTACHMENT_BYTES,
+  COMPACT_DEFERRED_COLOR_FORMATS,
   DEFERRED_ATTACHMENT_BYTES,
   DEFERRED_COLOR_FORMATS,
   STANDARD_VISIBLE_SURFACE_FORMAT,
@@ -47,6 +50,12 @@ import {
   FORWARD_PASS_SELECTOR,
   TRANSMISSION_BACK_PASS_SELECTOR,
 } from '../systems/pass-selector';
+import {
+  addDefaultDepthPrepass,
+  addDefaultDepthVelocity,
+  addDefaultVelocityTemporalProjection,
+  createDefaultVelocityTarget,
+} from '../temporal/default-gbuffer-velocity';
 import {
   SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
@@ -130,44 +139,67 @@ function target(
 }
 
 /** Does the device hold every Deferred attachment this profile declares? */
+const COMPACT_RECEIVER_TARGETS = {
+  channels: { label: 'deferred-lighting-channels', format: 'r32uint', bytes: 4 },
+  context: { label: 'deferred-surface-context', format: 'rg32uint', bytes: 8 },
+  geometry: { label: 'deferred-receiver-geometry', format: 'rgba32uint', bytes: 16 },
+} as const;
+
+function compactReceiverTarget(topology: RenderPipelineTopology) {
+  if (topology.compactGbuffer === undefined) return undefined;
+  // The identity writer is at location 6, after the optional receiver target.
+  const receiver =
+    topology.compactReceiver ??
+    (topology.standardProfile?.visibleSurface === true ? 'channels' : undefined);
+  return receiver === undefined ? undefined : COMPACT_RECEIVER_TARGETS[receiver];
+}
+
 function deferredLaneCapabilityError(
   topology: RenderPipelineTopology,
   visibleSurfaceEnabled: boolean,
 ): RenderGraphError | undefined {
   const lane = topology.lane;
-  const attachmentBytes =
-    topology.subsurface === undefined ? DEFERRED_ATTACHMENT_BYTES : SUBSURFACE_ATTACHMENT_BYTES;
+  const compact = topology.compactGbuffer !== undefined;
+  const receiverBytes = compactReceiverTarget(topology)?.bytes ?? 0;
+  const attachmentBytes = compact
+    ? COMPACT_DEFERRED_ATTACHMENT_BYTES
+    : topology.subsurface === undefined
+      ? DEFERRED_ATTACHMENT_BYTES
+      : SUBSURFACE_ATTACHMENT_BYTES;
+  const attachmentCount =
+    (compact ? COMPACT_DEFERRED_COLOR_FORMATS : DEFERRED_COLOR_FORMATS).length +
+    Number(receiverBytes > 0);
   const requiredSurfaceBytes = visibleSurfaceEnabled
-    ? attachmentBytes.visibleSurface
-    : attachmentBytes.surface;
+    ? attachmentBytes.visibleSurface + receiverBytes
+    : attachmentBytes.surface + receiverBytes;
   if (
     visibleSurfaceEnabled &&
     (lane.primitiveIndex !== true ||
-      lane.maxColorAttachments < 7 ||
-      (lane.maxColorAttachmentBytesPerSample ?? 0) < DEFERRED_ATTACHMENT_BYTES.visibleSurface ||
+      lane.maxColorAttachments < attachmentCount + 1 ||
+      (lane.maxColorAttachmentBytesPerSample ?? 0) < requiredSurfaceBytes ||
       isMultisampleAntialias(topology.camera.antialias))
   ) {
     return new RenderGraphError({
       code: 'resource-descriptor-invalid',
-      expected: `visible surfaces require primitive-index, seven targets, ${DEFERRED_ATTACHMENT_BYTES.visibleSurface} attachment bytes and single sampling`,
+      expected: `visible surfaces require primitive-index, ${attachmentCount + 1} targets, ${requiredSurfaceBytes} attachment bytes and single sampling`,
       hint: 'request these device features/limits before enabling visibleSurface',
       detail: {
         resourceLabel: 'visible-surface',
         field: 'capabilities',
-        expected: `primitive-index / 7 targets / ${DEFERRED_ATTACHMENT_BYTES.visibleSurface} bytes / single sample`,
+        expected: `primitive-index / ${attachmentCount + 1} targets / ${requiredSurfaceBytes} bytes / single sample`,
         actual: JSON.stringify(lane),
       },
     });
   }
-  if (!lane.storageBuffer || lane.maxColorAttachments < DEFERRED_COLOR_FORMATS.length) {
+  if (!lane.storageBuffer || lane.maxColorAttachments < attachmentCount) {
     return new RenderGraphError({
       code: 'resource-descriptor-invalid',
-      expected: 'Standard deferred requires storage buffers and six color attachments',
+      expected: `Standard deferred requires storage buffers and ${attachmentCount} color attachments`,
       hint: 'select a device with deferred capabilities or explicitly select the Forward profile',
       detail: {
         resourceLabel: 'forgeax::standard',
         field: 'renderPath',
-        expected: 'storage buffers and six MRTs',
+        expected: `storage buffers and ${attachmentCount} MRTs`,
         actual: `storageBuffer=${lane.storageBuffer}, maxColorAttachments=${lane.maxColorAttachments}`,
       },
     });
@@ -197,7 +229,8 @@ interface DeferredSceneTargets {
   readonly albedoMetallic: RenderPipelineTarget;
   readonly dielectricSpecular: RenderPipelineTarget;
   readonly lightingContext: RenderPipelineTarget;
-  readonly receiverGeometry: RenderPipelineTarget;
+  readonly receiverGeometry: RenderPipelineTarget | undefined;
+  readonly compactGbuffer: RenderPipelineTopology['compactGbuffer'];
   readonly visibleSurface: RenderPipelineTarget | undefined;
   readonly scene: RenderPipelineTarget;
   readonly medium: SingleLayerMediumNearestTargets | undefined;
@@ -216,8 +249,13 @@ function declareDeferredSceneTargets(
   size: InternalSize,
   visibleSurfaceEnabled: boolean,
 ): Result<DeferredSceneTargets, RenderGraphError> {
+  const compactGbuffer = topology.compactGbuffer;
   const formats =
-    topology.subsurface === undefined ? DEFERRED_COLOR_FORMATS : SUBSURFACE_DEFERRED_COLOR_FORMATS;
+    compactGbuffer !== undefined
+      ? COMPACT_DEFERRED_COLOR_FORMATS
+      : topology.subsurface === undefined
+        ? DEFERRED_COLOR_FORMATS
+        : SUBSURFACE_DEFERRED_COLOR_FORMATS;
   const depth = target(graph, 'hdrp-depth', { format: 'depth32float-stencil8', size });
   if (!depth.ok) return depth;
   const depthSample = graph.view(depth.value.texture, {
@@ -226,28 +264,35 @@ function declareDeferredSceneTargets(
     aspect: 'depth-only',
   });
   if (!depthSample.ok) return depthSample;
-  const normalRoughness = target(graph, 'gbuffer-normal-roughness', {
-    format: DEFERRED_COLOR_FORMATS[1],
+  const compact = compactGbuffer !== undefined;
+  const normalRoughness = target(graph, compact ? 'gbuffer-a' : 'gbuffer-normal-roughness', {
+    format: formats[1],
     size,
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!normalRoughness.ok) return normalRoughness;
-  const albedoMetallic = target(graph, 'gbuffer-albedo-metallic', {
+  const albedoMetallic = target(graph, compact ? 'gbuffer-c' : 'gbuffer-albedo-metallic', {
     format: DEFERRED_COLOR_FORMATS[3],
     size,
   });
   if (!albedoMetallic.ok) return albedoMetallic;
-  const dielectricSpecular = target(graph, 'gbuffer-dielectric-specular', {
+  const dielectricSpecular = target(graph, compact ? 'gbuffer-b' : 'gbuffer-dielectric-specular', {
     format: DEFERRED_COLOR_FORMATS[2],
     size,
   });
   if (!dielectricSpecular.ok) return dielectricSpecular;
-  const lightingContext = target(graph, 'gbuffer-lighting-context', { format: formats[4], size });
-  if (!lightingContext.ok) return lightingContext;
-  const receiverGeometry = target(graph, 'gbuffer-receiver-geometry', {
-    format: DEFERRED_COLOR_FORMATS[5],
+  const lightingContext = target(graph, compact ? 'gbuffer-d' : 'gbuffer-lighting-context', {
+    format: formats[4],
     size,
   });
+  if (!lightingContext.ok) return lightingContext;
+  const compactReceiver = compactReceiverTarget(topology);
+  const receiverGeometry =
+    compactGbuffer === undefined
+      ? target(graph, 'gbuffer-receiver-geometry', { format: DEFERRED_COLOR_FORMATS[5], size })
+      : compactReceiver === undefined
+        ? ok(undefined)
+        : target(graph, compactReceiver.label, { format: compactReceiver.format, size });
   if (!receiverGeometry.ok) return receiverGeometry;
   const visibleSurface = visibleSurfaceEnabled
     ? target(graph, 'visible-surface', { format: STANDARD_VISIBLE_SURFACE_FORMAT, size })
@@ -270,6 +315,7 @@ function declareDeferredSceneTargets(
     dielectricSpecular: dielectricSpecular.value,
     lightingContext: lightingContext.value,
     receiverGeometry: receiverGeometry.value,
+    compactGbuffer,
     visibleSurface: visibleSurface.value,
     scene: scene.value,
     medium: medium.value,
@@ -322,6 +368,12 @@ function declareReflectionTargets(
   return ok({ fallback: fallback.value, response: response.value });
 }
 
+interface DeferredTemporal {
+  readonly targets: StandardSceneDataTargets | undefined;
+  readonly inGBuffer: boolean;
+  readonly velocity?: RenderPipelineTarget;
+}
+
 /**
  * Admit the Standard temporal-v1 producer. `inGBuffer` reports whether the
  * G-buffer fragments can publish it beside the material facts; devices that
@@ -331,10 +383,7 @@ function admitDeferredTemporal(
   context: StandardPipelineBuildContext,
   topology: RenderPipelineTopology,
   visibleSurfaceEnabled: boolean,
-): Result<
-  { readonly targets: StandardSceneDataTargets | undefined; readonly inGBuffer: boolean },
-  RenderPipelineBuildError
-> {
+): Result<DeferredTemporal, RenderPipelineBuildError> {
   const lane = topology.lane;
   const demand = aggregateTemporalDemand({
     taa: isTemporalAntialias(topology.camera.antialias),
@@ -351,12 +400,19 @@ function admitDeferredTemporal(
   });
   if (!admission.ok) return admission;
   if (demand.targetCount !== 1) return ok({ targets: undefined, inGBuffer: false });
+  if (topology.compactGbuffer !== undefined) {
+    const velocity = createDefaultVelocityTarget(context.graph, renderInternalSize(topology));
+    return velocity.ok
+      ? ok({ targets: undefined, inGBuffer: false, velocity: velocity.value })
+      : velocity;
+  }
   const temporal = createStandardSceneDataTarget(context.graph, topology.extent);
   if (!temporal.ok) return temporal;
   const attachmentBytes =
     topology.subsurface === undefined ? DEFERRED_ATTACHMENT_BYTES : SUBSURFACE_ATTACHMENT_BYTES;
+  const attachmentCount = DEFERRED_COLOR_FORMATS.length;
   const inGBuffer =
-    lane.maxColorAttachments >= 7 + Number(visibleSurfaceEnabled) &&
+    lane.maxColorAttachments >= attachmentCount + 1 + Number(visibleSurfaceEnabled) &&
     (lane.maxColorAttachmentBytesPerSample ?? 0) >=
       (visibleSurfaceEnabled ? attachmentBytes.visibleSurfaceTemporal : attachmentBytes.temporal);
   return ok({ targets: temporal.value, inGBuffer });
@@ -465,7 +521,7 @@ function gbufferColorTargets(
     targets.dielectricSpecular,
     targets.albedoMetallic,
     targets.lightingContext,
-    targets.receiverGeometry,
+    ...(targets.receiverGeometry === undefined ? [] : [targets.receiverGeometry]),
     ...(targets.visibleSurface === undefined ? [] : [targets.visibleSurface]),
     ...(temporalInGBuffer && temporal !== undefined ? [temporal.temporal] : []),
   ];
@@ -481,40 +537,25 @@ function addEarlyGBufferPass(
   waterInputs: readonly GraphAccess[] = [],
   prepass = false,
   materialSceneDepth?: boolean,
+  primed = false,
 ): Result<void, RenderGraphError> {
-  const visibleSurfaceEnabled = targets.visibleSurface !== undefined;
+  const colorTargets = gbufferColorTargets(targets, temporal, temporalInGBuffer);
   return addTypedScenePass(graph, {
     materialSceneDepth,
     name: prepass ? 'main-depth-deferred' : 'g-buffer',
     color: targets.scene,
-    colorTargets: gbufferColorTargets(targets, temporal, temporalInGBuffer),
-    colorLoadOp: [
-      'load',
-      'clear',
-      'clear',
-      'clear',
-      'clear',
-      'clear',
-      ...(visibleSurfaceEnabled ? ['clear' as const] : []),
-      ...(temporalInGBuffer ? ['clear' as const] : []),
-    ],
-    colorClearValues: [
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      ...(visibleSurfaceEnabled ? [[0, 0, 0, 0] as const] : []),
-      ...(temporalInGBuffer ? [[0, 0, -1, 1] as const] : []),
-    ],
+    colorTargets,
+    colorLoadOp: colorTargets.map((_, index) => (index === 0 ? 'load' : 'clear')),
+    colorClearValues: colorTargets.map((_, index) =>
+      temporalInGBuffer && index === colorTargets.length - 1 ? [0, 0, -1, 1] : [0, 0, 0, 0],
+    ),
     gpuDrivenFilter: 'deferred-opaque',
     ...(gpuDriven === undefined || prepass ? {} : { gpuDriven }),
     ...(waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
     depth: targets.depth,
-    ...(prepass || waterInputs.length === 0
-      ? {}
-      : { depthLoadOp: 'load' as const, opaqueDepthPrimed: true, extraAccesses: waterInputs }),
+    ...(primed || (!prepass && waterInputs.length !== 0)
+      ? { depthLoadOp: 'load' as const, opaqueDepthPrimed: true, extraAccesses: waterInputs }
+      : {}),
     selector: DEFERRED_PASS_SELECTOR,
     // The G-buffer only admits opaque Standard materials. Medium Surface
     // programs have no Deferred entry and acquire raw depth in their later
@@ -522,6 +563,7 @@ function addEarlyGBufferPass(
     // groups before that producer exists.
     recordMode: prepass ? 'opaque-depth' : 'opaque',
     passKind: 'deferred',
+    ...(targets.compactGbuffer === undefined ? {} : { fragmentEntryPoint: 'fs_gbuffer_compact' }),
     clearColor: [0, 0, 0, 0],
   });
 }
@@ -535,25 +577,18 @@ function addLateGBufferPass(
   waterInfoTargets: WaterInfoGraphTargets,
   waterInputs: readonly GraphAccess[] = [],
   materialSceneDepth?: boolean,
+  primed = false,
 ): Result<void, RenderGraphError> {
+  const colorTargets = gbufferColorTargets(targets, temporal, temporalInGBuffer);
   return addTypedScenePass(graph, {
     materialSceneDepth,
     name: 'g-buffer-late',
     color: targets.scene,
-    colorTargets: gbufferColorTargets(targets, temporal, temporalInGBuffer),
-    colorLoadOp: [
-      'load',
-      'load',
-      'load',
-      'load',
-      'load',
-      'load',
-      ...(targets.visibleSurface !== undefined ? ['load' as const] : []),
-      ...(temporalInGBuffer ? ['load' as const] : []),
-    ],
+    colorTargets,
+    colorLoadOp: colorTargets.map(() => 'load'),
     depthLoadOp: 'load',
     extraAccesses: waterInputs,
-    opaqueDepthPrimed: waterInputs.length !== 0,
+    opaqueDepthPrimed: primed || waterInputs.length !== 0,
     gpuDriven,
     ...(waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
     gpuDrivenFilter: 'deferred-opaque',
@@ -562,6 +597,7 @@ function addLateGBufferPass(
     selector: DEFERRED_PASS_SELECTOR,
     recordMode: 'opaque',
     passKind: 'deferred',
+    ...(targets.compactGbuffer === undefined ? {} : { fragmentEntryPoint: 'fs_gbuffer_compact' }),
   });
 }
 
@@ -582,18 +618,27 @@ function addSurfaceStage(
     normal: targets.normalRoughness,
     albedo: targets.albedoMetallic,
     f0: targets.dielectricSpecular,
+    ...(targets.compactGbuffer === undefined ? {} : { compactGbuffer: true }),
     size,
   });
   if (!decals.ok) return decals;
+  const hasRayConsumers =
+    context.contributeDiffuseGi !== undefined ||
+    (context.contributeProbePlacement !== undefined && targets.visibleSurface !== undefined);
+  const rayNormal =
+    targets.compactGbuffer === undefined || !hasRayConsumers
+      ? ok(decals.value.normal)
+      : addRayReceiverNormalProjection(graph, decals.value.normal.view, decals.value.f0.view, size);
+  if (!rayNormal.ok) return rayNormal;
   if (context.contributeProbePlacement !== undefined && targets.visibleSurface !== undefined) {
     const placed = context.contributeProbePlacement({
       depth: targets.depthSample,
-      normal: decals.value.normal,
+      normal: rayNormal.value,
       identity: targets.visibleSurface,
     });
     if (!placed.ok) return placed;
   }
-  return decals;
+  return ok({ ...decals.value, rayNormal: rayNormal.value });
 }
 
 function addDeferredSsao(
@@ -604,11 +649,12 @@ function addDeferredSsao(
   depth: RenderPipelineTarget,
   executionOverride: StandardPipelineBuildContext['gtaoExecutionOverride'],
 ): Result<SceneColorAo | undefined, RenderGraphError> {
-  if (topology.config?.ssao?.enabled !== true) return ok(undefined);
-  const parameters = getSsaoParameters(topology.config.ssao);
+  if (topology.config?.ambientOcclusion?.enabled !== true) return ok(undefined);
+  const parameters = getSsaoParameters(topology.config.ambientOcclusion);
+  const depthNormals = topology.compactGbuffer !== undefined && parameters.method === 'gtao';
   const execution = resolveStandardGtaoExecution(
-    parameters.algorithm,
-    topology.lane.compute,
+    parameters.method,
+    topology.lane.compute && !depthNormals,
     executionOverride,
   );
   if (!execution.ok) return execution;
@@ -617,7 +663,7 @@ function addDeferredSsao(
     height: Math.max(1, Math.round(copySize.height * parameters.resolutionScale)),
   };
   const raw = target(graph, 'ssao-raw', {
-    format: parameters.algorithm === 'spiral-ssao' ? 'r8unorm' : 'rgba8unorm',
+    format: parameters.method === 'spiral-ssao' ? 'r8unorm' : 'rgba8unorm',
     size,
     usage:
       GPU_TEXTURE_USAGE_COPY_SRC |
@@ -631,7 +677,7 @@ function addDeferredSsao(
   });
   if (!blurred.ok) return blurred;
   let horizontal: RenderPipelineTarget | undefined;
-  if (parameters.algorithm === 'spiral-ssao') {
+  if (parameters.method === 'spiral-ssao') {
     const intermediate = target(graph, 'ssao-horizontal', {
       format: 'r8unorm',
       size: size,
@@ -641,17 +687,18 @@ function addDeferredSsao(
     horizontal = intermediate.value;
   }
   const linear =
-    parameters.algorithm === 'spiral-ssao'
+    parameters.method === 'spiral-ssao'
       ? addSsaoLinearDepthPass(graph, depth, size)
       : ok(undefined);
   if (!linear.ok) return linear;
   const passes = addTypedSsaoPasses(graph, {
-    normal,
+    normal: depthNormals ? undefined : normal,
     depth,
     raw: raw.value,
     blurred: blurred.value,
     execution: execution.value,
     horizontal,
+    gbufferNormalLayout: topology.compactGbuffer ?? 'standard-gbuffer/2',
     ...linear.value,
   });
   if (!passes.ok) return passes;
@@ -681,7 +728,7 @@ function addDeferredLightingStage(
   sources: DeferredLightSources,
   size: InternalSize,
   copySize: CopySize,
-): Result<void, RenderGraphError> {
+): Result<RenderPipelineTarget | undefined, RenderGraphError> {
   const subsurfaceDiffuse =
     topology.subsurface === undefined
       ? ok(undefined)
@@ -691,9 +738,16 @@ function addDeferredLightingStage(
   const reflection = targets.reflection;
   const lightingPass = addStandardDeferredLighting(graph, {
     color: targets.scene,
+    localProbes: topology.reflectionFallback?.localProbes === true,
     ...(subsurfaceDiffuse.value === undefined ? {} : { diffuse: subsurfaceDiffuse.value }),
     gbuffer: [surfaces.normal, surfaces.albedo, surfaces.f0, targets.lightingContext],
-    receiverGeometry: targets.receiverGeometry,
+    ...(targets.receiverGeometry === undefined
+      ? {}
+      : { receiverGeometry: targets.receiverGeometry }),
+    ...(targets.compactGbuffer === undefined ? {} : { compactGbuffer: targets.compactGbuffer }),
+    projectedDirectionalPcf:
+      topology.standardProfile?.deferredDirectionalShadowReceiver === 'projected' ||
+      (targets.compactGbuffer !== undefined && topology.compactReceiver !== 'geometry'),
     depth: targets.depthSample,
     ...(reflection.fallback === undefined ? {} : { reflectionFallback: reflection.fallback }),
     ...(reflection.response === undefined ? {} : { response: reflection.response }),
@@ -708,22 +762,7 @@ function addDeferredLightingStage(
     extraAccesses: clusters === null ? [] : standardClusterReadAccesses(clusters),
     size: copySize,
   });
-  if (!lightingPass.ok) return lightingPass;
-  if (subsurfaceDiffuse.value === undefined || topology.subsurface === undefined)
-    return ok(undefined);
-  return addSubsurfaceDiffusion(graph, {
-    scene: targets.scene,
-    diffuse: subsurfaceDiffuse.value,
-    profiles: targets.lightingContext.view,
-    normal: surfaces.normal.view,
-    depth: targets.depthSample,
-    size: copySize,
-    scale: [
-      copySize.width / (topology.extent?.outputWidth ?? topology.surface.width),
-      copySize.height / (topology.extent?.outputHeight ?? topology.surface.height),
-    ],
-    quality: topology.subsurface.quality,
-  });
+  return lightingPass.ok ? subsurfaceDiffuse : lightingPass;
 }
 
 /**
@@ -735,10 +774,11 @@ function addDeferredLightingStage(
 function addSceneDataConsumers(
   context: StandardPipelineBuildContext,
   targets: DeferredSceneTargets,
-  surfaces: DeferredSurfaceGBuffer,
-  temporal: { readonly targets: StandardSceneDataTargets | undefined; readonly inGBuffer: boolean },
+  surfaces: DeferredSurfaceGBuffer & { readonly rayNormal: RenderPipelineTarget },
+  temporal: DeferredTemporal,
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
   depthViews: DeferredDepthViews,
+  subsurfaceDiffuse: RenderPipelineTarget | undefined,
 ): Result<void, RenderPipelineBuildError> {
   const graph = context.graph;
   const waterInfoTargets = standardWaterInfoGraphTargets(
@@ -747,7 +787,7 @@ function addSceneDataConsumers(
   );
   const reflection = targets.reflection;
   const temporalTargets = temporal.targets;
-  if (temporalTargets !== undefined) {
+  if (temporalTargets !== undefined && temporal.velocity === undefined) {
     const producer = addStandardSceneDataPass(
       graph,
       temporalTargets.temporal,
@@ -763,8 +803,10 @@ function addSceneDataConsumers(
     const diffuse = context.contributeDiffuseGi({
       scene: targets.scene,
       depth: targets.depthSample,
-      normal: surfaces.normal,
+      normal: surfaces.rayNormal,
       albedo: surfaces.albedo,
+      ...(targets.compactGbuffer === undefined ? {} : { compactGbuffer: true }),
+      ...(subsurfaceDiffuse === undefined ? {} : { subsurfaceDiffuse }),
       f0: surfaces.f0,
       ...(targets.visibleSurface === undefined ? {} : { identity: targets.visibleSurface }),
       motion: temporalTargets.temporal,
@@ -788,7 +830,7 @@ function addDeferredSsr(
   topology: RenderPipelineTopology,
   targets: DeferredSceneTargets,
   normal: RenderPipelineTarget,
-  temporal: StandardSceneDataTargets | undefined,
+  temporal: DeferredTemporal,
   copySize: CopySize,
   depthViews: DeferredDepthViews,
 ): Result<TemporalSecondaryReactivity | undefined, RenderGraphError> {
@@ -800,6 +842,7 @@ function addDeferredSsr(
   if (!depthPyramid.ok) return depthPyramid;
   const history = context.ssrHistory;
   const fallback = targets.reflection.fallback;
+  const currentTemporal = temporal.targets?.temporal.view;
   const spatial = addSsrSpatialPasses(context.graph, {
     quality: topology.standardProfile?.quality?.ssr,
     admission: ssr,
@@ -809,10 +852,13 @@ function addDeferredSsr(
     depth: targets.depthSample,
     normal: normal.view,
     gbufferV2: true,
+    ...(targets.compactGbuffer === undefined
+      ? {}
+      : { compactMaterial: targets.dielectricSpecular.view }),
     scene: targets.scene.view,
-    ...(temporal === undefined ? {} : { currentTemporal: temporal.temporal.view }),
+    ...(currentTemporal === undefined ? {} : { currentTemporal }),
     ...(fallback === undefined ? {} : { fallback: fallback.view }),
-    ...(temporal === undefined || history === undefined
+    ...(currentTemporal === undefined || history === undefined
       ? {}
       : {
           temporal: {
@@ -867,6 +913,9 @@ function composeDeferredSsr(
     response: response.view,
     normal: normal.view,
     gbufferV2: true,
+    ...(targets.compactGbuffer === undefined
+      ? {}
+      : { compactMaterial: targets.dielectricSpecular.view }),
     view,
   });
   if (!composed.ok) return composed;
@@ -888,6 +937,7 @@ interface DeferredForwardScene {
   };
   readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined;
   readonly sceneDataTargets: readonly RenderPipelineTarget[];
+  readonly depthPrimed?: boolean;
 }
 
 /**
@@ -912,7 +962,8 @@ function addDeferredOpaqueForward(
   const pass = addTypedScenePass(graph, {
     environment,
     name: 'forward',
-    opaqueDepthPrimed: (context.getWaterMeshGraphAccesses?.().length ?? 0) !== 0,
+    opaqueDepthPrimed:
+      forward.depthPrimed === true || (context.getWaterMeshGraphAccesses?.().length ?? 0) !== 0,
     color,
     depth,
     selector: FORWARD_PASS_SELECTOR,
@@ -1145,7 +1196,6 @@ function addDeferredTranslucency(
   mediumTargets: SingleLayerMediumNearestTargets | undefined,
   targetCaptures: GraphTextureView | undefined,
   water: {
-    readonly targets: DeferredSceneTargets;
     readonly temporal: StandardSceneDataTargets | undefined;
     readonly depthViews: DeferredDepthViews;
   },
@@ -1166,10 +1216,6 @@ function addDeferredTranslucency(
     context,
     color: forward.color,
     depth: forward.depth,
-    opaqueNormal: water.targets.normalRoughness,
-    ...(water.targets.reflection.fallback === undefined
-      ? {}
-      : { opaqueFallback: water.targets.reflection.fallback }),
     ...(water.temporal === undefined ? {} : { opaqueTemporal: water.temporal.temporal }),
     receiver: forward.receiver,
     view: view.value,
@@ -1306,7 +1352,7 @@ function projectDeferredGpuDriven(
 function addDeferredGBufferPasses(
   context: StandardPipelineBuildContext,
   targets: DeferredSceneTargets,
-  temporal: { readonly targets: StandardSceneDataTargets | undefined; readonly inGBuffer: boolean },
+  temporal: DeferredTemporal,
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
   copySize: CopySize,
   depthViews: DeferredDepthViews,
@@ -1315,6 +1361,57 @@ function addDeferredGBufferPasses(
 ): Result<GraphTextureView | undefined, RenderPipelineBuildError> {
   const graph = context.graph;
   const waterInputs = context.getWaterMeshGraphAccesses?.() ?? [];
+  if (temporal.velocity !== undefined) {
+    const prepass = addDefaultDepthPrepass(graph, targets.depth);
+    if (!prepass.ok) return prepass;
+    const velocity = addDefaultDepthVelocity(graph, targets.depth, temporal.velocity, gpuDriven);
+    if (!velocity.ok) return velocity;
+    const late = addGpuLateOcclusion(graph, {
+      gpuDriven,
+      depth: targets.depthSample,
+      multisampled: false,
+      width: copySize.width,
+      height: copySize.height,
+      view: depthViews.sceneView,
+    });
+    if (!late.ok) return late;
+    if (late.value !== undefined && gpuDriven !== undefined) {
+      const velocityLate = addDefaultDepthVelocity(
+        graph,
+        targets.depth,
+        temporal.velocity,
+        gpuDriven,
+        true,
+      );
+      if (!velocityLate.ok) return velocityLate;
+    }
+    const base = addEarlyGBufferPass(
+      graph,
+      targets,
+      undefined,
+      false,
+      gpuDriven,
+      waterInfoTargets,
+      waterInputs,
+      false,
+      materialSceneDepth,
+      true,
+    );
+    if (!base.ok || late.value === undefined || gpuDriven === undefined)
+      return base.ok ? late : base;
+    const baseLate = addLateGBufferPass(
+      graph,
+      targets,
+      undefined,
+      false,
+      gpuDriven,
+      waterInfoTargets,
+      waterInputs,
+      materialSceneDepth,
+      true,
+    );
+    return baseLate.ok ? late : baseLate;
+  }
   if (waterInputs.length > 0) {
     const deferredDepth = addEarlyGBufferPass(
       graph,
@@ -1402,7 +1499,7 @@ function addDeferredForwardStages(
   },
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
   targetCaptures: GraphTextureView | undefined,
-  temporal: StandardSceneDataTargets | undefined,
+  temporal: DeferredTemporal,
   depthViews: DeferredDepthViews,
 ): Result<
   {
@@ -1417,6 +1514,7 @@ function addDeferredForwardStages(
     context.viewIdentity ?? 'camera:0',
   );
   const opaque: DeferredForwardScene = {
+    depthPrimed: temporal.velocity !== undefined,
     color: targets.scene,
     depth: targets.depth,
     environment: sources.environment,
@@ -1454,7 +1552,7 @@ function addDeferredForwardStages(
   const forward: DeferredForwardScene = {
     ...opaque,
     color: sceneOutput.value,
-    ...(temporal === undefined ? {} : { temporal: temporal.temporal }),
+    ...(temporal.targets === undefined ? {} : { temporal: temporal.targets.temporal }),
   };
   const translucent = addDeferredTranslucency(
     context,
@@ -1463,7 +1561,7 @@ function addDeferredForwardStages(
     standardTransmissionRoute(topology, targets.scene.sampleCount),
     targets.medium,
     targetCaptures,
-    { targets, temporal, depthViews },
+    { temporal: temporal.targets, depthViews },
   );
   if (!translucent.ok) return translucent;
   const observed = addDeferredSceneObservations(
@@ -1575,7 +1673,7 @@ export function buildStandardDeferredLane(
     const sources: DeferredLightSources = {
       shadows: shadows.value,
       cloudShadow: clouds.value.cloudShadow,
-      ssao: ssaoUsesLighting(topology.config?.ssao) ? ssao.value?.ao : undefined,
+      ssao: ssaoUsesLighting(topology.config?.ambientOcclusion) ? ssao.value?.ao : undefined,
       environment: environment.value,
       clusters: clusters.value,
     };
@@ -1589,21 +1687,62 @@ export function buildStandardDeferredLane(
       internalCopySize,
     );
     if (!lit.ok) return lit;
+    const velocity = temporal.value.velocity;
+    const usePackedTemporal =
+      velocity !== undefined &&
+      (topology.ssr?.status === 'admitted' ||
+        topology.water === true ||
+        topology.singleLayerMedium === true ||
+        context.contributeDiffuseGi !== undefined);
+    const reconstructionView = usePackedTemporal ? depthViews.sceneView() : ok(undefined);
+    if (!reconstructionView.ok) return reconstructionView;
+    const projected =
+      velocity === undefined || reconstructionView.value === undefined
+        ? ok(undefined)
+        : addDefaultVelocityTemporalProjection(
+            graph,
+            velocity,
+            { depth: targets.value.depthSample, view: reconstructionView.value },
+            internalCopySize,
+          );
+    if (!projected.ok) return projected;
+    const mediumTemporal =
+      projected.value === undefined
+        ? temporal.value
+        : { ...temporal.value, targets: { temporal: projected.value } };
     const sceneData = addSceneDataConsumers(
       context,
       targets.value,
       surfaces.value,
-      temporal.value,
+      mediumTemporal,
       gpuDriven.value,
       depthViews,
+      lit.value,
     );
     if (!sceneData.ok) return sceneData;
+    if (lit.value !== undefined && topology.subsurface !== undefined) {
+      const subsurface = addSubsurfaceDiffusion(graph, {
+        scene: targets.value.scene,
+        diffuse: lit.value,
+        profiles: targets.value.lightingContext.view,
+        normal: surfaces.value.normal.view,
+        depth: targets.value.depthSample,
+        size: internalCopySize,
+        scale: [
+          internalCopySize.width / (topology.extent?.outputWidth ?? topology.surface.width),
+          internalCopySize.height / (topology.extent?.outputHeight ?? topology.surface.height),
+        ],
+        quality: topology.subsurface.quality,
+        ...(targets.value.compactGbuffer === undefined ? {} : { compact: true }),
+      });
+      if (!subsurface.ok) return subsurface;
+    }
     const temporalInputs = addDeferredTemporalInputs(
       context,
       topology,
-      targets.value,
+      { ...targets.value, dielectricSpecular: surfaces.value.f0 },
       surfaces.value.normal,
-      temporal.value.targets,
+      mediumTemporal,
       internalCopySize,
       depthViews,
     );
@@ -1616,17 +1755,21 @@ export function buildStandardDeferredLane(
       clouds.value,
       gpuDriven.value,
       targetCaptures.value,
-      temporal.value.targets,
+      mediumTemporal,
       depthViews,
     );
     if (!sceneOutput.ok) return sceneOutput;
+    const postVelocity =
+      topology.water === true || topology.singleLayerMedium === true ? undefined : velocity;
+    const velocityView = postVelocity === undefined ? ok(undefined) : depthViews.sceneView();
+    if (!velocityView.ok) return velocityView;
     return addStandardPost(
       context,
       topology,
       sceneOutput.value.color,
       depth,
       surface.value,
-      temporal.value.targets?.temporal,
+      postVelocity ?? mediumTemporal.targets?.temporal,
       temporalInputs.value.secondaryReactivity,
       context.targetCoverage?.coverage,
       context.targetCoverage?.depth,
@@ -1635,6 +1778,9 @@ export function buildStandardDeferredLane(
       gpuDriven.value,
       sceneOutput.value.waterFoamSimulation,
       ssao.value,
+      velocityView.value === undefined
+        ? undefined
+        : { depth: targets.value.depthSample, view: velocityView.value },
     );
   };
   return buildDeferredLightingAndPostStages();

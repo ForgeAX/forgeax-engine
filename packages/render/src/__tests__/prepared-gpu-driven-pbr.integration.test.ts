@@ -1,4 +1,4 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, describeMeshDraw } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import {
   createMaterialProgramArtifactReceipt,
@@ -130,13 +130,62 @@ function customArtifact() {
 }
 
 describe('prepared Standard PBR producer-to-record integration', () => {
+  it('extracts indexed draws and non-indexed LOD offsets after bulk bytes leave the source', () => {
+    const box = createBoxGeometry(1, 1, 1).unwrap();
+    if (!box.aabb || !box.submeshes[0]) throw new Error('Expected a bounded box');
+    const storage = new Float32Array(box.vertices.length + box.aabb.length);
+    storage.set(box.vertices);
+    storage.set(box.aabb, box.vertices.length);
+    const aabb = storage.subarray(box.vertices.length);
+    const vertices = storage.subarray(0, box.vertices.length);
+    const range = { ...box.submeshes[0], vertexCount: 3, indexCount: 3 };
+    const indexed = {
+      ...box,
+      vertices,
+      aabb,
+      submeshes: [range, { ...range, indexOffset: 3 }],
+    };
+    const base = describeMeshDraw({ ...indexed, indices: new Uint32Array([0, 1, 2, 2, 3, 0]) });
+    const compact = describeMeshDraw({ ...indexed, indices: new Uint16Array([0, 1, 2, 2, 3, 0]) });
+    const { indices: _indices, ...nonIndexedBox } = box;
+    const lower = describeMeshDraw({
+      ...nonIndexedBox,
+      submeshes: [
+        { ...range, vertexCount: 6, indexCount: 0 },
+        { ...range, indexCount: 0 },
+      ],
+    });
+    expect([base.indexFormat, compact.indexFormat, lower.indexFormat]).toEqual([
+      'uint32',
+      'uint16',
+      'none',
+    ]);
+    structuredClone(storage.buffer, { transfer: [storage.buffer] });
+    expect(vertices.byteLength).toBe(0);
+    expect(aabb.byteLength).toBe(0);
+    expect(base.aabb).toEqual(box.aabb);
+    const draws = buildGpuDrivenDraws({
+      mesh: base,
+      lodMeshes: [lower],
+      deformation: 'rigid',
+      materials: [material()],
+      fallbackMaterial: material(),
+    });
+    expect(
+      draws.map(({ kind, first, count, lodRanges }) => [kind, first, count, lodRanges?.[0]?.first]),
+    ).toEqual([
+      ['indexed', 0, 3, 0],
+      ['indexed', 3, 3, 6],
+    ]);
+  });
+
   it.each([
     'forgeax::default-standard-pbr',
     'physical-material::standard-clearcoat-factor-r',
   ])('distinguishes canonical roots from legacy direct-only aliases: %s', (materialShaderId) => {
     const source = { ...material(), materialShaderId };
     const draws = buildGpuDrivenDraws({
-      mesh: createBoxGeometry(1, 1, 1).unwrap(),
+      mesh: describeMeshDraw(createBoxGeometry(1, 1, 1).unwrap()),
       materials: [source],
       fallbackMaterial: source,
       deformation: 'rigid',
@@ -153,7 +202,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     const { sceneIndexEntry: _entry, ...receipt } = program.receipt;
     const direct: MaterialSnapshot = { ...material(), materialShaderId: 'game::direct-only' };
     const draws = buildGpuDrivenDraws({
-      mesh: createBoxGeometry(1, 1, 1).unwrap(),
+      mesh: describeMeshDraw(createBoxGeometry(1, 1, 1).unwrap()),
       materials: [direct],
       fallbackMaterial: direct,
       deformation: 'rigid',
@@ -175,7 +224,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     };
     const requested: string[] = [];
     const draws = buildGpuDrivenDraws({
-      mesh: createBoxGeometry(1, 1, 1).unwrap(),
+      mesh: describeMeshDraw(createBoxGeometry(1, 1, 1).unwrap()),
       materials: [source],
       fallbackMaterial: source,
       deformation: 'rigid',
@@ -260,7 +309,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     };
     const selectedColorFacts: boolean[] = [];
     const draws = buildGpuDrivenDraws({
-      mesh: coloredMesh,
+      mesh: describeMeshDraw(coloredMesh),
       materials: [material()],
       fallbackMaterial: material(),
       deformation: 'rigid',
@@ -310,7 +359,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       uvSetCount: 8,
     };
     const draws = buildGpuDrivenDraws({
-      mesh: { ...mesh, attributes },
+      mesh: describeMeshDraw({ ...mesh, attributes }),
       materials: [material()],
       fallbackMaterial: material(),
       deformation: 'rigid',
@@ -347,7 +396,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
       attributes: { ...mesh.attributes, color: new Float32Array(96) },
     };
     const draws = buildGpuDrivenDraws({
-      mesh: coloredMesh,
+      mesh: describeMeshDraw(coloredMesh),
       materials: [plain],
       fallbackMaterial: plain,
       deformation: 'rigid',
@@ -369,7 +418,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     const mesh = { ...base, attributes };
     const project = (source: MeshAsset) =>
       buildGpuDrivenDraws({
-        mesh: source,
+        mesh: describeMeshDraw(source),
         materials: [],
         fallbackMaterial: material(),
         deformation: 'rigid',
@@ -474,7 +523,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     const box = createBoxGeometry(1, 1, 1).unwrap();
     if (box.indices === undefined) throw new Error('Expected indexed box');
     const draws = buildGpuDrivenDraws({
-      mesh: {
+      mesh: describeMeshDraw({
         ...box,
         indices: new Uint16Array([...box.indices, ...box.indices.slice(0, 12)]),
         submeshes: [
@@ -493,7 +542,7 @@ describe('prepared Standard PBR producer-to-record integration', () => {
             topology: 'triangle-list',
           },
         ],
-      },
+      }),
       deformation: 'rigid',
       materials: [material()],
       fallbackMaterial: material(),
@@ -582,14 +631,14 @@ describe('prepared Standard PBR producer-to-record integration', () => {
     };
     const mesh = createBoxGeometry(1, 1, 1).unwrap();
     const staticDraws = buildGpuDrivenDraws({
-      mesh,
+      mesh: describeMeshDraw(mesh),
       materials: [staticMaterial],
       fallbackMaterial: staticMaterial,
       deformation: 'rigid',
       getMaterialShaderArtifact: () => source,
     });
     const videoDraws = buildGpuDrivenDraws({
-      mesh,
+      mesh: describeMeshDraw(mesh),
       materials: [videoMaterial],
       fallbackMaterial: videoMaterial,
       deformation: 'rigid',

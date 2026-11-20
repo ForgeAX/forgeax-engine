@@ -28,6 +28,7 @@ const imports = Object.fromEntries(
     'lighting-spot-modifiers',
     'lighting-spot-projector',
     'shadow-pcf',
+    'standard-gbuffer',
     'standard-lighting',
     'standard-cluster',
     'view-atmosphere',
@@ -380,11 +381,11 @@ it('SLW capture selects its source direction through real PMREM and probe fallba
   const capture = color.slice(captureStart, captureEnd);
   expect(capture.length).toBeGreaterThan(100);
   const standardEnvironment = functionSource(standard, 'evaluateStandardEnvironment');
-  const standardStart = standardEnvironment.indexOf('  let specular =');
-  const standardEnd = standardEnvironment.indexOf('  let fresnel =', standardStart);
-  const standardDirection =
-    / {2}let reflectionDirection =[^;]+;/s.exec(standardEnvironment.slice(0, standardStart))?.[0] ??
-    '';
+  // Compare the radiance lookup before the Standard BRDF weights its result.
+  const standardLookup = /^ {2}let reflectionDirection =[^;]+;\s+let specular =[^;]+;/m.exec(
+    standardEnvironment,
+  )?.[0];
+  if (standardLookup === undefined) throw new Error('Missing Standard reflection radiance lookup');
   const standardImport = /#import forgeax_pbr::standard_lighting::\{([^}]+)\}/.exec(water)?.[1];
   const code = await compose(`
 #import forgeax_pbr::standard_lighting::{${standardImport}}
@@ -406,8 +407,7 @@ ${capture}
   return vec4<f32>(captureSky, reflectionWeight);
 }
 fn standardCapture(sky: SkylightUniforms, normal: vec3<f32>, direction: vec3<f32>, roughness: f32, worldPosition: vec3<f32>, prefilterMap: texture_2d<f32>, prefilterSampler: sampler, skylightPrefilterMap: texture_2d<f32>) -> vec3<f32> {
-${standardDirection}
-${standardEnvironment.slice(standardStart, standardEnd)}
+${standardLookup}
   return specular;
 }
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {

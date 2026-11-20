@@ -23,3 +23,7 @@ export function gpuRasterFilterMatches(
     (filter === 'forward-only-opaque' && materialPass === 'deferred')
   );
 }
+
+export function isVelocityRasterEntry(entry: string | undefined): boolean {
+  return entry === 'fs_temporal' || entry === 'fs_scene_velocity';
+}

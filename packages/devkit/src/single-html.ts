@@ -16,6 +16,7 @@ import { pathToFileURL } from 'node:url';
 import { type DefaultTreeAdapterTypes, parse } from 'parse5';
 import ts from 'typescript';
 import { type ESTree, type Plugin, parseAst, Visitor, build as viteBuild } from 'vite';
+import { staticPackEntryUrlPrefix } from './build/execution-workers.js';
 import { type DistArtifact, type DistManifest, mediaType } from './dist.js';
 import { createEngineWorkspaceResolverForProject } from './host.js';
 import { linkSingleHtmlModules, singleHtmlModuleLoaderSource } from './single-html-module-links.js';
@@ -1030,10 +1031,10 @@ function localModuleUrl(argument: ESTree.Expression | ESTree.SpreadElement, impo
   return path === undefined || source === undefined ? undefined : { url, source, path };
 }
 
-/** Publish prebuilt Worker entries into the same compiler graph as their consumers. */
+/** Publish prebuilt Worker and Pack entries into the compiler graph of their consumers. */
 function prebuiltWorkerPlugin(
   distRoot: string,
-  workerUrl: (path: string, emit: (id: string, fileName: string) => void) => string,
+  entryUrl: (path: string, emit: (id: string, fileName: string) => void) => string,
   rewriteImports = true,
 ): Plugin {
   return {
@@ -1055,7 +1056,28 @@ function prebuiltWorkerPlugin(
       };
       const handledUrls = new Set<number>();
       const replacements: Replacement[] = [];
+      const rewritePackEntry = (
+        node: Extract<ESTree.Expression, { type: 'Literal' | 'TemplateLiteral' }>,
+      ) => {
+        const specifier =
+          node.type === 'Literal'
+            ? node.value
+            : node.expressions.length === 0
+              ? node.quasis[0]?.value.cooked
+              : undefined;
+        if (typeof specifier !== 'string' || !specifier.startsWith(staticPackEntryUrlPrefix))
+          return;
+        const path = normalizePath(specifier.slice(staticPackEntryUrlPrefix.length));
+        if (path === undefined) throw new Error('Invalid static Pack entry URL');
+        replacements.push({
+          start: node.start,
+          end: node.end,
+          value: JSON.stringify(entryUrl(path, emitChunk)),
+        });
+      };
       new Visitor({
+        Literal: rewritePackEntry,
+        TemplateLiteral: rewritePackEntry,
         CallExpression(node) {
           if (!rewriteImports) return;
           const callee = node.callee;
@@ -1094,7 +1116,7 @@ function prebuiltWorkerPlugin(
           if (target === undefined || handledUrls.has(target.url.start)) return;
           if (!worker && !isJavaScriptOutputAsset(target.path)) return;
           handledUrls.add(target.url.start);
-          const generated = workerUrl(target.path, emitChunk);
+          const generated = entryUrl(target.path, emitChunk);
           const source = worker ? argument : target.source;
           replacements.push({
             start: source.start,

@@ -3056,7 +3056,11 @@ export async function runSurfaceManagedMediumOracle(
     Math.max(...left.map((value, index) => Math.abs(value - (right[index] ?? Number.NaN))));
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      const configured = renderer.setProfile({ ...profile, renderPath, ssao: false });
+      const configured = renderer.setProfile({
+        ...profile,
+        renderPath,
+        ambientOcclusion: { enabled: false },
+      });
       if (!configured.ok) throw configured.error;
       for (const geometryLane of ['direct', 'automatic'] as const) {
         const capture = async (isMedium: boolean, phase: SurfaceManagedMediumStage['phase']) => {

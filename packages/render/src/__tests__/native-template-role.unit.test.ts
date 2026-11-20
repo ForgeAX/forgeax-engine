@@ -3,8 +3,8 @@ import { expect, it, vi } from 'vitest';
 import { prewarmUtilityShaders } from '../assembly/utility-shader-prewarm';
 import {
   findEngineManifestEntry,
+  prepareStandardSceneSources,
   prewarmShadowCasterModules,
-  prewarmStandardScenePrograms,
 } from '../assembly/webgpu-ready-shaders';
 
 it('uses a native program declaration to find the reserved Engine role without reading unselected WGSL', async () => {
@@ -269,20 +269,14 @@ it('leaves native Deferred recipes uncompiled until the selected pipeline reads 
   (await registry.loadManifest()).unwrap();
   const compile = vi.fn();
   const seed = vi.fn();
-  const scenes = await prewarmStandardScenePrograms(
-    registry,
-    compile,
-    seed,
-    {
-      storageBuffer: true,
-      atmosphere: false,
-      webgl2Downlevel: false,
-      extendedLighting: false,
-      directionalPcss: false,
-      projector: false,
-    },
-    true,
-  );
+  const scenes = await prepareStandardSceneSources(registry, compile, seed, {
+    storageBuffer: true,
+    atmosphere: false,
+    webgl2Downlevel: false,
+    extendedLighting: false,
+    directionalPcss: false,
+    projector: false,
+  });
   expect(scenes?.deferred).toBeDefined();
   expect(compose).not.toHaveBeenCalled();
   expect(compile).not.toHaveBeenCalled();

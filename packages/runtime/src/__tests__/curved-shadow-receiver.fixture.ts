@@ -1,5 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
-import { createMeshBuilder, createPlaneGeometry } from '@forgeax/engine-geometry';
+import {
+  createBoxGeometry,
+  createMeshBuilder,
+  createPlaneGeometry,
+} from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import {
   Camera,
@@ -7,8 +11,12 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  PointLight,
+  ScreenSpaceReflection,
+  type SsrAdmissionIdentity,
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -21,6 +29,13 @@ interface ReceiverCase {
   readonly mapSize: number;
   readonly filter: number;
   readonly renderPath: 'forward' | 'deferred';
+  readonly projected?: true;
+  readonly compact?: true;
+  readonly ssr?: true;
+  readonly blocker?: true;
+  readonly mixedChannels?: 'three' | 'four';
+  readonly normalMappedGrazing?: true;
+  readonly coloredSpecular?: true;
 }
 export const CURVED_SHADOW_CASES: readonly ReceiverCase[] = (['wave', 'fold'] as const).flatMap(
   (kind) =>
@@ -90,9 +105,10 @@ function ratios(off: Float32Array, on: Float32Array) {
 export async function createCurvedShadowReceiverFixture(
   canvas: { readonly width: number; readonly height: number },
   manifestUrl: string,
+  ssrIdentity?: SsrAdmissionIdentity,
 ) {
   const host = value(
-    await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl }),
+    await constructRuntimeRendererHost(canvas, { ssrIdentity }, { shaderManifestUrl: manifestUrl }),
   );
   const world = new World({ assets: host.assets });
   const renderer = host.renderer,
@@ -107,24 +123,81 @@ export async function createCurvedShadowReceiverFixture(
   const material = host.assets
     .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], roughness: 1 }))
     .unwrap();
+  const normalTexture = host.assets
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array([
+        213, 145, 220, 255, 79, 156, 238, 255, 83, 200, 222, 255, 222, 90, 207, 255,
+      ]),
+    } satisfies TextureAsset)
+    .unwrap();
+  const normalMappedMaterial = host.assets
+    .create(
+      Materials.standard({
+        baseColor: [0.7, 0.6, 0.5, 1],
+        roughness: 0.31,
+        normalTexture: { texture: normalTexture },
+      }),
+    )
+    .unwrap();
+  const initialProfile = renderer.inspect().profile;
   return {
     async verify(scene: ReceiverCase) {
+      const firstError = errors.length;
       value(
         renderer.setProfile({
-          ...renderer.inspect().profile,
+          ...initialProfile,
+          ...(scene.projected === true ? { deferredDirectionalShadowReceiver: 'projected' } : {}),
+          ...(scene.compact === true ? { gbufferFormat: 'default' } : {}),
           renderPath: scene.renderPath,
-          ssao: false,
+          ambientOcclusion: { enabled: false },
         }),
       );
-      world
+      const receiverMaterial =
+        scene.coloredSpecular === true
+          ? host.assets
+              .create(
+                Materials.standard({
+                  baseColor: [0.7, 0.7, 0.7, 1],
+                  roughness: 1,
+                  specularColor: [0.9, 0.3, 0.2],
+                }),
+              )
+              .unwrap()
+          : scene.normalMappedGrazing === true
+            ? normalMappedMaterial
+            : material;
+      const receiver = world
         .spawn(
           { component: Transform, data: {} },
           { component: MeshFilter, data: { assetHandle: meshes[scene.kind] } },
-          { component: MeshRenderer, data: { materials: [material] } },
+          {
+            component: MeshRenderer,
+            data: {
+              materials: [receiverMaterial],
+              ...(scene.mixedChannels === undefined
+                ? {}
+                : { lightingChannels: scene.mixedChannels === 'three' ? 0x80001000 : 0x80001008 }),
+            },
+          },
         )
         .unwrap();
-      const eye = [0, 4, 7];
-      world
+      if (scene.blocker === true) {
+        const box = host.assets.create(createBoxGeometry(0.8, 0.6, 0.8).unwrap()).unwrap();
+        world
+          .spawn(
+            { component: Transform, data: { pos: [0.4, 0.3, 0.1] } },
+            { component: MeshFilter, data: { assetHandle: box } },
+            { component: MeshRenderer, data: { materials: [material] } },
+          )
+          .unwrap();
+      }
+      const eye = [0, scene.normalMappedGrazing === true ? 2 : 4, 7];
+      const camera = world
         .spawn(
           {
             component: Transform,
@@ -132,10 +205,24 @@ export async function createCurvedShadowReceiverFixture(
           },
           {
             component: Camera,
-            data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 160, antialias: 0, bloom: 0 },
+            data: {
+              fov: Math.PI / 3,
+              aspect: 1,
+              near: 0.1,
+              far: 160,
+              antialias: 0,
+              bloom: 0,
+            },
           },
         )
         .unwrap();
+      if (scene.ssr === true)
+        world
+          .addComponent(camera, {
+            component: ScreenSpaceReflection,
+            data: { maxDistance: 10, thickness: 0.18, maxRoughness: 0.8 },
+          })
+          .unwrap();
       const elevation = Math.PI / 9,
         yaw = (Math.PI * 35) / 180;
       const sun = world
@@ -151,14 +238,42 @@ export async function createCurvedShadowReceiverFixture(
             mapSize: scene.mapSize,
             shadowFilter: scene.filter,
             shadowDistance: 160,
+            ...(scene.mixedChannels === undefined ? {} : { lightingChannels: 0x1000 }),
           },
         })
         .unwrap();
+      if (scene.mixedChannels !== undefined) {
+        world
+          .spawn({
+            component: DirectionalLight,
+            data: {
+              direction: [0, -1, 0],
+              color: [0.2, 0.4, 1],
+              intensity: 1,
+              castShadow: false,
+              lightingChannels: 0x80000000,
+            },
+          })
+          .unwrap();
+        world
+          .spawn(
+            { component: Transform, data: { pos: [0, 2, 0] } },
+            {
+              component: PointLight,
+              data: {
+                color: [1, 0.4, 0.2],
+                intensity: 3,
+                lightingChannels: 4,
+              },
+            },
+          )
+          .unwrap();
+      }
       expect(world.get(sun, DirectionalLight).unwrap().contactShadowLength).toBe(0);
       const lease = value(renderer.attach(world));
       const capture = async (castShadow: boolean) => {
         world.set(sun, DirectionalLight, { castShadow }).unwrap();
-        let image: Float32Array | undefined;
+        let capture: { image: Float32Array; bytes: Uint8Array } | undefined;
         for (let frame = 0; frame < 3; frame++) {
           world.update(1 / 60).unwrap();
           propagateTransforms(world).unwrap();
@@ -172,25 +287,70 @@ export async function createCurvedShadowReceiverFixture(
             await renderer.observe(receipt, { include: ['linear-hdr'] }),
           ).observations?.find((item) => item.domain === 'linear-hdr');
           if (hdr === undefined) throw new Error('Missing curved receiver HDR observation');
-          image = luminanceRgba16f(
-            hdr.bytes,
-            canvas.width,
-            canvas.height,
-            hdr.metadata.bytesPerRow,
-          );
+          capture = {
+            image: luminanceRgba16f(
+              hdr.bytes,
+              canvas.width,
+              canvas.height,
+              hdr.metadata.bytesPerRow,
+            ),
+            bytes: hdr.bytes,
+          };
         }
-        if (image === undefined) throw new Error('Missing complete curved receiver frame');
-        return image;
+        if (capture === undefined) throw new Error('Missing complete curved receiver frame');
+        return capture;
       };
       try {
-        const off = await capture(false),
-          on = await capture(true);
+        const { image: off, bytes: offBytes } = await capture(false);
+        const { image: on, bytes: onBytes } = await capture(true);
         const metrics = { ...scene, ...ratios(off, on) },
           detail = JSON.stringify(metrics);
-        expect(errors, detail).toEqual([]);
+        expect(errors.slice(firstError), detail).toEqual([]);
         expect(metrics.samples, detail).toBeGreaterThan(10000);
-        expect(metrics.min, detail).toBeGreaterThanOrEqual(1 - 2 / 255);
-        return { metrics, off, on };
+        if (scene.blocker !== true) expect(metrics.min, detail).toBeGreaterThanOrEqual(1 - 2 / 255);
+        const inspectLayout = () => {
+          const key = renderer.inspect({ fields: ['featureGraph'] }).featureGraph?.last.topologyKey;
+          const topology =
+            key === undefined
+              ? undefined
+              : (
+                  JSON.parse(key) as {
+                    topology?: { compactGbuffer?: string; compactReceiver?: string };
+                  }
+                ).topology;
+          return {
+            layout: topology?.compactGbuffer,
+            channels: topology?.compactReceiver === 'channels',
+          };
+        };
+        const { layout, channels } = inspectLayout();
+        const { ssr, ssrDependencies } = renderer.inspect({ fields: ['ssr', 'ssrDependencies'] });
+        const activeAllocation = renderer.inspect({
+          fields: ['renderGraphResourceAllocation'],
+        }).renderGraphResourceAllocation;
+        const layoutTransitions: (ReturnType<typeof inspectLayout> & { image: Float32Array })[] =
+          [];
+        if (scene.mixedChannels === 'three' && scene.compact === true) {
+          for (const lightingChannels of [0xffffffff, 0x80001000]) {
+            world.set(receiver, MeshRenderer, { lightingChannels }).unwrap();
+            const { image } = await capture(false);
+            layoutTransitions.push({ ...inspectLayout(), image });
+          }
+          expect(errors.slice(firstError)).toEqual([]);
+        }
+        return {
+          metrics,
+          off,
+          on,
+          offBytes,
+          onBytes,
+          layout,
+          channels,
+          activeAllocation,
+          layoutTransitions,
+          ssr,
+          ssrDependencies,
+        };
       } finally {
         lease.dispose();
         world.despawnAll().unwrap();

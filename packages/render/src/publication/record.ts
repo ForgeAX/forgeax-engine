@@ -12,8 +12,8 @@ import {
  * object graph crosses only for low-frequency rows that actually exist this
  * frame, so an unchanged frame structured-clones three scalars and a buffer.
  */
-/** v9 admits native feature work and complete scaled/unscaled source time. */
-export const RENDER_PUBLICATION_PROTOCOL = 9;
+/** v10 admits fixed asset versions backed by an exact prepared Mesh. */
+export const RENDER_PUBLICATION_PROTOCOL = 10;
 
 /** What crosses the Worker boundary and what a Renderer draws. */
 export interface RenderPublicationMessage extends RenderPublicationIdentity {
@@ -425,8 +425,7 @@ export function renderPublicationBytes(message: RenderPublicationMessage): {
   readonly assets: number;
 } {
   let assets = 0;
-  if (message.side?.assets !== undefined || message.side?.assetPatches !== undefined)
-    for (const buffer of renderPublicationAssetTransfers(message)) assets += buffer.byteLength;
+  for (const buffer of renderPublicationAssetTransfers(message)) assets += buffer.byteLength;
   return { columns: renderPublicationRecordLength(message), assets };
 }
 
@@ -451,9 +450,17 @@ export function publicationAssetPayloadTransfers(
 /** Mesh copies stay with the receiver; only the record is recycled. */
 export function renderPublicationAssetTransfers(message: RenderPublicationMessage): ArrayBuffer[] {
   const side = message.side;
-  if (side?.assets === undefined && side?.assetPatches === undefined) return [];
+  if (
+    side?.assets === undefined &&
+    side?.assetVersions === undefined &&
+    side?.assetPatches === undefined
+  )
+    return [];
   const buffers = new Set<ArrayBuffer>();
   for (const row of side.assets ?? EMPTY) collectPublicationBuffers(row.value, buffers);
+  for (const row of side.assetVersions ?? EMPTY) {
+    if (row.value?.kind === 'mesh') collectPublicationBuffers(row.value, buffers);
+  }
   for (const patch of side.assetPatches ?? EMPTY) {
     collectPublicationBuffers(patch.fields, buffers);
     for (const range of patch.ranges) collectPublicationBuffers(range.bytes, buffers);

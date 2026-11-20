@@ -223,14 +223,26 @@ it('derives every matched-surface texture type from the registered fullscreen re
       }),
       expect.objectContaining({
         binding: 5,
-        texture: { sampleType: 'uint', viewDimension: '2d', multisampled: true },
-      }),
-      expect.objectContaining({
-        binding: 6,
         texture: { sampleType: 'unfilterable-float', viewDimension: '2d', multisampled: true },
       }),
     ]),
   );
+  expect(layouts.mock.calls.at(-1)?.[0].entries).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ binding: 6 })]),
+  );
+  const depth = SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS.find(
+    ({ name }) => name === 'forgeax.single-layer-medium-msaa-depth',
+  );
+  if (depth === undefined) throw new Error('missing depth-only resolve program');
+  expect(buildFullscreenPostProcessPass(context, depth, true)).not.toBeNull();
+  const depthEntries = layouts.mock.calls.at(-1)?.[0].entries;
+  expect(depthEntries?.map(({ binding }) => binding)).toEqual([0, 1, 2, 3, 4]);
+  expect(depthEntries?.find(({ binding }) => binding === 2)).toMatchObject({
+    buffer: { type: 'uniform' },
+  });
+  expect(depthEntries?.find(({ binding }) => binding === 3)).toMatchObject({
+    texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
+  });
   const gather = SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS[2];
   if (gather === undefined) throw new Error('missing selected color program');
   expect(buildFullscreenPostProcessPass(context, gather)).not.toBeNull();

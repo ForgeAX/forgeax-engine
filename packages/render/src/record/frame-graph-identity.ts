@@ -17,7 +17,7 @@ export function frameGraphTopologyIdentity(
       ? {
           config: {
             ...topology.config,
-            ssao: ssaoStructuralIdentity(topology.config.ssao, true),
+            ambientOcclusion: ssaoStructuralIdentity(topology.config.ambientOcclusion, true),
           },
         }
       : {}),
@@ -25,10 +25,10 @@ export function frameGraphTopologyIdentity(
       ? {
           standardProfile: {
             ...topology.standardProfile,
-            ssao:
-              typeof topology.standardProfile.ssao === 'object'
-                ? ssaoStructuralIdentity(topology.standardProfile.ssao, true)
-                : topology.standardProfile.ssao,
+            ambientOcclusion: ssaoStructuralIdentity(
+              topology.standardProfile.ambientOcclusion,
+              true,
+            ),
           },
         }
       : {}),

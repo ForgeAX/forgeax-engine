@@ -131,17 +131,13 @@ export {
   projectCloudShadowUv,
 } from './cloud/lighting/shadow.js';
 export {
-  AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_APPLICATIONS,
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_LIGHTING,
   AMBIENT_OCCLUSION_QUALITIES,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
   AMBIENT_OCCLUSION_SCENE_COLOR,
-  AMBIENT_OCCLUSION_SPIRAL_SSAO,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
   ambientOcclusionParameters,
@@ -765,6 +761,8 @@ export type { PointsLinesInspection } from './points-lines/inspection.js';
 export {
   type PreparedPublishedMeshResidency,
   type PublishedMeshPreparation,
+  type PublishedMeshPreparationOptions,
+  type PublishedMeshTransferReservation,
   type PublishedRenderFrameInput,
   type RenderPublication,
   RenderPublicationError,
@@ -937,6 +935,7 @@ export {
   SHADOW_ATLAS_DEFAULT_LAYERS,
   ShadowAtlas,
 } from './shadow-atlas.js';
+export type { AmbientOcclusionSettings } from './ssao-config.js';
 export type {
   SsrAdmissionBudget,
   SsrAdmissionFailure,

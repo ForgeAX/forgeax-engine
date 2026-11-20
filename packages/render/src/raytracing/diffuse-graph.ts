@@ -26,6 +26,8 @@ export interface RayDiffuseTargets {
   readonly normal: RenderPipelineTarget;
   readonly albedo: RenderPipelineTarget;
   readonly f0: RenderPipelineTarget;
+  readonly compactGbuffer?: true;
+  readonly subsurfaceDiffuse?: RenderPipelineTarget;
   /** Visible-surface identity; only the exact gather reads it (`visibleSurface` profiles). */
   readonly identity?: RenderPipelineTarget;
   readonly motion: RenderPipelineTarget;

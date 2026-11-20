@@ -25,6 +25,7 @@ const imports = Object.fromEntries(
     'lighting-spot-modifiers',
     'lighting-spot-projector',
     'shadow-pcf',
+    'standard-gbuffer',
     'standard-lighting',
     'standard-cluster',
     'view-atmosphere',

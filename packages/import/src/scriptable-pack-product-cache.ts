@@ -585,6 +585,7 @@ export async function createScriptablePackProductCache(options: {
           packageId: guid,
           values: subject.values ?? null,
           inheritedValues: subject.inheritedValues ?? null,
+          ...(subject.cookRuntimeOutputs === true ? { cookRuntimeOutputs: true } : {}),
           outputVersions: options.outputVersions,
           engine: engineProducerVersion(),
           ...(schema === KINDS_SCHEMA

@@ -34,6 +34,12 @@ export interface ScenePipelineDemand {
   readonly selection?: ScenePassSelection;
 }
 
+/** Facts available once Record has validated the current view's draws. */
+export type ScenePipelineSourceContext = Pick<
+  _InternalRenderPipelineContext,
+  'frameState' | 'runtime' | 'validatedOrdered'
+>;
+
 /** Return true only when this preparation matches a candidate material raster lane. */
 export type ScenePipelinePreparation = ((
   context: _InternalRenderPipelineContext,
@@ -42,6 +48,8 @@ export type ScenePipelinePreparation = ((
   readonly demand?: ScenePipelineDemand;
   /** Graph-owned utility programs do not participate in candidate material matching. */
   readonly kind?: 'utility';
+  /** Request CPU work before building the native scene pipelines or bindings. */
+  readonly prepareSource?: (context: ScenePipelineSourceContext) => void;
 };
 
 // Metadata belongs to this exact graph build, alongside its actual raster declarations.

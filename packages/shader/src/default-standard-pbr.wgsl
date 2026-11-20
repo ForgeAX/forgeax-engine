@@ -20,12 +20,12 @@ enable primitive_index;
 #import forgeax_clipping::planes::{applyViewClipping, viewClippingRejected, applyLocalClipping, viewClippingCap}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
-#import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
+#import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer, CompactGBufferOutput, StandardGBufferPassOutput, encodeCompactStandardGBuffer, encodeStandardReceiverContext, compactSubsurfaceCustomData}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness, encodeStandardReceiverNormal}
 
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
-#import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, applyLodCoverage, meshMotionValid, View, Mesh, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture, transformNormal}
+#import forgeax_view::common::{viewDirectionToCamera, lightingChannelsMatch, applyLodCoverage, meshMotionValid, meshGBufferObjectFlags, View, Mesh, InstanceData, view, shadowMap, shadowSampler, sampleMaterialTexture, transformNormal}
 #if WATER_WAVES_AVAILABLE == true
 #import forgeax_material::water_waves::{waterMaterialDrawData, waterMeshCoverageContains, waterDynamicBoundsContains, waterMeshWireColor, waterMeshTileVertex, waterMeshSourceBodyIndex, waterMeshInstanceTransformIndex}
 #if MATERIAL_WATER_DEFORMATION_AVAILABLE == true
@@ -39,7 +39,7 @@ enable primitive_index;
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
-#import forgeax_scene_temporal::{sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
+#import forgeax_scene_temporal::{encodeSceneVelocity, sceneFragmentViewZ, packSceneTemporalV1WithValidity, unpackSceneTemporalV1}
 #ifdef TRANSMISSION_AVAILABLE
 #import forgeax_view::fog::{forward_fog_transmission}
 #else
@@ -1036,7 +1036,7 @@ fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
     draw.world,
     draw.previousWorld,
     // Scene material rows never reach bit 31; it carries the receive opt-out.
-    vec4<u32>(visible.y | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe, visible.w),
+    vec4<u32>(visible.y | (draw.gbufferObjectFlags << 29u) | select(STANDARD_NO_RECEIVE_BIT, 0u, draw.receivesShadows), draw.probe, visible.w),
     vec3<f32>(draw.temporal, bitcast<f32>(visible.w)),
     idx,
   );
@@ -1069,6 +1069,18 @@ fn standardMaterialRow(in : VsOut) -> u32 {
 #endif
 }
 #endif
+
+fn standardGBufferObjectFlags(in : VsOut) -> u32 {
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
+  return (standardMaterialRow(in) >> 29u) & 3u;
+#else
+#if STORAGE_BUFFER_AVAILABLE == true
+  return meshGBufferObjectFlags(u32(meshes[0].temporal.y));
+#else
+  return meshGBufferObjectFlags(meshes[0].surface.w);
+#endif
+#endif
+}
 
 fn standardReceivesShadows(in : VsOut) -> bool {
   if (standardShadowReception == 0u) { return false; }
@@ -1159,11 +1171,12 @@ fn vs_scene_index_packed(input : Frame32Input, @builtin(instance_index) idx : u3
 #endif
 
 const STANDARD_NO_RECEIVE_BIT : u32 = 0x80000000u;
+const STANDARD_MATERIAL_ROW_MASK : u32 = 0x1fffffffu;
 @id(64002) override standardShadowReception: u32 = 1u;
 
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 fn selectedMaterial(index : u32) -> MaterialParameters {
-  return sceneMaterials[index & ~STANDARD_NO_RECEIVE_BIT];
+  return sceneMaterials[index & STANDARD_MATERIAL_ROW_MASK];
 }
 
 
@@ -2407,7 +2420,7 @@ fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool
 ) -> GBufferOutput {
   standardPositionWS = standardFragmentPosition(in);
   let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
-  let waterEntryOutput = standardGBuffer(capped, standardCappedFacing(frontFacing)
+  let waterEntryOutput = standardGBuffer(capped, standardCappedFacing(frontFacing), false
 #ifdef VISIBLE_SURFACE_AVAILABLE
     , primitiveIndex
 #endif
@@ -2415,14 +2428,33 @@ fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
-  return waterEntryOutput;
+  return waterEntryOutput.full;
 }
 
-fn standardGBuffer(in : VsOut, frontFacing : bool
+@fragment
+fn fs_gbuffer_compact(in : VsOut, @builtin(front_facing) frontFacing : bool
+#ifdef VISIBLE_SURFACE_AVAILABLE
+  , @builtin(primitive_index) primitiveIndex : u32
+#endif
+) -> CompactGBufferOutput {
+  standardPositionWS = standardFragmentPosition(in);
+  let capped = standardCappedInput(standardParallaxInput(in), frontFacing);
+  let output = standardGBuffer(capped, standardCappedFacing(frontFacing), true
+#ifdef VISIBLE_SURFACE_AVAILABLE
+    , primitiveIndex
+#endif
+  );
+#if WATER_WAVES_AVAILABLE == true
+  if (!standardWaterCovered) { discard; }
+#endif
+  return output.compact;
+}
+
+fn standardGBuffer(in : VsOut, frontFacing : bool, compact : bool
 #ifdef VISIBLE_SURFACE_AVAILABLE
   , primitiveIndex : u32
 #endif
-) -> GBufferOutput {
+) -> StandardGBufferPassOutput {
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   var rawGeometry = surfaceGeometryNormal(dpdx(standardPositionWS), dpdy(standardPositionWS), vec3<f32>(0.0));
@@ -2463,18 +2495,46 @@ fn standardGBuffer(in : VsOut, frontFacing : bool
   subsurface = vec4<f32>(material.subsurfaceRadius, material.subsurfaceWeight);
 #endif
   let specular = standardSurfaceSpecular(in, surface, standardDielectricF0(max(finiteScalar(material.ior, 1.5), 1.0)));
-  var output = encodeStandardGBuffer(surface.normalWS, receiverNormal,
-    specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread),
-    surface.baseColor, clamp(surface.metallic, 0.0, 1.0), specular,
-    surface.occlusion, surface.emissive, materialOutputAlpha(surface.opacity, standardAlphaMode()), u32(skylight.diffuseScale.w), probeRow,
-    standardReceivesShadows(in), standardLightingChannels(in), subsurface,
-    useDirectDfgLut,
-  );
+  let roughness = specularAntiAliasedRoughness(clamp(surface.roughness, 0.04, 1.0), normalSpread);
+  let metallic = clamp(surface.metallic, 0.0, 1.0);
+  let opacity = materialOutputAlpha(surface.opacity, standardAlphaMode());
+  var directionalLayerBase = 0u;
 #if TERRAIN_GEOMETRY_AVAILABLE == true
-  let directionalLayerBase = terrainShadowLayerBase(rawGeometry, frontFacing, view.lightDir,
+  directionalLayerBase = terrainShadowLayerBase(rawGeometry, frontFacing, view.lightDir,
     material.terrainShadowFamily, view.cascadeCount, view.directionalShadowFilter.x);
-  output.receiver_geometry.x = (output.receiver_geometry.x & 0x00ffffffu) | (directionalLayerBase << 24u);
 #endif
+  var output : StandardGBufferPassOutput;
+#ifdef VISIBLE_SURFACE_AVAILABLE
+#if WATER_WAVES_AVAILABLE == true
+  let visibleSurface = in.surfaceData.x;
+#else
+  let visibleSurface = in.surfaceData.z;
+#endif
+  let valid = visibleSurface != 0u && dot(rawGeometry, rawGeometry) > 0.0;
+  let identity = vec4<u32>(visibleSurface, primitiveIndex,
+    encodeStandardNormalRoughness(geometricNormal, 0.0), select(0u, select(1u, 3u, frontFacing), valid));
+#endif
+  if (compact) {
+    var customData = 0u;
+#ifdef SUBSURFACE_DIFFUSION_AVAILABLE
+    customData = compactSubsurfaceCustomData(subsurface, view.subsurfaceProfiles);
+#endif
+    output.compact = encodeCompactStandardGBuffer(surface.normalWS, roughness, surface.baseColor,
+      metallic, specular.x, surface.occlusion, surface.emissive, opacity,
+      vec4<u32>(standardLightingChannels(in), encodeStandardReceiverContext(
+        u32(skylight.diffuseScale.w), probeRow, standardReceivesShadows(in)),
+        encodeStandardReceiverNormal(receiverNormal) | 0x00800000u | (directionalLayerBase << 24u), 0u), customData, standardGBufferObjectFlags(in));
+#ifdef VISIBLE_SURFACE_AVAILABLE
+    output.compact.visible_surface = identity;
+#endif
+    return output;
+  }
+  output.full = encodeStandardGBuffer(surface.normalWS, receiverNormal, roughness,
+      surface.baseColor, metallic, specular,
+      surface.occlusion, surface.emissive, opacity, u32(skylight.diffuseScale.w), probeRow,
+      standardReceivesShadows(in), standardLightingChannels(in), subsurface,
+      useDirectDfgLut);
+  output.full.receiver_geometry.x |= directionalLayerBase << 24u;
 #if WATER_WAVES_AVAILABLE == true
   let temporal = unpackSceneTemporalV1(vec4<f32>(0.0, 0.0, 0.0, bitcast<f32>(in.surfaceData.y)));
 #else
@@ -2491,18 +2551,11 @@ fn standardGBuffer(in : VsOut, frontFacing : bool
   // Max-combined so instance, LOD and coverage reactivity are never reduced.
   reactive = max(reactive, surfaceTemporalReactive(surface.reactive));
   let currentClip = view.temporalCurrentViewProj * vec4<f32>(standardPositionWS, 1.0);
-  output.scene_temporal = packSceneTemporalV1WithValidity(
+  output.full.scene_temporal = packSceneTemporalV1WithValidity(
     currentClip, currentClip - in.clipDelta,
     view.temporalProjection, reactive, temporal.motionValid);
 #ifdef VISIBLE_SURFACE_AVAILABLE
-#if WATER_WAVES_AVAILABLE == true
-  let visibleSurface = in.surfaceData.x;
-#else
-  let visibleSurface = in.surfaceData.z;
-#endif
-  let valid = visibleSurface != 0u && dot(rawGeometry, rawGeometry) > 0.0;
-  output.visible_surface = vec4<u32>(visibleSurface, primitiveIndex,
-    encodeStandardNormalRoughness(geometricNormal, 0.0), select(0u, select(1u, 3u, frontFacing), valid));
+  output.full.visible_surface = identity;
 #endif
   return output;
 }
@@ -2746,12 +2799,15 @@ fn standardAlphaMode() -> f32 {
 #endif
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #if WATER_WAVES_AVAILABLE == true
-  if (in.waterCoverageXZ.z <= 0.0 || !waterMeshCoverageContains(in.waterMeshInstanceIndex, in.waterCoverageXZ.xy)) { discard; }
-  if (!waterDynamicBoundsContains(waterMeshSourceBodyIndex(in.waterMeshInstanceIndex), in.clippingPositionWS)) { discard; }
+fn waterTemporalRejected(in : TemporalVsOut) -> bool {
+  return in.waterCoverageXZ.z <= 0.0
+    || !waterMeshCoverageContains(in.waterMeshInstanceIndex, in.waterCoverageXZ.xy)
+    || !waterDynamicBoundsContains(waterMeshSourceBodyIndex(in.waterMeshInstanceIndex), in.clippingPositionWS);
+}
 #endif
+
+fn materialTemporal(in : TemporalVsOut) -> vec4<f32> {
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   material = selectedMaterial(in.materialIndex);
 #endif
@@ -2828,4 +2884,21 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #else
   return temporal;
 #endif
+}
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+#if WATER_WAVES_AVAILABLE == true
+  if (waterTemporalRejected(in)) { discard; }
+#endif
+  return materialTemporal(in);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) u32 {
+#if WATER_WAVES_AVAILABLE == true
+  if (waterTemporalRejected(in)) { discard; }
+#endif
+  return encodeSceneVelocity(materialTemporal(in));
 }

@@ -44,9 +44,10 @@ it.each([
   );
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', join(output, 'manifest.json'));
   vi.stubEnv('FORGEAX_ENGINE_SHADER_SOURCE_BUILD', '0');
-  const plugin = forgeaxShader(
-    outputDirectory === 'external-project' ? { workspaceRoot: root } : {},
-  );
+  const plugin = forgeaxShader({
+    publication: 'compiled',
+    ...(outputDirectory === 'external-project' ? { workspaceRoot: root } : {}),
+  });
   const server = await createServer({
     configFile: false,
     root: consumer,

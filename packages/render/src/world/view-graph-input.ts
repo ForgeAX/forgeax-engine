@@ -6,7 +6,7 @@ import { RENDER_FEATURE_PLAN_SYSTEM, viewFeaturePlanOf } from './feature-plan-sy
 import { VIEW_DIFFUSE_GI_SYSTEM, viewDiffuseGiOf } from './gi-systems';
 import { RENDER_GPU_DRIVEN_RASTER_SYSTEM } from './gpu-driven-raster-systems';
 import { RENDER_GPU_DRIVEN_PREPARE_SYSTEM, viewGpuDrivenOf } from './gpu-driven-systems';
-import { readViewPassPlan } from './pass-plan-systems';
+import { readViewPassPlan, type ViewPassPlan } from './pass-plan-systems';
 import { viewLightsOf } from './render-lights';
 import { RENDER_SSR_ADMISSION_SYSTEM, viewSsrAdmissionOf } from './ssr-admission-systems';
 import {
@@ -62,8 +62,29 @@ function unavailable(
 export function readViewGraphInput(
   world: World,
   entity: EntityHandle,
+  owner: ViewSettlementOwner,
+  request: ViewGraphCompileRequest,
+): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
+  return readGraphInput(world, entity, owner, request);
+}
+
+/** An off-frame Source supplies a plan from the same Pass family policy. */
+export function readSourceViewGraphInput(
+  world: World,
+  entity: EntityHandle,
+  owner: ViewSettlementOwner,
+  request: ViewGraphCompileRequest,
+  pass: ViewPassPlan,
+): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
+  return readGraphInput(world, entity, owner, request, pass);
+}
+
+function readGraphInput(
+  world: World,
+  entity: EntityHandle,
   { internals, frameState, captures }: ViewSettlementOwner,
   request: ViewGraphCompileRequest,
+  sourcePass?: ViewPassPlan,
 ): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
   const lighting = viewStandardLightingOf(world, entity);
   if (lighting?.kind !== 'prepared')
@@ -82,7 +103,7 @@ export function readViewGraphInput(
     return err(unavailable(RENDER_GPU_DRIVEN_RASTER_SYSTEM));
   const feature = viewFeaturePlanOf(world, entity);
   if (feature?.kind !== 'planned') return err(unavailable(RENDER_FEATURE_PLAN_SYSTEM, feature));
-  const pass = readViewPassPlan(world, entity);
+  const pass = sourcePass === undefined ? readViewPassPlan(world, entity) : ok(sourcePass);
   if (!pass.ok)
     return err(
       new RendererOperationError('graph-build-failed', {

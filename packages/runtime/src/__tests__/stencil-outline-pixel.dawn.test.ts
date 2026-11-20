@@ -58,8 +58,8 @@ const OUTLINE_R_LT_B_GAP = 0.03;
 const OUTLINE_MIN_PIXELS = 100;
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 

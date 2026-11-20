@@ -125,10 +125,10 @@ export function formatBytes(bytes: number | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function formatDate(ms: number | undefined): string {
+export function formatDate(ms: number | undefined, locale: 'en' | 'zh' = 'en'): string {
   if (!ms) return '';
   try {
-    return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    return new Date(ms).toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' });
   } catch {
     return '';
   }

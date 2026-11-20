@@ -15,7 +15,7 @@ import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
 import { ParticleEffectPlayer, VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
@@ -48,7 +48,7 @@ import {
 } from './vfx-failure-evidence.fixture';
 import { vfxNativeLoaderEvidence } from './vfx-native-loader.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/translucent-fog/dawn';
 const PARTICLE_ALPHA = 0.5;
 const TOLERANCE = 0.03;

@@ -2,6 +2,7 @@ import type { ComponentProps } from 'react';
 import '@forgeax/view-components/styles.css';
 import { ClipboardProvider, OverlayRootProvider } from '@forgeax/view-components';
 import '../i18n/index.ts';
+import { useTranslation } from '../i18n/useTranslation';
 import { createRoot } from 'react-dom/client';
 import { ContentBrowserPanel } from './ContentBrowserPanel';
 import './content-browser.css';
@@ -9,8 +10,9 @@ import './content-browser.css';
 export async function mountContentBrowserPanel(props: ComponentProps<typeof ContentBrowserPanel> & { mountElement: HTMLElement; overlayRoot?: HTMLElement; writeClipboard?: (text: string) => Promise<void> }) {
   if (!props.mountElement) throw new TypeError('mountContentBrowserPanel requires mountElement');
   const root = createRoot(props.mountElement);
-  root.render(
-    <ClipboardProvider writeText={props.writeClipboard}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
+  function Panel() {
+    const { t } = useTranslation();
+    return <ClipboardProvider writeText={props.writeClipboard} dismissLabel={t('contentBrowser.dismissClipboardError')}><OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
       <ContentBrowserPanel
         assetReferences={props.assetReferences}
         client={props.client}
@@ -21,7 +23,8 @@ export async function mountContentBrowserPanel(props: ComponentProps<typeof Cont
         addConversationReference={props.addConversationReference}
         registerAssetReveal={props.registerAssetReveal}
       />
-    </OverlayRootProvider></ClipboardProvider>,
-  );
+    </OverlayRootProvider></ClipboardProvider>;
+  }
+  root.render(<Panel />);
   return async () => root.unmount();
 }

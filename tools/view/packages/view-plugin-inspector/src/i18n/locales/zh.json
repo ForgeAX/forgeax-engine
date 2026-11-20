@@ -1,5 +1,19 @@
 {
   "inspector": {
+    "clearSearch": "清除搜索",
+    "dismissClipboardError": "关闭剪贴板错误",
+    "authoring": {
+      "sourceDraft": "源码草稿",
+      "unsaved": "源码更改未保存",
+      "saved": "源码已保存",
+      "save": "保存",
+      "undo": "撤销",
+      "redo": "重做",
+      "exposeHint": "通过 Agent 将此字段公开为 Pack 参数",
+      "exposeField": "通过 Agent 公开 {{field}}",
+      "expose": "公开参数",
+      "runtimeField": "运行时参数 {{field}}"
+    },
     "assetReferencesTruncated": "资产引用列表不完整",
     "assetReferencesUnavailable": "资产引用查询不可用",
     "materialSource": { "component": "实例覆盖", "mesh-default": "网格默认", "engine-default": "Engine 默认" },

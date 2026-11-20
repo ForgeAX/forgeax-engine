@@ -430,24 +430,33 @@ export function renderPublicationBytes(message: RenderPublicationMessage): {
   return { columns: renderPublicationRecordLength(message), assets };
 }
 
+function collectPublicationBuffers(value: unknown, buffers: Set<ArrayBuffer>): void {
+  if (value instanceof ArrayBuffer) buffers.add(value);
+  else if (ArrayBuffer.isView(value)) {
+    if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
+  } else if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) collectPublicationBuffers(child, buffers);
+  }
+}
+
+/** Caller owns the copied payload. Its views move together, once per buffer. */
+export function publicationAssetPayloadTransfers(
+  value: import('@forgeax/engine-types').Asset,
+): ArrayBuffer[] {
+  const buffers = new Set<ArrayBuffer>();
+  collectPublicationBuffers(value, buffers);
+  return [...buffers];
+}
+
 /** Mesh copies stay with the receiver; only the record is recycled. */
 export function renderPublicationAssetTransfers(message: RenderPublicationMessage): ArrayBuffer[] {
   const side = message.side;
   if (side?.assets === undefined && side?.assetPatches === undefined) return [];
   const buffers = new Set<ArrayBuffer>();
-  const collect = (value: unknown): void => {
-    if (value instanceof ArrayBuffer) {
-      buffers.add(value);
-    } else if (ArrayBuffer.isView(value)) {
-      if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
-    } else if (value !== null && typeof value === 'object') {
-      for (const child of Object.values(value)) collect(child);
-    }
-  };
-  for (const row of side.assets ?? EMPTY) collect(row.value);
+  for (const row of side.assets ?? EMPTY) collectPublicationBuffers(row.value, buffers);
   for (const patch of side.assetPatches ?? EMPTY) {
-    collect(patch.fields);
-    for (const range of patch.ranges) collect(range.bytes);
+    collectPublicationBuffers(patch.fields, buffers);
+    for (const range of patch.ranges) collectPublicationBuffers(range.bytes, buffers);
   }
   // The record is recycled separately and is never an asset buffer.
   buffers.delete(message.record);

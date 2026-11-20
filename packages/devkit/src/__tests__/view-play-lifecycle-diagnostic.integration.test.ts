@@ -19,10 +19,6 @@ it.skipIf(process.env.FOCUS_SELECTOR !== selector)(
     };
     for (const [file, args] of [
       ['pnpm', ['build:tools']],
-      [
-        'node',
-        ['scripts/forgeax/prepare-shader-release-inputs.mjs', '--build', '--profile', 'base-ssao'],
-      ],
       ['node', ['scripts/verify-engine-plugin-boundary.mjs']],
     ] as const) {
       try {

@@ -1,14 +1,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifyLensFlare } from './lens-flare.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 it('verifies lens flare ghosts, composite replay oracle and missing-bokeh falsifier on Dawn', {
   timeout: 180_000,
 }, async () => {

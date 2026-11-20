@@ -7,6 +7,26 @@ import type {
   RhiDevice,
   RhiRenderCommands,
 } from '@forgeax/engine-rhi';
+import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+
+export interface PreparedRasterWindowPreparation {
+  isCurrent(): boolean;
+  replacement(bundle: RenderBundle): RenderBundle | undefined;
+  publish(): Result<void, RhiError>;
+  release(): void;
+}
+
+function assertCurrent(current: (() => boolean) | undefined): void {
+  if (current !== undefined && !current()) throw staleWindows();
+}
+
+function staleWindows(): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'unchanged prepared raster entries and their window preparation',
+    hint: 'release this private recording and prepare against the current owners',
+  });
+}
 
 /** Complete physical closure of a batch's immutable indirect commands. */
 export interface PreparedRasterBindings {
@@ -76,17 +96,21 @@ function equal(a: PreparedRasterBindings, b: PreparedRasterBindings): boolean {
 export function recordPreparedRasters(
   commands: RhiRenderCommands,
   batches: readonly PreparedRasterBindings[],
+  current?: () => boolean,
 ): number {
+  assertCurrent(current);
   let previous: PreparedRasterBindings | undefined;
   let count = 0;
   for (const b of batches) {
     const pipelineChanged = previous?.pipeline !== b.pipeline;
     if (pipelineChanged) {
       commands.setPipeline(b.pipeline);
+      assertCurrent(current);
       count++;
     }
     if (pipelineChanged || previous?.view !== b.view || previous.viewOffset !== b.viewOffset) {
       commands.setBindGroup(0, b.view, [b.viewOffset, 0]);
+      assertCurrent(current);
       count++;
     }
     if (
@@ -95,6 +119,7 @@ export function recordPreparedRasters(
       previous.materialOffset !== b.materialOffset
     ) {
       commands.setBindGroup(1, b.material, [b.materialOffset]);
+      assertCurrent(current);
       count++;
     }
     if (
@@ -104,10 +129,12 @@ export function recordPreparedRasters(
       previous.meshOffsets.some((value, index) => value !== b.meshOffsets[index])
     ) {
       commands.setBindGroup(2, b.mesh, b.meshOffsets);
+      assertCurrent(current);
       count++;
     }
     if (previous?.vertex !== b.vertex) {
       commands.setVertexBuffer(0, b.vertex);
+      assertCurrent(current);
       count++;
     }
     if (
@@ -115,15 +142,18 @@ export function recordPreparedRasters(
       (previous?.index !== b.index || previous.indexFormat !== b.indexFormat)
     ) {
       commands.setIndexBuffer(b.index, b.indexFormat);
+      assertCurrent(current);
       count++;
     }
     for (let level = 0; level < b.windows.length; level++) {
       const window = b.windows[level];
       if (window === undefined) throw new Error('missing prepared raster LOD window');
       commands.setBindGroup(3, window);
+      assertCurrent(current);
       const offset = b.indirectOffset + level * 20;
       if (b.indexed) commands.drawIndexedIndirect(b.indirect, offset);
       else commands.drawIndirect(b.indirect, offset);
+      assertCurrent(current);
       count += 2;
     }
     previous = b;
@@ -229,12 +259,16 @@ function buildEntry(
   device: RhiDevice,
   bindings: readonly PreparedRasterBindings[],
   counters: PreparedRasterCounters,
+  current?: () => boolean,
 ): RenderBundle {
+  assertCurrent(current);
   const encoder = device.createRenderBundleEncoder(pass.descriptor);
   if (!encoder.ok) throw encoder.error;
-  const commands = recordPreparedRasters(encoder.value, bindings);
+  assertCurrent(current);
+  const commands = recordPreparedRasters(encoder.value, bindings, current);
   const finished = encoder.value.finish();
   if (!finished.ok) throw finished.error;
+  assertCurrent(current);
   if (!entries.has(pass) && entries.size === 8) {
     const oldest = entries.keys().next().value;
     if (oldest !== undefined) entries.delete(oldest);
@@ -258,6 +292,7 @@ class PreparedRasterRecording {
     entries: Map<PreparedRasterPass, PreparedRasterEntry>,
     entry: RasterRecordingEntry,
     private readonly counters: PreparedRasterCounters,
+    private readonly current?: () => boolean,
   ) {
     this.#entries = entries;
     this.#entry = entry;
@@ -279,6 +314,7 @@ class PreparedRasterRecording {
   }
 
   finish(): RenderBundle {
+    assertCurrent(this.current);
     const count = this.#count;
     if (count < 0) throw new Error('prepared raster recording already finished');
     this.#count = -1;
@@ -298,7 +334,14 @@ class PreparedRasterRecording {
         (count === entry.bindings?.length
           ? entry.bindings
           : (entry.bindings?.slice(0, count) ?? []));
-      return buildEntry(this.#entries, entry.pass, entry.device, bindings, this.counters);
+      return buildEntry(
+        this.#entries,
+        entry.pass,
+        entry.device,
+        bindings,
+        this.counters,
+        this.current,
+      );
     } catch (error) {
       this.#count = count;
       throw error;
@@ -309,17 +352,115 @@ class PreparedRasterRecording {
 /** One live batch owns bounded pass variants; callers never receive cached binding snapshots. */
 export class PreparedRasterBundleCache {
   readonly #entries = new Map<PreparedRasterPass, PreparedRasterEntry>();
+  #preparingWindows: PreparedRasterWindowPreparation | undefined;
+
+  captureCurrent(pass: PreparedRasterPass): (() => boolean) | undefined {
+    const entry = this.#entries.get(pass);
+    return entry === undefined ? undefined : () => this.#entries.get(pass) === entry;
+  }
+
+  /** Pre-record existing pass variants without replacing any accepted native bundle. */
+  prepareBindings(
+    replace: (binding: PreparedRasterBindings) => PreparedRasterBindings,
+    current: () => boolean,
+  ): Result<PreparedRasterWindowPreparation, RhiError> {
+    if (this.#preparingWindows !== undefined) return err(staleWindows());
+    const before = new Map(this.#entries);
+    const next = new Map(before);
+    const replacements = new Map<RenderBundle, RenderBundle>();
+    const counters: PreparedRasterCounters = { hits: 0, builds: 0, commands: 0, evictions: 0 };
+    let closed = false;
+    let ready = false;
+    let observing = false;
+    const live = () => {
+      if (closed || this.#preparingWindows !== api || !current()) return false;
+      // The supplied owner observation may itself reenter the cache.
+      if (closed || this.#preparingWindows !== api || this.#entries.size !== before.size)
+        return false;
+      for (const [pass, entry] of before) if (this.#entries.get(pass) !== entry) return false;
+      return true;
+    };
+    const release = () => {
+      closed = true;
+      ready = false;
+      before.clear();
+      next.clear();
+      replacements.clear();
+      if (this.#preparingWindows === api) this.#preparingWindows = undefined;
+    };
+    const isCurrent = () => {
+      if (observing) return false;
+      observing = true;
+      try {
+        return ready && live();
+      } finally {
+        observing = false;
+      }
+    };
+    const api: PreparedRasterWindowPreparation = Object.freeze({
+      isCurrent,
+      replacement: (bundle: RenderBundle) => {
+        // The caller can probe several cache owners. A miss has no validity to prove.
+        if (!replacements.has(bundle) || !isCurrent()) return undefined;
+        return replacements.get(bundle);
+      },
+      publish: () => {
+        if (observing) return err(staleWindows());
+        observing = true;
+        try {
+          if (!ready || !live()) return err(staleWindows());
+          for (const [pass, entry] of next) this.#entries.set(pass, entry);
+          release();
+          return ok(undefined);
+        } finally {
+          observing = false;
+        }
+      },
+      release,
+    });
+    this.#preparingWindows = api;
+    let accepted = false;
+    try {
+      assertCurrent(live);
+      for (const [pass, entry] of before) {
+        let changed = false;
+        const bindings = entry.bindings.map((binding) => {
+          assertCurrent(live);
+          const replacement = snapshotBindings(replace(binding));
+          assertCurrent(live);
+          changed ||= !equal(binding, replacement);
+          return replacement;
+        });
+        assertCurrent(live);
+        const bundle = changed
+          ? buildEntry(next, pass, entry.device, bindings, counters, live)
+          : entry.bundle;
+        replacements.set(entry.bundle, bundle);
+      }
+      assertCurrent(live);
+      ready = true;
+      accepted = true;
+      return ok(api);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      if (!accepted) release();
+    }
+  }
 
   begin(
     pass: PreparedRasterPass,
     device: RhiDevice,
     counters: PreparedRasterCounters,
+    current?: () => boolean,
   ): PreparedRasterRecording {
     const previous = this.#entries.get(pass);
     return new PreparedRasterRecording(
       this.#entries,
       previous?.device === device ? previous : { pass, device },
       counters,
+      current,
     );
   }
 
@@ -328,7 +469,9 @@ export class PreparedRasterBundleCache {
     device: RhiDevice,
     observed: PreparedRasterBindings,
     counters: PreparedRasterCounters,
+    current?: () => boolean,
   ): RenderBundle {
+    assertCurrent(current);
     const previous = this.#entries.get(pass);
     const before = previous?.bindings[0];
     if (
@@ -337,10 +480,11 @@ export class PreparedRasterBundleCache {
       before !== undefined &&
       equal(before, observed)
     ) {
+      assertCurrent(current);
       counters.hits++;
       return previous.bundle;
     }
-    return buildEntry(this.#entries, pass, device, [snapshotBindings(observed)], counters);
+    return buildEntry(this.#entries, pass, device, [snapshotBindings(observed)], counters, current);
   }
 
   retire(pass: PreparedRasterPass, counters: PreparedRasterCounters): void {

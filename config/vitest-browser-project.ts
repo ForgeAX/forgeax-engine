@@ -15,6 +15,7 @@ import { assetRoots as hdrAssetRoots } from '../apps/learn-render/5.advanced-lig
 import { assetRoots as bloomAssetRoots } from '../apps/learn-render/5.advanced-lighting/7.bloom/vite.config';
 import { gameCapabilityAssetRoots } from '../apps/preview/src/template-asset-roots';
 import { renderWorkerCommands } from '../packages/app/__tests__/render-worker.commands';
+import { materialTemplateWorkerCommands } from '../packages/app/src/__tests__/material-template-worker.commands';
 import { pcmRangeFixture } from '../packages/audio-webaudio/src/__tests__/support/pcm-range-fixture';
 import { websocketListenerCommands } from '../packages/net-websocket/__tests__/support/ws-listener-commands';
 import { diffuseGiCommands } from '../packages/render/src/__tests__/raytracing/diffuse-gi.commands';
@@ -179,15 +180,11 @@ export function createBrowserProject() {
     materialContractInventory.materialPackages,
     fixtureSources,
   ).map((file: string) => resolve(rootDir, file));
-  // This fixture compiles its real selector WGSL through RHI. Keep Engine
-  // source publication available without eagerly cooking unrelated profiles.
-  const gpuViewOnly =
-    include.length === 1 &&
-    include[0] === 'packages/render/src/__tests__/gpu-driven-view.browser.test.ts';
   // These owners either reuse their demo closure or author all assets through
   // the fixture Catalog or direct URLs. Unknown/broad/mixed selectors keep the full Catalog.
   const ownerPackRoots = new Map<string, readonly string[]>([
     ['packages/render/src/__tests__/gpu-driven-view.browser.test.ts', []],
+    ['packages/runtime/src/__tests__/point-light-shadow.browser.test.ts', []],
     [
       'packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts',
       [waterVisibilityPackRoot],
@@ -207,6 +204,7 @@ export function createBrowserProject() {
     ['packages/render/src/__tests__/transient-scene-taa.browser.test.ts', []],
     ['packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts', []],
     ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', []],
+    ['packages/app/__tests__/level-runtime-split.browser.test.ts', []],
     ['packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/dom.browser.test.ts', []],
@@ -253,7 +251,6 @@ export function createBrowserProject() {
     weaponSpiritMaterialFixture(),
     weaponSpiritMaterialFixture(true),
     forgeaxShader({
-      ...(gpuViewOnly ? { publication: 'source' as const } : {}),
       engineEntries: { pointShadows: true, hdrpSsao: true },
       materialPackages,
     }),
@@ -398,6 +395,7 @@ export function createBrowserProject() {
           ...nativeBindingCommands,
           ...threeNodeInputCommands,
           ...textureGeneratorCommands,
+          ...materialTemplateWorkerCommands,
           ...productionCspCommands,
           ...fixedFieldCommands,
           ...renderWorkerCommands,

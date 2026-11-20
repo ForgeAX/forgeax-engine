@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const FRAMES = Math.max(Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10), 60);
@@ -61,7 +61,7 @@ gpu.requestAdapter = async (options) => {
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildShaderMaterial2dWorld, makeTextureAsset, makeTexturePixels, TEXTURE_SIZE } = await import(resolve(root, 'src', 'scene.ts'));
-const manifest = JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json')));
+const manifest = await readCookedShaderManifestPublication(JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json'))));
 const manifestUrl = processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json'));
 
 let renderer;

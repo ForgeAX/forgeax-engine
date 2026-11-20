@@ -161,7 +161,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
             scene: {
               scene: available.scene,
               skin: skinFrame,
-              plan: topology.query(topology.sourcePlan(), undefined),
+              plan: topology.query(topology.sourcePlan(), undefined).active,
               slots: scene.slotsSnapshot(),
               slotAt: scene.slotAt,
             },
@@ -208,6 +208,8 @@ function recorder(
   const bindings: { group: BindGroup; offsets: readonly number[] }[] = [];
   const pipelines: RenderPipeline[] = [];
   let encodeError: unknown;
+  let submitted = false;
+  let sealed = false;
   graph
     .addRasterPass('cluster-bindings', {
       accesses: [...gpu.accesses, { resource: view, usage: 'color-attachment' }],
@@ -254,15 +256,25 @@ function recorder(
       return encodeError;
     },
     record(next: Partial<GpuDrivenStandardPbrFrameResources>) {
+      if (submitted) {
+        prepared = f.prepare();
+        submitted = false;
+        sealed = false;
+      }
       encodeError = undefined;
       overrides = next;
       bindings.length = 0;
       pipelines.length = 0;
       const before = f.device.totalDrawCount;
+      if (!sealed) {
+        prepared._sealResourceReads().unwrap();
+        sealed = true;
+      }
       const encoder = f.device.createCommandEncoder().unwrap();
       compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
       f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
       prepared._commitResourceReplacement();
+      submitted = true;
       return {
         bindings: [...bindings],
         pipelines: [...pipelines],

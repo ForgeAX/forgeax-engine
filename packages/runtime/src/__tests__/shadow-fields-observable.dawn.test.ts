@@ -1,4 +1,6 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { testAssets } from './helpers/runtime-assets';
 // shadow-fields-observable.dawn.test.ts
 // feat-20260621-merge-directionallightshadow-into-directionallight M6
@@ -44,8 +46,8 @@ const BPR = Math.ceil((WIDTH * 4) / 256) * 256;
 const SHADOW_FIELDS_FULL_PIXEL_TIMEOUT_MS = 300_000;
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = URL.createObjectURL(
   new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }),
@@ -110,12 +112,17 @@ interface WriteCapture {
   f32: Float32Array;
 }
 
-function composedStandardPbr(): string {
+async function composedStandardPbr(): Promise<string> {
   const m = ENGINE_MANIFEST.materialShaders.find(
     (s: { identifier: string }) => s.identifier === 'forgeax::default-standard-pbr',
   );
   if (!m) throw new Error('default-standard-pbr not in engine manifest');
-  return m.composedWgsl;
+  const registry = new ShaderRegistry({
+    manifestUrl: undefined,
+    programCompiler: (await prepareShaderProgramCompiler()).unwrap(),
+  });
+  registry.installProgramTemplates(ENGINE_MANIFEST.library).unwrap();
+  return registry.resolveProgramTemplate(m.program, m.selection).unwrap().manifestEntry.wgsl;
 }
 
 function buildTranslationGrid(): Float32Array {
@@ -522,8 +529,8 @@ async function renderConfigWithSpy(
 
 describe('M6 shadow fields observability', () => {
   // --- Gate A: structural WGSL check ---
-  it('composed default-standard-pbr WGSL reads view.depthBias, view.normalBias, and directionalShadowFilter', () => {
-    const wgsl = composedStandardPbr();
+  it('composed default-standard-pbr WGSL reads view.depthBias, view.normalBias, and directionalShadowFilter', async () => {
+    const wgsl = await composedStandardPbr();
     expect(wgsl).toContain('depthBias');
     expect(wgsl).toContain('normalBias');
     expect(wgsl).toContain('directionalShadowFilter');

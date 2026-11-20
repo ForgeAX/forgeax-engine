@@ -43,6 +43,7 @@ export function addForwardSsr(
   const size = renderInternalCopySize(topology);
   const execution = topology.lane.compute ? 'compute' : 'fragment';
   const pyramid = addDepthPyramidPasses(graph, {
+    nativeInputs: context.nativeInputs,
     depth: depth.value,
     view: view.value,
     ...size,

@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, relative, resolve } from 'node:path';
 import { collectRepairArtifactSources } from '../ci/ci-repair-artifacts.mjs';
-import { requestGitHub } from '../ci/ci-repair-qualification.mjs';
+import { repairDeclaration, requestGitHub } from '../ci/ci-repair-qualification.mjs';
 import { downloadArtifact, retryArtifact } from '../ci/download-artifact-with-retry.mjs';
 
+export const SDK_COMPACT_PREVIEW_FRAMES = 60;
 export const SDK_ARCHIVE_VERIFY_GROUPS = Object.freeze(['project', 'source']);
 export const SDK_PR_CONSUMERS = Object.freeze(['npm', ...SDK_ARCHIVE_VERIFY_GROUPS]);
 export const SDK_NPM_PARTITIONS = Object.freeze({
@@ -13,6 +14,85 @@ export const SDK_NPM_PARTITIONS = Object.freeze({
   js: Object.freeze(['runtime-js-live', 'runtime-js-cold']),
 });
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+// The regular Engine build and required runtime checks own internal changes
+// in these packages. Source distribution, bundler or consumer changes use
+// the expanded proof. New or ambiguous paths are expanded by default.
+function archiveGroups(profile) {
+  if (profile === 'pr-consumer') return ['project'];
+  if (profile === undefined || profile === 'pr-expanded') return SDK_ARCHIVE_VERIFY_GROUPS;
+  throw new Error('sdk-pr-archive-profile');
+}
+
+export function sdkPrConsumerMatrix(profile) {
+  return {
+    include: [
+      ...archiveGroups(profile).map((group) => ({ group })),
+      ...Object.keys(SDK_NPM_PARTITIONS).map((partition) => ({ group: 'npm', partition })),
+    ],
+  };
+}
+
+const sdkReferenceDocs = /^skills\/.+\.md$/;
+const testsOrWorkspaceImplementation =
+  /^packages\/(?:[^/]+\/(?:src\/)?__tests__\/|devkit\/src\/workspace-[^/]+\.ts$)/;
+const internalRuntimeSource =
+  /^packages\/(?:ecs|math|render|rhi|runtime|animation|audio|state|water)\/src\//;
+
+function compactArchivePath(path) {
+  return (
+    typeof path === 'string' &&
+    (internalRuntimeSource.test(path) ||
+      sdkReferenceDocs.test(path) ||
+      testsOrWorkspaceImplementation.test(path))
+  );
+}
+
+export function sdkPrArchiveProfile(comparison) {
+  const files = comparison?.files;
+  if (!Array.isArray(files) || files.length === 0 || files.length >= 300) return 'pr-expanded';
+  const internalOnly = files.every(
+    (file) =>
+      file !== null &&
+      typeof file === 'object' &&
+      ['added', 'modified', 'removed', 'renamed'].includes(file.status) &&
+      compactArchivePath(file.filename) &&
+      (file.status !== 'renamed' || compactArchivePath(file.previous_filename)),
+  );
+  return internalOnly ? 'pr-consumer' : 'pr-expanded';
+}
+
+async function writeSdkPrArchiveProfile() {
+  let profile = 'pr-expanded';
+  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+  const base = event.pull_request?.base.sha;
+  const head = event.pull_request?.head.sha;
+  if (
+    process.env.GITHUB_EVENT_NAME === 'pull_request' &&
+    /^[0-9a-f]{40}$/.test(base) &&
+    /^[0-9a-f]{40}$/.test(head) &&
+    head === execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  ) {
+    try {
+      const comparison = await requestGitHub(
+        `repos/${process.env.GITHUB_REPOSITORY}/compare/${base}...${head}`,
+        process.env.GH_TOKEN,
+      );
+      profile = sdkPrArchiveProfile(comparison);
+    } catch {
+      console.warn('[sdk-pr] immutable input comparison unavailable; using expanded verification');
+    }
+  }
+  const declaredRepair =
+    process.env.GITHUB_EVENT_NAME === 'pull_request' &&
+    Boolean(repairDeclaration(event.pull_request?.body, process.env.GITHUB_REPOSITORY));
+  const matrix = sdkPrConsumerMatrix(profile);
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    `profile=${profile}\ndeclared_repair=${declaredRepair}\nmatrix=${JSON.stringify(matrix)}\nconsumer_count=${matrix.include.length}\n`,
+  );
+  console.log(`[sdk-pr] Archive verification profile: ${profile}`);
+}
 
 function seedFiles(root, version, group = 'all') {
   return [
@@ -78,16 +158,15 @@ function consumerKey(report) {
   return `${report.group}${report.partition ? `-${report.partition}` : ''}`;
 }
 
-export function sdkConsumerChecks() {
-  return [
-    ...SDK_ARCHIVE_VERIFY_GROUPS,
-    ...Object.keys(SDK_NPM_PARTITIONS).map((key) => `npm-${key}`),
-  ].map((key) => `sdk-consumer-${key}`);
+export function sdkConsumerChecks(profile) {
+  return sdkPrConsumerMatrix(profile).include.map(
+    (consumer) => `sdk-consumer-${consumerKey(consumer)}`,
+  );
 }
 
-function repairSourceMap(sources) {
+function repairSourceMap(sources, profile) {
   if (sources === undefined) return undefined;
-  const checks = sdkConsumerChecks();
+  const checks = sdkConsumerChecks(profile);
   if (sources.length !== checks.length) throw new Error('sdk-pr-repair-conservation');
   const result = new Map();
   for (const source of sources) {
@@ -136,20 +215,39 @@ function assertConsumerIdentities(reports, expectedHead, version, sources) {
   }
 }
 
-export function aggregateSdkConsumers(reports, expectedHead, version, repairSources) {
-  const sources = repairSourceMap(repairSources);
+function missingCompactPreviewEvidence(report) {
+  if (report.group !== 'project' || report.profile !== 'pr-consumer') return false;
+  const readyFrames = report.previewBrowser?.readyFrames;
+  return !Number.isSafeInteger(readyFrames) || readyFrames < SDK_COMPACT_PREVIEW_FRAMES;
+}
+
+export function aggregateSdkConsumers(reports, expectedHead, version, repairSources, profile) {
+  const archive = archiveGroups(profile);
+  if (
+    profile !== undefined &&
+    reports.some(
+      (report) =>
+        report.group !== 'npm' &&
+        report.profile !== 'pr-expanded' &&
+        !(profile === 'pr-consumer' && ['core', 'pr-consumer'].includes(report.profile)),
+    )
+  )
+    throw new Error('sdk-pr-archive-profile-evidence');
+  if (reports.some(missingCompactPreviewEvidence))
+    throw new Error('sdk-pr-compact-preview-evidence');
+  const sources = repairSourceMap(repairSources, profile);
   if (sources !== undefined && version !== `0.0.0-pr.${expectedHead}`)
     throw new Error('sdk-pr-repair-current-identity');
   const npmReports = reports.filter((report) => report.group === 'npm');
   const partitions = Object.keys(SDK_NPM_PARTITIONS);
   if (
     !/^[0-9a-f]{40}$/.test(expectedHead) ||
-    reports.length !== SDK_ARCHIVE_VERIFY_GROUPS.length + partitions.length ||
+    reports.length !== archive.length + partitions.length ||
     npmReports.length !== partitions.length
   )
     throw new Error('sdk-pr-consumer-conservation');
   assertConsumerIdentities(reports, expectedHead, version, sources);
-  for (const group of SDK_ARCHIVE_VERIFY_GROUPS) {
+  for (const group of archive) {
     if (reports.filter((report) => report.group === group).length !== 1)
       throw new Error(`sdk-pr-consumer-missing-or-duplicate:${group}`);
   }
@@ -172,7 +270,8 @@ export function aggregateSdkConsumers(reports, expectedHead, version, repairSour
     ok: true,
     engineCommit: expectedHead,
     sdkVersion: version,
-    groups: SDK_PR_CONSUMERS,
+    groups: ['npm', ...archive],
+    ...(profile === undefined ? {} : { archiveProfile: profile }),
     ...(sources === undefined ? {} : { qualification: 'ci-repair', executions: repairSources }),
     npm: {
       partitions,
@@ -182,7 +281,7 @@ export function aggregateSdkConsumers(reports, expectedHead, version, repairSour
   };
 }
 
-export async function collectSdkRepairReports(context, api, readArtifact) {
+export async function collectSdkRepairReports(context, api, readArtifact, profile) {
   const rows = await collectRepairArtifactSources(
     {
       ...context,
@@ -190,7 +289,7 @@ export async function collectSdkRepairReports(context, api, readArtifact) {
       jobKey: 'consumers',
       checkPrefix: 'sdk-consumer-',
     },
-    sdkConsumerChecks(),
+    sdkConsumerChecks(profile),
     (name) => name.replace('sdk-consumer-', 'sdk-pr-result-'),
     api,
   );
@@ -230,7 +329,8 @@ async function readSdkConsumerArtifact(repository, root, artifact, source) {
 if (import.meta.main) {
   const value = (name) => process.argv[process.argv.indexOf(name) + 1];
   const version = value('--version');
-  if (process.argv.includes('--write-seed'))
+  if (process.argv.includes('--select-archive-profile')) await writeSdkPrArchiveProfile();
+  else if (process.argv.includes('--write-seed'))
     writeSeedChecksums(resolve(value('--write-seed')), version);
   else if (process.argv.includes('--check-seed'))
     checkSeed(
@@ -241,6 +341,9 @@ if (import.meta.main) {
     );
   else if (process.argv.includes('--aggregate')) {
     const root = resolve(value('--aggregate'));
+    const profile = process.argv.includes('--archive-profile')
+      ? value('--archive-profile')
+      : undefined;
     const repair = process.argv.includes('--ci-repair') ? value('--ci-repair') : 'false';
     if (!['true', 'false'].includes(repair)) throw new Error('sdk-pr-repair-context');
     if (repair === 'true') {
@@ -256,16 +359,21 @@ if (import.meta.main) {
         },
         (endpoint) => requestGitHub(endpoint, process.env.GH_TOKEN),
         (artifact, source) => readSdkConsumerArtifact(repository, root, artifact, source),
+        profile,
       );
       console.log(
-        JSON.stringify(aggregateSdkConsumers(reports, value('--expected-head'), version, sources)),
+        JSON.stringify(
+          aggregateSdkConsumers(reports, value('--expected-head'), version, sources, profile),
+        ),
       );
     } else {
       const reports = readdirSync(root)
         .filter((name) => name.endsWith('-result.json'))
         .map((name) => JSON.parse(readFileSync(resolve(root, name), 'utf8')));
       console.log(
-        JSON.stringify(aggregateSdkConsumers(reports, value('--expected-head'), version)),
+        JSON.stringify(
+          aggregateSdkConsumers(reports, value('--expected-head'), version, undefined, profile),
+        ),
       );
     }
   } else throw new Error(`unknown-sdk-pr-command:${basename(process.argv[1])}`);

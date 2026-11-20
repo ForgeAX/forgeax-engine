@@ -11,6 +11,31 @@ export function snapshotEngineWorkspaceProjectStatus(
   lifecycle: EngineWorkspaceProjectLifecycle | undefined,
 ): EngineWorkspaceProjectStatus | undefined {
   if (lifecycle === undefined) return undefined;
+  const preparation =
+    lifecycle.preparation === undefined
+      ? {}
+      : {
+          preparation: {
+            generation: lifecycle.preparation.generation,
+            stage: lifecycle.preparation.stage,
+            ...(lifecycle.preparation.operation === undefined
+              ? {}
+              : { operation: lifecycle.preparation.operation }),
+            startedAt: lifecycle.preparation.startedAt,
+            updatedAt: lifecycle.preparation.updatedAt,
+            activeCount: lifecycle.preparation.activeCount,
+            active: lifecycle.preparation.active.map(({ source, phase, startedAt, progress }) => ({
+              source,
+              phase,
+              startedAt,
+              ...(progress === undefined ? {} : { progress: { ...progress } }),
+            })),
+            recent: lifecycle.preparation.recent.map(({ source, cacheHit }) => ({
+              source,
+              cacheHit,
+            })),
+          },
+        };
   const targetIdentity = (value: EngineWorkspaceTarget): EngineWorkspaceProjectTargetIdentity => {
     const { surface: _surface, ...identity } = value;
     return identity;
@@ -19,12 +44,14 @@ export function snapshotEngineWorkspaceProjectStatus(
     case 'preparing':
       return {
         phase: 'preparing',
+        ...preparation,
         sessionId: lifecycle.sessionId,
         generation: lifecycle.generation,
       };
     case 'starting':
       return {
         phase: 'starting',
+        ...preparation,
         sessionId: lifecycle.sessionId,
         generation: lifecycle.generation,
         document: { ...lifecycle.document },
@@ -34,6 +61,7 @@ export function snapshotEngineWorkspaceProjectStatus(
     case 'running':
       return {
         phase: 'running',
+        ...preparation,
         sessionId: lifecycle.sessionId,
         generation: lifecycle.generation,
         document: { ...lifecycle.document },
@@ -43,6 +71,7 @@ export function snapshotEngineWorkspaceProjectStatus(
     case 'failed':
       return {
         phase: 'failed',
+        ...preparation,
         sessionId: lifecycle.sessionId,
         generation: lifecycle.generation,
         ...(lifecycle.document === undefined ? {} : { document: { ...lifecycle.document } }),

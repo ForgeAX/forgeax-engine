@@ -342,6 +342,7 @@ describe('single source frame loop', () => {
   it('steps update-only frames without drawing or receipt credit, then resets the next picture', () => {
     const world = new World();
     const update = vi.spyOn(world, 'update');
+    const beforeUpdate = vi.fn();
     const beforeDraw = vi.fn();
     const calls: DrawCall[] = [];
     // Receipts never complete: once the in-flight credit is spent, only update-only steps run.
@@ -360,6 +361,7 @@ describe('single source frame loop', () => {
       world,
       renderer,
       platform: testPlatform({ now, raf, caf }),
+      beforeUpdate,
       beforeDraw,
     });
     loop.start().unwrap();
@@ -374,6 +376,10 @@ describe('single source frame loop', () => {
     for (let step = 0; step < 3; step++) loop.stepFrame(0.05, false).unwrap();
     expect(calls).toHaveLength(drawn);
     expect(update.mock.calls.slice(updated)).toEqual([[0.05], [0.05], [0.05]]);
+    expect(beforeUpdate.mock.calls.slice(0, updated)).toEqual(
+      Array.from({ length: updated }, () => [true]),
+    );
+    expect(beforeUpdate.mock.calls.slice(updated)).toEqual([[false], [false], [false]]);
     expect(beforeDraw).toHaveBeenCalledTimes(drawn + 3);
     expect(loop.stepFrame(-1, false)).toMatchObject({
       ok: false,

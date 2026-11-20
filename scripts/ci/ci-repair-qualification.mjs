@@ -25,7 +25,7 @@ export const repairReusableJobs = Object.freeze({
     'metrics-validate-runtime',
   ],
   'native-ray-query.yml': ['native-ray-query-contract', 'native-node-gi'],
-  'sdk-pr-preflight.yml': ['consumers', 'aggregate'],
+  'sdk-pr-preflight.yml': ['consumers'],
   'webgpu-compatibility.yml': ['compatibility'],
   'modeling-ci.yml': ['engine-candidate'],
 });
@@ -34,18 +34,27 @@ export const repairReusableJobs = Object.freeze({
 const repairRequiredExecutionSteps = {
   'ci.yml': {
     'view-integration-0': [
-      'Prepare matching DevKit browser shader profile',
+      'Prepare verified paired consumer inputs',
       'Runtime Pack Worker dev/build JS/TS browser gate',
     ],
     'view-integration-1': [
-      'Prepare matching DevKit browser shader profile',
+      'Prepare verified paired consumer inputs',
       'DevKit project play browser journeys (uninstrumented)',
+    ],
+    'view-integration-2': [
+      'Prepare verified paired consumer inputs',
+      'Runtime Pack Worker dev/build JS/TS browser gate',
+    ],
+    'view-integration-3': [
+      'Prepare verified paired consumer inputs',
+      'Runtime Pack Worker dev/build JS/TS browser gate',
     ],
   },
 };
 
-function repairExecutionIsComplete(workflow, checkName, job) {
-  return (repairRequiredExecutionSteps[workflow]?.[checkName] ?? []).every((name) => {
+function repairExecutionIsComplete(workflow, checkName, job, requiredSourceStep) {
+  const required = repairRequiredExecutionSteps[workflow]?.[checkName] ?? [];
+  return [...required, ...(requiredSourceStep ? [requiredSourceStep] : [])].every((name) => {
     const steps = (job.steps ?? []).filter((step) => step.name === name);
     return (
       steps.length === 1 && steps[0].status === 'completed' && steps[0].conclusion === 'success'
@@ -64,7 +73,7 @@ export const repairArtifactSuites = Object.freeze({
     'metrics-validate-browser': 'metrics-validate',
     'metrics-validate-runtime': 'metrics-validate',
   },
-  'sdk-pr-preflight.yml': { consumers: 'sdk-build', aggregate: 'sdk-build' },
+  'sdk-pr-preflight.yml': { consumers: 'sdk-build' },
 });
 
 export const metricProducers = [
@@ -399,7 +408,21 @@ function upstreamOnlyCoverageFailure(jobs, run, job) {
   return steps.every(inactiveCoverageStep);
 }
 
+function sdkConsumersBlocked(jobs, run) {
+  if (observedJob(jobs, run, 'sdk-seed').kind !== 'failed') return false;
+  // An omitted matrix or GitHub's skipped matrix placeholder proves no
+  // consumer ran. A real consumer result is an execution boundary.
+  return jobs
+    .filter((job) => job.name.startsWith('sdk-consumer-'))
+    .every(
+      (job) => job.run_id === run.id && job.status === 'completed' && job.conclusion === 'skipped',
+    );
+}
+
 function blockedCheck(input, run, jobs, result) {
+  if (input.workflow === 'sdk-pr-preflight.yml' && input.jobKey === 'consumers') {
+    return ['missing', 'skipped'].includes(result.kind) && sdkConsumersBlocked(jobs, run);
+  }
   if (input.workflow !== 'ci.yml' || !coreBlocked(jobs, run)) return false;
   const coverageSuite = repairArtifactSuites[input.workflow]?.[input.jobKey] === 'coverage-pnpm';
   if (coverageSuite) {
@@ -639,7 +662,7 @@ export async function ciRepairQualification(
     return normal('artifact-consumer-needs-fresh-inputs');
   const source = await originalSuccess(api, { ...input, pr }, selected.run, selected.job);
   if (!source) return normal('reuse-provenance-unqualified');
-  if (!repairExecutionIsComplete(workflow, checkName, source.job))
+  if (!repairExecutionIsComplete(workflow, checkName, source.job, input.requiredSourceStep))
     return normal('required-execution-step-unqualified');
   const metrics = repairArtifactSuites[workflow]?.[jobKey] === 'metrics-validate';
   if (metrics && !metricProducers.includes(checkName))
@@ -774,6 +797,7 @@ async function main() {
         jobKey: process.env.GITHUB_JOB,
         checkName: process.env.CI_REPAIR_CHECK_NAME,
         dependencyResults: process.env.CI_REPAIR_DEPENDENCY_RESULTS,
+        requiredSourceStep: process.env.CI_REPAIR_REQUIRED_SOURCE_STEP,
         artifactSuiteProviderReused: process.env.CI_REPAIR_SUITE_PROVIDER_REUSED,
         currentRunId: process.env.GITHUB_RUN_ID,
         targetSha:

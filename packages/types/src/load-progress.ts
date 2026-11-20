@@ -16,6 +16,7 @@
  */
 
 import { type LoadChannel, loadChannelConstructor } from './load-channel.js';
+import zhCN from './locales/load-progress.zh-CN.json';
 
 /** Increments reported by one producer. Every count is a non-negative delta. */
 export interface LoadWork {
@@ -533,6 +534,10 @@ interface HostPageLabels {
   readonly unknownStartupFailure: string;
   readonly diagnosticNodeLimit: string;
   readonly circularDiagnostic: string;
+  readonly nativeStartupFailureTitle: string;
+  readonly nativePackageFailureTitle: string;
+  readonly nativeReloadHint: string;
+  readonly confirm: string;
 }
 
 /** Text shown for a snapshot. `{seconds}` in `elapsed` is replaced by whole seconds. */
@@ -594,6 +599,10 @@ export const DEFAULT_LOAD_PROGRESS_LABELS: LoadProgressLabels & {
     unknownStartupFailure: 'Unknown startup failure',
     diagnosticNodeLimit: '[diagnostic node limit]',
     circularDiagnostic: '[circular]',
+    nativeStartupFailureTitle: 'Unable to start',
+    nativePackageFailureTitle: 'Unable to load',
+    nativeReloadHint: 'Tap Reload to try again. If it fails again, close and reopen the game.',
+    confirm: 'OK',
   }),
 });
 
@@ -602,11 +611,14 @@ export function resolveLoadProgressLabels(input?: LoadProgressLabelInput): LoadP
   readonly host: HostPageLabels;
 } {
   if (input === undefined) return DEFAULT_LOAD_PROGRESS_LABELS;
+  const localized: typeof DEFAULT_LOAD_PROGRESS_LABELS | undefined =
+    /^zh(?:-(?:cn|sg|hans)(?:-|$)|$)/i.test(input.lang ?? '') ? zhCN : undefined;
   return {
     ...DEFAULT_LOAD_PROGRESS_LABELS,
+    ...localized,
     ...input,
-    phases: { ...DEFAULT_LOAD_PROGRESS_LABELS.phases, ...input.phases },
-    host: { ...DEFAULT_LOAD_PROGRESS_LABELS.host, ...input.host },
+    phases: { ...DEFAULT_LOAD_PROGRESS_LABELS.phases, ...localized?.phases, ...input.phases },
+    host: { ...DEFAULT_LOAD_PROGRESS_LABELS.host, ...localized?.host, ...input.host },
   };
 }
 

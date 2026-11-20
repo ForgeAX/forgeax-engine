@@ -1,6 +1,9 @@
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
 import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
+import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
+import { selectWorkspaceSceneSurfaceTarget } from '@forgeax/view-workspace-core/resource-open';
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { t, subscribeLocale } from './i18n/index.ts';
 
 // Lucide 0.460.0 icon geometry, kept local because the Engine-pinned workspace lockfile cannot be changed by View.
 const iconPaths = {
@@ -18,7 +21,7 @@ const iconMarkup = (name: IconName) => `<svg xmlns="http://www.w3.org/2000/svg" 
 export function mountPlayToolbar({ document, element, client }: { document: Document; element: HTMLElement; client: ViewWorkspaceClient }) {
   const toolbar = document.createElement('div');
   toolbar.setAttribute('role', 'toolbar');
-  toolbar.setAttribute('aria-label', 'Scene execution');
+  toolbar.setAttribute('aria-label', t('viewport.execution'));
   toolbar.className = 'fx-toolbar fx-toolbar--viewport';
   const surface = document.createElement('div');
   Object.assign(surface.style, { position: 'relative', flex: '1', minHeight: '0' });
@@ -28,16 +31,16 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   let errorText = '';
   let disposed = false;
   let playRequest: AbortController | undefined;
-  let playStage = '';
+  let playStage: '' | 'waitingForPage' | 'readingCamera' = '';
   const pending = new Set<string>();
   const buttons: { button: HTMLButtonElement; label: () => string; icon: () => IconName; available: () => boolean; visible: () => boolean }[] = [];
   const status = document.createElement('span');
   status.setAttribute('role', 'status');
   status.style.color = 'var(--fx-color-text-secondary)';
-  // Always-visible navigation hint in the viewport corner; pointer-events stay
-  // off so it never intercepts camera input.
   const navHint = document.createElement('div');
-  navHint.textContent = 'WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus';
+  navHint.className = 'fx-viewport-navigation-hint';
+  navHint.hidden = true;
+  navHint.textContent = t('viewport.navigation');
   Object.assign(navHint.style, {
     position: 'absolute', right: '8px', bottom: '6px', zIndex: '1',
     fontSize: '11px', lineHeight: '1.4', pointerEvents: 'none', userSelect: 'none',
@@ -86,14 +89,14 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
       log('play.start-returned');
       controller.signal.throwIfAborted();
       state = opened;
-      playStage = 'Waiting for the game page…';
+      playStage = 'waitingForPage';
       render();
       const target = { targetId: opened.play!.target.targetId, targetGeneration: opened.play!.target.generation };
       log('play.ready');
       await client.call('play.ready', target, options);
       log('play.ready-returned');
       controller.signal.throwIfAborted();
-      playStage = 'Reading the game camera…';
+      playStage = 'readingCamera';
       render();
       log('camera.get');
       await client.call('camera.get', target, options);
@@ -114,11 +117,14 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
   }, () => !!state?.play && state?.targetBinding !== 'play');
   toolbar.append(status);
   const render = () => {
+    toolbar.setAttribute('aria-label', t('viewport.execution'));
+    navHint.textContent = t('viewport.navigation');
     for (const { button, label, icon, available, visible } of buttons) {
       const action = label();
-      if (button.getAttribute('aria-label') !== action) {
-        button.setAttribute('aria-label', action);
-        button.title = action;
+      const translated = t(`viewport.${action.toLowerCase()}`);
+      if (button.getAttribute('aria-label') !== translated) {
+        button.setAttribute('aria-label', translated);
+        button.title = translated;
         button.innerHTML = iconMarkup(icon());
         button.setAttribute('data-action', `scene.${action.toLowerCase()}`);
       }
@@ -128,15 +134,22 @@ export function mountPlayToolbar({ document, element, client }: { document: Docu
     }
     const target = state?.targetBinding ?? 'scene';
     if (surface.dataset.forgeaxToolTarget !== target) surface.dataset.forgeaxToolTarget = target;
-    const nextStatus = errorText || (pending.has('Stop') ? 'Stopping…'
-      : pending.has('Play') ? (playStage || 'Preparing Play…')
-      : state?.play?.phase === 'starting' ? 'Preparing Play…' : '');
+    const sceneAvailable = (state?.projectStatus?.phase ?? state?.projectPhase) === 'running'
+      && state?.workspaceTargetLost !== true
+      && state?.selectedTabId === VIEW_WORKSPACE_TAB_ID
+      && target === 'scene' && state?.play?.phase !== 'starting'
+      && selectWorkspaceSceneSurfaceTarget(state) !== null;
+    navHint.hidden = !sceneAvailable;
+    const nextStatus = errorText || (pending.has('Stop') ? t('viewport.stopping')
+      : pending.has('Play') ? t(`viewport.${playStage || 'preparing'}`)
+      : state?.play?.phase === 'starting' ? t('viewport.preparing') : '');
     status.hidden = !nextStatus;
     if (status.textContent !== nextStatus) status.textContent = nextStatus;
   };
   const reader = createWorkspaceStateReader(client);
   const unsubscribe = reader.subscribe(() => { if (!disposed) { state = reader.getSnapshot(); render(); } });
+  const unsubscribeLocale = subscribeLocale(render);
   render();
   return { surface,
-    dispose() { disposed = true; playRequest?.abort(); unsubscribe(); toolbar.remove(); surface.remove(); } };
+    dispose() { disposed = true; playRequest?.abort(); unsubscribe(); unsubscribeLocale(); toolbar.remove(); surface.remove(); } };
 }

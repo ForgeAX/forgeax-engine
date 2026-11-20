@@ -16,6 +16,7 @@ import { projectedDecalTopology } from '../decals/graph';
 import { captureEditorAssistanceView } from '../features/editor-assistance/feature';
 import { scopedGraphTextureTarget } from '../features/graph-texture-targets';
 import { chromaticAberrationActive, outputLensEffectsActive } from '../features/lens-effects';
+import { distanceOutlineFirstStep } from '../features/outline/distance-graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
 
 import { importSharedGraphTextures } from '../features/shared-graph-textures';
@@ -81,7 +82,7 @@ import { renderSubmission, renderWorldFor } from '../world/render-world';
 import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
 
 import { recordContext } from '../world/view-record-context';
-
+import { retireClusterMeshBindings } from './cluster-mesh-binding-preparation';
 import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from './frame-graph-key';
 import {
   createRenderGraphPassInstrumentation,
@@ -99,7 +100,7 @@ import {
   consumeGtaoCandidatePreparationFault,
 } from './gtao-candidate-preparation-fault';
 import { flushMeshDrawUploads } from './mesh-ssbo';
-
+import { captureNativeGraphInputs } from './native-graph-inputs';
 import { scenePipelinePreparations } from './scene-pipeline-preparation';
 
 import { standardFeatureContribution } from './standard-feature-contribution';
@@ -183,13 +184,12 @@ import {
   buildFullscreenPostProcessPass,
   postProcessShaderEntrySignature,
 } from '../fullscreen-post-process-pass';
-
-import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
-
+import type {
+  GpuDrivenGraphProjection,
+  PreparedGpuDrivenFrame,
+} from '../gpu-driven/production-raster';
 import { GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '../gpu-texture-usage';
-
 import { GPU_BUFFER_USAGE_INDIRECT } from '../gpu-usage';
-
 import type { RenderFeatureGraphInspection } from '../inspection-types';
 
 import { type RenderExtent, renderInternalCopySize } from '../pipeline/render-extent';
@@ -1125,6 +1125,8 @@ function hasSelectedVolumeLight(
 function cameraTopologyOf(
   camera: CameraSnapshot,
   clearOnly: boolean,
+  outline: CameraSnapshot['outline'],
+  height: number,
 ): RenderPipelineTopology['camera'] {
   const depthOfField = depthOfFieldTopology(camera.depthOfField);
   return {
@@ -1139,7 +1141,16 @@ function cameraTopologyOf(
     // positive intensity changes update the recorder UBO in place.
     bloom: standardBloomAdmitted(camera) ? 'on' : 'off',
     bloomIntensity: camera.bloomIntensity,
-    outline: !clearOnly && camera.outline !== undefined,
+    outline:
+      !clearOnly &&
+      camera.postProcessing !== false &&
+      outline !== undefined &&
+      (outline.distanceStyle === undefined
+        ? true
+        : {
+            kind: 'distance-field',
+            firstStep: distanceOutlineFirstStep(outline.width, outline.distanceStyle, height),
+          }),
     lensEffects: !clearOnly && outputLensEffectsActive(camera.lensEffects),
     chromaticAberration: !clearOnly && chromaticAberrationActive(camera.lensEffects),
     lensFlare: !clearOnly && camera.lensFlare !== undefined,
@@ -1306,7 +1317,7 @@ function featureTopologySignatureOf(
 }
 
 function gpuDrivenTopologySignatureOf(
-  gpuDriven: PreparedGpuDrivenFrame | undefined,
+  gpuDriven: GpuDrivenGraphProjection | undefined,
   stockRecording: boolean,
 ): string {
   if (gpuDriven === undefined) return '';
@@ -1378,7 +1389,7 @@ function topologyOf(
   width: number,
   height: number,
   shadowMapSize: number | undefined,
-  gpuDriven: PreparedGpuDrivenFrame | undefined,
+  gpuDriven: GpuDrivenGraphProjection | undefined,
   featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
   featurePlanRevision: number | string,
   cubeCaptureState: CubeCaptureGraphState | undefined,
@@ -1444,11 +1455,15 @@ function topologyOf(
         profile: surfaceProfile.value,
       },
       camera: {
-        ...cameraTopologyOf(camera, clearOnly),
+        ...cameraTopologyOf(
+          camera,
+          clearOnly,
+          editor === undefined ? camera.outline : editor.authoredOutline,
+          height,
+        ),
         ...(editor === undefined
           ? {}
           : {
-              outline: editor.authoredOutline !== undefined,
               editorAssistance: true,
               editorOutline: editor.source.outline !== undefined,
             }),
@@ -1519,6 +1534,8 @@ export function retire(
 ): void {
   if (frameState.retiredCompiledFrameGraphs.has(graph)) return;
   frameState.retiredCompiledFrameGraphs.add(graph);
+  frameState.materialBgAssemblyCache.retireGraph(graph);
+  retireClusterMeshBindings(frameState.meshBindGroupCache, graph);
   setGraphGenerationRetiring(frameState, graph);
   const failures = graphRetirementFailureSet(frameState);
   const retirement = graph.retire();
@@ -2120,6 +2137,7 @@ function installedFrameGraphOf(
   preparedResourceKey: string | undefined,
   stockRecording: boolean,
   prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'],
+  prepareGpuDrivenSource: InstalledFrameGraph['prepareGpuDrivenSource'],
   directionalShadowViewCount: number | undefined,
   featureTextureAliases: ReadonlyMap<string, string>,
   configurationRevision: number | undefined,
@@ -2139,6 +2157,7 @@ function installedFrameGraphOf(
       ? {}
       : { requiresShadowPipelinePreparation }),
     ...(prepareGpuDrivenPipelines === undefined ? {} : { prepareGpuDrivenPipelines }),
+    ...(prepareGpuDrivenSource === undefined ? {} : { prepareGpuDrivenSource }),
     scenePipelinePreparations: scenePipelinePreparations(builder),
     ...(directionalShadowViewCount === undefined ? {} : { directionalShadowViewCount }),
     graph,
@@ -2326,10 +2345,59 @@ function emptyFeatureGraphMetricsDelta(): FeatureGraphMetricsDelta {
 export function compileViewGraph(input: GraphCompileInput): ViewGraphCompileOutcome {
   const frame = input.frameState.frameNumber;
   try {
-    return compileViewGraphStages(input, frame);
+    return compileViewGraphStages(input, frame, input.gpuDriven);
   } catch (cause) {
     return { frame, kind: 'failed', cause };
   }
+}
+
+export type SourceGraphCompileInput = Omit<GraphCompileInput, 'gpuDriven'> & {
+  readonly gpuDriven: GpuDrivenGraphProjection;
+};
+
+/** Same builder and native graph owner, without issuing a recording or frame replacement. */
+export function compileSourceViewGraph(input: SourceGraphCompileInput): ViewGraphCompileOutcome {
+  const frame = input.frameState.frameNumber;
+  try {
+    return compileViewGraphStages(input, frame, undefined);
+  } catch (cause) {
+    return { frame, kind: 'failed', cause };
+  }
+}
+
+/** Count actual stock shadow projection calls while building this graph. */
+function shadowGraphProjection(input: {
+  readonly gpuDriven: GpuDrivenGraphProjection | undefined;
+  readonly builder: RenderGraphBuilder<RenderPipelineFrame>;
+  readonly stockRecording: boolean;
+  readonly activePipeline: RenderFrameState['activePipeline'];
+  readonly shadowCameraCull: boolean;
+}) {
+  const { gpuDriven, builder, stockRecording, activePipeline, shadowCameraCull } = input;
+  let count: number | undefined = stockRecording ? 0 : undefined;
+  return {
+    get count() {
+      return count;
+    },
+    project: (
+      identity: import('../gpu-driven/shadow-views').ShadowViewIdentity,
+      cameraPyramid?: import('@forgeax/engine-render-graph').GraphTextureView,
+    ) => {
+      if (
+        (activePipeline === standardPipeline || isCaptureViewPipeline(activePipeline)) &&
+        identity.kind === 'directional'
+      )
+        count = Math.max(count ?? 0, identity.index + 1);
+      return (
+        gpuDriven?.projectShadow?.(
+          builder,
+          identity,
+          true,
+          shadowCameraCull ? cameraPyramid : undefined,
+        ) ?? ok(undefined)
+      );
+    },
+  };
 }
 
 function acceptedGraphFeatures(
@@ -2343,15 +2411,24 @@ function acceptedGraphFeatures(
   };
 }
 
-function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGraphCompileOutcome {
+function compileViewGraphStages(
+  input: ViewGraphCompileInput,
+  frame: number,
+  gpuReplacement: PreparedGpuDrivenFrame | undefined,
+): ViewGraphCompileOutcome {
   const profileSession = activeRenderProfileSession(input.internals);
-  return compileViewGraphStagesOwned(input, frame, profileSession);
+  return compileViewGraphStagesOwned(input, frame, profileSession, gpuReplacement);
 }
 
+type ViewGraphCompileInput = Omit<GraphCompileInput, 'gpuDriven'> & {
+  readonly gpuDriven?: GpuDrivenGraphProjection | undefined;
+};
+
 function compileViewGraphStagesOwned(
-  input: GraphCompileInput,
+  input: ViewGraphCompileInput,
   frame: number,
   profileSession: RecorderSession | undefined,
+  gpuReplacement: PreparedGpuDrivenFrame | undefined,
 ): ViewGraphCompileOutcome {
   const readViewGraphCompileInputs = () => {
     const {
@@ -2700,7 +2777,7 @@ function compileViewGraphStagesOwned(
     if (existing.kind !== 'rebuild') {
       return existingFrameGraphOutcome(existing, frame, key, metrics, effects, {
         ...accepted,
-        gpuReplacement: gpuDriven,
+        gpuReplacement,
       });
     }
     retireStash = existing.retireStash;
@@ -2738,13 +2815,21 @@ function compileViewGraphStagesOwned(
       | undefined;
     let projectedGpuDriven = false;
     let prepareGpuDrivenPipelines: InstalledFrameGraph['prepareGpuDrivenPipelines'];
+    let prepareGpuDrivenSource: InstalledFrameGraph['prepareGpuDrivenSource'];
     const activePipeline = frameState.activePipeline;
-    let directionalShadowViewCount: number | undefined;
+    const shadowProjection = shadowGraphProjection({
+      gpuDriven,
+      builder,
+      stockRecording,
+      activePipeline,
+      shadowCameraCull,
+    });
     const build = pipelineBuildOf(activePipeline, stockRecording, frameState.gtaoExecutionOverride);
     const prepareViewGraphBuildArguments = () => {
       const buildArgs = [
         {
           graph: builder,
+          nativeInputs: captureNativeGraphInputs(internals, pipelineState),
           viewIdentity,
           ...(fluid === undefined
             ? {}
@@ -2777,35 +2862,16 @@ function compileViewGraphStagesOwned(
               target.lateOcclusion === true,
               stockRecording,
             );
-            if (projected.ok) prepareGpuDrivenPipelines = projected.value.preparePipelines;
+            if (projected.ok) {
+              prepareGpuDrivenPipelines = projected.value.preparePipelines;
+              prepareGpuDrivenSource = projected.value.prepareSource;
+            }
             return projected;
           },
           ...(gpuDriven?.projectShadow === undefined
             ? {}
             : {
-                projectGpuDrivenShadow: (identity, cameraPyramid) => {
-                  // Capture demand from the stock builder's actual projection calls,
-                  // rather than re-reading a possibly retained request/topology key.
-                  if (
-                    (activePipeline === standardPipeline ||
-                      isCaptureViewPipeline(activePipeline)) &&
-                    identity.kind === 'directional'
-                  ) {
-                    directionalShadowViewCount = Math.max(
-                      directionalShadowViewCount ?? 0,
-                      identity.index + 1,
-                    );
-                  }
-                  // A newly compiled graph still owns every shadow compute pass.
-                  return (
-                    gpuDriven.projectShadow?.(
-                      builder,
-                      identity,
-                      true,
-                      shadowCameraCull ? cameraPyramid : undefined,
-                    ) ?? ok(undefined)
-                  );
-                },
+                projectGpuDrivenShadow: shadowProjection.project,
                 ...(gpuDriven.shadowViewPool === undefined
                   ? {}
                   : { gpuDrivenShadowDepthLayers: gpuDriven.shadowViewPool.staticLayers }),
@@ -3102,7 +3168,8 @@ function compileViewGraphStagesOwned(
           frameState.compiledFrameGraph?.preparedResourceKey,
         stockRecording,
         prepareGpuDrivenPipelines,
-        directionalShadowViewCount,
+        prepareGpuDrivenSource,
+        shadowProjection.count,
         new Map(
           [...featureProjection.graphTextures.targets].flatMap(([target, resolved]) => {
             const name = target.name;
@@ -3114,7 +3181,7 @@ function compileViewGraphStagesOwned(
         ),
         internals.standardProfile?.configurationRevision,
       ),
-      effects: effects({ ...accepted, gpuReplacement: gpuDriven }),
+      effects: effects({ ...accepted, gpuReplacement }),
     };
   };
   return completeViewGraphCompileCandidate();

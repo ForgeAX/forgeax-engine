@@ -81,6 +81,16 @@ class CasterColumns {
   promotedAt = new Float64Array(64);
   timer = new Float64Array(64);
 
+  copy(): CasterColumns {
+    const copy = new CasterColumns();
+    copy.flags = this.flags.slice();
+    copy.generation = this.generation.slice();
+    copy.threshold = this.threshold.slice();
+    copy.promotedAt = this.promotedAt.slice();
+    copy.timer = this.timer.slice();
+    return copy;
+  }
+
   ensure(slot: number): void {
     if (slot < this.flags.length) return;
     let capacity = this.flags.length;
@@ -124,6 +134,16 @@ function casterClasses(staticSlots: FrameSet, dynamicSlots: FrameSet): ShadowCas
   });
 }
 
+function sameCasterSlots(left: FrameSet, right: FrameSet): boolean {
+  if (left === right) return true;
+  if (left.size !== right.size) return false;
+  let same = true;
+  left.changesSince(right, () => {
+    same = false;
+  });
+  return same;
+}
+
 /**
  * Known transitions are batched until the next snapshot, which copies each
  * touched numeric page once; snapshots borrow the fixed root.
@@ -131,6 +151,12 @@ function casterClasses(staticSlots: FrameSet, dynamicSlots: FrameSet): ShadowCas
 class SlotClass {
   private slots = new FrameSet();
   private readonly pending = new Map<number, boolean>();
+  copy(): SlotClass {
+    const copy = new SlotClass();
+    copy.slots = this.slots;
+    for (const [slot, present] of this.pending) copy.pending.set(slot, present);
+    return copy;
+  }
   set(slot: number, present: boolean): void {
     this.pending.set(slot, present);
   }
@@ -152,10 +178,10 @@ class SlotClass {
 export class ShadowCasterClassifier {
   private frame = 0;
   private content: SceneContentCursor | undefined;
-  private readonly rows = new CasterColumns();
+  private rows = new CasterColumns();
   private readonly timers = new Map<number, Set<number>>();
-  private readonly staticSlots = new SlotClass();
-  private readonly dynamicSlots = new SlotClass();
+  private staticSlots = new SlotClass();
+  private dynamicSlots = new SlotClass();
   private declared = 0;
   private alwaysDynamic = 0;
   private flips = 0;
@@ -171,6 +197,41 @@ export class ShadowCasterClassifier {
     this.staticSlots.snapshot(),
     this.dynamicSlots.snapshot(),
   );
+
+  /** Pure next-update projection. Preparation never advances the execution clock or timers. */
+  preview(...args: Parameters<ShadowCasterClassifier['update']>): ShadowCasterClasses {
+    const copy = new ShadowCasterClassifier();
+    copy.frame = this.frame;
+    copy.content = this.content;
+    copy.rows = this.rows.copy();
+    copy.staticSlots = this.staticSlots.copy();
+    copy.dynamicSlots = this.dynamicSlots.copy();
+    copy.classes = this.classes;
+    for (const [frame, slots] of this.timers) copy.timers.set(frame, new Set(slots));
+    return copy.update(...args);
+  }
+
+  /** A readiness receipt accepts the exact caster layout predicted by this preparation. */
+  preparationCurrent(prepared: ShadowCasterClasses): () => boolean {
+    // First attachment classifies every resident rigid caster as static. It has no old timers.
+    if (this.content === undefined) return () => true;
+    const baseline = this.classes;
+    const due = this.timers.get(this.frame + 1);
+    let checked: ShadowCasterClasses | undefined;
+    let equivalent = false;
+    return () => {
+      if (this.timers.get(this.frame + 1) !== due) return false;
+      const current = this.classes;
+      if (current === baseline || current === prepared) return true;
+      if (current !== checked) {
+        equivalent =
+          sameCasterSlots(current.staticSlots, prepared.staticSlots) &&
+          sameCasterSlots(current.dynamicSlots, prepared.dynamicSlots);
+        checked = current;
+      }
+      return equivalent;
+    };
+  }
 
   update(
     source: {

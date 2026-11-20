@@ -46,5 +46,6 @@
   "bevy/time-elapsed",
   "bevy/timers",
   "bevy/transform",
-  "bevy/translation"
+  "bevy/translation",
+  "hello/gi"
 ]

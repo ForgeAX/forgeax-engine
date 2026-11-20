@@ -7,6 +7,7 @@ import type { SkinTaskBinding } from './record/skin-tasks';
 
 import type {
   BindGroup,
+  BindGroupDescriptor,
   BindGroupEntry,
   BindGroupLayout,
   BindGroupLayoutDescriptor,
@@ -120,6 +121,11 @@ interface HdrpTextureBuffers extends HdrpResourceBase {
 export type HdrpBuffers = HdrpStorageBuffers | HdrpTextureBuffers;
 
 const cache = new WeakMap<RenderSystemRuntime, HdrpBuffers>();
+/** Exact current lighting bundle; does not allocate or recover a missing one. */
+export function hdrpBuffersCurrent(runtime: RenderSystemRuntime, buffers: HdrpBuffers): boolean {
+  return cache.get(runtime) === buffers && buffers.device === runtime.device;
+}
+
 let nextClusterTransportGeneration = 1;
 
 function allocateClusterTransportGeneration(): number {
@@ -701,6 +707,7 @@ export function createHdrpUnifiedBindGroup(
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
     : MESH_UBO_FULL_ARRAY_BYTES,
+  capture?: (group: BindGroup, descriptor: BindGroupDescriptor) => void,
 ): BindGroup | null {
   const fallback = getOrCreateSsaoFallbackTexture(runtime);
   if (fallback === null) return null;
@@ -710,7 +717,7 @@ export function createHdrpUnifiedBindGroup(
     : fallback.view;
   const ssaoSampler: Sampler = fallback.sampler;
 
-  const result = runtime.device.createBindGroup({
+  const descriptor: BindGroupDescriptor = {
     label: 'hdrp-unified-bg-group2',
     layout: hdrpBuffers.unifiedBindGroupLayout,
     entries: [
@@ -727,11 +734,13 @@ export function createHdrpUnifiedBindGroup(
       },
       ...standardLightingEntries(hdrpBuffers, ssaoTexView, ssaoSampler),
     ],
-  });
+  };
+  const result = runtime.device.createBindGroup(descriptor);
   if (!result.ok) {
     runtime.errorRegistry.fire(result.error);
     return null;
   }
+  capture?.(result.value, descriptor);
   return result.value;
 }
 
@@ -786,10 +795,11 @@ export function createHdrpSkinUnifiedBindGroup(
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
     : MESH_UBO_FULL_ARRAY_BYTES,
+  capture?: (group: BindGroup, descriptor: BindGroupDescriptor) => void,
 ): BindGroup | null {
   const fallback = getOrCreateSsaoFallbackTexture(runtime);
   if (fallback === null) return null;
-  const result = runtime.device.createBindGroup({
+  const descriptor: BindGroupDescriptor = {
     label: 'hdrp-skin-unified-bg-group2',
     layout,
     entries: [
@@ -800,11 +810,13 @@ export function createHdrpSkinUnifiedBindGroup(
         fallback.sampler,
       ),
     ],
-  });
+  };
+  const result = runtime.device.createBindGroup(descriptor);
   if (!result.ok) {
     runtime.errorRegistry.fire(result.error);
     return null;
   }
+  capture?.(result.value, descriptor);
   return result.value;
 }
 

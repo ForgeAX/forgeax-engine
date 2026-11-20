@@ -138,6 +138,62 @@ function fixture(
   };
 }
 
+it.each([
+  'publication',
+  'release',
+] as const)('checks fixed Level assets once per publication and invalidates on %s', (invalidation) => {
+  const f = fixture();
+  const { packet, resources } = f.publish();
+  const asset = packet.assets.find(({ handle }) => handle === f.cube);
+  if (asset === undefined) throw new Error('Missing published fixture mesh');
+  const hold = f.receiver.retainClosedLevelAsset(f.publisher.identity, asset).unwrap();
+  const revisions = vi.spyOn(resources, 'assetRevision');
+  try {
+    const task = f.scene.shared.beginPublishedStagedGroup(
+      {
+        members: [],
+        chunks: [],
+        content: {
+          handles: [f.cube],
+          matchesCurrent: hold.isCurrent,
+          version: () => ok(asset.revision),
+          read: () => {
+            throw new Error('A collider-only source needs no mesh payload reads');
+          },
+        },
+        isCurrent: () => true,
+      },
+      (handle) => f.receiver.referencesAcceptedAsset(handle),
+    );
+    expect(task.step().unwrap().phase).toBe('resident-input');
+    revisions.mockClear();
+    expect(task.isCurrent()).toBe(true);
+    expect(task.isCurrent()).toBe(true);
+    expect(revisions).not.toHaveBeenCalled();
+
+    f.publish();
+    revisions.mockClear();
+    expect(task.isCurrent()).toBe(true);
+    expect(task.isCurrent()).toBe(true);
+    expect(revisions).toHaveBeenCalledTimes(1);
+
+    if (invalidation === 'release') hold.release();
+    else {
+      f.assets.replace(f.cube, BUILTIN_QUAD).unwrap();
+      f.publish();
+    }
+    expect(hold.isCurrent()).toBe(false);
+    expect(task.isCurrent()).toBe(false);
+  } finally {
+    revisions.mockRestore();
+    hold.release();
+    f.scene.dispose();
+    f.receiver.dispose();
+    f.publisher.dispose();
+    f.assets.dispose();
+  }
+});
+
 describe('native render publication', () => {
   it('transfers ordinary lens offsets without retaining author storage', () => {
     const f = fixture();

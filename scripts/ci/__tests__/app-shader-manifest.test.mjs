@@ -52,7 +52,7 @@ test('remaps reflection bindings and nested entry reads through app delta projec
   assert.throws(() => mergeAppShaderManifest(engine, broken), /reference is missing/);
 });
 
-test('retains a complete native source publication beside compiled Core inputs', () => {
+test('retains complete native and mixed project publications across shared transport', () => {
   const source = {
     schemaVersion: '7.0.0',
     library: publishShaderProgramTemplates(
@@ -83,6 +83,20 @@ test('retains a complete native source publication beside compiled Core inputs',
   };
   assert.equal(projectAppShaderManifest(source, publishShaderManifest([sharedEntry], [])), source);
   assert.equal(admitShaderTemplateManifest(source).ok, true);
+  const mixed = {
+    schemaVersion: '8.0.0',
+    templates: source,
+    cooked: publishShaderManifest([sharedEntry], []),
+  };
+  assert.equal(projectAppShaderManifest(mixed, source), mixed);
+  assert.throws(
+    () => projectAppShaderManifest({ ...mixed, cooked: {} }, source),
+    /invalid cooked shader publication/,
+  );
+  assert.throws(
+    () => projectAppShaderManifest({ ...mixed, templates: { ...source, library: {} } }, source),
+    /invalid source shader publication/,
+  );
   assert.throws(
     () => projectAppShaderManifest({ ...source, library: {} }, {}),
     /invalid source shader publication/,

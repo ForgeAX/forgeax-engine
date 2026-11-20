@@ -31,9 +31,15 @@ import {
   isSingleLayerMediumArtifact,
   type ProjectedRasterClass,
 } from './production-raster-classes';
+import type { ProjectedRasterGraph } from './production-raster-frame';
 import type { RasterMeshBinding } from './raster-mesh-bindings';
-import type { RetainedRasterBlock } from './retained-raster-encode';
-import type { GpuDrivenView } from './view-gpu';
+import type {
+  RasterRunRecording,
+  RetainedPassEncode,
+  RetainedRasterBlock,
+  runFacts,
+} from './retained-raster-encode';
+import type { GpuDrivenView, ViewStorageTarget } from './view-gpu';
 
 function requireViewSkinTask(view: GpuDrivenView) {
   const task = view.skinTaskBinding();
@@ -79,22 +85,32 @@ export class IndirectPassBindings {
   private indirectBuffer: Buffer | undefined;
   private readonly bundles: RenderBundle[] = [];
   private bundleBlock = -1;
+  private bundleGroup: number | undefined;
   private bundleOwner: LiveRasterBatch | undefined;
   private recording: ReturnType<PreparedRasterBundleCache['begin']> | undefined;
   /** The retained run being recorded; its bundle is attached when flushed. */
-  private run: RetainedRasterBlock | undefined;
+  private run: RasterRunRecording | undefined;
   /** Filled completely before each observation; only changed commands take a snapshot. */
   private readonly observed = {} as {
     -readonly [K in keyof PreparedRasterBindings]: PreparedRasterBindings[K];
   };
 
   constructor(
-    private readonly pass: RhiRenderPassEncoder,
+    private readonly encoder: RhiRenderPassEncoder | undefined,
     private readonly viewBindGroup: BindGroup,
     private readonly descriptor: RenderBundleEncoderDescriptor | undefined,
     private readonly bundlePass: PreparedRasterPass | undefined,
     private readonly viewOffset: number,
+    private readonly preparation?: {
+      readonly current: () => boolean;
+      readonly receipts: (() => boolean)[];
+    },
   ) {}
+
+  private get pass(): RhiRenderPassEncoder {
+    if (this.encoder === undefined) throw new Error('Native bundle preparation has no render pass');
+    return this.encoder;
+  }
 
   /** No descriptor: commands go straight to the pass. */
   get direct(): boolean {
@@ -154,7 +170,7 @@ export class IndirectPassBindings {
     counters.hits++;
   }
 
-  recordRun(block: RetainedRasterBlock): void {
+  recordRun(block: RasterRunRecording): void {
     this.run = block;
   }
 
@@ -259,11 +275,18 @@ export class IndirectPassBindings {
     const vertex = this.physicalVertex;
     if (vertex === undefined) throw new Error('Missing prepared vertex buffer');
     const block = Math.floor(live.batch.batchId / 32);
-    if (this.bundleBlock !== block) this.flush();
+    const group = live.batch.key.residencyGroup;
+    if (this.bundleBlock !== block || this.bundleGroup !== group) this.flush();
     this.bundleBlock = block;
+    this.bundleGroup = group;
     this.bundleOwner ??= live;
     if (this.bundleOwner !== live) live.bundles.retire(bundlePass, counters);
-    this.recording ??= this.bundleOwner.bundles.begin(bundlePass, device, counters);
+    this.recording ??= this.bundleOwner.bundles.begin(
+      bundlePass,
+      device,
+      counters,
+      this.preparation?.current,
+    );
     this.observeBindings(live, vertex, windows, indirectOffset, view);
     this.recording.push(this.observed);
   }
@@ -303,6 +326,8 @@ export class IndirectPassBindings {
       this.recording !== undefined
     ) {
       const finished = this.recording.finish();
+      const receipt = this.bundleOwner.bundles.captureCurrent(this.bundlePass);
+      if (receipt !== undefined) this.preparation?.receipts.push(receipt);
       this.bundles.push(finished);
       if (this.run !== undefined) this.run.bundle = finished;
     }
@@ -313,8 +338,8 @@ export class IndirectPassBindings {
   /** Close the last bundle block and execute every recorded bundle. */
   finish(): void {
     this.flush();
-    if (this.bundles.length === 0) return;
-    const executed = this.pass.executeBundles(this.bundles);
+    if (this.bundles.length === 0 || this.encoder === undefined) return;
+    const executed = this.encoder.executeBundles(this.bundles);
     if (!executed.ok) throw executed.error;
   }
 }
@@ -362,7 +387,20 @@ export function visibleWindowsFor(
   batch: ProjectedRasterClass,
   call: RasterEncodeCall,
 ): readonly BindGroup[] {
-  const windowPhase = call.phase === 'late' ? 'late' : 'early';
+  return preparedVisibleWindows(
+    live,
+    batch,
+    call.phase === 'late' ? 'late' : 'early',
+    call.visibleRegionBase,
+  );
+}
+
+export function preparedVisibleWindows(
+  live: LiveRasterBatch,
+  batch: ProjectedRasterClass,
+  windowPhase: 'early' | 'late',
+  visibleBase: number,
+): readonly BindGroup[] {
   const retained = live.visibleBindGroups?.[windowPhase];
   if (retained !== undefined) return retained;
   const levelStride = batchLevelStride(live.batch);
@@ -370,7 +408,7 @@ export function visibleWindowsFor(
   const resolvedWindows: BindGroup[] = [];
   for (let level = 0; level < levelCount; level += 1) {
     const resolved = batch.raster.visibleWindowBindGroup(
-      call.visibleRegionBase + live.batch.visibleBase + level * levelStride,
+      visibleBase + live.batch.visibleBase + level * levelStride,
       live.batch.visibleAllocationCapacity ?? live.batch.visibleCapacity,
     );
     if (!resolved.ok) throw resolved.error;
@@ -420,4 +458,135 @@ export function observeSurfaceDraw(
       ? {}
       : { receiptIdentity: receipt.receiptIdentity, receiptGeneration: receipt.generation }),
   });
+}
+
+/** One stock encode's retained-run state and the pass identities gating it. */
+export interface RetainedEncode {
+  readonly key: PreparedRasterPass;
+  readonly identities: readonly unknown[];
+  readonly runs: RetainedPassEncode;
+  readonly facts: ReturnType<typeof runFacts>;
+}
+
+/** End of the contiguous stable-ID block starting at `start`. */
+export function retainedRunEnd(lives: readonly LiveRasterBatch[], start: number): number {
+  const block = Math.floor((lives[start] as LiveRasterBatch).batch.batchId / 32);
+  const group = (lives[start] as LiveRasterBatch).batch.key.residencyGroup;
+  let end = start + 1;
+  while (
+    end < lives.length &&
+    Math.floor((lives[end] as LiveRasterBatch).batch.batchId / 32) === block &&
+    (lives[end] as LiveRasterBatch).batch.key.residencyGroup === group
+  )
+    end++;
+  return end;
+}
+
+export function requireLateRegion(
+  projected: ProjectedRasterGraph,
+): NonNullable<ProjectedRasterGraph['lateRegion']> {
+  if (projected.lateRegion === undefined) {
+    throw new RhiError({
+      code: 'internal-error',
+      expected: 'addLateOcclusion(...) before a late-phase GPU-driven encode',
+      hint: 'add the late HZB cull between the early and late geometry passes',
+    });
+  }
+  return projected.lateRegion;
+}
+
+/**
+ * Scene-index templates read numeric values from GPU Scene. Their retained
+ * uniform declaration only satisfies the shared layout; a frame-local material
+ * slot must not invalidate those commands. Full-custom programs that
+ * reference the uniform retain its offset.
+ */
+export function bindMaterialSlot(
+  bindings: IndirectPassBindings,
+  batch: ProjectedRasterClass,
+  frameResources: GpuDrivenStandardPbrFrameResources,
+  globalMaterialSlot: number,
+): { readonly group: BindGroup; readonly byteOffset: number } {
+  const prepared = frameResources.prepareMaterialBinding(globalMaterialSlot);
+  if (prepared === undefined) {
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: `material bind group for global slot ${globalMaterialSlot}`,
+      hint: 'keep GPU-driven material selection on the main-pass producer contract',
+    });
+  }
+  bindings.observeRunMaterial(globalMaterialSlot, prepared.group, prepared.byteOffset);
+  const offset = rasterMaterialOffset(batch, prepared.byteOffset);
+  bindings.bindMaterial(prepared.group, offset);
+  return prepared;
+}
+
+export function rasterMaterialOffset(batch: ProjectedRasterClass, byteOffset: number): number {
+  return batch.artifact.program.materialUniformRequired === false ? 0 : byteOffset;
+}
+
+/** One stock pass's ordered physical facts; storage migration uses the same layout. */
+export function retainedRasterIdentities(
+  projected: ProjectedRasterGraph,
+  call: RasterEncodeCall,
+  viewBindGroup: BindGroup,
+  indirect: Buffer | undefined,
+): readonly unknown[] {
+  const skinTask = projected.frame.view.skinTaskBinding();
+  return [
+    viewBindGroup,
+    call.frameResources.materialSlotIndicesByBinding.size === 0,
+    indirect,
+    call.regionOffset,
+    call.visibleRegionBase,
+    call.formatKey,
+    projected.rasterClasses,
+    projected.frame.scene.scene.tableBindingIdentity,
+    projected.frame.materialRaster.visibleBindingIdentity,
+    projected.frame.skinRaster?.visibleBindingIdentity,
+    // Palette contents change without changing commands. Physical buffers,
+    // ranges and dynamic addresses are the actual Skin bundle inputs.
+    skinTask?.data,
+    skinTask?.auxiliary,
+    skinTask?.dataOffset,
+    skinTask?.auxiliaryOffset,
+    skinTask?.dataSize,
+    skinTask?.auxiliarySize,
+  ];
+}
+
+/** Only the region and Skin fields of the exact replaced View may change numerically. */
+export function remapRetainedRasterStorage(
+  values: readonly unknown[],
+  storage: ViewStorageTarget | undefined,
+): readonly unknown[] {
+  if (storage === undefined || values[2] !== storage.before.indirect) return values;
+  const next = [...values];
+  next[2] = storage.after.indirect;
+  if (values[3] !== 0 && values[3] !== storage.previousLateIndirectBase)
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the original early or late indirect region',
+      hint: 'retain the actual graph pass storage recipe',
+    });
+  if (values[4] !== 0 && values[4] !== storage.previousLateVisibleBase)
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the original early or late visible region',
+      hint: 'retain the actual graph pass storage recipe',
+    });
+  if (values[3] !== 0) next[3] = storage.lateIndirectBase;
+  if (values[4] !== 0) next[4] = storage.lateVisibleBase;
+  const skin = storage.skin;
+  next.splice(
+    10,
+    6,
+    skin?.data,
+    skin?.auxiliary,
+    skin?.dataOffset,
+    skin?.auxiliaryOffset,
+    skin?.dataSize,
+    skin?.auxiliarySize,
+  );
+  return next;
 }

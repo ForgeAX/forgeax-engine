@@ -1,8 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { rhi } from '@forgeax/engine-rhi-webgpu';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { ok } from '@forgeax/engine-types';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { ANTIALIAS_TAA, Camera, MeshFilter, MeshRenderer } from '../components';
@@ -140,8 +141,8 @@ export async function verifyPostProcessDepth(url = '/shaders/manifest.json') {
       getContext: (kind: string) => (kind === 'webgpu' ? context : null),
     },
     { features: [feature] },
-    { shaderManifestUrl: url },
-    { rhi, createShaderModule: (device, descriptor) => rhi.createShaderModule(device, descriptor) },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
+    webgpu,
   );
   host.onError((error) => failures.push(error));
   const initialized = await host.initialization;

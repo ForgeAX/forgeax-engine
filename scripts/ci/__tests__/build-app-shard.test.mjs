@@ -1115,17 +1115,16 @@ test('package-owned native Pack requirements use the strict transfer closure wit
   }
 });
 
-test('core defers only forty-eight duplicate Bevy bundles and retains eighty percent of all app builds', async () => {
+test('core builds only owned Smoke inputs and omits verified shader-only duplicates', async () => {
   const { appShardRoster } = await import('../app-build-roster.mjs');
   const deferred = JSON.parse(
     readFileSync(new URL('../core-app-build-deferred.json', import.meta.url), 'utf8'),
   );
   const all = appShardRoster(repoRoot);
-  assert.equal(deferred.length, 48);
+  assert.equal(deferred.length, 49);
   assert.equal(new Set(deferred).size, deferred.length);
-  const ratio = (all.length - deferred.length) / all.length;
-  assert.ok(ratio >= 0.78 && ratio <= 0.82, String(ratio));
-  for (const app of deferred) {
+  assert.ok(deferred.includes('hello/gi'));
+  for (const app of deferred.filter((entry) => entry !== 'hello/gi')) {
     assert.ok(all.includes(app));
     assert.ok(app.startsWith('bevy/'));
     const root = join(repoRoot, 'apps', app);
@@ -1140,7 +1139,7 @@ test('core defers only forty-eight duplicate Bevy bundles and retains eighty per
     );
     assert.ok(pkg.scripts.smoke, 'native behavior remains mandatory');
   }
-  const root = fixture(['bevy/time-elapsed', 'retained']);
+  const root = fixture(['bevy/time-elapsed', 'hello/gi', 'hello/retained', 'water/example']);
   try {
     const args = ['--shard-count', '1', '--shard-index', '0', '--dry-run'];
     const full = runPlanner(root, args, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' });
@@ -1149,11 +1148,17 @@ test('core defers only forty-eight duplicate Bevy bundles and retains eighty per
     assert.equal(core.exitCode, 0, core.stdout || core.stderr);
     const fullPlan = JSON.parse(full.stdout);
     const corePlan = JSON.parse(core.stdout);
-    assert.deepEqual(fullPlan.buildApps, ['bevy/time-elapsed', 'retained']);
+    assert.deepEqual(fullPlan.buildApps, [
+      'bevy/time-elapsed',
+      'hello/gi',
+      'hello/retained',
+      'water/example',
+    ]);
     assert.deepEqual(corePlan.apps, fullPlan.apps);
-    assert.deepEqual(corePlan.buildApps, ['retained']);
-    assert.deepEqual(corePlan.omittedTransferApps, ['bevy/time-elapsed']);
-    assert.deepEqual(corePlan.skippedBuildApps, ['bevy/time-elapsed']);
+    assert.deepEqual(corePlan.buildApps, ['hello/retained']);
+    const omitted = ['bevy/time-elapsed', 'hello/gi', 'water/example'];
+    assert.deepEqual(corePlan.omittedTransferApps.sort(), omitted);
+    assert.deepEqual(corePlan.skippedBuildApps.sort(), omitted);
     assert.ok(corePlan.artifactInventory.every((path) => !path.includes('bevy/time-elapsed')));
     assert.equal(corePlan.profile, 'core');
     assert.equal(fullPlan.profile, 'full');

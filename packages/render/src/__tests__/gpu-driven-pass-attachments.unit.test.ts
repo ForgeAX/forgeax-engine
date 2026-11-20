@@ -41,7 +41,7 @@ it('observes ordered attachment formats once per pass even when one array is reu
         ...standardPbrInputs(device, shader, layout),
         scene: {
           scene: availability.scene,
-          plan: topology.query(topology.sourcePlan(), undefined),
+          plan: topology.query(topology.sourcePlan(), undefined).active,
           slots: scene.slotsSnapshot(),
           slotAt: scene.slotAt,
         },

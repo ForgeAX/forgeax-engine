@@ -25,10 +25,7 @@ it.skipIf(process.env.FOCUS_SELECTOR !== selector)(
     );
     let created = false;
     try {
-      for (const args of [
-        ['tools/view-plugins/integration/build.mjs'],
-        ['scripts/forgeax/prepare-shader-release-inputs.mjs', '--build', '--profile', 'base-ssao'],
-      ]) {
+      for (const args of [['tools/view-plugins/integration/build.mjs']]) {
         const result = await execute(process.execPath, args, {
           cwd: root,
           env,

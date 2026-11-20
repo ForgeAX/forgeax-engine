@@ -26,13 +26,9 @@ import {
   GEOMETRY_OBSERVATION_MAX_BYTES,
   type GeometryCommandCapture,
 } from '../geometry-observation';
-import { GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW, type GpuScene } from '../gpu-scene';
-import {
-  GPU_MATERIAL_DESCRIPTOR,
-  GPU_MESH_DESCRIPTOR,
-  type GpuInputReadFrame,
-} from '../gpu-scene-inputs';
-import { GPU_SCENE_LAYOUTS, gpuSceneWgsl } from '../gpu-scene-schema';
+import type { GpuScene, GpuSceneTableBindingTarget } from '../gpu-scene';
+import type { GpuInputReadFrame, GpuSceneInputPreparation } from '../gpu-scene-inputs';
+import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_COPY_SRC,
@@ -44,10 +40,7 @@ import {
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { SkinTaskBinding } from '../record/skin-tasks';
-import type { FrameList } from '../scene/frame-list';
-import { SKIN_INPUT_WGSL } from '../scene/skin-inputs.wgsl';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
-import { writeGpuLodRow } from '../scene/visibility/gpu-lod';
 import type { LodOcclusionGpuSelection } from '../scene/visibility/inspection';
 import type {
   SurfaceGpuIndirectParameters,
@@ -56,27 +49,9 @@ import type {
   SurfaceSubmissionCandidate,
 } from '../surface/submission-observation';
 import { decodeSurfaceIndirectParameters } from '../surface/submission-observation';
-import {
-  batchLevelStride,
-  batchLodLevelCount,
-  batchVisibleSpan,
-  GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
-  GPU_DRIVEN_LOD_LEVEL_CAPACITY,
-} from './batch-layout';
-import { MemberCandidates } from './batch-members';
-import {
-  type GpuDrivenBatch,
-  type GpuDrivenCandidate,
-  planDrawsSkin,
-  type SubmissionPlan,
-} from './batch-topology';
-import { hasFixedTaskHeaders } from './fixed-task-plan';
-import {
-  LOD_PROJECTION_WGSL,
-  LOD_VIEW_CONSTANTS_BYTES,
-  type LodViewCamera,
-  writeLodViewConstants,
-} from './lod-projection.wgsl';
+import { batchLevelStride, batchLodLevelCount } from './batch-layout';
+import { planDrawsSkin, type SubmissionPlan } from './batch-topology';
+import { type LodViewCamera, writeLodViewConstants } from './lod-projection.wgsl';
 import {
   type PreparedRasterBindings,
   type PreparedRasterBundleCache,
@@ -84,74 +59,78 @@ import {
   PreparedRasterPass,
 } from './prepared-raster-bundle';
 import { invertLightViewProjection } from './production-raster-camera';
-import { admittedRasterBatchCount, SHADOW_LOD_COARSEST } from './production-raster-lod';
+import { admittedRasterBatchCount } from './production-raster-lod';
 import { suppressionPatchOf } from './production-raster-prepare';
 import {
   GpuResourceAllocationLedger,
   type GpuResourceAllocationToken,
 } from './resource-allocation';
-import { shadowCameraCullWgsl } from './shadow-camera-cull.wgsl';
-import { SKIN_BOUNDS_WGSL } from './skin-bounds.wgsl';
 import { type SkinDemandLayout, skinDemandLayout, writeSkinDemandConstants } from './skin-demand';
-import { SKIN_DEMAND_WGSL } from './skin-demand.wgsl';
+import { GpuTaskResidency } from './task-residency';
+import {
+  deriveGpuDrivenViewBufferCapacities,
+  growGpuDrivenVisibleCapacity,
+  nextCapacity,
+  type ViewBufferRequest,
+  validateViewBufferRequests,
+} from './view-buffer-capacity';
+
+export {
+  deriveGpuDrivenViewBufferCapacities,
+  type GpuDrivenViewBufferCapacities,
+  growGpuDrivenVisibleCapacity,
+} from './view-buffer-capacity';
+
+import { ViewBufferRetirement } from './view-buffer-retirement';
+import { clearExitedIndirectCommands } from './view-indirect-retirement';
+import {
+  createInputBindingGroups,
+  type GpuViewInputPreparation,
+  type InputBindingFacts,
+  type InputBindingGroups,
+  inputBindingSceneFacts,
+  inputBindingStorageMatches,
+  inputBindingTablesMatch,
+  type PreparingInputBindings,
+  type ViewInputBuffers,
+} from './view-input-bindings';
+import { type EncodedViewTopology, encodedViewTopology } from './view-topology';
 
 export { invertLightViewProjection } from './production-raster-camera';
 
+import { GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL, GPU_DRIVEN_VIEW_WGSL } from './view.wgsl';
+import {
+  BATCH_STRIDE,
+  CAMERA_CULLED_COUNTER_OFFSET,
+  COUNTER_STRIDE,
+  COUNTER_WORDS,
+  EARLY_VISIBLE_COUNTER_OFFSET,
+  FRUSTUM_CULLED_COUNTER_OFFSET,
+  GEOMETRY_WORK_COUNTER_OFFSET,
+  INDIRECT_COMMAND_BYTES,
+  LEVEL_VISIBLE_COUNTER_OFFSET,
+  LOD_CONSTANTS_OFFSET,
+  LOD_COUNTER_OFFSET,
+  LOD_ROW_CAPACITY,
+  OCCLUSION_CONSTANTS_OFFSET,
+  OCCLUSION_CULLED_COUNTER_OFFSET,
+  OCCLUSION_STATE_BYTES,
+  OCCLUSION_STATE_OFFSET,
+  orderScratchWords,
+  ROOT_GEOMETRY_WORK_COUNTER_OFFSET,
+  SHADOW_CAMERA_CULL_OFFSET,
+  SKIN_CONSTANTS_OFFSET,
+  SKIN_RASTER_OFFSET,
+  TEXEL_CULLED_COUNTER_OFFSET,
+  VIEW_BYTES,
+  WORKGROUP_SIZE,
+} from './view-layout';
+import { prepareViewModule } from './view-native-module';
+
+export { GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL, GPU_DRIVEN_VIEW_WGSL } from './view.wgsl';
+export { GPU_DRIVEN_BATCH_STRIDE } from './view-layout';
+
 const COMPUTE_STAGE = 0x4;
-const WORKGROUP_SIZE = 64;
-const LOD_ROW_STRIDE = GPU_SCENE_LAYOUTS.lod.stride;
-const LOD_ROW_CAPACITY = GPU_DRIVEN_LOD_LEVEL_CAPACITY;
-/** Only binding identity varies per candidate; execution and LOD belong to its batch. */
-const BATCH_HEADER_STRIDE = 52;
-export const GPU_DRIVEN_BATCH_STRIDE = BATCH_HEADER_STRIDE + LOD_ROW_CAPACITY * LOD_ROW_STRIDE;
-const BATCH_STRIDE = GPU_DRIVEN_BATCH_STRIDE;
-const LOD_CONSTANTS_OFFSET = 128;
-const OCCLUSION_CONSTANTS_OFFSET = LOD_CONSTANTS_OFFSET + LOD_VIEW_CONSTANTS_BYTES;
-// viewProjection mat4 + camera range + the per-frame history words below.
-const OCCLUSION_STATE_OFFSET = OCCLUSION_CONSTANTS_OFFSET + 64 + 16;
-const OCCLUSION_STATE_BYTES = 32;
-const SHADOW_CAMERA_CULL_OFFSET = OCCLUSION_STATE_OFFSET + OCCLUSION_STATE_BYTES;
-
-// Pyramid camera, light view-projection and inverse, dilation and enable.
-const SHADOW_CAMERA_CULL_BYTES = 80 + 64 + 64 + 16;
-const SKIN_CONSTANTS_OFFSET = SHADOW_CAMERA_CULL_OFFSET + SHADOW_CAMERA_CULL_BYTES;
-const SKIN_RASTER_OFFSET = Math.ceil((SKIN_CONSTANTS_OFFSET + 48) / 256) * 256;
-const VIEW_BYTES = SKIN_RASTER_OFFSET + 16;
-const SKIN_VIEW_WGSL = `${SKIN_INPUT_WGSL}\n${SKIN_DEMAND_WGSL}\n${SKIN_BOUNDS_WGSL}`
-  .replaceAll(/\bskinInputs\b/g, 'sceneInputs')
-  .replaceAll(/\bskinCounters\b/g, 'counters')
-  .replaceAll(/\bskinOutput\b/g, 'visibleIndices')
-  .replaceAll(/\bskinIndirect\b/g, 'indirectArgs')
-  .replaceAll(/\bskinDemand\b/g, 'view.skin');
-// visible + overflow + one selector bucket per LOD level + selected/root index
-// work + texel-culled + one compaction counter per LOD level. The work
-// counters let inspection report geometry reduction from the actual indirect
-// draw ranges instead of treating submitted-instance count as a proxy for
-// vertex/index work.
-const LOD_COUNTER_OFFSET = 2;
-const GEOMETRY_WORK_COUNTER_OFFSET = LOD_COUNTER_OFFSET + LOD_ROW_CAPACITY;
-const ROOT_GEOMETRY_WORK_COUNTER_OFFSET = GEOMETRY_WORK_COUNTER_OFFSET + 1;
-const TEXEL_CULLED_COUNTER_OFFSET = ROOT_GEOMETRY_WORK_COUNTER_OFFSET + 1;
-const LEVEL_VISIBLE_COUNTER_OFFSET = TEXEL_CULLED_COUNTER_OFFSET + 1;
-// Two-phase occlusion: the early per-level counts drawn before the pyramid
-// exists, and the candidates the late HZB test rejected.
-const EARLY_VISIBLE_COUNTER_OFFSET = LEVEL_VISIBLE_COUNTER_OFFSET + LOD_ROW_CAPACITY;
-const OCCLUSION_CULLED_COUNTER_OFFSET = EARLY_VISIBLE_COUNTER_OFFSET + LOD_ROW_CAPACITY;
-/** Light-depth slabs a receiver prism is split into for the camera pyramid test. */
-const SHADOW_CAMERA_CULL_SLABS = 8;
-// Shadow casters whose shadowed receivers the main camera cannot see.
-const CAMERA_CULLED_COUNTER_OFFSET = OCCLUSION_CULLED_COUNTER_OFFSET + 1;
-const FRUSTUM_CULLED_COUNTER_OFFSET = CAMERA_CULLED_COUNTER_OFFSET + 1;
-const COUNTER_WORDS = FRUSTUM_CULLED_COUNTER_OFFSET + 1;
-const COUNTER_STRIDE = COUNTER_WORDS * 4;
-/** Per 64-candidate tile: level counts, level prefixes and 64 four-word records. */
-const ORDER_TILE_WORDS = 2 * LOD_ROW_CAPACITY + 64 * 4;
-const ORDER_SCAN_LANES = 256;
-/** Batch bases plus one tile block per 64 candidates. */
-const orderScratchWords = (batchCapacity: number, candidateCapacity: number): number =>
-  batchCapacity * LOD_ROW_CAPACITY + Math.ceil(candidateCapacity / 64) * ORDER_TILE_WORDS;
-const INDIRECT_COMMAND_BYTES = GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
-
 export type GpuLodLane = 'gpu' | 'cpu';
 
 export function selectGpuLodLane(caps: {
@@ -162,901 +141,64 @@ export function selectGpuLodLane(caps: {
   return caps.compute && caps.storageBuffer && caps.indirectDrawing ? 'gpu' : 'cpu';
 }
 
-export const GPU_DRIVEN_VIEW_WGSL = /* wgsl */ `
-${SKIN_VIEW_WGSL}
-struct PrimitiveRecord {
-  generation: u32,
-  flags: u32,
-  transformIndex: u32,
-  materialIndex: u32,
-  instanceStart: u32,
-  instanceCount: u32,
-  sourceIndex: u32,
-  localBoundsMin: vec3<f32>,
-  lightingChannels: u32,
-  localBoundsMax: vec4<f32>,
-};
-
-${gpuSceneWgsl(GPU_SCENE_LAYOUTS.transform)}
-
-${gpuSceneWgsl(GPU_SCENE_LAYOUTS.lod)}
-
-${LOD_PROJECTION_WGSL}
-
-// The batch address is derived for actual cull work, never stored per instance.
-struct CandidateRecord {
-  primitiveIndex: u32,
-  generation: u32,
-  instanceOrdinal: u32,
-  batchIndex: u32,
-  sourceSlot: u32,
-};
-
-struct InstanceRecord {
-  primitiveIndex: u32,
-  transformIndex: u32,
-  customDataStart: u32,
-  flags: u32,
-};
-
-struct PyramidCamera {
-  // Unjittered projection of the view that rasterized the pyramid source.
-  viewProjection: mat4x4<f32>,
-  near: f32,
-  far: f32,
-  orthographic: u32,
-  // Uniform footprint scale; 1 in production. The falsifier shrinks it to
-  // prove the conservative footprint is what keeps partial occluders visible.
-  footprintScale: f32,
-};
-
-struct OcclusionConstants {
-  camera: PyramidCamera,
-  // Non-zero only when this frame's graph also records the late phase.
-  enabled: u32,
-  // Zero after a camera cut, resize, recovery or skipped late phase: every
-  // candidate then counts as previously visible and draws early.
-  historyValid: u32,
-  // Word offsets of the two instance-visibility bit regions in counters.
-  previousBase: u32,
-  nextBase: u32,
-  bitWords: u32,
-  // First u32 of the late-phase indirect region.
-  lateArgsBase: u32,
-  // First item of the late-phase visible mirror: every segment's late
-  // suffix is copied to the same segment offset here. Capable commands use
-  // this absolute base; portable commands bind a window and start at zero.
-  lateVisibleBase: u32,
-};
-
-// A shadow view skips a caster whose every shadowed receiver the main
-// camera cannot see: the light-space prism from the caster's nearest depth
-// to the far plane, widened by the receiver's sampling footprint, lies
-// outside the viewport or behind the main camera's furthest depth.
-struct ShadowCameraCull {
-  camera: PyramidCamera,
-  lightViewProjection: mat4x4<f32>,
-  lightInverse: mat4x4<f32>,
-  // Receiver sampling footprint: light NDC widening for the filter kernel and
-  // world widening for the receiver's normal offset.
-  ndcDilation: f32,
-  worldDilation: f32,
-  enabled: u32,
-};
-
-struct ViewConstants {
-  planes: array<vec4<f32>, 6>,
-  candidateCount: u32,
-  batchCount: u32,
-  batchCapacity: u32,
-  minCasterDiameter: f32,
-  suppressionBase: u32,
-  resourceRoot: u32,
-  capsuleDirectional: u32,
-  // First counters word of the visible-order scratch (see orderTileBase).
-  orderBase: u32,
-  // A shadow view sets lod.clamp: its casters never raster coarser than SHADOW_LOD_COARSEST.
-  lod: LodViewConstants,
-  occlusion: OcclusionConstants,
-  shadowCamera: ShadowCameraCull,
-  skin: SkinDemandConstants,
-  ${SKIN_RASTER_OFFSET > SKIN_CONSTANTS_OFFSET + 48 ? `skinPadding: array<vec4<u32>, ${(SKIN_RASTER_OFFSET - SKIN_CONSTANTS_OFFSET - 48) / 16}>,` : ''}
-  skinRaster: vec4<u32>,
-};
-
-@group(0) @binding(0) var<storage, read> primitives: array<PrimitiveRecord>;
-@group(0) @binding(1) var<storage, read> instances: array<InstanceRecord>;
-@group(0) @binding(2) var<storage, read> transforms: array<GpuSceneTransform>;
-@group(0) @binding(3) var<storage, read> sceneInputs: array<u32>;
-@group(0) @binding(4) var<storage, read> batchWords: array<u32>;
-@group(0) @binding(5) var<uniform> view: ViewConstants;
-@group(0) @binding(6) var<storage, read_write> counters: array<atomic<u32>>;
-@group(0) @binding(7) var<storage, read_write> visibleIndices: array<vec4<u32>>;
-@group(0) @binding(8) var<storage, read_write> indirectArgs: array<u32>;
-// Furthest-depth pyramid of the current frame's early phase (late cull only).
-@group(1) @binding(0) var occlusionPyramid: texture_2d<f32>;
-
-// Per-view admission bitmap indexed by GPU Scene primitive slot, stored after
-// the batch table in batchWords (a separate binding would exceed the portable
-// eight storage buffers per stage). A set bit suppresses the primitive
-// (occlusion facet, author-hidden, unavailable); frustum rejection stays in
-// isVisible.
-fn isSuppressed(primitiveIndex: u32) -> bool {
-  let word = batchWords[view.suppressionBase + (primitiveIndex >> 5u)];
-  return (word & (1u << (primitiveIndex & 31u))) != 0u;
-}
-
-fn batchWord(batchIndex: u32, word: u32) -> u32 {
-  return batchWords[batchIndex * ${BATCH_STRIDE / 4}u + word];
-}
-
-// Four radix256 reads resolve one logical resource. Pages contain descriptor
-// numbers only; preparation must lease every resource a task can reach.
-fn logicalResource(slot: u32) -> u32 {
-  var page = view.resourceRoot;
-  for (var shift = 24i; shift >= 0i; shift -= 8i) {
-    if (page == 0xffffffffu) { return 0xffffffffu; }
-    page = sceneInputs[page + ((slot >> u32(shift)) & 255u)];
-  }
-  return page;
-}
-
-fn resourceDescriptor(batchIndex: u32, word: u32) -> u32 {
-  let slot = batchWord(batchIndex, word);
-  if ((batchWord(batchIndex, 6u) & 0x10000u) == 0u) { return slot; }
-  return logicalResource(slot);
-}
-
-// Row-material batches read each member's material through its primitive's
-// logical material slot; a slot the captured resource root does not reach
-// keeps the batch binding's material.
-fn candidateMaterialDescriptor(batchIndex: u32, materialSlot: u32) -> u32 {
-  if ((batchWord(batchIndex, 6u) & 0x20000u) != 0u && materialSlot != 0xffffffffu) {
-    let descriptor = logicalResource(materialSlot);
-    if (descriptor != 0xffffffffu) { return descriptor; }
-  }
-  return resourceDescriptor(batchIndex, 10u);
-}
-
-// Work stays dense across submesh executions; membership remains shared. The
-// sorted execution starts make the lookup bounded by log2(batchCount).
-fn candidateAt(work: u32) -> CandidateRecord {
-  var low = 0u;
-  var high = view.batchCount;
-  while (low < high) {
-    let middle = low + (high - low) / 2u;
-    if (batchWord(middle, 7u) <= work) { low = middle + 1u; }
-    else { high = middle; }
-  }
-  let batchIndex = low - 1u;
-  var member = batchWord(batchIndex, 12u);
-  var ordinal = work - batchWord(batchIndex, 7u);
-  loop {
-    if (member == 0u) { break; }
-    let leftWeight = sceneInputs[member + 2u];
-    let ownCount = sceneInputs[member + 3u];
-    if (ordinal < leftWeight) {
-      member = sceneInputs[member];
-    } else if (ordinal - leftWeight < ownCount) {
-      // Page records: [laneStart, physical, generation, sourceSlot, ordinalBase].
-      let lane = ordinal - leftWeight;
-      let records = sceneInputs[member + 4u];
-      var low = 0u;
-      var high = sceneInputs[member + 5u];
-      while (high - low > 1u) {
-        let middle = low + (high - low) / 2u;
-        if (sceneInputs[records + middle * 5u] <= lane) { low = middle; } else { high = middle; }
-      }
-      let record = records + low * 5u;
-      return CandidateRecord(sceneInputs[record + 1u], sceneInputs[record + 2u],
-        lane - sceneInputs[record] + sceneInputs[record + 4u], batchIndex,
-        sceneInputs[record + 3u]);
-    } else {
-      ordinal -= leftWeight + ownCount;
-      member = sceneInputs[member + 1u];
-    }
-  }
-  // Only a malformed work extent can reach null: never admit primitive zero.
-  return CandidateRecord(0u, primitives[0].generation ^ 0xffffffffu, 0u, batchIndex, 0u);
-}
-
-// Bounds and displacement are shared resource records. Actual culling dereferences
-// them without rewriting any primitive, instance, or candidate on asset edits.
-fn candidateSkinBinding(candidate: CandidateRecord) -> u32 {
-  if (view.skin.jointCapacity == 0u) { return 0xffffffffu; }
-  return skinRowAddress(view.skin.currentRoot, 1u, candidate.sourceSlot);
-}
-
-fn skinDemandCandidateSlot(index: u32) -> u32 {
-  let candidate = candidateAt(index);
-  if (primitives[candidate.primitiveIndex].generation != candidate.generation ||
-      batchWord(candidate.batchIndex, 1u) == 0u || isSuppressed(candidate.sourceSlot)) { return 0xffffffffu; }
-  return candidate.sourceSlot;
-}
-
-fn candidatePrimitive(candidate: CandidateRecord, candidateIndex: u32) -> PrimitiveRecord {
-  var primitive = primitives[candidate.primitiveIndex];
-  if ((primitive.flags & 64u) != 0u) {
-    let geometryAddress = resourceDescriptor(candidate.batchIndex, 11u);
-    var geometryFlags = 0u;
-    var boundsMin = vec3<f32>(0.0);
-    var boundsMax = vec3<f32>(0.0);
-    if (geometryAddress != 0u) {
-      geometryFlags = sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.flags}u];
-      boundsMin = bitcast<vec3<f32>>(vec3<u32>(
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.min}u],
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.min + 1}u],
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.min + 2}u]));
-      boundsMax = bitcast<vec3<f32>>(vec3<u32>(
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.max}u],
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.max + 1}u],
-        sceneInputs[geometryAddress + ${GPU_MESH_DESCRIPTOR.max + 2}u]));
-    }
-    let materialAddress = candidateMaterialDescriptor(candidate.batchIndex, primitive.materialIndex);
-    var radius = 0.0;
-    if (materialAddress != 0u) { radius = bitcast<f32>(sceneInputs[materialAddress + ${GPU_MATERIAL_DESCRIPTOR.radius}u]); }
-    primitive.flags = (primitive.flags & ~2u) | (geometryFlags & 2u);
-    if ((bitcast<u32>(radius) & 0x7f800000u) == 0x7f800000u) {
-      primitive.flags &= ~2u;
-    }
-    primitive.localBoundsMin = boundsMin - vec3<f32>(radius);
-    primitive.localBoundsMax = vec4<f32>(boundsMax + vec3<f32>(radius), 0.0);
-  }
-  if (candidateSkinBinding(candidate) != 0xffffffffu) {
-    primitive.flags &= ~2u;
-    let descriptor = skinDemandDescriptor(candidateIndex);
-    if ((descriptor.w & 1u) == 0u) { primitive.instanceCount = 0u; return primitive; }
-    if (view.capsuleDirectional != 0u && (primitive.flags & ${GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW}u) != 0u) {
-      let binding = candidateSkinBinding(candidate);
-      let skeleton = skinRowAddress(view.skin.currentRoot, 0u, sceneInputs[binding + 2u]);
-      let capsuleCount = sceneInputs[skeleton + 1u + descriptor.y * 16u];
-      if (capsuleCount != 0xffffffffu && capsuleCount > 0u) {
-        primitive.instanceCount = 0u;
-        return primitive;
-      }
-    }
-    let geometry = resourceDescriptor(candidate.batchIndex, 11u);
-    let material = resourceDescriptor(candidate.batchIndex, 10u);
-    if (geometry == 0u || geometry == 0xffffffffu || material == 0u || material == 0xffffffffu ||
-        sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.positionBounds}u] != 1u) { return primitive; }
-    let envelope = sceneInputs[geometry + ${GPU_MESH_DESCRIPTOR.skinEnvelopes}u];
-    let bounds = skinEnvelopeBounds(envelope, descriptor.z, descriptor.y,
-      bitcast<f32>(sceneInputs[material + ${GPU_MATERIAL_DESCRIPTOR.radius}u]));
-    if (bounds.valid != 0u) {
-      primitive.flags |= 2u;
-      primitive.localBoundsMin = bounds.minimum;
-      primitive.localBoundsMax = vec4<f32>(bounds.maximum, 0.0);
-    }
-  }
-  return primitive;
-}
-
-fn candidateRootWorld(candidate: CandidateRecord, primitive: PrimitiveRecord) -> mat4x4<f32> {
-  if (candidateSkinBinding(candidate) != 0xffffffffu) {
-    return mat4x4<f32>(vec4<f32>(1.0,0.0,0.0,0.0), vec4<f32>(0.0,1.0,0.0,0.0),
-      vec4<f32>(0.0,0.0,1.0,0.0), vec4<f32>(0.0,0.0,0.0,1.0));
-  }
-  return transforms[primitive.transformIndex].currentWorld;
-}
-
-// Shared execution bytes; no material or LOD edit rewrites a candidate record.
-fn batchLod(batchIndex: u32, level: u32) -> GpuSceneLod {
-  let first = ${BATCH_HEADER_STRIDE / 4}u + level * ${LOD_ROW_STRIDE / 4}u;
-  return GpuSceneLod(
-    batchWord(batchIndex, first), batchWord(batchIndex, first + 1u),
-    batchWord(batchIndex, first + 2u), batchWord(batchIndex, first + 3u),
-    bitcast<i32>(batchWord(batchIndex, first + 4u)),
-    bitcast<f32>(batchWord(batchIndex, first + 5u)),
-    bitcast<f32>(batchWord(batchIndex, first + 6u)), batchWord(batchIndex, first + 7u),
-  );
-}
-
-fn batchLods(batchIndex: u32, count: u32) -> array<GpuSceneLod, ${LOD_ROW_CAPACITY}> {
-  var rows: array<GpuSceneLod, ${LOD_ROW_CAPACITY}>;
-  for (var level = 0u; level < count; level += 1u) { rows[level] = batchLod(batchIndex, level); }
-  return rows;
-}
-
-fn counterIndex(batchIndex: u32) -> u32 { return batchIndex * ${COUNTER_WORDS}u; }
-fn overflowIndex(batchIndex: u32) -> u32 { return counterIndex(batchIndex) + 1u; }
-fn lodCounterIndex(batchIndex: u32, level: u32) -> u32 {
-  return counterIndex(batchIndex) + ${LOD_COUNTER_OFFSET}u + level;
-}
-fn levelVisibleIndex(batchIndex: u32, level: u32) -> u32 {
-  return counterIndex(batchIndex) + ${LEVEL_VISIBLE_COUNTER_OFFSET}u + level;
-}
-fn earlyVisibleIndex(batchIndex: u32, level: u32) -> u32 {
-  return counterIndex(batchIndex) + ${EARLY_VISIBLE_COUNTER_OFFSET}u + level;
-}
-
-// Instance visibility history lives after the batch counters, keyed by GPU
-// Scene instance row. A row outside the bitmap, or an invalid history, is
-// treated as previously visible so it draws in the early phase.
-fn previouslyVisible(instanceIndex: u32) -> bool {
-  if (view.occlusion.historyValid == 0u) { return true; }
-  if ((instanceIndex >> 5u) >= view.occlusion.bitWords) { return true; }
-  let word = atomicLoad(&counters[view.occlusion.previousBase + (instanceIndex >> 5u)]);
-  return (word & (1u << (instanceIndex & 31u))) != 0u;
-}
-
-fn recordVisibility(instanceIndex: u32, visible: bool) {
-  if ((instanceIndex >> 5u) >= view.occlusion.bitWords) { return; }
-  let index = view.occlusion.nextBase + (instanceIndex >> 5u);
-  let bit = 1u << (instanceIndex & 31u);
-  if (visible) {
-    atomicOr(&counters[index], bit);
-  } else {
-    atomicAnd(&counters[index], ~bit);
-  }
-}
-
-fn isVisible(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
-  // GPU Scene bounds are optional. A producer that has not published local
-  // bounds still belongs in the GPU lane; keep it conservatively visible
-  // instead of silently dropping a valid draw.
-  if ((primitive.flags & 5u) != 5u) { return false; }
-  if ((primitive.flags & 2u) == 0u) { return true; }
-  let localCenter = (primitive.localBoundsMin.xyz + primitive.localBoundsMax.xyz) * 0.5;
-  let localExtent = (primitive.localBoundsMax.xyz - primitive.localBoundsMin.xyz) * 0.5;
-  let worldCenter = (world * vec4<f32>(localCenter, 1.0)).xyz;
-  let worldExtent =
-    abs(world[0].xyz) * localExtent.x +
-    abs(world[1].xyz) * localExtent.y +
-    abs(world[2].xyz) * localExtent.z;
-  for (var planeIndex = 0u; planeIndex < 6u; planeIndex += 1u) {
-    let plane = view.planes[planeIndex];
-    let radius = dot(abs(plane.xyz), worldExtent);
-    if (dot(plane.xyz, worldCenter) + plane.w < -radius) { return false; }
-  }
-  return true;
-}
-
-// Extent across the first two side planes (left, bottom). Orthographic
-// shadow views are the only producers of a non-zero minimum diameter.
-fn belowMinDiameter(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
-  if (view.minCasterDiameter <= 0.0 || (primitive.flags & 2u) == 0u) { return false; }
-  let localExtent = (primitive.localBoundsMax.xyz - primitive.localBoundsMin.xyz) * 0.5;
-  let worldExtent =
-    abs(world[0].xyz) * localExtent.x +
-    abs(world[1].xyz) * localExtent.y +
-    abs(world[2].xyz) * localExtent.z;
-  let across = max(dot(abs(view.planes[0].xyz), worldExtent), dot(abs(view.planes[2].xyz), worldExtent));
-  return across * 2.0 < view.minCasterDiameter;
-}
-
-// One height per primitive from its root transform: every instance of a
-// primitive shares the root's LOD level, as on the CPU reference.
-fn primitiveHeight(primitive: PrimitiveRecord, rootWorld: mat4x4<f32>) -> f32 {
-  if ((primitive.flags & 2u) == 0u) { return LOD_INVALID_HEIGHT; }
-  return projectedHeight(
-    primitive.localBoundsMin.xyz,
-    primitive.localBoundsMax.xyz,
-    rootWorld,
-    view.lod,
-  );
-}
-
-// Visible items are placed in candidate order, never in atomic arrival order:
-// with discard-free opaque programs the rasterizer resolves equal-depth and
-// overlapping fragments by submission order, so an arrival-ordered segment
-// changes pixels from frame to frame. The cull records each admitted
-// candidate and counts it per 64-candidate tile; scanVisibleOrder turns the
-// tile counts into per-level prefixes, and placeVisibleOrder writes every
-// item at its batch-local rank.
-//
-// Scratch layout after the counters' other regions: eight batch bases per
-// batch, then one block per tile of [8 counts, 8 prefixes, 64 records of
-// (flags, instance, material, fade)]. Flags: bit 0 admitted, bits 1-4 level,
-// bit 5 paired with level + 1, bits 6+ batch index.
-fn orderBatchBase(batchIndex: u32, level: u32) -> u32 {
-  return view.orderBase + batchIndex * ${LOD_ROW_CAPACITY}u + level;
-}
-fn orderTileBase(tile: u32) -> u32 {
-  return view.orderBase + view.batchCapacity * ${LOD_ROW_CAPACITY}u + tile * ${ORDER_TILE_WORDS}u;
-}
-fn orderRecord(candidateIndex: u32) -> u32 {
-  return orderTileBase(candidateIndex >> 6u) + ${2 * LOD_ROW_CAPACITY}u + (candidateIndex & 63u) * 4u;
-}
-fn clearOrderRecord(candidateIndex: u32) {
-  if (candidateIndex >= view.candidateCount) { return; }
-  atomicStore(&counters[orderRecord(candidateIndex)], 0u);
-}
-
-// Count one visible item of the batch's per-level segment; each segment is an
-// independent indirect command sized by the batch's visible capacity.
-fn countVisible(batchIndex: u32, candidateIndex: u32, level: u32) {
-  let localVisible = atomicAdd(&counters[levelVisibleIndex(batchIndex, level)], 1u);
-  if (localVisible >= batchWord(batchIndex, 1u)) {
-    atomicStore(&counters[overflowIndex(batchIndex)], 1u);
-  }
-  atomicAdd(&counters[orderTileBase(candidateIndex >> 6u) + level], 1u);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn resetView(@builtin(global_invocation_id) id: vec3<u32>) {
-  let batchIndex = id.x;
-  if (batchIndex >= view.batchCount) { return; }
-  for (var word = 0u; word < ${COUNTER_WORDS}u; word += 1u) {
-    atomicStore(&counters[counterIndex(batchIndex) + word], 0u);
-  }
-  // Reuse the established submission overflow authority. A bounded claim or
-  // palette admission failure must reject work explicitly, never hide Skin.
-  if (view.skin.jointCapacity != 0u &&
-      atomicLoad(&counters[view.skin.counterBase + 2u]) != 0u) {
-    atomicStore(&counters[overflowIndex(batchIndex)], 1u);
-  }
-}
-
-fn candidateLod(
-  candidate: CandidateRecord,
-  primitive: PrimitiveRecord,
-  rootWorld: mat4x4<f32>,
-) -> LodCrossfade {
-  let lodCount = (batchWord(candidate.batchIndex, 6u) >> 1u) & 15u;
-  if (lodCount <= 1u) { return LodCrossfade(0u, 0.0, false); }
-  let rows = batchLods(candidate.batchIndex, lodCount);
-  let crossfade = batchWord(candidate.batchIndex, 9u) != 0u;
-  var height = primitiveHeight(primitive, rootWorld);
-  if (view.lod.clamp != 0u && height >= 0.0) {
-    height = max(height, lodCoarsestHeight(${SHADOW_LOD_COARSEST}u, rows, lodCount));
-  }
-  if (crossfade) {
-    return lodCrossfade(height, rows, lodCount);
-  }
-  return LodCrossfade(
-    selectLodLevel(height, 0u, false, rows, lodCount),
-    0.0,
-    false,
-  );
-}
-
-fn appendCandidate(
-  candidateIndex: u32,
-  candidate: CandidateRecord,
-  instanceIndex: u32,
-  lod: LodCrossfade,
-) {
-  let level = lod.level;
-  var work = batchLod(candidate.batchIndex, level).indexCount;
-  if (lod.paired) { work += batchLod(candidate.batchIndex, level + 1u).indexCount; }
-  atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${GEOMETRY_WORK_COUNTER_OFFSET}u], work);
-  // The no-LOD baseline counts each source once, even during dual coverage.
-  atomicAdd(
-    &counters[counterIndex(candidate.batchIndex) + ${ROOT_GEOMETRY_WORK_COUNTER_OFFSET}u],
-    batchLod(candidate.batchIndex, 0u).indexCount,
-  );
-  atomicAdd(&counters[counterIndex(candidate.batchIndex)], 1u);
-  // Visible item ABI: x = GPU Scene instance row, y = scene material row,
-  // z = the view candidate row for every deformation,
-  // w = bitcast LOD crossfade. Submeshes share an instance row, so per-draw
-  // tables (Surface frame rows) key by the candidate row.
-  let materialAddress = candidateMaterialDescriptor(
-    candidate.batchIndex,
-    primitives[candidate.primitiveIndex].materialIndex,
-  );
-  var materialIndex = 0u;
-  if (materialAddress != 0u) { materialIndex = sceneInputs[materialAddress + ${GPU_MATERIAL_DESCRIPTOR.payload}u]; }
-  let record = orderRecord(candidateIndex);
-  atomicStore(&counters[record + 1u], instanceIndex);
-  atomicStore(&counters[record + 2u], materialIndex);
-  atomicStore(&counters[record + 3u], bitcast<u32>(lod.fade));
-  atomicStore(
-    &counters[record],
-    1u | (level << 1u) | select(0u, 32u, lod.paired) | (candidate.batchIndex << 6u),
-  );
-  countVisible(candidate.batchIndex, candidateIndex, level);
-  if (lod.paired) { countVisible(candidate.batchIndex, candidateIndex, level + 1u); }
-}
-
-struct EarlyCandidate {
-  candidate: CandidateRecord,
-  primitive: PrimitiveRecord,
-  instanceIndex: u32,
-  world: mat4x4<f32>,
-  lod: LodCrossfade,
-};
-
-// Every early-phase test shared by the main and shadow cull entries.
-fn admitEarly(candidateIndex: u32, out: ptr<function, EarlyCandidate>) -> bool {
-  if (candidateIndex >= view.candidateCount) { return false; }
-  let candidate = candidateAt(candidateIndex);
-  if (batchWord(candidate.batchIndex, 1u) == 0u) { return false; }
-  let primitive = candidatePrimitive(candidate, candidateIndex);
-  if (primitive.generation != candidate.generation) { return false; }
-  if (candidate.instanceOrdinal >= primitive.instanceCount) { return false; }
-  let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
-  let instance = instances[instanceIndex];
-  let rootWorld = candidateRootWorld(candidate, primitive);
-  let world = rootWorld * transforms[instance.transformIndex].currentWorld;
-  let lod = candidateLod(candidate, primitive, rootWorld);
-  // Selector counters describe the complete LOD population, including
-  // candidates outside the frustum and candidates suppressed by the
-  // per-view bitmap. Submission counters below remain compacted draw facts.
-  atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level)], 1u);
-  if (lod.paired) { atomicAdd(&counters[lodCounterIndex(candidate.batchIndex, lod.level + 1u)], 1u); }
-  if (isSuppressed(candidate.sourceSlot)) { return false; }
-  if (!isVisible(primitive, world)) {
-    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${FRUSTUM_CULLED_COUNTER_OFFSET}u], 1u);
-    return false;
-  }
-  if (belowMinDiameter(primitive, world)) {
-    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${TEXEL_CULLED_COUNTER_OFFSET}u], 1u);
-    return false;
-  }
-  // Two-phase occlusion: the early phase draws only last frame's visible
-  // set; cullViewLate tests the rest against this frame's early depth.
-  if (view.occlusion.enabled != 0u && !previouslyVisible(instanceIndex)) { return false; }
-  *out = EarlyCandidate(candidate, primitive, instanceIndex, world, lod);
-  return true;
-}
-
-fn appendEarly(candidateIndex: u32, early: EarlyCandidate) {
-  appendCandidate(
-    candidateIndex,
-    early.candidate,
-    early.instanceIndex,
-    early.lod,
-  );
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn cullView(@builtin(global_invocation_id) id: vec3<u32>) {
-  clearOrderRecord(id.x);
-  var early: EarlyCandidate;
-  if (admitEarly(id.x, &early)) { appendEarly(id.x, early); }
-}
-
-fn linearOcclusionDepth(camera: PyramidCamera, value: f32) -> f32 {
-  if (camera.orthographic != 0u) { return camera.far - value * (camera.far - camera.near); }
-  return camera.near / (value + (1.0 - value) * (camera.near / camera.far));
-}
-
-// Conservative HZB test against the furthest-depth pyramid. Pyramid texel j
-// of level L covers uv [j / w_L, (j + 1) / w_L] (the reductions ceil their
-// footprint end), so the texels floor(uv * w_L) spanning the inflated screen
-// rectangle cover every pixel the bounds can touch. Occluded only when the
-// bounds' nearest point lies behind the furthest depth of all those texels.
-fn occludedByPyramid(primitive: PrimitiveRecord, world: mat4x4<f32>) -> bool {
-  if ((primitive.flags & 2u) == 0u) { return false; }
-  let camera = view.occlusion.camera;
-  let clipFromLocal = camera.viewProjection * world;
-  var uvMin = vec2<f32>(1.0, 1.0);
-  var uvMax = vec2<f32>(0.0, 0.0);
-  var nearestDepth = 0.0;
-  for (var corner = 0u; corner < 8u; corner += 1u) {
-    let clip = clipFromLocal * vec4<f32>(boundsCorner(primitive, corner), 1.0);
-    // A corner at or behind the eye plane has no bounded projection.
-    if (clip.w <= 1e-6) { return false; }
-    let ndc = clip.xyz / clip.w;
-    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    uvMin = min(uvMin, uv);
-    uvMax = max(uvMax, uv);
-    nearestDepth = max(nearestDepth, ndc.z);
-  }
-  return screenRectOccluded(camera, uvMin, uvMax, nearestDepth, 1u);
-}
-
-fn boundsCorner(primitive: PrimitiveRecord, corner: u32) -> vec3<f32> {
-  return vec3<f32>(
-    select(primitive.localBoundsMin.x, primitive.localBoundsMax.x, (corner & 1u) != 0u),
-    select(primitive.localBoundsMin.y, primitive.localBoundsMax.y, (corner & 2u) != 0u),
-    select(primitive.localBoundsMin.z, primitive.localBoundsMax.z, (corner & 4u) != 0u),
-  );
-}
-
-// One level-0 pyramid texel (two full-resolution pixels) absorbs TAA jitter
-// and rasterization rounding at a screen rectangle's edge.
-fn pyramidTexelUv() -> vec2<f32> {
-  return 1.0 / vec2<f32>(textureDimensions(occlusionPyramid, 0));
-}
-
-// The pyramid half of the HZB test: a screen rectangle whose nearest reversed-Z
-// depth is nearestDepth. Every caller shares this footprint, level choice and
-// margin, so the main and shadow tests cannot drift apart; maxTexelSpan only
-// trades fetches for a finer level (1: 2x2, 3: 4x4).
-fn screenRectOccluded(
-  camera: PyramidCamera,
-  uvMin: vec2<f32>,
-  uvMax: vec2<f32>,
-  nearestDepth: f32,
-  maxTexelSpan: u32,
-) -> bool {
-  // Reversed Z: a corner in front of the near plane is never occluded.
-  if (nearestDepth >= 1.0) { return false; }
-  let middle = (uvMin + uvMax) * 0.5;
-  let halfSize = (uvMax - uvMin) * 0.5 * camera.footprintScale;
-  let extent0 = textureDimensions(occlusionPyramid, 0);
-  let size0 = vec2<f32>(extent0);
-  let pad = pyramidTexelUv();
-  let lo = clamp(middle - halfSize - pad, vec2<f32>(0.0), vec2<f32>(1.0));
-  let hi = clamp(middle + halfSize + pad, vec2<f32>(0.0), vec2<f32>(1.0));
-  // Written so a non-finite footprint (NaN compares false) stays visible.
-  if (!all(lo < hi)) { return false; }
-  let levels = textureNumLevels(occlusionPyramid);
-  let span = max((hi - lo).x * size0.x, (hi - lo).y * size0.y);
-  let texelsPerSide = f32((maxTexelSpan + 1u) / 2u);
-  var level = u32(max(0.0, floor(log2(max(span / texelsPerSide, 1.0)))));
-  level = min(level, levels - 1u);
-  var texelMin = vec2<u32>(0u);
-  var texelMax = vec2<u32>(0u);
-  loop {
-    // Inline copy of forgeax_depth_pyramid::sample::depthPyramidLevelSize;
-    // this raw WGSL string has no import resolution.
-    let size = max(extent0 >> vec2<u32>(level), vec2<u32>(1u));
-    texelMin = min(vec2<u32>(lo * vec2<f32>(size)), size - vec2<u32>(1u));
-    texelMax = min(vec2<u32>(hi * vec2<f32>(size)), size - vec2<u32>(1u));
-    if (all(texelMax - texelMin <= vec2<u32>(maxTexelSpan)) || level + 1u >= levels) { break; }
-    level += 1u;
-  }
-  var furthest = 0.0;
-  for (var y = texelMin.y; y <= texelMax.y; y += 1u) {
-    for (var x = texelMin.x; x <= texelMax.x; x += 1u) {
-      furthest = max(
-        furthest,
-        textureLoad(occlusionPyramid, vec2<i32>(vec2<u32>(x, y)), i32(level)).r,
-      );
-    }
-  }
-  let nearest = linearOcclusionDepth(camera, max(nearestDepth, 0.0));
-  // A relative margin keeps coplanar geometry (decals, the occluder's own
-  // bounds) visible under float linearization error.
-  return nearest > furthest * 1.0001;
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn cullViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
-  let candidateIndex = id.x;
-  if (candidateIndex >= view.candidateCount) { return; }
-  clearOrderRecord(candidateIndex);
-  let candidate = candidateAt(candidateIndex);
-  if (batchWord(candidate.batchIndex, 1u) == 0u) { return; }
-  let primitive = candidatePrimitive(candidate, candidateIndex);
-  if (primitive.generation != candidate.generation) { return; }
-  if (candidate.instanceOrdinal >= primitive.instanceCount) { return; }
-  let instanceIndex = primitive.instanceStart + candidate.instanceOrdinal;
-  let instance = instances[instanceIndex];
-  let rootWorld = candidateRootWorld(candidate, primitive);
-  let world = rootWorld * transforms[instance.transformIndex].currentWorld;
-  var visible =
-    !isSuppressed(candidate.sourceSlot) &&
-    isVisible(primitive, world) &&
-    !belowMinDiameter(primitive, world);
-  if (visible && occludedByPyramid(primitive, world)) {
-    visible = false;
-    atomicAdd(&counters[counterIndex(candidate.batchIndex) + ${OCCLUSION_CULLED_COUNTER_OFFSET}u], 1u);
-  }
-  // Every submesh candidate of one instance row evaluates the same bounds,
-  // so their writes agree; the previous region is read-only this frame.
-  recordVisibility(instanceIndex, visible);
-  if (!visible || previouslyVisible(instanceIndex)) { return; }
-  appendCandidate(
-    candidateIndex,
-    candidate,
-    instanceIndex,
-    candidateLod(candidate, primitive, rootWorld),
-  );
-}
-
-var<workgroup> orderLaneSums: array<array<u32, ${LOD_ROW_CAPACITY}>, ${ORDER_SCAN_LANES}>;
-var<workgroup> orderLaneFlags: array<u32, ${WORKGROUP_SIZE}>;
-
-// One workgroup: tile counts become exclusive per-level prefixes over every
-// candidate before the tile, and each batch records the prefix at its first
-// candidate. Counts are cleared for the next phase.
-@compute @workgroup_size(${ORDER_SCAN_LANES})
-fn scanVisibleOrder(@builtin(local_invocation_index) lane: u32) {
-  let tiles = (view.candidateCount + 63u) / 64u;
-  let span = (tiles + ${ORDER_SCAN_LANES - 1}u) / ${ORDER_SCAN_LANES}u;
-  let first = min(lane * span, tiles);
-  let end = min(first + span, tiles);
-  var sums: array<u32, ${LOD_ROW_CAPACITY}>;
-  for (var tile = first; tile < end; tile += 1u) {
-    let base = orderTileBase(tile);
-    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
-      sums[level] += atomicLoad(&counters[base + level]);
-    }
-  }
-  orderLaneSums[lane] = sums;
-  workgroupBarrier();
-  var running: array<u32, ${LOD_ROW_CAPACITY}>;
-  for (var other = 0u; other < lane; other += 1u) {
-    let counted = orderLaneSums[other];
-    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) { running[level] += counted[level]; }
-  }
-  for (var tile = first; tile < end; tile += 1u) {
-    let base = orderTileBase(tile);
-    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
-      let count = atomicLoad(&counters[base + level]);
-      atomicStore(&counters[base + ${LOD_ROW_CAPACITY}u + level], running[level]);
-      atomicStore(&counters[base + level], 0u);
-      running[level] += count;
-    }
-  }
-  storageBarrier();
-  workgroupBarrier();
-  for (var batchIndex = lane; batchIndex < view.batchCount; batchIndex += ${ORDER_SCAN_LANES}u) {
-    let start = batchWord(batchIndex, 7u);
-    if (start >= view.candidateCount) { continue; }
-    let tileBase = orderTileBase(start >> 6u);
-    var base: array<u32, ${LOD_ROW_CAPACITY}>;
-    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
-      base[level] = atomicLoad(&counters[tileBase + ${LOD_ROW_CAPACITY}u + level]);
-    }
-    for (var candidateIndex = start & ~63u; candidateIndex < start; candidateIndex += 1u) {
-      let flags = atomicLoad(&counters[orderRecord(candidateIndex)]);
-      if ((flags & 1u) == 0u) { continue; }
-      let level = min((flags >> 1u) & 15u, ${LOD_ROW_CAPACITY - 1}u);
-      base[level] += 1u;
-      if ((flags & 32u) != 0u) { base[min(level + 1u, ${LOD_ROW_CAPACITY - 1}u)] += 1u; }
-    }
-    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
-      atomicStore(&counters[orderBatchBase(batchIndex, level)], base[level]);
-    }
-  }
-}
-
-// Late items follow the early prefix finalizeView stored; the mirror index is
-// the item's rank within the late suffix.
-fn placeVisible(
-  batchIndex: u32,
-  candidateIndex: u32,
-  lane: u32,
-  level: u32,
-  item: vec4<u32>,
-  late: bool,
-) {
-  var rank =
-    atomicLoad(&counters[orderTileBase(candidateIndex >> 6u) + ${LOD_ROW_CAPACITY}u + level]) -
-    atomicLoad(&counters[orderBatchBase(batchIndex, level)]);
-  for (var other = 0u; other < lane; other += 1u) {
-    let flags = orderLaneFlags[other];
-    if ((flags & 1u) == 0u) { continue; }
-    let otherLevel = (flags >> 1u) & 15u;
-    if (otherLevel == level || ((flags & 32u) != 0u && otherLevel + 1u == level)) { rank += 1u; }
-  }
-  var slot = rank;
-  if (late) { slot += atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]); }
-  if (slot >= batchWord(batchIndex, 1u)) { return; }
-  let segmentBase = batchWord(batchIndex, 0u) + level * batchWord(batchIndex, 8u);
-  visibleIndices[segmentBase + slot] = item;
-  if (late) { visibleIndices[view.occlusion.lateVisibleBase + segmentBase + rank] = item; }
-}
-
-// Visible item ABI: x = GPU Scene instance row, y = scene material row,
-// z = the view candidate row for every deformation,
-// w = bitcast LOD crossfade. Submeshes share an instance row, so per-draw
-// tables (Surface frame rows) key by the candidate row.
-fn placeVisibleItems(candidateIndex: u32, lane: u32, late: bool) {
-  var flags = 0u;
-  if (candidateIndex < view.candidateCount) {
-    flags = atomicLoad(&counters[orderRecord(candidateIndex)]);
-  }
-  orderLaneFlags[lane] = flags;
-  workgroupBarrier();
-  if ((flags & 1u) == 0u) { return; }
-  let batchIndex = flags >> 6u;
-  let level = (flags >> 1u) & 15u;
-  let record = orderRecord(candidateIndex);
-  let item = vec4<u32>(
-    atomicLoad(&counters[record + 1u]),
-    atomicLoad(&counters[record + 2u]),
-    candidateIndex,
-    atomicLoad(&counters[record + 3u]),
-  );
-  placeVisible(batchIndex, candidateIndex, lane, level, item, late);
-  if ((flags & 32u) != 0u) {
-    placeVisible(
-      batchIndex,
-      candidateIndex,
-      lane,
-      level + 1u,
-      vec4<u32>(item.xyz, bitcast<u32>(-bitcast<f32>(item.w))),
-      late,
-    );
-  }
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn placeVisibleOrder(
-  @builtin(global_invocation_id) id: vec3<u32>,
-  @builtin(local_invocation_index) lane: u32,
-) {
-  placeVisibleItems(id.x, lane, false);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn placeVisibleOrderLate(
-  @builtin(global_invocation_id) id: vec3<u32>,
-  @builtin(local_invocation_index) lane: u32,
-) {
-  placeVisibleItems(id.x, lane, true);
-}
-
-override INDIRECT_FIRST_INSTANCE: bool = false;
-
-fn finalizeBatch(batchIndex: u32, late: bool) {
-  if (batchIndex >= view.batchCount) { return; }
-  // Overflow is a failed generation, never a partially valid draw. Keep the
-  // telemetry flag for the producer retry path but emit zero instances so no
-  // subset of a visible batch reaches the rasterizer.
-  let overflowed = atomicLoad(&counters[overflowIndex(batchIndex)]) != 0u;
-  let capacity = batchWord(batchIndex, 1u);
-  let flags = batchWord(batchIndex, 6u);
-  let indexed = (flags & 1u) != 0u;
-  let levelCount = max(1u, (flags >> 1u) & 15u);
-  for (var level = 0u; level < levelCount; level += 1u) {
-    var visibleCount = min(atomicLoad(&counters[levelVisibleIndex(batchIndex, level)]), capacity);
-    if (overflowed) { visibleCount = 0u; }
-    let args = (batchWord(batchIndex, 5u) + level) * 5u;
-    var drawCount = batchWord(batchIndex, 2u);
-    var drawFirst = batchWord(batchIndex, 3u);
-    var drawBaseVertex: i32 = 0;
-    if (capacity > 0u) {
-      let lod = batchLod(batchIndex, level);
-      drawCount = lod.indexCount;
-      if (indexed) {
-        drawFirst = lod.firstIndex;
-        drawBaseVertex = lod.baseVertex;
-      }
-    } else if (indexed) {
-      drawBaseVertex = bitcast<i32>(batchWord(batchIndex, 4u));
-    }
-    indirectArgs[args] = drawCount;
-    indirectArgs[args + 1u] = visibleCount;
-    indirectArgs[args + 2u] = drawFirst;
-    let segmentBase = batchWord(batchIndex, 0u) + level * batchWord(batchIndex, 8u);
-    let firstInstance = select(0u, segmentBase, INDIRECT_FIRST_INSTANCE);
-    indirectArgs[args + 3u] = select(firstInstance, bitcast<u32>(drawBaseVertex), indexed);
-    indirectArgs[args + 4u] = select(0u, firstInstance, indexed);
-    if (late) {
-      // Late items were appended after the early prefix of the same segment
-      // and mirrored from the segment start of the late region: the late
-      // command draws that mirror, the main command the union.
-      let early = min(atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]), visibleCount);
-      let lateArgs = view.occlusion.lateArgsBase + args;
-      indirectArgs[lateArgs] = drawCount;
-      indirectArgs[lateArgs + 1u] = visibleCount - early;
-      indirectArgs[lateArgs + 2u] = drawFirst;
-      let lateFirstInstance = select(0u, view.occlusion.lateVisibleBase + segmentBase, INDIRECT_FIRST_INSTANCE);
-      indirectArgs[lateArgs + 3u] = select(lateFirstInstance, bitcast<u32>(drawBaseVertex), indexed);
-      indirectArgs[lateArgs + 4u] = select(0u, lateFirstInstance, indexed);
-    } else {
-      atomicStore(&counters[earlyVisibleIndex(batchIndex, level)], visibleCount);
-    }
-  }
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn finalizeView(@builtin(global_invocation_id) id: vec3<u32>) {
-  finalizeBatch(id.x, false);
-}
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
-fn finalizeViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
-  finalizeBatch(id.x, true);
-}
-`;
-
-/**
- * The main-camera shadow caster cull. Only views that receive a camera cull
- * input compile it, so every other view keeps the smaller module.
- */
-export const GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL = shadowCameraCullWgsl(
-  GPU_DRIVEN_VIEW_WGSL,
-  WORKGROUP_SIZE,
-  SHADOW_CAMERA_CULL_SLABS,
-  CAMERA_CULLED_COUNTER_OFFSET,
-);
-
-interface ViewBuffers {
-  readonly batches: Buffer;
-  readonly view: Buffer;
-  readonly counters: Buffer;
-  readonly visible: Buffer;
-  readonly indirect: Buffer;
-  readonly skinIndirect?: Buffer;
+interface ViewBuffers extends ViewInputBuffers {
   readonly lodReadback: Buffer;
   readonly visibleSurfaceRows?: Buffer;
+}
+
+/** Actual private successor, issued only while the original View still owns its old roots. */
+export interface ViewStorageTarget {
+  readonly view: GpuDrivenView;
+  readonly before: ViewInputBuffers;
+  readonly after: ViewInputBuffers;
+  readonly surfaceRows: Buffer | undefined;
+  readonly previousLateVisibleBase: number;
+  readonly lateVisibleBase: number;
+  readonly previousLateIndirectBase: number;
+  readonly lateIndirectBase: number;
+  readonly skin: SkinTaskBinding | undefined;
+  isCurrent(): boolean;
+}
+
+interface PreparedViewBufferGeneration {
+  readonly next: ViewBuffers;
+  readonly previous: ViewBuffers | undefined;
+  readonly candidate: number;
+  readonly visible: number;
+  readonly batch: number;
+  readonly indirect: number;
+  readonly suppression: number;
+  readonly order: number;
+  readonly skin: SkinDemandLayout | undefined;
+  readonly joints: number;
+  readonly lateMirror: boolean;
+  readonly initial: InitialViewStorage | undefined;
+  readonly groups: InputBindingGroups | undefined;
+  readonly consumers: GpuViewInputPreparation | undefined;
+}
+
+interface InitialViewStorage {
+  phase: 'preparing' | 'closed' | 'accepted';
+  readonly created: Partial<MutableViewBuffers>;
+}
+
+interface ViewAddressPreparation {
+  readonly scene: GpuScene;
+  readonly current: () => boolean;
+  readonly words: number;
+  readonly oldWords: number;
+  readonly facts: InputBindingFacts;
+  readonly plan: SubmissionPlan;
+  readonly topology: EncodedViewTopology | undefined;
+  readonly skinLayout: SkinDemandLayout | undefined;
+  readonly batchCapacity: number;
+  readonly orderCapacity: number;
+  readonly created: Partial<Pick<MutableViewBuffers, 'batches' | 'counters'>>;
+  readonly mirror: Uint32Array<ArrayBuffer>;
+  next?: ViewBuffers | undefined;
+  groups?: InputBindingGroups | undefined;
+  closed: boolean;
+  published: boolean;
 }
 
 type MutableViewBuffers = { -readonly [Name in keyof ViewBuffers]: ViewBuffers[Name] };
@@ -1248,13 +390,6 @@ export interface GpuDrivenViewInspection {
   readonly resourceAllocation: import('../inspection-types').GpuResourceAllocationInspection;
 }
 
-export interface GpuDrivenViewBufferCapacities {
-  readonly candidate: number;
-  readonly visible: number;
-  readonly batch: number;
-  readonly indirect: number;
-}
-
 export interface GpuDrivenLodSelectionInspection {
   /** Exact resource generation whose selector rows were copied. */
   readonly resourceGeneration?: number;
@@ -1313,290 +448,7 @@ export interface GpuDrivenLodSelectionInspection {
   readonly submit?: GpuDrivenLodSubmitIdentity;
 }
 
-function nextCapacity(required: number): number {
-  return 2 ** Math.ceil(Math.log2(Math.max(1, required)));
-}
-
-/** Raster binds windows at 256-byte storage offsets: 64 visible entries. */
-const VISIBLE_ALIGNMENT = 64;
 const VISIBLE_ENTRY_BYTES = 16;
-const VISIBLE_GROWTH = 1.5;
-/** First-allocation headroom: one small window relocation must not rebuild every binding. */
-const VISIBLE_HEADROOM = 1.25;
-
-function alignVisible(entries: number): number {
-  return Math.ceil(Math.max(VISIBLE_ALIGNMENT, entries) / VISIBLE_ALIGNMENT) * VISIBLE_ALIGNMENT;
-}
-
-/**
- * Visible-index allocation for one view: the aligned requirement plus bounded
- * headroom on first allocation, then geometric growth, so a stable workload
- * never reallocates and a growing one reallocates amortized O(1) times. Slack
- * never exceeds what the device can bind; the requirement itself is never clamped.
- */
-export function growGpuDrivenVisibleCapacity(
-  current: number,
-  required: number,
-  maxEntries: number,
-): number {
-  const needed = alignVisible(required);
-  if (needed <= current) return current;
-  const grown = alignVisible(
-    current === 0 ? Math.ceil(needed * VISIBLE_HEADROOM) : Math.ceil(current * VISIBLE_GROWTH),
-  );
-  const ceiling = Math.floor(Math.max(0, maxEntries) / VISIBLE_ALIGNMENT) * VISIBLE_ALIGNMENT;
-  return Math.max(needed, Math.min(grown, ceiling));
-}
-
-/**
- * Derive each GPU-driven allocation from its own logical capacity domain.
- * Candidate records are dense; visible indices use the sparse, 64-entry
- * aligned ranges assigned by BatchTopology. Keeping these values separate is
- * what makes a large LOD candidate set bounded instead of multiplying the
- * candidate record and inline LOD-row buffers by the visible address space.
- */
-export function deriveGpuDrivenViewBufferCapacities(
-  plan: Pick<SubmissionPlan, 'candidateCount' | 'batches'>,
-): GpuDrivenViewBufferCapacities {
-  const cached = viewBufferCapacities.get(plan);
-  if (cached !== undefined) return cached;
-  const memberships = new Set<FrameList<GpuDrivenCandidate>>();
-  let candidateCount = 0;
-  let visible = 0;
-  let indirect = 0;
-  for (const batch of plan.batches) {
-    const members = batch.candidates;
-    if (!memberships.has(members)) {
-      memberships.add(members);
-      candidateCount += members.length;
-    }
-    // Derived from the batch segments the kernels address, so a plan whose
-    // LOD chain grew never lets a level segment write past the buffer. Exact
-    // (aligned): growth slack is the allocator's decision, bounded by limits.
-    visible = Math.max(visible, batch.visibleBase + batchVisibleSpan(batch));
-    indirect = Math.max(
-      indirect,
-      batch.indirectOffset / INDIRECT_COMMAND_BYTES + batchLodLevelCount(batch),
-    );
-  }
-  const capacities = Object.freeze({
-    candidate: nextCapacity(candidateCount),
-    visible: alignVisible(visible),
-    batch: nextCapacity(plan.batches.length),
-    indirect: nextCapacity(indirect),
-  });
-  // Plans are immutable and shared by every view (cascade, layer) drawing them.
-  viewBufferCapacities.set(plan, capacities);
-  return capacities;
-}
-const viewBufferCapacities = new WeakMap<object, GpuDrivenViewBufferCapacities>();
-
-function bufferBinding(buffer: Buffer): {
-  readonly kind: 'buffer';
-  readonly value: { buffer: Buffer };
-} {
-  return { kind: 'buffer', value: { buffer } };
-}
-
-interface EncodedViewTopology {
-  readonly batchBytes: Uint8Array;
-  /** Fixed source batches in row order; an identical row keeps its encoded bytes. */
-  readonly rows?: readonly GpuDrivenBatch[];
-  /** Each row's logical member root; header word 12 of that row holds its physical address. */
-  readonly members: readonly FrameList<GpuDrivenCandidate>[];
-}
-/** Rows a successor searches past its cursor for a retained owner; local edits stay in range. */
-const ROW_LOOKAHEAD = 8;
-const MEMBER_ADDRESS_OFFSET = 48;
-const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
-
-/** A read frame resolves each root once, so views sharing a template share its patched result. */
-const patchedByFrame = new WeakMap<
-  GpuInputReadFrame,
-  WeakMap<EncodedViewTopology, EncodedViewTopology>
->();
-
-/**
- * Patch the current physical member roots into a topology template. The
- * template stays shared until an address differs; fixed task plans cache
- * their patched copy for the scene.
- */
-function patchMemberAddresses(
-  plan: SubmissionPlan,
-  scene: GpuScene,
-  inputs: GpuInputReadFrame,
-  template: EncodedViewTopology,
-): EncodedViewTopology {
-  let frameResults = patchedByFrame.get(inputs);
-  const shared = frameResults?.get(template);
-  if (shared !== undefined) return shared;
-  if (frameResults === undefined) {
-    frameResults = new WeakMap();
-    patchedByFrame.set(inputs, frameResults);
-  }
-  const patched = patchTemplateAddresses(plan, scene, inputs, template);
-  frameResults.set(template, patched);
-  return patched;
-}
-
-function patchTemplateAddresses(
-  plan: SubmissionPlan,
-  scene: GpuScene,
-  inputs: GpuInputReadFrame,
-  template: EncodedViewTopology,
-): EncodedViewTopology {
-  let batchBytes = template.batchBytes;
-  let patched = false;
-  let header = new DataView(batchBytes.buffer);
-  const { members } = template;
-  for (let row = 0; row < members.length; row++) {
-    // Rows sharing one root resolve it once through the read frame's memo.
-    const address = inputs.members(members[row] as FrameList<GpuDrivenCandidate>);
-    const offset = row * BATCH_STRIDE + MEMBER_ADDRESS_OFFSET;
-    if (header.getUint32(offset, true) === address) continue;
-    if (!patched) {
-      batchBytes = batchBytes.slice();
-      header = new DataView(batchBytes.buffer);
-      patched = true;
-    }
-    header.setUint32(offset, address, true);
-  }
-  if (!patched) return template;
-  const encoded = { ...template, batchBytes };
-  if (hasFixedTaskHeaders(plan)) encodedTopologies.get(scene)?.set(plan, encoded);
-  return encoded;
-}
-
-/** The retained row of `batch` at or shortly after `cursor`, if its owner is unchanged. */
-function retainedRow(
-  rows: readonly GpuDrivenBatch[],
-  cursor: number,
-  batch: GpuDrivenBatch,
-): number | undefined {
-  const end = Math.min(rows.length, cursor + ROW_LOOKAHEAD);
-  for (let row = cursor; row < end; row++) if (rows[row] === batch) return row;
-  return undefined;
-}
-
-/** Raster batch ABI flags; material rows may be selected by each candidate. */
-function rasterBatchFlags(batch: GpuDrivenBatch, lodCount: number): number {
-  return (
-    (batch.key.drawKind === 'indexed' ? 1 : 0) |
-    (lodCount << 1) |
-    (batch.logicalResources === true ? 0x10000 : 0) |
-    (batch.key.rowMaterial === true ? 0x20000 : 0)
-  );
-}
-
-/** Task headers retain logical member roots; physical roots are leased on each read. */
-function encodedViewTopology(
-  plan: SubmissionPlan,
-  scene: GpuScene,
-  previous?: EncodedViewTopology,
-): EncodedViewTopology {
-  let owner = encodedTopologies.get(scene);
-  const fixed = hasFixedTaskHeaders(plan);
-  const cached = fixed ? owner?.get(plan) : undefined;
-  if (cached !== undefined) return cached;
-  // A replaced fixed plan copies each identical logical row from the last
-  // encoding of the same scene; only edited rows and shifted bases re-encode.
-  // Plans keep stable batch order, so rows are matched by owner from a cursor
-  // that follows the predecessor: an insertion or removal does not re-encode
-  // later rows, and a moved row only rewrites its candidate base word.
-  const previousRows = fixed ? previous?.rows : undefined;
-  const previousWords =
-    previousRows === undefined || previous === undefined
-      ? undefined
-      : new Uint32Array(
-          previous.batchBytes.buffer,
-          previous.batchBytes.byteOffset,
-          previous.batchBytes.byteLength / 4,
-        );
-  let cursor = 0;
-  if (owner === undefined) {
-    owner = new WeakMap();
-    encodedTopologies.set(scene, owner);
-  }
-  const rows: GpuDrivenBatch[] = [];
-  const members: FrameList<GpuDrivenCandidate>[] = [];
-  const batchBytes = new Uint8Array(Math.max(1, plan.batches.length) * BATCH_STRIDE);
-  const batches = new DataView(batchBytes.buffer);
-  const words = new Uint32Array(batchBytes.buffer);
-  const lodRow = {
-    generation: 0,
-    level: 0,
-    firstIndex: 0,
-    indexCount: 0,
-    baseVertex: 0,
-    screenCoverage: 0,
-    hysteresis: 0,
-    ready: false,
-  };
-  let candidateIndex = 0;
-  let batchIndex = 0;
-  for (const batch of plan.batches) {
-    const index = batchIndex++;
-    const offset = index * BATCH_STRIDE;
-    rows.push(batch);
-    members.push(batch.candidates);
-    const previousRow =
-      previousRows !== undefined &&
-      batch.materialAddress !== undefined &&
-      batch.geometryAddress !== undefined
-        ? retainedRow(previousRows, cursor, batch)
-        : undefined;
-    if (previousWords !== undefined && previousRow !== undefined) {
-      cursor = previousRow + 1;
-      const source = (previousRow * BATCH_STRIDE) / 4;
-      const target = offset / 4;
-      for (let word = 0; word < BATCH_STRIDE / 4; word++)
-        words[target + word] = previousWords[source + word] as number;
-      batches.setUint32(offset + 28, candidateIndex, true);
-      candidateIndex += batch.candidates.length;
-      continue;
-    }
-    const lodCount = batchLodLevelCount(batch);
-    batches.setUint32(offset, batch.visibleBase, true);
-    batches.setUint32(offset + 4, batch.visibleCapacity, true);
-    batches.setUint32(offset + 8, batch.key.count, true);
-    batches.setUint32(offset + 12, batch.key.first, true);
-    batches.setInt32(offset + 16, batch.key.baseVertex, true);
-    batches.setUint32(offset + 20, batch.indirectOffset / INDIRECT_COMMAND_BYTES, true);
-    batches.setUint32(offset + 24, rasterBatchFlags(batch, lodCount), true);
-    batches.setUint32(offset + 28, candidateIndex, true);
-    batches.setUint32(offset + 32, batchLevelStride(batch), true);
-    batches.setUint32(offset + 36, batch.lod?.crossfade === true ? 1 : 0, true);
-    const materialAddress =
-      batch.materialAddress ??
-      (batch.binding === undefined
-        ? 0
-        : (scene.materialIndexForResource(batch.binding.material) ?? 0));
-    batches.setUint32(offset + 40, materialAddress, true);
-    const geometryAddress =
-      batch.geometryAddress ??
-      (batch.binding === undefined
-        ? 0
-        : (scene.geometryIndexForResource(batch.binding.assetHandle) ?? 0));
-    batches.setUint32(offset + 44, geometryAddress, true);
-
-    for (let level = 0; level < lodCount; level++) {
-      const range = level === 0 ? batch.key : batch.lod?.ranges?.[level - 1];
-      lodRow.generation = batch.generation;
-      lodRow.level = level;
-      lodRow.firstIndex = range?.first ?? batch.key.first;
-      lodRow.indexCount = range?.count ?? batch.key.count;
-      lodRow.baseVertex = range?.baseVertex ?? batch.key.baseVertex;
-      lodRow.screenCoverage = batch.lod?.coverages[level] ?? (level === 0 ? 1 : 0);
-      lodRow.hysteresis = batch.lod?.hysteresis ?? 0.08;
-      lodRow.ready = batch.lod?.crossfade !== true || level === 0 || range !== undefined;
-      writeGpuLodRow(batches, offset + BATCH_HEADER_STRIDE + level * LOD_ROW_STRIDE, lodRow);
-    }
-    candidateIndex += batch.candidates.length;
-  }
-  const encoded = { batchBytes, ...(fixed ? { rows } : {}), members };
-  if (fixed) owner.set(plan, encoded);
-  return encoded;
-}
 
 const SHADOW_RASTER_PASS = new PreparedRasterPass({
   colorFormats: [],
@@ -1604,7 +456,114 @@ const SHADOW_RASTER_PASS = new PreparedRasterPass({
   sampleCount: 1,
 });
 
+export type GpuDrivenViewCreationInput = {
+  readonly device: RhiDevice;
+  readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
+  readonly labelPrefix?: string;
+  /**
+   * @internal
+   * Falsifier hook: scales the HZB screen footprint. Production uses 1.
+   */
+  readonly occlusionFootprintScale?: number;
+  /** Compile the shadow caster cull against the main camera's pyramid. */
+  readonly shadowCameraCull?: boolean;
+  /** Stock shadow consumers need only batch counters; detailed LOD reads are unavailable. */
+  readonly readback?: 'complete' | 'culling-counts';
+};
+export type GpuDrivenViewCreationStep = void | Promise<void>;
+
+function viewCreationInvalid(): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'the original live View construction demand and device',
+    hint: 'discard this candidate and prepare again for the current owner',
+  });
+}
+
+function viewCreationSupported(device: RhiDevice, completion: boolean): Result<void, RhiError> {
+  if (!device.caps.compute || !device.caps.storageBuffer || !device.caps.indirectDrawing) {
+    return err(
+      new RhiError({
+        code: 'feature-not-enabled',
+        expected: 'compute && storageBuffer && indirectDrawing',
+        hint: 'use the CPU projection and direct submission fallback on this device',
+      }),
+    );
+  }
+  if (completion && device.createComputePipelineAsync === undefined)
+    return err(
+      new RhiError({
+        code: 'feature-not-enabled',
+        expected: 'completion-qualified native compute pipeline construction',
+        hint: 'use a backend with asynchronous pipeline preparation before qualifying this View',
+      }),
+    );
+  return ok(undefined);
+}
+
+function* createViewResource<T>(
+  current: () => boolean,
+  create: () => Result<T, RhiError>,
+): Generator<void, Result<T, RhiError>> {
+  if (!current()) return err(viewCreationInvalid());
+  const result = create();
+  if (!result.ok) return result;
+  if (!current()) return err(viewCreationInvalid());
+  yield;
+  return current() ? result : err(viewCreationInvalid());
+}
+
+function* prepareViewPipeline(
+  device: RhiDevice,
+  descriptor: import('@forgeax/engine-rhi').ComputePipelineDescriptor,
+  completion: boolean,
+  current: () => boolean,
+): Generator<GpuDrivenViewCreationStep, Result<ComputePipeline, RhiError>> {
+  if (!current()) return err(viewCreationInvalid());
+  const prepare = device.createComputePipelineAsync;
+  if (completion && prepare === undefined)
+    return err(
+      new RhiError({
+        code: 'feature-not-enabled',
+        expected: 'completion-qualified native compute pipeline construction',
+        hint: 'use a backend with asynchronous pipeline preparation before qualifying this View',
+      }),
+    );
+  const requested = completion
+    ? prepare?.call(device, descriptor)
+    : device.createComputePipeline(descriptor);
+  let result: Result<ComputePipeline, RhiError> | undefined;
+  if (requested instanceof Promise) {
+    const done = requested.then(
+      (value) => {
+        result = value;
+      },
+      (cause) => {
+        result = err(
+          cause instanceof RhiError
+            ? cause
+            : new RhiError({
+                code: 'webgpu-runtime-error',
+                expected: 'successful completion of the requested native View pipeline',
+                hint: cause instanceof Error ? cause.message : String(cause),
+              }),
+        );
+      },
+    );
+    while (result === undefined) yield done;
+  } else result = requested;
+  if (!current()) return err(viewCreationInvalid());
+  yield;
+  return result ?? err(viewCreationInvalid());
+}
+
 export class GpuDrivenView {
+  private addressPreparation: ViewAddressPreparation | undefined;
+  private initialStorage: InitialViewStorage | undefined;
+  private readonly bufferRetirement: ViewBufferRetirement;
+  private preparingInputBindings: PreparingInputBindings | undefined;
+  private inputReads: GpuInputReadFrame | undefined;
+  private updating = false;
   private encodedTopology: EncodedViewTopology | undefined;
   private shadowRaster: PreparedRasterCounters | undefined;
   private buffers: ViewBuffers | undefined;
@@ -1627,9 +586,7 @@ export class GpuDrivenView {
   /** Stable-order records address flattened executions, not shared member storage. */
   private orderCandidateCapacity = 0;
   private sceneRef: GpuScene | undefined;
-  /** Canonical memberships of the last accepted topology stay encoded for its successor. */
-  private memberHolds: { readonly topology: EncodedViewTopology; readonly release: () => void }[] =
-    [];
+  private readonly memberResidency: GpuTaskResidency;
   private visibleBufferCapacity = 0;
   /**
    * Two-phase occlusion mirrors late items after the union region. Only a view
@@ -1645,6 +602,7 @@ export class GpuDrivenView {
   private scenePrimitive: Buffer | undefined;
   private sceneInstance: Buffer | undefined;
   private sceneTransform: Buffer | undefined;
+  private sceneTableIdentity: object | undefined;
   private sceneMaterial: Buffer | undefined;
   private sceneMaterialBytes = 0;
   private sceneCapacity = 0;
@@ -1726,7 +684,14 @@ export class GpuDrivenView {
     private readonly orderScanPipeline: ComputePipeline,
     private readonly orderPlacePipeline: ComputePipeline,
     private readonly lateOrderPlacePipeline: ComputePipeline,
-  ) {}
+  ) {
+    this.memberResidency = new GpuTaskResidency(device);
+    this.bufferRetirement = new ViewBufferRetirement(
+      device,
+      this.allocationLedger,
+      this.allocationTokens,
+    );
+  }
 
   /**
    * Compiled on the first update with a camera cull input, so views that never
@@ -1749,8 +714,39 @@ export class GpuDrivenView {
     return created;
   }
 
-  private prepareSkinPipelines(): Result<void, RhiError> {
-    if (this.skinPipelines !== undefined) return ok(undefined);
+  private *prepareShadowCamera(
+    current: () => boolean,
+  ): Generator<GpuDrivenViewCreationStep, Result<void, RhiError>> {
+    const module = yield* prepareViewModule(
+      this.shaderModuleFactory,
+      {
+        label: 'gpu-driven-view-shadow-camera',
+        code: GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL,
+      },
+      current,
+    );
+    if (!module.ok) return module;
+    const pipeline = yield* prepareViewPipeline(
+      this.device,
+      {
+        label: `${this.labelPrefix}.cullViewShadowCamera`,
+        layout: this.latePipelineLayout,
+        compute: { module: module.value, entryPoint: 'cullViewShadowCamera' },
+      },
+      true,
+      current,
+    );
+    if (!pipeline.ok) return pipeline;
+    this.shadowCameraCullPipeline = pipeline.value;
+    return ok(undefined);
+  }
+
+  private prepareSkinForSubmission(
+    plan: SubmissionPlan,
+    skin: SkinSceneFrame | undefined,
+  ): Result<void, RhiError> | undefined {
+    this.skinActive = (skin?.current.jointCapacity ?? 0) > 0 && planDrawsSkin(plan);
+    if (!this.skinActive || this.skinPipelines !== undefined) return undefined;
     // Resolve reads dispatch arguments indirectly; its bind group must omit the
     // writable alias of that buffer, even though finalize writes it earlier.
     const layout = this.device.createBindGroupLayout({
@@ -1792,7 +788,7 @@ export class GpuDrivenView {
     }
     this.skinPipelineLayout = layout.value;
     this.skinPipelines = pipelines;
-    return ok(undefined);
+    return undefined;
   }
   private skinPipelineLayout: BindGroupLayout | undefined;
 
@@ -1843,128 +839,496 @@ export class GpuDrivenView {
     });
   }
 
-  static create(input: {
-    readonly device: RhiDevice;
-    readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
-    readonly labelPrefix?: string;
-    /**
-     * @internal
-     * Falsifier hook: scales the HZB screen footprint. Production uses 1.
-     */
-    readonly occlusionFootprintScale?: number;
-    /** Compile the shadow caster cull against the main camera's pyramid. */
-    readonly shadowCameraCull?: boolean;
-    /** Stock shadow consumers need only batch counters; detailed LOD reads are unavailable. */
-    readonly readback?: 'complete' | 'culling-counts';
-  }): Result<GpuDrivenView, RhiError> {
+  static create(input: GpuDrivenViewCreationInput): Result<GpuDrivenView, RhiError> {
+    const work = GpuDrivenView.construct(input, false, () => true);
+    for (;;) {
+      const next = work.next();
+      if (next.done) return next.value;
+      if (next.value instanceof Promise) {
+        work.return(err(viewCreationInvalid()));
+        return err(viewCreationInvalid());
+      }
+    }
+  }
+
+  /** Native calls are separate work units; yielded completion must settle before resumption. */
+  static prepareCreation(
+    input: GpuDrivenViewCreationInput,
+    current: () => boolean,
+  ): Generator<GpuDrivenViewCreationStep, Result<GpuDrivenView, RhiError>> {
+    // Retain only construction facts, never the caller's containing frame/context.
+    return GpuDrivenView.construct(
+      {
+        device: input.device,
+        shaderModuleFactory: input.shaderModuleFactory,
+        labelPrefix: input.labelPrefix ?? 'gpu-driven-view',
+        occlusionFootprintScale: input.occlusionFootprintScale ?? 1,
+        shadowCameraCull: input.shadowCameraCull === true,
+        readback: input.readback ?? 'complete',
+      },
+      true,
+      current,
+    );
+  }
+
+  private static *construct(
+    input: GpuDrivenViewCreationInput,
+    completion: boolean,
+    current: () => boolean,
+  ): Generator<GpuDrivenViewCreationStep, Result<GpuDrivenView, RhiError>> {
+    if (!current()) return err(viewCreationInvalid());
     const { device, shaderModuleFactory } = input;
     const labelPrefix = input.labelPrefix ?? 'gpu-driven-view';
-    if (!device.caps.compute || !device.caps.storageBuffer || !device.caps.indirectDrawing) {
-      return err(
-        new RhiError({
-          code: 'feature-not-enabled',
-          expected: 'compute && storageBuffer && indirectDrawing',
-          hint: 'use the CPU projection and direct submission fallback on this device',
-        }),
-      );
-    }
-    const layout = device.createBindGroupLayout({
-      label: `${labelPrefix}-bgl`,
-      entries: [
-        { binding: 0, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
-        { binding: 1, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
-        { binding: 3, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
-        { binding: 4, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
-        { binding: 5, visibility: COMPUTE_STAGE, buffer: { type: 'uniform' } },
-        { binding: 6, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
-        { binding: 7, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
-        { binding: 8, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
-      ],
-    });
-    if (!layout.ok) return layout;
-    const pipelineLayout = device.createPipelineLayout({
-      label: `${labelPrefix}-pl`,
-      bindGroupLayouts: [layout.value],
-    });
-    if (!pipelineLayout.ok) return pipelineLayout;
-    const module = shaderModuleFactory.createShaderModule({
-      label: 'gpu-driven-view',
-      code: GPU_DRIVEN_VIEW_WGSL,
-    });
-    if (!module.ok) return module;
-    const createPipeline = (entryPoint: string): Result<ComputePipeline, RhiError> =>
-      device.createComputePipeline({
-        label: `${labelPrefix}.${entryPoint}`,
-        layout: pipelineLayout.value,
-        compute: {
-          module: module.value,
-          entryPoint,
-          ...(device.caps.firstInstanceIndirect &&
-          (entryPoint === 'finalizeView' || entryPoint === 'finalizeViewLate')
-            ? { constants: { INDIRECT_FIRST_INSTANCE: 1 } }
-            : {}),
-        },
-      });
-    const reset = createPipeline('resetView');
-    if (!reset.ok) return reset;
-    const cull = createPipeline('cullView');
-    if (!cull.ok) return cull;
-    const finalize = createPipeline('finalizeView');
-    if (!finalize.ok) return finalize;
-    const lateFinalize = createPipeline('finalizeViewLate');
-    if (!lateFinalize.ok) return lateFinalize;
-    const orderScan = createPipeline('scanVisibleOrder');
-    if (!orderScan.ok) return orderScan;
-    const orderPlace = createPipeline('placeVisibleOrder');
-    if (!orderPlace.ok) return orderPlace;
-    const lateOrderPlace = createPipeline('placeVisibleOrderLate');
-    if (!lateOrderPlace.ok) return lateOrderPlace;
-    const pyramidLayout = device.createBindGroupLayout({
-      label: `${labelPrefix}-occlusion-bgl`,
-      entries: [
-        {
-          binding: 0,
-          visibility: COMPUTE_STAGE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-      ],
-    });
-    if (!pyramidLayout.ok) return pyramidLayout;
-    const latePipelineLayout = device.createPipelineLayout({
-      label: `${labelPrefix}-occlusion-pl`,
-      bindGroupLayouts: [layout.value, pyramidLayout.value],
-    });
-    if (!latePipelineLayout.ok) return latePipelineLayout;
-    const lateCull = device.createComputePipeline({
-      label: `${labelPrefix}.cullViewLate`,
-      layout: latePipelineLayout.value,
-      compute: { module: module.value, entryPoint: 'cullViewLate' },
-    });
-    if (!lateCull.ok) return lateCull;
-    return ok(
-      new GpuDrivenView(
-        device,
-        layout.value,
-        pipelineLayout.value,
-        reset.value,
-        cull.value,
-        finalize.value,
-        labelPrefix,
-        pyramidLayout.value,
-        lateCull.value,
-        lateFinalize.value,
-        input.occlusionFootprintScale ?? 1,
-        shaderModuleFactory,
-        latePipelineLayout.value,
-        input.shadowCameraCull === true,
-        module.value,
-        input.readback ?? 'complete',
-        orderScan.value,
-        orderPlace.value,
-        lateOrderPlace.value,
-      ),
+    const supported = viewCreationSupported(device, completion);
+    if (!supported.ok) return supported;
+    const layout = yield* createViewResource(current, () =>
+      device.createBindGroupLayout({
+        label: `${labelPrefix}-bgl`,
+        entries: [
+          { binding: 0, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+          { binding: 1, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+          { binding: 2, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+          { binding: 3, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+          { binding: 4, visibility: COMPUTE_STAGE, buffer: { type: 'read-only-storage' } },
+          { binding: 5, visibility: COMPUTE_STAGE, buffer: { type: 'uniform' } },
+          { binding: 6, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+          { binding: 7, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+          { binding: 8, visibility: COMPUTE_STAGE, buffer: { type: 'storage' } },
+        ],
+      }),
     );
+    if (!layout.ok) return layout;
+    const pipelineLayout = yield* createViewResource(current, () =>
+      device.createPipelineLayout({
+        label: `${labelPrefix}-pl`,
+        bindGroupLayouts: [layout.value],
+      }),
+    );
+    if (!pipelineLayout.ok) return pipelineLayout;
+    const module = yield* createViewResource(current, () =>
+      shaderModuleFactory.createShaderModule({
+        label: 'gpu-driven-view',
+        code: GPU_DRIVEN_VIEW_WGSL,
+      }),
+    );
+    if (!module.ok) return module;
+    const createPipeline = function* (entryPoint: string) {
+      return yield* prepareViewPipeline(
+        device,
+        {
+          label: `${labelPrefix}.${entryPoint}`,
+          layout: pipelineLayout.value,
+          compute: {
+            module: module.value,
+            entryPoint,
+            ...(device.caps.firstInstanceIndirect &&
+            (entryPoint === 'finalizeView' || entryPoint === 'finalizeViewLate')
+              ? { constants: { INDIRECT_FIRST_INSTANCE: 1 } }
+              : {}),
+          },
+        },
+        completion,
+        current,
+      );
+    };
+    const reset = yield* createPipeline('resetView');
+    if (!reset.ok) return reset;
+    const cull = yield* createPipeline('cullView');
+    if (!cull.ok) return cull;
+    const finalize = yield* createPipeline('finalizeView');
+    if (!finalize.ok) return finalize;
+    const lateFinalize = yield* createPipeline('finalizeViewLate');
+    if (!lateFinalize.ok) return lateFinalize;
+    const orderScan = yield* createPipeline('scanVisibleOrder');
+    if (!orderScan.ok) return orderScan;
+    const orderPlace = yield* createPipeline('placeVisibleOrder');
+    if (!orderPlace.ok) return orderPlace;
+    const lateOrderPlace = yield* createPipeline('placeVisibleOrderLate');
+    if (!lateOrderPlace.ok) return lateOrderPlace;
+    const pyramidLayout = yield* createViewResource(current, () =>
+      device.createBindGroupLayout({
+        label: `${labelPrefix}-occlusion-bgl`,
+        entries: [
+          {
+            binding: 0,
+            visibility: COMPUTE_STAGE,
+            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+          },
+        ],
+      }),
+    );
+    if (!pyramidLayout.ok) return pyramidLayout;
+    const latePipelineLayout = yield* createViewResource(current, () =>
+      device.createPipelineLayout({
+        label: `${labelPrefix}-occlusion-pl`,
+        bindGroupLayouts: [layout.value, pyramidLayout.value],
+      }),
+    );
+    if (!latePipelineLayout.ok) return latePipelineLayout;
+    const lateCull = yield* prepareViewPipeline(
+      device,
+      {
+        label: `${labelPrefix}.cullViewLate`,
+        layout: latePipelineLayout.value,
+        compute: { module: module.value, entryPoint: 'cullViewLate' },
+      },
+      completion,
+      current,
+    );
+    if (!lateCull.ok) return lateCull;
+    if (!current()) return err(viewCreationInvalid());
+    const view = new GpuDrivenView(
+      device,
+      layout.value,
+      pipelineLayout.value,
+      reset.value,
+      cull.value,
+      finalize.value,
+      labelPrefix,
+      pyramidLayout.value,
+      lateCull.value,
+      lateFinalize.value,
+      input.occlusionFootprintScale ?? 1,
+      shaderModuleFactory,
+      latePipelineLayout.value,
+      input.shadowCameraCull === true,
+      module.value,
+      input.readback ?? 'complete',
+      orderScan.value,
+      orderPlace.value,
+      lateOrderPlace.value,
+    );
+    return yield* view.completeCreation(completion, current);
+  }
+
+  private *completeCreation(
+    completion: boolean,
+    current: () => boolean,
+  ): Generator<GpuDrivenViewCreationStep, Result<GpuDrivenView, RhiError>> {
+    if (completion && this.shadowCameraCullEligible) {
+      const prepared = yield* this.prepareShadowCamera(current);
+      if (!prepared.ok) return prepared;
+    }
+    return ok(this);
+  }
+
+  /** Initial static execution storage, using the actual plan's ordinary capacity recipe. */
+  *prepareInitialStorage(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+    layout: { readonly surfaceRows: boolean; readonly lateMirror: boolean },
+  ): Generator<void, Result<void, RhiError>> {
+    if (this.buffers !== undefined || this.updating) return err(viewCreationInvalid());
+    this.updating = true;
+    const role: InitialViewStorage = { phase: 'preparing', created: {} };
+    this.initialStorage = role;
+    try {
+      const capacity = deriveGpuDrivenViewBufferCapacities(plan);
+      const live = () => {
+        this.bufferRetirement.assertHealthy();
+        this.memberResidency.assertLive(scene.inputs);
+        const valid = current();
+        this.bufferRetirement.assertHealthy();
+        this.memberResidency.assertLive(scene.inputs);
+        return (
+          valid &&
+          this.initialStorage === role &&
+          role.phase === 'preparing' &&
+          this.updating &&
+          scene.live
+        );
+      };
+      return yield* this.rebuildBufferSteps(
+        capacity.candidate,
+        capacity.visible,
+        capacity.batch,
+        capacity.indirect,
+        Math.max(1, Math.ceil(scene.rowAddressExtent / 32)),
+        layout.surfaceRows,
+        0,
+        0,
+        layout.lateMirror,
+        nextCapacity(plan.candidateCount),
+        live,
+        role,
+      );
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      this.closeInitialStorage(role);
+      this.updating = false;
+    }
+  }
+
+  private closeInitialStorage(role: InitialViewStorage): void {
+    if (role.phase === 'preparing') role.phase = 'closed';
+    if (this.initialStorage === role) this.initialStorage = undefined;
+    if (role.phase === 'closed') this.destroyAfterSubmittedWork([role.created]);
+  }
+
+  /** Grow this View's native capacity without selecting the prospective execution. */
+  *prepareStorageCapacity(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+    layout: { readonly surfaceRows: boolean; readonly lateMirror: boolean },
+    prepareConsumers: (target: ViewStorageTarget) => Result<GpuViewInputPreparation, RhiError>,
+  ): Generator<void, Result<void, RhiError>> {
+    const previous = this.buffers;
+    if (
+      this.updating ||
+      previous === undefined ||
+      this.sceneRef !== scene ||
+      this.sceneInputs === undefined ||
+      this.initialStorage !== undefined ||
+      this.addressPreparation !== undefined
+    )
+      return err(viewCreationInvalid());
+    const capacities = deriveGpuDrivenViewBufferCapacities(plan);
+    const words = Math.max(1, Math.ceil(scene.rowAddressExtent / 32));
+    const surfaceRows = layout.surfaceRows || previous.visibleSurfaceRows !== undefined;
+    const lateMirror = layout.lateMirror || this.lateMirror;
+    if (this.storageCapacityFits(capacities, plan.candidateCount, words, surfaceRows, lateMirror))
+      return current() ? ok(undefined) : err(viewCreationInvalid());
+    const role: InitialViewStorage = { phase: 'preparing', created: {} };
+    this.initialStorage = role;
+    const live = () => {
+      this.assertInputScene(scene);
+      const owned = () =>
+        !this.updating &&
+        this.initialStorage === role &&
+        role.phase === 'preparing' &&
+        this.buffers === previous &&
+        this.sceneRef === scene;
+      return owned() && current() && owned();
+    };
+    try {
+      return yield* this.rebuildBufferSteps(
+        Math.max(capacities.candidate, this.candidateCapacity),
+        Math.max(capacities.visible, this.visibleBufferCapacity),
+        Math.max(capacities.batch, this.batchCapacity),
+        Math.max(capacities.indirect, this.indirectCapacity),
+        words,
+        surfaceRows,
+        this.skinJointCapacity,
+        Math.max(plan.candidateCount, this.skinLayout?.candidateCapacity ?? 0),
+        lateMirror,
+        nextCapacity(plan.candidateCount),
+        live,
+        role,
+        (next, skin, nextVisible, nextIndirect) => {
+          const input = this.sceneInputs;
+          if (input === undefined || !scene.inputs.isCurrentBuffer(input))
+            return err(viewCreationInvalid());
+          const before = this.inputBindingFacts(scene, previous);
+          const groups = createInputBindingGroups(
+            this.device,
+            this.bindGroupLayout,
+            this.labelPrefix,
+            { ...before, ...inputBindingSceneFacts(scene, next, undefined) },
+            input,
+            () => live() && this.inputBindingFactsMatch(before),
+          );
+          if (!groups.ok) return groups;
+          const target: ViewStorageTarget = Object.freeze({
+            view: this,
+            before: previous,
+            after: next,
+            surfaceRows: next.visibleSurfaceRows,
+            previousLateVisibleBase: this.lateVisibleBase(),
+            lateVisibleBase: lateMirror ? nextVisible : 0,
+            previousLateIndirectBase: this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+            lateIndirectBase: nextIndirect * INDIRECT_COMMAND_BYTES,
+            skin:
+              skin === undefined
+                ? undefined
+                : {
+                    data: next.visible,
+                    auxiliary: next.view,
+                    dataOffset: 0,
+                    auxiliaryOffset: SKIN_RASTER_OFFSET,
+                    dataSize: skin.outputBytes,
+                    auxiliarySize: 16,
+                  },
+            isCurrent: () => live() && this.inputBindingFactsMatch(before),
+          });
+          const consumers = prepareConsumers(target);
+          if (!consumers.ok) return consumers;
+          return ok({ ...groups.value, consumers: consumers.value });
+        },
+      );
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      this.closeInitialStorage(role);
+    }
+  }
+
+  private storageCapacityFits(
+    capacities: ReturnType<typeof deriveGpuDrivenViewBufferCapacities>,
+    candidates: number,
+    words: number,
+    surfaceRows: boolean,
+    lateMirror: boolean,
+  ): boolean {
+    return (
+      capacities.candidate <= this.candidateCapacity &&
+      capacities.visible <= this.visibleBufferCapacity &&
+      capacities.batch <= this.batchCapacity &&
+      capacities.indirect <= this.indirectCapacity &&
+      nextCapacity(candidates) <= this.orderCandidateCapacity &&
+      words <= this.suppressionWordCapacity &&
+      surfaceRows === (this.buffers?.visibleSurfaceRows !== undefined) &&
+      lateMirror === this.lateMirror
+    );
+  }
+
+  /** Encode and retain fixed resident member roots; this does not flush or reserve View buffers. */
+  prepareResidentMembers(plan: SubmissionPlan, scene: GpuScene): Result<void, RhiError> {
+    try {
+      this.memberResidency.prepareResident(plan, scene.inputs);
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    }
+  }
+
+  /** Header/member custody only; native upload and View capacity remain separate demands. */
+  prepareResidentHeaders(plan: SubmissionPlan, scene: GpuScene): Result<void, RhiError> {
+    const owner = scene.inputs;
+    const guard = owner.captureGuard();
+    const cursor = scene.contentCursor;
+    let inputs: GpuInputReadFrame | undefined;
+    let failure: { readonly cause: unknown } | undefined;
+    try {
+      this.memberResidency.assertLive(owner);
+      inputs = owner.capture();
+      const encoded = encodedViewTopology(plan, scene, inputs);
+      inputs.seal().unwrap();
+      this.memberResidency.prepareHeaders(plan, owner, encoded, encoded.rows, encoded.headers);
+    } catch (cause) {
+      failure = { cause };
+    }
+    if (inputs !== undefined)
+      try {
+        this.memberResidency.releaseRead(owner, inputs);
+      } catch (cause) {
+        failure = {
+          cause:
+            failure === undefined
+              ? cause
+              : new AggregateError(
+                  [failure.cause, cause],
+                  'Resident header preparation and retirement failed',
+                ),
+        };
+      }
+    if (failure !== undefined) {
+      if (failure.cause instanceof RhiError) return err(failure.cause);
+      throw failure.cause;
+    }
+    try {
+      this.memberResidency.assertLive(owner);
+      if (!guard() || scene.inputs !== owner || !scene.live || scene.contentCursor !== cursor)
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'current View, Scene and Inputs after all header retirement',
+            hint: 'discard stale header preparation and retry under the source owner guard',
+          }),
+        );
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    }
+  }
+
+  /** First, unpublished View only: seed static topology without consuming a warm frame. */
+  prepareInitialTopology(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+  ): Result<void, RhiError> {
+    const buffers = this.buffers;
+    if (this.sceneRef === scene) return this.prepareExistingTopology(plan, scene, current);
+    if (
+      this.updating ||
+      buffers === undefined ||
+      this.bindGroup !== undefined ||
+      this.sceneRef !== undefined ||
+      this.plan !== undefined
+    )
+      return err(this.inputReadError('an unbound first View with its original source demand'));
+    this.updating = true;
+    try {
+      if (!current() || this.buffers !== buffers) return err(viewCreationInvalid());
+      const headers = this.prepareResidentHeaders(plan, scene);
+      if (!headers.ok) return headers;
+      if (!current() || this.buffers !== buffers) return err(viewCreationInvalid());
+      const encoded = this.readInitialTopology(plan, scene);
+      if (!current() || this.buffers !== buffers) return err(viewCreationInvalid());
+      const uploaded = this.uploadTopology(plan, scene, encoded, buffers, true);
+      if (!uploaded.ok) return uploaded;
+      const suppression = this.updateSuppression(buffers.batches, true, undefined);
+      if (!suppression.ok) return suppression;
+      if (!current() || this.buffers !== buffers) return err(viewCreationInvalid());
+      this.plan = plan;
+      this.adoptScene(scene);
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      this.updating = false;
+    }
+  }
+
+  /** Existing execution keeps active control; only shared resident headers receive static data. */
+  private prepareExistingTopology(
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+  ): Result<void, RhiError> {
+    const buffers = this.buffers;
+    if (this.updating || buffers === undefined || !current() || this.buffers !== buffers)
+      return err(viewCreationInvalid());
+    const prepared = this.prepareResidentHeaders(plan, scene);
+    if (!prepared.ok) return prepared;
+    return current() && this.buffers === buffers ? ok(undefined) : err(viewCreationInvalid());
+  }
+
+  private readInitialTopology(plan: SubmissionPlan, scene: GpuScene): EncodedViewTopology {
+    const reads = scene.inputs.capture();
+    let encoded: EncodedViewTopology | undefined;
+    let failure: { readonly cause: unknown } | undefined;
+    try {
+      encoded = encodedViewTopology(plan, scene, reads);
+      reads.seal().unwrap();
+    } catch (cause) {
+      failure = { cause };
+    } finally {
+      try {
+        this.memberResidency.releaseRead(scene.inputs, reads);
+      } catch (cause) {
+        failure = {
+          cause:
+            failure === undefined
+              ? cause
+              : new AggregateError(
+                  [failure.cause, cause],
+                  'Initial topology and read retirement failed',
+                ),
+        };
+      }
+    }
+    if (failure !== undefined) throw failure.cause;
+    if (encoded === undefined) throw viewCreationInvalid();
+    return encoded;
   }
 
   update(
@@ -1991,23 +1355,19 @@ export class GpuDrivenView {
         }),
       );
     }
+    const wasUpdating = this.updating;
     try {
+      this.assertInputMutation(scene, inputs);
+      this.updating = true;
       this.resetUpdateTelemetry();
-      this.skinActive = (skin?.current.jointCapacity ?? 0) > 0 && planDrawsSkin(plan);
-      if (this.skinActive) {
-        const prepared = this.prepareSkinPipelines();
-        if (!prepared.ok) return prepared;
-      }
+      const skinPrepared = this.prepareSkinForSubmission(plan, skin);
+      if (skinPrepared?.ok === false) return skinPrepared;
       const inputUploadStart = scene.inputs.uploadBytes;
-      const encoded = patchMemberAddresses(
+      const encoded = encodedViewTopology(
         plan,
         scene,
         inputs,
-        encodedViewTopology(
-          plan,
-          scene,
-          this.sceneRef === scene ? this.encodedTopology : undefined,
-        ),
+        this.sceneRef === scene ? this.encodedTopology : undefined,
       );
       const sharedInput = inputs.buffer();
       if (!sharedInput.ok) return sharedInput;
@@ -2025,6 +1385,8 @@ export class GpuDrivenView {
       const buffersRebuilt = ensured.value;
       const buffers = this.buffers;
       if (buffers === undefined) return ok(undefined);
+      const cleared = this.retireExitedCommands(plan, buffersRebuilt);
+      if (!cleared.ok) return cleared;
       const topology = this.uploadTopology(plan, scene, encoded, buffers, buffersRebuilt);
       if (!topology.ok) return topology;
       const surfaceRows = this.uploadSurfaceRows(buffers, visibleSurfaceRows, buffersRebuilt);
@@ -2056,14 +1418,113 @@ export class GpuDrivenView {
       this.plan = plan;
       this.sceneInputs = sharedInput.value.buffer;
       this.sceneInputBytes = sharedInput.value.byteLength;
-      this.holdMembers(scene, encoded);
+      this.memberResidency.adoptActive(scene.inputs, encoded, encoded.rows, encoded.headers);
       this.adoptScene(scene);
+      this.assertInputScene(scene);
+      this.inputReads = inputs;
       this.updateCount += 1;
       return ok(undefined);
     } catch (cause) {
       if (cause instanceof RhiError) return err(cause);
       throw cause;
+    } finally {
+      this.updating = wasUpdating;
     }
+  }
+
+  private retireExitedCommands(plan: SubmissionPlan, replaced: boolean): Result<void, RhiError> {
+    if (replaced || this.buffers === undefined) return ok(undefined);
+    const cleared = clearExitedIndirectCommands(
+      this.device,
+      this.buffers.indirect,
+      this.plan,
+      plan,
+      this.indirectCapacity * INDIRECT_COMMAND_BYTES,
+    );
+    if (!cleared.ok) return cleared;
+    this.uploadBytes += cleared.value;
+    return ok(undefined);
+  }
+
+  /** A retained-depth hit still observes this frame's real input lifetime. */
+  observeInputReads(scene: GpuScene, reads: GpuInputReadFrame): Result<void, RhiError> {
+    const wasUpdating = this.updating;
+    try {
+      this.assertInputMutation(scene, reads);
+      if (this.sceneRef !== scene || !scene.inputs.readIsCurrent(reads))
+        throw this.inputReadError('a current read from this retained View Scene');
+      this.updating = true;
+      if (
+        this.sceneInputs !== undefined &&
+        (!scene.inputs.isCurrentBuffer(this.sceneInputs) ||
+          !scene.inputs.readHoldsBuffer(reads, this.sceneInputs))
+      ) {
+        const shared = reads.buffer();
+        if (!shared.ok) return shared;
+        if (this.buffers === undefined) throw this.inputReadError('retained native View buffers');
+        if (shared.value.buffer !== this.sceneInputs) {
+          const bound = this.ensureBindGroups(scene, shared.value.buffer, this.buffers, false);
+          if (!bound.ok) return bound;
+        }
+        this.sceneInputs = shared.value.buffer;
+        this.sceneInputBytes = shared.value.byteLength;
+      }
+      this.assertInputScene(scene);
+      if (!scene.inputs.readIsCurrent(reads))
+        throw this.inputReadError('unchanged input facts after binding refresh');
+      this.inputReads = reads;
+      return ok(undefined);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      this.updating = wasUpdating;
+    }
+  }
+
+  private inputReadError(expected: string): RhiError {
+    return new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected,
+      hint: 'refresh the View in its actual open input read domain before encoding compute',
+    });
+  }
+
+  private assertInputScene(scene: GpuScene): void {
+    this.bufferRetirement.assertHealthy();
+    this.memberResidency.assertLive(scene.inputs);
+    if (!scene.live) throw this.inputReadError('a live GPU Scene incarnation');
+  }
+
+  private assertInputMutation(scene: GpuScene, reads: GpuInputReadFrame): void {
+    this.assertInputScene(scene);
+    if (this.updating || !scene.inputs.ownsRead(reads))
+      throw this.inputReadError('one actual input read issued by this Scene outside View mutation');
+  }
+
+  private inputBufferForExecution(buffer: Buffer, compute: boolean): Buffer {
+    const scene = this.sceneRef;
+    const reads = this.inputReads;
+    if (scene === undefined || reads === undefined || this.updating)
+      throw this.inputReadError('an observed input read outside View mutation');
+    this.assertInputScene(scene);
+    if (
+      this.sceneTableIdentity === undefined ||
+      !scene.readHoldsTableRoot(reads, this.sceneTableIdentity)
+    )
+      throw this.inputReadError('a real held read of every bound Scene table incarnation');
+    if (!scene.inputs.ownsRead(reads)) throw this.inputReadError('this Scene input issuer');
+    const held = scene.inputs.readHoldsBuffer(
+      reads,
+      buffer,
+      compute ? this.viewWords[29] : undefined,
+    );
+    if (
+      !held &&
+      (compute || !scene.inputs.readIsCurrent(reads) || !scene.inputs.isCurrentBuffer(buffer))
+    )
+      throw this.inputReadError('a held matching input snapshot before actual GPU reads');
+    return buffer;
   }
 
   /**
@@ -2109,7 +1570,7 @@ export class GpuDrivenView {
       skinJointCapacity > this.skinJointCapacity;
     const suppressionWords = Math.max(
       1,
-      Math.ceil(scene.rowCapacity / 32),
+      Math.ceil(scene.rowAddressExtent / 32),
       suppressedPrimitives?.length ?? 0,
     );
     const structureGrows =
@@ -2369,99 +1830,461 @@ export class GpuDrivenView {
     // Graph passes read the current scene bindings and imports at execute
     // time, so a scene or input buffer swap alone does not recompile them.
     const graphShapeChanged = this.bindGroup === undefined || buffersRebuilt || !skinBindingsReady;
-    const entries = [
-      { binding: 0, resource: bufferBinding(scene.primitiveBuffer) },
-      { binding: 1, resource: bufferBinding(scene.instanceBuffer) },
-      { binding: 2, resource: bufferBinding(scene.transformBuffer) },
-      { binding: 3, resource: bufferBinding(inputBuffer) },
-      { binding: 4, resource: bufferBinding(buffers.batches) },
-      { binding: 5, resource: bufferBinding(buffers.view) },
-      { binding: 6, resource: bufferBinding(buffers.counters) },
-      { binding: 7, resource: bufferBinding(buffers.visible) },
-      { binding: 8, resource: bufferBinding(buffers.indirect) },
-    ];
-    const binding = this.device.createBindGroup({
-      label: `${this.labelPrefix}-bg`,
-      layout: this.bindGroupLayout,
-      entries,
-    });
-    if (!binding.ok) return binding;
-    this.bindGroup = binding.value;
-    this.skinBindGroup = undefined;
-    this.skinFinalizeBindGroup = undefined;
-    if (this.skinLayout !== undefined && this.skinPipelineLayout !== undefined) {
-      const taskBinding = this.device.createBindGroup({
-        label: `${this.labelPrefix}-skin-bg`,
-        layout: this.skinPipelineLayout,
-        entries: entries.slice(0, 8),
-      });
-      if (!taskBinding.ok) {
-        this.bindGroup = undefined;
-        return taskBinding;
-      }
-      this.skinBindGroup = taskBinding.value;
-      const args = buffers.skinIndirect;
-      if (args === undefined)
-        return err(
-          new RhiError({
-            code: 'rhi-descriptor-invalid',
-            expected: 'dedicated Skin dispatch arguments for an active task',
-            hint: 'rebuild this view from the admitted Skin layout',
-          }),
-        );
-      const finalizeBinding = this.device.createBindGroup({
-        label: `${this.labelPrefix}-skin-finalize-bg`,
-        layout: this.bindGroupLayout,
-        entries: entries.map((entry) =>
-          entry.binding === 8 ? { binding: 8, resource: bufferBinding(args) } : entry,
-        ),
-      });
-      if (!finalizeBinding.ok) {
-        this.bindGroup = undefined;
-        this.skinBindGroup = undefined;
-        return finalizeBinding;
-      }
-      this.skinFinalizeBindGroup = finalizeBinding.value;
-    }
+    const facts = this.inputBindingFacts(scene, buffers);
+    const groups = createInputBindingGroups(
+      this.device,
+      this.bindGroupLayout,
+      this.labelPrefix,
+      facts,
+      inputBuffer,
+      () => this.inputBindingFactsMatch(facts),
+    );
+    if (!groups.ok) return groups;
+    if (!this.inputBindingFactsMatch(facts))
+      return err(this.inputReadError('unchanged native View bindings after creation'));
+    this.bindGroup = groups.value.cull;
+    this.skinBindGroup = groups.value.skin;
+    this.skinFinalizeBindGroup = groups.value.finalize;
     this.bindGroupCreates = this.skinBindGroup === undefined ? 1 : 3;
     if (graphShapeChanged) this.resourceGeneration += 1;
-    const shape = `${this.skinLayout !== undefined}|${buffers.visibleSurfaceRows !== undefined}`;
+    this.adoptGraphBindingShape();
+    return ok(undefined);
+  }
+
+  private adoptGraphBindingShape(): void {
+    const shape = `${this.skinLayout !== undefined}|${this.buffers?.visibleSurfaceRows !== undefined}`;
     if (shape !== this.graphShape) {
       this.graphShape = shape;
       this.graphGeneration += 1;
     }
+  }
+
+  private inputBindingFacts(
+    scene: GpuScene,
+    buffers: ViewBuffers,
+    target?: GpuSceneTableBindingTarget,
+  ): InputBindingFacts {
+    return {
+      ...inputBindingSceneFacts(scene, buffers, target),
+      viewScene: this.sceneRef,
+      input: this.sceneInputs,
+      cull: this.bindGroup,
+      skin: this.skinBindGroup,
+      finalize: this.skinFinalizeBindGroup,
+      skinLayout: buffers.skinIndirect === undefined ? undefined : this.skinPipelineLayout,
+      viewTables: [
+        this.scenePrimitive,
+        this.sceneInstance,
+        this.sceneTransform,
+        this.sceneMaterial,
+      ],
+    };
+  }
+
+  private inputBindingFactsMatch(facts: InputBindingFacts): boolean {
+    try {
+      this.assertInputScene(facts.scene);
+    } catch {
+      return false;
+    }
+    return (
+      this.sceneRef === facts.viewScene &&
+      this.sceneInputs === facts.input &&
+      this.bindGroup === facts.cull &&
+      this.skinBindGroup === facts.skin &&
+      this.skinFinalizeBindGroup === facts.finalize &&
+      (facts.buffers.skinIndirect === undefined ? undefined : this.skinPipelineLayout) ===
+        facts.skinLayout &&
+      this.buffers === facts.buffers &&
+      inputBindingStorageMatches(facts) &&
+      inputBindingTablesMatch(
+        facts,
+        this.scenePrimitive,
+        this.sceneInstance,
+        this.sceneTransform,
+        this.sceneMaterial,
+      )
+    );
+  }
+
+  /** Prepare only the address-keyed storage; existing execution/raster structure stays intact. */
+  *prepareAddressCapacity(
+    scene: GpuScene,
+    extent: number,
+    current: () => boolean,
+  ): Generator<void> {
+    if (this.sceneRef !== scene || !scene.live || !current())
+      throw this.inputReadError('the exact live View Scene and original caller');
+    if (this.sceneRef !== scene || !Number.isSafeInteger(extent) || extent < 0)
+      throw this.inputReadError('a nonnegative Scene-issued address extent');
+    this.assertInputScene(scene);
+    if (
+      this.updating ||
+      this.addressPreparation !== undefined ||
+      this.preparingInputBindings !== undefined
+    )
+      throw this.inputReadError('an idle View after the caller guard');
+    const words = nextCapacity(Math.max(1, Math.ceil(extent / 32)));
+    if (words <= this.suppressionWordCapacity) return;
+    if (
+      this.updating ||
+      this.addressPreparation !== undefined ||
+      this.preparingInputBindings !== undefined ||
+      this.buffers === undefined ||
+      this.plan === undefined ||
+      this.bindGroup === undefined ||
+      this.sceneInputs === undefined
+    )
+      throw this.inputReadError('one initialized idle View address preparation');
+    const requests = this.addressStorageRequests(words);
+    const role: ViewAddressPreparation = {
+      scene,
+      current,
+      words,
+      oldWords: this.suppressionWordCapacity,
+      facts: this.inputBindingFacts(scene, this.buffers),
+      plan: this.plan,
+      topology: this.encodedTopology,
+      skinLayout: this.skinLayout,
+      batchCapacity: this.batchCapacity,
+      orderCapacity: this.orderCandidateCapacity,
+      created: {},
+      mirror: new Uint32Array(words),
+      closed: false,
+      published: false,
+    };
+    this.addressPreparation = role;
+    try {
+      this.assertAddressPreparation(role);
+      const storage =
+        GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST;
+      for (const [name, size] of requests) {
+        this.assertAddressPreparation(role);
+        this.updating = true;
+        try {
+          const buffer = this.device
+            .createBuffer({ label: `${this.labelPrefix}-address-${name}`, size, usage: storage })
+            .unwrap();
+          role.created[name] = buffer;
+          this.allocationTokens.set(buffer, this.allocationLedger.allocate(size));
+        } finally {
+          this.updating = false;
+        }
+        this.assertAddressPreparation(role);
+        yield;
+      }
+      this.prepareAddressGroups(role);
+      yield;
+      this.publishAddressStorage(role);
+    } finally {
+      this.releaseAddressStorage(role);
+    }
+  }
+
+  coversAddressExtent(scene: GpuScene, extent: number): boolean {
+    return (
+      this.sceneRef === scene &&
+      scene.live &&
+      this.buffers !== undefined &&
+      !this.suppressionReseed &&
+      Math.ceil(extent / 32) <= this.suppressionWordCapacity
+    );
+  }
+
+  private addressStorageRequests(words: number) {
+    const requests = [
+      ['batches', this.batchCapacity * BATCH_STRIDE + words * 4],
+      ['counters', this.countersBytes() + (words - this.suppressionWordCapacity) * 8],
+    ] as const;
+    const knownLimits = [
+      this.device.limits.maxStorageBufferBindingSize,
+      this.device.limits.maxBufferSize,
+    ].filter(
+      (limit): limit is number => limit !== undefined && Number.isFinite(limit) && limit > 0,
+    );
+    const limit = Math.min(0xffffffff, ...knownLimits);
+    if (
+      !Number.isSafeInteger(words) ||
+      words > 0xffffffff / 4 ||
+      requests.some(([, size]) => size > limit)
+    )
+      throw this.inputReadError('View address storage within native buffer and u32 layout limits');
+    return requests;
+  }
+
+  private assertAddressPreparation(role: ViewAddressPreparation): void {
+    if (
+      this.addressPreparation !== role ||
+      role.closed ||
+      !role.current() ||
+      this.addressPreparation !== role ||
+      role.closed ||
+      this.sceneRef !== role.scene ||
+      !this.inputBindingFactsMatch(role.facts) ||
+      this.plan !== role.plan ||
+      this.encodedTopology !== role.topology ||
+      this.skinLayout !== role.skinLayout ||
+      this.batchCapacity !== role.batchCapacity ||
+      this.orderCandidateCapacity !== role.orderCapacity ||
+      this.suppressionWordCapacity !== role.oldWords ||
+      this.suppressionReseed ||
+      this.suppressionMirror.length !== role.oldWords
+    )
+      throw this.inputReadError('current fixed View execution and original address storage');
+  }
+
+  private prepareAddressGroups(role: ViewAddressPreparation): void {
+    this.assertAddressPreparation(role);
+    const { batches, counters } = role.created;
+    const input = role.facts.input;
+    if (batches === undefined || counters === undefined || input === undefined)
+      throw this.inputReadError('both private address buffers and original Inputs');
+    const next = { ...(this.buffers as ViewBuffers), batches, counters };
+    this.updating = true;
+    try {
+      role.groups = createInputBindingGroups(
+        this.device,
+        this.bindGroupLayout,
+        this.labelPrefix,
+        {
+          ...role.facts,
+          buffers: next,
+          storage: [batches, next.view, counters, next.visible, next.indirect, next.skinIndirect],
+        },
+        input,
+        () => {
+          this.assertAddressPreparation(role);
+          return true;
+        },
+      ).unwrap();
+      this.assertAddressPreparation(role);
+      role.next = next;
+    } finally {
+      this.updating = false;
+    }
+  }
+
+  /** Copy the latest submitted history and scratch, never an earlier preparation snapshot. */
+  private copyAddressStorage(role: ViewAddressPreparation): void {
+    const next = role.next;
+    if (next === undefined) throw this.inputReadError('prepared native address storage');
+    const before = role.facts.buffers;
+    const batchBytes = role.batchCapacity * COUNTER_STRIDE;
+    const oldBits = role.oldWords * 4,
+      nextBits = role.words * 4;
+    const encoder = this.device
+      .createCommandEncoder({ label: `${this.labelPrefix}-address-carry` })
+      .unwrap();
+    encoder.copyBufferToBuffer(
+      before.batches,
+      0,
+      next.batches,
+      0,
+      role.batchCapacity * BATCH_STRIDE + oldBits,
+    );
+    const regions = [
+      [0, 0, batchBytes],
+      [batchBytes, batchBytes, oldBits],
+      [batchBytes + oldBits, batchBytes + nextBits, oldBits],
+      [
+        batchBytes + oldBits * 2,
+        batchBytes + nextBits * 2,
+        this.countersBytes() - batchBytes - oldBits * 2,
+      ],
+    ] as const;
+    for (const [from, to, size] of regions)
+      if (size > 0) encoder.copyBufferToBuffer(before.counters, from, next.counters, to, size);
+    const commands = encoder.finish().unwrap();
+    this.assertAddressPreparation(role);
+    this.device.queue.submit([commands]).unwrap();
+  }
+
+  private writeAddressOffsets(role: ViewAddressPreparation): void {
+    const buffer = role.facts.buffers.view;
+    const skinBase = role.batchCapacity * COUNTER_WORDS + role.words * 2;
+    const orderBase = skinBase + (role.skinLayout?.counterWords ?? 0);
+    const write = (offset: number, values: readonly number[]) => {
+      this.device.queue.writeBuffer(buffer, offset, new Uint32Array(values)).unwrap();
+      this.assertAddressPreparation(role);
+    };
+    write(31 * 4, [orderBase]);
+    if (role.skinLayout !== undefined) write(SKIN_CONSTANTS_OFFSET + 16, [skinBase]);
+    const bits = role.batchCapacity * COUNTER_WORDS;
+    write(OCCLUSION_STATE_OFFSET + 8, [
+      bits + (1 - this.visibilityParity) * role.words,
+      bits + this.visibilityParity * role.words,
+      role.words,
+    ]);
+    this.viewWords[31] = orderBase;
+    if (role.skinLayout !== undefined) this.viewWords[SKIN_CONSTANTS_OFFSET / 4 + 4] = skinBase;
+  }
+
+  private publishAddressStorage(role: ViewAddressPreparation): void {
+    this.assertAddressPreparation(role);
+    const next = role.next,
+      groups = role.groups;
+    if (next === undefined || groups === undefined)
+      throw this.inputReadError('complete private address storage and bindings');
+    this.updating = true;
+    let uniformStarted = false;
+    try {
+      this.copyAddressStorage(role);
+      this.assertAddressPreparation(role);
+      role.mirror.set(this.suppressionMirror);
+      uniformStarted = true;
+      this.writeAddressOffsets(role);
+      this.assertAddressPreparation(role);
+      const old = { batches: role.facts.buffers.batches, counters: role.facts.buffers.counters };
+      this.buffers = next;
+      this.bindGroup = groups.cull;
+      this.skinBindGroup = groups.skin;
+      this.skinFinalizeBindGroup = groups.finalize;
+      this.suppressionWordCapacity = role.words;
+      this.suppressionMirror = role.mirror;
+      this.suppressionSource = null;
+      this.telemetryPending = undefined;
+      this.telemetrySubmit = undefined;
+      this.lodSelection = undefined;
+      role.published = true;
+      this.retireGeneration(old);
+      this.destroyAfterSubmittedWork([old]);
+    } catch (cause) {
+      if (uniformStarted) role.scene.failBindingPublication(cause);
+      throw cause;
+    } finally {
+      this.updating = false;
+    }
+  }
+
+  private releaseAddressStorage(role: ViewAddressPreparation): void {
+    role.closed = true;
+    if (this.addressPreparation === role) this.addressPreparation = undefined;
+    role.groups = undefined;
+    role.next = undefined;
+    if (role.published) return;
+    const created = { ...role.created };
+    delete role.created.batches;
+    delete role.created.counters;
+    this.retireGeneration(created);
+    this.destroyAfterSubmittedWork([created]);
+  }
+
+  /** Privately create both cull and cached Skin bindings for this Inputs issuer. */
+  ownsInputScene(scene: GpuScene): boolean {
+    return this.sceneRef === scene;
+  }
+
+  prepareInputBindings(
+    scene: GpuScene,
+    preparation: GpuSceneInputPreparation,
+    tables?: GpuSceneTableBindingTarget,
+  ): Result<GpuViewInputPreparation, RhiError> {
+    const target = scene.inputs.preparationTarget(preparation);
+    if (
+      this.updating ||
+      this.preparingInputBindings !== undefined ||
+      this.sceneRef !== scene ||
+      this.buffers === undefined ||
+      (this.bindGroup === undefined && this.sceneInputs !== undefined) ||
+      target === undefined
+    )
+      return err(this.inputReadError('one initialized View and an actual private Inputs target'));
+    if (tables !== undefined && !scene.capacityTargetMatches(tables))
+      return err(this.inputReadError('actual Scene-issued table target'));
+    const facts = this.inputBindingFacts(scene, this.buffers, tables);
+    const role: PreparingInputBindings = {
+      target: target.buffer,
+      bytes: target.byteLength,
+      facts,
+      groups: undefined,
+    };
+    this.preparingInputBindings = role;
+    this.updating = true;
+    let accepted = false;
+    try {
+      const groups = createInputBindingGroups(
+        this.device,
+        this.bindGroupLayout,
+        this.labelPrefix,
+        facts,
+        role.target,
+        () =>
+          this.preparingInputBindings === role &&
+          this.inputBindingFactsMatch(facts) &&
+          scene.inputs.preparationTarget(preparation) === target,
+      );
+      if (!groups.ok) return groups;
+      role.groups = groups.value;
+      if (
+        !this.preparedInputBindingsMatch(role) ||
+        scene.inputs.preparationTarget(preparation) !== target
+      )
+        return err(
+          this.inputReadError('unchanged View and original private target after creation'),
+        );
+      accepted = true;
+      return ok(
+        Object.freeze({
+          isCurrent: () =>
+            !this.updating &&
+            this.preparedInputBindingsMatch(role) &&
+            (scene.inputs.preparationIsCurrent(preparation) ||
+              scene.inputs.isCurrentBuffer(role.target)),
+          publish: () => this.publishInputBindings(role),
+          release: () => this.releaseInputBindings(role),
+        }),
+      );
+    } finally {
+      this.updating = false;
+      if (!accepted) this.releaseInputBindings(role);
+    }
+  }
+
+  private preparedInputBindingsMatch(role: PreparingInputBindings): boolean {
+    return (
+      this.preparingInputBindings === role &&
+      role.facts !== undefined &&
+      role.groups !== undefined &&
+      this.inputBindingFactsMatch(role.facts)
+    );
+  }
+
+  private publishInputBindings(role: PreparingInputBindings): Result<void, RhiError> {
+    if (
+      this.updating ||
+      !this.preparedInputBindingsMatch(role) ||
+      role.facts === undefined ||
+      role.groups === undefined ||
+      !role.facts.scene.inputs.isCurrentBuffer(role.target)
+    )
+      return err(this.inputReadError('original View facts and its accepted actual Inputs target'));
+    const initial = role.facts.cull === undefined;
+    this.bindGroup = role.groups.cull;
+    this.skinBindGroup = role.groups.skin;
+    this.skinFinalizeBindGroup = role.groups.finalize;
+    if (initial) {
+      this.resourceGeneration += 1;
+      this.adoptGraphBindingShape();
+    }
+    this.sceneInputs = role.target;
+    this.sceneInputBytes = role.bytes;
+    if (role.facts.target !== undefined) {
+      this.adoptScene(role.facts.scene);
+      this.inputReads = undefined;
+    }
+    this.releaseInputBindings(role);
     return ok(undefined);
   }
 
-  private holdMembers(scene: GpuScene, topology: EncodedViewTopology): void {
-    const previous = this.memberHolds;
-    if (this.sceneRef === scene && previous[0]?.topology === topology) return;
-    const holds: (typeof previous)[number][] = [];
-    try {
-      for (const candidates of topology.members)
-        if (MemberCandidates.is(candidates))
-          holds.push({ topology, release: scene.inputs.holdMembers(candidates) });
-    } catch (cause) {
-      let failure: AggregateError | undefined;
-      for (const hold of holds) {
-        try {
-          hold.release();
-        } catch (cleanup) {
-          if (failure === undefined)
-            failure = new AggregateError([cause, cleanup], 'Member lease rollback failed', {
-              cause,
-            });
-          else failure.errors.push(cleanup);
-        }
-      }
-      throw failure ?? cause;
-    }
-    this.memberHolds = holds;
-    for (const hold of previous) hold.release();
+  private releaseInputBindings(role: PreparingInputBindings): void {
+    role.facts = undefined;
+    role.groups = undefined;
+    if (this.preparingInputBindings === role) this.preparingInputBindings = undefined;
   }
 
   /** Retain the scene buffers this view's bind groups and receipts now address. */
   private adoptScene(scene: GpuScene): void {
+    this.sceneTableIdentity = scene.tableBindingIdentity;
     this.scenePrimitive = scene.primitiveBuffer;
     this.sceneInstance = scene.instanceBuffer;
     this.sceneTransform = scene.transformBuffer;
@@ -2489,9 +2312,14 @@ export class GpuDrivenView {
   resolveShadowBundle(
     cache: PreparedRasterBundleCache,
     observed: PreparedRasterBindings,
+    current?: () => boolean,
   ): RenderBundle {
     this.shadowRaster ??= { hits: 0, builds: 0, commands: 0, evictions: 0 };
-    return cache.resolveOne(SHADOW_RASTER_PASS, this.device, observed, this.shadowRaster);
+    return cache.resolveOne(SHADOW_RASTER_PASS, this.device, observed, this.shadowRaster, current);
+  }
+
+  shadowBundleCurrent(cache: PreparedRasterBundleCache): (() => boolean) | undefined {
+    return cache.captureCurrent(SHADOW_RASTER_PASS);
   }
 
   recordShadow(pass: RhiRenderPassEncoder, bundles: readonly RenderBundle[]): void {
@@ -2527,6 +2355,22 @@ export class GpuDrivenView {
   /** Shared GPU Scene inputs this view last read; vertex stages share it. */
   get sceneInputBuffer(): Buffer | undefined {
     return this.sceneInputs;
+  }
+
+  currentInputBindings(scene: GpuScene, input: Buffer): boolean {
+    return (
+      !this.updating &&
+      this.sceneRef === scene &&
+      this.buffers !== undefined &&
+      this.bindGroup !== undefined &&
+      this.sceneInputs === input &&
+      this.sceneTableIdentity === scene.tableBindingIdentity &&
+      this.scenePrimitive === scene.primitiveBuffer &&
+      this.sceneInstance === scene.instanceBuffer &&
+      this.sceneTransform === scene.transformBuffer &&
+      this.sceneMaterial === scene.materialBuffer &&
+      scene.inputs.isCurrentBuffer(input)
+    );
   }
 
   get visibleSurfaceRowsBuffer(): Buffer | undefined {
@@ -3053,7 +2897,14 @@ export class GpuDrivenView {
     // the current ones when the graph executes.
     const live = (current: () => Buffer | undefined, fallback: Buffer) => () =>
       current() ?? fallback;
-    const liveBindGroup = () => this.bindGroup ?? bindGroup;
+    const capturedInputs = this.sceneInputs as Buffer;
+    const liveBindGroup = () => {
+      this.inputBufferForExecution(
+        this.bindGroup === undefined ? capturedInputs : (this.sceneInputs ?? capturedInputs),
+        true,
+      );
+      return this.bindGroup ?? bindGroup;
+    };
     // View buffers grow without a new graph as well: every import, dispatch
     // and readback resolves the current generation when the graph executes.
     const currentBuffers = () => this.buffers ?? buffers;
@@ -3089,7 +2940,7 @@ export class GpuDrivenView {
     if (!material.ok) return material;
     const candidates = importBuffer(
       `${labelPrefix}.candidates`,
-      live(() => this.sceneInputs, this.sceneInputs as Buffer),
+      () => this.inputBufferForExecution(this.sceneInputs ?? capturedInputs, false),
       this.sceneInputBytes,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     );
@@ -3183,13 +3034,14 @@ export class GpuDrivenView {
         pass: Parameters<NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']>>[0],
         stage: number,
       ): void => {
-        pass.setPipeline(pipelines[stage] as ComputePipeline);
-        pass.setBindGroup(
-          0,
-          stage === 3
-            ? (this.skinFinalizeBindGroup ?? finalizeBinding)
-            : (this.skinBindGroup ?? taskBinding),
+        const liveTaskGroup = stage === 3 ? this.skinFinalizeBindGroup : this.skinBindGroup;
+        const taskGroup = liveTaskGroup ?? (stage === 3 ? finalizeBinding : taskBinding);
+        this.inputBufferForExecution(
+          liveTaskGroup === undefined ? capturedInputs : (this.sceneInputs ?? capturedInputs),
+          true,
         );
+        pass.setPipeline(pipelines[stage] as ComputePipeline);
+        pass.setBindGroup(0, taskGroup);
         if (stage === 4) {
           pass.dispatchWorkgroupsIndirect(currentBuffers().skinIndirect ?? argumentBuffer, 0);
         } else if (stage === 1 || stage === 3) {
@@ -3466,6 +3318,7 @@ export class GpuDrivenView {
     const addLateOcclusion = (
       pyramid: GraphTextureView,
     ): Result<GpuDrivenLateOcclusionGraph, RenderGraphError> => {
+      let preparedPyramid: { readonly view: TextureView; readonly group: BindGroup } | undefined;
       const lateCull = builder.addComputePass(`${labelPrefix}.occlusion-cull`, {
         accesses: [
           { resource: primitive.value, usage: 'storage-read' },
@@ -3479,6 +3332,18 @@ export class GpuDrivenView {
           { resource: pyramid, usage: 'sampled-read' },
         ],
         ...(executeIf === undefined ? {} : { executeIf }),
+        preparedResourcesCurrent: () =>
+          owner.buffers !== undefined &&
+          preparedPyramid !== undefined &&
+          owner.pyramidBindGroups.get(preparedPyramid.view) === preparedPyramid.group,
+        *prepareResources(resources, current) {
+          const view = resources.createdTextureView(pyramid);
+          if (view === undefined || !current()) throw viewCreationInvalid();
+          const group = owner.pyramidBindGroup(view, current);
+          if (!current()) throw viewCreationInvalid();
+          preparedPyramid = { view, group };
+          yield;
+        },
         encodeDirect: (pass, _graphframe, graphResources) => {
           pass.setPipeline(this.lateCullPipeline);
           pass.setBindGroup(0, liveBindGroup());
@@ -3563,7 +3428,9 @@ export class GpuDrivenView {
     if (!written.ok) throw written.error;
   }
 
-  private pyramidBindGroup(pyramid: TextureView): BindGroup {
+  private pyramidBindGroup(pyramid: TextureView, current?: () => boolean): BindGroup {
+    const owned = () => this.buffers !== undefined;
+    if (!owned() || (current !== undefined && !current()) || !owned()) throw viewCreationInvalid();
     const cached = this.pyramidBindGroups.get(pyramid);
     if (cached !== undefined) return cached;
     const created = this.device
@@ -3573,6 +3440,7 @@ export class GpuDrivenView {
         entries: [{ binding: 0, resource: { kind: 'textureView', value: pyramid } }],
       })
       .unwrap();
+    if (!owned() || (current !== undefined && !current()) || !owned()) throw viewCreationInvalid();
     this.pyramidBindGroups.set(pyramid, created);
     return created;
   }
@@ -3609,10 +3477,27 @@ export class GpuDrivenView {
   }
 
   dispose(): void {
+    if (this.preparingInputBindings !== undefined)
+      this.releaseInputBindings(this.preparingInputBindings);
+    this.inputReads = undefined;
     this.shadowRaster = undefined;
-    const holds = this.memberHolds;
-    this.memberHolds = [];
-    for (const hold of holds) hold.release();
+    const failures: unknown[] = [];
+    const attempt = (action: () => void) => {
+      try {
+        action();
+      } catch (cause) {
+        failures.push(cause);
+      }
+    };
+    attempt(() => {
+      if (this.initialStorage !== undefined) this.closeInitialStorage(this.initialStorage);
+    });
+    attempt(() => {
+      if (this.addressPreparation !== undefined)
+        this.releaseAddressStorage(this.addressPreparation);
+    });
+    attempt(() => this.bufferRetirement.assertHealthy());
+    attempt(() => this.memberResidency.dispose());
     const buffers = [
       ...this.supersededBuffers,
       ...(this.buffers === undefined ? [] : [this.buffers]),
@@ -3636,6 +3521,7 @@ export class GpuDrivenView {
     this.scenePrimitive = undefined;
     this.sceneInstance = undefined;
     this.sceneTransform = undefined;
+    this.sceneTableIdentity = undefined;
     this.sceneMaterial = undefined;
     this.sceneCapacity = 0;
     this.sceneTransformBytes = 0;
@@ -3648,9 +3534,10 @@ export class GpuDrivenView {
     this.visibilityHistoryReady = false;
     this.lodSelectionReadback = undefined;
     this.lodSelection = undefined;
-    for (const generation of buffers) this.retireGeneration(generation);
-    this.destroyAfterSubmittedWork(buffers);
+    for (const generation of buffers) attempt(() => this.retireGeneration(generation));
+    attempt(() => this.destroyAfterSubmittedWork(buffers));
     void this.pipelineLayout;
+    if (failures.length > 0) throw new AggregateError(failures, 'View disposal failed');
   }
 
   /**
@@ -3792,6 +3679,74 @@ export class GpuDrivenView {
     lateMirror = this.lateMirror,
     orderCandidateCapacity = this.orderCandidateCapacity,
   ): Result<void, RhiError> {
+    const work = this.rebuildBufferSteps(
+      candidateCapacity,
+      visibleCapacity,
+      batchCapacity,
+      indirectCapacity,
+      suppressionWords,
+      surfaceRows,
+      skinJointCapacity,
+      skinCandidateCapacity,
+      lateMirror,
+      orderCandidateCapacity,
+      () => true,
+    );
+    for (;;) {
+      const next = work.next();
+      if (next.done) return next.value;
+    }
+  }
+
+  private visibleBufferCeiling(skinTail: number, lateMirror: boolean): number {
+    const limit = Number(this.device.limits.maxStorageBufferBindingSize);
+    return Number.isFinite(limit) && limit > 0
+      ? (limit - skinTail - 64) / this.visiblePrefixBytes(1, lateMirror)
+      : Number.MAX_SAFE_INTEGER;
+  }
+
+  private adoptSkinStorage(
+    buffers: ViewBuffers,
+    skinLayout: SkinDemandLayout | undefined,
+    skinJointCapacity: number,
+  ): void {
+    this.skinLayout = skinLayout;
+    this.skinJointCapacity = skinJointCapacity;
+    this.skinBindGroup = undefined;
+    this.skinFinalizeBindGroup = undefined;
+    this.skinRasterBinding =
+      skinLayout === undefined
+        ? undefined
+        : {
+            data: buffers.visible,
+            auxiliary: buffers.view,
+            dataOffset: 0,
+            auxiliaryOffset: SKIN_RASTER_OFFSET,
+            dataSize: skinLayout.outputBytes,
+            auxiliarySize: 16,
+          };
+  }
+
+  private *rebuildBufferSteps(
+    candidateCapacity: number,
+    visibleCapacity: number,
+    batchCapacity: number,
+    indirectCapacity: number,
+    suppressionWords: number,
+    surfaceRows: boolean,
+    skinJointCapacity: number,
+    skinCandidateCapacity: number,
+    lateMirror: boolean,
+    orderCandidateCapacity: number,
+    current: () => boolean,
+    initial?: InitialViewStorage,
+    prepareGroups?: (
+      buffers: ViewBuffers,
+      skin: SkinDemandLayout | undefined,
+      visibleCapacity: number,
+      indirectCapacity: number,
+    ) => Result<InputBindingGroups & { readonly consumers: GpuViewInputPreparation }, RhiError>,
+  ): Generator<void, Result<void, RhiError>> {
     const nextCandidate = nextCapacity(candidateCapacity);
     const nextOrderCandidate = nextCapacity(
       Math.max(orderCandidateCapacity, this.orderCandidateCapacity),
@@ -3807,11 +3762,7 @@ export class GpuDrivenView {
       skinJointCapacity > 0
         ? skinDemandLayout(skinCandidateCapacity, skinJointCapacity).outputBytes
         : 0;
-    const storageLimit = Number(this.device.limits.maxStorageBufferBindingSize);
-    const visibleCeiling =
-      Number.isFinite(storageLimit) && storageLimit > 0
-        ? (storageLimit - skinTail - 64) / this.visiblePrefixBytes(1, lateMirror)
-        : Number.MAX_SAFE_INTEGER;
+    const visibleCeiling = this.visibleBufferCeiling(skinTail, lateMirror);
     const nextVisible = growGpuDrivenVisibleCapacity(
       // A changed mirror reserves a new allocation; its capacity restarts exact.
       lateMirror === this.lateMirror ? this.visibleBufferCapacity : 0,
@@ -3827,35 +3778,35 @@ export class GpuDrivenView {
           )
         : undefined;
     const previous = this.buffers;
-    const created: Partial<MutableViewBuffers> = {};
-    const allocatedBuffers: Buffer[] = [];
-    const createdTokens: GpuResourceAllocationToken[] = [];
+    const created: Partial<MutableViewBuffers> = initial?.created ?? {};
+    let accepted = false;
+    let consumers: GpuViewInputPreparation | undefined;
     const allocate = (
       name: keyof ViewBuffers,
       size: number,
       usage: number,
     ): Result<void, RhiError> => {
-      const buffer = this.device.createBuffer({
-        label: `gpu-driven-view-${name}`,
-        size,
-        usage,
-        mappedAtCreation: false,
-      });
-      if (!buffer.ok) return buffer;
-      created[name] = buffer.value;
-      allocatedBuffers.push(buffer.value);
-      const token = this.allocationLedger.allocate(size);
-      this.allocationTokens.set(buffer.value, token);
-      createdTokens.push(token);
-      return ok(undefined);
+      const endCreation = this.bufferRetirement.beginCreation();
+      try {
+        const buffer = this.device.createBuffer({
+          label: `gpu-driven-view-${name}`,
+          size,
+          usage,
+          mappedAtCreation: false,
+        });
+        if (!buffer.ok) return buffer;
+        created[name] = buffer.value;
+        const token = this.allocationLedger.allocate(size);
+        this.allocationTokens.set(buffer.value, token);
+        // Disposal may precede the native return. Transfer the exact late receipt before settlement.
+        if (initial?.phase === 'closed') this.closeInitialStorage(initial);
+        return ok(undefined);
+      } finally {
+        endCreation();
+      }
     };
     const storage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC;
-    const requests: readonly {
-      readonly name: keyof ViewBuffers;
-      readonly size: number;
-      readonly usage: number;
-      readonly storage: boolean;
-    }[] = [
+    const requests: readonly ViewBufferRequest<keyof ViewBuffers>[] = [
       {
         name: 'batches',
         size: nextBatch * BATCH_STRIDE + nextSuppression * 4,
@@ -3888,7 +3839,7 @@ export class GpuDrivenView {
         name: 'indirect',
         // Main region plus the late-phase region of two-phase occlusion.
         size: nextIndirect * INDIRECT_COMMAND_BYTES * 2,
-        usage: storage | GPU_BUFFER_USAGE_INDIRECT,
+        usage: storage | GPU_BUFFER_USAGE_INDIRECT | GPU_BUFFER_USAGE_COPY_DST,
         storage: true,
       },
       ...(skinLayout === undefined
@@ -3918,76 +3869,174 @@ export class GpuDrivenView {
         storage: false,
       },
     ];
-    const maxBufferSize = Number(this.device.limits.maxBufferSize);
-    const maxStorageBufferBindingSize = Number(this.device.limits.maxStorageBufferBindingSize);
-    for (const request of requests) {
-      const limit = request.storage ? maxStorageBufferBindingSize : maxBufferSize;
-      if (!Number.isFinite(limit) || limit <= 0 || request.size <= limit) continue;
-      return err(
-        new RhiError({
-          code: 'limit-exceeded',
-          expected: `GPU-driven ${request.name} buffer (${request.size} B) fits within ${request.storage ? 'device.limits.maxStorageBufferBindingSize' : 'device.limits.maxBufferSize'} (${limit} B)`,
-          hint: 'reduce the visible/candidate workload or split the GPU-driven buffer plan before retrying',
-          detail: {
-            maxStorageBufferBindingSize: limit,
-            requestedBytes: request.size,
-          },
-        }),
+    const valid = validateViewBufferRequests(this.device, requests);
+    if (!valid.ok) return valid;
+    const live = () => current() && this.buffers === previous;
+    try {
+      for (const request of requests) {
+        const result = yield* createViewResource(live, () =>
+          allocate(request.name, request.size, request.usage),
+        );
+        if (!result.ok) return result;
+      }
+      if (!live()) return err(viewCreationInvalid());
+      const next = created as ViewBuffers;
+      const preparedGroups = prepareGroups?.(next, skinLayout, nextVisible, nextIndirect);
+      if (preparedGroups !== undefined && !preparedGroups.ok) return preparedGroups;
+      consumers = preparedGroups?.value.consumers;
+      if (!live()) return err(viewCreationInvalid());
+      return this.publishBufferGeneration(
+        {
+          next,
+          previous,
+          candidate: nextCandidate,
+          visible: nextVisible,
+          batch: nextBatch,
+          indirect: nextIndirect,
+          suppression: nextSuppression,
+          order: nextOrderCandidate,
+          skin: skinLayout,
+          joints: skinJointCapacity,
+          lateMirror,
+          initial,
+          groups: preparedGroups?.value,
+          consumers,
+        },
+        live,
+        () => {
+          accepted = true;
+        },
       );
+    } finally {
+      consumers?.release();
+      if (!accepted) this.destroyAfterSubmittedWork([created]);
     }
-    for (const request of requests) {
-      const result = allocate(request.name, request.size, request.usage);
-      if (!result.ok) {
-        for (const buffer of allocatedBuffers) this.device.destroyBuffer(buffer);
-        for (const token of createdTokens) this.allocationLedger.rollback(token);
-        return result;
-      }
-    }
-    const next = created as ViewBuffers;
+  }
+
+  /** Complete private consumers and latest dynamic migration before the pure pointer publication. */
+  private publishBufferGeneration(
+    generation: PreparedViewBufferGeneration,
+    current: () => boolean,
+    adopted: () => void,
+  ): Result<void, RhiError> {
+    const { previous, next, batch, suppression, skin, consumers } = generation;
+    if (!current()) return err(viewCreationInvalid());
     if (previous !== undefined && this.visibilityHistoryReady) {
-      const carried = this.carryVisibilityHistory(previous, next, nextBatch, nextSuppression);
-      if (!carried.ok) {
-        for (const buffer of allocatedBuffers) this.device.destroyBuffer(buffer);
-        for (const token of createdTokens) this.allocationLedger.rollback(token);
-        return carried;
-      }
+      const carried = this.carryVisibilityHistory(previous, next, batch, suppression);
+      if (!carried.ok) return carried;
     }
+    let constants: Uint32Array<ArrayBuffer> | undefined;
+    let mirror: Uint32Array<ArrayBuffer> | undefined;
+    if (consumers !== undefined && previous !== undefined) {
+      if (!current() || !consumers.isCurrent()) return err(viewCreationInvalid());
+      const migrated = this.migrateActiveStorage(next, batch, suppression, skin);
+      if (!migrated.ok) return migrated;
+      constants = migrated.value;
+      mirror = new Uint32Array(suppression);
+      mirror.set(this.suppressionMirror);
+      if (!current() || !consumers.isCurrent()) return err(viewCreationInvalid());
+      const published = consumers.publish();
+      if (!published.ok) return published;
+    }
+    this.adoptBufferGeneration(generation, constants, mirror);
+    adopted();
+    // No native calls occur inside pointer publication. In-flight old commands
+    // retain their exact resources until this owner's real queue fence settles.
     if (previous !== undefined) {
-      this.supersededBuffers.push(previous);
       this.retireGeneration(previous);
+      if (consumers !== undefined) this.destroyAfterSubmittedWork([previous]);
     }
-    this.buffers = next;
-    this.skinLayout = skinLayout;
-    this.skinJointCapacity = skinJointCapacity;
-    this.skinBindGroup = undefined;
-    this.skinFinalizeBindGroup = undefined;
-    this.skinRasterBinding =
-      skinLayout === undefined
-        ? undefined
-        : {
-            data: next.visible,
-            auxiliary: next.view,
-            dataOffset: 0,
-            auxiliaryOffset: SKIN_RASTER_OFFSET,
-            dataSize: skinLayout.outputBytes,
-            auxiliarySize: 16,
-          };
-    // Replacement storage has no submitted topology or receiver addresses.
-    this.plan = undefined;
-    this.encodedTopology = undefined;
-    this.surfaceRows = undefined;
-    this.candidateCapacity = nextCandidate;
-    this.orderCandidateCapacity = nextOrderCandidate;
-    this.visibleBufferCapacity = nextVisible;
-    this.lateMirror = lateMirror;
-    this.batchCapacity = nextBatch;
-    this.indirectCapacity = nextIndirect;
-    this.suppressionWordCapacity = nextSuppression;
-    this.suppressionReseed = true;
-    this.bufferRebuilds += 1;
-    this.bindGroup = undefined;
-    this.telemetryPending = undefined;
     return ok(undefined);
+  }
+
+  private adoptBufferGeneration(
+    generation: PreparedViewBufferGeneration,
+    constants: Uint32Array<ArrayBuffer> | undefined,
+    mirror: Uint32Array<ArrayBuffer> | undefined,
+  ): void {
+    const { previous, next, skin, joints, consumers, groups, initial } = generation;
+    if (previous !== undefined && consumers === undefined) this.supersededBuffers.push(previous);
+    this.buffers = next;
+    if (constants !== undefined) this.viewWords.set(constants);
+    this.adoptSkinStorage(next, skin, joints);
+    if (consumers === undefined) {
+      this.plan = undefined;
+      this.encodedTopology = undefined;
+      this.surfaceRows = undefined;
+    }
+    this.candidateCapacity = generation.candidate;
+    this.orderCandidateCapacity = generation.order;
+    this.visibleBufferCapacity = generation.visible;
+    this.lateMirror = generation.lateMirror;
+    this.batchCapacity = generation.batch;
+    this.indirectCapacity = generation.indirect;
+    this.suppressionWordCapacity = generation.suppression;
+    this.suppressionReseed = consumers === undefined;
+    if (mirror !== undefined) {
+      this.suppressionMirror = mirror;
+      this.suppressionSource = null;
+    }
+    this.bufferRebuilds += 1;
+    this.bindGroup = groups?.cull;
+    this.skinBindGroup = groups?.skin;
+    this.skinFinalizeBindGroup = groups?.finalize;
+    if (groups !== undefined) {
+      this.resourceGeneration += 1;
+      this.adoptGraphBindingShape();
+    }
+    this.telemetryPending = undefined;
+    if (initial !== undefined) initial.phase = 'accepted';
+  }
+
+  /** Copy current active data at the final handoff, never a preparation-time snapshot. */
+  private migrateActiveStorage(
+    next: ViewBuffers,
+    batches: number,
+    words: number,
+    skin: SkinDemandLayout | undefined,
+  ): Result<Uint32Array<ArrayBuffer>, RhiError> {
+    const encoded = this.encodedTopology;
+    if (this.plan === undefined || encoded === undefined) return err(viewCreationInvalid());
+    const written = this.device.queue.writeBuffer(next.batches, 0, encoded.batchBytes);
+    if (!written.ok) return written;
+    const suppressed = this.device.queue.writeBuffer(
+      next.batches,
+      batches * BATCH_STRIDE,
+      this.suppressionMirror,
+    );
+    if (!suppressed.ok) return suppressed;
+    const constants = new Uint32Array(this.viewWords);
+    constants[26] = batches;
+    constants[28] = (batches * BATCH_STRIDE) / 4;
+    const skinCounterBase = batches * COUNTER_WORDS + words * 2;
+    constants[31] = skinCounterBase + (skin?.counterWords ?? 0);
+    if (this.skinActive && skin !== undefined) {
+      const base = SKIN_CONSTANTS_OFFSET / 4;
+      writeSkinDemandConstants(
+        new DataView(constants.buffer),
+        SKIN_CONSTANTS_OFFSET,
+        skin,
+        constants[base] ?? 0,
+        constants[base + 1] ?? 0xffffffff,
+        this.plan.candidateCount,
+        skinCounterBase,
+        0,
+        Number(this.device.limits.maxComputeWorkgroupsPerDimension) || 65535,
+      );
+      constants[SKIN_RASTER_OFFSET / 4] = skin.candidateBase;
+      constants[SKIN_RASTER_OFFSET / 4 + 1] = skin.descriptorBase;
+    }
+    const bits = batches * COUNTER_WORDS;
+    constants[OCCLUSION_STATE_OFFSET / 4 + 2] = bits + (1 - this.visibilityParity) * words;
+    constants[OCCLUSION_STATE_OFFSET / 4 + 3] = bits + this.visibilityParity * words;
+    constants[OCCLUSION_STATE_OFFSET / 4 + 4] = words;
+    const uniform = this.device.queue.writeBuffer(next.view, 0, constants);
+    if (!uniform.ok) return uniform;
+    if (this.surfaceRows !== undefined && next.visibleSurfaceRows !== undefined) {
+      const surface = this.device.queue.writeBuffer(next.visibleSurfaceRows, 0, this.surfaceRows);
+      if (!surface.ok) return surface;
+    }
+    return ok(constants);
   }
 
   /**
@@ -4021,18 +4070,19 @@ export class GpuDrivenView {
     return this.device.queue.submit([commands.value]);
   }
 
+  /** Await this owner's actual cleanup; errors retain native receipt responsibility. */
+  settleRetirement(): Promise<Result<void, RhiError>> {
+    return this.bufferRetirement.settle();
+  }
+
   private destroyAfterSubmittedWork(generations: readonly Partial<ViewBuffers>[]): void {
-    if (generations.length === 0) return;
-    const release = (): void => {
-      for (const buffers of generations) {
-        for (const buffer of Object.values(buffers)) {
-          this.device.destroyBuffer(buffer);
-          const token = this.allocationTokens.get(buffer);
-          if (token !== undefined) this.allocationLedger.release(token);
-        }
-      }
-    };
-    void this.device.queue.onSubmittedWorkDone().then(release, release);
+    const scene = this.sceneRef;
+    this.bufferRetirement.retire(
+      generations.flatMap((buffers) => Object.values(buffers)),
+      (failure) => {
+        scene?.failBindingPublication(failure);
+      },
+    );
   }
 
   private retireGeneration(generation: Partial<ViewBuffers>): void {

@@ -1,7 +1,9 @@
 import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import {
   materialProgramContextKey,
+  readMaterialTemplateSources,
   validateMaterialCookProgramContext,
+  validateMaterialTemplatePublication,
 } from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialRuntimeArtifact,
@@ -84,6 +86,23 @@ function validPublicationProjectionShape(
   return true;
 }
 
+function validPublicationSourceTemplate(projection: PublishedMaterialProjection): boolean {
+  const input = projection.sourceTemplate;
+  if (input === undefined) return true;
+  if (input === null || typeof input !== 'object') return false;
+  const checked = validateMaterialTemplatePublication(input.publication);
+  if (
+    !checked.ok ||
+    checked.value.guid !== projection.materialGuid ||
+    checked.value.sourceArtifact.digest !== projection.artifactHash
+  )
+    return false;
+  return readMaterialTemplateSources(
+    new TextEncoder().encode(JSON.stringify(input.sources)),
+    projection.artifactHash,
+  ).ok;
+}
+
 /** The receiver-state and material checks every admission repeats, even for interned content. */
 function publicationProjectionServesMaterial(
   projection: PublishedMaterialProjection,
@@ -160,6 +179,7 @@ export class PublicationMaterialProjectionAdmission {
       return true;
     };
     if (!validPublicationProjectionShape(input, validProgram)) return undefined;
+    if (!validPublicationSourceTemplate(input)) return undefined;
     const owned = ownRenderFeatureProgramDataWith(input as PublishedMaterialProjection, (node) =>
       reused.get(node),
     );

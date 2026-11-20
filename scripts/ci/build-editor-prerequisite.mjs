@@ -389,13 +389,6 @@ function runBuild(contract, payloadClasses) {
       code: 'engine-source-build-failed',
       env: { ...process.env, FORGEAX_BUILD_NO_TASK_CACHE: '1' },
     });
-    run(
-      process.execPath,
-      ['scripts/forgeax/prepare-shader-release-inputs.mjs', '--build', '--profile', 'base-ssao'],
-      {
-        code: 'engine-source-build-failed',
-      },
-    );
     stageTimingsMs['engine-dist'] = Date.now() - startedAt;
   }
   return stageTimingsMs;

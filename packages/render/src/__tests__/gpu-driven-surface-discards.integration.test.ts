@@ -150,7 +150,7 @@ describe('GPU-driven Standard surface discard specialization', () => {
             ...pbrInputs,
             scene: {
               scene: availability.scene,
-              plan: topology.query(topology.sourcePlan(), undefined),
+              plan: topology.query(topology.sourcePlan(), undefined).active,
               slots: projection.slotsSnapshot(),
               slotAt: projection.slotAt,
             },

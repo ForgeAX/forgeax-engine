@@ -294,7 +294,7 @@ try {
   });
   const playCycle = async (cycle) => {
     const playStarted = performance.now();
-    await view.getByRole('button', { name: 'Play', exact: true }).click();
+    await view.locator('button[data-action="scene.play"]').click();
     const play = view.locator('iframe[data-forgeax-scene-play]');
     // Presentation stays transparent until native readiness; observe startup while attached.
     await play.waitFor({ state: 'attached', ...playSessionTimeout });
@@ -377,9 +377,9 @@ try {
     records.push({ playCycle: cycle, frameId: completedFrames, drawingBuffer,
       readyMs, placement });
     const stopStarted = performance.now();
-    await view.getByRole('button', { name: 'Stop', exact: true }).click();
+    await view.locator('button[data-action="scene.stop"]').click();
     await play.waitFor({ state: 'detached' });
-    await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
+    await view.locator('button[data-action="scene.play"]').waitFor(playSessionTimeout);
     records.push({ stopCycle: cycle, ms: Math.round(performance.now() - stopStarted) });
   };
   // The first retained cycle covers Play before any scene is opened.
@@ -461,20 +461,20 @@ try {
   await page.screenshot({ path: join(evidence, 'view.png') });
   await playCycle(1);
   await view.getByRole('treeitem', { name: /Rusted Iron Sphere (网格|Mesh)/ }).waitFor();
-  await view.getByRole('button', { name: 'Play', exact: true }).click();
+  await view.locator('button[data-action="scene.play"]').click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
   await preparingPlay.waitFor({ state: 'attached', ...playSessionTimeout });
   assert.equal(await preparingPlay.getAttribute('srcdoc'), null, 'The adopted Stop probe holds document delivery');
   // The published target is adopted: its owner retains presentation through
   // initial readiness before native cleanup, within the existing workspace bound.
   const preparingStopStarted = performance.now();
-  await view.getByRole('button', { name: 'Stop', exact: true }).click();
-  await view.getByRole('button', { name: 'Game', exact: true }).waitFor();
+  await view.locator('button[data-action="scene.stop"]').click();
+  await view.locator('button[data-action="scene.game"]').waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-project-document]').isVisible(), false,
     'Preview rendering must stay paused while adopted Play startup is draining');
   await preparingPlay.waitFor({ state: 'detached', ...playSessionTimeout });
   records.push({ adoptedStopMs: Math.round(performance.now() - preparingStopStarted) });
-  await view.getByRole('button', { name: 'Play', exact: true }).waitFor(playSessionTimeout);
+  await view.locator('button[data-action="scene.play"]').waitFor(playSessionTimeout);
   await page.getByRole('button', { name: 'Reopen View', exact: true }).click();
   await page.locator('#opened').filter({ hasText: 'http' }).waitFor();
   assert.equal(await view.locator('iframe[data-forgeax-project-document]').getAttribute('data-forgeax-project-document'), targetId,

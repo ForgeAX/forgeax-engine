@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { availableParallelism } from 'node:os';
 import { promisify } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +32,42 @@ const source = `
 `;
 
 describe('Node material program compilation', () => {
+  it.skipIf(availableParallelism() < 2)(
+    'balances a colliding cold source and keeps its Worker affinity',
+    async () => {
+      const [first, second] = Array.from(
+        { length: 32 },
+        (_, index) => `${source}\n// source ${index}`,
+      ).filter(
+        (wgsl) =>
+          createHash('sha256')
+            .update(JSON.stringify([wgsl, undefined]))
+            .digest()
+            .readUInt32LE(0) %
+            2 ===
+          0,
+      );
+      if (first === undefined || second === undefined)
+        throw new Error('Missing colliding fixture sources');
+      const service = compiler(2);
+      const post = vi.spyOn(Worker.prototype, 'postMessage');
+      const built = await Promise.all([
+        service.compile(first),
+        service.compile(second),
+        service.compile(first),
+      ]);
+      expect(built.every((result) => result.ok)).toBe(true);
+      const routes = post.mock.calls.flatMap(([message], index) =>
+        message?.source === first || message?.source === second ? [post.mock.contexts[index]] : [],
+      );
+      expect(routes).toHaveLength(3);
+      expect(routes[0]).not.toBe(routes[1]);
+      expect(routes[2]).toBe(routes[0]);
+      expect(built[2]).toEqual(built[0]);
+    },
+    15_000,
+  );
+
   it('publishes identical real Standard material bytes and identities through both routes', async () => {
     const run = promisify(execFile);
     const entry = import.meta.resolve('@forgeax/engine-shader-compiler');
@@ -53,6 +91,7 @@ describe('Node material program compilation', () => {
         guid: 'worker-material-parity',
         source: {
           kind: 'material',
+          staticSwitches: { alphaClipping: false, alphaHash: false, displacement: false },
           parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
           passes: [
             { name: 'forward', program: { module: 'forgeax_material::standard' } },

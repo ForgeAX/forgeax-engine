@@ -23,7 +23,7 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 256;
@@ -173,7 +173,7 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   );
   process.exit(1);
 }
-const demoManifest = JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH));
+const demoManifest = await readCookedShaderManifestPublication(JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH)));
 const MANIFEST_URL = processShaderManifestUrl(DEMO_MANIFEST_PATH);
 
 let renderer;

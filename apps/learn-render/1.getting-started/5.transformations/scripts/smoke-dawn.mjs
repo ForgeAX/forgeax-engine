@@ -198,8 +198,8 @@ console.log(
   `[learn-render-transformations] decoded ${woodDecoded.width}x${woodDecoded.height} ${woodDecoded.mime} guid=${woodMeta.guid}`,
 );
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const EMPTY_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(EMPTY_MANIFEST_URL));
 

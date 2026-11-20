@@ -1,7 +1,32 @@
-import { describe, expect, it } from 'vitest';
-import { renderMaterialContext } from '../material-context';
+import { materialProgramContextKey } from '@forgeax/engine-pack/material-cook';
+import { describe, expect, it, vi } from 'vitest';
+import { renderMaterialContext, renderMaterialContextKey } from '../material-context';
+
+vi.mock('@forgeax/engine-pack/material-cook', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@forgeax/engine-pack/material-cook')>();
+  return { ...original, materialProgramContextKey: vi.fn(original.materialProgramContextKey) };
+});
 
 describe('material context publication', () => {
+  it('uses the canonical key repeatedly without serializing an owned definition again', () => {
+    const context = renderMaterialContext({ backendKind: 'webgpu', storageBuffer: true });
+    const definition = context.materialContext;
+    if (definition === undefined) throw Error('missing Render material domain');
+    const expected = materialProgramContextKey(definition);
+    const keys = vi.mocked(materialProgramContextKey);
+    keys.mockClear();
+
+    expect(renderMaterialContextKey(definition)).toBe(expected);
+    expect(renderMaterialContextKey(definition)).toBe(expected);
+    expect(keys).not.toHaveBeenCalled();
+
+    const borrowed = { ...definition, pass: 'forward' as 'forward' | 'shadow' };
+    expect(renderMaterialContextKey(borrowed)).toBe(expected);
+    borrowed.pass = 'shadow';
+    expect(renderMaterialContextKey(borrowed)).not.toBe(expected);
+    expect(keys).toHaveBeenCalledTimes(2);
+  });
+
   it('selects fixed definitions for every current receiving material domain', () => {
     const definitions = new Set<unknown>();
     for (const backendKind of ['webgpu', 'wgpu-native', 'wgpu-webgl2', 'null'] as const) {

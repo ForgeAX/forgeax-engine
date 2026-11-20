@@ -42,6 +42,7 @@ import type { PluginServerState } from './plugin-server.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
 interface AuthoredPackPublicationContext {
+  readonly onProgress?: (event: import('../plugin-contract.js').PluginPackSourceProgress) => void;
   readonly opts: PluginPackInternalOptions;
   readonly transportBase?: string | undefined;
   readonly metaPackBodies: PluginServerState['metaPackBodies'];
@@ -395,7 +396,10 @@ async function publishWithExecutors(
           ...(cookers === undefined ? {} : { cookers }),
           assetSource,
           availableGuids,
-          ...(timing === undefined ? {} : { onProgress: timing.onProgress }),
+          onProgress: (event) => {
+            timing?.onProgress(event);
+            context.onProgress?.(event);
+          },
         });
         if (!prepared.ok) throw dynamicPluginError(prepared.error);
         if (timing === undefined) publicationTiming('produce-and-cook', producingAt);

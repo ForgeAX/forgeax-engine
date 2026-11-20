@@ -39,6 +39,7 @@ import {
   validateComponentFieldValues,
   validateEnumFieldValues,
 } from './component-input';
+import { Disabled } from './entity';
 import {
   ENTITY_MAX_INDEX,
   ENTITY_NULL_RAW,
@@ -399,6 +400,8 @@ export class World {
     this.resources.set(Time, this.clock.time);
     this.resources.set(FixedTime, this.clock.fixed);
     this[worldInternal] = {
+      setDisabledBatch: this.setDisabledBatch.bind(this),
+      releaseUnadoptedUniqueRef: (handle) => this.uniqueRefs.release(handle),
       allocatePendingEntity: this.allocatePendingEntity.bind(this),
       cancelPendingEntity: this.cancelPendingEntity.bind(this),
       getArrayRangesChangedSince: this.internalgetArrayRangesChangedSince.bind(this),
@@ -2702,6 +2705,62 @@ export class World {
         }
       }
     }
+  }
+
+  /** Qualify every member before mutating and borrow one resolved edge per source archetype. */
+  private setDisabledBatch(
+    entities: ReadonlySet<EntityHandle>,
+    disabled: boolean,
+  ): Result<void, EcsError> {
+    const poisoned = worldPoisonedError(this.executionState);
+    if (poisoned !== undefined) return err(poisoned);
+    const id = componentId(Disabled);
+    const edges = new Map<Archetype, Archetype>();
+    for (const entity of entities) {
+      const slot = this.liveSlot(entity);
+      const source = this.graph.archetypes[this.records.archetypeId[slot] as number];
+      if (slot < 0 || source === undefined)
+        return this.staleEntityFailure(entity, 'setDisabledBatch', Disabled.name);
+      const hasDisabled = archetypeHasComponent(source, id);
+      if (hasDisabled === disabled)
+        return err(
+          disabled
+            ? new ComponentAlreadyPresentError(entity as number, Disabled.name)
+            : new ComponentNotPresentError(entity as number, Disabled.name),
+        );
+      if (!edges.has(source))
+        edges.set(
+          source,
+          disabled
+            ? getAddEdge(this.graph, source, id, Disabled)
+            : getRemoveEdge(this.graph, source, id),
+        );
+    }
+    try {
+      for (const entity of entities) {
+        const slot = entityIndex(entity);
+        const source = this.graph.archetypes[this.records.archetypeId[slot] as number];
+        const target = source === undefined ? undefined : edges.get(source);
+        if (source === undefined || target === undefined)
+          throw Error('Disabled batch edge changed');
+        // Earlier swap-removes can move this slot. migrateEntity resolves its current row.
+        this.migrateEntity(slot, source, target);
+        this.publishDisabledChange(entity, id, disabled);
+      }
+      return ok(undefined);
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.setDisabledBatch', cause);
+      throw cause;
+    }
+  }
+
+  private publishDisabledChange(entity: EntityHandle, id: number, disabled: boolean): void {
+    if (disabled) {
+      this.addedScratch[0] = id;
+      this.internalmarkComponentsAdded(entity, this.addedScratch);
+    } else this.internalnextMutationEpoch();
+    this.advanceStructureEpoch(entity);
+    if (!disabled) this.notifyComponentRemoved(entity, id);
   }
 
   /**

@@ -16,6 +16,12 @@ import type {
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
 import type { RhiRemoteCaptureCompletion } from '../internal/rhi-capture';
 import type {
+  ClosedLevelFrameSelection,
+  ClosedLevelFrameSelectionReceipt,
+  ClosedLevelRowReceipt,
+  ClosedLevelRowRequest,
+} from './closed-level-row-protocol';
+import type {
   ExecutionFrameCompletion,
   ExecutionFrameSubmitted,
   ExecutionInitMessage,
@@ -94,6 +100,11 @@ export type RenderWorkerInput =
     }
   | { readonly kind: 'hdr-observe-cancel'; readonly requestId: number }
   | MeshResidencyRequest
+  | ClosedLevelRowRequest
+  | {
+      readonly kind: 'stage-shader-manifest';
+      readonly url?: string;
+    }
   | (Pick<
       ExecutionInitMessage,
       | 'startup'
@@ -138,6 +149,7 @@ export type RenderWorkerInput =
       readonly width: number;
       readonly height: number;
       readonly publication: RenderPublicationMessage;
+      readonly groupSelection?: ClosedLevelFrameSelection;
       readonly sourceFixedStep: number;
       /** Engine Worker World update milliseconds for this published frame. */
       readonly engineUpdateMs?: number;
@@ -192,6 +204,8 @@ export type RenderWorkerOutput =
       readonly result: import('./types').ExecutionHdrObservationResult;
     }
   | MeshResidencyResponse
+  | ClosedLevelRowReceipt
+  | ClosedLevelFrameSelectionReceipt
   | {
       readonly kind: 'inspect-result';
       readonly requestId: number;

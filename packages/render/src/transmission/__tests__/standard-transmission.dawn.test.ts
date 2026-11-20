@@ -8,6 +8,7 @@ import {
   translateErrorEventToRhiError as translateWebgpuError,
 } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
@@ -40,8 +41,8 @@ const ROSTER_SMOKE_FRAMES =
   Number.isInteger(requestedSmokeFrames) && requestedSmokeFrames > 0 ? requestedSmokeFrames : 60;
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 const DAWN_BACKEND: RhiBackendPack = {
@@ -189,7 +190,7 @@ async function createTransmissionHost(testCase: TransmissionCase) {
           renderPath: testCase.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath,
         },
       },
-      { shaderManifestUrl: ENGINE_MANIFEST_URL },
+      { shaderManifestUrl: ENGINE_MANIFEST_URL, prepareShaderProgramCompiler },
       DAWN_BACKEND,
     );
   } finally {

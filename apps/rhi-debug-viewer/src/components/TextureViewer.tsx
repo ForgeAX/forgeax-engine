@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import { drawCallTextures, resolveTextureResource } from '../draw-call-resources';
+import { type Translate, useViewerTranslation } from '../i18n';
 import { useSelection } from '../selection-context';
 import {
   capabilityAnchor,
@@ -33,6 +34,20 @@ import {
 } from '../viewer-context';
 
 type PixelStatus = 'no-rt' | 'no-webgpu' | 'loading' | 'ok' | 'error';
+
+function pixelStatusText(status: PixelStatus, t: Translate): string {
+  switch (status) {
+    case 'ok':
+      return t('pixelsReady');
+    case 'no-webgpu':
+      return t('noWebgpu');
+    case 'no-rt':
+      return t('noRt');
+    default:
+      return t(status);
+  }
+}
+
 interface PixelPreview {
   readonly width: number;
   readonly height: number;
@@ -61,6 +76,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 export function DrawCallViewer(_props?: { readonly className?: string }) {
+  const t = useViewerTranslation();
   const model = useViewModel();
   const inspectWork = useInspectWork();
   const readResource = useReadResource();
@@ -287,17 +303,14 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
       {...{ [capabilityAnchor()]: capability.kind }}
     >
       {!selected ? (
-        <EmptyState
-          title="No work selected"
-          description="Select a work item to inspect its attachment"
-        />
+        <EmptyState title={t('noWork')} description={t('selectAttachment')} />
       ) : (
         <div className="space-y-fx-12 p-fx-12 text-compact">
           <div className="flex items-center justify-between gap-fx-8">
             <span className="text-muted-foreground">
               {explicitTexture === undefined
-                ? `Work ${work.workIndex} · draw attachment`
-                : 'Selected resource'}
+                ? t('drawAttachment', { index: work.workIndex })
+                : t('selectedResource')}
             </span>
             <span
               className={
@@ -309,17 +322,19 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
               }
               {...{ [rtStatusAnchor()]: pixelStatus }}
             >
-              {pixelStatus === 'ok' ? 'pixels ready' : pixelStatus}
+              {pixelStatusText(pixelStatus, t)}
             </span>
           </div>
           {selectedTexture !== undefined && (
             <div className="space-y-fx-4">
               <div className="text-code text-foreground">
-                {explicitTexture === undefined ? 'attachment' : 'resource'} ·{' '}
+                {t(explicitTexture === undefined ? 'attachment' : 'resource')} ·{' '}
                 {selectedTexture.resourceId}
               </div>
               <details>
-                <summary className="text-caption text-muted-foreground">Texture descriptor</summary>
+                <summary className="text-caption text-muted-foreground">
+                  {t('textureDescriptor')}
+                </summary>
                 <pre className="forgeax-code-block">
                   {JSON.stringify(selectedTexture.descriptor, null, 2)}
                 </pre>
@@ -329,19 +344,19 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
           <div className="forgeax-texture-controls border-y border-border py-fx-8">
             <div className="forgeax-texture-presets">
               <Button size="compact" onClick={() => resetViewTransform('fit')}>
-                Fit
+                {t('fit')}
               </Button>
               <Button size="compact" onClick={() => resetViewTransform(100)}>
                 1:1
               </Button>
             </div>
-            <Field label="Zoom" htmlFor="rhi-texture-zoom">
+            <Field label={t('zoom')} htmlFor="rhi-texture-zoom">
               <TextInput
                 id="rhi-texture-zoom"
-                aria-label="Texture zoom"
+                aria-label={t('textureZoom')}
                 className="font-mono"
                 size={6}
-                value={viewState.zoom === 'fit' ? 'fit' : viewState.zoom}
+                value={viewState.zoom === 'fit' ? t('fitValue') : viewState.zoom}
                 onChange={(event) => {
                   const value = Number(event.target.value);
                   resetViewTransform(
@@ -355,7 +370,7 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                 }}
               />
             </Field>
-            <Field label="Mip" htmlFor="rhi-texture-mip">
+            <Field label={t('mip')} htmlFor="rhi-texture-mip">
               <Select
                 id="rhi-texture-mip"
                 className="font-mono"
@@ -374,7 +389,7 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                 ))}
               </Select>
             </Field>
-            <Field label="Slice" htmlFor="rhi-texture-slice">
+            <Field label={t('slice')} htmlFor="rhi-texture-slice">
               <Select
                 id="rhi-texture-slice"
                 className="font-mono"
@@ -394,7 +409,7 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                 ))}
               </Select>
             </Field>
-            <Field label="Aspect" htmlFor="rhi-texture-aspect">
+            <Field label={t('aspect')} htmlFor="rhi-texture-aspect">
               <Select
                 id="rhi-texture-aspect"
                 value={effectiveAspect}
@@ -407,7 +422,13 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
               >
                 {aspectOptions.map((aspect) => (
                   <option key={aspect} value={aspect}>
-                    {aspect}
+                    {t(
+                      aspect === 'depth-only'
+                        ? 'depthOnly'
+                        : aspect === 'stencil-only'
+                          ? 'stencilOnly'
+                          : 'all',
+                    )}
                   </option>
                 ))}
               </Select>
@@ -429,7 +450,7 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
             >
               {pixels !== null && (
                 <canvas
-                  aria-label="RHI debug texture pixels"
+                  aria-label={t('texturePixels')}
                   data-forgeax-rt-canvas=""
                   ref={canvasRef}
                   className="image-pixelated"
@@ -457,10 +478,8 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                 <div className="forgeax-texture-overlay" data-forgeax-texture-overlay={pixelStatus}>
                   {pixelStatus === 'no-webgpu' ? (
                     <div className="max-w-md space-y-fx-4">
-                      <strong>Pixels unavailable: no WebGPU</strong>
-                      <p className="text-muted-foreground">
-                        Structure is available; open this tape in a WebGPU host to inspect pixels.
-                      </p>
+                      <strong>{t('pixelsUnavailable')}</strong>
+                      <p className="text-muted-foreground">{t('structureAvailable')}</p>
                       {readbackError !== null && (
                         <div
                           className="text-danger space-y-fx-4"
@@ -475,20 +494,14 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                     </div>
                   ) : pixelStatus === 'no-rt' ? (
                     <div className="text-muted-foreground">
-                      <p className="font-medium text-foreground">Pixel replay is ready</p>
-                      <p className="mt-fx-4">
-                        Inspect the selected draw attachment or choose a texture.
-                      </p>
+                      <p className="font-medium text-foreground">{t('replayReady')}</p>
+                      <p className="mt-fx-4">{t('chooseTexture')}</p>
                     </div>
                   ) : pixelStatus === 'loading' ? (
                     <div data-forgeax-texture-loading-overlay="">
-                      <Spinner label="Replaying selected work" />
-                      <p className="mt-fx-12 font-medium text-foreground">
-                        Replaying selected work
-                      </p>
-                      <p className="mt-fx-4 text-muted-foreground">
-                        Keeping the viewport stable until fresh pixels arrive
-                      </p>
+                      <Spinner label={t('replaying')} />
+                      <p className="mt-fx-12 font-medium text-foreground">{t('replaying')}</p>
+                      <p className="mt-fx-4 text-muted-foreground">{t('keepViewport')}</p>
                     </div>
                   ) : (
                     <div
@@ -498,15 +511,13 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
                       <strong>{readbackError?.code ?? 'readback-failed'}</strong>
                       <p data-forgeax-readback-detail>
                         {readbackError === null
-                          ? 'Pixel inspection failed.'
+                          ? t('pixelFailed')
                           : JSON.stringify(readbackError.detail)}
                       </p>
                       <p data-forgeax-readback-expected>
-                        {readbackError?.expected ?? 'a successful canonical readback'}
+                        {readbackError?.expected ?? t('successfulReadback')}
                       </p>
-                      <p data-forgeax-readback-hint>
-                        {readbackError?.hint ?? 'retry the readback operation'}
-                      </p>
+                      <p data-forgeax-readback-hint>{readbackError?.hint ?? t('retryReadback')}</p>
                     </div>
                   )}
                 </div>
@@ -516,19 +527,23 @@ export function DrawCallViewer(_props?: { readonly className?: string }) {
           <span className="text-caption text-muted-foreground" {...{ [texelInfoAnchor()]: '' }}>
             {pixels === null
               ? pixelStatus === 'loading'
-                ? 'Automatic readback in progress'
-                : 'Replay has not produced texels yet'
-              : `${pixels.width}×${pixels.height} · first texel ${Array.from(pixels.rgba.slice(0, 4)).join(', ')}`}
+                ? t('automaticReadback')
+                : t('noTexels')
+              : t('firstTexel', {
+                  width: pixels.width,
+                  height: pixels.height,
+                  values: Array.from(pixels.rgba.slice(0, 4)).join(', '),
+                })}
           </span>
           <div className="space-y-fx-4">
             <div className="flex items-center justify-between">
-              <div className="text-caption font-medium text-muted-foreground">Draw textures</div>
+              <div className="text-caption font-medium text-muted-foreground">
+                {t('drawTextures')}
+              </div>
               <span className="text-caption text-muted-foreground">{textures.length}</span>
             </div>
             {textures.length === 0 ? (
-              <p className="text-muted-foreground">
-                No texture attachments or bindings for this work
-              </p>
+              <p className="text-muted-foreground">{t('noTextures')}</p>
             ) : (
               <div className="grid max-h-44 grid-cols-2 gap-fx-4 overflow-auto pr-fx-4">
                 {textures.map((resource, index) => (

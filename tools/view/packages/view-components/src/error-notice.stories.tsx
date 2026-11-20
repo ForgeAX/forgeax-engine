@@ -175,3 +175,12 @@ export const ClipboardDenied: Story = {
     </ClipboardProvider>
   ),
 };
+
+export const LocalizedClipboardDenied: Story = {
+  parameters: { docs: { description: { story: 'The caller localizes the dismiss action; the original clipboard diagnostic remains available.' } } },
+  render: args => (
+    <ClipboardProvider dismissLabel="关闭剪贴板错误" writeText={async () => { throw new Error('Clipboard permission denied'); }}>
+      <ErrorNotice {...args} />
+    </ClipboardProvider>
+  ),
+};

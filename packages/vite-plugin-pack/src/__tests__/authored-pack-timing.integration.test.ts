@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
+import type { PluginPackProgress } from '../plugin-contract.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 type TimingRecord = Record<string, unknown>;
@@ -29,10 +30,11 @@ async function createPublicationFixture(cook: NativeCooker['cook']) {
       } }; }
     };`,
   );
-  const serve = async (scope: string) => {
+  const serve = async (scope: string, onProgress?: (event: PluginPackProgress) => void) => {
     const plugin = createPluginPackInternal({
       roots: [path],
       watch: false,
+      onProgress,
       cookers: [{ key: 'fixture-binary', cacheIdentity: () => 'fixture/1', cook }],
       runtimeBinding: createStandaloneRuntimeAssetBinding(scope),
       ddc: {
@@ -57,6 +59,44 @@ async function createPublicationFixture(cook: NativeCooker['cook']) {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+it('reports a real blocked cook before readiness and isolates observer failures', async () => {
+  vi.stubEnv('FORGEAX_WORKSPACE_TIMING', '0');
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const events: PluginPackProgress[] = [];
+  const fixture = await createPublicationFixture(async ({ guid }) => {
+    await blocked;
+    return {
+      guid,
+      payload: { kind: 'fixture-binary' },
+      refs: [],
+      artifacts: {},
+      inputFingerprint: 'progress',
+    };
+  });
+  const serving = fixture.serve('progress', (event) => {
+    events.push(event);
+    throw new Error('observer failure');
+  });
+  try {
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.kind === 'source' && event.source.phase === 'cook')).toBe(
+        true,
+      ),
+    );
+    expect(events.some((event) => event.kind === 'stage' && event.stage === 'ready')).toBe(false);
+    release();
+    await serving;
+    expect(events.at(-1)).toMatchObject({ kind: 'stage', stage: 'ready' });
+  } finally {
+    release();
+    await serving.catch(() => {});
+    await fixture.close();
+  }
 });
 
 it.each([
@@ -141,8 +181,13 @@ it('retains the original failed recipe and unfinished source without a ready rec
   const fixture = await createPublicationFixture(() => {
     throw cause;
   });
+  const progress: PluginPackProgress[] = [];
   try {
-    await expect(fixture.serve('failed')).rejects.toMatchObject({ code: 'produce-failed' });
+    await expect(fixture.serve('failed', (event) => progress.push(event))).rejects.toMatchObject({
+      code: 'produce-failed',
+    });
+    expect(progress.some((event) => event.kind === 'stage' && event.stage === 'failed')).toBe(true);
+    expect(progress.some((event) => event.kind === 'stage' && event.stage === 'ready')).toBe(false);
     expect(
       records.find((record) => record.stage === 'native-cook' && record.status === 'failed'),
     ).toMatchObject({

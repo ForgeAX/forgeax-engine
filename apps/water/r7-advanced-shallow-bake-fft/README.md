@@ -21,7 +21,7 @@ of `3/16` of the loaded recipe's cell size, separating a plane from a cell-thick
 selector. Automatic NDC impacts have a separate control.
 
 The yellow trajectory specimen has an admitted kinematic sphere collider.
-“投放原生动态球” hands it to the native dynamic solver with CCD and buoyancy,
+The native dynamic sphere action hands it to the native dynamic solver with CCD and buoyancy,
 launches from 7 m above the water, and derives its entry impulse from the
 completed native crossing. The basin floor is a native static collider.
 Reset restores the trajectory specimen. Runtime facts distinguish this body

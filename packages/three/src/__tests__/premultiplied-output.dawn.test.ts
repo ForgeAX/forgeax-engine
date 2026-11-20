@@ -1,5 +1,5 @@
 import * as THREE from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
@@ -12,7 +12,7 @@ it('encodes unassociated color before premultiplication, including tone mapping 
   const renderer = new THREE.WebGPURenderer({
     canvas: target.canvas as unknown as OffscreenCanvas,
     forgeax: {
-      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     },
   });
   const scene = new THREE.Scene(),

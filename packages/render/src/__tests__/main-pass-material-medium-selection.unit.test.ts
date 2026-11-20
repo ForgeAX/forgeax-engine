@@ -40,6 +40,7 @@ function dependencies(
     ...(options.selectedShader === SHA_MEDIUM_SHADER
       ? {
           shaderRegistry: {
+            materialArtifactDeclaration: () => undefined,
             findMaterialArtifact: (shaderId: string) =>
               shaderId !== SHA_MEDIUM_SHADER
                 ? err(new Error('Unknown selected shader'))
@@ -68,6 +69,7 @@ function dependencies(
       : {}),
   };
   const pipelineState = {
+    skylightFallback: null,
     materialBindGroupLayout: resource(),
     materialUniformBuffer: { buffer: resource() },
     meshStorageBuffer: { buffer: resource() },
@@ -210,6 +212,7 @@ describe('main-pass Surface material selection', () => {
     );
     Object.assign(deps.runtime, {
       shaderRegistry: {
+        materialArtifactDeclaration: () => undefined,
         findMaterialArtifact: findArtifact,
         materialShaderManifestEntry: () => undefined,
       },

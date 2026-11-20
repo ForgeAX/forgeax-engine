@@ -67,7 +67,7 @@ it.each([
   const dispatch = new MaterialDispatch();
   for (const slot of projection.slotsSnapshot()) dispatch.bind(slot.slot, slot.snapshot);
   const selected = collectGpuDrivenMaterialArtifacts({
-    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    batches: topology.query(topology.sourcePlan(), undefined).active.batches,
     programs: new GpuDrivenMaterialProgramProjection().project(
       dispatch.query(projection.slotsSnapshot()),
       dispatch.materials(),
@@ -85,13 +85,13 @@ it.each([
       ...selected,
       scene: {
         scene: scene.scene,
-        plan: topology.query(topology.sourcePlan(), undefined),
+        plan: topology.query(topology.sourcePlan(), undefined).active,
         slots: projection.slotsSnapshot(),
         slotAt: projection.slotAt,
       },
       camera: makeZeroCameraFallbackSnapshot(),
       meshByBinding: new Map(
-        topology.query(topology.sourcePlan(), undefined).batches.map((batch) => {
+        topology.query(topology.sourcePlan(), undefined).active.batches.map((batch) => {
           assert(batch.binding);
           return [batch.binding, sharedMesh] as const;
         }),

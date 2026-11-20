@@ -9,7 +9,7 @@ export default {
   const node = document.createElement('section');
   node.dataset.forgeaxDiagnostic = 'profiler';
   node.style.cssText = 'height:100%;min-height:0;overflow:auto';
-  const unregister = page.registerType({ typeId: 'profiler', context: 'artifact', title: 'CPU Profiler', order: 30,
+  const unregister = page.registerType({ typeId: 'profiler', context: 'artifact', titleKey: 'view.pages.profiler', order: 30,
    closable: true, singleton: true, initial: true, openable: true, layout: 'surface', showPanelRail: false, hideWhenInactive: true });
   const unmount = page.mount('profiler', node);
   let dispose: Dispose | undefined;

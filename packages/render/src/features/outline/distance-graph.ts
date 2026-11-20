@@ -2,6 +2,7 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import { cameraLensProjection } from '../../camera-projection';
+import type { OutlineDistanceStyle } from '../../components/outline';
 import {
   createRenderPipelineTarget,
   type RenderPipelineFrame,
@@ -9,6 +10,7 @@ import {
 } from '../../render-pipeline';
 import { COLOR_PASS_SELECTOR } from '../../systems/pass-selector';
 import { addTypedFullscreenPass, addTypedScenePass } from '../../typed-render-graph-primitives';
+import { distanceOutlineFloodEntryPoint } from './distance-shaders';
 
 const selection = (frame: RenderPipelineFrame) => {
   const outline =
@@ -44,56 +46,96 @@ function readBounds(
     throw new RangeError('Outline bounds require six admitted coordinates');
   return [x0, y0, z0, x1, y1, z1];
 }
+
+function distanceOutlineReach(width: number, style: OutlineDistanceStyle, height: number): number {
+  return (
+    (Math.max(width, style.accentWidth) +
+      Math.max(style.glowRadius, style.accentGlowRadius) * 1.6) *
+      style.focusScale *
+      style.largeScale *
+      (height / 1080) +
+    2
+  );
+}
+
+/** Only a change in the maximum jump alters the flood pass topology. */
+export function distanceOutlineFirstStep(
+  width: number,
+  style: OutlineDistanceStyle,
+  height: number,
+): number {
+  const reach = Math.ceil(distanceOutlineReach(width, style, height));
+  let step = 1;
+  while (step * 2 < reach) step *= 2;
+  return step;
+}
+
+const DISTANCE_CHANNELS = [
+  'camera-outline-distance',
+  'camera-outline-focus',
+  'camera-outline-accent',
+  'camera-outline-large',
+] as const;
+
+function distanceTarget(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  label: string,
+  format: 'rgba16float' | 'depth32float-stencil8' = 'rgba16float',
+) {
+  return createRenderPipelineTarget(graph, `outline-distance-${label}`, {
+    format,
+    size: 'surface',
+    ...(label === 'color' ? { domain: 'linear-hdr' as const } : {}),
+  });
+}
+
+function addDistanceSelectionDepth(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  index: number,
+  channel: (typeof DISTANCE_CHANNELS)[number],
+): Result<RenderPipelineTarget, RenderGraphError> {
+  const coverage = distanceTarget(graph, `coverage-${index}`);
+  if (!coverage.ok) return coverage;
+  const selectedDepth = distanceTarget(graph, `depth-${index}`, 'depth32float-stencil8');
+  if (!selectedDepth.ok) return selectedDepth;
+  const selected = addTypedScenePass(graph, {
+    name: `outline-distance-selection-${index}`,
+    color: coverage.value,
+    depth: selectedDepth.value,
+    selector: COLOR_PASS_SELECTOR,
+    passKind: 'temporal',
+    coverageOnly: true,
+    clearColor: [0, 0, 0, 0],
+    selection: channel,
+  });
+  if (!selected.ok) return selected;
+  const output = distanceTarget(graph, `packed-${index}`);
+  if (!output.ok) return output;
+  const copy = addTypedFullscreenPass(graph, {
+    name: `outline-distance-depth-copy-${index}`,
+    shader: 'forgeax.outline.depth',
+    input: coverage.value,
+    outputs: [output.value],
+    depth: selectedDepth.value,
+  });
+  return copy.ok ? output : copy;
+}
+
 /** Native independent coverage/depth channels followed by lossless JFA+1.
  * Selection reuses actual deformation and cutouts; no material overlay owner. */
 export function addDistanceOutlinePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: RenderPipelineTarget,
   depth: RenderPipelineTarget,
+  firstStep: number,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  const make = (label: string, format: 'rgba16float' | 'depth32float-stencil8' = 'rgba16float') =>
-    createRenderPipelineTarget(graph, `outline-distance-${label}`, {
-      format,
-      size: 'surface',
-      ...(label === 'color' ? { domain: 'linear-hdr' as const } : {}),
-    });
   const packed: RenderPipelineTarget[] = [];
-  for (const [index, key] of (
-    [
-      'camera-outline-distance',
-      'camera-outline-focus',
-      'camera-outline-accent',
-      'camera-outline-large',
-    ] as const
-  ).entries()) {
-    const coverage = make(`coverage-${index}`);
-    if (!coverage.ok) return coverage;
-    const selectedDepth = make(`depth-${index}`, 'depth32float-stencil8');
-    if (!selectedDepth.ok) return selectedDepth;
-    const selected = addTypedScenePass(graph, {
-      name: `outline-distance-selection-${index}`,
-      color: coverage.value,
-      depth: selectedDepth.value,
-      selector: COLOR_PASS_SELECTOR,
-      passKind: 'temporal',
-      coverageOnly: true,
-      clearColor: [0, 0, 0, 0],
-      selection: key,
-    });
+  for (const [index, channel] of DISTANCE_CHANNELS.entries()) {
+    const selected = addDistanceSelectionDepth(graph, index, channel);
     if (!selected.ok) return selected;
-    const output = make(`packed-${index}`);
-    if (!output.ok) return output;
-    const copy = addTypedFullscreenPass(graph, {
-      name: `outline-distance-depth-copy-${index}`,
-      shader: 'forgeax.outline.depth',
-      input: coverage.value,
-      outputs: [output.value],
-      depth: selectedDepth.value,
-    });
-    if (!copy.ok) return copy;
-    packed.push(output.value);
+    packed.push(selected.value);
   }
-  const seed = make('seed');
+  const seed = distanceTarget(graph, 'seed');
   if (!seed.ok) return seed;
   const [base, focus, accent, large] = packed;
   if (base === undefined || focus === undefined || accent === undefined || large === undefined)
@@ -113,22 +155,26 @@ export function addDistanceOutlinePasses(
   });
   if (!initialize.ok) return initialize;
   let current = seed.value;
-  // Fifteen stages cover the complete signed-i16 coordinate/authoring range.
-  // source reach settings; unused stages copy without another JFA iteration.
-  for (let index = 0; index < 15; index++) {
-    const output = make(`flood-${index}`);
+  const steps: number[] = [];
+  for (let step = firstStep; step >= 1; step /= 2) steps.push(step);
+  steps.push(1); // JFA+1 corrects errors near seed boundaries.
+  for (const [index, step] of steps.entries()) {
+    const output = distanceTarget(graph, `flood-${index}`);
     if (!output.ok) return output;
     const flood = addTypedFullscreenPass(graph, {
       name: `outline-distance-flood-${index}`,
       shader: 'forgeax.outline.distance.flood',
+      // Passes share the frame uniform. Keep the jump in the pipeline entry
+      // so writing a later pass's uniform cannot change an earlier jump.
+      fragmentEntryPoint: distanceOutlineFloodEntryPoint(step),
       input: current,
       outputs: [output.value],
-      paramsTransform: (_previous, frame) => distanceParams(frame, index),
+      paramsTransform: (_previous, frame) => distanceParams(frame),
     });
     if (!flood.ok) return flood;
     current = output.value;
   }
-  const output = make('color');
+  const output = distanceTarget(graph, 'color');
   if (!output.ok) return output;
   const composite = addTypedFullscreenPass(graph, {
     name: 'outline-distance-composite',
@@ -141,7 +187,7 @@ export function addDistanceOutlinePasses(
   });
   return composite.ok ? ok(output.value) : composite;
 }
-function distanceParams(frame: RenderPipelineFrame, stage?: number): Uint8Array {
+function distanceParams(frame: RenderPipelineFrame): Uint8Array {
   const data = new Float32Array(168),
     outline = selection(frame),
     style = outline?.distanceStyle;
@@ -151,13 +197,7 @@ function distanceParams(frame: RenderPipelineFrame, stage?: number): Uint8Array 
     px = height / 1080;
   if (width > 32767 || height > 32767)
     throw new RangeError('Distance-field outline seed coordinates require dimensions <=32767');
-  const reach =
-    (Math.max(outline.width, style.accentWidth) +
-      Math.max(style.glowRadius, style.accentGlowRadius) * 1.6) *
-      style.focusScale *
-      style.largeScale *
-      px +
-    2;
+  const reach = distanceOutlineReach(outline.width, style, height);
   const projection =
     frame.camera.captureProjection ?? cameraLensProjection(frame.camera, mat4.create());
   const inverse = mat4.invert(mat4.create(), projection),
@@ -274,18 +314,5 @@ function distanceParams(frame: RenderPipelineFrame, stage?: number): Uint8Array 
     fades++;
   }
   data[28] = fades;
-  data[36] = distanceFloodStep(reach, stage);
   return new Uint8Array(data.buffer);
-}
-
-function distanceFloodStep(reach: number, stage: number | undefined): number {
-  if (stage !== undefined) {
-    let first = 1;
-    while (first * 2 < Math.ceil(reach)) first *= 2;
-    const steps: number[] = [];
-    for (let step = first; step >= 1; step = Math.floor(step / 2)) steps.push(step);
-    steps.push(1);
-    return steps[stage] ?? 0;
-  }
-  return 0;
 }

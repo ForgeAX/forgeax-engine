@@ -205,6 +205,7 @@ export type {
   EngineWorkspaceProjectFailure,
   EngineWorkspaceProjectHandle,
   EngineWorkspaceProjectLifecycle,
+  EngineWorkspaceProjectPreparation,
   EngineWorkspaceProjectReference,
   EngineWorkspaceProjectSession,
   EngineWorkspaceProjectSessionFactory,

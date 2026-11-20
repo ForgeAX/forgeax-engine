@@ -32,7 +32,7 @@ function unique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
 }
 
-function selectionAbi(
+export function selectionAbi(
   abi: MaterialCookedPass['abi'],
   compile: MaterialCookedPass['compile'],
 ): MaterialCookedPass['abi'] {

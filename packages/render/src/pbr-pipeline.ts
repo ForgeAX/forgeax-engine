@@ -35,6 +35,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import {
+  isRuntimeMaterialVariantFamily,
   isShaderTemplateManifestRow,
   materialShaderAxes,
   type ShaderCatalog,
@@ -256,7 +257,7 @@ export function materialUsesSurfaceSceneInputs(
   return lookup.value.program.materialBindings?.includes(userRegionEnd + 9) === true;
 }
 
-/** Cooked families share their complete read union; capability templates stay conservative. */
+/** Cooked families share their read union. Runtime coverage uses the admitted base contract. */
 export function sharedMaterialBindingDeclarations(
   registry: ShaderCatalog | undefined,
   materialShaderId: string | undefined,
@@ -278,7 +279,13 @@ export function sharedMaterialBindingDeclarations(
   if (materialUsesSurfaceSceneInputs(registry, materialShaderId)) return undefined;
   if (!lookup.ok) return undefined;
   const primary = lookup.value.program.materialBindings;
-  if (family === undefined || family.variants.length === 0 || primary === undefined) return primary;
+  if (
+    family === undefined ||
+    isRuntimeMaterialVariantFamily(family) ||
+    family.variants.length === 0 ||
+    primary === undefined
+  )
+    return primary;
   const bindings = new Set(primary);
   for (const variant of family.variants) {
     const entries = variant.entryPoints ?? variant.receipt?.entryPoints;
@@ -307,7 +314,9 @@ export function projectSurfaceMaterialBindings<T extends { readonly binding: num
       entry.bindings.filter((binding) => binding.group === 1).map((binding) => binding.binding),
     ),
   );
-  for (const variant of registry.materialShaderManifestEntry(materialShaderId)?.variants ?? []) {
+  const family = registry.materialShaderManifestEntry(materialShaderId);
+  if (family !== undefined && isRuntimeMaterialVariantFamily(family)) return [...entries];
+  for (const variant of family?.variants ?? []) {
     const variantEntries = variant.entryPoints ?? variant.receipt?.entryPoints;
     if (variantEntries === undefined) return [...entries];
     for (const entry of variantEntries)

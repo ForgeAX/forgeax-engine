@@ -82,6 +82,8 @@ export const VolumetricFog = defineComponent('VolumetricFog', {
   light: { type: 'entity' },
   spotLight: { type: 'entity' },
   density: { type: 'asset<texture>', simulationTransient: true },
+  /** Runtime GPU-generated 3D density. Takes precedence over the byte source. */
+  generatedDensity: { type: 'asset<gpu-texture>', simulationTransient: true },
   boundsMin: { type: 'array<f32, 3>' },
   boundsMax: { type: 'array<f32, 3>' },
   extinction: { type: 'array<f32, 3>' },

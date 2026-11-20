@@ -25,7 +25,7 @@ import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-syst
 import { RenderScene } from '../scene/render-scene';
 import { addTypedShadowPasses } from '../typed-shadow-passes';
 import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
-import { updateShadowView } from './helpers/gpu-input-read-domain';
+import { releaseGpuFixtureReads, updateShadowView } from './helpers/gpu-input-read-domain';
 
 // The real classifier and view pool decide every cache hit; only the leaf
 // caster encoders become constant-depth full-viewport draws, so a static-layer
@@ -228,7 +228,7 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
       { slots: projection.slotsSnapshot(), slotAt: (slot) => projection.slotAt(slot) },
       scene,
     );
-    const sourcePlan = batches.query(batches.sourcePlan(), undefined);
+    const sourcePlan = batches.query(batches.sourcePlan(), undefined).active;
     updateShadowView(pool, {
       identity: staticIdentity,
       sourcePlan,
@@ -258,6 +258,7 @@ async function harness(initial: readonly RenderableSnapshot[], matrix?: Float32A
     ledger.commit();
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     await device.queue.onSubmittedWorkDone();
+    releaseGpuFixtureReads(scene);
     pool._commitResourceReplacement();
     const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
     const depth = new Float32Array(mapped.getMappedRange().unwrap().slice(0));

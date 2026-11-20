@@ -1,6 +1,8 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { WaterSplashWakeEvent, WaterVisualContact } from '@forgeax/engine-water';
 import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import { sceneSurfaceRowsOf } from '../scene/render-scene-view';
 
 export const WATER_FLUID_FOAM_EVENT_CAPACITY = 4096;
 export const WATER_FLUID_FOAM_EVENT_STRIDE_BYTES = 32;
@@ -109,12 +111,16 @@ export function waterFluidFoamEventCurrent(
   );
 }
 
+const NO_FOAM_MATERIALS: readonly WaterFluidFoamMaterial[] = Object.freeze([]);
+
 /** Derive the shader's exact mapping from the admitted material value snapshot. */
 export function captureWaterFluidFoamMaterials(
-  renderables: Iterable<RenderableSnapshot>,
+  renderables: FrameList<RenderableSnapshot>,
   viewIdentity: string,
   dispatch?: Iterable<Pick<DispatchEntry, 'renderableIndex' | 'materialHandle'>>,
 ): readonly WaterFluidFoamMaterial[] {
+  if (sceneSurfaceRowsOf(renderables, renderables.at)?.source.mayHaveWaterSources === false)
+    return NO_FOAM_MATERIALS;
   const result = new Map<string, WaterFluidFoamMaterial>();
   const draws = dispatch === undefined ? undefined : [...dispatch];
   for (const [index, row] of [...renderables].entries()) {

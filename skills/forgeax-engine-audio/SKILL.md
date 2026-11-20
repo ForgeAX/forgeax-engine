@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-audio
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > **Gameplay owns `AudioSource`; the Host owns `AudioContext`.** `@forgeax/engine-audio` produces the same closed audio intents in every execution tier. `@forgeax/engine-audio-webaudio` consumes them in the Host realm.
 
 ## Takeoff

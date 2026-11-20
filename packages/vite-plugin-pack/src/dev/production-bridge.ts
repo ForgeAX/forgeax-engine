@@ -55,6 +55,7 @@ function prepareMetaImports(
   inventory: CatalogInventory,
   createTask: NonNullable<PluginServerCallbacks['metaImportPreparation']>,
   signal: AbortSignal,
+  onStart: (sourcePath: string) => void,
 ) {
   const queue = declarations
     .flatMap(({ format, sourcePath }) => {
@@ -82,10 +83,11 @@ function prepareMetaImports(
       active.set(
         sourcePath,
         Promise.resolve()
-          .then(
-            async (): Promise<Result<PreparedMetaImport, unknown>> =>
-              signal.aborted ? err(signal.reason) : ok(await prepare()),
-          )
+          .then(async (): Promise<Result<PreparedMetaImport, unknown>> => {
+            if (signal.aborted) return err(signal.reason);
+            onStart(sourcePath);
+            return ok(await prepare());
+          })
           .catch((error: unknown) => err(error))
           .finally(() => {
             running--;
@@ -168,6 +170,7 @@ export interface ProductionBridge {
 }
 
 interface ProductionBridgeContext {
+  readonly onProgress?: import('../plugin-contract.js').PluginPackOptions['onProgress'];
   readonly enginePackageRoot?: string | undefined;
   readonly producerReadiness?: ProducerReadiness | undefined;
   readonly takeInitialSourceSnapshot?: (() => ScriptablePackSourceSnapshot | undefined) | undefined;
@@ -227,7 +230,33 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
     };
   };
 
+  let progressGeneration = 0;
+  let sessionRevision = 0;
   const createSession = (): ProductionSession<ProductionGenerationState> => {
+    const revision = ++sessionRevision;
+    let observedGeneration = progressGeneration;
+    let producerGeneration: number | undefined;
+    const observeGeneration = (generation: number): void => {
+      if (producerGeneration === generation) return;
+      producerGeneration = generation;
+      observedGeneration = ++progressGeneration;
+    };
+    const observe = (event: import('../plugin-contract.js').PluginPackProgress): void => {
+      if (revision !== sessionRevision) return;
+      try {
+        context.onProgress?.(event);
+      } catch {
+        // Presentation observers cannot reject an authoritative publication.
+      }
+    };
+    const stage = (value: 'inventory' | 'publish' | 'ready' | 'failed' | 'cancelled') =>
+      observe({ generation: observedGeneration, kind: 'stage', stage: value });
+    const sourceProgress = (
+      signal: AbortSignal,
+      source: import('../plugin-contract.js').PluginPackSourceProgress,
+    ): void => {
+      if (!signal.aborted) observe({ generation: observedGeneration, kind: 'source', source });
+    };
     const source = createProductionSession<ProductionGenerationState>({
       sourceKeys: () => [...roots()],
       // Materialization keeps the accepted publications. Only a fresh inventory
@@ -244,7 +273,9 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                 acceptedState.candidate,
               ),
       }),
-      inventory: async ({ sourceKeys, signal, state: generationState }) => {
+      inventory: async ({ generation, sourceKeys, signal, state: generationState }) => {
+        observeGeneration(generation);
+        stage('inventory');
         if (!readiness.ok) throw readiness.error;
         const inventoryStartedAt = performance.now();
         // The preparation snapshot is a one-shot candidate. Its scanner
@@ -302,10 +333,13 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
             inventory,
             callbacks.metaImportPreparation,
             signal,
+            (sourcePath) =>
+              sourceProgress(signal, { phase: 'import', sourcePath, completed: 0, total: 1 }),
           );
         return declarations;
       },
       produce: async ({ generation, declaration, intent, signal, state: generationState }) => {
+        observeGeneration(generation);
         const inventory = generationState.inventory;
         const candidate = generationState.candidate;
         if (inventory === undefined || candidate === undefined) {
@@ -343,6 +377,12 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
             const metaPath =
               declaration.sourcePath ?? resolve(process.cwd(), declaration.sourceKey);
             const producerStartedAt = performance.now();
+            sourceProgress(signal, {
+              phase: 'import',
+              sourcePath: metaPath,
+              completed: 0,
+              total: 1,
+            });
             try {
               producedEntries = await callbacks.ensureMetaImport(
                 metaPath,
@@ -352,6 +392,12 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                 runtimeBinding(),
                 await generationState.metaPreparation?.take(metaPath),
               );
+              sourceProgress(signal, {
+                phase: 'ready',
+                sourcePath: metaPath,
+                completed: 1,
+                total: 1,
+              });
             } finally {
               startupTiming('meta-import', producerStartedAt, {
                 generation,
@@ -375,6 +421,7 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
                 inventory.sourceDeclarations,
                 signal,
                 runtimeBinding(),
+                (source) => sourceProgress(signal, source),
               );
             } finally {
               startupTiming('authored-pack-publication', producerStartedAt, {
@@ -429,6 +476,8 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
       },
       publish: async ({ generation, signal, state: generationState }) => {
         if (signal.aborted) return;
+        observeGeneration(generation);
+        stage('publish');
         await generationState.metaPreparation?.drain();
         generationState.metaPreparation = undefined;
         const publishStartedAt = performance.now();
@@ -449,8 +498,10 @@ export function createProductionBridge(context: ProductionBridgeContext): Produc
         }
         if (signal.aborted) return;
         Object.assign(state, candidate);
+        stage('ready');
       },
-      discard: async ({ state: generationState }) => {
+      discard: async ({ state: generationState, error }) => {
+        stage(error === undefined ? 'cancelled' : 'failed');
         await generationState.metaPreparation?.drain();
         generationState.metaPreparation = undefined;
         const candidate = generationState.candidate;

@@ -496,9 +496,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
       // available outside CI. Keep the complete interaction and resize journey.
       const completedFrames = process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 60 : 300;
       await page.waitForFunction(
-        (frames) =>
-          (globalThis.__forgeaxGameInspection?.renderer().execution.render?.completedFrame ?? 0) >=
-          frames,
+        (frames) => (globalThis.__forgeaxWorkerPresentation?.readyCount ?? 0) >= frames,
         completedFrames,
         { timeout: 240_000 },
       );
@@ -518,10 +516,6 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     if (!pixels.ok) throw pixels.error;
     expect(new Set(pixels.value.bytes).size).toBeGreaterThan(32);
     expect(errors).toEqual([]);
-    const framesBeforeResize =
-      (await page.evaluate(
-        () => globalThis.__forgeaxGameInspection?.renderer().execution.render?.completedFrame,
-      )) ?? 0;
     const resizeMovePoint = await controlPoint('move-stick', 3);
     await touch.send('Input.dispatchTouchEvent', {
       type: 'touchStart',
@@ -537,11 +531,12 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         ? { width: 640, height: 360 }
         : { width: 1280, height: 720 },
     );
+    const readyAtResize = await page.evaluate(
+      () => globalThis.__forgeaxWorkerPresentation?.readyCount ?? 0,
+    );
     await page.waitForFunction(
-      (before) =>
-        (globalThis.__forgeaxGameInspection?.renderer().execution.render?.completedFrame ?? 0) >=
-        before + 60,
-      framesBeforeResize,
+      (before) => (globalThis.__forgeaxWorkerPresentation?.readyCount ?? 0) >= before + 60,
+      readyAtResize,
       // The outer 480-second deadline and sixty completed resized frames remain.
       { timeout: 240_000 },
     );

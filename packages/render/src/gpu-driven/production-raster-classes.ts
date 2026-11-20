@@ -288,7 +288,7 @@ function pipelineForFragment(
     // the fallback is not retained, so the selected PSO takes over once ready.
     if (!selected.ok && selectedArtifact !== generalArtifact) {
       const general = build(generalArtifact, formats, preparation, sampleCount);
-      if (general.ok) return shape.rendererRecording ? general : ok(general.value);
+      if (general.ok && !preparation) return shape.rendererRecording ? general : ok(general.value);
     }
     if (selected.ok) {
       projectedPipelines ??= new Map();

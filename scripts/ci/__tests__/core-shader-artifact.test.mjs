@@ -226,7 +226,7 @@ test('producer waiting is bounded without starting a source compiler', async () 
   assert.equal(time, 2000);
 });
 
-test('compatibility waits for core transfer before its unchanged carrier and publication deadlines', () => {
+test('compatibility waits for core transfer before its unchanged carrier execution deadline', () => {
   const workflow = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'));
   const admission = workflow.jobs['shader-producer-inputs'];
   const carrier = workflow.jobs.compatibility;
@@ -236,20 +236,18 @@ test('compatibility waits for core transfer before its unchanged carrier and pub
   assert.equal(carrier['timeout-minutes'], 30);
   assert.deepEqual(carrier.strategy.matrix.carrier, ['stable', 'reference', 'legacy', 'webkit']);
   const restore = carrier.steps.find(
-    (step) => step.name === 'Restore the admitted core base shader payload',
+    (step) => step.name === 'Restore the admitted Core compiler payload',
   );
-  const prepare = carrier.steps.find((step) =>
-    step.name?.startsWith('Prepare the source-verified shader publication'),
-  );
+  const gpu = carrier.steps.find((step) => step.name?.startsWith('Run actual GPU compatibility'));
   assert.match(restore.run, /needs\.shader-producer-inputs\.outputs\.artifact_id/);
   assert.match(restore.run, /restore-core-shader-inputs\.mjs/);
-  assert.match(restore.run, /--prepare-compiler/);
+  assert.match(restore.run, /--compiler-only --build-packages/);
   assert.equal(
     carrier.steps.some((step) => step.uses === './.github/actions/prepare-wgpu-wasm'),
     false,
   );
   const webkit = carrier.steps.find((step) => step.name?.startsWith('Prepare pinned Linux WebKit'));
   assert.ok(carrier.steps.indexOf(restore) < carrier.steps.indexOf(webkit));
-  assert.equal(prepare['timeout-minutes'], 10);
-  assert.ok(carrier.steps.indexOf(restore) < carrier.steps.indexOf(prepare));
+  assert.equal(restore['timeout-minutes'], 5);
+  assert.ok(carrier.steps.indexOf(restore) < carrier.steps.indexOf(gpu));
 });

@@ -21,6 +21,7 @@ import {
   shadowViewHasStaticLayer,
   shadowViewIdentityKey,
 } from '../gpu-driven/shadow-views';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
@@ -147,7 +148,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
   const identity: ShadowViewIdentity = { kind: 'directional', index: 0, layer: 'static' };
   const input = {
     identity,
-    sourcePlan: topology.query(topology.sourcePlan(), undefined),
+    sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
     scene: scene.scene,
     planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     ...extra,
@@ -393,7 +394,7 @@ describe('GPU-driven shadow view owner contract', () => {
         }),
       ]),
     );
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const prepared = value.gpuDrivenDraws?.[0]?.prepared;
     if (prepared === undefined) throw new Error('Missing prepared Skin fixture');
     const sourcePlan = {
@@ -596,7 +597,7 @@ describe('GPU-driven shadow view owner contract', () => {
         { slots: projection.slotsSnapshot(), slotAt: (slot) => projection.slotAt(slot) },
         scene,
       );
-      const sourcePlan = topology.query(topology.sourcePlan(), undefined);
+      const sourcePlan = topology.query(topology.sourcePlan(), undefined).active;
       const result = updateShadowView(pool, {
         identity,
         sourcePlan,
@@ -1268,7 +1269,7 @@ describe('GPU-driven shadow view owner contract', () => {
     for (const identity of identities) {
       let input = {
         identity,
-        sourcePlan: topology.query(topology.sourcePlan(), undefined),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
         scene: sceneAvailability.scene,
         planes,
         targetSize: 1024,
@@ -1341,9 +1342,9 @@ describe('GPU-driven shadow view owner contract', () => {
         cacheRebuildReasons: { 'first-publication': 1, 'view-changed': 1 },
       });
       expect(acceptedCounters?.cacheRebuilds).toBe(1);
-      // This raw subset captures a fresh member node, its one record and its root word.
+      // This raw subset captures a fresh member node/record (52 B) and static header (308 B).
       expect(payloadOnly.view.inspect()).toMatchObject({
-        sharedInputUploadBytes: 52,
+        sharedInputUploadBytes: 52 + GPU_TASK_HEADER_BYTES,
         batchUploadBytes: 4,
       });
       pool._commitResourceReplacement();
@@ -1459,7 +1460,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const frame = (identity: ShadowViewIdentity) => {
       const result = updateShadowView(pool, {
         identity,
-        sourcePlan: topology.query(topology.sourcePlan(), undefined),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
         scene,
         planes: frustum.fromViewProjection(frustum.create(), matrix),
         matrix,
@@ -1518,7 +1519,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const identity: ShadowViewIdentity = { kind: 'spot', index: 0 };
     const input = {
       identity,
-      sourcePlan: topology.query(topology.sourcePlan(), undefined),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
       scene,
       planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     } as const;
@@ -1603,7 +1604,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const staticInput = (candidates: readonly number[], dynamic: ReadonlySet<number>) =>
       ({
         identity,
-        sourcePlan: topology.query(topology.sourcePlan(), undefined),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
         scene: scene.scene,
         planes,
         candidatePrimitiveIndices: candidates,
@@ -1672,7 +1673,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const dynamicSlots = new Set([1]);
     const input = {
       identity,
-      sourcePlan: topology.query(topology.sourcePlan(), undefined),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
       scene: scene.scene,
       planes: frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
       candidatePrimitiveIndices: [0],
@@ -1710,13 +1711,13 @@ describe('GPU-driven shadow view owner contract', () => {
     projection.apply([updateSnapshot(snapshot(1)), updateSnapshot(snapshot(2))]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const sourcePlan = topology.query(topology.sourcePlan(), undefined);
+    const sourcePlan = topology.query(topology.sourcePlan(), undefined).active;
     const moved = new Float32Array(mat4.identity(mat4.create()));
     moved[12] = 4;
     const delta = projection.apply([{ kind: 'update', entityKey: 1, world: moved }]);
     expect(topology.apply(delta)).toBe(false);
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(sourcePlan);
-    expect(topology.query(topology.sourcePlan(), undefined).batches.at(0)).toBe(
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(sourcePlan);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches.at(0)).toBe(
       sourcePlan.batches.at(0),
     );
   });
@@ -1801,7 +1802,7 @@ describe('GPU-driven shadow view owner contract', () => {
     const input = (candidates: readonly number[], extra: Partial<{ matrix: Float32Array }> = {}) =>
       ({
         identity,
-        sourcePlan: topology.query(topology.sourcePlan(), undefined),
+        sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
         scene: scene.scene,
         planes: frustum.fromViewProjection(frustum.create(), matrix),
         matrix,

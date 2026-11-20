@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-debug
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 For Native GI jobs canceled after shared shader preparation consumes their
 execution window, use the existing Main core/point producer admission before
 the GPU jobs. Preserve exact source, compiler/profile and payload verification,
@@ -16,6 +18,11 @@ Explicit manual diagnostics retain the independent complete source producer.
 Keep qualified earlier successes and never relabel an artifact receipt or treat
 the completed prefix of a canceled job as a passed owner. See
 [Native GI shader input admission](../../scripts/ci/README.md#native-gi-shader-input-admission).
+
+For exhaustive Standard lean-input Dawn failures, select the case from the
+`surface-pipelines` native group. Retain all 2,560 paired comparisons and the ten-minute case bound.
+The [Dawn gate guide](../../scripts/ci/README.md#exhaustive-standard-lean-inputs)
+records compiler admission.
 
 For Browser stalls before the test body, distinguish profile preparation from
 GPU execution. Run the exact GPU-driven View file through the maintained Browser
@@ -36,10 +43,10 @@ replacement leaves the previous validated admission reusable. Retire offscreen
 surface images and error listeners with their owning configuration.
 The DevKit offscreen-target CPU lifetime Focus needs package outputs only.
 Run the native modeling render owner separately for actual validation and pixels.
-When a Shader test-only edit causes both source profiles to rebuild, inspect
-the producer's input key. Exclude test code from that key and retain executable
-compiler outputs, raw source, WASM and payload verification.
-Retain the complete native owner and qualify the affected CI consumers fresh.
+When a Shader test-only edit invalidates the Core template receipt, inspect the
+producer's input key. Retain executable compiler outputs, raw source, WASM and
+payload verification. Qualify the affected CI consumers with complete native
+evidence.
 
 For new Dawn files, extend the explicit discovery contract without rewriting
 historical timing receipts. Charge source-owned deadline reserves or the existing
@@ -57,6 +64,11 @@ filesystem cache across the existing children. Keep fresh evaluation, mocks and
 native lifetimes. Run the real cache invalidation/V8-counter gate before publishing;
 coverage adapters disable Node bytecode caching while retaining transform reuse.
 Measure a complete instrumented owner cold, warm and with a later uncached control.
+
+For a Coverage shard cancelled before its report, use the live case failure
+categories and complete child timings. Keep interrupted work as a separate
+reservation. Use the [Coverage placement guide](../../scripts/ci/README.md#vitest-type-test-and-coverage-ownership)
+to rebalance the existing four lanes and qualify the new partition.
 
 For long Three Dawn input families, count native device requests before tuning
 placement. Reuse one Renderer within each serial immutable configuration, with
@@ -134,13 +146,9 @@ before selecting public source mode. Its tracked-file copy omits prepared binary
 resources. Validate Water provenance in that sealed closure; keep private Assets
 and View absent and retain the original Engine build and API probes.
 
-For no-View source cancellation after POINT production, preserve the temporary
-package/compiler rebuild and POINT source producer. Pass the prepared checkout's
-BASE directory with `--base-shader-input-root` and its real HEAD with
-`--source-revision` to the existing Engine build. The core restore owner compares
-revision, rebuilt compiler/source/profile fingerprint and path-bound payload
-digest before copying only BASE receipt/payload. Retain rejection on any mismatch;
-ordinary SDK source verification still performs its independent cold build.
+For no-View shader failures, inspect the template manifest and resolve the
+selected program from the temporary Engine build. Keep the independent compiler
+rebuild and the original public API probes.
 
 For source-compiling coverage OOMs, use the split runner's existing exclusive
 source owner and capacity-derived producer heap, with one actual Vitest file
@@ -220,6 +228,16 @@ source admission, original timeouts and passed sibling artifacts. Run the repair
 ordinary owners under their actual admitted workers; local throughput is not a
 substitute for the complete failed Linux shard and strict coverage merge.
 
+Core App producers use the Smoke roots declared in the artifact contract.
+Before adding an App build, identify the consuming shader, Pack or preview
+output. The required inventory check and Browser aggregate run independently
+of Smoke. The Vite transport and DFG coverage tests consume the admitted BASE profile.
+Core owns cold compilation. Full-profile and standalone source checks retain
+the independent compilation path.
+During SDK CI repair, check the archive profile recorded in each receipt.
+An expanded scope must execute fresh when a valid expanded predecessor
+cannot be established. See [required PR work by consumer](../../scripts/ci/README.md#required-pr-work-by-consumer).
+
 ## PR CI repair workflow
 
 For an ordinary Dawn SIGKILL, correlate the cgroup OOM-counter delta with the
@@ -239,9 +257,26 @@ without another process. Keep its paired file, captures, original deadlines
 and sixty completed frames. Requalify all four Browser lanes after changing
 exclusive admission because it affects weighted placement.
 
+If the complete Three Node inputs file passes but a paired material instance
+file reaches the 300-second Browser process deadline, preserve both complete
+files in separate processes with their original deadlines. When the Node
+inputs material hook reaches its 30-second limit beside another Browser
+group, drain its neighbors within the existing process. Requalify all four
+Browser lanes after changing placement.
+
+For Standard transmission Coverage failures, select the failing Water selection
+file and retain its complete output checks and 60-second batch deadlines. See
+[Standard transmission output coverage](../../scripts/ci/README.md#standard-transmission-output-coverage).
+
 For Direct Surface shadow and consumed-resource preparation timeouts, keep
 both existing exclusive Coverage children, real Cooks and original case
 deadlines. Use the bounded source-compiler budget and package-only preparation.
+
+For the Standard Pack schema reuse timeout, select
+`material-program-schema-reuse.integration.test.ts` with Coverage Focus.
+Its existing exclusive owner uses package-only preparation and the source
+compiler budget. Keep the two original 30-second cases, each cold schema
+transition, the compiler call counts and the complete artifact hash comparison.
 
 For Standard/Skin cold-cook coverage timeouts, preserve the complete four-root
 file, every variant/artifact assertion and each original 15-second case deadline.
@@ -421,31 +456,28 @@ App test providers publish lifecycle status/document through the owning contract
 missing fixture fields must not bypass capture/artifact assertions. See the
 [paired repair route](../../scripts/ci/README.md#paired-view-capability-repairs).
 
-For a cold BASE compilation that stalls on the standard pool, use the existing
-capacity-verified heavy `ci-core` owner for package JS and both shader profiles.
-`shared-app-inputs` forwards its outputs on standard capacity without another
-checkout, install or compiler substrate. Keep the heavy execution count at 28,
-independent profile cache keys, source/payload verification and required shared
-artifact upload. Select BASE/POINT explicitly at the artifact resolver call;
-execution identity does not select a profile. Run Core's repository complexity
-and file-size gates for CI tooling changes before publishing, alongside relevant
-Focus tests. For stock stable/WebKit carriers, require the admitted Core ID
-after repair qualification and before expensive preparation; independent
-reference/legacy RHI carriers retain their execution. After combining producer
-jobs, move pin/Codec/heap contracts to the actual execution and retire checks for
-the removed second build closure. Real offline installer fixtures consume the
-root package-manager pin. SDK admission must identify the actual Core execution and its
-successful upload, preserving original attempts on consumer-only retries. Never
-report the cheap projection as source production or erase historical cold costs.
+Core builds packages and publishes the source library with the Pack catalog.
+The standard-capacity projection forwards those outputs. Retain verified source
+and payload identity, actual Core execution and original successful attempts on
+consumer-only retries. Stable and WebKit require the successful Core compiler
+artifact before native preparation. Preserve the independent reference and
+legacy carriers and the original GPU assertions.
 
-For SDK POINT or stable/WebKit Core BASE fingerprint mismatch after an independent native rebuild,
-restore the admitted Core compiler/glue before rebuilding the ordinary source JS
-closure, using the same Core archive transfer. Same-source native builds may differ
-in bytes; source equality cannot replace the exact compiler receipt. Preserve source,
-profile and payload validation and independent legacy/reference execution.
-After changing that workflow, run the complete shader-profile producer contracts.
-They must follow the exact Core handoff and reject dangling old cache IDs; retain
-the real producer guard, source preparation and GPU ordering assertions.
+The PR SDK seed reuses the exact Core archive's two Three program strings and
+missing declarations via `--reuse-core-build`. The SDK builds JavaScript,
+checks and emits declarations with fresh maps and executes installed consumers.
+Candidate and independent source builds retain cold preparation.
+
+For the sealed-successor Browser cleanup case, record the Host's admitted
+frame at pause and compare it with the last Render Worker receipt. Drain
+through that frame within the original resume window before normal disposal
+with a pending remote eval. Keep the separate forced-disposal cases and their
+5-second Render Worker and 10-second source boundaries.
+
+When a Host-only Audio Worker times out after Vite reloads, check the exact
+optimizer route from the affected Browser group. Admit nested `clipper2-ts`
+through its installed Water owner for the spatial Audio fixture and verify
+its real audio and Worker assertions within their original deadlines.
 
 For shared-input source recovery OOM, admit the existing source producer budget
 before loading its compiler plugins and remove fixed orchestration heap arguments
@@ -570,12 +602,10 @@ independent cold build. This current ownership supersedes older prescriptions
 below to retain three duplicate full builds. Keep variants, timeouts, coverage
 thresholds and original historical costs; require fresh changed-owner execution.
 
-For a native point-shadow smoke that reports a missing packaged profile before
-V8 OOM, use consumer-owned `ensureShaderManifestProfile` from the shared manifest
-helper. It invokes the existing verified producer under the bounded supervisor;
-Deep Agent, GI and Learn Render point consumers share it across roster, metrics
-and direct CLI routes. Keep all original frame/pixel/shadow assertions and
-caller smoke limits; shader readiness must not depend on a fixed shard number.
+Run the Deep Agent, GI and Learn Render native point-shadow smokes with their
+source template publication. Investigate preparation failures through the
+runtime compiler and selected program diagnostics. Keep the original frame,
+pixel, shadow and deadline assertions.
 
 > [!IMPORTANT]
 > For Dawn placement, the current rule here supersedes older replay-window
@@ -705,6 +735,12 @@ fresh within this workflow; it is not a reason to remove the declaration.
 | Reuse falls back | Inspect the emitted qualification reason. Correct declaration or baseline errors before the next repair push; report missing history or artifacts. Keep eligible unrelated successes and let unqualified checks execute under the contract. |
 | Qualify | Require complete final-head CI qualification through fresh execution or qualified reuse, plus protected review and normal merge. Advance the baseline to this completed CI run before the next update. |
 
+For Core Coverage reuse, inspect the original group and artifact IDs in
+`shard.json`. Verify the main-base input comparison, affected package closure
+and complete merged thresholds. Missing or unqualified group evidence executes
+fresh. For View, Dawn and Browser roster changes, use the retained native
+owners and full-profile rules in [Core validation](../../scripts/ci/README.md#core-validation-policy).
+
 Coverage core validation defers six expanded Modeling example suites through
 the shared reviewed exclusion list, retaining 79.8% of measured Modeling file
 seconds, core operators, nominal S6 and original thresholds. Producers and merge
@@ -760,10 +796,8 @@ workflow; never remove the declaration to force full CI.
 The workflow reads the PR body captured in its trigger event; editing the body
 after launch does not retrofit that run.
 
-The no-View source verifier also consumes paired View CI's ordinary BASE receipt
-at `shared-build-inputs-release/base-ssao`. Missing Core/shared transfers do not
-imply a missing BASE publication: inspect that producer location and retain exact
-revision, rebuilt compiler, profile and payload admission before projection.
+The no-View source verifier uses ordinary `pnpm build:engine` and exercises
+template admission and selected program preparation from its built packages.
 
 A declared completed manual anchor may supply prior successes only after the
 repair owner verifies the repository, branch and independent commit-to-PR
@@ -941,27 +975,14 @@ and restoring the original publications. Keep producer waiting distinct from the
 unchanged 30-minute seed budget and reject missing or mismatched artifact inputs.
 See [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
 
-For SDK OOM after completed shader profiles, inspect the actual
-`pnpm build:engine` child and profile-container process before blaming source
-compilation. Follow the SDK route and CI memory policy: declaration children
-inherit the runner heap, the profile encoder admits its own budget, and cold SDK
-production keeps the same memory-bound, at-most-four compiler pool with unchanged
-publication verification.
-For a fresh publication checker that fails at JSON.parse under an explicit
-512 MiB Node argument, apply the existing runner-derived SDK child environment.
-Keep its 128 MiB retained-heap assertion after GC and every source/count/digest
-check; validate the real sealed container without rebuilding the cold Engine.
+For an SDK build OOM, inspect the actual `pnpm build:engine` stage and child
+heap before changing capacity. The SDK packages Engine template sources and the
+portable compiler. Keep the independent source and installed-consumer journeys.
 
-For Stable/WebKit source-publication timeouts, inspect the same-source core
-producer admission and base-SSAO receipt. Compatibility waits for the successful
-existing core artifact before starting carrier execution, then restores only
-the base profile with unchanged paths and complete compiler/source/profile and
-payload verification. The point shared artifact cannot satisfy base admission.
-Missing or invalid core inputs remain failed preparation; do not start another
-cold compiler in the consumer's original ten-minute publication window. Follow
-the [compatibility input contract](../../scripts/ci/README.md#pinned-webgpu-compatibility);
-do not substitute point-SSAO, extend the deadline or treat unrun GPU assertions
-as success.
+For Stable/WebKit startup, check admission of the successful same-source Core
+compiler artifact before inspecting runtime shader composition. A missing or
+invalid tracked compiler remains a preparation failure. Keep the original GPU
+assertions, sandbox and carrier deadlines.
 
 On Windows, a local physical-GPU Browser failure batch selects the maintained
 native launch policy with `FORGEAX_BROWSER_GPU=native`. Other hosts use their
@@ -1250,6 +1271,8 @@ reproduce the complete project selection before changing admission. Use the
 existing exclusive-file owner, exclude it from ordinary siblings, and preserve
 V8 instrumentation, case deadlines and every retained placement window; see
 [CI operations](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse).
+Keep the complete frozen Toon publication file in the exclusive Shader Compiler
+child with its existing five-second cases and real Forward and ShadowCaster cooks.
 For Linux graphics preparation blocked by Ubuntu mirror size mismatches or
 HTTP 502, use the existing signed-source and bounded mirror recovery installer.
 Keep package failures fatal and requalify all affected native carriers; follow
@@ -2776,20 +2799,13 @@ For Browser startup stalls, inspect Pack and authored material preparation: expl
 use their workspace owners and declared shared source roots, including material
 contracts imported through shared test fixtures. Keep the original
 deadline and first failure; keep whole-group automatic retries retired.
-For core/shared-input stalls, inspect the shared native shader steps in `ci.yml`,
-profile fingerprint and portable receipt before comparing cold compilation with
-cache reuse. Cache restore/save have one-minute step deadlines; the segment
-download timeout does not bound metadata lookup. A cache timeout must still reach
-mandatory source/byte verification and source fallback, and starts no further
-save request. Shared catalog timing must include the preceding profile preparation;
-its explicit shader input is admitted before reuse and rebuilds when missing. The source producer
-validates restored bytes and rebuilds misses; keep one receipt
-and run admission on an Actions cache hit too. The CI guide names the retained
-single-texture and standalone-manifest coverage owners.
-Coverage prepares both base-SSAO and point-SSAO from admitted core/shared products.
-If standalone SSAO or Vite manifest assertions recompile the full fleet, inspect
-that preparation before changing their assertions. Cold source production and
-worker lifecycle retain their focused owners.
+For Core/shared-input stalls, distinguish Pack cook, template serialization and
+compiler substrate transfer. Verify any reused source library against the
+producer's compiler, source and payload receipt. Runtime composition belongs
+to the carrier evidence.
+Browser and Dawn coverage consume source templates. Compile-specific fixtures
+explicitly request composed publications and keep their source, ABI and worker
+lifecycle assertions.
 SDK package verification owns the default production build; the custom-base
 empty-project build retains direct CLI coverage. Package the unchanged
 project from the existing build.
@@ -3174,10 +3190,9 @@ receiver/nonreceiver lookup separation, unchanged pixels and positive dynamic
 shadow controls, then run the complete Browser owner with its original frames
 and deadlines.
 
-For a roster Browser child missing packaged point-SSAO, prepare the existing
-verified profile before its authoritative roster shard. Use the shared point
-producer receipt and exact source/profile fingerprint; base-SSAO is not a
-replacement. Keep child heap, startup deadlines and frame/pixel acceptance.
+For missing built-in programs in roster Browser tests, inspect the Vite source
+publication and runtime compiler error. Keep exact test selection, frame and
+pixel assertions and the original deadlines.
 
 For Linux CI setup failures or disk exhaustion after native crashes, use the
 shared Node/pnpm environment owner before adding workflow-specific exports.
@@ -3197,6 +3212,21 @@ an accepted artifact receipt. Use the common upload owner: required transfers
 have three staggered same-name attempts, acceleration inputs retain two, and
 canonical overwrite avoids retry-specific duplicates. Preserve exhausted upload
 failures and the actual successful attempt; no receipt means no qualified input.
+If the action reports a stalled blob and the process remains alive, use the
+upload wrapper's post-failure exit guard. It retires a failed action with open
+sockets before the next same-name retry. Active uploads retain their normal
+transport policy.
+For a download deadline, use the common artifact downloader. Check that an
+abandoned request receives an abort and the file writer closes before the next
+attempt. Test metadata, sequential bodies and ranges with a cancellation that
+stays pending, then validate the replacement artifact digest.
+For a Vite smoke startup stall, use the common HTTP readiness probe. Verify
+recovery from a warming response and the existing startup deadline when a
+probe ignores cancellation.
+For a native material DDC test that stalls after a hot read, time the
+assertion separately from the real importer and native Cook. Compare complete
+typed array products with Node strict equality and retain the producer call
+counts, source invalidation and test deadline.
 Do not rerun successful tests for an external transport failure. See
 [core validation and transport recovery](../../scripts/ci/README.md#core-validation-cost-and-crash-output).
 

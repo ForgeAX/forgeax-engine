@@ -18,13 +18,13 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterEach, assert, expect, it, vi } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { createIrradianceFieldHarness } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const LIT = '3c9e5a71-0d2b-4f6e-8a1c-7b4d2e9f0a35';
 const DARK = '8e2f4b06-1c7d-4a9e-b35f-0d6a2c8e1b47';
 const MISSING = 'd4a1c7e2-5b3f-4e8a-9c06-1f2b3d4e5a68';

@@ -631,6 +631,35 @@ export function createMaterialLayoutCache({
       undefined
     );
   };
+  const lookupMaterialBindGroupLayout = (
+    materialShaderId: string,
+    explicitParamSchema?: readonly ParamSchemaEntry[],
+  ): BindGroupLayout | undefined => {
+    if (isSharedLayoutMaterialShader(materialShaderId)) return undefined;
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    const artifact = lookup.ok ? lookup.value : undefined;
+    const state = currentPipelineCacheState();
+    switch (artifact?.receipt?.bindings) {
+      case 'group-0':
+        return state.group0MaterialLayout?.materialBgl;
+      case 'group-0-resource':
+        return state.group0ResourceLayouts.get(materialShaderId)?.materialBgl;
+      case 'view-and-scene-depth':
+        return undefined;
+      default: {
+        const cached = state.perShaderMaterialLayoutCache
+          .get(materialShaderId)
+          ?.get(materialLayoutSlot('pbr', false));
+        return sameMaterialLayoutPublication(
+          cached,
+          artifact?.program?.identity ?? '',
+          artifact?.paramSchema ?? explicitParamSchema,
+        )
+          ? (cached.layout?.materialBgl ?? undefined)
+          : undefined;
+      }
+    }
+  };
   return {
     getMaterialShaderBindingContract,
     getOrBuildPreparedStoragePipelineLayout,
@@ -642,6 +671,7 @@ export function createMaterialLayoutCache({
     getOrBuildPerShaderMaterialLayout,
     getParamSchema,
     getMaterialBindGroupLayout,
+    lookupMaterialBindGroupLayout,
   };
 }
 

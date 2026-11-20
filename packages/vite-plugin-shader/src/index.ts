@@ -22,7 +22,7 @@
 //   research Finding 3).
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
@@ -39,8 +39,11 @@ import {
   type MaterialShaderManifestVariant,
   publishShaderProgramTemplates,
   readShaderProgramTemplates,
+  SHADER_PROJECT_MANIFEST_VERSION,
   type ShaderProgramTemplate,
+  ShaderRegistry,
   type ShaderTemplateManifest,
+  supportedVariantDefines,
 } from '@forgeax/engine-shader';
 import {
   buildMaterialSourceCatalog,
@@ -56,6 +59,7 @@ import {
   MATERIAL_WGSL_PROFILE,
   projectShaderConditionals,
 } from '@forgeax/engine-shader-compiler';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import {
   assertMaterialAsset,
   type BindGroupLayoutDescriptor,
@@ -85,7 +89,6 @@ import {
   throwAuthoredMaterialError,
 } from './engine-inputs/prepare-engine-shader-source.js';
 import { waterInfoRasterEngineEntries } from './engine-inputs/water-info-raster-roster.js';
-import { supportedVariantDefines } from './supported-variant-defines.js';
 
 export {
   decodePackagedProfiles,
@@ -115,6 +118,7 @@ import {
   hasCompleteEngineShaderProfile,
   loadPackagedEngineShaderInputs,
   loadSharedEngineShaderManifest,
+  loadSharedEngineShaderTemplates,
   projectOptionalEngineEntries,
   projectShaderManifestEntries,
   projectShaderManifestInput,
@@ -217,7 +221,9 @@ export async function buildEngineShaderTemplateManifest(
       engine: {
         identifier,
         paramSchema: engineMaterialParamSchema(identifier),
-        ...(options.pointShadows === undefined ? {} : { pointShadows: options.pointShadows }),
+        ...(options.pointShadows === true && axes.includes('CLUSTER_FORWARD_AVAILABLE')
+          ? { pointShadows: true }
+          : {}),
         ...(file.surfaceModule === undefined ? {} : { surfaceModule: file.surfaceModule }),
         ...(file.program === undefined ? {} : { program: file.program }),
       },
@@ -276,13 +282,53 @@ function sharedEngineManifestPathFor(options: BuildEngineShaderManifestOptions):
   // closure, so the opt-in never depends on how the shared inputs were produced.
   if (options.pointShadows === true) return null;
   const configured = process.env[SHARED_ENGINE_MANIFEST_ENV];
-  return configured === undefined || configured.length === 0 ? null : resolve(configured);
+  if (!configured) return null;
+  const manifestPath = resolve(configured);
+  if ((options.materialPackages?.length ?? 0) === 0) return manifestPath;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    // Keep the existing asynchronous admission path for I/O and format diagnostics.
+    return manifestPath;
+  }
+  // Combining cooked material packages here needs the legacy compiled merge.
+  if (
+    manifest !== null &&
+    typeof manifest === 'object' &&
+    'shaderPublication' in manifest &&
+    manifest.shaderPublication === 'source'
+  )
+    return null;
+  return manifestPath;
 }
 
 async function loadSharedEngineManifestForBuilder(
   manifestPath: string,
   workspaceRoot: string,
 ): Promise<Awaited<ReturnType<typeof buildEngineShaderManifestUncached>>> {
+  const templates = loadSharedEngineShaderTemplates(manifestPath, {
+    pointShadows: false,
+    hdrpSsao: true,
+  });
+  if (templates !== undefined) {
+    const registry = new ShaderRegistry({
+      manifestUrl: manifestPath,
+      readText: async () => JSON.stringify(templates),
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    });
+    (await registry.loadManifest()).unwrap();
+    return serializeAsPublication(
+      {
+        schemaVersion: '1.0.0',
+        entries: Array.from(registry.entries(), (entry) =>
+          projectShaderManifestInput(entry, { glsl: '' }),
+        ),
+        materialShaders: [...registry.materialShaderManifestEntries()],
+      },
+      templates,
+    );
+  }
   const shared = await loadSharedEngineShaderManifest(manifestPath, workspaceRoot);
   const missing = SHARED_ENGINE_MANIFEST_REQUIRED_IDS.filter(
     (identifier) => !shared.materialShaders.some((entry) => entry.identifier === identifier),
@@ -314,8 +360,8 @@ async function loadSharedEngineManifestForBuilder(
  */
 function serializeAsPublication<
   M extends Awaited<ReturnType<typeof buildEngineShaderManifestUncached>>,
->(manifest: M, prepared?: ReturnType<typeof publishShaderManifest>): M {
-  let publication: ReturnType<typeof publishShaderManifest> | undefined;
+>(manifest: M, prepared?: ReturnType<typeof publishShaderManifest> | ShaderTemplateManifest): M {
+  let publication: typeof prepared;
   Object.defineProperty(manifest, 'toJSON', {
     enumerable: false,
     value: () => {
@@ -384,6 +430,88 @@ export function buildEngineShaderManifest(
   });
 }
 
+async function appendCookedMaterialPackages(
+  publication: ReturnType<typeof createCompiledEnginePublication>,
+  engineImports: Record<string, string>,
+  packagePaths: readonly string[],
+): Promise<void> {
+  if (packagePaths.length === 0) return;
+  const { publisher } = publication;
+  const authoredMaterialCompiler = createShaderProgramCompiler();
+  for (const packagePath of packagePaths) {
+    const resolvedPackagePath = resolve(process.cwd(), packagePath);
+    const materialPackage = parseMaterialPackage(
+      JSON.parse(await readFile(resolvedPackagePath, 'utf8')) as unknown,
+      resolvedPackagePath,
+    );
+    const programs = await prepareAuthoredMaterial(
+      resolvedPackagePath,
+      materialPackage,
+      engineImports,
+      authoredMaterialCompiler,
+    );
+    for (const prepared of programs) {
+      const primary = prepared.primary;
+      publication.entries.push(
+        publisher.entry(
+          {
+            ...primary.manifestEntry,
+            hash: primary.manifestEntry.hash,
+            wgsl: primary.manifestEntry.wgsl,
+            glsl: '' as const,
+            bindings: primary.manifestEntry.bindings,
+            uvSetCount: primary.manifestEntry.uvSetCount,
+            compilerProfile: MATERIAL_WGSL_PROFILE,
+          },
+          prepared.moduleId,
+        ),
+      );
+      publication.materialShaders.push({
+        identifier: prepared.moduleId,
+        sourcePath: prepared.sourcePath,
+        ...publisher.variant(
+          {
+            ...compiledArtifactProjection(primary.manifestEntry),
+            composedWgsl: primary.manifestEntry.wgsl,
+            ...(primary.receipt === undefined ? {} : { receipt: primary.receipt }),
+          },
+          prepared.moduleId,
+        ),
+        paramSchema: JSON.stringify(prepared.paramSchema),
+        variants: prepared.variants.map((variant) =>
+          publisher.variant(
+            {
+              definesKey: variant.definesKey,
+              defines: variant.defines,
+              ...compiledArtifactProjection(variant.manifestEntry),
+              composedWgsl: variant.manifestEntry.wgsl,
+              ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
+            },
+            variant.definesKey,
+          ),
+        ),
+      });
+    }
+  }
+}
+
+/** Publish built-ins as templates and cook only the project's declared material packages. */
+export async function buildProjectShaderTemplateManifest(
+  options: Pick<BuildEngineShaderManifestOptions, 'materialPackages' | 'pointShadows'>,
+) {
+  const templates = await buildEngineShaderTemplateManifest(options);
+  const packages = options.materialPackages ?? [];
+  if (packages.length === 0) return templates;
+  const publication = createCompiledEnginePublication();
+  const { imports } = await loadEngineShaderEntries();
+  await appendCookedMaterialPackages(publication, imports, packages);
+  return {
+    schemaVersion: SHADER_PROJECT_MANIFEST_VERSION,
+    templates,
+    cooked: publication.publisher.finish(publication.entries, publication.materialShaders),
+  };
+}
+
 async function buildEngineShaderManifestUncached(
   options: BuildEngineShaderManifestOptions = {},
   sharedManifestPath: string | null = null,
@@ -412,62 +540,11 @@ async function buildEngineShaderManifestUncached(
   for (const file of shared === undefined ? engineFiles : [])
     await compileEngineEntry(state, file, eng.imports, pointShadows, true);
   const publisher = state.compiledEngine.publisher;
-  const authoredMaterialCompiler = createShaderProgramCompiler();
-  for (const packagePath of options.materialPackages ?? []) {
-    const resolvedPackagePath = resolve(process.cwd(), packagePath);
-    const materialPackage = parseMaterialPackage(
-      JSON.parse(await readFile(resolvedPackagePath, 'utf8')) as unknown,
-      resolvedPackagePath,
-    );
-    const programs = await prepareAuthoredMaterial(
-      resolvedPackagePath,
-      materialPackage,
-      eng.imports,
-      authoredMaterialCompiler,
-    );
-    for (const prepared of programs) {
-      const primary = prepared.primary;
-      state.compiledEngine.entries.push(
-        publisher.entry(
-          {
-            ...primary.manifestEntry,
-            hash: primary.manifestEntry.hash,
-            wgsl: primary.manifestEntry.wgsl,
-            glsl: '' as const,
-            bindings: primary.manifestEntry.bindings,
-            uvSetCount: primary.manifestEntry.uvSetCount,
-            compilerProfile: MATERIAL_WGSL_PROFILE,
-          },
-          prepared.moduleId,
-        ),
-      );
-      state.compiledEngine.materialShaders.push({
-        identifier: prepared.moduleId,
-        sourcePath: prepared.sourcePath,
-        ...publisher.variant(
-          {
-            ...compiledArtifactProjection(primary.manifestEntry),
-            composedWgsl: primary.manifestEntry.wgsl,
-            ...(primary.receipt === undefined ? {} : { receipt: primary.receipt }),
-          },
-          prepared.moduleId,
-        ),
-        paramSchema: JSON.stringify(prepared.paramSchema),
-        variants: prepared.variants.map((variant) =>
-          publisher.variant(
-            {
-              definesKey: variant.definesKey,
-              defines: variant.defines,
-              ...compiledArtifactProjection(variant.manifestEntry),
-              composedWgsl: variant.manifestEntry.wgsl,
-              ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
-            },
-            variant.definesKey,
-          ),
-        ),
-      });
-    }
-  }
+  await appendCookedMaterialPackages(
+    state.compiledEngine,
+    eng.imports,
+    options.materialPackages ?? [],
+  );
   const produced = publisher.finish(
     state.compiledEngine.entries,
     state.compiledEngine.materialShaders,
@@ -512,7 +589,18 @@ async function buildEngineShaderManifestUncached(
  * Options for the `forgeaxShader` plugin factory (no configurable items in M2;
  * the future signature is reserved).
  */
+export type ShaderPreparationProgress =
+  | { readonly phase: 'inputs' }
+  | {
+      readonly phase: 'compile' | 'ready';
+      readonly sourcePath: string;
+      readonly completed: number;
+      readonly total: number;
+    };
+
 export interface ForgeAXShaderOptions {
+  /** Observations only; callback failures cannot affect shader publication. */
+  readonly onProgress?: (event: ShaderPreparationProgress) => void;
   /** Source publications prepare Engine programs at actual runtime use; Pack owns material artifacts. */
   readonly publication?: 'compiled' | 'source';
   /** Producer workspace root for repository-relative shared input paths. */
@@ -570,7 +658,8 @@ export interface ForgeAXShaderOptions {
    * shader manifest. Hosts that already have a Pack runtime publisher can
    * disable this channel while retaining the compile-time source transform;
    * the Pack artifact then remains the sole runtime registration owner.
-   * Defaults to `true` for standalone shader-only consumers.
+   * The standalone default publishes these artifacts. Explicit source hosts
+   * use their Pack publisher by default.
    */
   readonly publishAuthoredMaterialShaders?: boolean;
 }
@@ -682,6 +771,7 @@ function createCompiledEnginePublication() {
 }
 
 interface ManifestEntries {
+  readonly onProgress?: (event: ShaderPreparationProgress) => void;
   compiledEngine: ReturnType<typeof createCompiledEnginePublication>;
   readonly entries: Map<string, ManifestEntryValue>;
   readonly materialShaders: MaterialShaderManifestEntry[];
@@ -840,7 +930,7 @@ async function compileUserMaterialVariants(
   // cannot silently ship a storage WGSL source against the WebGL2 uniform
   // pipeline layout (the old failure surfaced only at queue submit).
   const axes = scanUserMaterialVariantAxes(source);
-  const combinations = axes.length > 0 ? supportedVariantDefines(axes) : [undefined];
+  const combinations = axes.length > 0 ? [...supportedVariantDefines(axes)] : [undefined];
   const sourceForRouting = source;
   // Restrict the compiler catalog to the source's reachable import closure.
   // Engine material catalogs contain unrelated guarded imports (notably
@@ -1375,7 +1465,7 @@ export function engineManifestFiles(
  */
 export function publishedVariantDefines(source: string): Record<string, boolean>[] {
   const axes = scanVariantAxes(source);
-  return axes.length > 0 ? supportedVariantDefines(axes) : [{}];
+  return axes.length > 0 ? [...supportedVariantDefines(axes)] : [{}];
 }
 
 // The rule table lives in @forgeax/engine-shader so request sites share it.
@@ -1941,11 +2031,11 @@ function sharedEngineManifestPath(
 ): string | undefined {
   return process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD === '1' || wantEngineEntries === false
     ? undefined
-    : process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+    : (sharedEngineManifestPathFor({}) ?? undefined);
 }
 
 async function compileEngineEntry(
-  state: Pick<ManifestEntries, 'entries' | 'compiledEngine'>,
+  state: Pick<ManifestEntries, 'entries' | 'compiledEngine' | 'onProgress'>,
   file: EngineShaderFile,
   imports: Record<string, string>,
   pointShadows = false,
@@ -1962,6 +2052,13 @@ async function compileEngineEntry(
     pointShadows,
   );
   const canonical = engineCanonicalVariantKey(standalone, variantAxes);
+  let completed = 0;
+  state.onProgress?.({
+    phase: 'compile',
+    sourcePath: file.id,
+    completed,
+    total: variantJobs.length,
+  });
   const selected = variantJobs.find((variant) => variant.definesKey === canonical);
   const direct =
     selected === undefined
@@ -2030,6 +2127,13 @@ async function compileEngineEntry(
           job.uniqueId,
         ),
       });
+      completed++;
+      state.onProgress?.({
+        phase: 'compile',
+        sourcePath: file.id,
+        completed,
+        total: variantJobs.length,
+      });
     },
   );
   const entryKey =
@@ -2082,6 +2186,7 @@ async function compileEngineEntry(
       ...(standalone ? {} : { uvSetCount }),
     });
   }
+  state.onProgress?.({ phase: 'ready', sourcePath: file.id, completed, total: variantJobs.length });
 }
 
 async function compileWaterEngineEntries(
@@ -2115,11 +2220,20 @@ async function compileWaterEngineEntries(
  * | `configureServer(server)` | dev-only: middleware serves the shader manifest from the same `state.entries` Map (II-A from plan-strategy §2 D-P2) |
  */
 export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShaderPlugin {
+  const report = (event: ShaderPreparationProgress): void => {
+    try {
+      options.onProgress?.(event);
+    } catch {
+      // Presentation observers cannot fail shader production.
+    }
+  };
   let workspaceRoot =
     options.workspaceRoot === undefined
       ? searchForWorkspaceRoot(process.cwd())
       : resolve(options.workspaceRoot);
-  const sourcePublication = options.publication === 'source';
+  const sourcePublication =
+    options.publication === 'source' ||
+    (options.publication === undefined && options.engineEntries !== false);
   let compiledInputs = new WeakMap<object, ShaderProgramTemplate>();
   const createAuthoredCompiler = (): ReturnType<typeof createShaderProgramCompiler> => {
     const compile = createShaderProgramCompiler();
@@ -2152,6 +2266,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   };
   let compileAuthoredMaterial = createAuthoredCompiler();
   const state: ManifestEntries = {
+    onProgress: report,
     compiledEngine: createCompiledEnginePublication(),
     entries: new Map(),
     materialShaders: [],
@@ -2160,7 +2275,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   };
   const wantEngineEntries = options.engineEntries ?? true;
   const publishAuthoredMaterialShaders =
-    options.publishAuthoredMaterialShaders ?? !sourcePublication;
+    options.publishAuthoredMaterialShaders ?? options.publication !== 'source';
   let nativeEnginePublication: ShaderTemplateManifest | undefined;
   // StandardProfile can enable AO at runtime without a second producer switch.
   const wantHdrpSsao =
@@ -2250,26 +2365,34 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     sharedEnginePublication = shared.publication;
   };
 
-  const prepareNativeEnginePublication = async (context: MinimalPluginContext): Promise<void> => {
-    if (publishAuthoredMaterialShaders)
-      context.error({
-        message:
-          'Source publication delegates authored material programs to Pack; set publishAuthoredMaterialShaders to false.',
-      });
-    nativeEnginePublication =
-      wantEngineEntries === false
-        ? undefined
-        : await buildEngineShaderTemplateManifest({
-            pointShadows: wantPointShadows,
-            hdrpSsao: wantHdrpSsao,
-          });
+  const prepareNativeEnginePublication = async (): Promise<void> => {
+    if (wantEngineEntries !== false) {
+      const configured = process.env[SHARED_ENGINE_MANIFEST_ENV];
+      const shared =
+        configured === undefined || configured.length === 0
+          ? undefined
+          : loadSharedEngineShaderTemplates(resolve(configured), {
+              pointShadows: wantPointShadows,
+              hdrpSsao: wantHdrpSsao,
+            });
+      nativeEnginePublication =
+        shared ??
+        (await buildEngineShaderTemplateManifest({
+          pointShadows: wantPointShadows,
+          hdrpSsao: wantHdrpSsao,
+        }));
+    }
     loadedEngineShaderState = true;
+    if (publishAuthoredMaterialShaders)
+      await ensureAuthoredMaterialPackages(currentMaterialPackages(), getEngineImports());
   };
 
-  const publishNativeSourceManifest = (): ShaderManifestPublication | ShaderTemplateManifest => {
+  const publishNativeSourceManifest = () => {
     const base = nativeEnginePublication;
     if (!loadedEngineShaderState)
       throw new Error('Engine source publication has not been prepared');
+    if (base !== undefined && state.entries.size === 0 && state.materialShaders.length === 0)
+      return base;
     const programs = new Map(
       [...(base === undefined ? [] : readShaderProgramTemplates(base.library).unwrap())].map(
         ([id, value]) => [id, value.template],
@@ -2277,8 +2400,17 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     );
     const entries = [...(base?.entries ?? [])];
     const hashes = new Set(entries.map((entry) => entry.hash));
+    const cookedKeys = new Set(
+      state.materialShaders.flatMap(({ identifier, sourcePath }) => [identifier, sourcePath]),
+    );
+    const cookedEntries: typeof state.entries = new Map();
     for (const [identifier, entry] of state.entries) {
       if (hashes.has(entry.hash)) continue;
+      if (cookedKeys.has(identifier)) {
+        cookedEntries.set(identifier, entry);
+        hashes.add(entry.hash);
+        continue;
+      }
       const template =
         entry.reflection === undefined ? undefined : compiledInputs.get(entry.reflection);
       if (template === undefined)
@@ -2289,18 +2421,32 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       entries.push({ hash: entry.hash, identifier, program, selection: {} });
       hashes.add(entry.hash);
     }
-    if (programs.size === 0) return publishShaderManifest([], []);
-    return admitShaderTemplateManifest({
+    const cooked =
+      state.materialShaders.length === 0
+        ? undefined
+        : publishShaderManifest(
+            projectShaderManifestEntries(cookedEntries),
+            projectManifestMaterialSourcePaths(
+              inlineMaterialShaderComposedWgsl(
+                state.materialShaders,
+                state.entries,
+                state.variantWgsl,
+              ),
+            ),
+          );
+    if (programs.size === 0) return cooked ?? publishShaderManifest([], []);
+    const templates = admitShaderTemplateManifest({
       schemaVersion: '7.0.0',
       library: publishShaderProgramTemplates(programs).unwrap(),
       entries,
       materialShaders: base?.materialShaders ?? [],
     }).unwrap().wire;
+    return cooked === undefined
+      ? templates
+      : { schemaVersion: SHADER_PROJECT_MANIFEST_VERSION, templates, cooked };
   };
 
-  const publishCurrentManifest = (
-    appShardDelta: boolean,
-  ): ShaderManifestPublication | ShaderTemplateManifest => {
+  const publishCurrentManifest = (appShardDelta: boolean) => {
     if (sourcePublication) {
       return publishNativeSourceManifest();
     }
@@ -2486,7 +2632,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   const primeDevManifest = (server: ViteDevServerLike): Promise<void> => {
     if (devManifestPrimeInFlight !== undefined) return devManifestPrimeInFlight;
     const prime = (async () => {
-      if (!sourcePublication)
+      if (!sourcePublication || publishAuthoredMaterialShaders)
         await ensureAuthoredMaterialPackages(currentMaterialPackages(), getEngineImports());
       const devWgslEntries = resolveDevWgslEntries(server);
       for (const wgslId of devWgslEntries) {
@@ -2554,11 +2700,9 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     // shaders are SSOT — a compile failure here is a real bug, not a soft
     // skip).
     async buildStart(this: MinimalPluginContext): Promise<void> {
+      report({ phase: 'inputs' });
       devManifestBody = undefined;
-      if (sourcePublication) {
-        await prepareNativeEnginePublication(this);
-        return;
-      }
+      if (sourcePublication) return prepareNativeEnginePublication();
       const materialPackages = currentMaterialPackages();
       if (!wantEngineEntries && materialPackages.length === 0) return;
       const sharedManifest = sharedEngineManifestPath(wantEngineEntries);

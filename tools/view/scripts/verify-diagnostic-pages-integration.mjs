@@ -218,7 +218,7 @@ try {
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted || !!globalThis.__forgeaxViewReady?.error, undefined, { timeout: 90_000 });
   assert.equal(await page.evaluate(()=>globalThis.__forgeaxViewReady?.error),undefined);
   await openDiagnosticPage(page);
-  await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
   assert.equal(await page.locator('.fx-view-project-open').count(), 0, 'projectless artifact page must remain usable');
  });
  const profiler = createProfiler({ phaseCatalog: { app: ['frame'], render: [] } });
@@ -240,7 +240,7 @@ try {
   await page.locator('[data-forgeax-diagnostic="profiler"] input[type="file"]').setInputFiles(capturePath);
   await page.locator('[data-profile-status="loaded"]').waitFor();
   assert.equal(await page.locator('[data-profile-frames]').getAttribute('data-profile-frames'), '60');
-  assert.ok((await page.locator('.fx-profile-summary').textContent()).includes(`${expected.value.summary.recordCount} records`));
+  assert.match(await page.locator('.fx-profile-summary').textContent(),new RegExp(`${expected.value.summary.recordCount} (?:records|\u6761\u8bb0\u5f55)`));
  });
  await page.screenshot({ path: resolve(output, 'resident-profiler.png') });
  const invalid = resolve(output, 'invalid-profile.json'); await writeFile(invalid, '{"schemaVersion":"invalid"}');
@@ -252,13 +252,13 @@ try {
   await page.reload();
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted);
   await openDiagnosticPage(page);
-  await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  });
  await page.screenshot({ path: resolve(output, 'resident-rhi.png') });
  for(let sample=0;sample<5;sample++) await stage(`resident-reload-sample-${sample}`, async () => {
   await page.reload(); await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted);
   await openDiagnosticPage(page);
-  await page.getByRole('button',{name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button',{name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  });
  for(const type of ['rhi-debug','profiler']) {
   const ownerUid = await page.evaluate(() => globalThis.__forgeaxViewReady.mounted.frontendHost.context.fiber.uid);
@@ -446,14 +446,14 @@ try {
  await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,liveProfile:liveProfileModel.value.summary,liveCapture,liveBytes,sceneCompletedFrames},null,2));
 
  await openDiagnosticPage(page);
- await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+ await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  // The existing artifact fixture is explicit structural/replay data, not a claimed live capture.
  const generator = resolve(output, 'diagnostic-fixture.mjs');
  await writeFile(generator, (await readFile(resolve(root, 'apps/rhi-debug-viewer/fixtures/generate-fixture.mjs'), 'utf8')).replace('@forgeax/engine-rhi-debug', engineEntry('rhi-debug')));
  const fixture = spawnSync(process.execPath, [generator,output], {cwd:gameRoot,encoding:'utf8'});
  assert.equal(fixture.status,0,fixture.stderr); const tapePath = resolve(output, 'frame-0.rhitape');
  await stage('rhi-file-to-model', async () => {
-  await page.getByLabel('Select one v7 RHI tape').setInputFiles(tapePath);
+  await page.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(tapePath);
   await page.waitForFunction(() => globalThis.__forgeaxRhiDebug?.model?.works?.length > 0, undefined, {timeout:90000});
  });
  await page.evaluate(() => {
@@ -469,7 +469,7 @@ try {
   observer.observe(document,{childList:true,attributes:true,subtree:true});
  });
  await page.locator('[data-forgeax-event-browser] [data-forgeax-work-index="0"]').click();
- const drawTab=page.getByRole('tab',{name:'Draw Call Viewer',exact:true});
+ const drawTab=page.getByRole('tab',{name:/^(?:Draw Call Viewer|\u7ed8\u5236\u8c03\u7528\u67e5\u770b\u5668)$/});
  if(await drawTab.count()) await drawTab.click();
  await page.locator('[data-forgeax-rt-status="ok"]').first().waitFor({timeout:90000});
  const firstReadyPixels=await page.evaluate(()=>globalThis.__forgeaxFirstReadyPixels);
@@ -487,7 +487,7 @@ try {
  assert.ok(layout.y+layout.height<=rhiViewport.height+1,`RHI tool must fit inside the View viewport: ${JSON.stringify({layout,viewport:rhiViewport})}`);
  await page.screenshot({ path: resolve(output, 'embedded-rhi.png') });
  await stage('live-rhi-file-to-model', async () => {
-  await page.getByLabel('Select one v7 RHI tape').setInputFiles(liveTape);
+  await page.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(liveTape);
   await page.waitForFunction(digest => globalThis.__forgeaxRhiDebug?.artifactRef?.digest===digest && !!globalThis.__forgeaxRhiDebug?.model?.works?.length,liveCapture.digest,{timeout:90000});
  });
  const liveModel=await page.evaluate(()=>({digest:globalThis.__forgeaxRhiDebug.artifactRef.digest,passes:globalThis.__forgeaxRhiDebug.model.passes.length,works:globalThis.__forgeaxRhiDebug.model.works.length,resources:globalThis.__forgeaxRhiDebug.model.resources.length}));
@@ -564,7 +564,7 @@ try {
  await page.goto(restartedView.url);
  await page.waitForFunction(()=>!!globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:90000});
  await openDiagnosticPage(page);
- await page.getByRole('button',{name:'Import tape',exact:true}).waitFor();
+ await page.getByRole('button',{name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  // The projectless fallback must run before a project intent can auto-open
  // another game in this GPU-disabled page. Backend restart clears that intent.
  const noGpu=await browser.newPage({viewport:{width:1440,height:900}});
@@ -572,7 +572,7 @@ try {
  await noGpu.goto(restartedView.url);
  await noGpu.waitForFunction(()=>!!globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:90000});
  await noGpu.locator('[role="tab"][data-page-id="page-rhi-debug"]').click();
- await noGpu.getByLabel('Select one v7 RHI tape').setInputFiles(tapePath);
+ await noGpu.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(tapePath);
  await noGpu.locator('[data-forgeax-event-browser] [data-forgeax-work-index="0"]').click();
  await noGpu.locator('[data-forgeax-rt-status="no-webgpu"]').first().waitFor();
  assert.ok(await noGpu.evaluate(()=>globalThis.__forgeaxRhiDebug.model.works.length>0));

@@ -91,7 +91,7 @@ it('patches view suppression from logged row and roster changes, at any scene si
     const activeBefore = new SlotIdentityKeys(slots.capture());
     setSceneRow(slots, 5, sceneSlot(5));
     const before = slots.capture();
-    const words = suppressedPrimitiveWords(before, activeBefore, capacity);
+    const words = suppressedPrimitiveWords(before, activeBefore, identityAddresses(capacity));
     setSceneRow(slots, 3, sceneSlot(3, 2));
     setSceneRow(slots, 7, undefined);
     // Slot 5 re-enters the active roster; the new row leaves it.
@@ -107,13 +107,15 @@ it('patches view suppression from logged row and roster changes, at any scene si
       },
     });
     const patched = patchSuppressedPrimitiveWords(
-      { slots: before, activeEntityKeys: activeBefore, words },
+      { slots: before, activeEntityKeys: activeBefore, words, addressRevision: 0 },
       after,
       activeAfter,
-      capacity,
+      identityAddresses(capacity),
     );
     evaluations.push(reads);
-    expect(patched).toEqual(suppressedPrimitiveWords(after, activeAfter, capacity));
+    expect(patched).toEqual(
+      suppressedPrimitiveWords(after, activeAfter, identityAddresses(capacity)),
+    );
     expect(words[0]).toBe(1 << 5);
     expect(patched?.[0]).toBe(0);
     expect(patched?.[count >>> 5]).toBe(1 << (count & 31));
@@ -126,10 +128,10 @@ it('patches view suppression from logged row and roster changes, at any scene si
     changedWords.push(patch?.words.length ?? -1);
     expect(
       patchSuppressedPrimitiveWords(
-        { slots: before, activeEntityKeys: activeBefore, words },
+        { slots: before, activeEntityKeys: activeBefore, words, addressRevision: 0 },
         after,
         activeAfter,
-        capacity + 64,
+        identityAddresses(capacity + 64),
       ),
     ).toBeUndefined();
   }
@@ -137,3 +139,7 @@ it('patches view suppression from logged row and roster changes, at any scene si
   expect(evaluations).toEqual([4, 4]);
   expect(changedWords[0]).toBe(changedWords[1]);
 });
+
+function identityAddresses(rowAddressExtent: number) {
+  return { rowAddressExtent, allocationRevision: 0, primitiveIndexForSlot: (slot: number) => slot };
+}

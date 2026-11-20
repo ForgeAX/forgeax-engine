@@ -318,139 +318,139 @@
   },
   {
     "file": "packages/modeling/examples/actuator/__tests__/actuator.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/armor-bake/__tests__/armor.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/blend-corner/__tests__/blend-corner.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/body-panels/__tests__/panels.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/bracket/__tests__/bracket.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/c131/__tests__/c131.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/case/__tests__/render-validation.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/crate/__tests__/crate.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/crease-neck/__tests__/crease-neck.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/desk-lamp/__tests__/lamp.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/door-hinge/__tests__/hinge.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/feature-bracket/__tests__/feature-bracket.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/forearm/__tests__/forearm.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hair-fork/__tests__/hair-fork.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hood-linkage/__tests__/hood.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/housing/__tests__/housing.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hydraulic-joint/__tests__/joint.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/joint-boot/__tests__/boot.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/limb-choreography/__tests__/choreo.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/limit-cage/__tests__/limit-cage.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/panel/__tests__/panel.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/patch-network/__tests__/patch-network.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pauldron/__tests__/pauldron.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-bend/__tests__/pipe-bend.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-manifold/__tests__/manifold.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-weld/__tests__/pipe-weld.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/quality-body/__tests__/quality-body.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/scifi-mech/__tests__/scifi-mech.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/suspension/__tests__/suspension.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/tg-cases/__tests__/render.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/transforming-limb/__tests__/limb.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/tunic/__tests__/tunic.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/wheel-rim/__tests__/wheel-rim.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/wheel-uv/__tests__/wheel.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hood-linkage/__tests__/hood.unit.test.ts",

@@ -31,7 +31,7 @@ it.skipIf(process.env.TAA_MATURITY !== 'hotspot')(
       'clipTaaHistory(current.rgb, taaNeighborhood(',
     );
     expect(source).toContain('neighbors : array<vec3<f32>, 25>');
-    const baselineUrl = await resolveManifestUrl(source);
+    const baselineUrl = resolveManifestUrl(source);
     const windows = [];
     for (const [width, height] of [
       [1920, 1080],

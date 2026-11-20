@@ -24,6 +24,38 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
+it('waits for the exact requested PSO without inheriting another flight failure', async () => {
+  const target = deferred<ReturnType<RhiDevice['createRenderPipeline']>>();
+  const unrelated = deferred<ReturnType<RhiDevice['createRenderPipeline']>>();
+  const createRenderPipelineAsync = vi
+    .fn()
+    .mockImplementationOnce(() => target.promise)
+    .mockImplementationOnce(() => unrelated.promise);
+  const owner = new PreparedRenderPipelineOwner(
+    { createRenderPipelineAsync } as unknown as RhiDevice,
+    () => true,
+  );
+  const desc = descriptor();
+  owner.request('target', 'target-code', desc);
+  owner.request('unrelated', 'other-code', desc);
+  const completion = owner.pendingCompletion('target');
+  expect(completion).toBeDefined();
+  expect(owner.pendingCompletion('absent')).toBeUndefined();
+  target.resolve(ok({} as RenderPipeline));
+  expect((await completion)?.ok).toBe(true);
+  unrelated.resolve(
+    err(
+      new RhiError({
+        code: 'internal-error',
+        expected: 'other pipeline fails',
+        hint: 'retain its own failure',
+      }),
+    ),
+  );
+  await unrelated.promise;
+  expect((await completion)?.ok).toBe(true);
+});
+
 it('stays pending until actual backend completion and reuses exactly its handle', async () => {
   const ready = deferred<ReturnType<RhiDevice['createRenderPipeline']>>();
   const createRenderPipeline = vi.fn();

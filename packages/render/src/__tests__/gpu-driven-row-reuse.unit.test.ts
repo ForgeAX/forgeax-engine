@@ -7,7 +7,11 @@ import { capturedGpuDrivenBatchKey, captureMeshBatch } from '../gpu-driven/batch
 import { BatchTopology, type GpuDrivenBatch } from '../gpu-driven/batch-topology';
 import { freezePreparedGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 import { type GpuDrivenPrepareInput, GpuDrivenProduction } from '../gpu-driven/production-raster';
-import type { PreparedProductionPlan } from '../gpu-driven/production-raster-prepare';
+import type {
+  BatchPreparation,
+  PreparedProductionPlan,
+} from '../gpu-driven/production-raster-prepare';
+import { BatchRowAssembly } from '../gpu-driven/production-raster-rows';
 import { GpuScene, type GpuSceneResourceFrame } from '../gpu-scene';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { RenderScene } from '../scene/render-scene';
@@ -45,7 +49,7 @@ async function fixture() {
   available.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   const source = plan.batches.at(0);
   assert(source);
   const batch = captureMeshBatch(source);
@@ -82,17 +86,42 @@ async function fixture() {
   };
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const owner = production as unknown as Assembly;
-  const assemble = (sourceBatch = batch) => {
+  const preparation = (production as unknown as { preparations: { forward: BatchPreparation } })
+    .preparations.forward;
+  const executions = () => {
+    const selected = new Map(input.batchExecutions);
+    selected.set(binding, { forward: execution, shadow: { route: 'none' } });
+    return selected;
+  };
+  const assemble = (sourceBatch = batch, readFrame = frame) => {
     scene.plan = { ...plan, batches: [sourceBatch] };
-    const executions = new Map(input.batchExecutions);
-    executions.set(binding, { forward: execution, shadow: { route: 'none' } });
     return owner
-      .assemblePrepared(scene, frame, 'forward', executions, input.meshByBinding)
+      .assemblePrepared(scene, readFrame, 'forward', executions(), input.meshByBinding)
       .unwrap();
   };
   return {
     batch,
+    preparation,
+    empty() {
+      scene.plan = { ...plan, batches: [], candidateCount: 0 };
+      return owner
+        .assemblePrepared(scene, frame, 'forward', executions(), input.meshByBinding)
+        .unwrap();
+    },
     assemble,
+    background() {
+      const preparation = (production as unknown as { preparations: { forward: BatchPreparation } })
+        .preparations.forward;
+      return new BatchRowAssembly(
+        preparation,
+        'forward',
+        scene,
+        frame,
+        executions(),
+        input.meshByBinding,
+        false,
+      ).assemble();
+    },
     get frame() {
       return frame;
     },
@@ -289,6 +318,53 @@ it('retains rows of an edited plan under the same resource frame without resolvi
     expect(f.assemble().batchRows[0]).toBe(first);
     expect(material).not.toHaveBeenCalled();
     expect(geometry).not.toHaveBeenCalled();
+  } finally {
+    f.dispose();
+  }
+});
+
+it('does not use the previous aggregate resource proof for a background cache row', async () => {
+  const f = await fixture();
+  try {
+    const originalFrame = f.frame;
+    const first = f.assemble().batchRows[0];
+    expect(first?.source.materialAddress).toBe(1);
+    f.materialAddress = 5;
+    const background = f.background()[0];
+    expect(background?.source.materialAddress).toBe(5);
+    f.materialAddress = 1;
+    const restored = f.assemble(f.batch, originalFrame).batchRows[0];
+    expect(restored?.source.materialAddress).toBe(1);
+    expect(restored).not.toBe(background);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('keeps a missing artifact blocked across repeated cache observations', async () => {
+  const f = await fixture();
+  try {
+    f.assemble();
+    const missing = { ...f.execution };
+    Reflect.deleteProperty(missing, 'artifact');
+    f.execution = missing;
+    expect(() => f.assemble()).toThrow('missing-material-receipt');
+    expect(() => f.assemble()).toThrow('missing-material-receipt');
+  } finally {
+    f.dispose();
+  }
+});
+
+it('drops aggregate row coverage immediately when the last row retires', async () => {
+  const f = await fixture();
+  try {
+    const row = f.assemble().batchRows[0];
+    assert(row);
+    expect(f.preparation.coversCachedRow(row)).toBe(true);
+    expect(Reflect.get(f.preparation, 'coverage')).toBeDefined();
+    expect(f.empty().batchRows).toHaveLength(0);
+    expect(f.preparation.batches.size).toBe(0);
+    expect(Reflect.get(f.preparation, 'coverage')).toBeUndefined();
   } finally {
     f.dispose();
   }

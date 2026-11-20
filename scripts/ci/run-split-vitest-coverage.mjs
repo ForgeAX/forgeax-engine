@@ -24,6 +24,12 @@ import {
   shaderSourceCompileWorkers,
 } from '../lib/runner-resources.mjs';
 import { coreDeferredCoverageFiles } from './core-validation.mjs';
+import {
+  baselineGroupResult,
+  loadCoverageBaseline,
+  reusableCoverageGroup,
+  writeCoverageBaseline,
+} from './coverage-baseline.mjs';
 import completedCoverage from './coverage-completed-child-seconds.json' with { type: 'json' };
 import { withLocalGpuLease } from './local-gpu-lease.mjs';
 import modelingTimings from './modeling-coverage-file-seconds.json' with { type: 'json' };
@@ -44,8 +50,17 @@ const completedCoverageSearchRestarts = 48;
 // Retain all historical replay windows after admitting a slower partial cohort.
 // More bounded search work preserves the same execution and test deadlines.
 const completedCoverageSearchIterations = 60_000;
-// The required coverage-perf job owns these complete runtime CPU-budget cases.
-const uninstrumentedPerformanceFiles = ['packages/modeling/src/__tests__/perf-tiers.unit.test.ts'];
+const standardOutputReceiptFiles = [
+  'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+  'packages/shader/src/__tests__/material-program.test.ts',
+];
+const standardOutputReceipt = `@forgeax/engine-shader:${standardOutputReceiptFiles.join(',')}`;
+// coverage-perf and primary-pnpm own these workloads without V8. The
+// browser journey times a separate real process that V8 does not instrument.
+const uninstrumentedFiles = [
+  'packages/modeling/src/__tests__/perf-tiers.unit.test.ts',
+  'packages/devkit/src/__tests__/project-play-session.e2e.test.ts',
+];
 const serialCoveragePreflights = [
   {
     project: '@forgeax/engine-render',
@@ -281,17 +296,29 @@ const isolatedCoverageFileSets = [
     packagesOnly: true,
   },
   {
-    // The same run crossed both unchanged 60 s budgets while processing the
-    // complete transmission permutation oracle and >256 MiB source identities.
-    // Preserve their cardinality and assertions in one exclusive CPU child.
+    // The catalog checks every selection without compiling the archived Engine
+    // profile. Keep the >256 MiB source identity case in its exclusive child.
     project: '@forgeax/engine-shader',
-    files: [
-      'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
-      'packages/shader/src/__tests__/material-program.test.ts',
-    ],
+    files: standardOutputReceiptFiles,
     sourceCompilation: true,
+    packagesOnly: true,
     weight: 180,
   },
+  // These provisional costs charge the real runtime compiler on the four
+  // disjoint Water selections, with a separate 60 s bound for each batch.
+  ...[
+    ['dry-rgba32', 420],
+    ['dry-rgba16', 55],
+    ['waves-rgba32', 390],
+    ['waves-rgba16', 390],
+  ].map(([mode, weight]) => ({
+    project: '@forgeax/engine-shader',
+    files: [`packages/shader/src/__tests__/standard-transmission-${mode}.unit.test.ts`],
+    splitFromReceipt: standardOutputReceipt,
+    sourceCompilation: true,
+    packagesOnly: true,
+    weight,
+  })),
   {
     // Run 39497388005 shared cold 100k World initialization with Render's
     // instrumented child: 5.702 s at the original 5 s deadline. Keep all rows
@@ -333,13 +360,15 @@ const isolatedCoverageFileSets = [
       'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/standard-static-shadow.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/surface-resources.integration.test.ts',
+      // Run 44509497362 crossed the frozen Toon cook's 5 s limit in the shared lane.
+      'packages/shader-compiler/src/material/__tests__/weapon-spirit-material.integration.test.ts',
     ],
     receiptLabel:
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts,packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
     weight: 40,
     // Run 44024988647 crossed the added files' unchanged 30-second cold
     // cooking bounds. Keep the original receipt and reserve the full owner.
-    reservationWeight: 960,
+    reservationWeight: 975,
     sourceCompilation: true,
     packagesOnly: true,
   },
@@ -388,11 +417,14 @@ const isolatedCoverageFileSets = [
     project: '@forgeax/engine-vite-plugin-pack',
     // This consumer owns both the Render factory and the compiler. A fresh
     // observing realm preserves the portable matrix without an upward compiler
-    // dependency or unrelated publication state. Placement weight is estimated.
+    // dependency or unrelated publication state. Its real compiler needs the
+    // same inherited heap and worker budget as the other cold Pack owners.
     files: [
       'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
     ],
     weight: 40,
+    sourceCompilation: true,
+    packagesOnly: true,
   },
   {
     // Repository scans keep their existing deadlines without competing with
@@ -925,12 +957,14 @@ export function coverageGroups(
           receiptLabel,
           batch,
           batchReceiptLabel,
+          splitFromReceipt,
           sourceCompilation = false,
           packagesOnly = false,
         }) => ({
           label: `${project}:${receiptLabel ?? files.join(',')}`,
           ...(batch === undefined ? {} : { batch }),
           ...(batchReceiptLabel === undefined ? {} : { batchReceiptLabel }),
+          ...(splitFromReceipt === undefined ? {} : { splitFromReceipt }),
           projects: [project],
           files,
           excludes: [],
@@ -953,7 +987,7 @@ export function coverageGroups(
         group.projects[0] === '@forgeax/engine-modeling'
           ? modelingPartitionWeight(partition.count, [
               ...group.excludes,
-              ...(isolateFiles ? uninstrumentedPerformanceFiles : []),
+              ...(isolateFiles ? uninstrumentedFiles : []),
             ])
           : (partition.weight ?? 0);
       return Array.from({ length: partition.count }, (_value, index) => ({
@@ -984,12 +1018,7 @@ export function coverageGroups(
       // A newly separated owner can have complete replay evidence without
       // rewriting the historical seed that already charged its case work.
       const hasReplay =
-        isolateFiles &&
-        replayRuns?.some(
-          (run) =>
-            run.completedSeconds[group.label] !== undefined ||
-            run.reservedSeconds?.[group.label] !== undefined,
-        );
+        isolateFiles && replayRuns?.some((run) => coverageReplaySeconds(run, group) !== undefined);
       return receipt || hasReplay
         ? {
             ...group,
@@ -1008,9 +1037,7 @@ export function coverageGroups(
                 : undefined,
             // Partial later runs are distinct scenarios, never restamped as a
             // complete cohort. Missing work keeps the admitted cohort forecast.
-            replaySeconds: replayRuns?.map(
-              (run) => run.completedSeconds[group.label] ?? run.reservedSeconds?.[group.label],
-            ),
+            replaySeconds: replayRuns?.map((run) => coverageReplaySeconds(run, group)),
             replayReserved: replayRuns?.map(
               (run) =>
                 run.completedSeconds[group.label] === undefined &&
@@ -1021,6 +1048,17 @@ export function coverageGroups(
           }
         : group;
     });
+}
+
+function coverageReplaySeconds(run, group) {
+  const recorded = run.completedSeconds[group.label] ?? run.reservedSeconds?.[group.label];
+  if (recorded !== undefined || group.splitFromReceipt === undefined) return recorded;
+  // A replay which still names the original complete owner already accounts
+  // for that workload. A split child participates in today's forecast and in
+  // any future replay with its own measurement.
+  const prior =
+    run.completedSeconds[group.splitFromReceipt] ?? run.reservedSeconds?.[group.splitFromReceipt];
+  return prior === undefined ? undefined : 0;
 }
 
 export function coverageGroupOrder(groups, typecheck = false) {
@@ -1260,13 +1298,14 @@ function prepareCoveragePlacement(groups, shardCount) {
     siblings.set(project, cohort);
     return { count, project, wave: Math.floor((part - 1) / shardCount) };
   });
+  const evenShare = Math.ceil(groups.length / shardCount);
   return {
     critical,
     exclusive,
     measured,
     sparseLimit:
       measured.size < shardCount || measured.size >= 20 ? 0 : Math.ceil(measured.size / shardCount),
-    childLimit: Math.min(16, Math.ceil(groups.length / shardCount) + 1),
+    childLimit: Math.max(evenShare, Math.min(16, evenShare + 1)),
     broad,
     broadLimit: Math.ceil(broad.length / shardCount),
     siblings,
@@ -2027,6 +2066,19 @@ export function validateShardManifests(manifests, expectedGroups) {
     if (JSON.stringify(manifest.expectedGroups) !== JSON.stringify(expectedGroups)) {
       failures.push(`shard ${manifest.shardIndex} planned a different coverage group roster`);
     }
+    const inherited = manifest.inherited ?? [];
+    if (
+      !Array.isArray(inherited) ||
+      inherited.some(
+        (entry) =>
+          !entry ||
+          !manifest.groups.includes(entry.group) ||
+          !/^[0-9a-f]{40}$/.test(entry.source) ||
+          ![entry.run, entry.job, entry.artifact].every((id) => Number.isSafeInteger(id) && id > 0),
+      ) ||
+      new Set(inherited.map(({ group }) => group)).size !== inherited.length
+    )
+      failures.push(`shard ${manifest.shardIndex} declared invalid inherited coverage`);
   }
   const seen = new Map();
   for (const manifest of manifests) {
@@ -2257,7 +2309,7 @@ export function buildGroupArgs({
     ...serialCoveragePreflights.map(
       ({ file }) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
     ),
-    ...uninstrumentedPerformanceFiles.map(
+    ...uninstrumentedFiles.map(
       (file) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
     ),
     ...group.excludes.map(
@@ -2464,7 +2516,7 @@ const shardManifestName = 'shard.json';
 const shardReportName = 'vitest.json';
 const shardCoverageName = 'coverage-final.json';
 
-function writeShardOutput({ outputDir, manifest, groupResults }) {
+function writeShardOutput({ outputDir, manifest, groups, groupResults, baselineSource }) {
   rmSync(outputDir, { recursive: true, force: true });
   mkdirSync(outputDir, { recursive: true });
   writeFileSync(
@@ -2482,6 +2534,13 @@ function writeShardOutput({ outputDir, manifest, groupResults }) {
     ),
   );
   writeFileSync(path.join(outputDir, shardManifestName), JSON.stringify(manifest, null, 2));
+  if (baselineSource) {
+    try {
+      writeCoverageBaseline(rootDir, outputDir, baselineSource, groups, groupResults);
+    } catch (error) {
+      console.warn(`[vitest] optional reuse baseline could not be staged: ${error.message}`);
+    }
+  }
 }
 
 function findShardDirectories(directory) {
@@ -2564,6 +2623,17 @@ function groupExecutionConcurrency(options, resources) {
   return concurrency;
 }
 
+async function coverageShardBaseline(options) {
+  const baselineSource = process.env.FORGEAX_COVERAGE_BASELINE_SOURCE;
+  if (
+    options.shardOutputDir === null ||
+    process.env.FORGEAX_CI_CORE_VALIDATION !== '1' ||
+    !/^[0-9a-f]{40}$/.test(baselineSource ?? '')
+  )
+    return {};
+  return { baselineSource, reuse: await loadCoverageBaseline(rootDir, options.shardIndex) };
+}
+
 async function main(options) {
   const projects = resolveProjects(options);
   const groups = coverageGroups(projects, options.groupSize, { isolateFiles: options.coverage });
@@ -2610,6 +2680,7 @@ async function main(options) {
   }
 
   const cliPath = path.join(scriptDir, 'run-vitest-projects.mjs');
+  const { baselineSource, reuse } = await coverageShardBaseline(options);
   let groupResults = [];
   try {
     process.stderr.write(plan);
@@ -2642,6 +2713,22 @@ async function main(options) {
       runGroupImpl: async (group, index) => {
         const startedAt = Date.now();
         const label = `Vitest group ${group.label}`;
+        if (reuse && reusableCoverageGroup(group, reuse.packages, reuse.affected)) {
+          const cached = baselineGroupResult(
+            rootDir,
+            group,
+            reuse.baseline,
+            reuse.changed,
+            greenReport,
+          );
+          if (cached) {
+            const { source, run, job, artifact } = cached.origin ?? reuse.baseline;
+            console.log(
+              `[vitest] ${group.label} reused coverage from run ${run} job ${job} (${source})`,
+            );
+            return { ...cached, inherited: { group: group.label, source, run, job, artifact } };
+          }
+        }
         const maxWorkers = coverageGroupMaxWorkers(group, options, resources, groupConcurrency);
         const shaderWorkers = group.sourceCompilation
           ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
@@ -2709,8 +2796,11 @@ async function main(options) {
           shardCount: options.shardCount,
           expectedGroups: groups.map(({ label }) => label),
           groups: selectedGroups.map(({ label }) => label),
+          inherited: groupResults.flatMap((result) => result.inherited ?? []),
         },
+        groups: selectedGroups,
         groupResults,
+        baselineSource,
       });
       process.stdout.write(
         `[vitest] coverage shard ${options.shardIndex + 1}/${options.shardCount} passed: groups=${selectedGroups.length}\n`,

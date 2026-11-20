@@ -13,7 +13,7 @@ import type { AssetRecords } from './internal/asset-records';
 /** Validate the actual runtime closure once during admission, after material linking. */
 export function prepareRuntimeTerrain(
   root: TerrainAsset,
-  records: AssetRecords,
+  records: Pick<AssetRecords, 'validate' | 'borrowClosure'>,
   resolve: (guid: string) => AssetHandle | undefined,
 ): Result<{ value: TerrainAsset; dependencies: readonly number[] }, AssetError> {
   const invalid = () =>

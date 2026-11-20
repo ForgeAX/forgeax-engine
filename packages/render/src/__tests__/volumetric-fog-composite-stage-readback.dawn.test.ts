@@ -1,5 +1,5 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
+import { readEngineTemplates } from './engine-shader-templates.dawn.fixture';
 
 const SIZE = 4;
 const ROW_BYTES = 256;
@@ -9,7 +9,7 @@ const COPY_SRC = 0x0001;
 const TEXTURE_COPY_DST = 0x0002;
 const TEXTURE_BINDING = 0x0004;
 const RENDER_ATTACHMENT = 0x0010;
-const engineManifest = await buildEngineShaderManifest();
+const registry = await readEngineTemplates();
 
 function floatToHalf(value: number): number {
   if (!Number.isFinite(value)) return value < 0 ? 0xfc00 : 0x7c00;
@@ -50,9 +50,12 @@ function decodeHalf(bytes: Uint8Array, offset: number): number {
   return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
 }
 
-function shader(marker: string): string {
-  const entry = engineManifest.entries.find(({ wgsl }) => wgsl.includes(marker));
-  if (entry === undefined) throw new Error(`missing cooked shader entry: ${marker}`);
+function compositeShader(): string {
+  const entry = [...registry.entries()].find(
+    ({ identifier }) => identifier === 'forgeax_view::volume_composite',
+  );
+  if (entry === undefined || !entry.wgsl.includes('fn volume_fs'))
+    throw new Error('Missing the volume composite program.');
   return entry.wgsl;
 }
 
@@ -150,7 +153,7 @@ async function runComposite(
     { width: SIZE, height: SIZE, depthOrArrayLayers: 1 },
   );
   device.queue.writeBuffer(uniform, 0, viewUniform());
-  const productionSource = shader('fn volume_fs');
+  const productionSource = compositeShader();
   // The producer emits valid Naga WGSL with renamed locals and condition
   // temporaries. Change the named function body, not its source spelling.
   const source =
@@ -366,7 +369,7 @@ describe('volumetric fog composite HDR stage on Dawn', () => {
     }
     expect(onEdge.center.every(Number.isFinite)).toBe(true);
     expect(onEdge.center[0]).toBeGreaterThan(0);
-    const source = shader('fn volume_fs');
+    const source = compositeShader();
     expect(source).toContain('linear_scene_depth');
     expect(source).toContain('depth_weight');
     expect(source).toContain('scene_depth');

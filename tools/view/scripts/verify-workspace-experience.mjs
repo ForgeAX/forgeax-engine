@@ -107,12 +107,15 @@ try {
   const opened = await client.getState();
   assert.equal(opened.project.root, canonicalRoot);
   const assets = await client.listAssets(opened.project.id, { targetId: opened.projectTarget.targetId });
+  assert.equal(await page.locator('.fx-viewport-navigation-hint').isVisible(), false,
+    'project readiness alone does not enable Scene navigation');
   const scene = assets.assets.find(asset => asset.kind === 'scene'
     && (asset.sourcePath ?? asset.path ?? '').includes('proof.pack.ts'));
   const mesh = assets.assets.find(asset => asset.kind === 'mesh' && asset.path === 'assets/proof.pack.ts');
   assert.ok(scene && mesh);
   await client.openAsset(scene.guid, { projectId: opened.project.id });
   await waitForRenderedViewport(game);
+  await page.locator('.fx-viewport-navigation-hint').waitFor({ state: 'visible' });
   const canvas = page.frameLocator('iframe[data-forgeax-project-document]').locator('canvas[data-forgeax-view-surface="engine-canvas"], [data-forgeax-view-surface="engine-canvas"] canvas, canvas#app').first();
   assert.equal(await canvas.evaluate(element => {
     const rect = element.getBoundingClientRect();
@@ -135,14 +138,36 @@ try {
   const rearEntity = await client.call('entity.inspect', { ...identity, entityId: trianglePick.entityId });
   assert.equal(rearEntity.components.find(component => component.name === 'Name')?.values.value,
     'Cube behind opening');
-  let bounds = await canvas.boundingBox();
+  let bounds;
   const positionPointer = async () => {
     await game.waitForFunction(() => !document.pointerLockElement);
     bounds = await canvas.boundingBox();
     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
   };
-  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  const selected = await until(async () => (await client.getState()).sceneSelection);
+  const firstClickEvidence = await canvas.evaluateHandle(element => {
+    const input = new AbortController();
+    const events = [];
+    for (const type of ['pointerdown', 'pointerup', 'click']) {
+      element.addEventListener(type, event => {
+        if (events.length === 8) return;
+        const { left, top, width, height } = element.getBoundingClientRect();
+        events.push({ type, x: event.clientX - left, y: event.clientY - top, width, height, trusted: event.isTrusted });
+      }, { capture: true, signal: input.signal });
+    }
+    return { input, events };
+  });
+  let selected;
+  try {
+    await canvas.click();
+    selected = await until(async () => (await client.getState()).sceneSelection);
+  } catch (error) {
+    const events = await firstClickEvidence.evaluate(receipt => receipt.events).catch(() => null);
+    console.error('First Scene click canvas events', JSON.stringify(events));
+    throw error;
+  } finally {
+    await firstClickEvidence.evaluate(receipt => receipt.input.abort()).catch(() => {});
+    await firstClickEvidence.dispose();
+  }
   assert.ok(selected.primary?.entityId, 'First click must select an actual entity');
   assert.equal(selected.primary.entityId, trianglePick.entityId,
     'The real View Scene click must select the same rear entity found by exact geometry');
@@ -155,7 +180,7 @@ try {
   assert.equal((await client.getState()).sceneSelection, null);
   await client.call('target.pick', { ...identity, ...outputCenter });
   assert.equal((await client.getState()).sceneSelection, null, 'A domain pick query cannot change View selection');
-  await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await canvas.click();
   await until(async () => (await client.getState()).sceneSelection?.primary?.entityId === selected.primary.entityId);
   console.error('PASS explicit query is read-only and View click owns selection');
   const camera = () => client.getCamera(identity);

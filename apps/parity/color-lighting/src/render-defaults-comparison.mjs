@@ -1,5 +1,6 @@
+import { prepareShaderProgramCompiler } from '@forgeax/engine/shader-compiler/program';
 import { halfFloat } from '@forgeax/engine/math';
-import { readShaderManifestPublication } from '@forgeax/engine/shader';
+import { ShaderRegistry } from '@forgeax/engine/shader';
 import { DataTexture, HalfFloatType, LinearFilter, LinearSRGBColorSpace, NoToneMapping, RGBAFormat, RenderTarget, UnsignedByteType } from 'three';
 import { NodeMaterial, QuadMesh, WebGPURenderer } from 'three/webgpu';
 import { texture } from 'three/tsl';
@@ -89,7 +90,7 @@ async function forgeCapture(manifest, data, effect, parameters = { threshold: 0,
   const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   const encoder = device.createCommandEncoder();
   const pass = async (marker, textures, values, output) => {
-    const entry = manifest.entries.find((e) => e.wgsl.includes(marker));
+    const entry = manifest.entries.find((e) => e.role === marker);
     if (!entry) throw new Error(`Production shader is missing: ${marker}`);
     const module = device.createShaderModule({ code: entry.wgsl });
     const pipeline = await device.createRenderPipelineAsync({ layout: 'auto', vertex: { module, entryPoint: 'vs_main' }, fragment: { module, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] } });
@@ -104,22 +105,22 @@ async function forgeCapture(manifest, data, effect, parameters = { threshold: 0,
     let result;
     if (effect === 'fxaa') {
       result = makeTexture(width, height);
-      await pass('struct FxaaParams', [input], [0, 0, 0, 0], result);
+      await pass('fxaa', [input], [0, 0, 0, 0], result);
     } else {
       const levels = [];
       let w = width, h = height, previous = input;
       for (let level = 0; level < 5; level++) {
         w = Math.max(1, Math.ceil(w / 2)); h = Math.max(1, Math.ceil(h / 2));
         const current = makeTexture(w, h);
-        await pass('struct BloomHorizontalParams', [previous], [parameters.threshold, parameters.smoothWidth, w, h, level, 0, 0, 0], current);
+        await pass('bloomHorizontal', [previous], [parameters.threshold, parameters.smoothWidth, w, h, level, 0, 0, 0], current);
         const vertical = makeTexture(w, h);
-        await pass('struct BloomVerticalParams', [current], [level, 0, 0, 0], vertical);
+        await pass('bloomVertical', [current], [level, 0, 0, 0], vertical);
         levels.push(vertical); previous = vertical;
       }
       // The production composite upsamples the bloom component. A zero scene
       // isolates its additive contribution without changing that shader.
       const zero = makeTexture(width, height); result = makeTexture(width, height);
-      await pass('struct BloomCompositeParams', [zero, ...levels], [1, parameters.radius, 0, 0], result);
+      await pass('bloomComposite', [zero, ...levels], [1, parameters.radius, 0, 0], result);
     }
     const readback = device.createBuffer({ size: width * height * 8, usage: 1 | 8 }); owned.push(readback);
     encoder.copyTextureToBuffer({ texture: result }, { buffer: readback, bytesPerRow: width * 8 }, [width, height]);
@@ -131,7 +132,12 @@ async function forgeCapture(manifest, data, effect, parameters = { threshold: 0,
 }
 
 async function run() {
-  const manifest = await readShaderManifestPublication(await (await fetch('/shaders/manifest.json')).json());
+  const shaderRegistry = new ShaderRegistry({
+    manifestUrl: '/shaders/manifest.json',
+    prepareProgramCompiler: prepareShaderProgramCompiler,
+  });
+  (await shaderRegistry.loadManifest()).unwrap();
+  const manifest = { entries: [...shaderRegistry.entries()] };
   const report = { engineRevision: __FORGEAX_PRODUCT_HEAD__, reference: 'Three r184 / d3b629c0c2097cec664ad16369bb6eae3b10e335', inputSize: [width, height], bloomImpulseRadiance: 8 };
   for (const effect of ['fxaa', 'bloom']) {
     const data = effect === 'bloom' ? Uint16Array.from(pixels(effect), (value, i) => halfFloat.f32ToF16(i % 4 === 3 ? 1 : value * 8 / 255)) : pixels(effect), reference = await threeCapture(data, effect), actual = await forgeCapture(manifest, data, effect);

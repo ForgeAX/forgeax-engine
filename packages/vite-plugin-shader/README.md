@@ -1,28 +1,46 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-vite-plugin-shader
+
+## Preparation feedback
+
+`forgeaxShader({ onProgress })` reports input preparation from `buildStart`,
+before Pack starts producing assets. Source compilation reports the WGSL path
+and the completed/total variant count for that source, then reports it ready.
+These are observed compiler completions, not a whole-project percentage.
+Observer errors cannot interrupt compilation; scheduling and cache admission
+remain owned by the existing compiler and publication paths.
 
 ## Native source delivery
 
-`forgeaxShader({ publication: 'source' })` publishes the native `7.0.0`
-source library through the ordinary production and development manifest route.
-Engine modules are shared once; source discovery composes no unused program.
-Actual shader transforms retain their pre-Naga inputs and original lookup handle.
-`engineEntries: false` also applies to this route. An empty roster stays empty.
+`forgeaxShader()` publishes Engine sources in the native `7.0.0` library.
+Engine modules are shared once and the runtime compiler prepares the selected
+programs. The Vite transform validates imported WGSL and preserves its original
+lookup handle. With `engineEntries: false`, the output contains only project
+shaders.
 
-Source delivery delegates authored material registration to Pack and defaults
-`publishAuthoredMaterialShaders` to false. Its cooked material artifacts remain
-versioned independently; this does not claim those artifacts are source templates.
-Standalone compiled publication remains the default while source startup cost is
-qualified. DevKit reads `package.json#forgeax.shaderPublication` to select this route.
+| Consumer | Publication |
+|:--|:--|
+| Standalone Vite | Engine templates and cooked material packages supplied to the plugin |
+| DevKit Play and production build | Engine templates with material artifacts published through Pack |
+| DevKit resource and workspace previews | Engine templates with cooked texture-view materials |
+
+An `8.0.0` manifest embeds a source-template library and a separately versioned
+cooked section. Set `publishAuthoredMaterialShaders: false` when Pack supplies
+the project's material artifacts. Build local Engine packages with
+`pnpm build:engine`. Use `publication: 'compiled'` for hosts that explicitly
+require a composed publication. Legacy publication versions remain readable.
 
 Package-owned material programs declare their resource interface in
 `package.json#forgeax.materialPrograms`, keyed by the WGSL filename under
 `src/shaders`. Values use the ordinary MaterialProgram fields without `module`;
 the existing WGSL module declaration retains identity. The producer validates
 the declaration against reflection and publishes the same ABI receipt as Cook.
-Shared profile provenance includes these declarations and the package WGSL,
-so a declaration edit cannot reuse an older inferred-layout publication.
+The shared publication fingerprint covers these declarations and the package
+WGSL. A declaration edit invalidates the prior publication.
 
-> **本包是 `@forgeax/engine-shader-compiler` 的 Vite 插件薄壳，对齐 Vite 4-hook 模型（load / transform / generateBundle / handleHotUpdate）全装入，约束 transform 仅 forwarding 调 `compileShader`，不重新实现编译逻辑（AC-02）。** AI 用户（含 agentic AI runtime）通过 `import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader'` 在 `vite.config.ts` 里注入 plugin，得到 build-time `.wgsl` → 三件套 + manifest 落盘 + ShaderError → RollupLog wrap（plan-strategy §S-6 + §S-7）。
+> **This package is a thin Vite wrapper around `@forgeax/engine-shader-compiler`.** It installs the four hooks (`load` / `transform` / `generateBundle` / `handleHotUpdate`); `transform` only forwards to `compileShader`, without reimplementing compilation (AC-02). AI users, including agentic runtimes, inject `forgeaxShader` from `@forgeax/engine-vite-plugin-shader` into `vite.config.ts` to compile `.wgsl` into three outputs, write the manifest and wrap ShaderError as RollupLog (plan-strategy S-6/S-7).
 
 ## Engine inputs and ABI transport
 
@@ -40,11 +58,11 @@ The stock import catalog includes the dependencies of its published modules.
 imported module belongs to the Engine source loader, not a Cloud-specific
 exception or a caller-maintained substitute catalog.
 
-Shared inventory paths belong to their producer workspace. Hosts serving a
-project outside that workspace pass `workspaceRoot` to `forgeaxShader`; Vite's
-project root then cannot replace the producer root during config resolution.
-DevKit supplies its existing Engine workspace authority. Missing inventory and
-invalid publications still fail admission.
+Source receipts can move with their declared layout into a disposable project.
+The receipt names the shader payload next to it and admission checks that path,
+the inventory and the producer digest. Compiled inventories resolve from their
+producer workspace, supplied through `workspaceRoot` by a host serving another
+project.
 
 Repeated Node loads of the same live publication share verified immutable row
 facts; each consumer receives its own entry and material collections. Inventory
@@ -61,19 +79,18 @@ The ray query, transport, raster-receiver and diffuse-composite entries use this
 both standalone and Vite builds. Their traversal module and imports live in
 `packages/shader/src`; test-side string insertion is not a publication path.
 
-The standalone `buildEngineShaderManifest` builder combines the admitted shared
-or packaged engine projection with freshly compiled `materialPackages`. Authored
-base and point-shadow builds retain SSAO from the complete source-build roster.
-Custom materials use the same source/import/cook path and do not trigger another
-engine-wide compile when that projection is available. Missing/stale profiles and
-explicit source validation retain the complete source producer. Result arrays
-are independent of the base manifest.
+Standalone hosts use `buildEngineShaderTemplateManifest()` for Engine sources or
+`buildProjectShaderTemplateManifest({ materialPackages })` to add cooked project
+materials. The runtime host supplies the matching portable compiler to
+`ShaderRegistry`. Vite and standalone acceptance load the production template
+publication and check selected resampling, Cluster, DFG and temporal programs.
 
-Complete cold-source manifest tests share a 900-second case budget, including
-the direct-DFG fit/LUT assertion. The standalone cold source owner checks Cluster ABI, resampling and DFG fit/LUT
-variants from one fresh complete compile. The real Vite publication keeps its
-independent cold build. Every admitted variant and native validation remains. This is a test execution budget,
-not a performance SLA or permission to extend the enclosing CI job.
+<details>
+<summary>Explicit compiled publications and legacy profile inputs</summary>
+
+The `buildEngineShaderManifest()` builder can produce a composed Engine
+publication. It also reads verified shared inputs. Callers serialize its result
+with `JSON.stringify(manifest)` so it can preserve the prepared transport.
 
 Source compilation keeps the complete variant roster, but projects each variant's
 source and import catalog only when a compiler slot starts that job. The worker
@@ -88,7 +105,7 @@ or WASM teardown with `terminate()`. Job errors retain precedence over shutdown
 errors, and a worker that exits before returning its job rejects that job.
 This applies to both Vite and the standalone source builder.
 
-Production and development publish the same `6.0.0` manifest: each WGSL source
+Compiled Vite builds and development serve the `6.0.0` manifest. Each WGSL source
 is identified by a domain-separated SHA-256 digest of its ordered fragment
 digests, while repeated source blocks are stored once in a shared fragment table.
 Material variants and direct entries refer to those identities. A synchronous
@@ -115,8 +132,8 @@ remain authoritative.
 
 ### Complete engine profiles
 
-The packaged base/point profiles and shared engine input must carry the complete
-renderer publication. Each material primary and variant keeps facts from its own
+Legacy packaged profiles and compiled shared inputs carry the complete renderer
+publication. Each material primary and variant keeps facts from its own
 compiled artifact; publication pooling stores compact indices and expansion
 resolves them before profile admission.
 
@@ -183,7 +200,7 @@ successful source, import, package or shared-input changes invalidate that respo
 Failed author edits preserve the existing last-known-good state. Failed publication
 is retried, and `closeBundle` releases the retained response with the shader inputs.
 
-Standalone point-shadow requests without authored packages reuse an admitted
+Explicit compiled point-shadow requests without authored packages reuse an admitted
 packaged point profile when present. Missing inputs and explicit
 `FORGEAX_ENGINE_SHADER_SOURCE_BUILD=1` requests retain source compilation.
 Authored point-shadow packages reuse the admitted point projection while their
@@ -209,14 +226,9 @@ compiler's original 128-entry / 16MiB bound; distinct reflection and entry
 contracts still validate independently. Worker termination releases that state,
 and emission keeps the original job order.
 
-The packaged input roster contains `base-ssao` and `point-ssao`. SSAO is an
-independent fullscreen entry, so the same projection used for transferred inputs
-removes it when disabled without recompiling material shaders. All four public
-point-shadow/SSAO configurations remain available. The packaged
-`buildEngineShaderManifest` path retains SSAO in both point-shadow
-configurations, matching its source-built manifest and the runtime Standard
-profile. Explicit bundler `engineEntries.hdrpSsao: false` still removes it;
-configured shared inputs retain their producer-owned projection.
+The legacy compiled input roster contains `base-ssao` and `point-ssao`. SSAO
+is an independent fullscreen program. A caller may exclude it with
+`engineEntries.hdrpSsao: false`.
 
 Both profiles live in one deterministic `dist/engine-inputs/profiles.json.gz`
 container (`packaged-profiles` entry). It pools the WGSL fragments and source
@@ -233,8 +245,8 @@ container left behind by an earlier SDK or Dawn preparation after a WGSL edit),
 an obsolete container version or an absent profile warns or falls back and
 compiles from source instead of publishing stale bindings.
 
-For a source checkout used by an external Vite app, prepare the standard BASE
-profile **in the Engine checkout**, after its package build:
+To explicitly prepare a legacy compiled profile, run the producer in the Engine
+checkout after building its packages.
 
 ```sh
 node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile base-ssao
@@ -245,10 +257,11 @@ profile and the actual shader payload digest; otherwise it compiles the complete
 profile. Repeat preparation reports `compile count=0` for an admitted hit.
 Packaging without `--build` also requires that receipt; unverified input fails
 with `shader-profile-input-unverified` before replacing the existing container.
-The external app keeps ordinary `forgeaxShader()` configuration. Its resolved
-plugin package must own this prepared container and resolve the matching shader
-sources. Missing profile rows or stale compiler facts warn with the profile and
-preparation command before selecting the complete source fallback.
+Explicit compiled Vite consumers resolve the prepared container and matching
+shader sources from the plugin package. Missing profiles and stale compiler
+facts select the complete compiled source fallback.
+
+</details>
 
 The public `VIEW_ABI` export is typed transport metadata for
 `forgeax_view::common`: group 0, binding 0, and the 1296-byte upload shape, including camera clipping planes, fog, atmosphere and sky fog. It contains no live WebGPU object. Consumers should use the manifest
@@ -284,34 +297,29 @@ payloads in Vite's `closeBundle` lifecycle. A subsequent `buildStart` loads its
 inputs again, including after a dev-server restart. Closed servers must not keep
 another copy of the shader fleet alive through retained plugin callbacks.
 
-Serving hosts share one verified compact engine publication per physical
-base/point profile. Each load still verifies current engine source provenance
-and hashes the actual manifest/import bytes before reuse; changed bytes replace
-the profile, and corrupt or stale input retains its existing failure/fallback
-contract. Project, authored-material and HTTP response state remains server-owned.
-The standalone builder checks the current packaged input before reusing a
-projection keyed by its admitted row identity. Source and shared builds coalesce
-only while running; a subsequent edit or replacement at the same path is read
-again. A completed authored generation is not held in a permanent option cache.
+Serving hosts can reuse the verified shared Engine template publication. Each
+load verifies the producer receipt and the actual shader payload digest.
+Project, authored-material and HTTP response state remains server-owned. A
+subsequent source edit or input replacement is admitted from current bytes.
 
-## 形态铁律
+## Invariants
 
-- **薄壳 forwarding** —— 4 hook（`load` / `transform` / `generateBundle` / `handleHotUpdate`）全部装入，但 `transform` 仅 forwarding 调 `@forgeax/engine-shader-compiler.compileShader`，不重新实现编译逻辑（AC-02 闸门）。
-- **peerDep vite** —— 插件签名走 `'vite'` 的 `Plugin` 类型；vite 由 host 应用提供（`peerDependencies: { vite: ">=4" }`）。
-- **hint 双投影** —— `toRollupLog(err)` 同时把 `ShaderError.hint` 放到 `RollupLog` 顶层与 `meta.hint`，AI 用户消费走 `err.hint` 顶层（charter 命题 5 一致抽象 + 命题 4 显式失败；plan-strategy §S-7）。
-- **emitFile 必经路径** —— `generateBundle` 走 `this.emitFile({ type: 'asset', fileName, source })`，**禁止**直接 mutate `bundle[fileName]`（Rollup 官方 danger callout，research Finding 3）。
-- **HMR 默认传播** —— `handleHotUpdate(ctx)` 返回 `ctx.modules` 即可；客户端 `import.meta.hot.accept(` 由 `transform` 注入字面量（whitespace-sensitive）。
+- **Thin forwarding** -- Install all four hooks (`load` / `transform` / `generateBundle` / `handleHotUpdate`), but let `transform` only forward to `@forgeax/engine-shader-compiler.compileShader` (AC-02).
+- **Vite peer dependency** -- The plugin signature uses Vite's `Plugin` type; the host application supplies Vite (`peerDependencies: { vite: ">=4" }`).
+- **Two hint projections** -- `toRollupLog(err)` places `ShaderError.hint` at the top level and in `meta.hint`. AI consumers read top-level `err.hint` (charter propositions 5 and 4; plan-strategy S-7).
+- **Always emitFile** -- `generateBundle` calls `this.emitFile({ type: 'asset', fileName, source })`; never mutate `bundle[fileName]` directly (Rollup's warning; research Finding 3).
+- **Default HMR propagation** -- `handleHotUpdate(ctx)` returns `ctx.modules`. `transform` injects the whitespace-sensitive client literal `import.meta.hot.accept(`.
 
-## API 索引
+## API Index
 
-| 入口 | 说明 |
+| Entry | Description |
 |:--|:--|
-| `forgeaxShader(options?)` | Vite plugin factory，返回含 4 hook + `resolveId` + `load`（virtual module 通道）的 `Plugin` 对象（w14 落地 + feat-20260608 M3 扩展） |
-| `engineShaderSourceDigest(root)` | Packaged-profile provenance: SHA-256 over every `*.wgsl` under `root`, recorded in the packaged container and re-derived by the loader |
-| `encodePackagedProfiles` / `decodePackagedProfiles` / `packagedProfilePublication` / `PACKAGED_PROFILES_FILE` / `PACKAGED_PROFILE_NAMES` | The pooled `profiles.json.gz` container and exact per-profile publication rebuild |
-| `toRollupLog(err)` | `ShaderError` → `RollupLog`（hint 双投影，w14 落地） |
-| `ForgeAXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
-| `virtual:forgeax/bundler` | Build-time virtual module emitting `forgeaxBundlerAdapter()` factory（feat-20260608 M3，详见下节） |
+| `forgeaxShader(options?)` | Vite plugin factory returning a `Plugin` with four hooks plus `resolveId` and virtual-module `load` (w14 and feat-20260608 M3). |
+| `engineShaderSourceDigest(root)` | Legacy packaged-profile provenance. SHA-256 over every `*.wgsl` under `root`, recorded in the packaged container and re-derived by the loader |
+| `encodePackagedProfiles` / `decodePackagedProfiles` / `packagedProfilePublication` / `PACKAGED_PROFILES_FILE` / `PACKAGED_PROFILE_NAMES` | The legacy pooled `profiles.json.gz` container and exact per-profile rebuild |
+| `toRollupLog(err)` | `ShaderError` to `RollupLog`, with two hint projections (w14). |
+| `ForgeAXShaderRollupLog` | RollupLog extension type with ForgeaX's top-level `hint` field. |
+| `virtual:forgeax/bundler` | Build-time virtual module emitting the `forgeaxBundlerAdapter()` factory (feat-20260608 M3; see below). |
 
 ## `virtual:forgeax/bundler` virtual module
 
@@ -342,11 +350,11 @@ const renderer = await createRenderer(canvas, {}, bundler);
 - The plugin package does not add an App runtime dependency. Its ambient virtual module declaration type-imports the existing App facade so consumer callsites retain the full host adapter contract.
 - The TypeScript ambient module declaration (`declare module 'virtual:forgeax/bundler'`) ships in each app's `src/vite-env.d.ts` so per-app `tsc --noEmit` resolves the import without each app having to depend on the plugin's package types.
 
-## 关联
+## Related Work
 
-- 决策 plan-strategy §S-6 4 hook 分工 / §S-7 ShaderError wrap（hint 双投影）/ §6 M2 范围。
-- 上游 [`@forgeax/engine-shader-compiler`](../shader-compiler/README.md) 提供 `compileShader` 纯函数 + `ShaderError` 5 字段顶层错误类。
-- 集成端 [`apps/hello/triangle/vite.config.ts`](../../apps/hello/triangle/vite.config.ts) M2 注入验证（w15）+ M3 替换 fixture 为 pbr.wgsl。
+- Decisions: plan-strategy S-6 hook responsibilities, S-7 ShaderError wrapping (two hint projections), and section 6 M2 scope.
+- Provider: [`@forgeax/engine-shader-compiler`](../shader-compiler/README.md) supplies pure `compileShader` and `ShaderError` with five top-level fields.
+- Integration: [`apps/hello/triangle/vite.config.ts`](../../apps/hello/triangle/vite.config.ts), M2 injection verification (w15) and M3 fixture replacement with pbr.wgsl.
 
 SSAO is included by default, matching the runtime `StandardProfile.ssao` switch. `engineEntries.hdrpSsao: false` explicitly strips it for a producer that never supports AO; requesting AO with that manifest produces a renderer error.
 

@@ -243,13 +243,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       .unwrap();
     world.update(1 / 60).unwrap();
     expect(centerHit()?.entity).toBe(parent);
-    const draw = async (geometryLane?: 'direct', label = 'draw') => {
+    const draw = async (label: string) => {
       stage = `${label}:propagate-transforms`;
       propagateTransforms(world).unwrap();
       stage = `${label}:draw-ready:pending`;
       const receipt = await drawReadyFrame(renderer, {
         source: lease,
-        ...(geometryLane === undefined ? {} : { geometryLane }),
       });
       lastReadyReceipt = receipt;
       stage = `${label}:raf:pending`;
@@ -265,7 +264,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       stage = `shot:${name}:done`;
       return typeof value === 'string' ? value : value.base64;
     };
-    for (let i = 0; i < 12; i++) await draw(undefined, `initial:${i + 1}`);
+    for (let i = 0; i < 12; i++) await draw(`initial:${i + 1}`);
     const descriptors = [...pipelines.mock.calls, ...asyncPipelines.mock.calls].map(
       ([descriptor]) => descriptor,
     );
@@ -301,7 +300,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       })
       .unwrap();
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(closedHandle);
-    await draw(undefined, 'revision2-prepared');
+    await draw('revision2-prepared');
     expect(await shot('prepared')).toBe(closed);
     stage = 'revision2:admit-candidate';
     let accepted: DynamicGeometryCandidate | undefined;
@@ -333,13 +332,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(accepted).toBeDefined();
     if (accepted === undefined) throw new Error('paired admission did not run');
     expect(centerHit()).toBeUndefined();
-    const directFrame = await draw('direct', 'revision2-direct');
-    expect(renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
-      frameId: directFrame.frameId,
-      recordStageConsumed: true,
-      recordStageLane: 'cpu',
-    });
-    const frame = await draw(undefined, 'revision2-gpu');
+    const frame = await draw('revision2-gpu');
     expect(renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
       frameId: frame.frameId,
       recordStageConsumed: true,
@@ -348,12 +341,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     const opened = await shot('open');
     expect(opened).not.toBe(closed);
     world.set(light, DirectionalLight, { castShadow: false }).unwrap();
-    await draw(undefined, 'shadow-disabled');
+    await draw('shadow-disabled');
     expect(await shot('no-shadow')).not.toBe(opened);
     world.set(light, DirectionalLight, { castShadow: true }).unwrap();
     world.set(parent, Transform, { pos: [0.75, 0, 0] }).unwrap();
     world.update(1 / 60).unwrap();
-    await draw(undefined, 'parent-moved');
+    await draw('parent-moved');
     expect(await shot('moved')).not.toBe(opened);
     stage = 'revision3:prepare-replacement';
     const replacement = renderer
@@ -411,11 +404,11 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     stage = 'revision4:publish-step';
     world.update(1 / 60).unwrap();
     expect(physics.getDerivedPublication(parent)?.revision).toBe(4);
-    await draw(undefined, 'revision4-sealed');
+    await draw('revision4-sealed');
     renderer.retireDynamicGeometry(accepted as DynamicGeometryCandidate).unwrap();
     await shot('sealed');
     world.set(camera, Camera, { antialias: ANTIALIAS_TAA }).unwrap();
-    for (let i = 0; i < 8; i++) await draw(undefined, `taa-sealed:${i + 1}`);
+    for (let i = 0; i < 8; i++) await draw(`taa-sealed:${i + 1}`);
     await shot('taa-sealed');
     expect(renderer.inspect().temporal.mode).toBe('taa');
     expect(renderer.inspect().temporal.historyValid).toBe(true);
@@ -445,7 +438,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       .unwrap();
     stage = 'revision5:publish-step';
     world.update(1 / 60).unwrap();
-    await draw(undefined, 'revision5-taa-open');
+    await draw('revision5-taa-open');
     expect(renderer.inspect().temporal.frameIndex).toBe(beforeTaaGeometry + 1);
     expect(renderer.inspect().temporal.historyValid).toBe(true);
     await shot('taa-open-first');
@@ -537,7 +530,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(parentHit()?.entity).toBe(parent);
     expect(peerHit()).toBeUndefined();
     const beforeGroupFrame = renderer.inspect().temporal.frameIndex;
-    const groupFrame = await draw(undefined, 'group-accepted');
+    const groupFrame = await draw('group-accepted');
     expect(groupAccepted).toHaveLength(2);
     for (const candidate of groupAccepted)
       expect(renderer.dynamicGeometryReceipt(candidate)?.frameId).toBe(groupFrame.frameId);
@@ -571,12 +564,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(world.get(peerMesh, MeshFilter).unwrap().assetHandle).toBe(openHandle);
     expect(parentHit()?.entity).toBe(parent);
     expect(peerHit()).toBeUndefined();
-    await draw(undefined, 'group-refused');
+    await draw('group-refused');
     world.set(peerMesh, MeshRenderer, { materials: [material] }).unwrap();
     world.set(camera, Camera, { historyVersion: 1 }).unwrap();
-    await draw(undefined, 'post-mutation-512');
+    await draw('post-mutation-512');
     expect(renderer.inspect().temporal.frameIndex).toBe(0);
-    await draw(undefined, 'post-mutation-514');
+    await draw('post-mutation-514');
     expect(renderer.inspect().temporal.frameIndex).toBe(1);
     expect(renderer.inspect().temporal.historyValid).toBe(true);
     stage = 'uncertain-group:prepare';

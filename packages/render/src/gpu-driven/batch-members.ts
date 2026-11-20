@@ -48,6 +48,14 @@ export type MemberPage = Float64Array;
 /** Admission scratch: `#put` copies the facts it keeps. */
 const ADMITTED = new Float64Array(STRIDE);
 
+function writeMember(page: MemberPage, base: number, member: GpuDrivenBatchMember): void {
+  page[base] = numeric(member.primitiveIndex);
+  page[base + GENERATION] = numeric(member.generation);
+  page[base + ENTITY] = numeric(member.entityKey);
+  page[base + DRAW] = numeric(member.drawItemIndex);
+  page[base + COUNT] = numeric(member.instanceCount);
+}
+
 /** Pages key by their first slot and weigh their candidates; one node kind keeps keys unboxed. */
 const MEMBER_KIND = treeKind();
 
@@ -230,6 +238,32 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
   get memberCount(): number {
     return this.#members;
   }
+  /** Publish a cold roster after filling its pages. The caller gives up the scratch array. */
+  static fromMembers(members: GpuDrivenBatchMember[]): MemberCandidates {
+    members.sort((a, b) => a.primitiveIndex - b.primitiveIndex);
+    let root: Node<MemberPage> | undefined;
+    let count = 0;
+    let used = 0;
+    let weight = 0;
+    let page = new Float64Array(Math.min(members.length, PAGE_MAX) * STRIDE);
+    for (let index = 0; index < members.length; index++) {
+      const member = members[index] as GpuDrivenBatchMember;
+      writeMember(page, used, member);
+      // The stable sort preserves replacement order for repeated slots.
+      if (members[index + 1]?.primitiveIndex === member.primitiveIndex) continue;
+      weight += member.instanceCount;
+      used += STRIDE;
+      count++;
+      if (used === page.length) {
+        root = place(root, page, weight);
+        page = new Float64Array(Math.min(members.length - index - 1, PAGE_MAX) * STRIDE);
+        used = 0;
+        weight = 0;
+      }
+    }
+    if (used > 0) root = place(root, page.slice(0, used), weight);
+    return MemberCandidates.#from(root, count);
+  }
   static #from(root: Node<MemberPage> | undefined, members: number): MemberCandidates {
     const value = new MemberCandidates();
     value.#root = sealPath(root);
@@ -271,13 +305,8 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
     return found === undefined ? undefined : memberOf(found.page, found.base);
   }
   with(member: GpuDrivenBatchMember): MemberCandidates {
-    const facts = ADMITTED;
-    facts[0] = numeric(member.primitiveIndex);
-    facts[GENERATION] = numeric(member.generation);
-    facts[ENTITY] = numeric(member.entityKey);
-    facts[DRAW] = numeric(member.drawItemIndex);
-    facts[COUNT] = numeric(member.instanceCount);
-    return this.#put(facts, 0);
+    writeMember(ADMITTED, 0, member);
+    return this.#put(ADMITTED, 0);
   }
   /** Admit the member at `source[base]`; an equal member keeps this owner. */
   #put(source: MemberPage, base: number): MemberCandidates {
@@ -632,6 +661,22 @@ class PageIterator implements IterableIterator<GpuDrivenCandidate | GpuDrivenBat
   }
 }
 
+function captureSourceBatch(batch: GpuDrivenBatch): GpuDrivenBatch {
+  const admitted = { ...batch };
+  const candidates = admitted.candidates;
+  if (!MemberCandidates.is(candidates))
+    throw new TypeError('Source publication requires owned numeric members');
+  const lod = captureBatchLod(admitted);
+  return Object.freeze({
+    ...admitted,
+    candidates,
+    key: Object.freeze({ ...admitted.key }),
+    ...(admitted.binding === undefined ? {} : { binding: captureBinding(admitted.binding) }),
+    ...(lod === undefined ? {} : { lod }),
+    members: candidates.membersFrame(),
+  });
+}
+
 /** The existing published source roster; its numeric candidate facts are sealed at admission. */
 export class BatchSources extends FrameListBase<GpuDrivenBatch> {
   #root: Node<GpuDrivenBatch> | undefined;
@@ -657,6 +702,25 @@ export class BatchSources extends FrameListBase<GpuDrivenBatch> {
       #root in value &&
       Object.getPrototypeOf(value) === BatchSources.prototype
     );
+  }
+  /** Capture bindings once and seal only the roots a consumer can hold. */
+  static fromBatches(
+    batches: Iterable<GpuDrivenBatch>,
+    isActive: (batch: GpuDrivenBatch) => boolean,
+  ): { readonly resident: BatchSources; readonly active: BatchSources } {
+    let all: Node<GpuDrivenBatch> | undefined;
+    let selected: Node<GpuDrivenBatch> | undefined;
+    for (const batch of batches) {
+      const captured = captureSourceBatch(batch);
+      const key = numeric(captured.batchId);
+      const weight = captured.candidates.length;
+      const previous = all;
+      all = put(all, captured, 0, key, weight);
+      if (isActive(captured))
+        selected = selected === previous ? all : put(selected, captured, 0, key, weight);
+    }
+    const resident = BatchSources.#from(all);
+    return { resident, active: selected === all ? resident : BatchSources.#from(selected) };
   }
   static #from(root: Node<GpuDrivenBatch> | undefined): BatchSources {
     const value = new BatchSources();
@@ -688,22 +752,18 @@ export class BatchSources extends FrameListBase<GpuDrivenBatch> {
     return BatchSources.#from(put(this.#root, captured, 0, batchId, candidates.length));
   }
   with(batch: GpuDrivenBatch): BatchSources {
-    const admitted = { ...batch };
-    const candidates = admitted.candidates;
-    if (!MemberCandidates.is(candidates))
-      throw new TypeError('Source publication requires owned numeric members');
-    const lod = captureBatchLod(admitted);
-    const captured = Object.freeze({
-      ...admitted,
-      candidates,
-      key: Object.freeze({ ...admitted.key }),
-      ...(admitted.binding === undefined ? {} : { binding: captureBinding(admitted.binding) }),
-      ...(lod === undefined ? {} : { lod }),
-      members: candidates.membersFrame(),
-    });
+    const captured = captureSourceBatch(batch);
     return BatchSources.#from(
-      put(this.#root, captured, 0, numeric(captured.batchId), candidates.length),
+      put(this.#root, captured, 0, numeric(captured.batchId), captured.candidates.length),
     );
+  }
+  /** Select an already admitted batch while preserving its immutable source and binding. */
+  withPublished(source: BatchSources, batchId: number): BatchSources {
+    if (!BatchSources.isFixed(source)) throw new TypeError('Selection requires an owned source');
+    const batch = source.get(batchId);
+    if (batch === undefined) throw new Error('Selection requires an admitted batch');
+    if (this.get(batchId) === batch) return this;
+    return BatchSources.#from(put(this.#root, batch, 0, batchId, batch.candidates.length));
   }
   without(batchId: number): BatchSources {
     return BatchSources.#from(remove(this.#root, 0, batchId));

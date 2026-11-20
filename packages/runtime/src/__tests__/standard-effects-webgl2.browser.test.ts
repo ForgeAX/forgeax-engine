@@ -16,6 +16,7 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as wgpu from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
@@ -101,7 +102,7 @@ it.each([
             buildSha256: 'fixture:standard-effects-webgl2',
           },
         },
-        { shaderManifestUrl: '/shaders/manifest.json' },
+        { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
         loadRhiPack(
           { ...recorder.backend },
           {

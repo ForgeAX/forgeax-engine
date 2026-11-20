@@ -25,7 +25,7 @@ import type {
   VolumetricFogShaderSources,
 } from '../render-contract';
 import type { RhiBackendPack } from './backend-contract';
-import type { BundlerOptions } from './bundler-contract';
+import type { RendererHostBundlerOptions } from './bundler-contract';
 import type { RendererAssemblyImplementation } from './host-contract';
 import type { MeshSsboGrowResult, MeshSsboState } from './mesh-ssbo-grow';
 
@@ -48,7 +48,7 @@ export interface WebGPURendererInternals {
   device: RhiDevice;
   context: RhiCanvasContext;
   options: RendererOptions | undefined;
-  bundler: BundlerOptions | undefined;
+  bundler: RendererHostBundlerOptions | undefined;
   lostRegistry: LostListenerRegistry;
   errorRegistry: RhiErrorListenerRegistry;
   healthRegistry: HealthListenerRegistry;

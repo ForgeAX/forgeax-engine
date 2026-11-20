@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it, vi } from 'vitest';
 import * as admissionOwner from '../../../render/src/temporal/standard-scene-data-admission';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -74,7 +74,7 @@ function value<T>(
 it('admits the published Standard Deferred surface when GTAO turns on', async () => {
   const admission = vi.spyOn(admissionOwner, 'createStandardSceneSurfaceAdmission');
   const unavailable = vi.spyOn(admissionOwner, 'standardAoSceneDataUnavailable');
-  const manifest = await buildEngineShaderManifest();
+  const manifest = await buildEngineShaderTemplateManifest();
   const host = value(
     await constructRuntimeRendererHost(
       { width: 256, height: 256, getContext: () => null },

@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { rayPathCommands } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { verifyRendererDiffuse } from './renderer-diffuse.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 for (const reconstruction of [undefined, 'combined'] as const) {
   it(`submits ordinary Renderer diffuse GI (${reconstruction ?? 'raw'}) with content invalidation and exact RHI replay`, async () => {

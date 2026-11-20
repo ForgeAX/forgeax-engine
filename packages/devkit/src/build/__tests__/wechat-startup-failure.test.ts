@@ -7,6 +7,7 @@ import type { Context, Plugin } from '@forgeax/engine-plugin';
 import { inspectPluginFiber } from '@forgeax/engine-plugin';
 import { Camera, orthographic, perspective, type RendererOptions } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { DEFAULT_LOAD_PROGRESS_LABELS } from '@forgeax/engine-types';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { transformWithOxc } from 'vite';
@@ -567,7 +568,7 @@ describe('native Host startup failure ownership', () => {
       expect(running.sceneAdmission()).toBe('ui-only');
       expect(running.inputAllowed()).toBe(false);
       expect(document.querySelector('#forgeax-fatal-message')?.textContent).toBe(
-        'The game stopped because execution failed.',
+        DEFAULT_LOAD_PROGRESS_LABELS.host.runtimeFailed,
       );
       running.emitError({ code: 'cleanup-failed' });
       expect(running.inspect().startupError).toBe(cleanupError);

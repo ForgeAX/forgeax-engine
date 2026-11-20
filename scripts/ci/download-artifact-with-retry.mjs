@@ -5,12 +5,18 @@ import { createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { discardHttpResponse } from '../lib/http-deadline.mjs';
 import {
   ArtifactRangesUnavailable,
   tryDownloadArtifactRanges,
 } from './artifact-range-download.mjs';
+import {
+  artifactResponseStream,
+  readArtifactChunks,
+  withinArtifactDeadline,
+} from './artifact-response.mjs';
 
 export const RETRY_DELAYS_SECONDS = [0, 5, 15];
 // Bound response-header stalls, not the duration of a progressing archive.
@@ -132,8 +138,11 @@ function headers() {
 
 async function responseFor(url, requestTimeoutMs = REQUEST_TIMEOUT_MS) {
   const result = await requestWithTimeout(url, requestTimeoutMs);
-  const { response } = result;
-  if (!response.ok) throw new Error(`HTTP ${response.status} while reading artifact service`);
+  const { response, controller } = result;
+  if (!response.ok) {
+    discardHttpResponse(response, controller);
+    throw new Error(`HTTP ${response.status} while reading artifact service`);
+  }
   return result;
 }
 
@@ -222,34 +231,13 @@ export async function discoverRunArtifacts(repository, runId, pattern, expectedC
   return selectRunArtifacts(listed.value, pattern, expectedCount);
 }
 
-function timeoutMessage(kind, timeoutMs) {
-  return `artifact ${kind} timeout after ${timeoutMs}ms`;
-}
-
-async function raceWithTimeout(operation, timeoutMs, message, onTimeout = () => {}) {
-  let timer;
-  try {
-    return await Promise.race([
-      operation(),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          onTimeout();
-          reject(new Error(message));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function requestWithTimeout(url, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const response = await raceWithTimeout(
+  const response = await withinArtifactDeadline(
     () => fetch(url, { headers: headers(), signal: controller.signal }),
+    controller,
     timeoutMs,
-    timeoutMessage('request', timeoutMs),
-    () => controller.abort(),
+    'request',
   );
   return { response, controller };
 }
@@ -260,34 +248,26 @@ export async function readResponseBody(
 ) {
   if (!response.body || typeof response.body.getReader !== 'function') {
     return Buffer.from(
-      await raceWithTimeout(
+      await withinArtifactDeadline(
         () => response.arrayBuffer(),
+        controller,
         idleTimeoutMs,
-        timeoutMessage('download idle', idleTimeoutMs),
-        () => controller?.abort(),
+        'download idle',
       ),
     );
   }
 
-  const reader = response.body.getReader();
   const chunks = [];
   let totalBytes = 0;
-  try {
-    while (true) {
-      const result = await raceWithTimeout(
-        () => reader.read(),
-        idleTimeoutMs,
-        timeoutMessage('download idle', idleTimeoutMs),
-        () => controller?.abort(),
-      );
-      if (result.done) break;
-      const chunk = Buffer.from(result.value);
-      chunks.push(chunk);
-      totalBytes += chunk.byteLength;
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
+  for await (const value of readArtifactChunks(
+    response.body,
+    controller,
+    idleTimeoutMs,
+    'download idle',
+  )) {
+    const chunk = Buffer.from(value);
+    chunks.push(chunk);
+    totalBytes += chunk.byteLength;
   }
   return Buffer.concat(chunks, totalBytes);
 }
@@ -322,62 +302,40 @@ export async function downloadArtifact(
 ) {
   const metadata = await metadataFor(repository, artifactId, requestTimeoutMs, idleTimeoutMs);
 
-  let transferController;
-  let transferTimedOut = false;
-  let transferTimer;
-  const armTransferTimer = () => {
-    clearTimeout(transferTimer);
-    transferTimer = setTimeout(() => {
-      transferTimedOut = true;
-      transferController?.abort();
-    }, idleTimeoutMs);
-  };
+  const archiveUrl = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`;
+  let responseResult = await responseFor(archiveUrl, requestTimeoutMs);
   try {
-    const archiveUrl = `https://api.github.com/repos/${repository}/actions/artifacts/${artifactId}/zip`;
-    let responseResult = await responseFor(archiveUrl, requestTimeoutMs);
-    try {
-      const bytes = await tryDownloadArtifactRanges({
-        ...responseResult,
-        metadata,
-        destination,
-        requestTimeoutMs,
-        idleTimeoutMs,
-      });
-      if (bytes !== null) return bytes;
-    } catch (error) {
-      if (!(error instanceof ArtifactRangesUnavailable)) throw error;
-      responseResult = await responseFor(archiveUrl, requestTimeoutMs);
-    }
-    transferController = responseResult.controller;
-    const response = responseResult.response;
-    if (!response.body) throw new Error(`artifact ${artifactId} response has no body`);
-    armTransferTimer();
-    const hash = createHash('sha256');
-    let bytes = 0;
-    const hashingTransform = new Transform({
-      transform(chunk, _encoding, callback) {
-        armTransferTimer();
-        const buffer = Buffer.from(chunk);
-        hash.update(buffer);
-        bytes += buffer.byteLength;
-        callback(null, buffer);
-      },
+    const bytes = await tryDownloadArtifactRanges({
+      ...responseResult,
+      metadata,
+      destination,
+      requestTimeoutMs,
+      idleTimeoutMs,
     });
-    await pipeline(
-      Readable.fromWeb(response.body),
-      hashingTransform,
-      createWriteStream(destination),
-    );
-    const digest = `sha256:${hash.digest('hex')}`;
-    if (digest !== metadata.digest) throw new Error(`artifact ${artifactId} digest mismatch`);
-    return bytes;
+    if (bytes !== null) return bytes;
   } catch (error) {
-    if (transferTimedOut)
-      throw new Error(`artifact transfer idle timeout after ${idleTimeoutMs}ms`, { cause: error });
-    throw error;
-  } finally {
-    clearTimeout(transferTimer);
+    if (!(error instanceof ArtifactRangesUnavailable)) throw error;
+    responseResult = await responseFor(archiveUrl, requestTimeoutMs);
   }
+  const { response, controller } = responseResult;
+  if (!response.body) throw new Error(`artifact ${artifactId} response has no body`);
+  const hash = createHash('sha256');
+  let bytes = 0;
+  const hashing = new Transform({
+    transform(chunk, _encoding, callback) {
+      hash.update(chunk);
+      bytes += chunk.byteLength;
+      callback(null, chunk);
+    },
+  });
+  await pipeline(
+    artifactResponseStream(response.body, controller, idleTimeoutMs),
+    hashing,
+    createWriteStream(destination),
+  );
+  const digest = `sha256:${hash.digest('hex')}`;
+  if (digest !== metadata.digest) throw new Error(`artifact ${artifactId} digest mismatch`);
+  return bytes;
 }
 
 export async function ensureArtifactDestination(path) {

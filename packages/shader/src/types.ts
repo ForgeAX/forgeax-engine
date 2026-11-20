@@ -107,11 +107,28 @@ export function findVariantByDefines(
   );
 }
 
+const admittedVariantAxes = new WeakMap<MaterialShaderManifestEntry, readonly string[]>();
+
+function collectVariantAxes(entry: MaterialShaderManifestEntry): readonly string[] {
+  const axes = new Set<string>();
+  for (const variant of entry.variants) {
+    for (const axis of Object.keys(variant.defines)) axes.add(axis);
+  }
+  return [...axes];
+}
+
+/** Seal the variant inputs of a validated, privately decoded material manifest row. */
+export function sealMaterialShaderVariants(entry: MaterialShaderManifestEntry): void {
+  for (const variant of entry.variants) {
+    Object.freeze(variant.defines);
+    Object.freeze(variant);
+  }
+  Object.freeze(entry.variants);
+  Object.freeze(entry);
+  admittedVariantAxes.set(entry, Object.freeze(collectVariantAxes(entry)));
+}
+
 /** Axes are source declarations; inspecting them never composes a program or expands permutations. */
 export function materialShaderAxes(entry: MaterialShaderManifestEntry): readonly string[] {
-  return (
-    templateManifestAxes(entry) ?? [
-      ...new Set(entry.variants.flatMap((variant) => Object.keys(variant.defines))),
-    ]
-  );
+  return templateManifestAxes(entry) ?? admittedVariantAxes.get(entry) ?? collectVariantAxes(entry);
 }

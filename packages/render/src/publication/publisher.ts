@@ -82,6 +82,7 @@ import {
   renderPublicationRecordBytes,
   renderPublicationRecordColumns,
 } from './record';
+import { renderableTemplateSnapshot } from './renderable-template';
 import { worldRenderResources } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
@@ -251,6 +252,8 @@ export function createRenderPublisher(
    * payload crosses once through the preparation instead of a second clone.
    */
   preparingMesh?: (handle: number) => boolean,
+  /** These newly materialized renderables are owned by the closed Level lane. */
+  ownsClosedLevelRow?: (entity: number) => boolean,
 ) {
   world.bindAssets(assets).unwrap();
   const assetObserver = assets.observe().unwrap();
@@ -447,12 +450,24 @@ export function createRenderPublisher(
         if (!change.removed) this.invalidated.add(change.handle as unknown as number);
       this.collectSourceChanges();
       if (baseline) this.addBaselineMembers();
+      this.excludeClosedLevelRows();
       this.collectTransformRows();
       observation?.fact('changed', this.changed.size);
       observation?.fact('removed', this.removed.size);
       observation?.fact('invalidated', this.invalidated.size);
       observation?.fact('matrixRows', this.matrixRows.size);
       for (const entity of this.changed) pending.add(entity);
+    }
+
+    private excludeClosedLevelRows(): void {
+      if (ownsClosedLevelRow === undefined) return;
+      for (const entity of this.changed) {
+        if (!ownsClosedLevelRow(entity)) continue;
+        if (members.has(entity))
+          throw new Error('A closed Level cannot claim an already published renderable');
+        this.changed.delete(entity);
+        pending.delete(entity);
+      }
     }
 
     private templateWorkspace(): ReturnType<typeof createTemplateWorkspace> {
@@ -990,22 +1005,7 @@ export function createRenderPublisher(
       let template: RenderPublicationTemplate | undefined;
       let key: string | undefined;
       if (known === undefined) {
-        const {
-          entityKey: _entity,
-          transform: _transform,
-          material: _material,
-          materials: _materials,
-          materialOverrides: _overrides,
-          ...content
-        } = row;
-        snapshot = {
-          ...content,
-          material: references.material,
-          materials: references.materials,
-          ...(references.overrides === undefined
-            ? {}
-            : { materialOverrides: references.overrides }),
-        };
+        snapshot = renderableTemplateSnapshot(row, references);
         template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
         if (shareable) {
           key = this.templateKey(template);

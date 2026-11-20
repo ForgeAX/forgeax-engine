@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-rhi
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Late pipeline inspection
 
 `device.pipelineLibrary?.inspect({runtimeRequests:true})` explicitly materializes

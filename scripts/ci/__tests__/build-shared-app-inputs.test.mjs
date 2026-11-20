@@ -13,13 +13,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
+import { admitShaderTemplateManifest } from '@forgeax/engine-shader';
 
 const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
 const script = join(repoRoot, 'scripts', 'ci', 'build-shared-app-inputs.mjs');
 const unpackScript = join(repoRoot, 'scripts', 'ci', 'unpack-shared-app-inputs.mjs');
 
-test('shared inputs reuse verified shaders while preserving raw assets and required entries', async () => {
+test('shared inputs reuse verified templates while preserving raw assets and required entries', () => {
   const output = mkdtempSync(join(tmpdir(), 'forgeax-shared-inputs-'));
   const projection = `${output}-projection`;
   // Shared Vite input paths are relative to the manifest directory's parent.
@@ -54,11 +54,11 @@ test('shared inputs reuse verified shaders while preserving raw assets and requi
     const catalog = decodeCatalogWire(
       JSON.parse(readFileSync(join(output, 'assets', 'catalog.json'), 'utf8')),
     ).unwrap();
-    const shaderManifest = await readShaderManifestPublication(
+    const shaderManifest = admitShaderTemplateManifest(
       JSON.parse(readFileSync(join(output, 'shaders', 'manifest.json'), 'utf8')),
-    );
+    ).unwrap();
     assert.ok(
-      shaderManifest.entries.some((entry) => entry.wgsl.includes('fs_ssao_calc')),
+      shaderManifest.wire.entries.some((entry) => entry.role === 'ssao'),
       'shared shader manifest includes the SSAO fullscreen entry used by the browser oracle',
     );
     assert.equal(
@@ -124,7 +124,12 @@ test('catalog-only recovery ignores the inherited consumer manifest and omits se
       'shader output carries the exact producer compiler bytes',
     );
     assert.ok(existsSync(join(output, 'compiler', 'provenance.json')));
-    assert.equal(facts.engineCompileCount, 1, 'a missing/cleared input must rebuild from source');
+    assert.equal(
+      facts.engineCompileCount,
+      0,
+      'a missing input regenerates templates without WGSL compilation',
+    );
+    assert.equal(manifest.shaderPublication, 'source');
     assert.equal(facts.payloadMode, 'catalog-only');
     assert.equal(facts.payloadEmitCount, 0);
     assert.equal(existsSync(join(output, 'assets', 'payload')), false);

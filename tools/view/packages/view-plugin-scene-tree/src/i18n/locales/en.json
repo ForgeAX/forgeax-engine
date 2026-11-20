@@ -1,9 +1,16 @@
 {
   "sceneTree": {
+    "clearSearch": "Clear search",
+    "dismissClipboardError": "Dismiss clipboard error",
     "title": "Hierarchy",
     "sceneRoot": "Scene",
     "empty": "No hierarchy data",
     "unavailable": "Scene tree unavailable",
+    "unavailableDescription": "Connect to the View workspace API to load the Engine scene tree.",
+    "loading": "Loading hierarchy",
+    "openPreview": "Open a scene preview from the Content Browser to load the Engine hierarchy.",
+    "loadMore": "Showing {{count}} entities. Load more",
+    "loadingDescription": "Reading the selected Engine target.",
     "loadErrorDescription": "Could not load the scene hierarchy. See the error notice for details.",
     "filterByType": "Filter by type",
     "clearFilters": "Clear filters",

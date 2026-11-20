@@ -19,8 +19,10 @@ import {
 import { waterBodyOwnerKey } from '@forgeax/engine-water';
 import { meshSsboBuffer, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import { prepareMorphGeometryPipeline } from '../device/morph-geometry';
+import { atmosphereStoragePinned, currentAtmosphereStorage } from '../environment/storage';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { RendererContractFailureError } from '../errors/render';
+import type { EnvironmentSource } from '../extract/environment';
 import { renderFeatureViewIdentity } from '../features/view';
 import {
   createHdrpSkinUnifiedBindGroup,
@@ -59,6 +61,10 @@ import {
 } from '../water/mesh-source-admission';
 import { type WaterMaterialFrameBindings, waterMaterialDrawBinding } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
+import {
+  observeClusterMeshBinding,
+  rememberClusterMeshBinding,
+} from './cluster-mesh-binding-preparation';
 import { FirstEntryMap } from './first-entry-map';
 import { materialSlotsByClass } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
@@ -68,6 +74,7 @@ import {
   geometryPipelineRequestContext,
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
+import { type GraphBindingViews, graphBindingViewsCurrent } from './graph-binding-views';
 import { recordGeometryDraws, recordIblPipelineBinding } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
@@ -91,6 +98,7 @@ import {
 import { reflectionProbeMaterial } from './reflection-probe-material';
 import type {
   _InternalRenderPipelineContext,
+  RenderSystemInternals,
   WaterMaterialRecordCacheCandidate,
 } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
@@ -112,6 +120,7 @@ export function gpuDrivenSkinVariantKey(task: SkinTaskBinding, bytes: number): s
 }
 
 export type MainPassOptions = {
+  readonly materialGraphViews?: GraphBindingViews;
   readonly materialSceneDepth?: TextureView;
   readonly bundleDescriptor?: RenderBundleEncoderDescriptor;
   readonly selection?: { readonly entities: readonly number[] };
@@ -857,6 +866,87 @@ function resolveHdrpSsaoBindGroup(
   return cached.ok ? cached.value : null;
 }
 
+export interface ClusterMeshBindingInputs {
+  readonly runtime: import('./render-context').RenderSystemRuntime;
+  readonly cache: WeakMap<object, unknown>;
+  readonly hdrp: HdrpBuffers;
+  readonly ssaoView: TextureView | undefined;
+  readonly counts: import('./frame-snapshot').BindGroupCounts;
+  readonly graph:
+    | import('@forgeax/engine-render-graph').CompiledRenderGraph<
+        import('../render-pipeline').RenderPipelineFrame
+      >
+    | undefined;
+  readonly graphViews: GraphBindingViews | undefined;
+  readonly current?: () => boolean;
+}
+
+/** Both prospective preparation and indirect encoding use this exact physical owner. */
+export function resolveClusterMeshBinding(
+  input: ClusterMeshBindingInputs,
+  meshBuffer: import('@forgeax/engine-rhi').Buffer,
+  bindingBytes: number,
+): BindGroup | undefined {
+  const { runtime, cache, hdrp, ssaoView, counts, graph, graphViews } = input;
+  const requireCurrent = () => {
+    if (
+      input.current?.() === false ||
+      graph?.isRetired() ||
+      (graphViews !== undefined && !graphBindingViewsCurrent(graphViews))
+    )
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'the current clustered mesh binding and original graph',
+        hint: 'reprepare the current native binding',
+      });
+  };
+  const observe = (group: BindGroup) => {
+    requireCurrent();
+    observeClusterMeshBinding(
+      cache,
+      group,
+      graph,
+      graphViews,
+      ssaoView !== undefined && graphViews === undefined,
+    ).unwrap();
+    return group;
+  };
+  requireCurrent();
+  const leaf = bindGroupByteRangeLeaf4(
+    cache,
+    meshBuffer,
+    hdrp.unifiedBindGroupLayout,
+    hdrp,
+    ssaoView ?? NO_SSAO_VIEW,
+  );
+  const cached = leaf.get(bindingBytes);
+  if (cached !== undefined) return observe(cached);
+  const group = createHdrpUnifiedBindGroup(
+    runtime,
+    hdrp,
+    meshBuffer,
+    ssaoView === undefined ? { enabled: false } : { enabled: true, ssaoBlurredView: ssaoView },
+    bindingBytes,
+    (created, descriptor) => {
+      requireCurrent();
+      rememberClusterMeshBinding(cache, created, {
+        runtime,
+        hdrp,
+        lightingKey: ssaoView ?? NO_SSAO_VIEW,
+        descriptor,
+        leaf,
+        key: bindingBytes,
+      });
+    },
+  );
+  requireCurrent();
+  return group === null
+    ? undefined
+    : observe(
+        rememberBindGroup(leaf, bindingBytes, group, counts, gpuDrivenMeshVariantKey(bindingBytes)),
+      );
+}
+
 /**
  * Device-scoped chain keyed on every bound handle: an unchanged batch re-emits
  * the identical group(2), so its render bundle segment stays reusable instead
@@ -873,41 +963,47 @@ function publishGpuDrivenClusterGroups(
     return;
   }
   const { runtime, pipelineState, frameState, bindGroupCounts } = c;
+  const meshCache = frameState.meshBindGroupCache;
   const ssaoView = c.hdrpSsaoBlurredView;
+  const graph = frameState.compiledFrameGraph?.graph;
+  const graphViews = c.hdrpSsaoGraphViews;
+  const observe = (group: BindGroup) => {
+    const observed = observeClusterMeshBinding(
+      meshCache,
+      group,
+      graph,
+      graphViews,
+      ssaoView !== undefined && graphViews === undefined,
+    );
+    if (!observed.ok) throw observed.error;
+    return group;
+  };
+  const requireGraph = () => {
+    if (graph?.isRetired() || (graphViews !== undefined && !graphBindingViewsCurrent(graphViews)))
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'the original live graph before creating clustered mesh bindings',
+        hint: 'discard this recording and use the current graph',
+      });
+  };
   const ssao: SsaoBindOptions =
     ssaoView === undefined ? { enabled: false } : { enabled: true, ssaoBlurredView: ssaoView };
-  resources.clusterBindGroupForMesh = (meshBuffer, bindingBytes) => {
-    const leaf = bindGroupByteRangeLeaf4(
-      frameState.meshBindGroupCache,
-      meshBuffer,
-      hdrpBuffers.unifiedBindGroupLayout,
-      hdrpBuffers,
-      ssaoView ?? NO_SSAO_VIEW,
-    );
-    const cached = leaf.get(bindingBytes);
-    if (cached !== undefined) return cached;
-    const created = createHdrpUnifiedBindGroup(
-      runtime,
-      hdrpBuffers,
-      meshBuffer,
-      ssao,
-      bindingBytes,
-    );
-    return created === null
-      ? undefined
-      : rememberBindGroup(
-          leaf,
-          bindingBytes,
-          created,
-          bindGroupCounts,
-          gpuDrivenMeshVariantKey(bindingBytes),
-        );
+  const meshInputs: ClusterMeshBindingInputs = {
+    runtime,
+    cache: meshCache,
+    hdrp: hdrpBuffers,
+    ssaoView,
+    counts: bindGroupCounts,
+    graph,
+    graphViews,
   };
+  resources.clusterBindGroupForMesh = (meshBuffer, bindingBytes) =>
+    resolveClusterMeshBinding(meshInputs, meshBuffer, bindingBytes);
   resources.clusterBindGroupForSkin = (meshBuffer, meshBindingBytes, task) => {
     const skinLayout = pipelineState.hdrpSkinMeshBindGroupLayout;
     if (skinLayout === null) return undefined;
     const leaf = bindGroupSkinRangeLeaf6(
-      frameState.meshBindGroupCache,
+      meshCache,
       meshBuffer,
       task.data,
       task.auxiliary,
@@ -918,7 +1014,8 @@ function publishGpuDrivenClusterGroups(
       task.dataSize,
     );
     const cached = leaf.get(task.auxiliarySize);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return observe(cached);
+    requireGraph();
     const created = createHdrpSkinUnifiedBindGroup(
       runtime,
       hdrpBuffers,
@@ -927,15 +1024,27 @@ function publishGpuDrivenClusterGroups(
       task,
       ssao,
       meshBindingBytes,
+      (group, descriptor) =>
+        rememberClusterMeshBinding(meshCache, group, {
+          runtime,
+          hdrp: hdrpBuffers,
+          lightingKey: ssaoView ?? NO_SSAO_VIEW,
+          descriptor,
+          leaf,
+          key: task.auxiliarySize,
+          task,
+        }),
     );
     return created === null
       ? undefined
-      : rememberBindGroup(
-          leaf,
-          task.auxiliarySize,
-          created,
-          bindGroupCounts,
-          gpuDrivenSkinVariantKey(task, meshBindingBytes),
+      : observe(
+          rememberBindGroup(
+            leaf,
+            task.auxiliarySize,
+            created,
+            bindGroupCounts,
+            gpuDrivenSkinVariantKey(task, meshBindingBytes),
+          ),
         );
   };
 }
@@ -1786,8 +1895,26 @@ function createMaterialBindGroupResolver(
  * sole route. The material UBO slice mirrors the post-split Standard schema
  * (MATERIAL_UNIFORM_BYTES).
  */
-function createPerSubmeshMaterialBgDeps(
-  c: _InternalRenderPipelineContext,
+export type MaterialBindingInputs = Pick<
+  _InternalRenderPipelineContext,
+  | 'runtime'
+  | 'world'
+  | 'frameState'
+  | 'pipelineState'
+  | 'store'
+  | 'gpuDrivenStandardPbrFrameResources'
+  | 'gpuDrivenSceneMaterialBuffer'
+  | 'reflectionProbes'
+  | 'planarReflectionView'
+  | 'skylight'
+  | 'capturedAtmosphere'
+  | 'planarReflectionAllowed'
+  | 'materialBgAssemblyCache'
+  | 'bindGroupCounts'
+>;
+
+export function createPerSubmeshMaterialBgDeps(
+  c: MaterialBindingInputs,
   options: MainPassOptions | undefined,
   skylightResources: SkylightBindGroupResources,
   hasProbeBindings: boolean,
@@ -1803,6 +1930,7 @@ function createPerSubmeshMaterialBgDeps(
     materialSlice: MATERIAL_UNIFORM_BYTES,
     videoHighPerfAvailable: probeVideoHighPerfUpload(runtime.device),
     skylightResources,
+    bindingSceneCurrent: materialSceneBindingCurrency(c),
     resolveRenderTargetTextureSource: runtime.resolveRenderTargetTextureSource,
     resolveFeatureTextureSource: (name) => {
       const graphFrame = options?.waterFrame;
@@ -1827,7 +1955,70 @@ function createPerSubmeshMaterialBgDeps(
     bindGroupCounts: c.bindGroupCounts,
     ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
     ...surfaceMediumViews(options),
+    ...(options?.materialGraphViews === undefined
+      ? {}
+      : { graphViews: options.materialGraphViews }),
   };
+}
+
+/** Keep persistent owners and physical facts, never the pass context or its resource reader. */
+export function materialSceneBindingCurrency(
+  c: Pick<
+    _InternalRenderPipelineContext,
+    | 'runtime'
+    | 'frameState'
+    | 'store'
+    | 'world'
+    | 'pipelineState'
+    | 'skylight'
+    | 'capturedAtmosphere'
+    | 'planarReflectionView'
+    | 'planarReflectionAllowed'
+  >,
+): NonNullable<PerSubmeshMaterialBgDeps['bindingSceneCurrent']> {
+  const { runtime, frameState, store, world, pipelineState } = c;
+  const owner = (runtime as RenderSystemInternals).viewOwner;
+  const lifecycle = frameState.environmentLifecycle;
+  const environment = frameState.environmentFrame?.source ?? lifecycle?.activeFrame?.source;
+  const handle = c.skylight?.equirectHandle;
+  const image = handle === undefined ? undefined : store.getCubemapIbl(handle, world);
+  const atmosphere = currentAtmosphereStorage(runtime);
+  const capturedAtmosphere = c.capturedAtmosphere;
+  const planarView = c.planarReflectionView;
+  const planarAllowed = c.planarReflectionAllowed !== false;
+  const planarUniform = pipelineState.viewUniformBuffer;
+  const environmentCurrent = () =>
+    capturedAtmosphere === undefined
+      ? sameEnvironmentBindingSource(environment, lifecycle?.activeFrame?.source) &&
+        (lifecycle?.activeGeneration === undefined ||
+          (!lifecycle.activeGeneration.retired && lifecycle.activeGeneration.scope.isAlive())) &&
+        currentAtmosphereStorage(runtime) === atmosphere
+      : atmosphereStoragePinned(capturedAtmosphere);
+  return (skylight, probeIndex, planar) => {
+    const current = handle === undefined ? undefined : store.getCubemapIbl(handle, world);
+    return (
+      environmentCurrent() &&
+      current?.irradianceView === image?.irradianceView &&
+      current?.prefilterView === image?.prefilterView &&
+      current?.brdfLutView === image?.brdfLutView &&
+      (!planar ||
+        ((planarAllowed ? owner?.captures.planar?.current()?.physical.resolveView : undefined) ===
+          planarView &&
+          pipelineState.viewUniformBuffer === planarUniform)) &&
+      (probeIndex === undefined ||
+        owner?.reflectionProbes.materialBindingCurrent(probeIndex, skylight) === true)
+    );
+  };
+}
+
+function sameEnvironmentBindingSource(
+  a: EnvironmentSource | undefined,
+  b: EnvironmentSource | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.kind === b.kind && (a.kind !== 'image' || (b.kind === 'image' && a.sourceKey === b.sourceKey))
+  );
 }
 
 /** The optional backdrop and medium views a pass consumes, omitting absent ones. */
@@ -1878,14 +2069,24 @@ function publishGpuDrivenMaterialSlots(
     c.materialBindingSlots ?? materialSlotsByClass(c.materialBindings);
 }
 
-/** @internal Prepare a batch's exact physical material binding only when it is recorded. */
+/** Prepare a batch's exact physical material binding only when it is recorded. */
+export function materialBindingByteOffset(
+  c: Pick<_InternalRenderPipelineContext, 'runtime' | 'pipelineState'>,
+  material: MaterialSnapshot,
+): number {
+  return meshSsboByteOffset(
+    c.pipelineState.materialUniformBuffer,
+    materialUniformSlot(c.runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
+  );
+}
+
 export function publishMaterialBindingPreparer(
   c: _InternalRenderPipelineContext,
   resources: GpuDrivenStandardPbrFrameResources,
   selectedGpuMaterialSlots: ReadonlySet<number> | undefined,
   resolveMaterialBindGroup: ReturnType<typeof createMaterialBindGroupResolver>,
 ): void {
-  const { runtime, world, materialSlots, materialBindings, pipelineState } = c;
+  const { world, materialSlots, materialBindings } = c;
   resources.prepareMaterialBinding = (slot) => {
     const material = materialSlots[slot];
     const binding = materialBindings[slot];
@@ -1919,10 +2120,7 @@ export function publishMaterialBindingPreparer(
         binding.world ?? world,
         materialShaderId,
       ),
-      byteOffset: meshSsboByteOffset(
-        pipelineState.materialUniformBuffer,
-        materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
-      ),
+      byteOffset: materialBindingByteOffset(c, material),
     };
   };
   resources.recordMaterialPipelineBinding = (slot, pipeline, group) => {

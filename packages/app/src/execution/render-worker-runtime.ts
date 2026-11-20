@@ -25,6 +25,7 @@ import {
   fullscreenRenderFeatureDeclaration,
   ownReceivedPublicationMaterials,
   renderGraphCompileCount,
+  retainPublishedLevelAsset,
 } from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
@@ -38,6 +39,7 @@ import {
   constructRuntimeRendererHost,
   type RendererHostAssembly,
 } from '@forgeax/engine-runtime/internal/renderer-host';
+import { stagePublicationShaders } from '@forgeax/engine-runtime/internal/shader-publication';
 import { bindLoadProgressScope } from '@forgeax/engine-types';
 import {
   applyRenderConfiguration,
@@ -54,7 +56,9 @@ import {
   type RhiRemoteCaptureCompletion,
 } from '../internal/rhi-capture';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
+import { DEFAULT_LEVEL_WORK_SLICE_MS } from '../levels/work-slice';
 import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootstrap-entry';
+import type { ClosedLevelRowRequest } from './closed-level-row-protocol';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { installCarriedGpuStub } from './gpu-stub';
 import { armLinearHdr, observeLinearHdr } from './hdr-frame-observation';
@@ -63,8 +67,11 @@ import {
   renderPipelineCapacityOf,
   type SerializedRenderError,
 } from './protocol';
+import { RenderClosedLevelRows } from './render-closed-level-rows';
 import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
 import { RenderDrawTiming } from './render-draw-timing';
+import { RenderLevelDeviceWork } from './render-level-device-work';
+import { RenderLevelFrameSelection } from './render-level-frame-selection';
 import { RenderMeshResidency } from './render-mesh-residency';
 import { RenderWorkerControlBoundary } from './render-worker-control-boundary';
 import type {
@@ -74,7 +81,11 @@ import type {
   SubmittedFeatureReceipt,
 } from './render-worker-protocol';
 import { createRenderWorkerTaskTurns, yieldRenderWorkerTaskTurn } from './render-worker-task-turn';
-import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
+import {
+  readRendererInspection,
+  rendererInspectionFailure,
+  sendRendererInspection,
+} from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import type {
   ExecutionDiagnosticsOptions,
@@ -85,11 +96,12 @@ import { serializableDetail, workerError } from './worker-error';
 
 const scope = globalThis as unknown as {
   postMessage(message: RenderWorkerOutput, transfer?: Transferable[]): void;
-  onmessage: ((event: MessageEvent<RenderWorkerInput>) => void) | null;
   close(): void;
 };
 let renderer: Renderer | undefined;
 let meshResidency: RenderMeshResidency | undefined;
+let closedLevelRows: RenderClosedLevelRows | undefined;
+let levelDeviceWork: RenderLevelDeviceWork | undefined;
 let publicationIdentity: RenderPublicationIdentity | undefined;
 /** Host port for render-submitted / render-complete; Host credit bypasses the Engine tick. */
 let hostPort: MessagePort | undefined;
@@ -122,6 +134,17 @@ let activePreparationAbort: AbortController | undefined;
 let failed = false;
 let shuttingDown = false;
 let initializing: Promise<void> | undefined;
+let stagedShaderCatalog:
+  | {
+      readonly url: string | undefined;
+      readonly ready: ReturnType<typeof stagePublicationShaders>['ready'];
+    }
+  | undefined;
+
+export function adoptStagedRenderShaders(staged: NonNullable<typeof stagedShaderCatalog>): void {
+  stagedShaderCatalog = staged;
+}
+
 let completing: Promise<void> = Promise.resolve();
 // Credit order of the admitted frames. A frame is credited after its
 // predecessor's credit, never after the predecessor's held retirement.
@@ -572,6 +595,7 @@ async function completeFrame(
     creditReturned = true;
     framesInFlight--;
     credited();
+    scheduleClosedLevelRows();
     if (observedTiming !== undefined) void deliverGpuPassTiming(message, receipt, observedTiming);
   } catch (cause) {
     // A failed successor must stop admission even while an older receipt waits.
@@ -697,10 +721,16 @@ function traceDisposal(
 async function disposeRenderResources(): Promise<unknown> {
   let cleanupFailure: unknown;
   try {
+    await levelDeviceWork?.dispose();
+    closedLevelRows?.dispose();
+  } catch (cause) {
+    cleanupFailure = cause;
+  }
+  try {
     traceDisposal('mesh-release');
     await meshResidency?.dispose();
   } catch (cause) {
-    cleanupFailure = cause;
+    cleanupFailure ??= cause;
   }
   try {
     traceDisposal('renderer-destroy');
@@ -723,6 +753,8 @@ async function disposeRenderResources(): Promise<unknown> {
 async function receiveDispose(): Promise<void> {
   terrainReceipts.clear();
   shuttingDown = true;
+  pendingClosedLevelRows.length = 0;
+  closedLevelTurns.dispose();
   activePreparationAbort?.abort();
   invalidateCaptureRequests();
   try {
@@ -779,33 +811,6 @@ function inspectionResult(message: InspectMessage): ReturnType<typeof readRender
     : readRendererInspection(renderer, undefined, message);
 }
 
-function receiveInspect(message: InspectMessage): void {
-  const result = inspectionResult(message);
-  try {
-    scope.postMessage({
-      kind: 'inspect-result',
-      requestId: message.requestId,
-      identity: message.identity,
-      worldIdentity: message.worldIdentity,
-      result,
-    });
-  } catch (cause) {
-    // One failure delivery; observation cannot change draw admission.
-    try {
-      scope.postMessage({
-        kind: 'inspect-result',
-        requestId: message.requestId,
-        identity: message.identity,
-        worldIdentity: message.worldIdentity,
-        result: rendererInspectionFailure('transport', cause),
-      });
-    } catch {
-      // No delivery is possible; caller still fails at its unchanged read deadline.
-      console.error('Renderer inspection failure response was not delivered');
-    }
-  }
-}
-
 async function receive(message: RenderWorkerInput): Promise<void> {
   if (message.kind === 'geometry-observe-cancel') {
     receiveGeometryObserveCancel(message.requestId);
@@ -828,7 +833,7 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     return receiveMeshControl(message);
   }
   if (message.kind === 'inspect') {
-    receiveInspect(message);
+    sendRendererInspection(scope, message, inspectionResult(message));
     return;
   }
   if (failed || shuttingDown) {
@@ -1224,10 +1229,19 @@ async function receiveInit(message: InitMessage): Promise<void> {
     attachment = await attachWorkerRhiRecorder();
     capture = createRhiCapture(attachment);
   }
+  const staged = stagedShaderCatalog;
+  stagedShaderCatalog = undefined;
+  const admittedShaderCatalog =
+    staged !== undefined && staged.url === message.shaderManifestUrl
+      ? await staged.ready
+      : undefined;
   const constructed = await constructRuntimeRendererHost(
     canvas,
     initRendererOptions(message, prepared.value),
-    initBundlerOptions(message),
+    {
+      ...initBundlerOptions(message),
+      ...(admittedShaderCatalog === undefined ? {} : { admittedShaderCatalog }),
+    },
   );
   if (!constructed.ok) throw constructed.error;
   const activeRenderer = constructed.value.renderer;
@@ -1237,6 +1251,16 @@ async function receiveInit(message: InitMessage): Promise<void> {
     scope.postMessage(message),
   );
   inspectionWorldIdentity = message.worldIdentity;
+  closedLevelRows = new RenderClosedLevelRows(message.identity, message.worldIdentity, (asset) => {
+    const retained = retainPublishedLevelAsset(activeRenderer, message.identity, asset);
+    return retained.ok ? retained.value : undefined;
+  });
+  levelDeviceWork = new RenderLevelDeviceWork(
+    activeRenderer,
+    closedLevelRows,
+    (receipt) => scope.postMessage(receipt),
+    scheduleClosedLevelRows,
+  );
   unsubscribeRenderer = activeRenderer.subscribe(
     createRendererErrorListener(createInitFailureContext(message)),
   );
@@ -1276,7 +1300,10 @@ async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): P
   // letting its existing completion/ACK wake the Engine Worker before the
   // next synchronous Renderer.draw task occupies this Worker. Never wait for
   // that receipt: an unfinished GPU must not serialize CPU preparation.
-  if (renderTaskYield === 'completion' && unretiredReceipts > 0) {
+  const yieldForCompletion =
+    renderTaskYield === 'completion' ||
+    (renderTaskYield === 'none' && message.groupSelection !== undefined);
+  if (yieldForCompletion && unretiredReceipts > 0) {
     await yieldRenderWorkerTaskTurn();
     if (failed || shuttingDown) return false;
   }
@@ -1343,6 +1370,7 @@ function publishedFrameInput(
   features: SubmittedFeatureReceipt[],
   observeGeometry: boolean,
   onFeatureSourceCompleted: NonNullable<PublishedRenderFrameInput['onFeatureSourceCompleted']>,
+  onPublicationAccepted: PublishedRenderFrameInput['onPublicationAccepted'],
 ): PublishedRenderFrameInput {
   return {
     publication: ownReceivedPublicationMaterials(message.publication),
@@ -1356,6 +1384,7 @@ function publishedFrameInput(
     onFeatureSourceSubmitted: (identity, feedback, submission) =>
       features.push({ identity, feedback, ...(submission === undefined ? {} : { submission }) }),
     onFeatureSourceCompleted,
+    ...(onPublicationAccepted === undefined ? {} : { onPublicationAccepted }),
   };
 }
 
@@ -1501,6 +1530,13 @@ async function deliverGeometryObservation(
 
 async function receiveDraw(message: DrawMessage): Promise<void> {
   let completionOwnsFrame = false;
+  let selectionReceipt: FrameReceipt | undefined;
+  const levelSelection =
+    message.groupSelection === undefined
+      ? undefined
+      : new RenderLevelFrameSelection(message, message.groupSelection, levelDeviceWork, (receipt) =>
+          scope.postMessage(receipt),
+        );
   drawTiming.begin(message);
   stepRetainedBytes();
   try {
@@ -1530,6 +1566,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       (completion, observations, settleReadbackFlight) => {
         featureSourceCompletion = { completion, observations, settleReadbackFlight };
       },
+      levelSelection?.apply,
     );
     const captureDraw = attachment === undefined ? undefined : { recordingGenerations: [] };
     let draw: ReturnType<Renderer['draw']>;
@@ -1550,6 +1587,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
       throw draw.error;
     }
     const receipt = draw.value;
+    selectionReceipt = receipt;
     const meshConsumption = consumedMeshes(message, receipt);
     retainTerrainReceipt(message.frameId, receipt);
     const snapshotBoundary = captureBoundary;
@@ -1584,6 +1622,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   } finally {
+    levelSelection?.finish(selectionReceipt);
     drawTiming.end();
     busy = false;
     if (!completionOwnsFrame) {
@@ -1595,7 +1634,64 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
 const drawControls = new RenderWorkerControlBoundary();
 let drawing: Promise<void> | undefined;
 const queued: DrawMessage[] = [];
-scope.onmessage = (event) => {
+const pendingClosedLevelRows: ClosedLevelRowRequest[] = [];
+const closedLevelTurns = createRenderWorkerTaskTurns();
+let closedLevelScheduled = false;
+
+function closedLevelTurnAvailable(): boolean {
+  return (
+    !shuttingDown && !failed && drawing === undefined && framesInFlight < renderPipelineCapacity
+  );
+}
+
+function scheduleClosedLevelRows(): void {
+  if (
+    closedLevelScheduled ||
+    !closedLevelTurnAvailable() ||
+    (pendingClosedLevelRows.length === 0 && levelDeviceWork?.hasWork() !== true)
+  )
+    return;
+  closedLevelScheduled = true;
+  void closedLevelTurns.yield().then(() => {
+    try {
+      // New draws and in-flight ordinary receipts take priority over cold work.
+      if (!closedLevelTurnAvailable()) return;
+      const deadline = performance.now() + DEFAULT_LEVEL_WORK_SLICE_MS;
+      do {
+        const message = pendingClosedLevelRows.shift();
+        if (message !== undefined) receiveClosedLevelRows(message);
+        else if (levelDeviceWork?.hasWork()) levelDeviceWork.step();
+        else return;
+      } while (performance.now() < deadline);
+    } finally {
+      closedLevelScheduled = false;
+      scheduleClosedLevelRows();
+    }
+  });
+}
+
+function receiveClosedLevelRows(message: ClosedLevelRowRequest): void {
+  try {
+    if (closedLevelRows !== undefined && readyAnnounced) {
+      if (levelDeviceWork?.receive(message) === true) {
+        scheduleClosedLevelRows();
+        return;
+      }
+      scope.postMessage(closedLevelRows.receive(message));
+      return;
+    }
+  } catch {
+    // A malformed isolated row payload cannot fault the ordinary frame lane.
+  }
+  scope.postMessage({
+    kind: 'closed-level-rows-result',
+    id: message.id,
+    serial: message.serial,
+    result: { ok: false, reason: readyAnnounced ? 'rows' : 'closed' },
+  });
+}
+
+export function receiveRenderWorkerInput(event: MessageEvent<RenderWorkerInput>): void {
   const message = event.data;
   if (message.kind === 'configuration-apply') {
     void drawControls.after(drawControls.cut, async () => receiveConfiguration(message));
@@ -1611,8 +1707,29 @@ scope.onmessage = (event) => {
     if (message.kind === 'dispose' && !shuttingDown) void receive(message);
     return;
   }
+  if (message.kind === 'stage-shader-manifest') {
+    if (!busy && renderer === undefined && stagedShaderCatalog === undefined) {
+      const { url } = message;
+      stagedShaderCatalog = {
+        url,
+        ready: stagePublicationShaders(url === undefined ? undefined : { shaderManifestUrl: url })
+          .ready,
+      };
+    }
+    return;
+  }
   if (message.kind === 'init') {
     initializing = receive(message);
+    return;
+  }
+  if (message.kind === 'closed-level-rows') {
+    // Cancelling CPU custody does not edit Renderer state. A delayed chunk for
+    // the retired stream will be rejected when ordinary draws release a turn.
+    if (message.operation.kind === 'retire') receiveClosedLevelRows(message);
+    else {
+      pendingClosedLevelRows.push(message);
+      scheduleClosedLevelRows();
+    }
     return;
   }
   if (message.kind !== 'draw') {
@@ -1647,9 +1764,10 @@ scope.onmessage = (event) => {
       }
     }
     drawing = undefined;
+    scheduleClosedLevelRows();
   };
   drawing = drain(message);
-};
+}
 
 function transferable(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return bytes.buffer instanceof ArrayBuffer &&

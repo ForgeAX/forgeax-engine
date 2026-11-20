@@ -44,7 +44,7 @@ import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -264,7 +264,7 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing at ${DEMO_MANIFEST_PATH}`);
   process.exit(1);
 }
-const demoManifest = JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH));
+const demoManifest = await readCookedShaderManifestPublication(JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH)));
 const MANIFEST_URL = processShaderManifestUrl(DEMO_MANIFEST_PATH);
 
 let renderer;

@@ -69,8 +69,8 @@ Top-level View access therefore does not imply annotation access inside every ch
 
 Simulation readiness follows the retained native Host and project-session owners,
 not the header status that also describes project restoration. Require the
-expected project's target publication within 180 seconds, then lock that target
-and wait at most 120 seconds for its running phase and completed restoration.
+expected project's document URL within 180 seconds. Lock the document's target ID
+and wait at most 120 seconds for the matching running target and completed restoration.
 Starting observations never renew the deadline; failed, lost or replaced targets
 reject the wait. Owner-state polling does not depend on animation frames. Retain
 the complete Scene, Play and lifecycle gates. Scene/Play progress must be `ready`

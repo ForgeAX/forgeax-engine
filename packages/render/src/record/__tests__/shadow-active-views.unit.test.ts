@@ -25,13 +25,19 @@ describe('directional shadow graph demand', () => {
   });
 
   it('rejects invalid counts instead of accidentally dropping a requested cascade', () => {
-    for (const invalid of [0, -1, 5, 2.5, NaN, Infinity]) {
+    expect(directionalShadowPreparationLimit(0, installed(3), undefined)).toBeUndefined();
+    for (const invalid of [-1, 5, 2.5, NaN, Infinity]) {
       expect(directionalShadowPreparationLimit(invalid, installed(3), undefined)).toBeUndefined();
       expect(directionalShadowPreparationLimit(3, installed(invalid), undefined)).toBeUndefined();
       expect(
         directionalShadowPreparationLimit(3, installed(3), installed(invalid)),
       ).toBeUndefined();
     }
+  });
+
+  it('prepares the first directional light for a graph with no existing shadow views', () => {
+    expect(directionalShadowPreparationLimit(3, installed(0), undefined)).toBe(3);
+    expect(directionalShadowPreparationLimit(3, installed(3), installed(0))).toBe(3);
   });
 
   it('releases old graph demand only when that graph has actually retired', () => {

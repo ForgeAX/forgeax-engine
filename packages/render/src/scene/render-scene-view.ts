@@ -1,5 +1,6 @@
 import type { box3 } from '@forgeax/engine-math';
 import type { MeshAsset } from '@forgeax/engine-types';
+import { type RenderResidencySelection, residencySelected } from '../gpu-driven/batch-residency';
 import type { InstanceBoundsCache } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -29,10 +30,16 @@ import type {
   RenderSceneRecord,
   RenderSceneResyncReason,
   RenderSceneSlot,
+  SceneRowGeometry,
 } from './render-scene-types';
 import type { RowContent } from './row-contents';
-import { SceneRows, type WorldTransformSpan } from './scene-rows';
-import { SceneSlotFrame } from './scene-slots';
+import {
+  type SceneRowPreparation,
+  SceneRows,
+  type SceneRowWriteAccess,
+  type WorldTransformSpan,
+} from './scene-rows';
+import { type SceneGeneratedSource, SceneSlotFrame } from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
 type SurfaceColumnReader<T> = (
@@ -48,6 +55,7 @@ class SceneSurfaceRows {
     private readonly meshes: MeshFrame,
     private readonly materials?: MaterialFrame,
     private readonly unavailable?: FrameSet,
+    private readonly residencySelection?: RenderResidencySelection,
   ) {
     Object.freeze(this);
   }
@@ -62,6 +70,7 @@ class SceneSurfaceRows {
       this.source.contentEpoch === other.source.contentEpoch &&
       this.source.identities === other.source.identities &&
       this.meshes === other.meshes &&
+      this.residencySelection === other.residencySelection &&
       this.materials === other.materials &&
       this.unavailable === other.unavailable
     );
@@ -71,6 +80,11 @@ class SceneSurfaceRows {
     let found = false;
     const result = this.source.readContentAt(index, (content, entityKey, slot) => {
       found = true;
+      if (
+        this.residencySelection !== undefined &&
+        !residencySelected(this.residencySelection, content?.residencyGroup)
+      )
+        return read(-1, undefined, undefined);
       return this.consume(content, entityKey, slot, read);
     });
     return found ? (result as T) : read(-1, undefined, undefined);
@@ -138,6 +152,7 @@ export const EMPTY_SLOT_FRAME = new SceneSlotFrame(undefined, 0);
 export class RenderScene {
   private readonly rows: SceneRows;
   private readonly ownsRows: boolean;
+  private readonly rowWrites: SceneRowWriteAccess | undefined;
   private frame: SceneSlotFrame;
   private meshes: MeshFrame;
   private preparation: FrameSet;
@@ -147,12 +162,14 @@ export class RenderScene {
   private history = SubmittedHistory.cut();
   private materialized:
     | {
+        readonly residencySelection: RenderResidencySelection | undefined;
         readonly meshes: MeshFrame;
         readonly value: FrameProjection<RenderSceneSlot, RenderableSnapshot>;
       }
     | undefined;
   private temporalMaterialized:
     | {
+        readonly residencySelection: RenderResidencySelection | undefined;
         readonly current: SceneSlotFrame;
         readonly history: SubmittedHistory;
         readonly materials: MaterialFrame;
@@ -172,13 +189,15 @@ export class RenderScene {
   private lastResyncReason: RenderSceneResyncReason | undefined;
 
   /** Private rows over `source` scopes, or a view over rows another owner writes. */
-  constructor(source?: RenderResourceScope | SceneRows) {
+  constructor(source?: RenderResourceScope | SceneRows, stageRows?: SceneRowWriteAccess) {
     if (source instanceof SceneRows) {
       this.rows = source;
       this.ownsRows = false;
+      this.rowWrites = stageRows;
     } else {
       this.rows = new SceneRows(source);
       this.ownsRows = true;
+      this.rowWrites = this.rows;
     }
     this.frame = this.rows.capture();
     this.meshes = this.rows.meshFrame();
@@ -219,7 +238,7 @@ export class RenderScene {
     return adopted;
   }
 
-  get pipelinePreparationSlots(): ReadonlySet<number> {
+  get pipelinePreparationSlots(): FrameSet {
     return this.preparation;
   }
 
@@ -279,16 +298,50 @@ export class RenderScene {
   }
 
   /** Write owned rows, then observe the delta. */
+  prepareRow(snapshot: RenderableSnapshot): SceneRowPreparation {
+    if (this.rowWrites === undefined)
+      throw new Error('Only the Scene row owner prepares source identities');
+    const task = this.rowWrites.prepareRow(snapshot);
+    const { entityKey, slot, generation } = task.row;
+    let owner: RenderScene | undefined = this;
+    let published = false;
+    const api: SceneRowPreparation = Object.freeze({
+      get row() {
+        return task.row;
+      },
+      isCurrent: () => owner !== undefined && task.isCurrent(),
+      publish: (publication?: SceneRowGeometry) => {
+        const target = owner;
+        if (target === undefined) throw new Error('Scene row preparation is closed');
+        rotateMeshDraws();
+        const delta = task.publish(publication);
+        published = true;
+        target.observe(delta, 1);
+        owner = undefined;
+        return delta;
+      },
+      release: () => {
+        const row = owner !== undefined && published ? owner.rows.lookup(entityKey) : undefined;
+        if (row?.slot === slot && row.generation === generation)
+          throw new Error('A partially observed Scene row retains its cleanup responsibility');
+        task.release();
+        owner = undefined;
+      },
+    });
+    return api;
+  }
+
   apply(
     operations: readonly RenderSceneOperation[],
     spans: readonly WorldTransformSpan[] = [],
   ): RenderSceneApplyResult {
-    if (!this.ownsRows) throw new Error('A view over shared rows observes its owner’s deltas');
+    if (this.rowWrites === undefined)
+      throw new Error('A view over shared rows observes its owner’s deltas');
     let scans = operations.length;
     for (const span of spans) scans += span.entities.length;
     // One read generation per row write; every view of the write shares it.
     rotateMeshDraws();
-    const delta = this.rows.apply(operations, spans);
+    const delta = this.rowWrites.apply(operations, spans);
     this.observe(delta, scans);
     return delta;
   }
@@ -329,13 +382,30 @@ export class RenderScene {
 
   /** Seed a cold view from the owner's complete current rows. */
   observeBaseline(): RenderSceneApplyResult {
+    this.observeCurrentRows();
+    return sceneSnapshotDelta(this.frame);
+  }
+
+  /** Catch up after multiple writes without materializing a full publication. */
+  observeCurrentRows(): void {
+    const before = this.frame;
     this.pin();
-    const delta = sceneSnapshotDelta(this.frame);
+    const frame = this.frame;
+    const retire = (record: RenderSceneSlot) => {
+      if (frame.slotAt(record.slot)?.generation !== record.generation)
+        this.meshDrawSlots.release(record);
+    };
+    if (
+      !frame.changesSince(before, (slot) => {
+        const record = before.slotAt(slot);
+        if (record !== undefined) retire(record);
+      })
+    )
+      for (const record of before) retire(record);
     this.history = SubmittedHistory.cut();
     this.revision += 1;
     this.fullRebuilds += 1;
     this.invalidateSnapshots();
-    return delta;
   }
 
   /** Rows revision this view last observed; a delta applies only on top of it. */
@@ -399,21 +469,37 @@ export class RenderScene {
     return this.temporalTracking ? this.history : undefined;
   }
 
-  hasSource(kind: 'terrain' | 'glyph' | 'tilemap'): boolean {
+  hasSource(kind: SceneGeneratedSource): boolean {
     return this.rows.hasSource(kind);
   }
 
-  materialize(): FrameList<RenderableSnapshot> {
+  materialize(residencySelection?: RenderResidencySelection): FrameList<RenderableSnapshot> {
     const current = this.frame,
       meshes = this.meshes;
-    if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes) {
-      const reader = new SceneSurfaceRows(current, meshes);
+    if (
+      this.materialized?.value.source !== current ||
+      this.materialized.meshes !== meshes ||
+      this.materialized.residencySelection !== residencySelection
+    ) {
+      const reader = new SceneSurfaceRows(
+        current,
+        meshes,
+        undefined,
+        undefined,
+        residencySelection,
+      );
+      const project = (record: RenderSceneSlot) =>
+        residencySelection !== undefined &&
+        !residencySelected(residencySelection, record.snapshot.residencyGroup)
+          ? record.snapshot
+          : meshDrawSnapshot(record.snapshot, meshes);
       this.materialized = {
+        residencySelection,
         meshes,
         value: new RetainedFrameProjection(
           current,
-          (record) => meshDrawSnapshot(record.snapshot, meshes),
-          this.rows.rowFacts(current, meshes),
+          project,
+          this.rows.rowFacts(current, meshes, project),
           reader,
         ),
       };
@@ -487,6 +573,7 @@ export class RenderScene {
     counters: FrameCacheTally,
     materials: MaterialFrame,
     unavailable?: FrameSet,
+    residencySelection?: RenderResidencySelection,
   ): FrameList<RenderableSnapshot> {
     const current = this.frame,
       history = this.history,
@@ -498,12 +585,18 @@ export class RenderScene {
       previous.history === history &&
       previous.materials === materials &&
       previous.meshes === meshes &&
-      previous.unavailable === unavailable
+      previous.unavailable === unavailable &&
+      previous.residencySelection === residencySelection
     )
       return previous.value;
     const memo = this.temporalBySlot;
     // The unavailable roster is live; only a fixed frame without it retains rows.
     const project = (record: RenderSceneSlot): RenderableSnapshot => {
+      if (
+        residencySelection !== undefined &&
+        !residencySelected(residencySelection, record.snapshot.residencyGroup)
+      )
+        return record.snapshot;
       // Pending source rows are retained for retry but have no accepted material.
       // Keep them hidden before consuming temporal facts from the accepted root.
       if (unavailable?.has(record.slot)) return { ...record.snapshot, authorVisible: false };
@@ -518,7 +611,13 @@ export class RenderScene {
     };
     // The temporal row keeps its draw projection's LOD levels, so the Scene's
     // maintained facts hold; sparse rows yield the same temporal projection.
-    const reader = new SceneSurfaceRows(current, meshes, materials, unavailable);
+    const reader = new SceneSurfaceRows(
+      current,
+      meshes,
+      materials,
+      unavailable,
+      residencySelection,
+    );
     const value =
       unavailable === undefined
         ? new RetainedFrameProjection(
@@ -530,6 +629,7 @@ export class RenderScene {
         : new FrameProjection(current, project, reader);
     surfaceProjectionOwners.set(value, reader);
     this.temporalMaterialized = {
+      residencySelection,
       current,
       history,
       materials,

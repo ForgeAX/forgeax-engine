@@ -191,6 +191,79 @@ describe('owned runtime asset content', () => {
     records.release(handle).unwrap();
   });
 
+  test('acceptance reads and retains candidates but cannot mutate the already validated graph', () => {
+    const records = new AssetRecords();
+    const a = records.create('material', material()).unwrap();
+    const b = records.create('material', material()).unwrap();
+    const observer = records.observe().unwrap();
+    records
+      .adoptClosure(
+        () => records.adopt('material', material(0.2), [b], undefined, a),
+        () => {
+          expect(records.read(a).unwrap()).toEqual(material(0.2));
+          // Graph validation has finished. A second replacement here would
+          // introduce a cycle after that validation, before publication.
+          expect(records.adopt('material', material(0.3), [a], undefined, b)).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(records.create('material', material())).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(records.update(b, { ...material(0.4) }, { replace: true })).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(observer.read()).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          records.retain(a).unwrap();
+          records.retain(b).unwrap();
+          records.release(b).unwrap();
+        },
+      )
+      .unwrap();
+    expect(records.read(b).unwrap()).toEqual(material());
+    expect(records.refcount(a)).toBe(2);
+    expect(records.refcount(b)).toBe(2);
+    expect(
+      observer
+        .read()
+        .unwrap()
+        .changes.map((change) => change.handle),
+    ).toEqual([a]);
+    records.release(a).unwrap();
+    records.release(a).unwrap();
+    records.release(b).unwrap();
+    expect(records.inspect().assets).toBe(0);
+    observer.dispose();
+  });
+
+  test('closes the acceptance mutation fence on rejection before caller consumer cleanup', () => {
+    const records = new AssetRecords();
+    const a = records.create('material', material()).unwrap();
+    const before = records.inspect();
+    const rejected = new Error('consumer rejected');
+    expect(() =>
+      records.adoptClosure(
+        () => records.adopt('material', material(0.2), [], undefined, a),
+        () => {
+          records.retain(a).unwrap();
+          throw rejected;
+        },
+      ),
+    ).toThrow(rejected);
+    expect(records.read(a).unwrap()).toEqual(material());
+    expect(records.refcount(a)).toBe(2);
+    records.release(a).unwrap(); // Caller-owned consumer cleanup after unwind.
+    expect(records.inspect()).toEqual(before);
+    records.update(a, { ...material(0.3) }).unwrap();
+    records.release(a).unwrap();
+    expect(records.inspect().assets).toBe(0);
+  });
+
   test('replaces existing source identities atomically, retaining fixed closures and dependency holds', () => {
     const records = new AssetRecords();
     const texture = records.create('texture', new Uint8Array([1, 2])).unwrap();

@@ -9,7 +9,7 @@ import {
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { translucentViewOffset } from '../../../render/src/record/view-ubo';
@@ -32,7 +32,7 @@ import {
   wallDepthFoggedPanePixel,
 } from './translucent-fog.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/translucent-fog/dawn';
 const REPLAY_TOLERANCE = 0.03;
 

@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,7 +22,7 @@ import {
 export const coreBaseShaderDirectory =
   'packages/vite-plugin-shader/dist/engine-inputs/ci/base-ssao';
 
-function assertCoreSource(root, extracted, { sourceRevision } = {}) {
+export function assertCoreSource(root, extracted, { sourceRevision } = {}) {
   if (sourceRevision !== undefined && !/^[a-f0-9]{40}$/.test(sourceRevision))
     throw new Error('core shader inputs require an exact source revision');
   // A verifier-owned projection has no Git metadata. Its parent supplies the
@@ -43,8 +51,8 @@ function assertCoreSource(root, extracted, { sourceRevision } = {}) {
 }
 
 /** Native source equality does not imply independently rebuilt bundle-byte equality. */
-export async function restoreCoreCompiler(root, extracted, options) {
-  assertCoreSource(root, extracted, options);
+export async function restoreCoreCompiler(root, extracted) {
+  assertCoreSource(root, extracted);
   const source = join(extracted, 'packages/wgpu-wasm/pkg');
   await verifyProvenance({ pkgDirectory: source });
   const target = join(root, 'packages/wgpu-wasm/pkg');
@@ -56,8 +64,8 @@ export async function restoreCoreCompiler(root, extracted, options) {
   );
 }
 
-export function restoreCoreBaseShader(root, extracted, options) {
-  assertCoreSource(root, extracted, options);
+export function restoreCoreBaseShader(root, extracted) {
+  assertCoreSource(root, extracted);
   const fingerprint = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
   // Core, shared transfer and paired View builds retain independent BASE
   // receipts in their producer locations. POINT cannot satisfy admission.
@@ -96,7 +104,12 @@ async function main() {
   if (index < 0 || !/^[1-9]\d*$/.test(artifactId ?? ''))
     throw new Error('exact core artifact ID required');
   const root = process.cwd();
+  const retainSdkCore = process.argv.includes('--sdk-core');
+  const compilerOnly = process.argv.includes('--compiler-only');
+  if (retainSdkCore && (!compilerOnly || !process.env.GITHUB_ENV))
+    throw new Error('--sdk-core requires --compiler-only in a CI job');
   const staging = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'forgeax-core-base-'));
+  let retained = false;
   try {
     const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     execFileSync(
@@ -110,8 +123,9 @@ async function main() {
       ],
       { stdio: 'inherit', env: { ...process.env, FORGEAX_ARTIFACT_EXPECTED_SHA: sha } },
     );
-    if (process.argv.includes('--prepare-compiler')) {
-      await restoreCoreCompiler(root, staging);
+    const prepareCompiler = process.argv.includes('--prepare-compiler');
+    if (compilerOnly || prepareCompiler) await restoreCoreCompiler(root, staging);
+    if (prepareCompiler || process.argv.includes('--build-packages')) {
       execFileSync(
         process.execPath,
         [
@@ -123,10 +137,16 @@ async function main() {
         { cwd: root, stdio: 'inherit' },
       );
     }
-    restoreCoreBaseShader(root, staging);
-    console.log(`[core-shader-inputs] restored verified base artifact=${artifactId} source=${sha}`);
+    if (!compilerOnly) restoreCoreBaseShader(root, staging);
+    if (retainSdkCore) {
+      appendFileSync(process.env.GITHUB_ENV, `FORGEAX_SDK_CORE_INPUT=${staging}\n`);
+      retained = true;
+    }
+    console.log(
+      `[core-shader-inputs] restored verified ${compilerOnly ? 'compiler' : 'base shader'} artifact=${artifactId} source=${sha}`,
+    );
   } finally {
-    rmSync(resolve(staging), { recursive: true, force: true });
+    if (!retained) rmSync(resolve(staging), { recursive: true, force: true });
   }
 }
 

@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { brotliDecompressSync } from 'node:zlib';
 import { FixedTime, Time, World } from '@forgeax/engine-ecs';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { verifyDist, writeDistManifest } from '../../dist.js';
 import type { ProjectFacts } from '../../types.js';
@@ -207,12 +208,15 @@ it('rejects either the main-package or total deployed-byte limit', async () => {
   }
 });
 
-it.each([
-  undefined,
-  'default',
-  'none',
-  { html: '' },
-] as const)('honors failure presentation %j before the native subpackage loads', async (failure) => {
+it.each(
+  ['en', 'zh-CN'].flatMap((lang) =>
+    ([undefined, 'default', 'none', { html: '' }] as const).map((failure) => ({ lang, failure })),
+  ),
+)('honors failure presentation $failure in $lang before the native subpackage loads', async ({
+  lang,
+  failure,
+}) => {
+  const labels = resolveLoadProgressLabels({ lang });
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-presentation-'));
   const generated = resolve(root, 'generated');
   const output = resolve(root, 'output');
@@ -238,7 +242,7 @@ it.each([
         sourceSnapshot: createScriptablePackSourceSnapshot(),
         filesystemInputs: undefined,
       },
-      { startupUi: { ...(failure === undefined ? {} : { failure }) } },
+      { loadingLabels: { lang }, startupUi: { ...(failure === undefined ? {} : { failure }) } },
     );
     const hook = plugin.generateBundle;
     const emitted: { fileName: string; source: string }[] = [];
@@ -271,6 +275,13 @@ it.each([
       message: 'Native package transport rejected',
     });
     expect(modals).toHaveLength(failure === undefined || failure === 'default' ? 1 : 0);
+    if (modals.length > 0) {
+      expect(modals[0]).toMatchObject({
+        title: labels.host.nativePackageFailureTitle,
+        confirmText: labels.host.confirm,
+        content: 'Native package transport rejected',
+      });
+    }
     await expect(readFile(resolve(output, 'forgeax-wechat-startup.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });

@@ -15,6 +15,17 @@ export {
   type PreparedEngineShaderSource,
   prepareEngineShaderSource,
 } from './engine-program.js';
-export { materialVertexInputs } from './material/cook.js';
+export {
+  compileMaterialSelection,
+  type MaterialCookError,
+  type MaterialCookedAsset,
+  type MaterialCookRequest,
+  materialVertexInputs,
+} from './material/cook.js';
+export {
+  type CookedRayMaterial,
+  compileRayMaterialSelection,
+  type RayMaterialCookRequest,
+} from './material/ray-material.js';
 
 export { prepareShaderProgramCompiler } from './program-template.js';

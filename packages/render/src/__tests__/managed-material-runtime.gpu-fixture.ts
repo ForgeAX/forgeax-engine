@@ -5,8 +5,9 @@ import {
   meshFromInterleaved,
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
-import { rhi } from '@forgeax/engine-rhi-webgpu';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -52,11 +53,8 @@ export async function verifyRuntimeMaterial(
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
     undefined,
-    { shaderManifestUrl: url },
-    {
-      rhi,
-      createShaderModule: (device, descriptor) => rhi.createShaderModule(device, descriptor),
-    },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
+    webgpu,
   );
   renderer.onError((error) => failures.push(error));
   const initialized = await renderer.initialization;

@@ -2,6 +2,7 @@ import {
   type CompiledRenderGraph,
   compiledRenderGraphGeneration,
 } from '@forgeax/engine-render-graph';
+import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { RenderError } from '../errors/render';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { retirePendingStandardOutputGpu } from '../pipeline/standard-output/resources';
@@ -26,6 +27,107 @@ import {
 } from './typed-frame-graph';
 
 type Graph = CompiledRenderGraph<RenderPipelineFrame>;
+
+/** Failed compiler allocations remain exact original-owner retirement responsibilities. */
+export function retireRejectedSourceGraph(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  graph: Graph,
+): Promise<Result<void, unknown>> {
+  trackGraphGeneration(frameState, graph);
+  recordGraphDeviceGeneration(internals, graph);
+  retire(frameState, graph);
+  return graph.retire();
+}
+
+export interface PreparedViewGraph {
+  readonly installed: InstalledFrameGraph;
+  accept(): Result<void, RhiError>;
+  isCurrent(): boolean;
+  retire(): Promise<Result<void, unknown>>;
+}
+
+/** Register one real compiled graph before exposing callbacks or yielding its Source task. */
+export function holdPreparedViewGraph(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  installed: InstalledFrameGraph,
+): PreparedViewGraph {
+  const context = recordContext(internals),
+    scope = context.deviceScope;
+  const previous = frameState.compiledFrameGraph;
+  const graph = installed.graph;
+  trackGraphGeneration(frameState, graph);
+  recordGraphDeviceGeneration(internals, graph);
+  let accepted = false;
+  let retirement: Promise<Result<void, unknown>> | undefined;
+  const ownerCurrent = () =>
+    recordContext(internals) === context &&
+    context.deviceScope === scope &&
+    scope.isAlive() &&
+    !graph.isRetired();
+  const current = () =>
+    accepted &&
+    retirement === undefined &&
+    ownerCurrent() &&
+    (frameState.compiledFrameGraph?.graph === graph ||
+      frameState.unsubmittedCompiledFrameGraph?.installed.graph === graph);
+  return Object.freeze({
+    installed,
+    isCurrent: current,
+    accept: () => {
+      if (
+        accepted ||
+        retirement !== undefined ||
+        !ownerCurrent() ||
+        renderSubmission(renderWorldFor(internals)).open ||
+        frameState.compiledFrameGraph !== previous ||
+        frameState.compiledFrameGraphCandidate !== undefined
+      )
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'one idle original View graph owner',
+            hint: 'recompile the current Source demand outside recording',
+          }),
+        );
+      const stash = frameState.unsubmittedCompiledFrameGraph;
+      if (previous?.graph !== graph)
+        frameState.unsubmittedCompiledFrameGraph = {
+          installed,
+          deviceGeneration: scope.generation,
+        };
+      accepted = true;
+      if (stash !== undefined && stash.installed.graph !== graph)
+        retire(frameState, stash.installed.graph);
+      return current()
+        ? ok(undefined)
+        : err(
+            new RhiError({
+              code: 'rhi-descriptor-invalid',
+              expected: 'the original prepared graph remains owned',
+              hint: 'reprepare the invalidated Source graph',
+            }),
+          );
+    },
+    retire: () => {
+      if (retirement !== undefined) return retirement;
+      retirement = Promise.resolve().then(async () => {
+        // Ordinary adoption transfers this graph to its existing View owner.
+        if (
+          frameState.compiledFrameGraph?.graph === graph ||
+          frameState.compiledFrameGraphCandidate?.graph === graph
+        )
+          return ok(undefined);
+        if (frameState.unsubmittedCompiledFrameGraph?.installed.graph === graph)
+          frameState.unsubmittedCompiledFrameGraph = undefined;
+        retire(frameState, graph);
+        return graph.retire();
+      });
+      return retirement;
+    },
+  });
+}
 
 /** Why a view kept its last-known-good graph (`retained`) or has none (`rejected`). */
 export type GraphRejectCode =

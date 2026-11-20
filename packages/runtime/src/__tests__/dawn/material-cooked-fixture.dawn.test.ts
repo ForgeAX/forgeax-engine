@@ -8,7 +8,7 @@ import { AssetGuid, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildProjectShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../../renderer-host';
@@ -68,11 +68,11 @@ const root = materialRows.find((asset) => asset.payload.parent === undefined);
 const derived = materialRows.find((asset) => asset.payload.parent === root?.guid);
 
 describe('custom-shader cooked MaterialAsset fixture', () => {
-  let manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>;
+  let manifest: Awaited<ReturnType<typeof buildProjectShaderTemplateManifest>>;
   // Authored packages compile from source. Keep that cold preparation outside
   // the unchanged 60-second GPU test budget and fail once if compilation fails.
   beforeAll(async () => {
-    manifest = await buildEngineShaderManifest({
+    manifest = await buildProjectShaderTemplateManifest({
       materialPackages: [authoredShaderPackage],
     });
   }, 300_000);

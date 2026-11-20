@@ -1,10 +1,22 @@
+import { type Buffer, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
-import type { GpuDrivenPreparationFailureInspection } from '../inspection-types';
-import type { GpuDrivenBatch } from './batch-topology';
+import type {
+  GpuDrivenPreparationFailureInspection,
+  GpuDrivenProductionInspection,
+} from '../inspection-types';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { FramePresentationPendingReason, RenderRecordPhase } from '../render-contract';
+import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import type { GpuDrivenBatch, GpuDrivenBatchBinding } from './batch-topology';
+import type { BatchExecutions } from './material-artifacts';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
+import type { GpuDrivenPrepareInput } from './production-raster';
+import type { PipelinePreparationJob } from './production-raster-frame';
+import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import type { PreparedBatch } from './production-raster-prepare';
+import type { ShadowViewIdentity } from './shadow-views';
 
 export function preparationFailureInspection(
   error: GpuDrivenPreparationError,
@@ -178,4 +190,107 @@ export function observeShadowArtifacts(
     if (!previous.has(key) || previous.get(key)?.key !== observed?.key) changed = true;
   }
   return changed || previous.size !== next.size ? next : previous;
+}
+
+export function rasterSampleCount(value: number): 1 | 4 {
+  if (value === 1 || value === 4) return value;
+  throw new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'one or four samples in a GPU raster pass',
+    hint: 'derive pipeline samples from the actual graph pass attachments',
+  });
+}
+
+export function hasSurfaceArtifact(input: GpuDrivenPrepareInput): boolean {
+  if (input.directSurface !== undefined) return true;
+  if (input.materialArtifact?.receipt?.surface !== undefined) return true;
+  if (input.materialSkinArtifact?.receipt?.surface !== undefined) return true;
+  if (input.materialArtifacts === undefined) return false;
+  for (const artifact of input.materialArtifacts.values()) {
+    if (artifact.receipt?.surface !== undefined) return true;
+  }
+  return false;
+}
+
+export function mainPlanPhase(part: 'groups' | 'group-key' | 'batches'): RenderRecordPhase {
+  if (part === 'groups') return 'record/gpu-driven-prepare/filter/main-plan/groups';
+  if (part === 'group-key') return 'record/gpu-driven-prepare/filter/main-plan/groups/key';
+  return 'record/gpu-driven-prepare/filter/main-plan/batches';
+}
+
+export function shadowPlanPhase(part: 'groups' | 'group-key' | 'batches'): RenderRecordPhase {
+  if (part === 'groups') return 'record/gpu-driven-prepare/filter/shadow-plan/groups';
+  if (part === 'group-key') return 'record/gpu-driven-prepare/filter/shadow-plan/groups/key';
+  return 'record/gpu-driven-prepare/filter/shadow-plan/batches';
+}
+
+export function surfaceArtifactInspection(
+  artifact: MaterialShaderArtifact | undefined,
+): GpuDrivenProductionInspection['surfaceArtifact'] {
+  const receipt = artifact?.receipt;
+  if (artifact === undefined || receipt === undefined || receipt.sceneIndexEntry === undefined)
+    return undefined;
+  return Object.freeze({
+    material: artifact.material,
+    specializationKey: artifact.specializationKey,
+    variantSet: artifact.variantSet,
+    layoutIdentity: artifact.layoutIdentity,
+    receiptIdentity: receipt.receiptIdentity,
+    receiptGeneration: receipt.generation,
+    directEntry: receipt.directEntry,
+    sceneIndexEntry: receipt.sceneIndexEntry,
+  });
+}
+
+export function isSkinPreparedBatch({ batch }: PreparedBatch): boolean {
+  return batch.prepared?.identity.deformation === 'skin';
+}
+
+export function rebindRaster(
+  raster: MaterialAbiRasterAdapter,
+  input: GpuDrivenPrepareInput,
+  visibleBuffer: Buffer,
+): Result<MaterialAbiRasterAdapter, RhiError> {
+  const probe = raster.ensureProbeBlendRecordBuffer(input.probeBlendRecordBuffer);
+  if (!probe.ok) return probe;
+  const rebound = raster.ensureVisibleBuffer(visibleBuffer);
+  if (!rebound.ok) return rebound;
+  return ok(raster);
+}
+
+export function sceneTransformBytes(scene: PersistentGpuDrivenState): number {
+  return scene.scene.transformByteLength;
+}
+
+export function shadowDirectRequired(
+  scene: PersistentGpuDrivenState,
+  executions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
+): boolean {
+  if (scene.completeGeometry !== true) return true;
+  return scene.plan.batches.some((batch) => {
+    const execution =
+      batch.binding === undefined ? undefined : executions.get(batch.binding)?.shadow;
+    return execution === undefined || execution.route === 'direct';
+  });
+}
+
+export function runPipelinePreparations(
+  jobs: ReadonlyMap<string, PipelinePreparationJob>,
+  entries: readonly ValidatedRenderable[],
+  artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
+  onPending: ((reason: FramePresentationPendingReason) => void) | undefined,
+  materials: import('../scene/material-dispatch').MaterialFrame | undefined,
+): boolean {
+  let ready = true;
+  for (const job of jobs.values())
+    if (!job.prepare(entries, artifacts, onPending, materials)) ready = false;
+  return ready;
+}
+
+export function shadowViewPass(
+  kind: ShadowViewIdentity['kind'],
+): 'directional-shadow' | 'point-shadow' | 'spot-shadow' {
+  if (kind === 'directional') return 'directional-shadow';
+  if (kind === 'point') return 'point-shadow';
+  return 'spot-shadow';
 }

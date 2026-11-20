@@ -8,7 +8,7 @@ import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createRayPathTracer } from '../../raytracing/path-tracer';
-import type { RayPathFixture } from './path-tracer.commands';
+import type { RayPublicationFixture } from './path-tracer.commands';
 import { readBuffer } from './path-tracer.fixture';
 import { retainedPublishedTransportPlane } from './scene-projection.fixture';
 
@@ -29,7 +29,10 @@ const SOURCE = `
 `;
 
 /** A GPU producer changes the initial rays without any receiver readback or CPU ray upload. */
-export async function verifyGpuPathSource(fixture: RayPathFixture, graphOwned = false) {
+export async function verifyGpuPathSource(
+  { kernel, material }: RayPublicationFixture,
+  graphOwned = false,
+) {
   const recorder = attachRecorder(gpu).unwrap();
   const device = (
     await (await recorder.backend.rhi.requestAdapter()).unwrap().requestDevice()
@@ -68,17 +71,10 @@ export async function verifyGpuPathSource(fixture: RayPathFixture, graphOwned = 
         ],
       })
       .unwrap();
-    const material = fixture.materials.find((entry) => entry.name === 'emission');
-    assert(material?.cookedPublication);
     const tracer = (
       await createRayPathTracer(device, recorder.backend.createShaderModule, {
-        kernel: fixture.kernel,
-        scene: (
-          await retainedPublishedTransportPlane({
-            ...material,
-            cookedPublication: material.cookedPublication,
-          })
-        ).project().scene,
+        kernel,
+        scene: (await retainedPublishedTransportPlane(material)).project().scene,
         materials: [{ id: 0, ...material }],
         lights: [],
         settings: {

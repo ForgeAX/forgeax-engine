@@ -1,5 +1,7 @@
 # Engine working rules
 
+[Simplified Chinese](AGENTS.zh-CN.md)
+
 AI-first TypeScript game engine; AI is the primary user. Reduce the concepts a reader must hold, not line count. Prefer one authority, derived state and closed unions. Fix the owning subsystem rather than adding a demo workaround or parallel registry. Prefer the better API over compatibility shims; published wire/API changes retain their versioning rules.
 
 ## Start with the task

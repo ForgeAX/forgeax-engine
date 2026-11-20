@@ -9,11 +9,70 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import { assetDataBytes, assetFieldBytes, copyAssetData, takeAssetData } from './asset-data';
+import {
+  assetDataBytes,
+  assetFieldBytes,
+  captureAssetDataAllocated,
+  copyAssetData,
+  takeAssetData,
+} from './asset-data';
 
 export interface PreparedAssetContent<T = unknown> {
   readonly value: T;
   readonly dependencies?: readonly number[];
+}
+
+/** Explicit private preparation capability; ordinary owner reads stay committed. */
+export interface AssetAdoptionReader {
+  read<T>(handle: number): Result<T, AssetError>;
+  /** Synchronous use only for committed values; never retain their POD across a step. */
+  borrow<T>(handle: number): Result<T, AssetError>;
+  version(handle: number): Result<number, AssetError>;
+  kind(handle: number): Result<string, AssetError>;
+  dependencies(handle: number): Result<readonly number[], AssetError>;
+  borrowClosure<T>(roots: readonly number[]): Result<ReadonlyMap<number, T>, AssetError>;
+  validate(handle: number, target?: string): Result<void, AssetError>;
+}
+
+export interface AssetAdoptionStatus {
+  readonly phase: 'preparing' | 'committed' | 'retiring' | 'retired' | 'closed';
+  readonly assets: number;
+  readonly bytes: number;
+  readonly consumerReferences: number;
+  readonly processedReferences: number;
+}
+
+/** A short-lived operation of the existing owner, never a public asset registry. */
+export interface AssetAdoption {
+  readonly reader: AssetAdoptionReader;
+  adopt<K extends string, T, E = never>(
+    target: K,
+    input: T,
+    dependencies?: readonly number[],
+    prepare?: (owned: T, reader: AssetAdoptionReader) => Result<PreparedAssetContent, E>,
+    replacing?: AssetHandle<K>,
+    storage?: 'copy' | 'take',
+  ): Result<AssetHandle<K>, AssetError | E>;
+  commit(beforeCommit?: () => void): Result<void, AssetError>;
+  retire(): void;
+  stepRetirement(maxWork: number): Result<AssetAdoptionStatus, AssetError>;
+  inspect(): AssetAdoptionStatus;
+}
+
+interface AdoptionState {
+  readonly maximumInputRevision: number;
+  readonly values: Map<number, RecordEntry>;
+  readonly newIdentities: Set<number>;
+  readonly expected: Map<number, number>;
+  readonly guardRoots: number[];
+  readonly edgeRoots: number[];
+  readonly consumers: Map<number, number>;
+  readonly check: (() => Result<void, AssetError>) | undefined;
+  phase: AssetAdoptionStatus['phase'];
+  bytes: number;
+  consumerReferences: number;
+  processedReferences: number;
+  cleanup: readonly AssetRetirement[] | undefined;
 }
 
 /** Default content byte budget of one AssetRegistry: a runaway-growth guard, not a scene cap. */
@@ -90,6 +149,73 @@ export interface AssetRevisionGuard {
 
 export interface AssetSnapshot extends AssetRevisionGuard {
   read<T>(handle: number): Result<T, AssetError>;
+}
+
+/** One owner-held cleanup cursor. Each step bounds reference decrements, including dependency edges. */
+export interface AssetRetirement {
+  step(maxReferences: number): Result<AssetRetirementStatus, AssetError>;
+  inspect(): AssetRetirementStatus;
+}
+
+export interface AssetRetirementStatus {
+  readonly done: boolean;
+  readonly pendingReferences: number;
+  readonly processedReferences: number;
+  readonly retiredAssets: number;
+  readonly retiredBytes: number;
+}
+
+/** Engine-only fixed closure plus real holds; borrowed values must not be edited or outlive retirement. */
+export interface AssetContentLease extends Omit<AssetRevisionGuard, 'dispose'> {
+  readonly handles: readonly number[];
+  read<T>(handle: number): Result<T, AssetError>;
+  retire(): Result<AssetRetirement, AssetError>;
+}
+
+/** One independent acquisition of a sealed fixed closure. */
+export interface AssetContentCapture {
+  step(maxAssets: number): Result<AssetContentLease | undefined, AssetError>;
+  inspect(): AssetContentCaptureStatus;
+  retire(): Result<AssetRetirement, AssetError>;
+}
+
+export interface AssetContentCaptureStatus {
+  readonly phase: 'capturing' | 'complete' | 'cancelled';
+  readonly copiedAssets: number;
+  /** Cumulative copied work, not a live-memory measurement after cancellation. */
+  readonly copiedBytes: number;
+  readonly reservedBytes: number;
+}
+
+interface FixedSnapshotData {
+  readonly snapshot: CapturedSnapshot;
+  readonly value: unknown;
+  borrow<T>(handle: number): Result<T, AssetError>;
+}
+
+interface SharedContentSnapshot {
+  readonly root: number;
+  readonly data: FixedSnapshotData;
+  holders: number;
+}
+
+interface ContentCaptureState {
+  readonly handle: number;
+  readonly handles: readonly number[];
+  readonly expected: Map<number, { readonly revision: number; readonly bytes: number }>;
+  readonly guard: CapturedRevisionGuard;
+  readonly values: Map<number, { readonly value: unknown; readonly revision: number }>;
+  readonly bytes: number;
+  copiedAssets: number;
+  copiedBytes: number;
+  status:
+    | { readonly kind: 'capturing' }
+    | { readonly kind: 'complete'; readonly lease: AssetContentLease }
+    | {
+        readonly kind: 'cancelled';
+        readonly retirement: AssetRetirement;
+        readonly cause?: AssetError;
+      };
 }
 
 /** Engine-only fixed content lease. No borrowed storage is exposed by public snapshots. */
@@ -377,6 +503,16 @@ export class AssetRecords implements AssetReferenceOwner {
   private readonly cursors: Cursor[] = [];
   private readonly pinned = new Map<number, PinnedVersion>();
   private readonly versions = new Map<string, PinnedVersion>();
+  /** Holds in custody cannot be consumed by an unrelated ordinary release. */
+  private readonly custodyHolds = new Map<number, number>();
+  private readonly pendingCaptures = new Set<ContentCaptureState>();
+  /** The current sealed copy per root. Replaced versions stay with their existing leases. */
+  private readonly contentSnapshots = new Map<number, SharedContentSnapshot>();
+  private readonly pendingAdoptions = new Set<AdoptionState>();
+  private participatingAdoption: AdoptionState | undefined;
+  private adoptionBytes = 0;
+  private adoptionIdentities = 0;
+  private captureReservedBytes = 0;
   private readonly limits: Required<AssetLimits>;
   private first: ChangeNode | undefined;
   private last: ChangeNode | undefined;
@@ -389,6 +525,7 @@ export class AssetRecords implements AssetReferenceOwner {
   private closed = false;
   private staged: Set<number> | undefined;
   private preparingAdoption = false;
+  private acceptingAdoption = false;
   private replacements: Map<number, RecordEntry> | undefined;
   private candidateBytes = 0;
   private scope: object | undefined;
@@ -413,9 +550,14 @@ export class AssetRecords implements AssetReferenceOwner {
 
   /** Extension preparation may inspect candidate data but cannot publish runtime work. */
   mutationError(): AssetError | undefined {
-    return this.preparingAdoption
+    return this.preparingAdoption || this.acceptingAdoption
       ? failure('asset-write-conflict', 'runtime mutation outside atomic asset preparation')
       : undefined;
+  }
+
+  /** Acceptance may establish consumers of the already validated candidate. */
+  private referenceMutationError(): AssetError | undefined {
+    return this.preparingAdoption ? this.mutationError() : undefined;
   }
 
   private admissionError(newIdentity: boolean): AssetError | undefined {
@@ -424,7 +566,7 @@ export class AssetRecords implements AssetReferenceOwner {
       return failure('asset-budget-exceeded', 'available content revisions');
     if (
       newIdentity &&
-      (this.records.size + this.retiredPending >= this.limits.maxAssets ||
+      (this.records.size + this.retiredPending + this.adoptionIdentities >= this.limits.maxAssets ||
         identities.reference >= 0xffff_ffff)
     )
       return failure('asset-budget-exceeded', 'available asset identity capacity');
@@ -432,10 +574,11 @@ export class AssetRecords implements AssetReferenceOwner {
   }
 
   attach(scope: object): Result<void, AssetError> {
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    if (this.scope === scope) return ok(undefined);
     const conflict = this.mutationError();
     if (conflict !== undefined) return err(conflict);
-    if (this.closed) return err(failure('asset-owner-closed', this.identity));
-    if (this.scope !== undefined && this.scope !== scope)
+    if (this.scope !== undefined)
       return err(failure('asset-reference-invalid', 'an asset owner isolated to one World'));
     this.scope = scope;
     return ok(undefined);
@@ -502,7 +645,9 @@ export class AssetRecords implements AssetReferenceOwner {
     if (linked.length > this.limits.maxDependencies)
       return err(failure('asset-budget-exceeded', 'available dependency capacity'));
     const held = Object.freeze([...new Set(linked)]);
-    const bytes = assetDataBytes(prepared.value.value) + held.length * 8;
+    const value = prepared.value.value;
+    const fieldBytes = new Map<string, number>();
+    const bytes = assetDataBytes(value, fieldBytes) + held.length * 8;
     if (!this.fits(bytes))
       return err(failure('asset-budget-exceeded', 'available prepared content bytes'));
     for (const handle of held) {
@@ -511,17 +656,10 @@ export class AssetRecords implements AssetReferenceOwner {
     }
     const handle = replacing ?? (++identities.reference as AssetHandle<Target>);
     for (const dependency of held) this.retain(dependency).unwrap();
-    const value = prepared.value.value;
-    const fields = objectFields(value);
     const record: RecordEntry = {
       target,
       value,
-      fieldBytes: new Map(
-        Object.entries(fields).map(([key, child]) => [
-          key,
-          assetFieldBytes(key, assetDataBytes(child)),
-        ]),
-      ),
+      fieldBytes,
       dependencies: held,
       revision: previous?.revision ?? ++this.revision,
       holders: 1,
@@ -535,7 +673,7 @@ export class AssetRecords implements AssetReferenceOwner {
     this.records.set(handle, record);
     this.bytes += bytes;
     if (this.staged !== undefined) this.staged.add(handle);
-    else this.changed(handle, Object.keys(fields));
+    else this.changed(handle, [...fieldBytes.keys()]);
     return ok(handle);
   }
 
@@ -544,6 +682,8 @@ export class AssetRecords implements AssetReferenceOwner {
     adopt: () => Result<T, E>,
     beforeCommit?: () => void,
   ): Result<T, AssetError | E> {
+    const conflict = this.mutationError();
+    if (conflict !== undefined) return err(conflict);
     if (this.staged !== undefined)
       return err(failure('asset-write-conflict', 'one atomic asset adoption at a time'));
     const staged = new Set<number>();
@@ -561,7 +701,12 @@ export class AssetRecords implements AssetReferenceOwner {
       }
       // Acceptance may inspect candidate content and retain it for new consumers.
       // A thrown failure rolls back the candidate before any change is published.
-      beforeCommit?.();
+      this.acceptingAdoption = true;
+      try {
+        beforeCommit?.();
+      } finally {
+        this.acceptingAdoption = false;
+      }
       const retired: RecordEntry[] = [];
       if (replacements.size > 0) this.revision++;
       for (const [handle, record] of replacements) {
@@ -602,6 +747,508 @@ export class AssetRecords implements AssetReferenceOwner {
     }
   }
 
+  /** Reserve one private ingestion operation, without opening a global staged view. */
+  beginAdoption(
+    check?: () => Result<void, AssetError>,
+    maximumInputRevision = this.revision,
+  ): Result<AssetAdoption, AssetError> {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    if (
+      !Number.isSafeInteger(maximumInputRevision) ||
+      maximumInputRevision < 0 ||
+      maximumInputRevision > this.revision
+    )
+      return err(
+        failure('asset-invalid-value', 'bounded ingestion inputs and an initial revision'),
+      );
+    for (const pending of this.pendingAdoptions)
+      if (pending.phase === 'preparing')
+        return err(failure('asset-write-conflict', 'one active ingestion candidate per owner'));
+    const state: AdoptionState = {
+      maximumInputRevision,
+      values: new Map(),
+      newIdentities: new Set(),
+      expected: new Map(),
+      guardRoots: [],
+      edgeRoots: [],
+      consumers: new Map(),
+      check,
+      phase: 'preparing',
+      bytes: 0,
+      consumerReferences: 0,
+      processedReferences: 0,
+      cleanup: undefined,
+    };
+    this.pendingAdoptions.add(state);
+    const reader = this.adoptionReader(state);
+    return ok({
+      reader,
+      adopt: (target, input, dependencies = [], prepare, replacing, storage = 'copy') =>
+        this.prepareAdoption(
+          state,
+          reader,
+          target,
+          input,
+          dependencies,
+          prepare,
+          replacing,
+          storage,
+        ),
+      commit: (beforeCommit) => this.commitAdoption(state, beforeCommit),
+      retire: () => {
+        const conflict = this.custodyConflict();
+        if (conflict !== undefined) throw conflict;
+        this.cancelAdoption(state);
+      },
+      stepRetirement: (maxWork) => this.stepAdoptionRetirement(state, maxWork),
+      inspect: () => this.inspectAdoption(state),
+    });
+  }
+
+  private inspectAdoption(state: AdoptionState): AssetAdoptionStatus {
+    return {
+      phase: state.phase,
+      assets: state.values.size,
+      bytes: state.bytes,
+      consumerReferences: state.consumerReferences,
+      processedReferences: state.processedReferences,
+    };
+  }
+
+  private checkAdoption(state: AdoptionState): Result<void, AssetError> {
+    try {
+      const checked = this.validateAdoptionInputs(state);
+      if (!checked.ok) this.cancelAdoption(state);
+      return checked;
+    } catch (cause) {
+      this.cancelAdoption(state);
+      throw cause;
+    }
+  }
+
+  private validateAdoptionInputs(state: AdoptionState): Result<void, AssetError> {
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    if (state.phase !== 'preparing')
+      return err(failure('asset-write-conflict', 'an active private ingestion candidate'));
+    if (
+      this.staged !== undefined ||
+      (this.acceptingAdoption && this.participatingAdoption !== state)
+    )
+      return err(failure('asset-write-conflict', 'candidate reads outside another adoption'));
+    const preparing = this.preparingAdoption;
+    this.preparingAdoption = true;
+    let checked: Result<void, AssetError>;
+    try {
+      checked = state.check?.() ?? ok(undefined);
+    } finally {
+      this.preparingAdoption = preparing;
+    }
+    if (!checked.ok) return checked;
+    for (const [handle, revision] of state.expected)
+      if (this.records.get(handle)?.revision !== revision)
+        return err(failure('asset-write-conflict', 'the initial committed ingestion inputs'));
+    return ok(undefined);
+  }
+
+  private adoptionEntry(state: AdoptionState, handle: number): Result<RecordEntry, AssetError> {
+    const current = this.checkAdoption(state);
+    if (!current.ok) return current;
+    const candidate = state.values.get(handle);
+    if (candidate !== undefined) return ok(candidate);
+    const record = this.records.get(handle);
+    if (record === undefined)
+      return err(failure('asset-reference-invalid', 'a candidate or guarded committed dependency'));
+    if (record.revision > state.maximumInputRevision) {
+      this.cancelAdoption(state);
+      return err(
+        failure('asset-write-conflict', 'runtime inputs unchanged since this ingestion began'),
+      );
+    }
+    if (!state.expected.has(handle)) {
+      const held = this.protectAdoptionReference(handle, state.guardRoots);
+      if (!held.ok) return held;
+      state.expected.set(handle, record.revision);
+    }
+    return ok(record);
+  }
+
+  private adoptionReader(state: AdoptionState): AssetAdoptionReader {
+    return {
+      read: <T>(handle: number) => {
+        const found = this.adoptionEntry(state, handle);
+        return found.ok ? this.capture(found.value.value as T) : found;
+      },
+      borrow: <T>(handle: number) => {
+        const found = this.adoptionEntry(state, handle);
+        return found.ok ? ok(found.value.value as T) : found;
+      },
+      version: (handle) => {
+        const found = this.adoptionEntry(state, handle);
+        return found.ok ? ok(found.value.revision) : found;
+      },
+      kind: (handle) => {
+        const found = this.adoptionEntry(state, handle);
+        return found.ok ? ok(found.value.target) : found;
+      },
+      dependencies: (handle) => {
+        const found = this.adoptionEntry(state, handle);
+        return found.ok ? ok(found.value.dependencies) : found;
+      },
+      borrowClosure: <T>(roots: readonly number[]) => this.borrowAdoptionClosure<T>(state, roots),
+      validate: (handle, target) => {
+        if (handle === 0) return this.checkAdoption(state);
+        const found = this.adoptionEntry(state, handle);
+        if (!found.ok) return found;
+        return target === undefined || found.value.target === target
+          ? ok(undefined)
+          : err(failure('asset-reference-invalid', 'a candidate dependency of the selected kind'));
+      },
+    };
+  }
+
+  private borrowAdoptionClosure<T>(
+    state: AdoptionState,
+    roots: readonly number[],
+  ): Result<ReadonlyMap<number, T>, AssetError> {
+    const values = new Map<number, T>();
+    const pending = [...roots];
+    while (pending.length > 0) {
+      const handle = pending.pop() as number;
+      if (values.has(handle)) continue;
+      const found = this.adoptionEntry(state, handle);
+      if (!found.ok) return found;
+      values.set(handle, found.value.value as T);
+      for (const dependency of found.value.dependencies) pending.push(dependency);
+    }
+    return ok(values);
+  }
+
+  private protectAdoptionReference(handle: number, roots: number[]): Result<void, AssetError> {
+    const record = this.records.get(handle);
+    if (record === undefined)
+      return err(failure('asset-reference-invalid', 'a live committed ingestion dependency'));
+    if (record.holders >= Number.MAX_SAFE_INTEGER)
+      return err(failure('asset-budget-exceeded', 'available ingestion reference grants'));
+    record.holders++;
+    this.custodyHolds.set(handle, (this.custodyHolds.get(handle) ?? 0) + 1);
+    roots.push(handle);
+    return ok(undefined);
+  }
+
+  private prepareAdoption<K extends string, T, E>(
+    state: AdoptionState,
+    reader: AssetAdoptionReader,
+    target: K,
+    input: T,
+    dependencies: readonly number[],
+    prepare:
+      | ((owned: T, reader: AssetAdoptionReader) => Result<PreparedAssetContent, E>)
+      | undefined,
+    replacing: AssetHandle<K> | undefined,
+    storage: 'copy' | 'take',
+  ): Result<AssetHandle<K>, AssetError | E> {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    try {
+      const result = this.prepareAdoptionValue(
+        state,
+        reader,
+        target,
+        input,
+        dependencies,
+        prepare,
+        replacing,
+        storage,
+      );
+      if (!result.ok) this.cancelAdoption(state);
+      return result;
+    } catch (cause) {
+      this.cancelAdoption(state);
+      throw cause;
+    }
+  }
+
+  private prepareAdoptionValue<K extends string, T, E>(
+    state: AdoptionState,
+    reader: AssetAdoptionReader,
+    target: K,
+    input: T,
+    dependencies: readonly number[],
+    prepare:
+      | ((owned: T, reader: AssetAdoptionReader) => Result<PreparedAssetContent, E>)
+      | undefined,
+    replacing: AssetHandle<K> | undefined,
+    storage: 'copy' | 'take',
+  ): Result<AssetHandle<K>, AssetError | E> {
+    const current = this.checkAdoption(state);
+    if (!current.ok) return current;
+    const admission = this.admissionError(replacing === undefined);
+    if (admission !== undefined) return err(admission);
+    const replacement = this.adoptionReplacement(state, target, replacing);
+    if (!replacement.ok) return replacement;
+    const measured = this.measureInput(input);
+    if (!measured.ok) return measured;
+    if (!this.fits(measured.value))
+      return err(failure('asset-budget-exceeded', 'ingestion scratch capacity'));
+    const capturedAllocation = captureAssetDataAllocated(input, storage);
+    const scratchBytes = capturedAllocation.bytes;
+    this.adoptionBytes += scratchBytes;
+    state.bytes += scratchBytes;
+    try {
+      const captured = ok(capturedAllocation.value);
+      let prepared: Result<PreparedAssetContent, E>;
+      this.preparingAdoption = true;
+      try {
+        prepared = prepare?.(captured.value, reader) ?? ok({ value: captured.value });
+      } finally {
+        this.preparingAdoption = false;
+      }
+      if (!prepared.ok) return prepared;
+      const record = this.prepareAdoptionRecord(
+        state,
+        target,
+        prepared.value,
+        dependencies,
+        capturedAllocation.reusedBy(prepared.value.value),
+      );
+      if (!record.ok) return record;
+      const handle = replacing ?? (++identities.reference as AssetHandle<K>);
+      if (replacing === undefined) {
+        state.newIdentities.add(handle);
+        this.adoptionIdentities++;
+      }
+      state.values.set(handle, record.value);
+      state.bytes += record.value.bytes;
+      this.adoptionBytes += record.value.bytes;
+      return ok(handle);
+    } finally {
+      state.bytes -= scratchBytes;
+      this.adoptionBytes -= scratchBytes;
+    }
+  }
+
+  private adoptionReplacement(
+    state: AdoptionState,
+    target: string,
+    replacing: number | undefined,
+  ): Result<void, AssetError> {
+    if (replacing === undefined) return ok(undefined);
+    if (state.values.has(replacing))
+      return err(failure('asset-write-conflict', 'one ingestion replacement per identity'));
+    const found = this.adoptionEntry(state, replacing);
+    if (!found.ok) return found;
+    return found.value.target === target
+      ? ok(undefined)
+      : err(failure('asset-reference-invalid', 'a live source identity of the same kind'));
+  }
+
+  private prepareAdoptionRecord(
+    state: AdoptionState,
+    target: string,
+    prepared: PreparedAssetContent,
+    dependencies: readonly number[],
+    reusedScratch: number,
+  ): Result<RecordEntry, AssetError> {
+    const linked = prepared.dependencies ?? dependencies;
+    if (linked.length > this.limits.maxDependencies)
+      return err(failure('asset-budget-exceeded', 'available dependency capacity'));
+    const held = Object.freeze([...new Set(linked)]);
+    const fieldBytes = new Map<string, number>();
+    const measured = this.measureInput(prepared.value, fieldBytes);
+    if (!measured.ok) return measured;
+    const bytes = measured.value + held.length * 8;
+    if (!this.fits(bytes - reusedScratch))
+      return err(failure('asset-budget-exceeded', 'prepared ingestion capacity'));
+    for (const handle of held) {
+      const found = this.adoptionEntry(state, handle);
+      if (!found.ok) return found;
+    }
+    for (const handle of held) {
+      if (state.newIdentities.has(handle)) {
+        const child = state.values.get(handle) as RecordEntry;
+        if (child.holders >= Number.MAX_SAFE_INTEGER)
+          return err(failure('asset-budget-exceeded', 'available candidate dependency grants'));
+        child.holders++;
+      } else {
+        const retained = this.protectAdoptionReference(handle, state.edgeRoots);
+        if (!retained.ok) return retained;
+      }
+    }
+    return ok({
+      target,
+      value: prepared.value,
+      dependencies: held,
+      bytes,
+      revision: 0,
+      holders: 1,
+      fieldBytes,
+    });
+  }
+
+  /** Final graph validation also guards nodes that were never payload preparation inputs. */
+  private validateAdoptionGraph(state: AdoptionState): Result<void, AssetError> {
+    for (const [root, record] of state.values) {
+      const visited = new Set<number>();
+      const pending = [...record.dependencies];
+      while (pending.length > 0) {
+        const handle = pending.pop() as number;
+        if (handle === root)
+          return err(failure('asset-reference-invalid', 'an acyclic merged ingestion graph'));
+        if (visited.has(handle)) continue;
+        visited.add(handle);
+        const child = this.adoptionEntry(state, handle);
+        if (!child.ok) return child;
+        for (const dependency of child.value.dependencies) pending.push(dependency);
+      }
+    }
+    return this.checkAdoption(state);
+  }
+
+  private commitAdoption(
+    state: AdoptionState,
+    beforeCommit?: () => void,
+  ): Result<void, AssetError> {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    try {
+      const current = this.checkAdoption(state);
+      if (!current.ok) {
+        this.cancelAdoption(state);
+        return current;
+      }
+      const graph = this.validateAdoptionGraph(state);
+      if (!graph.ok) {
+        this.cancelAdoption(state);
+        return graph;
+      }
+      this.acceptingAdoption = true;
+      this.participatingAdoption = state;
+      try {
+        beforeCommit?.();
+      } finally {
+        this.participatingAdoption = undefined;
+        this.acceptingAdoption = false;
+      }
+      const after = this.checkAdoption(state);
+      if (!after.ok) {
+        this.cancelAdoption(state);
+        return after;
+      }
+      const admission = this.admissionError(false);
+      if (admission !== undefined) {
+        this.cancelAdoption(state);
+        return err(admission);
+      }
+      try {
+        this.publishAdoption(state);
+      } catch (cause) {
+        // Publication has started: terminate this owner rather than pretending
+        // a private rollback restored every already public fact.
+        this.dispose();
+        throw cause;
+      }
+      return ok(undefined);
+    } catch (cause) {
+      this.cancelAdoption(state);
+      throw cause;
+    }
+  }
+
+  /** No extension code or payload preparation runs after this first public mutation. */
+  private publishAdoption(state: AdoptionState): void {
+    const oldRoots: number[] = [];
+    if (state.values.size > 0) this.revision++;
+    for (const [handle, record] of state.values) {
+      const previous = this.records.get(handle);
+      if (previous !== undefined) {
+        record.holders = previous.holders;
+        for (const dependency of previous.dependencies) {
+          // Transfer the old graph's actual edge, without manufacturing a new grant.
+          this.custodyHolds.set(dependency, (this.custodyHolds.get(dependency) ?? 0) + 1);
+          oldRoots.push(dependency);
+        }
+      }
+      record.revision = this.revision;
+      this.records.set(handle, record);
+      this.bytes += record.bytes - (previous?.bytes ?? 0);
+      this.changed(handle, [
+        ...new Set([...(previous?.fieldBytes.keys() ?? []), ...record.fieldBytes.keys()]),
+      ]);
+    }
+    for (const handle of state.edgeRoots) {
+      const count = this.custodyHolds.get(handle) as number;
+      if (count === 1) this.custodyHolds.delete(handle);
+      else this.custodyHolds.set(handle, count - 1);
+    }
+    this.adoptionBytes -= state.bytes;
+    this.adoptionIdentities -= state.newIdentities.size;
+    state.bytes = 0;
+    state.values.clear();
+    state.newIdentities.clear();
+    state.consumers.clear();
+    state.consumerReferences = 0;
+    state.phase = 'committed';
+    state.cleanup = [this.createRetirement(state.guardRoots), this.createRetirement(oldRoots)];
+    state.edgeRoots.length = 0;
+  }
+
+  private cancelAdoption(state: AdoptionState): void {
+    if (state.phase !== 'preparing') return;
+    state.phase = 'retiring';
+    state.cleanup = [
+      this.createRetirement(state.guardRoots),
+      this.createRetirement(state.edgeRoots),
+    ];
+  }
+
+  private stepAdoptionRetirement(
+    state: AdoptionState,
+    maxWork: number,
+  ): Result<AssetAdoptionStatus, AssetError> {
+    if (!Number.isSafeInteger(maxWork) || maxWork <= 0)
+      return err(
+        failure('asset-invalid-value', 'a positive safe-integer ingestion retirement budget'),
+      );
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    if (state.phase === 'preparing') this.cancelAdoption(state);
+    for (let work = 0; work < maxWork; work++) {
+      const pending = state.cleanup?.find((task) => !task.inspect().done);
+      if (pending !== undefined) {
+        const before = pending.inspect().processedReferences;
+        const result = pending.step(1);
+        if (!result.ok) return result;
+        state.processedReferences += result.value.processedReferences - before;
+        continue;
+      }
+      if (state.consumerReferences > 0) break;
+      const first = state.values.entries().next();
+      if (first.done) {
+        this.finishAdoption(state);
+        break;
+      }
+      const [handle, record] = first.value;
+      state.values.delete(handle);
+      state.bytes -= record.bytes;
+      this.adoptionBytes -= record.bytes;
+      if (state.newIdentities.delete(handle)) this.adoptionIdentities--;
+    }
+    return ok(this.inspectAdoption(state));
+  }
+
+  private finishAdoption(state: AdoptionState): void {
+    if (state.phase === 'closed' || state.phase === 'retired') return;
+    state.phase = 'retired';
+    state.expected.clear();
+    state.guardRoots.length = 0;
+    state.edgeRoots.length = 0;
+    state.consumers.clear();
+    state.cleanup = undefined;
+    this.pendingAdoptions.delete(state);
+  }
+
   /** A public read is an independently owned value, including every binary view. */
   read<T>(handle: number): Result<T, AssetError> {
     const found = this.entry(handle);
@@ -632,6 +1279,8 @@ export class AssetRecords implements AssetReferenceOwner {
 
   /** Internal lease-accounting evidence for atomic domain admission and rollback. */
   refcount(handle: number): number {
+    if (this.participatingAdoption?.newIdentities.has(handle))
+      return this.participatingAdoption.values.get(handle)?.holders ?? 0;
     return this.records.get(handle)?.holders ?? 0;
   }
 
@@ -821,6 +1470,8 @@ export class AssetRecords implements AssetReferenceOwner {
       limits: Required<AssetLimits>,
     ) => Result<readonly AssetRangeUpdate[], E>,
   ): Result<void, AssetError | E> {
+    const conflict = this.mutationError();
+    if (conflict !== undefined) return err(conflict);
     if (this.staged !== undefined)
       return err(failure('asset-write-conflict', 'range writes outside a closure replacement'));
     const found = this.entry(handle);
@@ -999,10 +1650,20 @@ export class AssetRecords implements AssetReferenceOwner {
   }
 
   retain(handle: number, target?: string): Result<void, AssetError> {
-    const conflict = this.mutationError();
+    const conflict = this.referenceMutationError();
     if (conflict !== undefined) return err(conflict);
     const valid = this.validate(handle, target);
     if (!valid.ok || handle === 0) return valid;
+    const participant = this.participatingAdoption;
+    if (participant?.newIdentities.has(handle)) {
+      const record = participant.values.get(handle) as RecordEntry;
+      if (record.holders >= Number.MAX_SAFE_INTEGER)
+        return err(failure('asset-budget-exceeded', 'available private consumer grants'));
+      record.holders++;
+      participant.consumers.set(handle, (participant.consumers.get(handle) ?? 0) + 1);
+      participant.consumerReferences++;
+      return ok(undefined);
+    }
     const record = this.records.get(handle) as RecordEntry;
     if (record.holders >= Number.MAX_SAFE_INTEGER)
       return err(failure('asset-budget-exceeded', 'available reference holds'));
@@ -1020,11 +1681,18 @@ export class AssetRecords implements AssetReferenceOwner {
   }
 
   release(handle: number): Result<void, AssetError> {
-    const conflict = this.mutationError();
+    const conflict = this.referenceMutationError();
     if (conflict !== undefined) return err(conflict);
     if (handle === 0) return ok(undefined);
+    if (!this.closed && !this.records.has(handle)) {
+      for (const state of this.pendingAdoptions)
+        if (state.newIdentities.has(handle)) return this.releaseAdoptionConsumer(state, handle);
+    }
     const found = this.entry(handle);
     if (!found.ok) return found;
+    const committed = this.records.get(handle) as RecordEntry;
+    if (committed.holders <= (this.custodyHolds.get(handle) ?? 0))
+      return err(failure('asset-reference-invalid', 'a caller-owned reference outside custody'));
     const pending = [handle];
     while (pending.length > 0) {
       const retired = pending.pop() as number;
@@ -1039,13 +1707,347 @@ export class AssetRecords implements AssetReferenceOwner {
     return ok(undefined);
   }
 
+  private releaseAdoptionConsumer(state: AdoptionState, handle: number): Result<void, AssetError> {
+    const count = state.consumers.get(handle) ?? 0;
+    if (count === 0)
+      return err(failure('asset-reference-invalid', 'an outstanding private consumer grant'));
+    if (count === 1) state.consumers.delete(handle);
+    else state.consumers.set(handle, count - 1);
+    state.consumerReferences--;
+    const record = state.values.get(handle) as RecordEntry;
+    record.holders--;
+    return ok(undefined);
+  }
+
+  /** Transfer already owned references exactly once, before any dependency can be decremented. */
+  deferRelease(handles: readonly number[]): Result<AssetRetirement, AssetError> {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    const counts = new Map<number, number>();
+    const roots: number[] = [];
+    for (const handle of handles) {
+      if (handle === 0) continue;
+      const found = this.entry(handle);
+      if (!found.ok) return found;
+      const count = (counts.get(handle) ?? 0) + 1;
+      if (count > found.value.holders - (this.custodyHolds.get(handle) ?? 0))
+        return err(failure('asset-reference-invalid', 'one owned hold per transferred reference'));
+      counts.set(handle, count);
+      roots.push(handle);
+    }
+    for (const [handle, count] of counts)
+      this.custodyHolds.set(handle, (this.custodyHolds.get(handle) ?? 0) + count);
+    return ok(this.createRetirement(roots));
+  }
+
+  /** Synchronous compatibility for internal callers; streaming drives beginContentCapture explicitly. */
+  captureContent(handle: number): Result<AssetContentLease, AssetError> {
+    const started = this.beginContentCapture(handle);
+    if (!started.ok) return started;
+    const finished = started.value.step(Number.MAX_SAFE_INTEGER);
+    return finished.ok && finished.value !== undefined
+      ? ok(finished.value)
+      : finished.ok
+        ? err(failure('asset-reference-invalid', 'a completed fixed capture'))
+        : finished;
+  }
+
+  /** Atomically reserve the initial closure and real holds, without copying its values. */
+  beginContentCapture(handle: number): Result<AssetContentCapture, AssetError> {
+    const plan = this.reserveContentCapture(handle);
+    if (!plan.ok) return plan;
+    const { handles, expected, bytes, shared } = plan.value;
+    const capture: ContentCaptureState = {
+      handle,
+      handles,
+      expected,
+      bytes,
+      guard: this.revisionGuard(expected),
+      values: new Map(),
+      copiedAssets: 0,
+      copiedBytes: 0,
+      status: { kind: 'capturing' },
+    };
+    if (shared === undefined) this.pendingCaptures.add(capture);
+    else this.completeContentCapture(capture, shared);
+    return ok({
+      step: (maxAssets) => this.stepContentCapture(capture, maxAssets),
+      inspect: () => ({
+        phase: capture.status.kind,
+        copiedAssets: capture.copiedAssets,
+        copiedBytes: capture.copiedBytes,
+        reservedBytes:
+          capture.status.kind === 'capturing' ? capture.bytes - capture.copiedBytes : 0,
+      }),
+      retire: () => this.retireContentCapture(capture),
+    });
+  }
+
+  /** No live Record/value escapes this serial admission operation. */
+  private reserveContentCapture(handle: number): Result<
+    {
+      readonly handles: readonly number[];
+      readonly expected: ContentCaptureState['expected'];
+      readonly bytes: number;
+      readonly shared: SharedContentSnapshot | undefined;
+    },
+    AssetError
+  > {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    const selected = this.collectRecords([handle]);
+    if (!selected.ok) return selected;
+    const expected: ContentCaptureState['expected'] = new Map();
+    const shared = this.currentContentSnapshot(handle);
+    let bytes = 0;
+    for (const [reference, record] of selected.value) {
+      if (record.holders >= Number.MAX_SAFE_INTEGER)
+        return err(failure('asset-budget-exceeded', 'available reference holds'));
+      expected.set(reference, { revision: record.revision, bytes: record.bytes });
+      if (shared === undefined) bytes += record.bytes;
+    }
+    if (this.snapshots >= this.limits.maxSnapshots || !this.fits(bytes))
+      return err(failure('asset-budget-exceeded', 'available fixed snapshot capacity'));
+    const handles = Object.freeze([...expected.keys()]);
+    this.snapshots++;
+    this.captureReservedBytes += bytes;
+    for (const reference of handles) {
+      const record = this.records.get(reference) as RecordEntry;
+      record.holders++;
+      this.custodyHolds.set(reference, (this.custodyHolds.get(reference) ?? 0) + 1);
+    }
+    return ok({ handles, expected, bytes, shared });
+  }
+
+  private stepContentCapture(
+    capture: ContentCaptureState,
+    maxAssets: number,
+  ): Result<AssetContentLease | undefined, AssetError> {
+    if (!Number.isSafeInteger(maxAssets) || maxAssets <= 0)
+      return err(failure('asset-invalid-value', 'a positive safe-integer asset work budget'));
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    if (this.closed) return err(failure('asset-owner-closed', this.identity));
+    if (capture.status.kind === 'complete') return ok(capture.status.lease);
+    if (capture.status.kind === 'cancelled')
+      return err(
+        capture.status.cause ?? failure('asset-reference-invalid', 'an uncancelled fixed capture'),
+      );
+    if (!capture.guard.matchesCurrent()) return this.invalidateContentCapture(capture);
+    const shared = this.currentContentSnapshot(capture.handle);
+    if (shared !== undefined) return ok(this.completeContentCapture(capture, shared));
+    for (let work = 0; work < maxAssets && capture.copiedAssets < capture.handles.length; work++) {
+      const reference = capture.handles[capture.copiedAssets] as number;
+      const expected = capture.expected.get(reference) as { revision: number; bytes: number };
+      // entry() deliberately supports staged replacement reads. Capture never does.
+      const record = this.records.get(reference);
+      if (record === undefined || record.revision !== expected.revision)
+        return this.invalidateContentCapture(capture);
+      capture.values.set(reference, {
+        value: copyAssetData(record.value),
+        revision: expected.revision,
+      });
+      capture.copiedAssets++;
+      capture.copiedBytes += expected.bytes;
+      this.captureReservedBytes -= expected.bytes;
+      this.snapshotBytes += expected.bytes;
+    }
+    if (capture.copiedAssets !== capture.handles.length) return ok(undefined);
+    if (!capture.guard.matchesCurrent()) return this.invalidateContentCapture(capture);
+    return ok(this.completeContentCapture(capture));
+  }
+
+  private currentContentSnapshot(handle: number): SharedContentSnapshot | undefined {
+    const shared = this.contentSnapshots.get(handle);
+    return shared?.data.snapshot.matchesCurrent() === true ? shared : undefined;
+  }
+
+  private completeContentCapture(
+    capture: ContentCaptureState,
+    shared?: SharedContentSnapshot,
+  ): AssetContentLease {
+    if (shared === undefined) {
+      const root = capture.handle;
+      shared = { root, data: this.fixedSnapshot(root, capture.values, capture.bytes), holders: 0 };
+      this.contentSnapshots.set(root, shared);
+    } else {
+      // A concurrent closed acquisition can adopt the copy already sealed by its peer.
+      this.captureReservedBytes -= capture.bytes - capture.copiedBytes;
+      this.snapshotBytes -= capture.copiedBytes;
+      capture.values.clear();
+    }
+    capture.guard.dispose();
+    capture.expected.clear();
+    const lease = this.contentLease(capture.handles, shared);
+    capture.status = { kind: 'complete', lease };
+    this.pendingCaptures.delete(capture);
+    return lease;
+  }
+
+  private invalidateContentCapture(capture: ContentCaptureState): Result<never, AssetError> {
+    const cause = failure('asset-write-conflict', 'the unchanged initial fixed-capture closure');
+    const retired = this.retireContentCapture(capture, cause);
+    return retired.ok ? err(cause) : retired;
+  }
+
+  private retireContentCapture(
+    capture: ContentCaptureState,
+    cause?: AssetError,
+  ): Result<AssetRetirement, AssetError> {
+    const conflict = this.custodyConflict();
+    if (conflict !== undefined) return err(conflict);
+    if (capture.status.kind === 'complete') return capture.status.lease.retire();
+    if (capture.status.kind === 'cancelled') return ok(capture.status.retirement);
+    capture.guard.dispose();
+    capture.expected.clear();
+    capture.values.clear();
+    this.snapshots--;
+    this.snapshotBytes -= capture.copiedBytes;
+    this.captureReservedBytes -= capture.bytes - capture.copiedBytes;
+    const retirement = this.createRetirement(capture.handles, () =>
+      this.pendingCaptures.delete(capture),
+    );
+    capture.status = { kind: 'cancelled', retirement, ...(cause === undefined ? {} : { cause }) };
+    return ok(retirement);
+  }
+
+  private contentLease(
+    handles: readonly number[],
+    shared: SharedContentSnapshot,
+  ): AssetContentLease {
+    const { snapshot, borrow } = shared.data;
+    shared.holders++;
+    let readable = true;
+    let retirement: AssetRetirement | undefined;
+    return {
+      handles,
+      read: <T>(reference: number) =>
+        readable
+          ? borrow<T>(reference)
+          : err(failure('asset-reference-invalid', 'a live fixed content lease')),
+      version: (reference) =>
+        readable
+          ? snapshot.version(reference)
+          : err(failure('asset-reference-invalid', 'a live fixed content lease')),
+      matchesCurrent: () => readable && this.staged === undefined && snapshot.matchesCurrent(),
+      retire: () => {
+        if (retirement !== undefined) return ok(retirement);
+        const conflict = this.custodyConflict();
+        if (conflict !== undefined) return err(conflict);
+        readable = false;
+        retirement = this.createRetirement(handles, () => {
+          if (--shared.holders === 0) {
+            snapshot.dispose();
+            if (this.contentSnapshots.get(shared.root) === shared)
+              this.contentSnapshots.delete(shared.root);
+          } else {
+            this.snapshots--;
+          }
+        });
+        return ok(retirement);
+      },
+    };
+  }
+
+  private custodyConflict(): AssetError | undefined {
+    return (
+      this.mutationError() ??
+      (this.staged === undefined
+        ? undefined
+        : failure('asset-write-conflict', 'reference custody outside an adoption transaction'))
+    );
+  }
+
+  private createRetirement(roots: readonly number[], complete?: () => void): AssetRetirement {
+    const frames: { readonly dependencies: readonly number[]; index: number }[] = [];
+    let pendingRoots = roots;
+    let rootIndex = 0;
+    let pendingReferences = pendingRoots.length;
+    let processedReferences = 0;
+    let retiredAssets = 0;
+    let retiredBytes = 0;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      pendingReferences = 0;
+      pendingRoots = [];
+      frames.length = 0;
+      complete?.();
+    };
+    if (pendingReferences === 0) finish();
+    const inspect = (): AssetRetirementStatus => ({
+      done,
+      pendingReferences,
+      processedReferences,
+      retiredAssets,
+      retiredBytes,
+    });
+    return {
+      inspect,
+      step: (maxReferences) => {
+        if (!Number.isSafeInteger(maxReferences) || maxReferences <= 0)
+          return err(
+            failure('asset-invalid-value', 'a positive safe-integer reference work budget'),
+          );
+        if (done) return ok(inspect());
+        const conflict = this.custodyConflict();
+        if (conflict !== undefined) return err(conflict);
+        if (this.closed) {
+          finish();
+          return ok(inspect());
+        }
+        for (let work = 0; work < maxReferences && pendingReferences > 0; work++) {
+          const frame = frames[frames.length - 1];
+          const reference = (
+            frame === undefined ? pendingRoots[rootIndex] : frame.dependencies[frame.index]
+          ) as number;
+          const found = this.entry(reference);
+          if (!found.ok) return found;
+          if (frame === undefined) {
+            const protectedCount = this.custodyHolds.get(reference) ?? 0;
+            if (protectedCount <= 0)
+              return err(
+                failure('asset-reference-invalid', 'an unconsumed reference custody token'),
+              );
+            if (protectedCount === 1) this.custodyHolds.delete(reference);
+            else this.custodyHolds.set(reference, protectedCount - 1);
+            rootIndex++;
+          } else if (++frame.index === frame.dependencies.length) frames.pop();
+          pendingReferences--;
+          processedReferences++;
+          const record = found.value;
+          if (--record.holders > 0) continue;
+          this.records.delete(reference);
+          this.bytes -= record.bytes;
+          retiredAssets++;
+          retiredBytes += record.bytes;
+          this.revision++;
+          this.changed(reference, []);
+          if (record.dependencies.length > 0) {
+            frames.push({ dependencies: record.dependencies, index: 0 });
+            pendingReferences += record.dependencies.length;
+          }
+        }
+        if (pendingReferences === 0) finish();
+        return ok(inspect());
+      },
+    };
+  }
+
   /** Derive dependents from the authoritative held-reference graph. */
   dependentHandles(handle: number): readonly number[] {
     const found: number[] = [];
     for (const [key, record] of this.records) {
-      const candidate = this.replacements?.get(key) ?? record;
+      const candidate =
+        this.participatingAdoption?.values.get(key) ?? this.replacements?.get(key) ?? record;
       if (candidate.dependencies.includes(handle)) found.push(key);
     }
+    if (this.participatingAdoption !== undefined)
+      for (const key of this.participatingAdoption.newIdentities)
+        if (this.participatingAdoption.values.get(key)?.dependencies.includes(handle))
+          found.push(key);
     return found;
   }
 
@@ -1189,6 +2191,7 @@ export class AssetRecords implements AssetReferenceOwner {
   ): CapturedRevisionGuard {
     let active = true;
     const cursor = this.openCursor();
+    let validatedRevision = -1;
     return {
       version: (reference) => {
         const retained = versions.get(reference);
@@ -1198,6 +2201,7 @@ export class AssetRecords implements AssetReferenceOwner {
       },
       matchesCurrent: (preserveChangeEvidence = false) => {
         if (!active || this.closed || this.preparingAdoption || cursor.index < 0) return false;
+        if (validatedRevision === this.revision) return true;
         // Key iteration: this runs per guarded consumer every frame, and an
         // entries() walk would allocate one [key, value] pair per reference.
         for (const reference of versions.keys()) {
@@ -1207,7 +2211,8 @@ export class AssetRecords implements AssetReferenceOwner {
             return false;
           }
         }
-        this.acceptCursor(cursor, this.revision);
+        validatedRevision = this.revision;
+        this.acceptCursor(cursor, validatedRevision);
         return true;
       },
       dispose: () => {
@@ -1220,10 +2225,12 @@ export class AssetRecords implements AssetReferenceOwner {
 
   private captureSnapshot(
     handle: number,
-  ): Result<{ snapshot: CapturedSnapshot; value: unknown }, AssetError> {
+    selectedRecords?: ReadonlyMap<number, RecordEntry>,
+  ): Result<FixedSnapshotData, AssetError> {
     const conflict = this.mutationError();
     if (conflict !== undefined) return err(conflict);
-    const closure = this.collectRecords([handle]);
+    const closure =
+      selectedRecords === undefined ? this.collectRecords([handle]) : ok(selectedRecords);
     if (!closure.ok) return closure;
     const selected = closure.value;
     let bytes = 0;
@@ -1238,7 +2245,17 @@ export class AssetRecords implements AssetReferenceOwner {
       });
     this.snapshots++;
     this.snapshotBytes += bytes;
+    return ok(this.fixedSnapshot(handle, values, bytes));
+  }
+
+  /** Accept already owned copies and their existing snapshot accounting; never copies again. */
+  private fixedSnapshot(
+    handle: number,
+    values: Map<number, { readonly value: unknown; readonly revision: number }>,
+    bytes: number,
+  ): FixedSnapshotData {
     let active = true;
+    const borrowed = new Set<number>();
     const guard = this.revisionGuard(values);
     const snapshot: CapturedSnapshot = {
       ...guard,
@@ -1253,11 +2270,25 @@ export class AssetRecords implements AssetReferenceOwner {
         active = false;
         guard.dispose();
         values.clear();
+        borrowed.clear();
         this.snapshots--;
         this.snapshotBytes -= bytes;
       },
     };
-    return ok({ snapshot, value: values.get(handle)?.value });
+    return {
+      snapshot,
+      value: values.get(handle)?.value,
+      borrow: <T>(reference: number): Result<T, AssetError> => {
+        const retained = values.get(reference);
+        if (!active || retained === undefined)
+          return err(failure('asset-reference-invalid', 'a live captured dependency'));
+        if (!borrowed.has(reference)) {
+          freezeFixedData(retained.value);
+          borrowed.add(reference);
+        }
+        return ok(retained.value as T);
+      },
+    };
   }
 
   observe(): Result<AssetObserver, AssetError> {
@@ -1304,7 +2335,11 @@ export class AssetRecords implements AssetReferenceOwner {
         changes.reverse();
         return ok({
           changes,
-          accept: () => this.acceptCursor(cursor, revision),
+          accept: () => {
+            const conflict = this.mutationError();
+            if (conflict !== undefined) throw conflict;
+            this.acceptCursor(cursor, revision);
+          },
         });
       },
       dispose: () => {
@@ -1316,6 +2351,9 @@ export class AssetRecords implements AssetReferenceOwner {
   }
 
   inspect() {
+    let adoptionConsumerReferences = 0;
+    for (const state of this.pendingAdoptions)
+      adoptionConsumerReferences += state.consumerReferences;
     return {
       assets: this.records.size,
       bytes: this.bytes,
@@ -1323,16 +2361,41 @@ export class AssetRecords implements AssetReferenceOwner {
       snapshotBytes: this.snapshotBytes,
       snapshots: this.snapshots,
       observers: this.observers,
+      adoptionAssets: this.adoptionIdentities,
+      adoptionBytes: this.adoptionBytes,
+      adoptions: this.pendingAdoptions.size,
+      adoptionConsumerReferences,
     };
   }
 
   dispose(): void {
     if (this.closed) return;
-    const conflict = this.mutationError();
+    const conflict = this.custodyConflict();
     if (conflict !== undefined) throw conflict;
     this.closed = true;
+    for (const state of this.pendingAdoptions) {
+      state.phase = 'closed';
+      state.values.clear();
+      state.newIdentities.clear();
+      state.expected.clear();
+      state.guardRoots.length = 0;
+      state.edgeRoots.length = 0;
+      state.cleanup = undefined;
+      state.bytes = 0;
+    }
+    this.pendingAdoptions.clear();
+    this.adoptionBytes = this.adoptionIdentities = 0;
+    for (const capture of this.pendingCaptures) {
+      const retired = this.retireContentCapture(capture);
+      if (!retired.ok) throw retired.error;
+      const closed = retired.value.step(1);
+      if (!closed.ok) throw closed.error;
+    }
+    this.pendingCaptures.clear();
+    this.contentSnapshots.clear();
     this.scope = undefined;
     this.records.clear();
+    this.custodyHolds.clear();
     this.pinned.clear();
     this.changes.clear();
     for (const cursor of this.cursors) cursor.index = -1;
@@ -1371,9 +2434,12 @@ export class AssetRecords implements AssetReferenceOwner {
     this.prune();
   }
 
-  private measureInput(input: unknown): Result<number, AssetError> {
+  private measureInput(
+    input: unknown,
+    fieldBytes?: Map<string, number>,
+  ): Result<number, AssetError> {
     try {
-      return ok(assetDataBytes(input));
+      return ok(assetDataBytes(input, fieldBytes));
     } catch (cause) {
       return err(
         failure('asset-invalid-value', cause instanceof Error ? cause.message : String(cause)),
@@ -1397,7 +2463,10 @@ export class AssetRecords implements AssetReferenceOwner {
 
   private entry(handle: number): Result<RecordEntry, AssetError> {
     if (this.closed) return err(failure('asset-owner-closed', this.identity));
-    const record = this.replacements?.get(handle) ?? this.records.get(handle);
+    const record =
+      this.participatingAdoption?.values.get(handle) ??
+      this.replacements?.get(handle) ??
+      this.records.get(handle);
     return record === undefined
       ? err(failure('asset-reference-invalid', `a live reference owned by ${this.identity}`))
       : ok(record);
@@ -1405,7 +2474,13 @@ export class AssetRecords implements AssetReferenceOwner {
 
   private fits(additional: number): boolean {
     return (
-      this.bytes + this.snapshotBytes + this.candidateBytes + additional <= this.limits.maxBytes
+      this.bytes +
+        this.snapshotBytes +
+        this.captureReservedBytes +
+        this.candidateBytes +
+        this.adoptionBytes +
+        additional <=
+      this.limits.maxBytes
     );
   }
 

@@ -25,7 +25,11 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+const fixtureShaderManifest = `data:application/json,${encodeURIComponent(
+  JSON.stringify({ entries: [], materialShaders: [] }),
+)}`;
 const state = vi.hoisted(() => ({
+  assetGate: undefined as ReturnType<typeof deferred<void>> | undefined,
   rootGate: undefined as ReturnType<typeof deferred<void>> | undefined,
   rootEntered: undefined as ReturnType<typeof deferred<void>> | undefined,
   terminal: undefined as ReturnType<typeof deferred<EngineToHostMessage>> | undefined,
@@ -46,8 +50,13 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (original) => {
   const real = await original<typeof import('@forgeax/engine-runtime/internal/renderer-host')>();
   return {
     ...real,
-    createPublicationAssets: async () =>
-      new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) }),
+    stagePublicationAssets: () => {
+      const catalog = new ShaderRegistry({ manifestUrl: undefined });
+      return {
+        assets: new AssetRegistry({ shaderRegistry: catalog }),
+        ready: Promise.resolve(state.assetGate?.promise).then(() => catalog),
+      };
+    },
   };
 });
 vi.mock('../execution/bootstrap-entry', async (original) => {
@@ -113,6 +122,7 @@ class CpuModuleWorker {
   static ctorFailure: Error | undefined;
   readonly thread: NodeWorker;
   readonly loaded = deferred<{ moduleUrl: string; gpuCalls: number }>();
+  readonly shaderReady = deferred<{ url: string; gpuCalls: number }>();
   readonly exited = deferred<number>();
   readonly posts: RenderWorkerInput[] = [];
   readonly moduleErrors: string[] = [];
@@ -144,9 +154,11 @@ class CpuModuleWorker {
         fixture: string;
         moduleUrl: string;
         gpuCalls: number;
+        url: string;
         data: RenderWorkerOutput;
       }) => {
         if (message.fixture === 'loaded') this.loaded.resolve(message);
+        if (message.fixture === 'shader-ready') this.shaderReady.resolve(message);
         if (message.fixture === 'product') {
           const event = new MessageEvent<RenderWorkerOutput>('message', { data: message.data });
           for (const listener of this.listeners) listener(event);
@@ -213,6 +225,7 @@ let receive: ((event: MessageEvent<HostToEngineMessage>) => void) | null;
 beforeEach(async () => {
   vi.resetModules();
   ecs = await import('@forgeax/engine-ecs');
+  state.assetGate = undefined;
   state.rootGate = deferred<void>();
   state.rootEntered = deferred<void>();
   state.terminal = deferred<EngineToHostMessage>();
@@ -239,6 +252,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   // Preserve failing assertions while settling only this fixture's owned workers.
+  state.assetGate?.resolve();
   state.rootGate?.resolve();
   if (receive !== null && receive !== undefined) {
     await state.terminal?.promise;
@@ -262,6 +276,7 @@ async function launch(kernels = false, diagnostics?: ExecutionDiagnosticsOptions
       startupTimeoutMs: 30_000,
       canvas: {},
       bootstrapUrl: 'fixture://root',
+      shaderManifestUrl: fixtureShaderManifest,
       workers: workerSelection({ engine: true, render: true, kernels }),
       ...(diagnostics === undefined ? {} : { diagnostics }),
     },
@@ -374,9 +389,22 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   expect(world.execution.health).toBe('healthy');
 });
 
-it('loads the actual child module during a deferred Native root, without init or World publisher', async () => {
-  await launch();
-  const child = worker(); // RED on baseline: no worker exists until the root finishes.
+it('stages the actual child while source assets are pending and waits for the Native root before init', async () => {
+  const assetGate = deferred<void>();
+  state.assetGate = assetGate;
+  const launched = launch();
+  await vi.waitFor(() => expect(CpuModuleWorker.instances).toHaveLength(1));
+  const child = worker();
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
+  expect(state.world).toBeUndefined();
+  child.openModuleGate();
+  expect(await child.loaded.promise).toMatchObject({ gpuCalls: 0 });
+  expect(await child.shaderReady.promise).toMatchObject({
+    url: fixtureShaderManifest,
+    gpuCalls: 0,
+  });
+  assetGate.resolve();
+  await launched;
   const world = state.world;
   if (world === undefined)
     throw new Error('Fixture expected the World installed before Native root entry');
@@ -385,14 +413,11 @@ it('loads the actual child module during a deferred Native root, without init or
     new URL('../execution/render-worker-runtime.mjs', import.meta.url).href,
   );
   expect(child.options).toEqual({ type: 'module', name: 'forgeax-render' });
-  expect(child.posts).toEqual([]);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
   expect(await state.terrain?.querySubmittedTerrainHeight?.({} as never)).toMatchObject({
     ok: false,
     error: { detail: { field: 'Worker' } },
   });
-  child.openModuleGate();
-  expect(await child.loaded.promise).toMatchObject({ gpuCalls: 0 });
-  expect(child.posts).toEqual([]);
   expect(world.inspect().scheduleSystemCount(ecs.Update)).toBe(count);
   state.rootGate?.resolve();
   expect(await state.terminal?.promise).toMatchObject({ kind: 'ready' });
@@ -422,7 +447,7 @@ it('retains a real early module error until the original start boundary', async 
     kind: 'fault',
     detail: { code: 'render-worker-failed', detail: 'fixture-early-module-failure' },
   });
-  expect(child.posts).toEqual([]);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
 });
 
 it('preserves the original root failure over an early constructor failure', async () => {
@@ -458,7 +483,7 @@ it('cleans a still-uninitialized real module worker on root failure without fake
   expect(await state.terminal?.promise).toMatchObject({ kind: 'fault' });
   await child.exited.promise;
   expect(child.thread.threadId).toBe(-1);
-  expect(child.posts).toEqual([]); // No init/dispose: the real module gate never opened.
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
 });
 
 it('preserves kernel-ready failure precedence and disposes the staged uninitialized worker', async () => {
@@ -471,7 +496,7 @@ it('preserves kernel-ready failure precedence and disposes the staged uninitiali
     detail: { message: 'fixture-kernel-failure' },
   });
   await child.exited.promise;
-  expect(child.posts).toEqual([]);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
   expect(state.order).toContain('kernel-cleanup');
 });
 
@@ -491,7 +516,7 @@ it('preserves the Native root error over an actual early module failure and reta
   expect(child.errorEvents[0]?.defaultPrevented).toBe(true);
   expect(child.propagatedErrors).toEqual([]);
   await child.exited.promise;
-  expect(child.posts).toEqual([]);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
 });
 
 it('cancels a queued staged event even after its owned worker was disposed', async () => {
@@ -507,7 +532,7 @@ it('cancels a queued staged event even after its owned worker was disposed', asy
   Object.defineProperty(stale, 'message', { value: 'fixture-stale-module-error' });
   stagedHandler?.(stale as ErrorEvent);
   expect(stale.defaultPrevented).toBe(true);
-  expect(child.posts).toEqual([]);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
 });
 
 it('keeps explicit repeated module preload idempotent', async () => {
@@ -524,7 +549,7 @@ it('keeps explicit repeated module preload idempotent', async () => {
     owner.preloadModule();
     expect(CpuModuleWorker.instances).toHaveLength(1);
     expect(CpuModuleWorker.ctorAttempts).toBe(1);
-    expect(CpuModuleWorker.instances[0]?.posts).toEqual([]);
+    expect(CpuModuleWorker.instances[0]?.posts).toEqual([{ kind: 'stage-shader-manifest' }]);
   } finally {
     await owner.dispose();
   }

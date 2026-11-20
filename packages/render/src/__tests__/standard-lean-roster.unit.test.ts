@@ -1,8 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { violatedVariantPermutationRules } from '@forgeax/engine-shader';
 import { publishedVariantDefines } from '@forgeax/engine-vite-plugin-shader';
-import { transpile } from 'typescript';
 import { expect, it } from 'vitest';
+import { generalComparison, validateStandardLeanRoster } from './standard-lean-oracle.fixture';
 
 const standardSource = readFileSync(
   new URL('../../../shader/src/default-standard-pbr.wgsl', import.meta.url),
@@ -19,25 +18,7 @@ const publishedVariants = publishedRows.map((defines) => ({
   definesKey: variantKey(defines),
 }));
 
-function originalGeneralComparison() {
-  const fixture = readFileSync(new URL('gpu-driven-pbr.dawn.test.ts', import.meta.url), 'utf8');
-  const original = fixture.slice(fixture.indexOf("it('validates every STANDARD_LEAN_INPUTS row"));
-  const comparison =
-    / {4}const general(?:Defines)?(?:: Record<string, boolean>)? = [\s\S]*?(?=\n {4}const fields =)/.exec(
-      original,
-    )?.[0];
-  if (comparison === undefined) throw new Error('Missing original general row comparison');
-  return new Function(
-    'variant',
-    'byKey',
-    'violatedVariantPermutationRules',
-    'expect',
-    `${transpile(comparison)}\nreturn general;`,
-  );
-}
-
 it('compares every lean row with its exact published general Water format row', () => {
-  const compare = originalGeneralComparison();
   const byKey = new Map(publishedVariants.map((variant) => [variant.definesKey, variant]));
   const lean = publishedVariants.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS);
   const normalized = lean.filter(
@@ -50,7 +31,7 @@ it('compares every lean row with its exact published general Water format row', 
   expect(added).toHaveLength(32);
   expect(normalized.filter((row) => !added.includes(row))).toHaveLength(608);
   for (const variant of lean) {
-    const general = compare(variant, byKey, violatedVariantPermutationRules, expect);
+    const general = generalComparison(variant, byKey);
     expect(general.defines).toEqual({
       ...variant.defines,
       STANDARD_LEAN_INPUTS: false,
@@ -62,7 +43,6 @@ it('compares every lean row with its exact published general Water format row', 
 });
 
 it('rejects missing or mismatched general rows instead of selecting another published row', () => {
-  const compare = originalGeneralComparison();
   const byKey = new Map(publishedVariants.map((variant) => [variant.definesKey, variant]));
   const variant = publishedVariants.find(
     (row) =>
@@ -71,20 +51,17 @@ it('rejects missing or mismatched general rows instead of selecting another publ
       row.defines.WATER_INFO_RGBA16,
   );
   if (variant === undefined) throw new Error('Missing maintained lean Water format lane');
-  const general = compare(variant, byKey, violatedVariantPermutationRules, expect);
+  const general = generalComparison(variant, byKey);
   byKey.delete(general.definesKey);
-  expect(() => compare(variant, byKey, violatedVariantPermutationRules, expect)).toThrow(
-    'missing general row',
-  );
+  expect(() => generalComparison(variant, byKey)).toThrow('missing general row');
   byKey.set(general.definesKey, {
     ...general,
     defines: { ...general.defines, WATER_WAVES_AVAILABLE: true },
   });
-  expect(() => compare(variant, byKey, violatedVariantPermutationRules, expect)).toThrow();
+  expect(() => generalComparison(variant, byKey)).toThrow();
 });
 
 it('rejects unrelated permutation violations in the general comparison', () => {
-  const compare = originalGeneralComparison();
   const variant = publishedVariants.find((row) => row.defines.STANDARD_LEAN_INPUTS);
   if (variant === undefined) throw new Error('Missing lean row');
   const invalid = {
@@ -95,9 +72,7 @@ it('rejects unrelated permutation violations in the general comparison', () => {
       WATER_WAVES_AVAILABLE: true,
     },
   };
-  expect(() => compare(invalid, new Map(), violatedVariantPermutationRules, expect)).toThrow(
-    'unsupported general comparison',
-  );
+  expect(() => generalComparison(invalid, new Map())).toThrow('unsupported general comparison');
 });
 
 it('keeps every published lean row and the four maintained Water compile lanes', () => {
@@ -129,23 +104,10 @@ it('keeps every published lean row and the four maintained Water compile lanes',
         row.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true && row.STORAGE_BUFFER_AVAILABLE === true,
     ),
   ).toBe(true);
-  const fixture = readFileSync(new URL('gpu-driven-pbr.dawn.test.ts', import.meta.url), 'utf8');
-  const gate = / {2}const (?:expectedLean|lean) = [\s\S]*?(?=\n {2}const adapter)/.exec(
-    fixture.slice(fixture.indexOf("it('validates every STANDARD_LEAN_INPUTS row")),
-  )?.[0];
-  if (gate === undefined) throw new Error('Missing original lean roster gate');
-  const validate = new Function(
-    'standard',
-    'publishedVariantDefines',
-    'STANDARD_PBR_SOURCE',
-    'expect',
-    gate,
-  );
   const variants = rows.map((defines) => ({ defines }));
-  const publishedRows = () => rows;
-  expect(() => validate({ variants }, publishedRows, source, expect)).not.toThrow();
+  expect(() => validateStandardLeanRoster(variants, rows)).not.toThrow();
   const missing = variants.filter((row) => row.defines !== lean[0]);
-  expect(() => validate({ variants: missing }, publishedRows, source, expect)).toThrow();
+  expect(() => validateStandardLeanRoster(missing, rows)).toThrow();
   const duplicate = [...missing, { defines: lean[1] }];
-  expect(() => validate({ variants: duplicate }, publishedRows, source, expect)).toThrow();
+  expect(() => validateStandardLeanRoster(duplicate, rows)).toThrow();
 });

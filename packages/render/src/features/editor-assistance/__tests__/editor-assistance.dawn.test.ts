@@ -3,7 +3,8 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { shaderManifestUrl } from '../../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { createRenderer } from '../../../assembly/factory';
@@ -20,7 +21,7 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 it.each([0, 2])('renders detached helpers, same-frame depth and independent outlines with AA=%s', {
   timeout: 120_000,
 }, async (antialias) => {
-  const manifest = await buildEngineShaderManifest();
+  const manifest = await buildEngineShaderTemplateManifest();
   const url = shaderManifestUrl(manifest);
   let target: GPUTexture | undefined;
   const canvas = {
@@ -39,7 +40,11 @@ it.each([0, 2])('renders detached helpers, same-frame depth and independent outl
       getCurrentTexture: () => target,
     }),
   };
-  const renderer = await createRenderer(canvas, { rhi: webgpu.rhi }, { shaderManifestUrl: url });
+  const renderer = await createRenderer(
+    canvas,
+    { rhi: webgpu.rhi },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
+  );
   const errors: unknown[] = [];
   renderer.onError((error) => errors.push(error));
   try {

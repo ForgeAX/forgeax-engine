@@ -1,6 +1,5 @@
 import type {
   GraphAccess,
-  GraphBuffer,
   GraphResourceResolver,
   GraphTextureView,
   RenderGraphBuilder,
@@ -24,13 +23,11 @@ import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-bl
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import {
-  boundGeometryObservationMetadata,
   GEOMETRY_OBSERVATION_MAX_COMMANDS,
   type GeometryObservation,
-  unavailableGeometry,
 } from '../geometry-observation';
-import type { GpuSceneResourceFrame } from '../gpu-scene';
-import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
+import type { GpuScene, GpuSceneResourceFrame, GpuSceneTableBindingTarget } from '../gpu-scene';
+import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
 import type {
   GpuDrivenLaneReason,
   GpuDrivenLaneSummary,
@@ -38,7 +35,7 @@ import type {
   GpuDrivenProductionInspection,
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
-import { clippingCapRenderState, reflectedRenderState } from '../material-render-state';
+import { clippingCapRenderState } from '../material-render-state';
 import {
   applySurfaceDiscardAxis,
   materialAbiRasterConstants,
@@ -47,21 +44,17 @@ import {
 import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { PREDEPTH_FRAGMENT_ENTRY, predepthCoversMaterial } from '../predepth-coverage';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { ClusterMeshBindingPreparation } from '../record/cluster-mesh-binding-preparation';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { GpuDrawSummary } from '../record/gpu-draw-receipts';
+import type { MaterialTableBindingPreparation } from '../record/material-bg-assembly-cache';
 import {
   type PipelineState,
   type RecordProfileRunner,
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from '../record/render-context';
-import type {
-  CameraSnapshot,
-  FramePresentationPendingReason,
-  RenderRecordPhase,
-} from '../render-contract';
-import { cameraAdmitsLayers } from '../render-layers';
+import type { CameraSnapshot } from '../render-contract';
 import type {
   GpuDrivenDrawPhase,
   GpuDrivenStandardPbrFrameResources,
@@ -78,7 +71,6 @@ import {
   type SurfaceGpuSubmissionAdmission,
 } from '../surface/gpu-driven';
 import type { SurfaceSubmissionCandidate } from '../surface/submission-observation';
-import { gpuLanePreparesAsynchronously } from './batch-execution';
 import {
   batchLevelStride,
   batchLodLevelCount,
@@ -91,8 +83,10 @@ import {
   inspectResourceClassSplits,
   type SubmissionPlan,
 } from './batch-topology';
+import { mainLayerSuppression } from './camera-layer-suppression';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './draw-selection';
 import { FilteredPlanContributionOwner } from './filtered-plan-contributions';
+import { hasCapturedTaskMembership } from './fixed-task-plan';
 import {
   type GBufferOrderDiagnosticConfig,
   type GBufferOrderEncodeEvidence,
@@ -101,13 +95,22 @@ import {
   orderGBufferDiagnostic,
 } from './gbuffer-order-diagnostic';
 import { type LiveRasterBatch, type LiveRasterCache, projectLiveRaster } from './live-raster';
-import { type BatchExecutions, prepareHiddenGpuDrivenPipelines } from './material-artifacts';
+import type { BatchExecutions } from './material-artifacts';
 import {
   type PreparedRasterBundleCache,
   type PreparedRasterCounters,
   type PreparedRasterPass,
   PreparedRasterPassCache,
 } from './prepared-raster-bundle';
+import { InitialViewPreparationOwner } from './production-initial-view';
+import {
+  bindSceneTables,
+  prepareProductionInputBindings,
+  prepareProductionStorageInputs,
+  readSourceResources,
+  sameInputViews,
+} from './production-input-bindings';
+import { registerRasterPipelinePreparation } from './production-pipeline-preparation';
 import { activeFrustum, occlusionCamera, shadowViewClipping } from './production-raster-camera';
 import {
   createRasterPipelines,
@@ -117,7 +120,6 @@ import {
   isSingleLayerMediumArtifact,
   type ProjectedRasterClass,
   type ProjectedRasterPipelines,
-  type RasterPipelineFor,
   type RasterPipelineShape,
   rasterClassFor,
   rasterClassProjectionKey,
@@ -125,13 +127,25 @@ import {
   selectRasterPipeline,
 } from './production-raster-classes';
 import {
+  bindMaterialSlot,
   IndirectPassBindings,
   observeSurfaceDraw,
   observesSurfaceDraws,
   type RasterEncodeCall,
+  type RetainedEncode,
+  requireLateRegion,
+  retainedRasterIdentities,
+  retainedRunEnd,
   selectedMaterialSlot,
   visibleWindowsFor,
 } from './production-raster-encode';
+import type {
+  PipelinePreparationJob,
+  PreparedRasterFrame,
+  ProjectedRasterGraph,
+  RasterGraphTarget,
+  RasterProjectionFrame,
+} from './production-raster-frame';
 import {
   type GBufferOrderEvidence,
   type GBufferOrderSources,
@@ -141,7 +155,9 @@ import {
   captureGeometrySources,
   type GpuGeometryCapture,
   gbufferGeometryProgram,
+  observeProductionGeometry,
 } from './production-raster-geometry-capture';
+import type { ProductionRasterInputs } from './production-raster-inputs';
 import {
   admittedRasterBatchCount,
   lodCoverageMayFade,
@@ -151,6 +167,7 @@ import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
   SurfaceFrameProjectionOwner,
+  surfaceVisibleRows,
 } from './production-raster-material';
 import {
   assemblePreparedPlan,
@@ -158,18 +175,22 @@ import {
   type FilteredProductionPlan,
   type PreparedBatch,
   type PreparedProductionPlan,
-  patchSuppressedPrimitiveWords,
-  suppressedPrimitiveWords,
 } from './production-raster-prepare';
-import { BatchRowAssembly } from './production-raster-rows';
 import {
+  BatchRowAssembly,
+  type HeldResidentBatchRows,
+  type ProvisionalBatchContribution,
+  type ResidentBatchPreparationInput,
+  type ResidentBatchSetInput,
+} from './production-raster-rows';
+import {
+  captureShadowBatchFacts,
   createShadowBatchProjection,
   preparedShadowRows,
   publishedShadowProjections,
   restrictShadowCasterChannels,
   retainedShadowOwners,
   retainedShadowProjection,
-  type ShadowBatchFacts,
   type ShadowBatchProjections,
   ShadowChannelSlots,
   type ShadowProjectionPass,
@@ -181,40 +202,61 @@ import {
   sameShadowBindings,
   sameShadowExecution,
   shadowArtifactsChanged,
+  shadowLayerRequests,
   shadowMaterialsChanged,
   shadowMeshesChanged,
 } from './production-raster-shadow';
 import {
+  hasSurfaceArtifact,
+  isSkinPreparedBatch,
+  mainPlanPhase,
   observeShadowArtifacts,
   preparationFailureInspection,
+  rasterSampleCount,
+  rebindRaster,
+  runPipelinePreparations,
   type ShadowArtifactObservations,
-  sameEntityKeySet,
+  sceneTransformBytes,
+  shadowDirectRequired,
+  shadowPlanPhase,
+  shadowViewPass,
+  surfaceArtifactInspection,
 } from './production-raster-support';
 import { RasterGraphIdentity } from './raster-graph-identity';
+import {
+  createResidentRowPreparation,
+  type ResidentRowPreparation,
+  type ResidentRowPreparationInput,
+} from './resident-row-preparation';
 import { combineGpuResourceAllocationInspections } from './resource-allocation';
 import { preparedAssemblyInputs, samePreparedAssemblyInputs } from './retained-batch-inputs';
 import {
   classOwner,
   materialOwner,
-  type RetainedPassEncode,
   type RetainedRasterBlock,
   RetainedRasterEncodes,
   runFacts,
 } from './retained-raster-encode';
-import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
+import { ShadowCasterClassifier } from './shadow-caster-classes';
 import { ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
 import { staticShadowViewIdentity } from './shadow-view-identity';
 import {
   type ShadowCameraCullDilation,
+  type ShadowViewGraphProjection,
   type ShadowViewIdentity,
-  type ShadowViewProjection,
   ShadowViewStatePool,
   type ShadowViewUpdate,
   type ShadowViewUpdateInput,
-  shadowViewHasStaticLayer,
   shadowViewIdentityKey,
 } from './shadow-views';
+import { rasterPassKey } from './source-raster-bundles';
+import {
+  type NativeMainGraphPreparation,
+  prepareNativeMainGraph,
+  SourceRasterPreparations,
+} from './source-raster-preparation';
+import { type SubmissionAdmission, submissionAdmission } from './submission-admission';
 import {
   type GpuDrivenLodSelectionInspection,
   type GpuDrivenLodSubmitIdentity,
@@ -223,6 +265,7 @@ import {
   type GpuDrivenViewGraphResources,
   selectGpuLodLane,
 } from './view-gpu';
+import type { GpuViewInputPreparation } from './view-input-bindings';
 
 export interface GpuDrivenShadowBatchProjection {
   /** Batch-owned command closure; retained projection edits validate its physical inputs. */
@@ -309,7 +352,7 @@ export interface PreparedGpuDrivenFrame {
     identity: ShadowViewIdentity,
     forceCompute?: boolean,
     cameraPyramid?: GraphTextureView,
-  ) => Result<ShadowViewProjection | undefined, RenderGraphError>;
+  ) => Result<ShadowViewGraphProjection | undefined, RenderGraphError>;
   readonly updateShadowViews?: (
     views: readonly ShadowViewRequest[],
     /** @internal Transfer fresh recorder requests; borrowed callers omit this. */
@@ -331,6 +374,16 @@ export interface PreparedGpuDrivenFrame {
     rendererRecording?: boolean,
   ): Result<RenderPipelineGpuDrivenProjection, RenderGraphError | RhiError>;
 }
+
+/** Graph construction consumes physical owners and demand, never a frame read lease. */
+export type GpuDrivenGraphProjection = Pick<
+  PreparedGpuDrivenFrame,
+  | 'topologySignature'
+  | '_recordingTopologySignature'
+  | 'project'
+  | 'projectShadow'
+  | 'shadowViewPool'
+>;
 
 export interface GpuDrivenPrepareInput {
   readonly materialArtifactResolver?: RenderSystemInternals['getMaterialShaderArtifact'];
@@ -396,204 +449,12 @@ export interface GpuDrivenPrepareInput {
   readonly profilePhase?: RecordProfileRunner;
 }
 
-/** Active-entity admission of one submission plan; reused while the active set holds. */
-interface SubmissionAdmission {
-  readonly source: SubmissionPlan;
-  readonly sceneCapacity: number;
-  readonly activeEntityRevision?: number;
-  readonly activeEntityKeys?: ReadonlySet<number>;
-  readonly suppressed?: Uint32Array;
-  /** The scene rows `suppressed` was derived from, for patching the next admission. */
-  readonly slots: PersistentGpuDrivenState['slots'];
-}
-
-const layerSuppressions = new WeakMap<
-  object,
-  Map<number, { layers: Uint32Array | undefined; combined: WeakMap<Uint32Array, Uint32Array> }>
->();
-/** Immutable SceneSlotFrame identity retains camera membership independently
- * of camera pose. A static scene is not scanned again when a camera moves. */
-function mainLayerSuppression(
-  scene: PersistentGpuDrivenState,
-  camera: CameraSnapshot,
-  base: Uint32Array | undefined,
-): Uint32Array | undefined {
-  let masks = layerSuppressions.get(scene.slots);
-  if (!masks) {
-    masks = new Map();
-    layerSuppressions.set(scene.slots, masks);
-  }
-  const mask = camera.cullMask ?? 0xffffffff;
-  let found = masks.get(mask);
-  if (!found) {
-    let layers: Uint32Array | undefined;
-    for (const row of scene.slots) {
-      if (cameraAdmitsLayers(camera, row.snapshot)) continue;
-      layers ??= new Uint32Array(Math.max(1, Math.ceil(scene.scene.rowCapacity / 32)));
-      const word = row.slot >>> 5;
-      layers[word] = (layers[word] ?? 0) | (1 << (row.slot & 31));
-    }
-    found = { layers, combined: new WeakMap() };
-    if (masks.size >= 16) {
-      const oldest = masks.keys().next().value;
-      if (oldest !== undefined) masks.delete(oldest);
-    }
-    masks.set(mask, found);
-  }
-  if (!found.layers) return base;
-  if (!base) return found.layers;
-  let combined = found.combined.get(base);
-  if (!combined) {
-    combined = base.slice();
-    for (const [i, word] of found.layers.entries()) combined[i] = (combined[i] ?? 0) | word;
-    found.combined.set(base, combined);
-  }
-  return combined;
-}
-
 /** The main and shadow filtered plans of one prepared plan, with their admission. */
 interface FilteredFrame {
   readonly preparedPlan: PreparedProductionPlan;
   readonly filtered: FilteredProductionPlan;
   readonly admission: SubmissionAdmission;
   readonly shadowFiltered: FilteredProductionPlan | undefined;
-}
-
-/** Everything one accepted GPU-lane preparation retains for graph projection and commit. */
-interface PreparedRasterFrame {
-  readonly input: GpuDrivenPrepareInput;
-  readonly scene: PersistentGpuDrivenState;
-  readonly materials: GpuSceneResourceFrame;
-  readonly materialPipelineState: PipelineState;
-  readonly preparedPlan: PreparedProductionPlan;
-  readonly filtered: FilteredProductionPlan;
-  readonly shadowFiltered: FilteredProductionPlan | undefined;
-  readonly liveRasterBatches: readonly LiveRasterBatch[];
-  readonly view: GpuDrivenView;
-  readonly shadowViewPool: ShadowViewStatePool;
-  readonly materialRaster: MaterialAbiRasterAdapter;
-  readonly skinRaster: MaterialAbiRasterAdapter | undefined;
-  readonly viewClipping: string;
-  readonly viewClippingLive: boolean;
-}
-
-/** Attachment facts one graph projection compiles its raster classes against. */
-interface RasterGraphTarget {
-  readonly format: TextureFormat;
-  readonly sampleCount: 1 | 4;
-  readonly rendererRecording: boolean;
-  readonly colorFormats: readonly TextureFormat[];
-  readonly colorFormatKey: string | undefined;
-}
-
-/** One graph projection: its compiled classes and the late region added afterwards. */
-interface ProjectedRasterGraph {
-  readonly frame: PreparedRasterFrame;
-  readonly target: RasterGraphTarget;
-  readonly indirect: GraphBuffer;
-  readonly rasterClasses: Map<string, ProjectedRasterClass>;
-  lateRegion: { readonly indirectByteOffset: number; readonly visibleBase: number } | undefined;
-}
-
-type PipelinePreparationJob = (
-  entries: readonly ValidatedRenderable[],
-  artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-  onPending?: (reason: FramePresentationPendingReason) => void,
-  materials?: import('../scene/material-dispatch').MaterialFrame,
-) => boolean;
-
-/** GPU raster pipelines follow the actual pass attachment profile. */
-function rasterSampleCount(value: number): 1 | 4 {
-  if (value === 1 || value === 4) return value;
-  throw new RhiError({
-    code: 'rhi-descriptor-invalid',
-    expected: 'one or four samples in a GPU raster pass',
-    hint: 'derive pipeline samples from the actual graph pass attachments',
-  });
-}
-
-function hasSurfaceArtifact(input: GpuDrivenPrepareInput): boolean {
-  if (input.directSurface !== undefined) return true;
-  if (input.materialArtifact?.receipt?.surface !== undefined) return true;
-  if (input.materialSkinArtifact?.receipt?.surface !== undefined) return true;
-  if (input.materialArtifacts === undefined) return false;
-  for (const artifact of input.materialArtifacts.values()) {
-    if (artifact.receipt?.surface !== undefined) return true;
-  }
-  return false;
-}
-
-function mainPlanPhase(part: 'groups' | 'group-key' | 'batches'): RenderRecordPhase {
-  if (part === 'groups') return 'record/gpu-driven-prepare/filter/main-plan/groups';
-  if (part === 'group-key') return 'record/gpu-driven-prepare/filter/main-plan/groups/key';
-  return 'record/gpu-driven-prepare/filter/main-plan/batches';
-}
-
-function shadowPlanPhase(part: 'groups' | 'group-key' | 'batches'): RenderRecordPhase {
-  if (part === 'groups') return 'record/gpu-driven-prepare/filter/shadow-plan/groups';
-  if (part === 'group-key') return 'record/gpu-driven-prepare/filter/shadow-plan/groups/key';
-  return 'record/gpu-driven-prepare/filter/shadow-plan/batches';
-}
-
-function sameActiveEntities(admission: SubmissionAdmission, input: GpuDrivenPrepareInput): boolean {
-  if (input.activeEntityRevision !== undefined && admission.activeEntityRevision !== undefined)
-    return input.activeEntityRevision === admission.activeEntityRevision;
-  return sameEntityKeySet(admission.activeEntityKeys, input.activeEntityKeys);
-}
-
-function createSubmissionAdmission(
-  scene: PersistentGpuDrivenState,
-  sceneCapacity: number,
-  input: GpuDrivenPrepareInput,
-  previous: SubmissionAdmission | undefined,
-): SubmissionAdmission {
-  const { activeEntityRevision, activeEntityKeys } = input;
-  const patched =
-    activeEntityKeys === undefined ||
-    previous?.activeEntityKeys === undefined ||
-    previous.suppressed === undefined
-      ? undefined
-      : patchSuppressedPrimitiveWords(
-          {
-            slots: previous.slots,
-            activeEntityKeys: previous.activeEntityKeys,
-            words: previous.suppressed,
-          },
-          scene.slots,
-          activeEntityKeys,
-          sceneCapacity,
-        );
-  return {
-    source: scene.plan,
-    sceneCapacity,
-    slots: scene.slots,
-    ...(activeEntityRevision === undefined ? {} : { activeEntityRevision }),
-    ...(activeEntityKeys === undefined
-      ? {}
-      : {
-          activeEntityKeys,
-          suppressed:
-            patched ?? suppressedPrimitiveWords(scene.slots, activeEntityKeys, sceneCapacity),
-        }),
-  };
-}
-
-function surfaceArtifactInspection(
-  artifact: MaterialShaderArtifact | undefined,
-): GpuDrivenProductionInspection['surfaceArtifact'] {
-  const receipt = artifact?.receipt;
-  if (artifact === undefined || receipt === undefined || receipt.sceneIndexEntry === undefined)
-    return undefined;
-  return Object.freeze({
-    material: artifact.material,
-    specializationKey: artifact.specializationKey,
-    variantSet: artifact.variantSet,
-    layoutIdentity: artifact.layoutIdentity,
-    receiptIdentity: receipt.receiptIdentity,
-    receiptGeneration: receipt.generation,
-    directEntry: receipt.directEntry,
-    sceneIndexEntry: receipt.sceneIndexEntry,
-  });
 }
 
 /**
@@ -603,178 +464,14 @@ function surfaceArtifactInspection(
 const EMPTY_MATERIAL_BINDING_SLOTS: GpuDrivenStandardPbrFrameResources['materialSlotIndicesByBinding'] =
   new Map();
 
-const surfaceRowCache = new WeakMap<
-  SubmissionPlan,
-  { readonly bases: object; readonly layout: number; readonly rows: Uint32Array }
->();
-
-function surfaceVisibleRows(
-  plan: SubmissionPlan,
-  scene: PersistentGpuDrivenState,
-  visibleSurface: GpuDrivenPrepareInput['visibleSurface'],
-): Uint32Array | undefined {
-  if (visibleSurface === undefined) return undefined;
-  // Rows derive only from the plan and the surface addresses: an unchanged
-  // layout reuses the immutable array, so a steady frame does no candidate walk.
-  const cached = surfaceRowCache.get(plan);
-  if (cached?.bases === visibleSurface.slotBases && cached.layout === visibleSurface.layout)
-    return cached.rows;
-  const rows = new Uint32Array(plan.candidateCount);
-  let row = 0;
-  for (const batch of plan.batches) {
-    for (const candidate of batch.candidates) {
-      const base = visibleSurface.slotBases.get(candidate.primitiveIndex) ?? 0;
-      const instanceCount =
-        scene.slotAt(candidate.primitiveIndex)?.snapshot.instances?.instanceCount ?? 1;
-      rows[row++] =
-        base === 0
-          ? 0
-          : base +
-            (batch.binding?.drawItemIndex ?? candidate.drawItemIndex) * instanceCount +
-            candidate.instanceOrdinal;
-    }
-  }
-  surfaceRowCache.set(plan, {
-    bases: visibleSurface.slotBases,
-    layout: visibleSurface.layout,
-    rows,
-  });
-  return rows;
-}
-
-function isSkinPreparedBatch({ batch }: PreparedBatch): boolean {
-  return batch.prepared?.identity.deformation === 'skin';
-}
-
-function rebindRaster(
-  raster: MaterialAbiRasterAdapter,
-  input: GpuDrivenPrepareInput,
-  visibleBuffer: Buffer,
-): Result<MaterialAbiRasterAdapter, RhiError> {
-  const probe = raster.ensureProbeBlendRecordBuffer(input.probeBlendRecordBuffer);
-  if (!probe.ok) return probe;
-  const rebound = raster.ensureVisibleBuffer(visibleBuffer);
-  if (!rebound.ok) return rebound;
-  return ok(raster);
-}
-
-function sceneTransformBytes(scene: PersistentGpuDrivenState): number {
-  return scene.scene.transformByteLength;
-}
-
-function bindSceneTables(
-  raster: MaterialAbiRasterAdapter,
-  scene: PersistentGpuDrivenState,
-  view: GpuDrivenView,
-): void {
-  const rowCapacity = scene.scene.rowCapacity;
-  raster.ensureSceneTables(
-    scene.scene.instanceBuffer,
-    rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
-    scene.scene.primitiveBuffer,
-    rowCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
-    view.visibleSurfaceRowsBuffer,
-    // Only morph rows read the arena; rigid scenes keep their raster groups (and
-    // retained bundles) stable when the arena reallocates.
-    scene.scene.hasMorphRows ? view.sceneInputBuffer : undefined,
-  );
-}
-
-function shadowDirectRequired(
-  scene: PersistentGpuDrivenState,
-  executions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>,
-): boolean {
-  if (scene.completeGeometry !== true) return true;
-  return scene.plan.batches.some((batch) => {
-    const execution =
-      batch.binding === undefined ? undefined : executions.get(batch.binding)?.shadow;
-    return execution === undefined || execution.route === 'direct';
-  });
-}
-
-function runPipelinePreparations(
-  jobs: ReadonlyMap<string, PipelinePreparationJob>,
-  entries: readonly ValidatedRenderable[],
-  artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined,
-  onPending: ((reason: FramePresentationPendingReason) => void) | undefined,
-  materials: import('../scene/material-dispatch').MaterialFrame | undefined,
-): boolean {
-  let ready = true;
-  for (const prepare of jobs.values())
-    if (!prepare(entries, artifacts, onPending, materials)) ready = false;
-  return ready;
-}
-
-/** One stock encode's retained-run state and the pass identities gating it. */
-interface RetainedEncode {
-  readonly key: PreparedRasterPass;
-  readonly identities: readonly unknown[];
-  readonly runs: RetainedPassEncode;
-  readonly facts: ReturnType<typeof runFacts>;
-}
-
-/** End of the contiguous stable-ID block starting at `start`. */
-function retainedRunEnd(lives: readonly LiveRasterBatch[], start: number): number {
-  const block = Math.floor((lives[start] as LiveRasterBatch).batch.batchId / 32);
-  let end = start + 1;
-  while (
-    end < lives.length &&
-    Math.floor((lives[end] as LiveRasterBatch).batch.batchId / 32) === block
-  )
-    end++;
-  return end;
-}
-
-function requireLateRegion(
-  projected: ProjectedRasterGraph,
-): NonNullable<ProjectedRasterGraph['lateRegion']> {
-  if (projected.lateRegion === undefined) {
-    throw new RhiError({
-      code: 'internal-error',
-      expected: 'addLateOcclusion(...) before a late-phase GPU-driven encode',
-      hint: 'add the late HZB cull between the early and late geometry passes',
-    });
-  }
-  return projected.lateRegion;
-}
-
-/**
- * Scene-index templates read numeric values from GPU Scene. Their retained
- * uniform declaration only satisfies the shared layout; a frame-local material
- * slot must not invalidate those commands. Full-custom programs that
- * reference the uniform retain its offset.
- */
-function bindMaterialSlot(
-  bindings: IndirectPassBindings,
-  batch: ProjectedRasterClass,
-  frameResources: GpuDrivenStandardPbrFrameResources,
-  globalMaterialSlot: number,
-): { readonly group: BindGroup; readonly byteOffset: number } {
-  const prepared = frameResources.prepareMaterialBinding(globalMaterialSlot);
-  if (prepared === undefined) {
-    throw new RhiError({
-      code: 'rhi-not-available',
-      expected: `material bind group for global slot ${globalMaterialSlot}`,
-      hint: 'keep GPU-driven material selection on the main-pass producer contract',
-    });
-  }
-  bindings.observeRunMaterial(globalMaterialSlot, prepared.group, prepared.byteOffset);
-  const offset = batch.artifact.program.materialUniformRequired === false ? 0 : prepared.byteOffset;
-  bindings.bindMaterial(prepared.group, offset);
-  return prepared;
-}
-
-function shadowViewPass(
-  kind: ShadowViewIdentity['kind'],
-): 'directional-shadow' | 'point-shadow' | 'spot-shadow' {
-  if (kind === 'directional') return 'directional-shadow';
-  if (kind === 'point') return 'point-shadow';
-  return 'spot-shadow';
-}
-
 export class GpuDrivenProduction {
+  private inputBindingPreparation: GpuViewInputPreparation | undefined;
   private readonly resourceFrames = new Set<GpuSceneResourceFrame>();
+  private readonly residentRowHolds = new Set<HeldResidentBatchRows>();
+  private readonly residentRowTasks = new Set<ResidentRowPreparation>();
   private disposed = false;
+  private residentPreparing = false;
+  private disposalFailure: AggregateError | undefined;
   private readonly rasterPasses = new PreparedRasterPassCache();
   private readonly retainedEncodes = new RetainedRasterEncodes();
   private gbufferOrderMaterials: import('../scene/material-dispatch').MaterialFrame | undefined;
@@ -794,53 +491,28 @@ export class GpuDrivenProduction {
   beginGeometryObservation(source: GpuGeometryCapture['source'] | undefined): void {
     this.geometryCapture = source === undefined ? undefined : { commands: [], members: 0, source };
   }
-  async observeGeometry(receipt: {
+  observeGeometry(receipt: {
     frameId: number;
     deviceGeneration: number;
   }): Promise<GeometryObservation> {
     const capture = this.geometryCapture,
       view = this.view;
-    if (capture === undefined || view === undefined)
-      return unavailableGeometry('not-captured', receipt.frameId, receipt.deviceGeneration);
-    try {
-      if (capture.failure !== undefined) throw Error(capture.failure);
-      const { commands, viewConstants } = await view.readGeometryCommands(
-        capture.commands,
-        receipt,
-      );
-      if (capture !== this.geometryCapture || view !== this.view) throw Error('superseded');
-      const result: GeometryObservation = {
-        scope: 'primary-display-view-gpu-commands',
-        otherViews: 'unobserved',
-        shadows: 'unobserved',
-        cpuDraws: 'unobserved',
-        featureDraws: 'unobserved',
-        status: 'complete',
-        frameId: receipt.frameId,
-        deviceGeneration: receipt.deviceGeneration,
-        viewConstants,
-        commands,
-        commandCount: commands.length,
-        indexOrVertexWork: commands.reduce((n, c) => n + c.indexOrVertexWork, 0),
-      };
-      return boundGeometryObservationMetadata(result);
-    } catch (error) {
-      return unavailableGeometry(
-        error instanceof Error ? error.message : 'readback-failed',
-        receipt.frameId,
-        receipt.deviceGeneration,
-      );
-    }
+    return observeProductionGeometry(
+      capture,
+      view,
+      receipt,
+      () => capture === this.geometryCapture && view === this.view,
+    );
   }
   private view: GpuDrivenView | undefined;
+  private readonly initialViews: InitialViewPreparationOwner;
+  private readonly sourceRasters: SourceRasterPreparations;
   private materialRaster: MaterialAbiRasterAdapter | undefined;
   private skinRaster: MaterialAbiRasterAdapter | undefined;
   /** The frame whose live batches are current; stock graphs project new classes from it. */
   private currentRasterFrame: PreparedRasterFrame | undefined;
   /** Stock raster classes projected after their graph compiled. */
   readonly lateRasterClasses = { projected: 0, failed: 0 };
-  private readonly sceneIdentities = new WeakMap<object, number>();
-  private nextSceneIdentity = 1;
   private readonly preparations = {
     forward: new BatchPreparation(),
     shadow: new BatchPreparation(),
@@ -942,7 +614,39 @@ export class GpuDrivenProduction {
     private readonly device: RhiDevice,
     private readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory,
     private readonly recoveryCount = 0,
-  ) {}
+  ) {
+    const production = this;
+    this.sourceRasters = new SourceRasterPreparations(device, this.rasterPasses);
+    this.initialViews = new InitialViewPreparationOwner(device, shaderModuleFactory, {
+      get alive() {
+        return !production.disposed;
+      },
+      get idle() {
+        return (
+          !production.disposed &&
+          !production.residentPreparing &&
+          production.resourceFrames.size === 0
+        );
+      },
+      get view() {
+        return production.view;
+      },
+      adopt: (view) => {
+        production.view = view;
+      },
+      discard: (view) => {
+        if (production.view === view) production.view = undefined;
+      },
+      prepareConsumers: (scene, storage) =>
+        prepareProductionStorageInputs(
+          scene,
+          storage,
+          this.inputBindingViews(scene),
+          () => this.rasterInputState(),
+          (main, shadows) => this.acceptRasterInputs(main, shadows),
+        ),
+    });
+  }
 
   static forDevice(
     device: RhiDevice,
@@ -951,10 +655,478 @@ export class GpuDrivenProduction {
     return new GpuDrivenProduction(device, shaderModuleFactory);
   }
 
+  /** Actual material/geometry projection for prospective demand, without a View update or draw. */
+  prepareInitialPlan(
+    input: GpuDrivenPrepareInput,
+    current: () => boolean,
+  ): Result<
+    { readonly main: SubmissionPlan; readonly shadow?: SubmissionPlan },
+    RhiError | GpuDrivenPreparationError
+  > {
+    const invalid = () =>
+      err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'one idle original Production and current prospective input',
+          hint: 'retry the original Source demand outside recording',
+        }),
+      );
+    const scene = input.scene;
+    if (
+      this.disposed ||
+      this.residentPreparing ||
+      this.resourceFrames.size !== 0 ||
+      scene === undefined
+    )
+      return invalid();
+    this.residentPreparing = true;
+    try {
+      if (!current() || this.disposed || this.resourceFrames.size !== 0) return invalid();
+      const result = readSourceResources(this.resourceFrames, scene.scene, (resources) =>
+        this.projectInitialPlan(input, scene, resources, current),
+      );
+      if (result === undefined || !current() || this.disposed || this.resourceFrames.size !== 0)
+        return invalid();
+      return result;
+    } finally {
+      this.residentPreparing = false;
+    }
+  }
+
+  private projectInitialPlan(
+    input: GpuDrivenPrepareInput,
+    scene: PersistentGpuDrivenState,
+    resources: GpuSceneResourceFrame,
+    current: () => boolean,
+  ): Result<
+    { readonly main: SubmissionPlan; readonly shadow?: SubmissionPlan },
+    RhiError | GpuDrivenPreparationError
+  > {
+    const prepared = this.assemblePrepared(
+      scene,
+      resources,
+      'forward',
+      input.batchExecutions,
+      input.meshByBinding,
+    );
+    if (!prepared.ok) return prepared;
+    const filtered = this.filterFrame(input, scene, resources, prepared.value);
+    if (filtered === undefined || !current() || this.disposed)
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'current nonempty prospective material execution',
+          hint: 'prepare the actual target consumers before accepting',
+        }),
+      );
+    const sealed = resources.seal();
+    if (!sealed.ok) return sealed;
+    return ok({
+      main: filtered.filtered.plan,
+      ...(filtered.shadowFiltered === undefined ? {} : { shadow: filtered.shadowFiltered.plan }),
+    });
+  }
+
+  /** Native main graph construction only; no View update, target draw or frame read survives. */
+  prepareMainGraphProjection(
+    input: GpuDrivenPrepareInput,
+    view: GpuDrivenView,
+    current: () => boolean,
+  ): Result<NativeMainGraphPreparation, RhiError | GpuDrivenPreparationError> {
+    return prepareNativeMainGraph(this.sourceRasters, input, view, current, {
+      owns: (candidate) =>
+        !this.disposed && (this.view === candidate || this.initialViews.view === candidate),
+      available: () => !this.residentPreparing && this.resourceFrames.size === 0,
+      raster: () => this.materialRaster,
+      shadows: () => this.shadowBatchProjections,
+      prepare: (scene, pipeline, visible, live) => {
+        this.residentPreparing = true;
+        try {
+          return readSourceResources(this.resourceFrames, scene.scene, (resources) =>
+            this.prepareMainGraphFrame(input, scene, resources, pipeline, view, visible, live),
+          );
+        } finally {
+          this.residentPreparing = false;
+        }
+      },
+      signatures: (frame) => this.graphProjectionSignatures(frame, true),
+      project: (frame, args) => {
+        const [graph, format, samples, surface, additional, late, recording] = args;
+        return this.projectGraph(
+          frame,
+          graph,
+          format,
+          samples,
+          surface,
+          additional,
+          late ?? false,
+          recording ?? false,
+        );
+      },
+    });
+  }
+
+  private prepareMainGraphFrame(
+    input: GpuDrivenPrepareInput,
+    scene: PersistentGpuDrivenState,
+    resources: GpuSceneResourceFrame,
+    pipeline: PipelineState,
+    view: GpuDrivenView,
+    visible: Buffer,
+    current: () => boolean,
+  ): Result<RasterProjectionFrame, RhiError | GpuDrivenPreparationError> {
+    const prepared = this.assemblePrepared(
+      scene,
+      resources,
+      'forward',
+      input.batchExecutions,
+      input.meshByBinding,
+    );
+    if (!prepared.ok) return prepared;
+    const filtered = this.filterFrame(input, scene, resources, prepared.value);
+    if (filtered === undefined || !current())
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'current prospective main batches',
+          hint: 'reprepare the current Source',
+        }),
+      );
+    const raster = this.ensureMaterialRaster(
+      input,
+      pipeline,
+      filtered.filtered,
+      filtered.shadowFiltered,
+      visible,
+    );
+    if (!raster.ok) return raster;
+    bindSceneTables(raster.value, scene, view);
+    const pool =
+      this.shadowViews ??
+      ShadowViewStatePool.create({
+        device: this.device,
+        shaderModuleFactory: this.shaderModuleFactory,
+      }).unwrap();
+    this.shadowViews = pool;
+    resources.seal().unwrap();
+    return ok({
+      input,
+      scene,
+      materialPipelineState: pipeline,
+      filtered: filtered.filtered,
+      shadowFiltered: filtered.shadowFiltered,
+      liveRasterBatches: projectLiveRaster(
+        undefined,
+        filtered.filtered,
+        visible,
+        raster.value.visibleBindingIdentity,
+        undefined,
+      ).value,
+      view,
+      shadowViewPool: pool,
+      materialRaster: raster.value,
+      skinRaster: undefined,
+      viewClipping: shadowViewClipping(input.camera),
+      viewClippingLive: (input.camera.clipping?.planes.length ?? 0) > 0,
+    });
+  }
+
+  /** First native View only. This prepares storage, not complete Pass or Level readiness. */
+  prepareInitialViewStorage(...args: Parameters<InitialViewPreparationOwner['prepare']>) {
+    return this.initialViews.prepare(...args);
+  }
+
+  prepareSourceShadowStorage(
+    identity: ShadowViewIdentity,
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+  ) {
+    const pool =
+      this.shadowViews ??
+      ShadowViewStatePool.create({
+        device: this.device,
+        shaderModuleFactory: this.shaderModuleFactory,
+      }).unwrap();
+    this.shadowViews = pool;
+    return pool.prepareSourceView(identity, plan, scene, current, (storage) =>
+      prepareProductionStorageInputs(
+        scene,
+        storage,
+        this.inputBindingViews(scene),
+        () => this.rasterInputState(),
+        (main, shadows) => this.acceptRasterInputs(main, shadows),
+      ),
+    );
+  }
+
+  /** Prospective class/layer data only; no target View update or execution clock change. */
+  prepareSourceShadowLayers(input: GpuDrivenPrepareInput, requests: readonly ShadowViewRequest[]) {
+    const scene = input.scene;
+    if (scene === undefined) throw new Error('Source shadow layers require their original Scene');
+    const classes = this.shadowCasterClasses.preview(scene, scene.scene);
+    const current = this.shadowCasterClasses.preparationCurrent(classes);
+    const layers = requests.flatMap((requested) => {
+      const layers = shadowLayerRequests(
+        restrictShadowCasterChannels(requested, this.shadowChannelSlots, {
+          scene,
+          shadowScene: scene.scene,
+        }),
+        classes,
+      );
+      return layers.static === undefined ? [layers.final] : [layers.static, layers.final];
+    });
+    return { layers, current };
+  }
+
+  prepareSourceShadowTopology(...args: Parameters<ShadowViewStatePool['prepareSourceLayer']>) {
+    if (this.shadowViews === undefined)
+      throw new Error('Prepare the original shadow storage first');
+    return this.shadowViews.prepareSourceLayer(...args);
+  }
+
+  settleInitialViewRetirement(): Promise<Result<void, RhiError>> {
+    return this.initialViews.settleInitialViewRetirement();
+  }
+
+  /** Existing owned View/raster demand only; other Productions remain separate. */
+  prepareInputBindings(
+    scene: GpuScene,
+    input: GpuSceneInputPreparation,
+    current?: () => boolean,
+    tables?: GpuSceneTableBindingTarget,
+    clusters?: ClusterMeshBindingPreparation,
+    materialTables?: MaterialTableBindingPreparation,
+  ): Result<GpuViewInputPreparation, RhiError> {
+    if (
+      this.disposed ||
+      this.residentPreparing ||
+      this.resourceFrames.size !== 0 ||
+      this.inputBindingPreparation !== undefined
+    )
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'one idle Production View input preparation',
+          hint: 'finish recording or release its previous preparation',
+        }),
+      );
+    const views = this.inputBindingViews(scene);
+    let building = true;
+    this.residentPreparing = true;
+    try {
+      const created = prepareProductionInputBindings(
+        scene,
+        input,
+        views,
+        () =>
+          (current === undefined || current()) &&
+          !this.disposed &&
+          this.resourceFrames.size === 0 &&
+          (building || !this.residentPreparing) &&
+          sameInputViews(views, this.inputBindingViews(scene)),
+        (task) => {
+          if (this.inputBindingPreparation === task) this.inputBindingPreparation = undefined;
+        },
+        () => this.rasterInputState(),
+        (main, shadows) => this.acceptRasterInputs(main, shadows),
+        tables,
+        clusters,
+        materialTables,
+      );
+      if (created.ok) this.inputBindingPreparation = created.value;
+      return created;
+    } finally {
+      building = false;
+      this.residentPreparing = false;
+    }
+  }
+
+  private rasterInputState(): ProductionRasterInputs {
+    return {
+      rigid: this.materialRaster,
+      skin: this.skinRaster,
+      main: this.liveRasterCache,
+      shadows: this.shadowBatchProjections,
+      shadowSources: this.shadowProjectionSources,
+      unchanged: this.shadowUnchangedInputs,
+      retained: this.retainedEncodes,
+    };
+  }
+  private acceptRasterInputs(
+    main: ProductionRasterInputs['main'],
+    shadows: ProductionRasterInputs['shadows'],
+  ): void {
+    this.liveRasterCache = main;
+    this.shadowBatchProjections = shadows;
+  }
+
+  inputBindingViews(scene: GpuScene): readonly GpuDrivenView[] {
+    return [
+      ...new Set([
+        ...(this.view?.ownsInputScene(scene) === true ? [this.view] : []),
+        ...(this.initialViews.view?.ownsInputScene(scene) === true ? [this.initialViews.view] : []),
+        ...(this.shadowViews?.inputBindingViews(scene) ?? []),
+      ]),
+    ];
+  }
+
+  currentInputBindings(scene: GpuScene, input: Buffer): boolean {
+    const views = this.inputBindingViews(scene);
+    return (
+      !this.disposed &&
+      views.length > 0 &&
+      views.every((view) => view.currentInputBindings(scene, input)) &&
+      [this.materialRaster, this.skinRaster].every(
+        (raster) =>
+          raster === undefined ||
+          ['unused', 'current'].includes(raster.inputBindingState(scene.inputs)),
+      )
+    );
+  }
+
+  /** Group-scoped work units; App still owns outer-frame admission and complete Render readiness. */
+  createResidentPreparation(
+    input: ResidentRowPreparationInput,
+  ): Result<ResidentRowPreparation, RhiError | GpuDrivenPreparationError> {
+    if (this.disposed || this.residentPreparing || this.resourceFrames.size !== 0)
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'a live idle owner for resident task creation',
+          hint: 'finish ordinary recording before creating resident work',
+        }),
+      );
+    this.residentPreparing = true;
+    try {
+      const created = createResidentRowPreparation(
+        {
+          alive: () => !this.disposed,
+          available: () =>
+            !this.disposed && !this.residentPreparing && this.resourceFrames.size === 0,
+          prepare: (contribution) => this.prepareResidentBatch(contribution),
+          accept: (set) => this.acceptResidentBatches(set),
+          finished: (task) => this.residentRowTasks.delete(task),
+        },
+        input,
+      );
+      if (!created.ok) return created;
+      if (this.disposed) {
+        created.value.release();
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'a live owner after resident task creation',
+            hint: 'discard terminated work',
+          }),
+        );
+      }
+      this.residentRowTasks.add(created.value);
+      return created;
+    } finally {
+      this.residentPreparing = false;
+    }
+  }
+
+  /** One off-frame contribution. Successful facts remain provisional, not Ready. */
+  prepareResidentBatch(
+    input: ResidentBatchPreparationInput,
+  ): Result<ProvisionalBatchContribution, RhiError | GpuDrivenPreparationError> {
+    if (this.disposed || this.residentPreparing || this.resourceFrames.size !== 0)
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'a live idle GPU preparation owner at an exclusive maintenance boundary',
+          hint: 'finish the ordinary recording before advancing a resident contribution',
+        }),
+      );
+    this.residentPreparing = true;
+    try {
+      const observed = { ...input };
+      const scope = {
+        ...observed,
+        isCurrent: () => {
+          if (this.disposed) return false;
+          const current = observed.isCurrent.call(input) === true;
+          return current && !this.disposed;
+        },
+      };
+      const preparation = this.preparations[observed.pass];
+      const result = BatchRowAssembly.prepareContribution(preparation, scope);
+      if (!result.ok) return result;
+      const filtered =
+        observed.pass === 'forward' ? this.mainFilterContributions : this.shadowFilterContributions;
+      const staged = filtered.prepareContribution({
+        taskContext: { scene: observed.scene.scene, device: this.device },
+        plan: observed.plan,
+        index: observed.index,
+        row: result.value.kind === 'provisional' ? result.value.row : undefined,
+        isCurrent: () => BatchRowAssembly.isCurrentContribution(preparation, scope, result.value),
+      });
+      if (!staged.ok) return staged;
+      if (observed.pass === 'forward') this.filteredCache = undefined;
+      else this.shadowFilteredCache = undefined;
+      return result;
+    } finally {
+      this.residentPreparing = false;
+    }
+  }
+
+  /** Accept exact issued contributions in one read domain and retain its Scene versions. */
+  acceptResidentBatches(
+    input: ResidentBatchSetInput,
+  ): Result<HeldResidentBatchRows, RhiError | GpuDrivenPreparationError> {
+    if (this.disposed || this.residentPreparing || this.resourceFrames.size !== 0)
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'a live idle GPU preparation owner for resident row acceptance',
+          hint: 'finish the ordinary recording before accepting resident rows',
+        }),
+      );
+    this.residentPreparing = true;
+    try {
+      const observed = { ...input };
+      const accepted = BatchRowAssembly.acceptContributions(this.preparations, {
+        ...observed,
+        isCurrent: () => {
+          if (this.disposed) return false;
+          const current = observed.isCurrent.call(input) === true;
+          return current && !this.disposed;
+        },
+      });
+      if (!accepted.ok) return accepted;
+      const raw = accepted.value;
+      const held: HeldResidentBatchRows = Object.freeze({
+        forward: raw.forward,
+        shadow: raw.shadow,
+        isCurrent: () => !this.disposed && raw.isCurrent() && !this.disposed,
+        release: () => {
+          raw.release();
+          this.residentRowHolds.delete(held);
+        },
+      });
+      this.residentRowHolds.add(held);
+      if (this.disposed) {
+        held.release();
+        return err(
+          new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'a live owner after resident row acceptance',
+            hint: 'discard this terminated preparation owner',
+          }),
+        );
+      }
+      return ok(held);
+    } finally {
+      this.residentPreparing = false;
+    }
+  }
+
   prepare(
     input: GpuDrivenPrepareInput,
   ): Result<PreparedGpuDrivenFrame | undefined, RhiError | GpuDrivenPreparationError> {
-    if (this.resourceFrames.size !== 0)
+    if (this.disposed || this.residentPreparing || this.resourceFrames.size !== 0)
       return err(
         new RhiError({
           code: 'rhi-descriptor-invalid',
@@ -962,7 +1134,7 @@ export class GpuDrivenProduction {
           hint: 'submit or abort the existing recording; game asset edits remain independent',
         }),
       );
-    const sources = input.scene?.plan.sourceGroups;
+    const sources = input.scene?.residentExecution?.sourceGroups ?? input.scene?.plan.sourceGroups;
     try {
       if (sources !== undefined) input.scene?.scene.inputs.adoptSources(sources);
     } catch (cause) {
@@ -1214,7 +1386,7 @@ export class GpuDrivenProduction {
     materials: GpuSceneResourceFrame,
     preparedPlan: PreparedProductionPlan,
   ): FilteredFrame | undefined {
-    const filtered = this.mainFilteredPlan(input, preparedPlan);
+    const filtered = this.mainFilteredPlan(input, preparedPlan, scene);
     runRecordProfilePhase(input.profilePhase, 'record/gpu-driven-prepare/filter/counts', () => {
       this.indirectDrawCount = admittedRasterBatchCount(filtered.plan);
     });
@@ -1223,7 +1395,8 @@ export class GpuDrivenProduction {
     if (
       filtered.batches.length === 0 &&
       (shadowFiltered?.batches.length ?? 0) === 0 &&
-      input.directSurface === undefined
+      input.directSurface === undefined &&
+      !this.sourceRasters.keepsEmptyView(this.view, this.materialRaster)
     )
       return undefined;
     const admission = this.submissionAdmission(input, scene);
@@ -1239,6 +1412,7 @@ export class GpuDrivenProduction {
   private mainFilteredPlan(
     input: GpuDrivenPrepareInput,
     preparedPlan: PreparedProductionPlan,
+    scene: PersistentGpuDrivenState,
   ): FilteredProductionPlan {
     const cached = this.filteredCache;
     if (cached?.prepared === preparedPlan && cached.bindings === input.materialBindingClasses)
@@ -1254,7 +1428,8 @@ export class GpuDrivenProduction {
           profile === undefined
             ? undefined
             : (part, action) => runRecordProfilePhase(profile, mainPlanPhase(part), action),
-        ),
+          { scene: scene.scene, device: this.device },
+        ).active,
     );
     this.filteredPlanBuilds = Number(filtered !== cached?.value);
     this.filteredCache = {
@@ -1292,7 +1467,8 @@ export class GpuDrivenProduction {
           profile === undefined
             ? undefined
             : (part, action) => runRecordProfilePhase(profile, shadowPlanPhase(part), action),
-        ),
+          { scene: scene.scene, device: this.device },
+        ).active,
     );
     this.filteredBatchBuilds += this.shadowFilterContributions.lastWork.projectedBatches;
     this.shadowFilteredCache = { prepared: shadowPrepared, value: shadowFiltered };
@@ -1304,17 +1480,10 @@ export class GpuDrivenProduction {
     input: GpuDrivenPrepareInput,
     scene: PersistentGpuDrivenState,
   ): SubmissionAdmission {
-    const sceneCapacity = scene.scene.rowCapacity;
-    const cached = this.admissionCache;
-    const matches =
-      cached !== undefined &&
-      cached.source === scene.plan &&
-      cached.sceneCapacity === sceneCapacity &&
-      sameActiveEntities(cached, input);
     return runRecordProfilePhase(
       input.profilePhase,
       'record/gpu-driven-prepare/filter/admission',
-      () => (matches ? cached : createSubmissionAdmission(scene, sceneCapacity, input, cached)),
+      () => submissionAdmission(scene, input, this.admissionCache),
     );
   }
 
@@ -1395,6 +1564,13 @@ export class GpuDrivenProduction {
       visibleBuffer.value,
       materialRaster.value.visibleBindingIdentity,
       skinRaster.value?.visibleBindingIdentity,
+      (prepared) =>
+        this.sourceRasters.borrow(
+          prepared,
+          visibleBuffer.value,
+          materialRaster.value.visibleBindingIdentity,
+          skinRaster.value?.visibleBindingIdentity,
+        ),
     );
     this.liveRasterBatches = this.liveRasterCache.value;
     this.beginGBufferOrderDiagnostic(input, scene);
@@ -1475,6 +1651,7 @@ export class GpuDrivenProduction {
       if (!created.ok) return created;
       this.view = created.value;
     }
+    this.initialViews.consume(this.view);
     return ok(this.view);
   }
 
@@ -1532,6 +1709,12 @@ export class GpuDrivenProduction {
       filtered.materialBatches[0]?.artifact ??
       shadowFiltered?.materialBatches[0]?.artifact ??
       input.directSurface?.artifact;
+    if (
+      representativeArtifact === undefined &&
+      this.materialRaster !== undefined &&
+      this.sourceRasters.keepsEmptyView(this.view, this.materialRaster)
+    )
+      return rebindRaster(this.materialRaster, input, visibleBuffer);
     if (representativeArtifact === undefined) {
       return err(
         new RhiError({
@@ -1607,7 +1790,7 @@ export class GpuDrivenProduction {
     return created;
   }
 
-  /** Frame rows are keyed by GPU Scene instance row and bound whole by both adapters. */
+  /** Frame rows use full filtered candidate indices and are bound whole by both adapters. */
   private prepareSurfaceInput(
     input: GpuDrivenPrepareInput,
     scene: PersistentGpuDrivenState,
@@ -1624,7 +1807,7 @@ export class GpuDrivenProduction {
       directRanges,
     );
     if (!projection.ok) return projection;
-    const capacity = Math.max(scene.scene.rowCapacity, projection.value.capacity);
+    const capacity = projection.value.capacity;
     const frameTime = input.surfaceDynamicInput?.frameTime ?? input.frameTime ?? 0;
     const deviceGeneration = input.deviceGeneration ?? 1;
     const ranges = projection.value.ranges;
@@ -1705,16 +1888,17 @@ export class GpuDrivenProduction {
    * flags and material rows from the scene tables, so no per-batch row
    * projection exists.
    */
-  private publishGpuFrame(frame: PreparedRasterFrame): PreparedGpuDrivenFrame {
-    this.currentRasterFrame = frame;
-    const { input, scene, materials, filtered, view, shadowViewPool, materialRaster, skinRaster } =
-      frame;
+  private graphProjectionSignatures(
+    frame: RasterProjectionFrame,
+    source = false,
+  ): Pick<GpuDrivenGraphProjection, 'topologySignature' | '_recordingTopologySignature'> {
+    const { input, scene, filtered, view, materialRaster, skinRaster } = frame;
     // The graph imports scene and view buffers live, so neither a replaced
     // material table nor grown view storage is a graph dependency: key the
     // raster graph on the view's pass-list generation only.
     const graphIdentity = this.rasterGraphIdentity.update(
       filtered,
-      this.sceneIdentity(scene.scene),
+      this.rasterGraphIdentity.sceneIdentity(scene.scene),
       view.graphResourceGeneration,
       frame.liveRasterBatches,
       materialRaster.visibleBindingIdentity,
@@ -1728,6 +1912,26 @@ export class GpuDrivenProduction {
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${variantSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 
+    return {
+      topologySignature: () => {
+        const shadow = source
+          ? frame.shadowViewPool.sourceTopologySignature(scene.scene)
+          : this.shadowTopologySignature();
+        return shadow.length === 0 ? signature : `${signature}|shadow=${shadow}`;
+      },
+      _recordingTopologySignature: () => {
+        const shadow = source
+          ? frame.shadowViewPool.sourceTopologySignature(scene.scene)
+          : this.shadowTopologySignature();
+        return shadow.length === 0 ? recordingSignature : `${recordingSignature}|shadow=${shadow}`;
+      },
+    };
+  }
+
+  private publishGpuFrame(frame: PreparedRasterFrame): PreparedGpuDrivenFrame {
+    this.currentRasterFrame = frame;
+    const { input, scene, materials, filtered, view, shadowViewPool, materialRaster, skinRaster } =
+      frame;
     const surfaceSubmission = this.surfaceSubmission;
     const consumeSurfaceDynamicInput =
       surfaceSubmission === undefined
@@ -1735,14 +1939,7 @@ export class GpuDrivenProduction {
         : this.surfaceFrames.consumer(input.surfaceDynamicInput);
     return {
       materialBindings: filtered.materialBindings,
-      topologySignature: () => {
-        const shadow = this.shadowTopologySignature();
-        return shadow.length === 0 ? signature : `${signature}|shadow=${shadow}`;
-      },
-      _recordingTopologySignature: () => {
-        const shadow = this.shadowTopologySignature();
-        return shadow.length === 0 ? recordingSignature : `${recordingSignature}|shadow=${shadow}`;
-      },
+      ...this.graphProjectionSignatures(frame),
       selection: filtered.selection,
       shadowSelection: frame.shadowFiltered?.selection,
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
@@ -1862,7 +2059,7 @@ export class GpuDrivenProduction {
 
   /** Graph-time projection: import buffers, compile raster classes, expose encode. */
   private projectGraph(
-    frame: PreparedRasterFrame,
+    frame: RasterProjectionFrame,
     graph: RenderGraphBuilder<RenderPipelineFrame>,
     format: TextureFormat,
     sampleCount: 1 | 4,
@@ -2016,8 +2213,11 @@ export class GpuDrivenProduction {
       : selected;
   }
 
-  private projectLateRasterClass(projected: ProjectedRasterGraph, live: LiveRasterBatch): boolean {
-    const frame = this.currentRasterFrame;
+  private projectLateRasterClass(
+    projected: ProjectedRasterGraph,
+    live: LiveRasterBatch,
+    frame: RasterProjectionFrame | undefined = this.currentRasterFrame,
+  ): boolean {
     const index = frame?.liveRasterBatches.indexOf(live) ?? -1;
     const prepared = index < 0 ? undefined : frame?.filtered.batches[index];
     if (frame === undefined || prepared === undefined) {
@@ -2181,6 +2381,14 @@ export class GpuDrivenProduction {
     const preparationJobs = new Map<string, PipelinePreparationJob>();
     return {
       accesses,
+      prepareSource: (source, graphCurrent) =>
+        this.sourceRasters.prepare(
+          source,
+          projected,
+          preparationJobs,
+          graphCurrent,
+          (live, frame) => this.projectLateRasterClass(projected, live, frame),
+        ),
       ...(projected.target.rendererRecording && preparationFactory !== undefined
         ? {
             registerPipelinePreparation: (
@@ -2192,15 +2400,22 @@ export class GpuDrivenProduction {
               seededDepth = false,
               opaqueDepthPrimed = false,
             ) =>
-              this.registerPipelinePreparation(projected, preparationJobs, preparationFactory, {
-                formats,
-                filter,
-                fragmentEntryPoint,
-                coverageOnly,
-                sampleCount,
-                seededDepth,
-                opaqueDepthPrimed,
-              }),
+              registerRasterPipelinePreparation(
+                projected,
+                preparationJobs,
+                preparationFactory,
+                {
+                  formats,
+                  filter,
+                  fragmentEntryPoint,
+                  coverageOnly,
+                  sampleCount,
+                  seededDepth,
+                  opaqueDepthPrimed,
+                },
+                () => this.liveRasterBatches,
+                (live) => this.classFor(projected, live, filter, fragmentEntryPoint, coverageOnly),
+              ),
             preparePipelines: (entries = [], artifacts, onPending, materials) =>
               runPipelinePreparations(preparationJobs, entries, artifacts, onPending, materials),
           }
@@ -2255,108 +2470,6 @@ export class GpuDrivenProduction {
     };
   }
 
-  /** Register the real PSOs one graph pass will bind, without drawing or culling. */
-  private registerPipelinePreparation(
-    projected: ProjectedRasterGraph,
-    jobs: Map<string, PipelinePreparationJob>,
-    factory: MaterialPipelineFactory,
-    pass: {
-      readonly formats: readonly TextureFormat[];
-      readonly filter: RenderPipelineGpuDrivenFilter | undefined;
-      readonly fragmentEntryPoint: string | undefined;
-      readonly coverageOnly: boolean;
-      readonly sampleCount: 1 | 4;
-      readonly seededDepth: boolean;
-      readonly opaqueDepthPrimed?: boolean;
-    },
-  ): void {
-    const {
-      formats,
-      filter,
-      fragmentEntryPoint,
-      coverageOnly,
-      sampleCount,
-      seededDepth,
-      opaqueDepthPrimed = false,
-    } = pass;
-    const key = JSON.stringify([
-      formats,
-      filter,
-      fragmentEntryPoint,
-      coverageOnly,
-      sampleCount,
-      seededDepth,
-      opaqueDepthPrimed,
-    ]);
-    if (jobs.has(key)) return;
-    // Classes may join a compiled stock graph; select pipelines from the
-    // current live batches whenever that set is replaced.
-    let selectedFor: readonly LiveRasterBatch[] | undefined;
-    const selected = new Map<RasterPipelineFor, MaterialShaderArtifact>();
-    const select = () => {
-      if (selectedFor === this.liveRasterBatches) return;
-      selectedFor = this.liveRasterBatches;
-      selected.clear();
-      for (const live of this.liveRasterBatches) {
-        const batch = this.classFor(projected, live, filter, fragmentEntryPoint, coverageOnly);
-        if (batch !== undefined)
-          selected.set(
-            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly, seededDepth),
-            batch.artifact,
-          );
-      }
-    };
-    select();
-    const { frame } = projected;
-    const ownedFormats = [...formats];
-    const formatKey = ownedFormats.join(',');
-    jobs.set(key, (entries, artifacts, onPending, materials) => {
-      select();
-      let ready = true;
-      for (const [pipelineFor, artifact] of selected)
-        if (
-          !pipelineFor(
-            ownedFormats,
-            formatKey,
-            gpuLanePreparesAsynchronously(artifact),
-            sampleCount,
-            opaqueDepthPrimed,
-          ).ok
-        ) {
-          ready = false;
-          onPending?.({
-            code: 'scene-pipeline-preparation',
-            pass: (fragmentEntryPoint ?? filter ?? 'forward').slice(0, 256),
-            shader: artifact.material.slice(0, 256),
-          });
-        }
-      if (
-        !prepareHiddenGpuDrivenPipelines({
-          entries,
-          artifacts,
-          materials,
-          resolve: frame.input.materialArtifactResolver,
-          factory,
-          formats: ownedFormats,
-          sampleCount,
-          shaderUvSetCount: frame.materialPipelineState.standardPbrShaderUvSetCount,
-          filter,
-          fragmentEntry: fragmentEntryPoint,
-          coverageOnly,
-          seededDepth,
-          opaqueDepthPrimed,
-          visibleSurface: frame.input.visibleSurface !== undefined,
-          viewClipping: frame.viewClippingLive,
-          directionalShadowSimple: frame.input.directionalShadowSimple === true,
-          leanLighting: frame.input.leanLighting === true,
-          ...(onPending === undefined ? {} : { onPending }),
-        })
-      )
-        ready = false;
-      return ready;
-    });
-  }
-
   /**
    * Encode one graph pass's indirect draws. The shared Standard view BGL
    * carries two dynamic buffers: the frame view UBO and the per-frame
@@ -2388,7 +2501,15 @@ export class GpuDrivenProduction {
       descriptor === undefined
         ? undefined
         : this.rasterPasses.prepare(
-            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}/${viewOffset}/${frameResources.opaqueDepthPrimed ? 1 : 0}${seededDepth ? '/seeded' : ''}`,
+            rasterPassKey(
+              filter,
+              fragmentEntryPoint,
+              coverageOnly,
+              phase,
+              seededDepth,
+              viewOffset,
+              frameResources.opaqueDepthPrimed === true,
+            ),
             descriptor,
           );
     const bindings = new IndirectPassBindings(
@@ -2465,31 +2586,14 @@ export class GpuDrivenProduction {
       this.geometryCapture !== undefined
     )
       return undefined;
-    const { scene } = projected.frame;
     const indirect = call.resources.buffer(projected.indirect);
     const slotsByBinding = frameResources.materialSlotIndicesByBinding;
-    const skinTask = projected.frame.view.skinTaskBinding();
-    const identities = [
+    const identities = retainedRasterIdentities(
+      projected,
+      call,
       viewBindGroup,
-      slotsByBinding.size === 0,
       indirect.ok ? indirect.value : undefined,
-      call.regionOffset,
-      call.visibleRegionBase,
-      formatKey,
-      projected.rasterClasses,
-      scene.scene.transformBuffer,
-      sceneTransformBytes(scene),
-      projected.frame.materialRaster.visibleBindingIdentity,
-      projected.frame.skinRaster?.visibleBindingIdentity,
-      // Palette contents change without changing commands. Physical buffers,
-      // ranges and dynamic addresses are the actual Skin bundle inputs.
-      skinTask?.data,
-      skinTask?.auxiliary,
-      skinTask?.dataOffset,
-      skinTask?.auxiliaryOffset,
-      skinTask?.dataSize,
-      skinTask?.auxiliarySize,
-    ];
+    );
     const runs = this.retainedEncodes.begin(
       bundlePass,
       identities,
@@ -2850,10 +2954,17 @@ export class GpuDrivenProduction {
     profilePhase?: RecordProfileRunner,
   ): Result<PreparedProductionPlan, GpuDrivenPreparationError> {
     const preparation = this.preparations[pass];
+    const complete = scene.residentExecution ?? scene.plan;
+    const resident =
+      hasCapturedTaskMembership(scene.plan) && hasCapturedTaskMembership(complete)
+        ? complete
+        : scene.plan;
+    preparation.retireAbsent(complete);
     const previous = preparation.cached;
     const sameInputs = previous !== undefined && previous.scene === scene.scene;
     if (
       sameInputs &&
+      previous.value.residentSource === resident &&
       previous.plan === scene.plan &&
       samePreparedAssemblyInputs(previous.inputs, batchExecutions, materials, [
         meshByBinding,
@@ -2880,15 +2991,6 @@ export class GpuDrivenProduction {
         : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/plan/rows', () =>
             assembly.assemble(),
           );
-    // Native plans contain unique batch IDs, and the row loop retains every
-    // admitted ID even for a rejected artifact. Equal cardinality therefore
-    // proves there are no retired rows; only removals need a membership scan.
-    if (preparation.batches.size > batchRows.length) {
-      const live = new Set(batchRows.map((rows) => rows.source.batchId));
-      for (const batchId of preparation.batches.keys()) {
-        if (!live.has(batchId)) preparation.batches.delete(batchId);
-      }
-    }
     this.preparedBatchBuilds += assembly.rebuiltBatches;
     this.planRebuildBatches += assembly.rebuiltBatches;
     this.planRebuildCandidates = 0;
@@ -2897,6 +2999,7 @@ export class GpuDrivenProduction {
     const { sameRows, fixedMembership, serializedStates } = assembly;
     if (
       sameInputs &&
+      previous.value.residentSource === resident &&
       previous.plan === scene.plan &&
       sameRows &&
       previous.batchRows.length === batchRows.length
@@ -2920,9 +3023,9 @@ export class GpuDrivenProduction {
     this.gpuOwnedSnapshotsMaterialized = 0;
     const value =
       profilePhase === undefined
-        ? assemblePreparedPlan(scene.plan, batchRows)
+        ? assemblePreparedPlan(resident, batchRows, scene.plan)
         : runRecordProfilePhase(profilePhase, 'record/gpu-driven-prepare/plan/admission', () =>
-            assemblePreparedPlan(scene.plan, batchRows),
+            assemblePreparedPlan(resident, batchRows, scene.plan),
           );
     preparation.cached = {
       plan: scene.plan,
@@ -3034,38 +3137,28 @@ export class GpuDrivenProduction {
     classes: ReturnType<ShadowCasterClassifier['update']>,
     retained: ShadowViewIdentity[],
   ): Result<void, RhiError> {
-    const input = restrictShadowCasterChannels(requested, this.shadowChannelSlots, pass);
+    const input = restrictShadowCasterChannels(
+      pass.ownedRequests ? requested : { ...requested },
+      this.shadowChannelSlots,
+      pass,
+    );
     retained.push(input.identity);
-    if (!shadowViewHasStaticLayer(input.identity)) return this.projectShadowView(pass, input);
-    const staticIdentity: ShadowViewIdentity = staticShadowViewIdentity(input.identity);
-    const viewClasses = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
-    const singleLayer = input.staticLayer === false;
-    this.syncShadowLayerMode(pass.pool, input.identity, staticIdentity, singleLayer);
-    if (singleLayer) {
-      // Settled casters draw with the rest every time the view rasters;
-      // capsule casters leave directional views on the GPU as in two layers.
-      return this.projectShadowView(pass, {
-        ...input,
-        candidatePrimitiveIndices: viewClasses.casterSlots,
-      });
+    const layers = shadowLayerRequests(input, classes);
+    const staticIdentity = staticShadowViewIdentity(input.identity);
+    this.syncShadowLayerMode(
+      pass.pool,
+      input.identity,
+      staticIdentity,
+      input.staticLayer === false,
+    );
+    if (layers.static !== undefined) {
+      retained.push(staticIdentity);
+      const projected = this.projectShadowViewCache(pass, layers.static);
+      if (!projected.ok) return projected;
+      if (projected.value === 'invalidated')
+        pass.pool.invalidate('static-layer-changed', input.identity);
     }
-    // The static layer holds settled casters and is re-rastered only when one
-    // of them changes; the final layer copies it and adds the rest.
-    retained.push(staticIdentity);
-    const staticProjected = this.projectShadowViewCache(pass, {
-      ...input,
-      identity: staticIdentity,
-      candidatePrimitiveIndices: viewClasses.staticSlots,
-      ignoredChangeSlots: classes.dynamicSlots,
-    });
-    if (!staticProjected.ok) return staticProjected;
-    if (staticProjected.value === 'invalidated') {
-      pass.pool.invalidate('static-layer-changed', input.identity);
-    }
-    return this.projectShadowView(pass, {
-      ...input,
-      candidatePrimitiveIndices: viewClasses.dynamicSlots,
-    });
+    return this.projectShadowView(pass, layers.final);
   }
 
   /**
@@ -3099,19 +3192,11 @@ export class GpuDrivenProduction {
     pass: ShadowProjectionPass,
     request: ShadowViewRequest,
   ): Result<ShadowViewUpdate['cache'], RhiError> {
-    if (pass.ownedRequests) {
-      const cameraCull = request.cameraCull;
-      return runRecordProfilePhase(
-        pass.profilePhase,
-        'record/gpu-driven-prepare/shadow-views/project-view',
-        () => this.projectShadowViewBatches(pass, request, cameraCull),
-      );
-    }
-    const { cameraCull, staticLayer: _staticLayer, ...input } = request;
+    const cameraCull = request.cameraCull;
     return runRecordProfilePhase(
       pass.profilePhase,
       'record/gpu-driven-prepare/shadow-views/project-view',
-      () => this.projectShadowViewBatches(pass, input, cameraCull),
+      () => this.projectShadowViewBatches(pass, request, cameraCull),
     );
   }
 
@@ -3395,7 +3480,7 @@ export class GpuDrivenProduction {
         batchIndex++;
         continue;
       }
-      const facts = this.shadowBatchFacts(pass, batch, viewBindings);
+      const facts = captureShadowBatchFacts(pass, batch, viewBindings, this.skinRaster);
       if (!facts.ok) return facts;
       // Stable command addresses need not follow source order after a
       // split/rejoin. Keep unchanged ordinals allocation-free; only a
@@ -3415,79 +3500,25 @@ export class GpuDrivenProduction {
         projections?.set(batch.batchId, previousProjection);
         continue;
       }
-      const created = createShadowBatchProjection(
+      const borrowed = this.sourceRasters.borrowShadow(
+        viewBindings.visibleBuffer,
         batch,
         facts.value,
-        viewBindings.visibleBuffer,
-        previousProjection,
       );
+      const created =
+        borrowed === undefined
+          ? createShadowBatchProjection(
+              batch,
+              facts.value,
+              viewBindings.visibleBuffer,
+              previousProjection,
+            )
+          : ok(borrowed);
       if (!created.ok) return created;
       projections ??= new Map(previousProjections);
       projections.set(batch.batchId, created.value);
     }
     return ok(projections);
-  }
-
-  /** The physical draw facts a GPU shadow batch would project in this view. */
-  private shadowBatchFacts(
-    pass: ShadowProjectionPass,
-    batch: GpuDrivenBatch,
-    viewBindings: ShadowViewBindings,
-  ): Result<ShadowBatchFacts, RhiError> {
-    const prepared = preparedShadowRows(pass).get(batch.batchId);
-    if (prepared === undefined) {
-      return err(
-        new RhiError({
-          code: 'internal-error',
-          expected: `prepared shadow mesh batch ${batch.batchId}`,
-          hint: 'keep filtered shadow topology and per-view projection on one frame identity',
-        }),
-      );
-    }
-    const binding = batch.binding;
-    const execution = binding === undefined ? undefined : pass.executions.get(binding)?.shadow;
-    if (binding === undefined || execution?.route !== 'gpu') {
-      return err(
-        new RhiError({
-          code: 'internal-error',
-          expected: `accepted shared material execution for shadow batch ${batch.batchId}`,
-          hint: 'retain the same geometry binding and material frame through shadow projection',
-        }),
-      );
-    }
-    const deformation = batch.prepared?.identity.deformation ?? 'rigid';
-    const skin = deformation === 'skin';
-    const raster = skin ? this.skinRaster : pass.materialRaster;
-    const meshBindGroup = skin ? viewBindings.skinMeshBinding : viewBindings.meshBinding;
-    const shadowArtifact = execution.artifact;
-    if (
-      raster === undefined ||
-      meshBindGroup === undefined ||
-      prepared.artifact === undefined ||
-      shadowArtifact === undefined
-    ) {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: `${skin ? 'skinned ' : ''}selected shadow MaterialProgramAbi artifact`,
-          hint: 'publish a matching shadow-pass program before entering the capable shadow lane',
-        }),
-      );
-    }
-    return ok({
-      raster,
-      mesh: prepared.mesh,
-      meshContentEpoch: prepared.meshContentEpoch,
-      meshBindGroup,
-      deformation,
-      shadowArtifact,
-      shadowRenderState: reflectedRenderState(
-        execution.pass.renderState,
-        batch.key.reflected === true,
-      ),
-      shadowEntry: execution.pass,
-      material: execution.material,
-    });
   }
 
   private publishShadowProjections(
@@ -3522,32 +3553,52 @@ export class GpuDrivenProduction {
   }
 
   dispose(): void {
-    for (const frame of this.resourceFrames) frame.release();
-    this.resourceFrames.clear();
-    if (this.disposed) return;
     this.disposed = true;
-    this.view?.dispose();
-    this.view = undefined;
-    this.materialRaster?.dispose();
-    this.materialRaster = undefined;
+    this.sourceRasters.clear();
+    const failures: unknown[] = [];
+    const attempt = (action: () => void) => {
+      try {
+        action();
+      } catch (cause) {
+        failures.push(cause);
+      }
+    };
+    attempt(() => this.initialViews.dispose());
+    for (const task of this.residentRowTasks) attempt(() => task.release());
+    attempt(() => this.inputBindingPreparation?.release());
+    for (const hold of this.residentRowHolds) attempt(() => hold.release());
+    for (const frame of this.resourceFrames)
+      attempt(() => {
+        frame.release();
+        this.resourceFrames.delete(frame);
+      });
+    attempt(() => {
+      this.view?.dispose();
+      this.view = undefined;
+    });
+    attempt(() => {
+      this.materialRaster?.dispose();
+      this.materialRaster = undefined;
+    });
     this.observedShadowArtifacts = new Map();
-    this.skinRaster?.dispose();
-    this.skinRaster = undefined;
-    for (const preparation of Object.values(this.preparations)) {
-      preparation.cached = undefined;
-      preparation.batches.clear();
-    }
+    attempt(() => {
+      this.skinRaster?.dispose();
+      this.skinRaster = undefined;
+    });
+    for (const preparation of Object.values(this.preparations)) preparation.clear();
     this.filteredCache = undefined;
     this.liveRasterCache = undefined;
     this.liveRasterBatches = [];
     this.currentRasterFrame = undefined;
     this.shadowFilteredCache = undefined;
-    this.mainFilterContributions.clear();
-    this.shadowFilterContributions.clear();
+    attempt(() => this.mainFilterContributions.clear());
+    attempt(() => this.shadowFilterContributions.clear());
     this.surfaceFrames.clear();
     this.rasterGraphIdentity.clear();
-    this.shadowViews?.dispose();
-    this.shadowViews = undefined;
+    attempt(() => {
+      this.shadowViews?.dispose();
+      this.shadowViews = undefined;
+    });
     this.shadowSource = undefined;
     this.shadowScene = undefined;
     this.shadowBatchProjections = publishReadonlyMap(new Map());
@@ -3555,6 +3606,12 @@ export class GpuDrivenProduction {
     this.preparationFailure = undefined;
     this.surfaceArtifactInspection = undefined;
     this.overflowRecoveryRequired = false;
+    if (failures.length > 0) {
+      if (this.disposalFailure === undefined)
+        this.disposalFailure = new AggregateError(failures, 'GPU production retirement failed');
+      else this.disposalFailure.errors.push(...failures);
+    }
+    if (this.disposalFailure !== undefined) throw this.disposalFailure;
   }
 
   get resourceGeneration(): number | undefined {
@@ -4008,14 +4065,5 @@ export class GpuDrivenProduction {
     this.cpuDeformationReasons.clear();
     for (const [reason, count] of summary.deformationReasons)
       this.cpuDeformationReasons.set(reason, count);
-  }
-
-  private sceneIdentity(scene: object): number {
-    const existing = this.sceneIdentities.get(scene);
-    if (existing !== undefined) return existing;
-    const identity = this.nextSceneIdentity;
-    this.nextSceneIdentity += 1;
-    this.sceneIdentities.set(scene, identity);
-    return identity;
   }
 }

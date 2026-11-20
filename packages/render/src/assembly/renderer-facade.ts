@@ -57,6 +57,7 @@ import type {
 import { resolveSsaoParameters } from '../ssao-config';
 import { captureTargetEnvironment } from '../targets/capture-environment';
 import type { RendererHostImplementation } from './host-contract';
+import { bindLevelSourceAccess } from './level-source-access';
 import { createRendererLifecycle, isRendererStateOperational } from './renderer-lifecycle';
 
 /** Narrow the concrete host to the lease/receipt-only public contract. */
@@ -576,7 +577,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return disposeInFlight;
     },
   };
-  return facade;
+  return bindLevelSourceAccess(facade, renderer.levelSourceAccess);
 }
 
 // ─── feat-20260520-directional-light-shadow-mapping M1c / w8 helpers ────────

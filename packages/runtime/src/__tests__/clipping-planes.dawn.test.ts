@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -10,7 +10,7 @@ import { startClippingPlanesServer } from './clipping-planes.server';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { gbufferReplayIdentity, renderValue } from './standard-gbuffer-replay.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 async function fixture(mode: 'local' | 'view') {
   let target: GPUTexture | undefined;
   const canvas = {

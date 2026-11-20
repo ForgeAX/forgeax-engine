@@ -93,7 +93,8 @@ describe('material bind-group assembly cache', () => {
       paramSnapshot: { roughness: 0.5 },
     } as unknown as MaterialSnapshot;
     const cached: MaterialBgAssemblyCacheEntry = {
-      bindingEntries: [],
+      descriptor: { layout: {} as BindGroupLayout, entries: [] },
+      bindingsCurrent: () => true,
       skylightBindingStart: 0,
       material,
       materialBgl: {} as BindGroupLayout,
@@ -144,7 +145,8 @@ describe('material bind-group assembly cache', () => {
       intensityBuffer: {},
     } as MaterialBgAssemblyCacheEntry['skylightResources'];
     const cached: MaterialBgAssemblyCacheEntry = {
-      bindingEntries: [],
+      descriptor: { layout: {} as BindGroupLayout, entries: [] },
+      bindingsCurrent: () => true,
       skylightBindingStart: 0,
       material,
       uniformResources: [],

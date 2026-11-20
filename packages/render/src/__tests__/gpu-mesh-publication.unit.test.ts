@@ -47,17 +47,17 @@ it.each([
   expect(topology.sourcePlan()).toBe(source);
   expect(actualQuery).not.toHaveBeenCalled();
   expect(reads).not.toHaveBeenCalled();
-  const before = windows.query(source, edited);
+  const before = windows.query(source, edited).active;
   expect(reads).toHaveBeenCalledTimes(count); // Explicit actual task preparation, not publication.
   const survivor = before.batches.at(-1);
   const queriedReads = reads.mock.calls.length;
-  expect(windows.query(source, edited)).toBe(before);
+  expect(windows.query(source, edited).active).toBe(before);
   expect(reads).toHaveBeenCalledTimes(queriedReads);
   topology.apply(scene.apply([{ kind: 'remove', entityKey: 1 }]));
   const removed = topology.sourcePlan();
   expect(actualQuery).toHaveBeenCalledTimes(2);
   expect(reads).toHaveBeenCalledTimes(queriedReads);
-  const after = windows.query(removed, edited);
+  const after = windows.query(removed, edited).active;
   expect(after.batches.at(-1)).toBe(survivor);
   expect(after.candidateCount).toBe(count - 1);
   expect(windows.windowRelocations).toBe(0);
@@ -80,7 +80,7 @@ it('uses the accepted Mesh material query for execution after a default-slot edi
   const mesh = createPrimitiveMesh('cube').unwrap();
   const before = new MeshFrame().with(original.assetHandle as number, mesh);
   const windows = new MeshBatchProjection();
-  const previous = windows.query(source, before);
+  const previous = windows.query(source, before).active;
   const edited = before.with(original.assetHandle as number, {
     ...mesh,
     materialSlots: [{ slotName: 'surface', defaultMaterial: 105 as never }],
@@ -97,7 +97,7 @@ it('uses the accepted Mesh material query for execution after a default-slot edi
     pending,
   );
   for (const write of pending) write.contexts.set(write.geometry, write.value);
-  const current = windows.query(source, edited);
+  const current = windows.query(source, edited).active;
   expect(accepted.material).toBe(medium);
   expect(current.batches.at(0)?.binding?.material).toBe(accepted.material);
   expect(current.batches.at(0)?.members).toBe(previous.batches.at(0)?.members);
@@ -150,7 +150,7 @@ it.each([
   topology.rebuild(scene.slotsSnapshot());
   const source = topology.sourcePlan();
   const windows = new MeshBatchProjection();
-  const previous = windows.query(source, meshes, previousMaterials);
+  const previous = windows.query(source, meshes, previousMaterials).active;
   expect(previous.batches.at(0)?.binding?.material).toBe(first);
 
   resolved = new MaterialResource({ ...first.snapshot, roughness: 0.8 });
@@ -173,17 +173,17 @@ it.each([
   if (!eligible) expect(changed.batches).toBe(source.batches);
   const materials = dispatch.materials();
   expect(materials.get(first)).toBeUndefined();
-  const current = windows.query(changed, meshes, materials);
+  const current = windows.query(changed, meshes, materials).active;
   const actual = current.batches.at(0)?.binding?.material;
   expect(actual).toBe(resolved);
   if (actual === undefined) throw new Error('missing execution material');
   expect(materials.get(actual)).toBeDefined();
   expect(previous.batches.at(0)?.binding?.material).toBe(first);
   expect(previousMaterials.get(first)).toBeDefined();
-  expect(windows.query(changed, meshes, materials)).toBe(current);
+  expect(windows.query(changed, meshes, materials).active).toBe(current);
   const reads = vi.spyOn(meshes, 'get');
   resolved.adopt({ ...resolved.snapshot, roughness: 0.9 });
   dispatch.adopt(resolved);
-  expect(windows.query(changed, meshes, dispatch.materials())).toBe(current);
+  expect(windows.query(changed, meshes, dispatch.materials()).active).toBe(current);
   expect(reads).not.toHaveBeenCalled();
 });

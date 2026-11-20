@@ -28,6 +28,7 @@ import { createWaterFluidFeature, type WaterFluidFeatureFrame } from '../../wate
 import type { ViewLights } from '../../world/render-lights';
 import type { RenderFrameState } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
 import {
   compileViewGraph,
@@ -64,6 +65,8 @@ async function harness(retainBuildBinding = false) {
     compiledFrameGraphGeneration: 0,
     standardLightingGraphSignature: '',
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
     frameNumber: 0,

@@ -7,13 +7,30 @@ import type { ScenePassRequest } from './scene-pass-work';
 
 /** Immutable request facts declared by this exact typed graph pass, without a frame plan. */
 export interface ScenePipelineDemand {
+  readonly bundleDescriptor?: import('@forgeax/engine-rhi').RenderBundleEncoderDescriptor;
+  readonly gpuFragmentEntryPoint?: string | undefined;
+  readonly gpuPhase?: import('../render-pipeline').GpuDrivenDrawPhase;
   readonly pass: ScenePassRequest;
+  readonly bindings?: Pick<
+    import('../typed-render-graph-primitives').TypedScenePassOptions,
+    | 'directionalShadow'
+    | 'spotShadow'
+    | 'shadowMoments'
+    | 'cloudShadow'
+    | 'ssao'
+    | 'environment'
+    | 'transmissionBackdrop'
+    | 'surfacePair'
+    | 'surfaceNearestLayer'
+    | 'surfaceNearestDepth'
+  >;
   readonly formats: readonly GPUTextureFormat[];
   readonly sampleCount: RenderPipelineTarget['sampleCount'];
   readonly fragmentEntryPoint: string | undefined;
   readonly coverageOnly: boolean;
   readonly transparentDepthWrite: boolean;
   readonly seededDepth?: boolean;
+  readonly opaqueDepthPrimed?: boolean;
   readonly selection?: ScenePassSelection;
 }
 

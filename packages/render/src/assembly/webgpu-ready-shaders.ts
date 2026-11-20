@@ -589,12 +589,52 @@ const STANDARD_COMPANION_PROGRAMS = [
   ['subsurface', 'forgeax::engine-subsurface-diffusion'],
 ] as const;
 
+/** Admit recipe addresses now and compile only the Deferred route a prepared frame requests. */
+function deferredTemplateSources(
+  material: MaterialShaderManifestEntry,
+  caps: ReadyDeviceCapabilities,
+): NonNullable<StandardSceneShaderSources['deferred']> {
+  const select = (clustered: boolean, directDfgLut: boolean) =>
+    findVariantByDefines(material, {
+      CLUSTER_FORWARD_AVAILABLE: clustered,
+      DIRECT_DFG_LUT_AVAILABLE: directDfgLut,
+      ATMOSPHERE_AVAILABLE: caps.atmosphere,
+      EXTENDED_LIGHTING_AVAILABLE: caps.extendedLighting,
+      PROJECTOR_AVAILABLE: caps.projector,
+    });
+  const clustered = select(true, false);
+  const unclustered = select(false, false);
+  if (clustered === undefined || unclustered === undefined)
+    throw new RhiError({
+      code: 'shader-compile-failed',
+      expected: 'capability-matched Deferred lighting templates',
+      hint: 'rebuild the Engine shader manifest',
+    });
+  const clusteredLut = select(true, true);
+  const unclusteredLut = select(false, true);
+  return {
+    get clustered() {
+      return materialShaderSource(clustered);
+    },
+    get unclustered() {
+      return materialShaderSource(unclustered);
+    },
+    get clusteredLut() {
+      return clusteredLut === undefined ? undefined : materialShaderSource(clusteredLut);
+    },
+    get unclusteredLut() {
+      return unclusteredLut === undefined ? undefined : materialShaderSource(unclusteredLut);
+    },
+  };
+}
+
 /** Deferred lighting variants plus their decal/subsurface companions, or undefined when absent. */
 export async function prewarmStandardScenePrograms(
   registry: ShaderCatalog,
   compileUtility: CompileUtilityShader,
   seed: SeedShaderModule,
   caps: ReadyDeviceCapabilities,
+  hasImmediateShaderCreation = false,
 ): Promise<StandardSceneShaderSources | undefined> {
   const deferred = findMaterialShaderEntry(registry, 'forgeax::engine-standard-deferred-lighting');
 
@@ -602,7 +642,9 @@ export async function prewarmStandardScenePrograms(
   const contractFor = (material: MaterialShaderManifestEntry | undefined) => {
     if (material === undefined) return undefined;
     const declared = declarations.find((entry) => entry.identifier === material.identifier);
-    if (declared !== undefined) return declared.programContract;
+    // Native declarations use recipe handles, so a compiled hash lookup cannot fill this contract.
+    if (declared !== undefined || isShaderTemplateManifestRow(material))
+      return declared?.programContract;
     const hash = material.hash;
     return hash === undefined
       ? undefined
@@ -664,18 +706,21 @@ export async function prewarmStandardScenePrograms(
     ...(gbufferCompatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
     ...(caps.storageBuffer && deferred !== undefined
       ? {
-          deferred: {
-            clustered: await resolve(true),
-            unclustered: await resolve(false),
-            ...(deferred.variants.some(
-              (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
-            )
-              ? {
-                  clusteredLut: await resolve(true, true),
-                  unclusteredLut: await resolve(false, true),
-                }
-              : {}),
-          },
+          deferred:
+            hasImmediateShaderCreation && isShaderTemplateManifestRow(deferred)
+              ? deferredTemplateSources(deferred, caps)
+              : {
+                  clustered: await resolve(true),
+                  unclustered: await resolve(false),
+                  ...(deferred.variants.some(
+                    (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
+                  )
+                    ? {
+                        clusteredLut: await resolve(true, true),
+                        unclusteredLut: await resolve(false, true),
+                      }
+                    : {}),
+                },
         }
       : {}),
   };

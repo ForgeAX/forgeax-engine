@@ -444,10 +444,10 @@ export function directionalShadowPreparationLimit(
   )
     return undefined;
   const count = installed?.directionalShadowViewCount;
-  if (count === undefined || !Number.isInteger(count) || count < 1 || count > 4) return undefined;
+  if (count === undefined || !Number.isInteger(count) || count < 0 || count > 4) return undefined;
   if (previous !== undefined) {
     const old = previous?.directionalShadowViewCount;
-    if (old === undefined || !Number.isInteger(old) || old < 1 || old > 4) return undefined;
+    if (old === undefined || !Number.isInteger(old) || old < 0 || old > 4) return undefined;
     return Math.max(cascadeCount, count, old);
   }
   return Math.max(cascadeCount, count);
@@ -961,7 +961,14 @@ function emitSubmittedDrawReceipts(
     onRenderableDraw,
   );
   owned?.submitted(selection);
-  frameGpuDriven.owner.recordDrawSummary(() => summarizeGpuDrivenDraws(renderables, selection));
+  frameGpuDriven.owner.recordDrawSummary(() => {
+    if (owned === undefined) return summarizeGpuDrivenDraws(renderables, selection);
+    const residual = owned.frame.residualSet(selection);
+    return summarizeGpuDrivenDraws(renderables, selection, (row) => {
+      const slot = owned.frame.slots.identitySlot(row.entityKey);
+      return slot !== undefined && residual.has(slot);
+    });
+  });
 }
 
 function fixedShadowMeshLease(

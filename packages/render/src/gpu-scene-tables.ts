@@ -6,7 +6,7 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-rhi';
+import { err, ok, RhiError as TableError } from '@forgeax/engine-rhi';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_COPY_SRC,
@@ -25,6 +25,10 @@ export interface GpuSceneTableTexture {
   readonly view: TextureView;
   readonly width: number;
 }
+
+export type GpuSceneTableStorage =
+  | { readonly kind: 'buffer'; readonly buffer: Buffer }
+  | { readonly kind: 'texture'; readonly texture: Texture; readonly width: number };
 
 export type GpuSceneTableResource =
   | { readonly kind: 'buffer'; readonly buffer: Buffer }
@@ -61,6 +65,7 @@ export function createGpuSceneTable(
   backend: GpuSceneTableBackend,
   label: string,
   size: number,
+  capture?: (storage: GpuSceneTableStorage) => void,
 ): Result<GpuSceneTableResource, RhiError> {
   if (backend === 'buffer') {
     const buffer = device.createBuffer({
@@ -69,7 +74,10 @@ export function createGpuSceneTable(
       usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
       mappedAtCreation: false,
     });
-    return buffer.ok ? ok({ kind: 'buffer', buffer: buffer.value }) : buffer;
+    if (!buffer.ok) return buffer;
+    const storage = { kind: 'buffer', buffer: buffer.value } as const;
+    capture?.(storage);
+    return ok(storage);
   }
   const width = textureWidth(device);
   const height = Math.max(1, Math.ceil(size / (width * TEXEL_BYTES)));
@@ -81,17 +89,66 @@ export function createGpuSceneTable(
     usage: TEXTURE_USAGE_COPY_DST | TEXTURE_USAGE_TEXTURE_BINDING,
   });
   if (!texture.ok) return texture;
-  const view = device.createTextureView(texture.value, { dimension: '2d' });
-  if (!view.ok) {
-    device.destroyTexture(texture.value);
-    return view;
+  const storage = { kind: 'texture', texture: texture.value, width } as const;
+  // A caller taking custody owns cleanup even if native view construction fails or throws.
+  capture?.(storage);
+  let failure: unknown;
+  try {
+    const view = device.createTextureView(texture.value, { dimension: '2d' });
+    if (view.ok) return ok({ ...storage, view: view.value });
+    if (capture !== undefined) return view;
+    failure = view.error;
+  } catch (cause) {
+    if (capture !== undefined) throw cause;
+    failure = cause;
   }
-  return ok({ kind: 'texture', texture: texture.value, view: view.value, width });
+  try {
+    destroyGpuSceneTable(device, storage);
+  } catch (cleanup) {
+    failure = new AggregateError([failure, cleanup], 'GPU table view and cleanup failed');
+  }
+  return err(
+    Object.assign(
+      new TableError({
+        code: 'internal-error',
+        expected: 'a complete table view or confirmed native cleanup',
+        hint: 'retain the original failure and retire this GPU owner',
+      }),
+      { cause: failure },
+    ),
+  );
 }
 
-export function destroyGpuSceneTable(device: RhiDevice, table: GpuSceneTableResource): void {
-  if (table.kind === 'buffer') device.destroyBuffer(table.buffer);
-  else device.destroyTexture(table.texture);
+export function destroyGpuSceneTable(device: RhiDevice, table: GpuSceneTableStorage): void {
+  if (table.kind === 'buffer') device.destroyBuffer(table.buffer).unwrap();
+  else device.destroyTexture(table.texture).unwrap();
+}
+
+/** Attempt every owned allocation; a failed result retains exact unknown-effect receipts. */
+export function destroyGpuSceneTables(
+  device: RhiDevice,
+  tables: Iterable<GpuSceneTableStorage>,
+): Result<void, RhiError> {
+  const failures: { readonly table: GpuSceneTableStorage; readonly cause: unknown }[] = [];
+  for (const table of tables) {
+    try {
+      destroyGpuSceneTable(device, table);
+    } catch (cause) {
+      failures.push({ table, cause });
+    }
+  }
+  return failures.length === 0
+    ? ok(undefined)
+    : err(
+        Object.assign(
+          new TableError({
+            code: 'internal-error',
+            expected: 'confirmed cleanup for every private GPU table',
+            hint: 'retain the failed allocations and retire this GPU owner',
+          }),
+          { cause: new AggregateError(failures, 'GPU table cleanup remains unconfirmed') },
+        ),
+      );
 }
 
 /**
@@ -101,7 +158,7 @@ export function destroyGpuSceneTable(device: RhiDevice, table: GpuSceneTableReso
  */
 export function writeGpuSceneTable(
   device: RhiDevice,
-  table: GpuSceneTableResource,
+  table: GpuSceneTableStorage,
   source: ArrayBuffer,
   offset: number,
   size: number,

@@ -9,8 +9,7 @@ import {
   createMaterialProgramSetDigest,
 } from '@forgeax/engine-pack';
 import { derive } from '@forgeax/engine-types';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
-import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const APP_ROOT = resolve(new URL('..', import.meta.url).pathname);
 const FIXTURE_PATH = resolve(APP_ROOT, 'src/multi-uv-inheritance.pack.json');
@@ -58,7 +57,7 @@ function digest(value) {
 }
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8'));
-const manifest = await readShaderManifestPublication(
+const manifest = await readCookedShaderManifestPublication(
   JSON.parse(readShaderManifestText(MANIFEST_PATH)),
 );
 const shader = (manifest.materialShaders ?? []).find((entry) => entry.identifier === MODULE_ID);

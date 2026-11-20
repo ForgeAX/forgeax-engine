@@ -33,6 +33,7 @@ import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
 import { createWorkspacePackAuthoring } from './workspace-pack-authoring.js';
 import type { WorkspacePackCookPlugin } from './workspace-pack-cook.js';
+import { createWorkspacePreparation } from './workspace-preparation.js';
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -839,11 +840,15 @@ export function createDevKitWorkspaceProvider(
         );
       return currentTarget;
     };
+    const preparation = createWorkspacePreparation(() => publishStatus());
     const publishStatus = (): void => {
       const target = currentTarget;
+      const progress = preparation.read();
+      const preparationStatus = progress === undefined ? {} : { preparation: progress };
       if (pageLost || readyFailure !== undefined) {
         input.publishStatus({
           phase: 'failed',
+          ...preparationStatus,
           sessionId,
           generation: input.generation,
           ...(projectDocument === undefined ? {} : { document: projectDocument }),
@@ -860,6 +865,7 @@ export function createDevKitWorkspaceProvider(
       } else if (ready !== undefined && projectDocument !== undefined) {
         input.publishStatus({
           phase: 'running',
+          ...preparationStatus,
           sessionId,
           generation: input.generation,
           document: projectDocument,
@@ -869,6 +875,7 @@ export function createDevKitWorkspaceProvider(
       } else if (projectDocument !== undefined) {
         input.publishStatus({
           phase: 'starting',
+          ...preparationStatus,
           sessionId,
           generation: input.generation,
           document: projectDocument,
@@ -876,7 +883,12 @@ export function createDevKitWorkspaceProvider(
           browserGeneration,
         });
       } else {
-        input.publishStatus({ phase: 'preparing', sessionId, generation: input.generation });
+        input.publishStatus({
+          phase: 'preparing',
+          sessionId,
+          generation: input.generation,
+          ...preparationStatus,
+        });
       }
     };
 
@@ -1347,6 +1359,7 @@ export function createDevKitWorkspaceProvider(
       }
       input.startupController.abort(new Error('Project session closed'));
       sessionClosed = true;
+      preparation.close();
       removePresentation?.();
       removePresentation = undefined;
       removeClientConnect();
@@ -1443,6 +1456,7 @@ export function createDevKitWorkspaceProvider(
     input.publishCleanup(closeResources);
 
     try {
+      preparation.host('project-config');
       assertSessionActive();
       backend = parent?.backend ?? options.hostBinding?.backend ?? (await backendFactory());
       backendBound = true;
@@ -1493,10 +1507,23 @@ export function createDevKitWorkspaceProvider(
               strictPort: true,
             },
             host: binding,
+            onPreparation: (operation) => {
+              if (!input.startupController.signal.aborted && !sessionClosed)
+                preparation.host(operation);
+            },
+            onShaderProgress: (event) => {
+              if (!input.startupController.signal.aborted && !sessionClosed)
+                preparation.shader(event);
+            },
+            onPackProgress: (event) => {
+              if (!input.startupController.signal.aborted && !sessionClosed)
+                preparation.observe(event);
+            },
             scriptablePackMetadata,
           });
           timing('vite-config');
           await closeIfInactive();
+          preparation.host('vite-server');
           server = await serverFactory(config);
           timing('vite-server-created');
           await closeIfInactive();
@@ -1537,6 +1564,7 @@ export function createDevKitWorkspaceProvider(
       workspaceUrl.searchParams.set('forgeaxWorkspaceHeight', String(height));
       workspaceUrl.searchParams.set('forgeaxWorkspaceHeaded', headed ? '1' : '0');
       projectDocument = { sessionId, targetId, url: workspaceUrl.href, browserGeneration };
+      preparation.host('scene-connection');
       publishStatus();
       timing('target-url-published');
 
@@ -2199,6 +2227,7 @@ export function createDevKitWorkspaceProvider(
       const prior = status;
       publishStatus({
         phase: 'failed',
+        ...(prior.preparation === undefined ? {} : { preparation: prior.preparation }),
         sessionId,
         generation: input.generation,
         ...('document' in prior && prior.document ? { document: prior.document } : {}),

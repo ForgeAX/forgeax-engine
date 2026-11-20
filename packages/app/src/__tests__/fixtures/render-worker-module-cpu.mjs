@@ -17,18 +17,40 @@ Object.defineProperty(globalThis, 'navigator', {
 globalThis.postMessage = (data) => parentPort.postMessage({ fixture: 'product', data });
 globalThis.close = () => parentPort.close();
 let loaded = false;
+let stagedShader;
+let manifestStage;
+Object.defineProperty(globalThis, '__forgeaxShaderManifest', {
+  get: () => manifestStage,
+  set(value) {
+    manifestStage = value;
+    if (value.name === 'shader-manifest-validated')
+      parentPort.postMessage({ fixture: 'shader-ready', url: value.url, gpuCalls });
+  },
+});
 let hostPort;
 const pictures = new Map();
+function deliver(message) {
+  if (typeof globalThis.onmessage !== 'function')
+    throw new Error('Actual module handler is missing');
+  globalThis.onmessage({ data: message });
+}
+async function loadWorker() {
+  // Error mode is a genuine failing ES module, not a rejected transport mock.
+  await import(
+    workerData.failModule
+      ? 'data:text/javascript,throw new Error("fixture-early-module-failure")'
+      : workerData.moduleUrl
+  );
+  loaded = true;
+  if (stagedShader !== undefined) deliver(stagedShader);
+  stagedShader = undefined;
+  parentPort.postMessage({ fixture: 'loaded', moduleUrl: workerData.moduleUrl, gpuCalls });
+}
 parentPort.on('message', async (message) => {
-  if (message.fixture === 'load') {
-    // Error mode is a genuine failing ES module, not a rejected transport mock.
-    await import(
-      workerData.failModule
-        ? 'data:text/javascript,throw new Error("fixture-early-module-failure")'
-        : workerData.moduleUrl
-    );
-    loaded = true;
-    parentPort.postMessage({ fixture: 'loaded', moduleUrl: workerData.moduleUrl, gpuCalls });
+  if (message.fixture === 'load') return loadWorker();
+  if (message.kind === 'stage-shader-manifest') {
+    if (loaded) deliver(message);
+    else stagedShader = message;
     return;
   }
   if (message.kind === 'init') {
@@ -98,9 +120,7 @@ parentPort.on('message', async (message) => {
     return;
   }
   if (message.kind === 'dispose' || message.kind === 'inspect') {
-    if (typeof globalThis.onmessage !== 'function')
-      throw new Error('Actual module handler is missing');
-    globalThis.onmessage({ data: message });
+    deliver(message);
     return;
   }
   throw new Error('Unexpected fixture command');

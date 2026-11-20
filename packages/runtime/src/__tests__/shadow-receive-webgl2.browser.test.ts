@@ -1,6 +1,7 @@
 import { encodePng } from '@forgeax/engine-image/png';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as wgpu from '@forgeax/engine-rhi-wgpu';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
@@ -20,7 +21,7 @@ it('applies object receive toggles to real WebGL2 directional and spot shadows',
     host = await constructRendererHost(
       canvas,
       undefined,
-      { shaderManifestUrl: '/shaders/manifest.json' },
+      { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
       loadRhiPack(
         { ...recorder.backend },
         {

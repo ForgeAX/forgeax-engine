@@ -1,7 +1,13 @@
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime/internal';
 import {
+  MATERIAL_TEMPLATE_SOURCES_MEDIA_TYPE,
+  readMaterialTemplateSources,
+  validateMaterialTemplatePublication,
+} from '@forgeax/engine-pack/material-cook';
+import {
   type AddressMode,
   type AssetDecoderContribution,
+  type AssetDecoderInput,
   AssetError,
   type AssetKind,
   type AssetLoadError,
@@ -193,12 +199,131 @@ function digestOf(descriptor: { readonly integrity?: { readonly digest: string }
   return digest === undefined ? {} : { digest };
 }
 
+async function decodeMaterialTemplate(
+  payload: Record<string, unknown>,
+  { envelope, artifacts }: AssetDecoderInput<MaterialAsset>,
+) {
+  const source = validateMaterialTemplatePublication(payload.template);
+  const fail = (reason: string) =>
+    invalid(envelope.guid, 'a verified material template publication', reason);
+  if (!source.ok) return fail(source.error);
+  if (
+    source.value.guid.toLowerCase() !== envelope.guid.toLowerCase() ||
+    payload.cooked !== undefined
+  )
+    return fail('material template does not own this material payload');
+  const { path, digest } = source.value.sourceArtifact;
+  const descriptor = envelope.artifacts[path];
+  if (
+    descriptor === undefined ||
+    descriptor.mediaType !== MATERIAL_TEMPLATE_SOURCES_MEDIA_TYPE ||
+    descriptor.integrity?.digest !== digest
+  )
+    return fail('the material source descriptor is absent or disagrees with its template');
+  const bytes = await (artifacts.program ?? artifacts.read)(descriptor);
+  if (!bytes.ok) return bytes;
+  const modules = readMaterialTemplateSources(bytes.value, digest);
+  if (!modules.ok) return fail(modules.error);
+  const { template: _, ...authored } = payload;
+  if (!validMaterial(authored)) return fail('material owner validation failed');
+  const resolved = resolveMaterialWireRefs(authored, envelope.refs, envelope.guid);
+  if (!resolved.ok) return resolved;
+  return ok({
+    ...resolved.value,
+    materialTemplate: { publication: source.value, sources: modules.value },
+  });
+}
+
+function materialArtifactRequests(
+  programs: readonly unknown[],
+  { envelope, artifacts }: AssetDecoderInput<MaterialAsset>,
+) {
+  // Collect each external artifact once while retaining declaration order.
+  const requests = new Map<
+    string,
+    { descriptor: (typeof envelope.artifacts)[string]; indices: number[] }
+  >();
+  for (const [index, program] of programs.entries()) {
+    if (!record(program) || !record(program.artifact)) continue;
+    const artifact = program.artifact;
+    const path = artifact.path;
+    const descriptor = typeof path === 'string' ? envelope.artifacts[path] : undefined;
+    if (artifact.bytes !== undefined && descriptor === undefined) continue;
+    if (
+      typeof path !== 'string' ||
+      descriptor === undefined ||
+      (artifacts.locate !== undefined && artifacts.locate(descriptor) === undefined)
+    )
+      return invalid(
+        envelope.guid,
+        'a verified external artifact for each compact material program',
+        'compact material program artifact descriptor or digest mismatch',
+      );
+    const request = requests.get(path);
+    if (request === undefined) requests.set(path, { descriptor, indices: [index] });
+    else request.indices.push(index);
+  }
+  return ok([...requests.values()]);
+}
+
+async function hydrateMaterialProgramArtifacts(
+  programs: unknown[],
+  input: AssetDecoderInput<MaterialAsset>,
+) {
+  const requests = materialArtifactRequests(programs, input);
+  if (!requests.ok) return requests;
+  const distinct = requests.value;
+  const { artifacts, envelope } = input;
+  const results: Awaited<ReturnType<typeof artifacts.read>>[] = new Array(distinct.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(8, distinct.length) }, async () => {
+      while (cursor < distinct.length) {
+        const index = cursor++;
+        const request = distinct[index];
+        if (request === undefined) continue;
+        // Materials share program modules; the session keeps one resident copy.
+        results[index] = await (artifacts.program ?? artifacts.read)(request.descriptor);
+      }
+    }),
+  );
+  // Keep declaration-order failure precedence even when later reads finish first.
+  for (const [index, request] of distinct.entries()) {
+    const loaded = results[index];
+    if (loaded === undefined) throw new Error('material artifact read did not complete');
+    if (!loaded.ok) return loaded;
+    for (const programIndex of request.indices) {
+      const program = programs[programIndex] as Record<string, unknown>;
+      const inline = (program.artifact as Record<string, unknown>).bytes;
+      if (
+        inline !== undefined &&
+        (!(Array.isArray(inline) || inline instanceof Uint8Array) ||
+          inline.length !== loaded.value.length ||
+          loaded.value.some((byte, offset) => byte !== inline[offset]))
+      )
+        return invalid(
+          envelope.guid,
+          'inline bytes matching the verified external program',
+          'inline material program bytes differ from their external artifact',
+        );
+      programs[programIndex] = {
+        ...program,
+        artifact: { ...(program.artifact as object), bytes: loaded.value },
+      };
+    }
+  }
+  return ok(programs);
+}
+
 export const materialContribution: AssetDecoderContribution<MaterialAsset, 'material'> = {
   kind: { kind: 'material' } as AssetKind<MaterialAsset, 'material'>,
   consumer: 'Render MaterialScene',
   decoder: {
-    async decode({ envelope, artifacts }) {
+    async decode(input) {
+      const { envelope } = input;
       let payload: unknown = envelope.payload;
+      if (record(payload) && payload.template !== undefined)
+        return decodeMaterialTemplate(payload, input);
       if (
         record(payload) &&
         record(payload.cooked) &&
@@ -207,70 +332,8 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
       ) {
         const programs = [...payload.cooked.programs];
         const cooked = payload.cooked;
-        // Hydrate unique bytes in bounded parallel work before the one complete Cook validation.
-        const requests = new Map<
-          string,
-          { descriptor: (typeof envelope.artifacts)[string]; indices: number[] }
-        >();
-        for (const [index, program] of programs.entries()) {
-          if (!record(program) || !record(program.artifact)) continue;
-          const artifact = program.artifact;
-          const path = artifact.path;
-          const descriptor = typeof path === 'string' ? envelope.artifacts[path] : undefined;
-          if (artifact.bytes !== undefined && descriptor === undefined) continue;
-          if (
-            typeof path !== 'string' ||
-            descriptor === undefined ||
-            (artifacts.locate !== undefined && artifacts.locate(descriptor) === undefined)
-          )
-            return invalid(
-              envelope.guid,
-              'a verified external artifact for each compact material program',
-              'compact material program artifact descriptor or digest mismatch',
-            );
-          const request = requests.get(path);
-          if (request === undefined) requests.set(path, { descriptor, indices: [index] });
-          else request.indices.push(index);
-        }
-        const distinct = [...requests.values()];
-        const results: Awaited<ReturnType<typeof artifacts.read>>[] = new Array(distinct.length);
-        let cursor = 0;
-        await Promise.all(
-          Array.from({ length: Math.min(8, distinct.length) }, async () => {
-            while (cursor < distinct.length) {
-              const index = cursor++;
-              const request = distinct[index];
-              if (request === undefined) continue;
-              // Materials share program modules; the session keeps one resident copy.
-              results[index] = await (artifacts.program ?? artifacts.read)(request.descriptor);
-            }
-          }),
-        );
-        // Keep declaration-order failure precedence even when later reads finish first.
-        for (const [index, request] of distinct.entries()) {
-          const loaded = results[index];
-          if (loaded === undefined) throw new Error('material artifact read did not complete');
-          if (!loaded.ok) return loaded;
-          for (const programIndex of request.indices) {
-            const program = programs[programIndex] as Record<string, unknown>;
-            const inline = (program.artifact as Record<string, unknown>).bytes;
-            if (
-              inline !== undefined &&
-              (!(Array.isArray(inline) || inline instanceof Uint8Array) ||
-                inline.length !== loaded.value.length ||
-                loaded.value.some((byte, offset) => byte !== inline[offset]))
-            )
-              return invalid(
-                envelope.guid,
-                'inline bytes matching the verified external program',
-                'inline material program bytes differ from their external artifact',
-              );
-            programs[programIndex] = {
-              ...program,
-              artifact: { ...(program.artifact as object), bytes: loaded.value },
-            };
-          }
-        }
+        const hydrated = await hydrateMaterialProgramArtifacts(programs, input);
+        if (!hydrated.ok) return hydrated;
         payload = { ...payload, cooked: { ...cooked, programs } };
       }
       if (!validMaterial(payload)) {

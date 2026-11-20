@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import { materialContribution } from '@forgeax/engine-render';
+import { createPublicationAssets } from '@forgeax/engine-runtime/internal/renderer-host';
 import { afterEach, expect, it } from 'vitest';
+import { openShaderManifestPublication } from '../../../../scripts/lib/shader-manifest.mjs';
 import { buildProject } from '../host.js';
 
 const buildRoot = '019fb7ce-4300-7000-8000-000000000000';
@@ -88,18 +89,24 @@ export default definePack({
       return new Response('missing', { status: 404 });
     }
   };
-  const registry = new AssetRegistry({
-    catalog: createCatalogSource({ url: 'https://fixture.invalid/pack-index.json', fetch }),
-    fetcher: fetch,
-  });
-  const lease = registry.installDecoder(materialContribution.kind, materialContribution.decoder);
+  const publication = openShaderManifestPublication(resolve(dist, 'shaders/manifest.json'));
+  let registry: Awaited<ReturnType<typeof createPublicationAssets>> | undefined;
   try {
+    registry = await createPublicationAssets({ shaderManifestUrl: publication.url });
+    registry.setCatalogSource(
+      createCatalogSource({ url: 'https://fixture.invalid/pack-index.json', fetch }),
+      fetch,
+    );
     for (const key of ['material/declared', 'material/baked']) {
-      const loaded = await registry.load(guidOf(paintPack, key), 'material');
+      const guid = guidOf(paintPack, key);
+      const loaded = await registry.load(guid, 'material');
       expect(loaded, `${key}: ${JSON.stringify(loaded)}`).toMatchObject({ ok: true });
+      const projection = registry.getMaterialProjection(loaded.unwrap()).unwrap();
+      expect(projection?.sourceTemplate?.publication.guid).toBe(guid);
+      expect(projection?.staticSelection).toContain('static-switch:clearcoat=true');
     }
   } finally {
-    lease.dispose();
-    registry.dispose();
+    registry?.dispose();
+    publication.dispose();
   }
 });

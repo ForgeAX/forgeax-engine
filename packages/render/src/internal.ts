@@ -1,14 +1,22 @@
 // Non-stable implementation seam for engine-owned consumers and tests.
 
 export { renderGraphCompileCount } from '@forgeax/engine-render-graph';
-
 export {
   createDynamicGeometrySourceHost,
   type DynamicGeometryResidencyPort,
 } from './assembly/dynamic-geometry-host';
+export {
+  type LevelSourceHost,
+  levelSourceHost,
+  preparePublishedLevel,
+  retainPublishedLevelAsset,
+} from './assembly/level-source-access';
+export type { PublishedLevelPreparation } from './assembly/published-level-preparation';
+export type { SourceViewPreparation } from './assembly/source-view-preparation';
 export { DeviceScope } from './device/device-scope';
 export { assertTextureMipSkip } from './device/texture-mip-skip';
 export { createLightResourceUnavailable } from './errors/render';
+export { renderMaterialContext } from './extract/material-context';
 export {
   type FullscreenRenderFeatureDeclaration,
   fullscreenRenderFeatureDeclaration,
@@ -19,6 +27,7 @@ export {
   type RenderFeatureNativePlanBuilder,
   type RenderFeatureNativePlanToken,
 } from './features/prepared-gpu-work';
+export { resolveMeshMaterialBindings } from './mesh-material-bindings';
 export {
   deriveLtcResourcePlan,
   type LtcResourcePlan,
@@ -37,7 +46,13 @@ export {
   promoteExtendedLightingCandidate,
   recordExtendedLightingFailure,
 } from './prepare/extended-lighting/state';
-export type { MeshPipelinePreparation } from './publication/contract';
+export { encodeClosedLevelRows, sameClosedLevelRows } from './publication/closed-level-rows';
+export type {
+  MeshPipelinePreparation,
+  PublishedAssetVersion,
+  RenderPublicationRows,
+} from './publication/contract';
+export { publicationDependencies } from './publication/dependencies';
 export { captureMeshPipelinePreparation } from './publication/mesh-pipeline-preparation';
 export {
   isPackedRowsMesh,
@@ -46,10 +61,16 @@ export {
   packedRowsEligible,
 } from './publication/packed-rows-mesh';
 export { ownReceivedPublicationMaterials } from './publication/received-materials';
-export { RenderPublicationReceiver } from './publication/receiver';
+export {
+  type ClosedLevelAssetHold,
+  type ClosedLevelAssetPublication,
+  decodeClosedLevelRows,
+  RenderPublicationReceiver,
+} from './publication/receiver';
 export {
   decodeRenderPublication,
   encodeRenderPublication,
+  publicationAssetPayloadTransfers,
   renderPublicationTiming,
 } from './publication/record';
 export {
@@ -195,14 +216,32 @@ export {
 } from './record/gpu-pass-timing/parser';
 export {
   buildRectAreaWorldFrame,
+  prepareExtractContext,
   rectAreaFacesPoint,
 } from './render-system-extract';
+export { LocalMeshSource } from './scene/local-mesh-source';
+export {
+  type MeshSourcePreparation,
+  MeshSourcePreparationError,
+  type MeshSourcePreparationReason,
+  meshSourceComponents,
+  type PreparedMeshSource,
+  prepareMeshSourceSteps,
+} from './scene/prepared-mesh-source';
 export {
   admitProbeContributors,
   blendLightProbes,
   scaledProbeWeight,
 } from './scene/probe-blend';
 export { PROBE_BLEND_RECORD_CAPACITY } from './scene/probe-blend-record';
+export type { PublishedLevelMeshInput } from './scene/published-mesh-source';
+export type { SceneComposition } from './scene/scene-composition';
+export {
+  type StagedMeshSource,
+  StagedMeshSourceError,
+  type StagedMeshSourceFailure,
+  type StagedMeshSourceStatus,
+} from './scene/staged-mesh-source';
 export {
   createSsrHistoryOwner,
   SSR_HISTORY_FORMAT,
@@ -224,6 +263,7 @@ export {
   type SsrTemporalExecutionError,
   type SsrTemporalInspection,
 } from './ssr/temporal';
+export { type StreamingMaterialRejection, streamingMaterialRejection } from './streaming-material';
 export { TemporalFrameCoordinator } from './temporal/frame-coordinator';
 export {
   createWaterUnderwaterFeature,

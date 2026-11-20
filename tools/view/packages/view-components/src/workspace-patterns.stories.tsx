@@ -39,6 +39,22 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+export const LocalizedInspector: Story = {
+  parameters: { docs: { description: { story: 'The caller supplies locale. Changing it updates color control labels without resetting the selected display mode or expanded groups.' } } },
+  render: () => {
+    const [locale, setLocale] = useState<'en' | 'zh'>('en');
+    return <div style={{ width: '100%', maxWidth: 400 }}>
+      <Select aria-label="Language" value={locale} onChange={event => setLocale(event.target.value as 'en' | 'zh')}>
+        <option value="en">English</option><option value="zh">简体中文</option>
+      </Select>
+      <InspectorForm locale={locale} groups={[{ key: 'material', name: 'Material', fields: [
+        { key: 'color', label: 'Color', kind: 'color', value: [0.2, 0.4, 0.6, 1] },
+        { key: 'texture', label: 'Texture', kind: 'asset', value: { guid: 'texture-grass', name: 'Grass', kind: 'texture' } },
+      ] }]} />
+    </div>;
+  },
+};
+
 export const PanelChrome: Story = {
   render: () => (
     <div style={{ border: '1px solid var(--fx-color-border-default)' }}>

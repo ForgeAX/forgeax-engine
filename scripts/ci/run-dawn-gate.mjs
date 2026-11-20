@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { dawnOrdinaryWorkers } from '../lib/runner-resources.mjs';
 import { coreValidationFiles } from './core-validation.mjs';
 import { reportDawnEnvironment } from './dawn-environment-diagnostics.mjs';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
+import {
+  DAWN_GATE_GROUPS,
+  DAWN_GATE_SHARDS,
+  DAWN_VITEST_CONFIG,
+  dawnAuthoringCapturesOutsideCi,
+} from './dawn-gate-roster.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
@@ -202,8 +207,16 @@ function dawnExecutionEnvironment(id, environment) {
 
 export function dawnExecutionGroups(id, shard, environment = process.env) {
   const selectionEnvironment = dawnExecutionEnvironment(id, environment);
+  const authoringOnly = new Set(
+    id === undefined ? dawnAuthoringCapturesOutsideCi(environment) : [],
+  );
   return selectDawnGroups(id, shard)
-    .map((group) => ({ ...group, files: coreValidationFiles(group.files, selectionEnvironment) }))
+    .map((group) => ({
+      ...group,
+      files: coreValidationFiles(group.files, selectionEnvironment).filter(
+        (file) => !authoringOnly.has(file),
+      ),
+    }))
     .filter((group) => group.vitestShard !== undefined || group.files.length > 0);
 }
 
@@ -231,25 +244,6 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
   const nativeConcurrency = dawnNativeConcurrency(environment, ordinaryWorkers);
   if (!environmentDiagnostics && nativeConcurrency === 2)
     reportDawnEnvironment(ROOT, 'start', true);
-  if (environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST) {
-    const prepared = await runBrowserCommand(
-      [
-        process.execPath,
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        // Only the renderer's disabled-shadow control needs a separate base
-        // fleet. Other lanes consume the shared point projection unchanged.
-        ...(groups.some(({ id }) => id === 'renderer') ? [] : ['--profile', 'point-ssao']),
-        '--input',
-        'node_modules/.cache/forgeax-build/dawn-shaders',
-        '--shared-input-manifest',
-        environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
-      ],
-      { cwd: ROOT, env: environment, label: 'Dawn shader profile producer' },
-    );
-    if (prepared.status !== 0)
-      throw new Error(`Dawn shader preparation failed; ${prepared.failure}`);
-  }
   const failures = await executeDawnGroups(
     await dawnCapacityGroups(groups, nativeConcurrency, environment),
     async (group) => {

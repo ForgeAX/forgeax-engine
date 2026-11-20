@@ -3,9 +3,43 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { GpuInputArena } from '../gpu-input-arena';
 import { GpuSceneInputs } from '../gpu-scene-inputs';
 import { RenderScene } from '../scene/render-scene';
 import { receiptRow } from './gpu-draw-selection-fixture';
+
+it('reserves real logical resources without changing the accepted root or accepting a foreign descriptor', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const inputs = new GpuSceneInputs(device, (slot) => slot);
+  const foreign = new GpuInputArena();
+  const descriptor = inputs.arena.reserveDescriptor(3, (_address, data) =>
+    data.setUint32(0, 23, true),
+  );
+  const other = foreign.reserveDescriptor(3, () => undefined);
+  const guard = inputs.captureGuard();
+  const first = inputs.reserveResource(descriptor);
+  const second = inputs.reserveResource(descriptor);
+  try {
+    expect(first.logicalSlot).not.toBe(second.logicalSlot);
+    expect(guard()).toBe(true);
+    expect(inputs.resourceIsCurrent(first.logicalSlot, descriptor.address)).toBe(false);
+    expect(() => inputs.reserveResource(other)).toThrow();
+    first.release();
+    expect(inputs.allocateResource(0)).toBe(first.logicalSlot);
+    first.release();
+    expect(second.isCurrent()).toBe(true);
+    descriptor.release();
+    expect(second.isCurrent()).toBe(false);
+    expect(() => inputs.reserveResource(descriptor)).toThrow();
+  } finally {
+    second.release();
+    first.release();
+    descriptor.release();
+    other.release();
+    inputs.dispose();
+    foreign.dispose();
+  }
+});
 
 it('path-copies resource mappings, preserves descriptor zero and reclaims empty pages', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

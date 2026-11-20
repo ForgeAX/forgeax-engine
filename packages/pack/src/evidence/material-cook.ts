@@ -1,5 +1,8 @@
 import type {
   MaterialAsset,
+  MaterialCookProgramContext,
+  MaterialCookRasterContext,
+  MaterialCookRayContext,
   MaterialParameter,
   MaterialPass,
   MaterialProgramAbi,
@@ -26,6 +29,12 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { AssetGuid } from '../guid.js';
 
+export type {
+  MaterialCookProgramContext,
+  MaterialCookRasterContext,
+  MaterialCookRayContext,
+} from '@forgeax/engine-types';
+
 export interface MaterialCookRefs {
   readonly parent: readonly string[];
   readonly textures: readonly string[];
@@ -39,43 +48,6 @@ export interface MaterialCookArtifact {
   readonly digest: string;
   readonly bytes: Uint8Array;
 }
-
-/** Domain-owned inputs used to compile and select a material program. */
-export interface MaterialCookRasterContext {
-  readonly backend: 'webgpu' | 'webgl2' | 'wgpu-native';
-  readonly capability:
-    | 'storage-buffer-minimum'
-    | 'storage-buffer-projector'
-    | 'storage-buffer'
-    | 'storage-buffer-atmosphere'
-    | 'uniform-fallback';
-  readonly pipeline: 'forward' | 'deferred';
-  /** Absent is the ordinary material ABI; enabled by the receiving renderer. */
-  readonly visibleSurface?: true;
-  /** Receiving-view clipping; material-local planes remain independent. Absence is off. */
-  readonly viewClipping?: true;
-  /** Scene-index cross-fade coverage, independent of receiving-view clipping. Absence is off. */
-  readonly lodCoverage?: true;
-  readonly geometry: 'mesh' | 'skinned' | 'sprite' | 'sprite-instances' | 'terrain';
-  readonly pass: 'forward' | 'shadow' | 'depth';
-  readonly profile: 'forgeax-material-wgsl-v1';
-  readonly toolchain: 'naga-oil';
-  readonly instrumentation: 'none' | 'validation';
-}
-
-/** The same authored Surface evaluated at a ray hit or Card capture, without a submission address ABI. */
-export interface MaterialCookRayContext {
-  readonly backend: 'webgpu' | 'wgpu-native';
-  readonly capability: 'storage-buffer';
-  readonly pipeline: 'ray';
-  readonly geometry: 'mesh';
-  readonly pass: 'ray-hit' | 'card-capture';
-  readonly profile: 'forgeax-material-ray-v1';
-  readonly toolchain: 'naga-oil';
-  readonly instrumentation: 'none';
-}
-
-export type MaterialCookProgramContext = MaterialCookRasterContext | MaterialCookRayContext;
 
 /** Programs are derived artifacts, never independently authored assets. */
 export interface MaterialCookProgram {

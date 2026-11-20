@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebGPURenderer } from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
@@ -24,7 +24,7 @@ it.each([
     canvas: surface.canvas as unknown as OffscreenCanvas,
     forgeax: {
       materialPrograms: publication.publications,
-      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     },
   });
   try {

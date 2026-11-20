@@ -3,7 +3,7 @@ import { requireWaterValue } from '@forgeax/engine-water/internal';
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
 import { type Mat4, mat4 } from '@forgeax/engine-math';
-import type { AssetHandle, EquirectAsset } from '@forgeax/engine-types';
+import type { AssetHandle, EquirectAsset, GpuTextureAsset } from '@forgeax/engine-types';
 import { cameraLensProjection } from '../camera-projection';
 import { EquirectProjectionFailedError } from '../errors/render';
 import { isStandardPbrMaterialShader } from '../pbr-pipeline';
@@ -193,11 +193,9 @@ export function driveLazyEquirectProjection(
 
   // 'pending' and 'ready' are both handled downstream (white fallback while
   // pending; real IBL once ready). Only the first sight ('undefined') launches.
-  if (store.getCubemapStatus(handle, world) !== undefined) return;
-
   // First sight: resolve the equirect POD and fire-and-forget the projection.
-  const podRes = world.resolveAsset<EquirectAsset>(handle);
-  if (!podRes.ok || podRes.value.kind !== 'equirect') {
+  const podRes = world.resolveAsset<EquirectAsset | GpuTextureAsset>(handle);
+  if (!podRes.ok || (podRes.value.kind !== 'equirect' && podRes.value.kind !== 'gpu-texture')) {
     // The handle does not resolve to a live equirect POD (stale / wrong kind).
     // Launch nothing; the store stays empty and the white fallback holds. The
     // skybox / IBL degradation paths surface the missing resource per their own
@@ -207,6 +205,8 @@ export function driveLazyEquirectProjection(
   // Fire-and-forget: do NOT await. The store writes status:'pending'
   // synchronously (before its first await), so a re-entry next frame
   // short-circuits and this launches exactly once.
+  if (podRes.value.kind === 'equirect' && store.getCubemapStatus(handle, world) !== undefined)
+    return;
   void store._uploadCubemapFromEquirect(world, handle, podRes.value);
 }
 

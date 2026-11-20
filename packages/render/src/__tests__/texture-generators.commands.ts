@@ -77,11 +77,11 @@ export async function prepareTextureGeneratorPrograms(): Promise<TextureGenerato
 export async function prepareDerivedTextureGeneratorPrograms(): Promise<TextureGeneratorPrograms> {
   const module = 'test::gpu-derived';
   const source = `
-    struct Params { _textureLayer: u32 };
+    struct Params { _textureLayer: u32, sliceValues: array<vec4<f32>, 2> };
     @group(0) @binding(0) var<uniform> params: Params;
     @group(0) @binding(1) var source: texture_2d<f32>;
     @fragment fn derived() -> @location(0) vec4<f32> {
-      return vec4<f32>(textureLoad(source, vec2<i32>(0), 4).r, f32(params._textureLayer), 0.0, 1.0);
+      return vec4<f32>(textureLoad(source, vec2<i32>(0), 4).r, params.sliceValues[params._textureLayer].g, 0.0, 1.0);
     }
   `;
   const result = (

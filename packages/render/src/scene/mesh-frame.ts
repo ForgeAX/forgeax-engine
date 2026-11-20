@@ -10,6 +10,8 @@ const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
 /** Shared geometry facts. Vertex bytes remain with the asset and GPU residency owners. */
 export interface MeshGeometry {
   readonly handle: number;
+  /** Exact producer revision used to capture metadata; absent on unqualified callers. */
+  readonly source?: { readonly identity: string; readonly revision: number };
   readonly bounds: Float32Array | undefined;
   /** Shared base-position enclosure, derived only on admitted Mesh changes.
    * Absence forbids Skin culling; never substitute the rigid/bind-pose box.
@@ -67,6 +69,7 @@ export class MeshFrame {
     handle: number,
     mesh: MeshAsset,
     materials: readonly MaterialResource[] = EMPTY_MATERIALS,
+    provenance?: { readonly identity: string; readonly revision: number },
   ): MeshFrame {
     // Only metadata is captured. A range edit may mutate the asset's backing bytes,
     // while old frames must retain their original bounds and section description.
@@ -82,6 +85,7 @@ export class MeshFrame {
         : undefined;
     const geometry: MeshGeometry = {
       handle,
+      ...(provenance === undefined ? {} : { source: Object.freeze({ ...provenance }) }),
       bounds,
       skinEnvelopes: skinGeometryEnvelopes(mesh),
       morph: morphDeltas(mesh),
@@ -93,7 +97,12 @@ export class MeshFrame {
       lods: mesh.lods,
       lodHysteresis: mesh.lodHysteresis,
     };
-    return new MeshFrame(put(this.root, geometry, 0, handle, 1));
+    return this.withGeometry(geometry);
+  }
+
+  /** Consume already-captured metadata without rereading the asset or deriving it again. */
+  withGeometry(geometry: MeshGeometry): MeshFrame {
+    return new MeshFrame(put(this.root, geometry, 0, geometry.handle, 1));
   }
 
   without(handle: number): MeshFrame {

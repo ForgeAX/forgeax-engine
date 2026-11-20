@@ -1,5 +1,6 @@
 import { type AssetRegistry, validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import { EngineEnvironmentError, type RhiBackendPack } from './assembly/backend-contract';
+import type { RendererHostBundlerOptions } from './assembly/bundler-contract';
 import type { BundlerOptions } from './assembly/factory';
 import { createRenderer, exposeRenderer } from './assembly/factory';
 import type {
@@ -16,6 +17,7 @@ export type {
   RhiBackendPack,
 } from './assembly/backend-contract';
 export { EngineEnvironmentError, loadRhiPack } from './assembly/backend-contract';
+export type { RendererHostBundlerOptions } from './assembly/bundler-contract';
 export type { RendererLegacyHostAdapter } from './assembly/host-contract';
 export type { BundlerOptions };
 
@@ -70,7 +72,7 @@ function describeRendererInitializationFailure(error: unknown): string {
 export async function constructRendererHost(
   canvas: unknown,
   options?: RendererOptions,
-  bundler?: BundlerOptions,
+  bundler?: RendererHostBundlerOptions,
   backend?: RhiBackendPack,
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   try {

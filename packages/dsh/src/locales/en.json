@@ -1,0 +1,23 @@
+{
+  "lang": "en",
+  "language": "Language",
+  "languageEnglish": "English",
+  "languageChinese": "简体中文",
+  "ready": "● bridge ready",
+  "connecting": "○ connecting",
+  "hidePreview": "Hide preview",
+  "showPreview": "Show preview",
+  "binding": "Binding",
+  "frameId": "Frame ID",
+  "tick": "Tick",
+  "state": "State",
+  "pending": "Pending",
+  "external": "External",
+  "embedded": "Embedded",
+  "previewTitle": "Running ForgeAX Engine",
+  "headless": "Embedded headless Engine · no placeholder pixels",
+  "loader": "DSH native Loader",
+  "leases": "Leases",
+  "protocol": "Protocol",
+  "toggleState": "Toggle Engine state"
+}

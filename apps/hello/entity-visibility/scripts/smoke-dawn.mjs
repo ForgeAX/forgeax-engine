@@ -254,8 +254,8 @@ export async function runVisibilityDawnSmoke({ frames = 60 } = {}) {
     import('@forgeax/engine-scene'),
     import('@forgeax/engine-assets-runtime'),
   ]);
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  const engineManifest = await buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const engineManifest = await buildEngineShaderTemplateManifest();
   const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(engineManifest)], { type: 'application/json' }));
   process.once('exit', () => URL.revokeObjectURL(manifestUrl));
   const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');

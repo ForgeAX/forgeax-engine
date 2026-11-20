@@ -46,6 +46,24 @@ const DEFAULT_LABELS: AssetReferenceLabels = {
   previewUnsupported: 'Asset preview unavailable',
 };
 
+const CHINESE_LABELS: AssetReferenceLabels = {
+  none: '无',
+  missing: '资产缺失',
+  open: '打开资产查看器',
+  openUnavailable: '资产查看器不可用',
+  identityUnavailable: '资产身份不可用',
+  readOnly: '只读资产引用',
+  useSelection: '使用所选资产',
+  browse: '浏览至资产',
+  reveal: '在内容浏览器中显示',
+  more: '更多引用操作',
+  clear: '清除',
+  copyGuid: '复制 GUID',
+  previewLoading: '正在加载资产预览',
+  previewFailed: '资产预览失败',
+  previewUnsupported: '资产预览不可用',
+};
+
 export function AssetReferenceField({
   value,
   labels: customLabels,
@@ -57,6 +75,7 @@ export function AssetReferenceField({
   onClear,
   thumbnail,
   readOnly = false,
+  locale = 'en',
 }: {
   value: unknown;
   labels?: Partial<AssetReferenceLabels>;
@@ -68,10 +87,11 @@ export function AssetReferenceField({
   onClear?: () => void;
   thumbnail?: AssetReferenceThumbnail;
   readOnly?: boolean;
+  locale?: 'en' | 'zh';
 }) {
   const writeClipboard = useClipboardAction();
   const [failedSrc, setFailedSrc] = useState<string>();
-  const labels = { ...DEFAULT_LABELS, ...customLabels };
+  const labels = { ...(locale === 'zh' ? CHINESE_LABELS : DEFAULT_LABELS), ...customLabels };
   const record = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
   const guid = typeof record?.guid === 'string' ? record.guid

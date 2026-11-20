@@ -95,6 +95,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'temperature'
       | 'tint'
       | 'colorLut'
+      | 'generatedColorLut'
       | 'colorLutStrength'
       | 'antialias'
       | 'transparency'
@@ -130,6 +131,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['temperature']>().toEqualTypeOf<number>();
     expectTypeOf<Data['tint']>().toEqualTypeOf<number>();
     expectTypeOf<Data['colorLut']>().toEqualTypeOf<AssetHandle<'texture'>>();
+    expectTypeOf<Data['generatedColorLut']>().toEqualTypeOf<AssetHandle<'gpu-texture'>>();
     expectTypeOf<Data['colorLutStrength']>().toEqualTypeOf<number>();
     expectTypeOf<Data['transparency']>().toEqualTypeOf<number>();
     expectTypeOf<Data['historyVersion']>().toEqualTypeOf<number>();

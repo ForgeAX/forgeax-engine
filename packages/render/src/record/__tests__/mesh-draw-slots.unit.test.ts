@@ -247,6 +247,30 @@ it('retires exact source allocations on remove, recreate and reset without a cac
   expect(scene.meshDrawCapacity).toBe(3);
 });
 
+it('retires a missed row generation when a borrowed view catches up after slot reuse', () => {
+  const owner = new RenderScene();
+  const before = receiptRow().source;
+  const survivor = { ...before, entityKey: before.entityKey + 1 };
+  const replacement = { ...before, entityKey: before.entityKey + 2 };
+  owner.rebuild([before, survivor]);
+  const view = new RenderScene(owner.sceneRows);
+  const previous = view.slot(before.entityKey);
+  assert(previous);
+  const address = view.meshDrawSlot(before);
+  const stable = view.meshDrawSlot(survivor);
+  owner.apply([{ kind: 'remove', entityKey: before.entityKey }]);
+  owner.prepareRow(replacement).publish();
+  const next = owner.slot(replacement.entityKey);
+  assert(next);
+  expect(next.slot).toBe(previous.slot);
+  expect(next.generation).not.toBe(previous.generation);
+
+  view.observeBaseline();
+  expect(view.meshDrawSlot(replacement)).toBe(address);
+  expect(view.meshDrawSlot(survivor)).toBe(stable);
+  expect(view.meshDrawCapacity).toBe(2);
+});
+
 it('assigns the same source address to independently ordered main and shadow rosters', () => {
   const scene = new RenderScene();
   const a = {

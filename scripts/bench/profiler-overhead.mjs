@@ -1,11 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldEventLoop } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
-import { openShaderManifestPublication } from '../lib/shader-manifest.mjs';
-import { reusableSharedShader, sharedShaderInputFingerprint } from '../lib/shared-build-cache.mjs';
 import { createSmokePlatform } from '../smoke-platform.mjs';
 
 const GROUP_COUNT = 15;
@@ -186,41 +182,8 @@ function makeCanvas() {
 }
 
 async function makeShaderManifest() {
-  // The runner already admitted the BASE+SSAO producer. Use its original
-  // checked bytes directly instead of repackaging and opening the same shader
-  // records again before the timed workload starts.
-  if (
-    process.env.FORGEAX_BUILD_NO_TASK_CACHE !== '1' &&
-    !process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST
-  ) {
-    const root = fileURLToPath(new URL('../../', import.meta.url));
-    const receipt = fileURLToPath(
-      new URL(
-        '../../packages/vite-plugin-shader/dist/engine-inputs/ci/base-ssao/manifest.json',
-        import.meta.url,
-      ),
-    );
-    if (existsSync(receipt)) {
-      const input = sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true });
-      const shader = reusableSharedShader(root, receipt, input);
-      if (shader !== null) {
-        console.info('[profiler-overhead] using verified core base-ssao shader bytes');
-        return openShaderManifestPublication(shader);
-      }
-    }
-  }
-  execFileSync(
-    process.execPath,
-    [
-      fileURLToPath(new URL('../forgeax/prepare-shader-release-inputs.mjs', import.meta.url)),
-      '--build',
-      '--profile',
-      'base-ssao',
-    ],
-    { stdio: 'inherit' },
-  );
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  const manifest = await buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const manifest = await buildEngineShaderTemplateManifest();
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
   );

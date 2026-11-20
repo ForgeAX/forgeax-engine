@@ -108,6 +108,7 @@ export {
   type MaterialRenderPassProjection,
   type MaterialRenderProjection,
   materialParametersToParamSchema,
+  materialPassOwnsProgram,
   projectMaterialRecord,
   runtimeMaterialShaderId,
   sameMaterialContext,

@@ -53,7 +53,7 @@ it.each([
     dispatch.materials(),
   );
   const selected = collectGpuDrivenMaterialArtifacts({
-    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    batches: topology.query(topology.sourcePlan(), undefined).active.batches,
     programs,
     resolve: () => inputs.materialArtifact,
     clustered: false,
@@ -89,13 +89,13 @@ it.each([
         materialPipelinePreparationFactory: prepare,
         scene: {
           scene: available.scene,
-          plan: topology.query(topology.sourcePlan(), undefined),
+          plan: topology.query(topology.sourcePlan(), undefined).active,
           slots: scene.slotsSnapshot(),
           slotAt: scene.slotAt,
         },
         camera: makeZeroCameraFallbackSnapshot(),
         meshByBinding: new Map(
-          topology.query(topology.sourcePlan(), undefined).batches.map((batch) => {
+          topology.query(topology.sourcePlan(), undefined).active.batches.map((batch) => {
             assert(batch.binding);
             return [batch.binding, mesh(device)] as const;
           }),

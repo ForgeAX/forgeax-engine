@@ -11,7 +11,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { observeReplaySubmissions } from './native-replay-work.fixture';
@@ -23,7 +23,7 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/radiance-cache/dawn';
 mkdirSync(directory, { recursive: true });
 const save = (name: string, value: unknown) =>

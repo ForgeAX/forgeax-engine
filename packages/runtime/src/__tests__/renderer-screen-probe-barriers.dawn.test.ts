@@ -3,7 +3,7 @@ import type { StandardDiffuseGi } from '@forgeax/engine-render';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import {
   createIrradianceFieldHarness,
@@ -11,7 +11,7 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 it('rebuilds and consumes the Renderer depth pyramid across captured screen-probe frames', {
   timeout: 600_000,

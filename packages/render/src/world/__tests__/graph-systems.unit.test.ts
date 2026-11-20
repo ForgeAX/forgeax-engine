@@ -1,6 +1,7 @@
 import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
 import type { RenderFrameState } from '../../record/frame-snapshot';
+import { MaterialBgAssemblyCache } from '../../record/material-bg-assembly-cache';
 import type { RenderSystemInternals } from '../../record/render-context';
 import {
   commitFeatureCandidate,
@@ -59,6 +60,8 @@ function adoptedView(beforeRegister?: (world: World) => void) {
       },
     },
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     pipelinePreparationPending: false,
   } as unknown as RenderFrameState;
   const errorRegistry = { fire: vi.fn() };

@@ -131,6 +131,7 @@ export {
   type ShaderRegistryOptions as ShaderCatalogOptions,
   SSR_SHADER_MODULES,
 } from './ShaderRegistry.js';
+export { supportedVariantDefines } from './supported-variant-defines.js';
 export {
   type ExpandedShaderManifest,
   findVariantByDefines,
@@ -316,10 +317,16 @@ export {
   rayMaterialFailure,
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
+export { isRuntimeMaterialVariantFamily } from './material/variant-family.js';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
 export {
   type AdmittedShaderProgramTemplate,
   admitShaderProgramTemplate,
+  type MaterialShaderSelection,
+  type MaterialShaderSelectionResult,
+  type MaterialShaderTemplate,
+  type MaterialShaderTemplateProgram,
+  type PreparedMaterialShaderTemplate,
   publishShaderProgramTemplates,
   readShaderProgramTemplates,
   type ShaderProgramCompilation,
@@ -333,6 +340,7 @@ export {
   admitShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materialShaderPreparedSourceRows,
+  SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
   type ShaderTemplateManifest,
   shaderTemplateVariantEntry,

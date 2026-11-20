@@ -8,6 +8,9 @@ import type { RenderSceneSlot } from './render-scene-types';
 import { type RowChange, RowChangeLog } from './row-change-log';
 import type { RowContent } from './row-contents';
 
+const emptySourceCounts = () => ({ terrain: 0, glyph: 0, tilemap: 0, waterMeshSource: 0 });
+export type SceneGeneratedSource = keyof ReturnType<typeof emptySourceCounts>;
+
 const PAGE_SHIFT = 6;
 const PAGE_SIZE = 1 << PAGE_SHIFT;
 const PAGE_MASK = PAGE_SIZE - 1;
@@ -151,6 +154,8 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
      * owner keep the token across pose-only writes; ownerless frames have none.
      */
     readonly contentEpoch?: object,
+    /** Whether this exact row root can contribute authored or generated Water draws. */
+    readonly mayHaveWaterSources = true,
   ) {
     super();
     this.length = root?.count ?? 0;
@@ -459,6 +464,15 @@ export interface SceneRowWrite {
   readonly poseOffset?: number;
 }
 
+/** An unpublished address from this owner; neither rows nor captured frames include it. */
+export interface SceneSlotReservation {
+  readonly slot: number;
+  readonly generation: number;
+  isCurrent(): boolean;
+  publish(row: SceneRowWrite): RenderSceneSlot;
+  release(): void;
+}
+
 /** One mutable owner; known writes coalesce per page before a frame is captured. */
 export class SceneSlots {
   private readonly views = new RowViews();
@@ -477,6 +491,7 @@ export class SceneSlots {
     0,
     undefined,
     this.contentEpoch,
+    false,
   );
   private readonly pending = new Map<number, WritablePage>();
   private identities = new IdentityMapEditor();
@@ -486,9 +501,8 @@ export class SceneSlots {
   private newPages = 0;
   private copiedPages = 0;
   private copiedBytes = 0;
-  private terrainCount = 0;
-  private glyphCount = 0;
-  private tilemapCount = 0;
+  private sourceCounts = emptySourceCounts();
+  private authoredWaterOwners = 0;
   private lods = new LodCandidates();
   private terrainSlots = new SlotIndex();
   private capsuleSlots = new SlotIndex();
@@ -498,6 +512,8 @@ export class SceneSlots {
   /** Released addresses, reused last-in first-out; generations survive reuse. */
   private readonly freeSlots: number[] = [];
   private generations = new Uint32Array(64);
+  private nextAddress = 0;
+  private readonly reservations = new Map<number, SceneSlotReservation>();
 
   /**
    * The GPU row address for a new row: the most recently released slot with
@@ -505,10 +521,44 @@ export class SceneSlots {
    */
   allocate(): { readonly slot: number; readonly generation: number } {
     const reused = this.freeSlots.pop();
-    if (reused === undefined) return { slot: this.highWater, generation: 0 };
+    if (reused === undefined) return { slot: this.nextAddress++, generation: 0 };
     const generation = (this.generations[reused] as number) + 1;
     this.generations[reused] = generation;
     return { slot: reused, generation };
+  }
+
+  reserve(): SceneSlotReservation {
+    const { slot, generation } = this.allocate();
+    let owner: SceneSlots | undefined = this;
+    const current = () => owner?.reservations.get(slot) === api;
+    const api: SceneSlotReservation = Object.freeze({
+      slot,
+      generation,
+      isCurrent: current,
+      publish: (row: SceneRowWrite) => {
+        const target = owner;
+        if (target === undefined || !current() || row.generation !== generation)
+          throw new Error('Scene slot reservation is not current');
+        const record = target.writeRow(slot, row);
+        target.reservations.delete(slot);
+        owner = undefined;
+        return record;
+      },
+      release: () => {
+        const target = owner;
+        if (target !== undefined && current()) {
+          if (target.content(slot) !== undefined)
+            throw new Error('A partially published Scene slot retains its cleanup responsibility');
+          target.reservations.delete(slot);
+          target.ensureGeneration(slot);
+          target.generations[slot] = generation;
+          target.freeSlots.push(slot);
+        }
+        owner = undefined;
+      },
+    });
+    this.reservations.set(slot, api);
+    return api;
   }
 
   get freeCount(): number {
@@ -545,14 +595,8 @@ export class SceneSlots {
     this.lods.clearMeshes();
   }
 
-  hasSource(kind: 'terrain' | 'glyph' | 'tilemap'): boolean {
-    return (
-      (kind === 'terrain'
-        ? this.terrainCount
-        : kind === 'glyph'
-          ? this.glyphCount
-          : this.tilemapCount) > 0
-    );
+  hasSource(kind: SceneGeneratedSource): boolean {
+    return this.sourceCounts[kind] > 0;
   }
 
   get capacity(): number {
@@ -682,9 +726,11 @@ export class SceneSlots {
 
   private account(slot: number, content: RowContent | undefined, sign: 1 | -1): void {
     if (content === undefined) return;
-    if (content.terrain !== undefined) this.terrainCount += sign;
-    if (content.glyph !== undefined) this.glyphCount += sign;
-    if (content.tilemap !== undefined) this.tilemapCount += sign;
+    if (content.terrain !== undefined) this.sourceCounts.terrain += sign;
+    if (content.glyph !== undefined) this.sourceCounts.glyph += sign;
+    if (content.tilemap !== undefined) this.sourceCounts.tilemap += sign;
+    if (content.waterMeshSource !== undefined) this.sourceCounts.waterMeshSource += sign;
+    if (content.waterOwner !== undefined) this.authoredWaterOwners += sign;
     this.lods.slot(content, sign);
     if (sign === 1) {
       this.terrainSlots.set(slot, content.terrain !== undefined);
@@ -697,6 +743,12 @@ export class SceneSlots {
 
   /** Write one complete row; returns its new read view. */
   write(slot: number, row: SceneRowWrite): RenderSceneSlot {
+    if (this.reservations.has(slot))
+      throw new Error('An unpublished Scene slot belongs to its reservation');
+    return this.writeRow(slot, row);
+  }
+
+  private writeRow(slot: number, row: SceneRowWrite): RenderSceneSlot {
     if (!validSlot(slot)) throw new RangeError('Scene write requires a non-negative slot address');
     const page = this.writablePose(slot, true);
     const lane = slot & PAGE_MASK;
@@ -730,6 +782,13 @@ export class SceneSlots {
     for (let index = 0; index < POSE; index++) poses[base + index] = row.pose[offset + index] ?? 0;
     this.account(slot, row.content, 1);
     this.highWater = Math.max(this.highWater, slot + 1);
+    this.nextAddress = Math.max(this.nextAddress, slot + 1);
+    this.ensureGeneration(slot);
+    this.generations[slot] = row.generation;
+    return this.views.read(page, slot) as RenderSceneSlot;
+  }
+
+  private ensureGeneration(slot: number): void {
     if (slot >= this.generations.length) {
       let capacity = this.generations.length;
       while (capacity <= slot) capacity *= 2;
@@ -737,8 +796,6 @@ export class SceneSlots {
       grown.set(this.generations);
       this.generations = grown;
     }
-    this.generations[slot] = row.generation;
-    return this.views.read(page, slot) as RenderSceneSlot;
   }
 
   /** Replace only the live row's pose; returns its new read view. */
@@ -802,6 +859,7 @@ export class SceneSlots {
         pointsLines: this.indexedSlots('pointsLines'),
       },
       this.contentEpoch,
+      this.authoredWaterOwners > 0 || this.hasSource('waterMeshSource'),
     );
     return this.frame;
   }
@@ -821,12 +879,16 @@ export class SceneSlots {
       this.log.position,
       undefined,
       this.contentEpoch,
+      false,
     );
     this.highWater = 0;
+    this.nextAddress = 0;
+    this.reservations.clear();
     this.live = 0;
     this.freeSlots.length = 0;
     this.generations = new Uint32Array(64);
-    this.terrainCount = this.glyphCount = this.tilemapCount = 0;
+    this.sourceCounts = emptySourceCounts();
+    this.authoredWaterOwners = 0;
     this.lods = new LodCandidates();
     this.terrainSlots = new SlotIndex();
     this.capsuleSlots = new SlotIndex();

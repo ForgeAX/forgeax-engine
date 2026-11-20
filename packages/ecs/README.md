@@ -248,6 +248,13 @@ payload. `world.resolveUniqueRef<T>(handle)` reads that same payload and returns
 `unique-ref-released` or `unique-ref-stale` for invalid generations. Component
 replacement, removal and despawn own release; the read API grants no independent
 release or mutation of the store.
+An engine producer whose component creation fails before adopting its newly
+allocated handle cancels that unadopted allocation through
+`releaseUnadoptedUniqueRef` from `@forgeax/engine-ecs/internal`. This owner-only
+capability requires proof that no successful component write owns the handle;
+ordinary component values and read borrows never grant an independent release.
+It preserves generation checks and refuses to mutate a poisoned World.
+
 Each live entry publishes one frozen success Result; payload replacement publishes
 a new Result while older results keep their original payload. The payload itself
 remains live and is not frozen or cloned.

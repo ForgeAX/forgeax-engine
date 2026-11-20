@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-math
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > Pure functions, out-parameter-first, SoA-friendly math. Functions that write output storage require an explicit `out` to reuse caller-owned buffers. Returning the same `out` is allowed; optional/default output allocation is forbidden. Covers `@forgeax/engine-math`.
 
 ## Mental model

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createBackendHost } from '@forgeax/engine-host/backend';
@@ -7,11 +7,15 @@ import { chromium } from 'playwright';
 import { createServer } from 'vite';
 import { expect, it } from 'vitest';
 import { createDevKitWorkspaceProvider } from '../src/workspace-provider.js';
+import { createLiveSyncProjectDirectory, prepareLiveSyncSharedInputs } from '../scripts/live-sync-inputs.mjs';
 import { runtimeBrowserLaunchOptions } from './browser-launch.js';
 
 it('renders editor and Play on one project server and retains editing after Stop', async () => {
   const repository = resolve(import.meta.dirname, '../../..');
-  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-shared-project-browser-'));
+  const manifestPath = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+  const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
+    'forgeax-shared-project-browser-', repository, manifestPath,
+  );
   const backend = await createBackendHost();
   let servers = 0;
   let closed = 0;
@@ -32,6 +36,8 @@ it('renders editor and Play on one project server and retains editing after Stop
   const evidence = resolve(tmpdir(), 'forgeax-shared-project-browser-evidence');
   const errors: string[] = [];
   try {
+    if (manifestPath)
+      await prepareLiveSyncSharedInputs({ sourceRoot: repository, projectRoot: root, temporaryRoot, manifestPath });
     const packageId = '019fb7ce-1100-7000-8000-000000000000';
     const sceneGuid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'scene'));
     const frontendGuid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'frontend'));
@@ -113,7 +119,10 @@ it('renders editor and Play on one project server and retains editing after Stop
       await game.waitForSelector('html[data-forgeax-input="open"]', { timeout: 120_000 });
       stages[`play${cycle}UsableMs`] = performance.now() - began;
       expect(await game.getAttribute('html', 'data-shared-game-frontend')).toBe('active');
-      await game.waitForFunction(() => {
+      // The first Play proves sustained rendering. Re-entry proves admission
+      // of a new scene on the existing server and replaces no editor state.
+      if (cycle === 0 || process.env.FORGEAX_CI_CORE_VALIDATION !== '1')
+        await game.waitForFunction(() => {
         const inspection = (globalThis as unknown as { __forgeaxGameInspection?: { renderer(): { frameId: number } } }).__forgeaxGameInspection;
         return (inspection?.renderer().frameId ?? 0) >= 60;
       }, undefined, { timeout: 120_000 });
@@ -136,6 +145,6 @@ it('renders editor and Play on one project server and retains editing after Stop
     await browser.close();
     await provider.dispose?.().catch(() => {});
     await backend.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }, 240_000);

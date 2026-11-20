@@ -116,6 +116,7 @@ interface ImportedTextureRecord<FrameCtx> extends ResourceRecordBase {
   readonly origin: 'imported';
   readonly descriptor: ImportedTextureDescriptor;
   readonly resolve: (frame: FrameCtx) => Texture;
+  readonly native?: import('./types.js').NativeTextureImport;
 }
 
 interface CreatedBufferRecord extends ResourceRecordBase {

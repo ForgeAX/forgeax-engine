@@ -92,7 +92,7 @@ function fixture(count: number) {
     ),
   );
   for (const row of scene.slotsSnapshot()) dispatch.bind(row.slot, row.snapshot);
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   const gpuBatches = plan.batches
     .filter((batch) => batch.binding?.material === shared || batch.binding?.material === noLod)
     .map((batch) => ({
@@ -192,7 +192,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
     {
       phases: new ViewDrawPhases(),
       scene: {
-        plan: f.topology.query(f.topology.sourcePlan(), undefined),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
         slotAt: f.scene.slotAt,
         drawSnapshotAt: f.scene.drawSnapshotAt,
         unbatchedSlots: new FrameSet(),
@@ -366,7 +366,7 @@ it('sorts each requested camera before folding its CPU draws', () => {
   const capture = captureView.transparent;
   const folding = vi.fn((_dispatch: import('../../render-system-extract').DispatchList) => []);
   // The Pass edit changed the shared material's batch class: its rows moved batches.
-  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const mesh = f.meshes.values().next().value;
   assert(mesh);
   const meshes = new Map(plan.batches.map((batch) => [batch.binding ?? assert.fail(), mesh]));
@@ -662,7 +662,7 @@ it('culls direct capture rows with their own camera instead of the display admis
     );
   }
   const capture = new CaptureScenePasses(makeZeroCameraFallbackSnapshot());
-  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const prepared = prepareScenePasses([capture.opaque], {
     phases: new ViewDrawPhases(),
     scene: {
@@ -978,7 +978,7 @@ it('retains combined Scene Pass work until a selected phase output or request ro
     ...inputs,
     scene: {
       ...inputs.scene,
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       draws: { ...draws, slots: f.scene.slotsSnapshot() },
     },
   });
@@ -1045,7 +1045,7 @@ it('keeps capture phases warm while applying source pose changes', () => {
     ...inputs,
     scene: {
       ...inputs.scene,
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       draws: { ...draws, slots: f.scene.slotsSnapshot() },
     },
   });
@@ -1268,7 +1268,7 @@ it('retains quiet layer-filtered work and invalidates it when the camera mask ch
   const inputs: Parameters<typeof prepareScenePasses>[1] = {
     phases: new ViewDrawPhases(),
     scene: {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: new FrameSet(),

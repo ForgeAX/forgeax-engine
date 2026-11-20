@@ -147,149 +147,29 @@ test('rejects source, compiler, profile, payload and receipt drift before publis
   }
 });
 
-test('projected source admits BASE after its compiler rebuild with an explicit original revision', () => {
+test('restores from an original checkout and rejects a conflicting producer receipt', () => {
   const f = fixture();
   try {
-    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: f.root,
-      encoding: 'utf8',
-    }).trim();
-    rmSync(join(f.root, '.git'), { recursive: true });
-    f.write(join(f.extracted, 'packages/compiler/dist/index.js'), 'producer compiler');
-    const receipt = readFileSync(f.receipt);
-    const payload = readFileSync(f.shader);
-    restoreCoreBaseShader(f.root, f.extracted, { sourceRevision });
-    assert.deepEqual(readFileSync(join(f.root, coreBaseShaderDirectory, 'manifest.json')), receipt);
-    assert.deepEqual(
-      readFileSync(join(f.root, coreBaseShaderDirectory, 'shaders/manifest.json')),
-      payload,
-    );
-    assert.equal(readFileSync(join(f.root, 'packages/compiler/dist/index.js'), 'utf8'), 'compiler');
-    assert.deepEqual(readFileSync(f.receipt), receipt);
-    assert.equal(existsSync(join(f.root, 'shared-build-inputs')), false);
-    assert.equal(existsSync(join(f.root, '.git')), false);
-  } finally {
-    rmSync(f.directory, { recursive: true, force: true });
-  }
-});
-
-test('projected source accepts the original admitted checkout BASE without inventing an artifact receipt', () => {
-  const f = fixture();
-  try {
-    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: f.root,
-      encoding: 'utf8',
-    }).trim();
-    execFileSync('git', ['init', '--quiet'], { cwd: f.extracted });
-    execFileSync('git', ['fetch', '--quiet', f.root, 'HEAD'], { cwd: f.extracted });
-    execFileSync('git', ['update-ref', 'HEAD', sourceRevision], { cwd: f.extracted });
-    rmSync(join(f.extracted, 'engine-prerequisite-build-manifest.json'));
-    rmSync(join(f.root, '.git'), { recursive: true });
-    restoreCoreBaseShader(f.root, f.extracted, { sourceRevision });
+    const checkout = join(f.directory, 'checkout');
+    execFileSync('git', ['clone', '--quiet', f.root, checkout]);
+    cpSync(join(f.extracted, coreBaseShaderDirectory), join(checkout, coreBaseShaderDirectory), {
+      recursive: true,
+    });
+    restoreCoreBaseShader(f.root, checkout);
     assert.deepEqual(
       readFileSync(join(f.root, coreBaseShaderDirectory, 'manifest.json')),
       readFileSync(f.receipt),
     );
-    assert.equal(existsSync(join(f.extracted, 'engine-prerequisite-build-manifest.json')), false);
+    f.write(
+      join(checkout, 'engine-prerequisite-build-manifest.json'),
+      JSON.stringify({ engineSha: 'b'.repeat(40) }),
+    );
+    assert.throws(
+      () => restoreCoreBaseShader(f.root, checkout),
+      /source revision differs from input checkout HEAD/,
+    );
   } finally {
     rmSync(f.directory, { recursive: true, force: true });
-  }
-});
-
-test('explicit revision cannot replace either checkout HEAD or an existing producer receipt', () => {
-  for (const drift of ['consumer-head', 'input-head', 'input-receipt']) {
-    const f = fixture();
-    try {
-      const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: f.root,
-        encoding: 'utf8',
-      }).trim();
-      if (drift === 'consumer-head') {
-        assert.throws(
-          () =>
-            restoreCoreBaseShader(f.root, f.extracted, {
-              sourceRevision: 'b'.repeat(40),
-            }),
-          /differs from checkout HEAD/,
-        );
-      } else {
-        execFileSync('git', ['init', '--quiet'], { cwd: f.extracted });
-        execFileSync('git', ['fetch', '--quiet', f.root, 'HEAD'], { cwd: f.extracted });
-        execFileSync('git', ['update-ref', 'HEAD', sourceRevision], { cwd: f.extracted });
-        const sha = drift === 'input-receipt' ? 'b'.repeat(40) : sourceRevision;
-        writeFileSync(
-          join(f.extracted, 'engine-prerequisite-build-manifest.json'),
-          JSON.stringify({ engineSha: sha }),
-        );
-        if (drift === 'input-head') {
-          execFileSync(
-            'git',
-            [
-              '-c',
-              'user.name=Fixture',
-              '-c',
-              'user.email=fixture@example.invalid',
-              'commit',
-              '--allow-empty',
-              '-qm',
-              'drift',
-            ],
-            { cwd: f.extracted },
-          );
-        }
-        rmSync(join(f.root, '.git'), { recursive: true });
-        assert.throws(
-          () => restoreCoreBaseShader(f.root, f.extracted, { sourceRevision }),
-          /source revision differs from input checkout HEAD/,
-        );
-      }
-      assert.equal(existsSync(join(f.root, coreBaseShaderDirectory)), false);
-    } finally {
-      rmSync(f.directory, { recursive: true, force: true });
-    }
-  }
-});
-
-test('projected source rejects revision, rebuilt compiler, profile and payload drift before restoring BASE', () => {
-  for (const change of [
-    (f) => {
-      f.sourceRevision = 'b'.repeat(40);
-    },
-    (f) => {
-      f.sourceRevision = 'invalid';
-    },
-    (f) => f.write(join(f.root, 'packages/compiler/dist/index.js'), 'new compiler'),
-    (f) => f.write(join(f.root, 'packages/shader/src/surface.wgsl'), 'new source'),
-    (f) => {
-      f.manifest.shaderBuild.inputFingerprint = sharedShaderInputFingerprint(f.root, {
-        pointShadows: true,
-        hdrpSsao: true,
-      });
-      f.write(f.receipt, JSON.stringify(f.manifest));
-    },
-    (f) => f.write(f.shader, 'changed payload'),
-    (f) => {
-      f.manifest.payload.engineShaderManifest = 'other/manifest.json';
-      f.write(f.receipt, JSON.stringify(f.manifest));
-    },
-  ]) {
-    const f = fixture();
-    try {
-      f.sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: f.root,
-        encoding: 'utf8',
-      }).trim();
-      rmSync(join(f.root, '.git'), { recursive: true });
-      change(f);
-      assert.throws(() =>
-        restoreCoreBaseShader(f.root, f.extracted, {
-          sourceRevision: f.sourceRevision,
-        }),
-      );
-      assert.equal(existsSync(join(f.root, coreBaseShaderDirectory)), false);
-    } finally {
-      rmSync(f.directory, { recursive: true, force: true });
-    }
   }
 });
 
@@ -324,16 +204,9 @@ for (const baseDirectory of [
         null,
         'POINT cannot satisfy BASE or vice versa',
       );
-      const projectedRoot = join(f.directory, 'without-view');
+      const projectedRoot = join(f.directory, 'compatible-consumer');
       cpSync(f.root, projectedRoot, { recursive: true });
-      rmSync(join(projectedRoot, '.git'), { recursive: true });
-      const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: f.root,
-        encoding: 'utf8',
-      }).trim();
-      // The real no-View build uses a separate source tree and its rebuilt
-      // compiler; the prepared parent may have lost the Core transfer entirely.
-      restoreCoreBaseShader(projectedRoot, f.root, { sourceRevision });
+      restoreCoreBaseShader(projectedRoot, f.root);
       assert.equal(
         readFileSync(join(projectedRoot, coreBaseShaderDirectory, 'shaders/manifest.json'), 'utf8'),
         readFileSync(f.shader, 'utf8'),
@@ -348,7 +221,7 @@ for (const baseDirectory of [
       f.write(payload, 'tampered');
       assert.equal(reusableSharedShader(f.root, projected, fingerprint), null);
       assert.throws(() => projectSharedShader(f.root, projected, target, fingerprint), /rejected/);
-      assert.throws(() => restoreCoreBaseShader(projectedRoot, f.root, { sourceRevision }));
+      assert.throws(() => restoreCoreBaseShader(projectedRoot, f.root));
     } finally {
       rmSync(f.directory, { recursive: true, force: true });
     }

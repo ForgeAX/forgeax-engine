@@ -7,7 +7,10 @@ import {
   RhiError,
   type RhiQueue,
 } from '@forgeax/engine-rhi';
+import { type GpuInputPreparation, InputPreparation } from './gpu-input-preparation';
 import { StableRangeAllocator } from './stable-range-allocator';
+
+export type { GpuInputPreparation, GpuInputPreparationStatus } from './gpu-input-preparation';
 
 function invalid(expected: string): RhiError {
   return new RhiError({
@@ -37,13 +40,49 @@ export function gpuInputByteLimit(device?: RhiDevice): number {
 export interface GpuInputUpload {
   /** A fresh physical buffer requires the full current numeric backing. */
   readonly uploadBytes: number;
+  /** Queue-accepted current numeric backing; GPU completion remains a separate fence. */
+  isCurrent(queue: RhiQueue, buffer: Buffer): boolean;
   flush(queue: RhiQueue, buffer: Buffer, initial: boolean): Result<void, RhiError>;
   activate(): void;
+  /** A fresh private target; committing proves numeric upload only, not native consumers. */
+  prepare(
+    queue: RhiQueue,
+    buffer: Buffer,
+    descriptors?: readonly GpuInputDescriptorReservation[],
+  ): Result<GpuInputPreparation, RhiError>;
+  release(): void;
+}
+
+/** Real arena address with task-owned bytes; not part of the accepted backing or upload. */
+export interface GpuInputDescriptorReservation {
+  readonly address: number;
+  readonly wordCount: number;
+  readWord(index: number): number;
+  copyTo(target: Uint32Array, offset: number, start?: number, count?: number): void;
+  isCurrent(): boolean;
   release(): void;
 }
 
 const COALESCE_GAP_WORDS = 64;
 type DirtyRange = { start: number; end: number };
+interface UploadConnection {
+  released: boolean;
+  busy: boolean;
+  needsFull: boolean;
+  readRevision: number;
+  uploadedBytes: number;
+  target: { readonly queue: RhiQueue; readonly buffer: Buffer } | undefined;
+}
+interface PreparingUpload {
+  readonly task: InputPreparation;
+  readonly connection: UploadConnection;
+  readonly queue: RhiQueue;
+  readonly buffer: Buffer;
+  readonly session: object;
+  readonly privateWords?: Uint32Array<ArrayBuffer>;
+  readonly privateFloats?: Float32Array<ArrayBuffer>;
+  readonly descriptors: readonly GpuInputDescriptorReservation[];
+}
 
 /** Renderer-owned CPU numbers and range identity, independent of any GPU incarnation. */
 export class GpuInputArena {
@@ -53,10 +92,18 @@ export class GpuInputArena {
   private floats = new Float32Array(this.words.buffer);
   private readonly pending = new Map<number, DirtyRange>();
   private pendingOrder = new Uint32Array(0);
-  private active: GpuInputUpload | undefined;
+  private active: UploadConnection | undefined;
+  private activeSession: object = {};
+  private preparing: PreparingUpload | undefined;
+  private readonly usedTargets = new WeakSet<Buffer>();
+  private writing = 0;
   private revision = 0;
   private failed = false;
   private disposed = false;
+  private readonly privateDescriptors = new WeakMap<
+    GpuInputDescriptorReservation,
+    { consume(): void }
+  >();
   constructor(readonly byteLimit = 128 * 1024 * 1024) {
     if (!Number.isSafeInteger(byteLimit) || byteLimit < 1024 || byteLimit > 0xffffffff * 4)
       throw invalid('a bounded numeric arena budget of at least 1024 bytes');
@@ -83,12 +130,15 @@ export class GpuInputArena {
   }
   private changed(address: number, words: number, index = 0): void {
     this.revision++;
-    if (this.active === undefined) return;
-    // Keep allocation identity for retirement while uploading only its dirty suffix.
-    const range = this.pending.get(address) ?? { start: address + index, end: address + words };
-    range.start = Math.min(range.start, address + index);
-    range.end = Math.max(range.end, address + words);
-    this.pending.set(address, range);
+    if (this.active !== undefined) {
+      // Keep allocation identity for retirement while uploading only its dirty suffix.
+      const range = this.pending.get(address) ?? { start: address + index, end: address + words };
+      range.start = Math.min(range.start, address + index);
+      range.end = Math.max(range.end, address + words);
+      this.pending.set(address, range);
+    }
+    // Even a cold, not-yet-active writer must observe every actual byte mutation.
+    this.preparing?.task.changed(address, words, index);
   }
   allocateDescriptor(wordCount: number): number {
     this.assertLive();
@@ -122,6 +172,116 @@ export class GpuInputArena {
       }
       throw cause;
     }
+  }
+
+  reserveDescriptor(
+    wordCount: number,
+    initialize: (address: number, scratch: DataView) => void,
+    capture?: (reservation: GpuInputDescriptorReservation) => void,
+  ): GpuInputDescriptorReservation {
+    this.assertLive();
+    u32(wordCount);
+    if (wordCount === 0 || wordCount > Math.floor(this.byteLimit / 4))
+      throw invalid('a nonempty private descriptor within the arena budget');
+    const range = this.ranges.reserve(wordCount);
+    let owner: GpuInputArena | undefined = this;
+    let words: Uint32Array | undefined;
+    let failure: { cause: unknown } | undefined;
+    const current = () =>
+      failure === undefined && words !== undefined && owner?.live === true && range.isCurrent();
+    const api: GpuInputDescriptorReservation = Object.freeze({
+      address: range.start,
+      wordCount,
+      isCurrent: current,
+      readWord: (index: number) => {
+        if (!current() || !Number.isSafeInteger(index) || index < 0 || index >= wordCount)
+          throw invalid('a current private descriptor word');
+        return words?.[index] ?? 0;
+      },
+      copyTo: (target: Uint32Array, offset: number, start = 0, count = wordCount - start) => {
+        if (
+          !current() ||
+          words === undefined ||
+          !Number.isSafeInteger(offset) ||
+          offset < 0 ||
+          !Number.isSafeInteger(start) ||
+          !Number.isSafeInteger(count) ||
+          start < 0 ||
+          count < 0 ||
+          start + count > wordCount ||
+          offset + count > target.length
+        )
+          throw invalid('a current private descriptor and a complete destination');
+        target.set(words.subarray(start, start + count), offset);
+      },
+      release: () => {
+        if (failure !== undefined) throw failure.cause;
+        const held = owner;
+        if (held === undefined) return;
+        owner = undefined;
+        try {
+          range.release();
+          words = undefined;
+          held.privateDescriptors.delete(api);
+        } catch (cause) {
+          owner = held;
+          held.failed = true;
+          failure = { cause };
+          throw cause;
+        }
+      },
+    });
+    this.privateDescriptors.set(api, {
+      consume: () => {
+        if (!current()) throw invalid('the exact private numeric allocation before transfer');
+        range.accept();
+        owner = undefined;
+        words = undefined;
+        this.privateDescriptors.delete(api);
+      },
+    });
+    try {
+      capture?.(api);
+      if (range.start + wordCount > Math.floor(this.byteLimit / 4))
+        throw invalid('private descriptor addresses within the arena budget');
+      if (owner !== this || !range.isCurrent())
+        throw invalid('the original private descriptor reservation');
+      const scratch = new Uint32Array(wordCount);
+      initialize(range.start, new DataView(scratch.buffer));
+      this.assertLive();
+      if (owner !== this || !range.isCurrent())
+        throw invalid('the original private descriptor reservation');
+      // The initializer borrows scratch; retained caller views cannot mutate the owned value.
+      words = scratch.slice();
+      return api;
+    } catch (cause) {
+      try {
+        api.release();
+      } catch (cleanup) {
+        throw new AggregateError([cause, cleanup], 'Private numeric reservation rollback failed', {
+          cause,
+        });
+      }
+      throw cause;
+    }
+  }
+
+  ownsDescriptorReservation(value: GpuInputDescriptorReservation): boolean {
+    return this.live && this.privateDescriptors.has(value) && value.isCurrent();
+  }
+
+  /** Capacity for the same arena's actual private addresses, without growing accepted bytes. */
+  preparationByteLength(descriptors: readonly GpuInputDescriptorReservation[]): number {
+    this.assertLive();
+    let words = this.words.length;
+    for (const descriptor of descriptors) {
+      if (!this.ownsDescriptorReservation(descriptor))
+        throw invalid('current private descriptors from this numeric arena');
+      words = Math.max(words, descriptor.address + descriptor.wordCount);
+    }
+    if (words * 4 > this.byteLimit)
+      throw invalid('private numeric backing within the arena budget');
+    return words * 4;
   }
   /** Write a descriptor suffix while dirty tracking retains the complete
    * allocation identity and extent. index=0 writes the ordinary whole row.
@@ -221,82 +381,301 @@ export class GpuInputArena {
       throw cause;
     }
   }
-  /** One producer dirty population. Detached recovery candidates read cold snapshots. */
+  /** One active dirty population and one independently observed private preparation. */
   connect(): GpuInputUpload {
     this.assertLive();
-    let released = false,
-      needsFull = true,
-      readRevision = -1,
-      uploadedBytes = 0;
-    const upload: GpuInputUpload = {
-      get uploadBytes() {
-        return uploadedBytes;
-      },
-      activate: () => {
-        this.assertLive();
-        if (released) throw invalid('a live upload incarnation');
-        if (this.active === upload) return;
-        this.active = upload;
-        this.pending.clear();
-        needsFull = true;
-      },
-      flush: (queue, buffer, initial) => {
-        if (released || this.disposed || this.failed)
-          return err(invalid('a live numeric upload incarnation'));
-        const revision = this.revision;
-        const active = this.active === upload;
-        if (initial || needsFull || (!active && readRevision !== revision)) {
-          const uploaded = queue.writeBuffer(buffer, 0, this.words);
-          if (!uploaded.ok) return uploaded;
-          uploadedBytes += this.words.byteLength;
-        } else if (active && this.pending.size > 0) {
-          // Known changes are often adjacent rows. Uploading a short unchanged
-          // gap from the authoritative CPU words is cheaper than another queue
-          // write, so nearby ranges share one call in address order.
-          const addresses = this.sortedPending();
-          const first = this.pending.get(addresses[0] as number) as DirtyRange;
-          let start = first.start;
-          let end = first.end;
-          for (let index = 1; index <= addresses.length; index++) {
-            const address = addresses[index];
-            const next = address === undefined ? undefined : this.pending.get(address);
-            if (next !== undefined && next.start <= end + COALESCE_GAP_WORDS) {
-              end = Math.max(end, next.end);
-              continue;
-            }
-            const uploaded = queue.writeBuffer(
-              buffer,
-              start * 4,
-              this.words.buffer,
-              start * 4,
-              (end - start) * 4,
-            );
-            if (!uploaded.ok) return uploaded;
-            uploadedBytes += (end - start) * 4;
-            if (next === undefined) break;
-            start = next.start;
-            end = next.end;
-          }
-        }
-        if (active && revision === this.revision) this.pending.clear();
-        needsFull = false;
-        readRevision = revision;
-        return ok(undefined);
-      },
-      release: () => {
-        if (released) return;
-        released = true;
-        if (this.active === upload) {
-          this.active = undefined;
-          this.pending.clear();
-        }
-      },
+    const connection: UploadConnection = {
+      released: false,
+      busy: false,
+      needsFull: true,
+      readRevision: -1,
+      uploadedBytes: 0,
+      target: undefined,
     };
-    return upload;
+    return {
+      get uploadBytes() {
+        return connection.uploadedBytes;
+      },
+      isCurrent: (queue, buffer) =>
+        this.connectionWritable(connection, buffer) &&
+        !connection.needsFull &&
+        connection.readRevision === this.revision &&
+        connection.target?.buffer === buffer &&
+        connection.target.queue === queue,
+      activate: () => this.activateConnection(connection),
+      flush: (queue, buffer, initial) => this.flushConnection(connection, queue, buffer, initial),
+      prepare: (queue, buffer, descriptors) =>
+        this.prepareConnection(connection, queue, buffer, descriptors),
+      release: () => this.releaseConnection(connection),
+    };
   }
+
+  private activateConnection(connection: UploadConnection): void {
+    this.assertLive();
+    if (connection.released) throw invalid('a live upload incarnation');
+    if (this.active === connection) return;
+    this.preparing?.task.api.release();
+    this.active = connection;
+    this.activeSession = {};
+    this.pending.clear();
+    connection.needsFull = true;
+  }
+
+  private releaseConnection(connection: UploadConnection): void {
+    if (connection.released) return;
+    connection.released = true;
+    connection.target = undefined;
+    if (this.preparing?.connection === connection) this.preparing.task.api.release();
+    if (this.active === connection) {
+      this.preparing?.task.api.release();
+      this.active = undefined;
+      this.activeSession = {};
+      this.pending.clear();
+    }
+  }
+
+  private writeUpload(
+    connection: UploadConnection,
+    queue: RhiQueue,
+    buffer: Buffer,
+    words: Uint32Array<ArrayBuffer>,
+    start: number,
+    count: number,
+    full = false,
+  ): Result<void, RhiError> {
+    this.usedTargets.add(buffer);
+    this.writing++;
+    try {
+      const result = full
+        ? queue.writeBuffer(buffer, 0, words)
+        : queue.writeBuffer(buffer, start * 4, words.buffer, start * 4, count * 4);
+      if (result.ok) connection.uploadedBytes += count * 4;
+      return result;
+    } finally {
+      this.writing--;
+    }
+  }
+
+  private flushPending(
+    connection: UploadConnection,
+    queue: RhiQueue,
+    buffer: Buffer,
+  ): Result<void, RhiError> {
+    const addresses = this.sortedPending();
+    let start = -1,
+      end = -1;
+    for (const address of addresses) {
+      const next = this.pending.get(address);
+      if (next === undefined) continue;
+      if (start < 0) {
+        start = next.start;
+        end = next.end;
+        continue;
+      }
+      if (next.start <= end + COALESCE_GAP_WORDS) {
+        end = Math.max(end, next.end);
+        continue;
+      }
+      const result = this.writeUpload(connection, queue, buffer, this.words, start, end - start);
+      if (!result.ok) return result;
+      start = next.start;
+      end = next.end;
+    }
+    return start < 0
+      ? ok(undefined)
+      : this.writeUpload(connection, queue, buffer, this.words, start, end - start);
+  }
+
+  private connectionWritable(connection: UploadConnection, buffer: Buffer): boolean {
+    return (
+      this.live &&
+      !connection.released &&
+      !connection.busy &&
+      this.writing === 0 &&
+      this.preparing?.connection !== connection &&
+      this.preparing?.buffer !== buffer
+    );
+  }
+
+  private flushConnection(
+    connection: UploadConnection,
+    queue: RhiQueue,
+    buffer: Buffer,
+    initial: boolean,
+  ): Result<void, RhiError> {
+    if (!this.connectionWritable(connection, buffer))
+      return err(invalid('a live upload outside private preparation and native writes'));
+    connection.busy = true;
+    try {
+      const revision = this.revision,
+        session = this.activeSession;
+      const active = this.active === connection;
+      const full =
+        initial ||
+        connection.needsFull ||
+        connection.target?.buffer !== buffer ||
+        connection.target.queue !== queue ||
+        (!active && connection.readRevision !== revision);
+      const result = full
+        ? this.writeUpload(connection, queue, buffer, this.words, 0, this.words.length, true)
+        : active
+          ? this.flushPending(connection, queue, buffer)
+          : ok(undefined);
+      if (!result.ok) return result;
+      if (
+        !this.live ||
+        connection.released ||
+        this.activeSession !== session ||
+        (this.active === connection) !== active
+      )
+        return err(invalid('unchanged upload lifetime and active session after writing'));
+      if (
+        active &&
+        this.active === connection &&
+        this.activeSession === session &&
+        revision === this.revision
+      )
+        this.pending.clear();
+      connection.needsFull = false;
+      connection.readRevision = revision;
+      connection.target = { queue, buffer };
+      return ok(undefined);
+    } finally {
+      connection.busy = false;
+    }
+  }
+
+  private preparationCurrent(role: PreparingUpload): boolean {
+    return (
+      this.live &&
+      this.writing === 0 &&
+      this.preparing === role &&
+      !role.connection.released &&
+      !role.connection.busy &&
+      this.activeSession === role.session &&
+      this.active !== role.connection &&
+      (role.privateWords === undefined || this.words.length <= role.privateWords.length) &&
+      role.descriptors.every((descriptor) => this.ownsDescriptorReservation(descriptor))
+    );
+  }
+
+  private publishPrepared(
+    role: PreparingUpload,
+    revision: number,
+    extent: number,
+  ): Result<void, RhiError> {
+    if (
+      !this.preparationCurrent(role) ||
+      this.revision !== revision ||
+      (role.privateWords ?? this.words).byteLength !== extent
+    )
+      return err(invalid('the exact current prepared upload and original active session'));
+    if (role.privateWords !== undefined) {
+      const floats = role.privateFloats;
+      if (floats === undefined) return err(invalid('the prebuilt private numeric views'));
+      try {
+        for (const descriptor of role.descriptors) {
+          const claim = this.privateDescriptors.get(descriptor);
+          if (claim === undefined) throw invalid('the issuing private numeric allocation');
+          claim.consume();
+        }
+        this.words = role.privateWords;
+        this.floats = floats;
+        this.revision++;
+      } catch (cause) {
+        this.failed = true;
+        throw cause;
+      }
+    }
+    role.connection.target = { queue: role.queue, buffer: role.buffer };
+    role.connection.needsFull = false;
+    role.connection.readRevision = this.revision;
+    this.active = role.connection;
+    this.activeSession = {};
+    this.pending.clear();
+    this.preparing = undefined;
+    return ok(undefined);
+  }
+
+  private prepareConnection(
+    connection: UploadConnection,
+    queue: RhiQueue,
+    buffer: Buffer,
+    descriptors: readonly GpuInputDescriptorReservation[] = [],
+  ): Result<GpuInputPreparation, RhiError> {
+    if (
+      !this.live ||
+      connection.released ||
+      connection.busy ||
+      this.active === connection ||
+      connection.target !== undefined ||
+      this.preparing !== undefined ||
+      this.usedTargets.has(buffer)
+    )
+      return err(invalid('one detached upload incarnation with a fresh private native target'));
+    const owned = [...new Set(descriptors)].sort((a, b) => a.address - b.address);
+    const privateWords =
+      owned.length === 0 ? undefined : new Uint32Array(this.preparationByteLength(owned) / 4);
+    const task: InputPreparation = new InputPreparation(
+      {
+        snapshot: () => ({ words: privateWords ?? this.words, revision: this.revision }),
+        current: () => this.preparing?.task === task && this.preparationCurrent(this.preparing),
+        write: (targetQueue, targetBuffer, words, start, count) => {
+          if (privateWords !== undefined) this.copyPrivateWords(privateWords, owned, start, count);
+          return this.writeUpload(connection, targetQueue, targetBuffer, words, start, count);
+        },
+        publish: (_task, revision, extent) =>
+          this.preparing?.task === task
+            ? this.publishPrepared(this.preparing, revision, extent)
+            : err(invalid('the issuing preparation')),
+        detach: (closed) => {
+          if (this.preparing?.task === closed) this.preparing = undefined;
+        },
+      },
+      queue,
+      buffer,
+    );
+    this.usedTargets.add(buffer);
+    this.preparing = {
+      task,
+      connection,
+      queue,
+      buffer,
+      session: this.activeSession,
+      descriptors: owned,
+      ...(privateWords === undefined
+        ? {}
+        : {
+            privateWords,
+            privateFloats: new Float32Array(privateWords.buffer),
+          }),
+    };
+    return ok(task.api);
+  }
+
+  private copyPrivateWords(
+    target: Uint32Array,
+    descriptors: readonly GpuInputDescriptorReservation[],
+    start: number,
+    count: number,
+  ): void {
+    const end = start + count;
+    target.fill(0, start, end);
+    target.set(this.words.subarray(start, Math.min(end, this.words.length)), start);
+    for (const descriptor of descriptors) {
+      if (descriptor.address >= end) break;
+      const first = Math.max(start, descriptor.address);
+      const last = Math.min(end, descriptor.address + descriptor.wordCount);
+      if (first < last) descriptor.copyTo(target, first, first - descriptor.address, last - first);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.preparing?.task.api.release();
+    if (this.active !== undefined) this.releaseConnection(this.active);
+    this.activeSession = {};
     this.pending.clear();
     this.active = undefined;
     this.ranges.reset(1);

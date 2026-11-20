@@ -9,7 +9,7 @@ import { isCodexBrowser } from './codex-browser.ts';
 import { createViewPageHost, createViewPageTypeRegistry } from './host/page-registry.ts';
 import { mountViewViewer } from './host/frontend.ts';
 import { createViewSlotRegistry } from './host/slot-registry.ts';
-import { initI18n, t } from './i18n';
+import { initI18n, t, useTranslation } from './i18n';
 import type { HostConnection } from './shell/HostConnectionIndicator';
 import { createBrowserConnection } from './plugins/browser-connection.ts';
 import { ViewerShell } from './shell/ViewerShell';
@@ -84,9 +84,10 @@ export function mountViewApplication(platform: FrontendPlatform, { panels, prese
   const noSubscription = () => () => {};
   const readTheme = () => platform.theme?.getSnapshot();
   function Application() {
+    const { t } = useTranslation();
     const hostTheme = useSyncExternalStore(platform.theme?.subscribe ?? noSubscription, readTheme, readTheme);
     return (
-      <StrictMode><ClipboardProvider writeText={platform.writeClipboard}><OverlayRootProvider root={root!}>
+      <StrictMode><ClipboardProvider writeText={platform.writeClipboard} dismissLabel={t('view.dismissClipboardError')}><OverlayRootProvider root={root!}>
         <ThemeProvider systemTheme={hostTheme} persist applyToDocument className="fx-view-root">
           <ViewerShell
             slotRegistry={window.__forgeaxViewSlotRegistry!}

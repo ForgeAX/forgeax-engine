@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { RhiError } from '@forgeax/engine-rhi';
 import { Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
@@ -20,7 +21,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const manifest = await (
   await import('@forgeax/engine-vite-plugin-shader')
-).buildEngineShaderManifest();
+).buildEngineShaderTemplateManifest();
 const manifestUrl = shaderManifestUrl(manifest);
 
 it('retains native Frame Mesh dependencies and advances unrelated-change cursors only on accepted submit', async () => {
@@ -80,7 +81,7 @@ it('retains native Frame Mesh dependencies and advances unrelated-change cursors
   const constructed = await constructRendererHost(
     canvas,
     {},
-    { shaderManifestUrl: manifestUrl },
+    { shaderManifestUrl: manifestUrl, prepareShaderProgramCompiler },
     backend.value,
   );
   assert(constructed.ok, constructed.ok ? undefined : JSON.stringify(constructed.error));

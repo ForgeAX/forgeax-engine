@@ -45,6 +45,7 @@ import {
 } from './shadow-layer-projection';
 import { ShadowPlanChanges } from './shadow-plan-changes';
 import { memoizedPlanPair } from './shadow-projection-publication';
+import { ShadowViewConstructions } from './shadow-view-construction';
 import {
   captureShadowViewIdentity,
   shadowViewIdentityKey as identityKey,
@@ -123,7 +124,14 @@ export interface ShadowViewUpdate {
   readonly view: GpuDrivenView;
 }
 
-export interface ShadowViewProjection {
+export interface ShadowViewGraphProjection {
+  readonly identity: ShadowViewIdentity;
+  readonly view: GpuDrivenView;
+  readonly passNames: readonly string[];
+  readonly graphResources: GpuDrivenViewGraphResources | undefined;
+}
+
+export interface ShadowViewProjection extends ShadowViewGraphProjection {
   readonly identity: ShadowViewIdentity;
   readonly cache: ShadowViewCacheState;
   readonly generation: number;
@@ -1219,6 +1227,136 @@ function countRebuild(
  * counters, indirect arguments, and its cache decision.
  */
 export class ShadowViewStatePool {
+  /** Includes retiring records whose graphs still belong to this pool. */
+  inputBindingViews(scene: GpuScene): readonly GpuDrivenView[] {
+    const views = new Set<GpuDrivenView>();
+    for (const record of this.records.values())
+      if (record.scene === scene) views.add(record.submission.view);
+    for (const record of this.retiring.values())
+      if (record.scene === scene) views.add(record.submission.view);
+    for (const entry of this.constructions.views(scene)) views.add(entry.view);
+    return [...views];
+  }
+
+  sourceViews(scene: GpuScene): readonly {
+    readonly view: GpuDrivenView;
+    readonly identity: ShadowViewIdentity;
+    readonly isCurrent: () => boolean;
+  }[] {
+    const views: { view: GpuDrivenView; identity: ShadowViewIdentity; isCurrent: () => boolean }[] =
+      [];
+    for (const key of this.activeKeys) {
+      const record = this.records.get(key);
+      if (record?.scene !== scene) continue;
+      const view = record.submission.view;
+      views.push({
+        view,
+        identity: record.submission.identity,
+        isCurrent: () =>
+          this.activeKeys.has(key) && this.records.get(key)?.submission.view === view,
+      });
+    }
+    for (const entry of this.constructions.views(scene))
+      if (!views.some((row) => row.view === entry.view)) views.push(entry);
+    return views;
+  }
+
+  prepareSourceView(
+    identity: ShadowViewIdentity,
+    plan: SubmissionPlan,
+    scene: GpuScene,
+    current: () => boolean,
+    consumers: (
+      target: import('./view-gpu').ViewStorageTarget,
+    ) => Result<import('./view-input-bindings').GpuViewInputPreparation, RhiError>,
+  ) {
+    const existing = this.records.get(identityKey(identity))?.submission.view;
+    return this.constructions.prepare(
+      scene,
+      identity,
+      existing,
+      {
+        labelPrefix: `${shadowViewLabelPrefix(identity)}.view`,
+        shadowCameraCull: cameraCullEligible(identity),
+        readback: 'culling-counts',
+      },
+      consumers,
+      plan,
+      current,
+    );
+  }
+
+  /** Graph shape from actual physical children, without inventing an execution/cache record. */
+  projectSource<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    identity: ShadowViewIdentity,
+    scene: GpuScene,
+    cameraPyramid?: GraphTextureView,
+  ): Result<ShadowViewGraphProjection | undefined, RenderGraphError> {
+    const row = this.sourceViews(scene).find(
+      (entry) => identityKey(entry.identity) === identityKey(identity),
+    );
+    if (row === undefined) return ok(undefined);
+    const key = identityKey(identity);
+    const execute = () => {
+      const record = this.records.get(key);
+      return (
+        record !== undefined &&
+        this.activeKeys.has(key) &&
+        (record.invalidated || record.submission.cache !== 'hit')
+      );
+    };
+    const projected = row.view.addPasses(
+      builder,
+      shadowViewLabelPrefix(identity),
+      true,
+      undefined,
+      execute,
+      false,
+      cameraPyramid,
+      undefined,
+      'combined',
+    );
+    if (!projected.ok) return projected;
+    return ok({
+      identity,
+      view: row.view,
+      passNames: passNames(identity),
+      graphResources: projected.value,
+    });
+  }
+
+  /** Private pure layer roots held by the same physical preparation lease. */
+  private readonly sourceLayers = new Map<
+    string,
+    Set<{ readonly scene: GpuScene; readonly projection: ShadowLayerProjection }>
+  >();
+  prepareSourceLayer(
+    identity: ShadowViewIdentity,
+    source: SubmissionPlan,
+    candidates: ShadowViewUpdateInput['candidatePrimitiveIndices'],
+    scene: GpuScene,
+  ) {
+    const key = identityKey(identity);
+    const projection = this.projectLayer(undefined, source, candidateIndices(candidates).unwrap());
+    const held = { scene, projection };
+    let heldLayers = this.sourceLayers.get(key);
+    if (heldLayers === undefined) {
+      heldLayers = new Set();
+      this.sourceLayers.set(key, heldLayers);
+    }
+    heldLayers.add(held);
+    return {
+      plan: this.projectedPlan(projection, undefined),
+      release: () => {
+        heldLayers.delete(held);
+        if (heldLayers.size === 0 && this.sourceLayers.get(key) === heldLayers)
+          this.sourceLayers.delete(key);
+      },
+    };
+  }
+
+  private readonly constructions: ShadowViewConstructions;
   private readonly records = new Map<string, ShadowViewRecord>();
   private readonly pointSelectionBatches = new WeakMap<
     object,
@@ -1243,6 +1381,7 @@ export class ShadowViewStatePool {
     private readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory,
   ) {
     this.staticLayers = new ShadowDepthLayers(device);
+    this.constructions = new ShadowViewConstructions(device, shaderModuleFactory);
   }
 
   static create(input: {
@@ -1290,6 +1429,8 @@ export class ShadowViewStatePool {
       sameRestriction,
     );
     if (invalidationReason === undefined && previous !== undefined) {
+      const observed = previous.submission.view.observeInputReads(input.scene, input.inputReads);
+      if (!observed.ok) return observed;
       return ok(adoptCacheHit(previous, input, selection, candidateSource, candidates));
     }
 
@@ -1341,7 +1482,7 @@ export class ShadowViewStatePool {
     const sameFixedCandidates =
       previous !== undefined && sameShadowCandidates(previous.candidates, candidates);
     const sameSource = sameFixedCandidates && previous.sourcePlan === source;
-    const projection = this.projectLayer(previous, source, candidates);
+    const projection = this.projectLayer(previous, source, candidates, this.preparedLayer(input));
     let executionPlan: SubmissionPlan | undefined;
     if (sameFixedCandidates && previous.published && sameViewResources(previous, input.scene)) {
       if (previous.sourcePlan === source) executionPlan = previous.submission.plan;
@@ -1377,17 +1518,37 @@ export class ShadowViewStatePool {
    * Patch the record's own projection, or share an equal one another view of
    * this source already holds: projections are pure in source and selection.
    */
+  private preparedLayer(input: ShadowViewUpdateInput): ShadowLayerProjection | undefined {
+    let prepared: ShadowLayerProjection | undefined;
+    for (const held of this.sourceLayers.get(identityKey(input.identity)) ?? []) {
+      if (held.scene !== input.scene) continue;
+      const origin = held.projection.source.batches;
+      if (
+        origin.length === input.sourcePlan.batches.length &&
+        origin.every((batch, index) => batch === input.sourcePlan.batches.at(index))
+      )
+        prepared = held.projection;
+    }
+    return prepared;
+  }
+
   private projectLayer(
     previous: ShadowViewRecord | undefined,
     source: SubmissionPlan,
     candidates: ShadowCandidates | undefined,
+    prepared?: ShadowLayerProjection,
   ): ShadowLayerProjection {
     for (const record of this.records.values()) {
       const shared = record.projection;
       if (shared?.source === source && sameShadowCandidates(shared.candidates, candidates))
         return shared;
     }
-    return projectShadowLayer(previous?.projection, source, candidates, previous?.preparation);
+    return projectShadowLayer(
+      prepared ?? previous?.projection,
+      source,
+      candidates,
+      previous?.preparation,
+    );
   }
 
   /** A fresh plan identity whenever the view must re-upload its retained one. */
@@ -1576,7 +1737,12 @@ export class ShadowViewStatePool {
     previous: ShadowViewRecord | undefined,
     identity: ShadowViewIdentity,
   ): Result<GpuDrivenView, RhiError> {
-    if (previous !== undefined) return ok(previous.submission.view);
+    if (previous !== undefined) {
+      this.constructions.consume(identity);
+      return ok(previous.submission.view);
+    }
+    const prepared = this.constructions.consume(identity);
+    if (prepared !== undefined) return ok(prepared);
     return GpuDrivenView.create({
       device: this.device,
       shaderModuleFactory: this.shaderModuleFactory,
@@ -1974,9 +2140,22 @@ export class ShadowViewStatePool {
 
   /** Only active view/pass-list facts shape the compiled graph. */
   topologySignature(): string {
-    return [...this.activeKeys]
+    const views = new Map<string, GpuDrivenView>();
+    for (const key of this.activeKeys) {
+      const record = this.records.get(key);
+      if (record !== undefined) views.set(key, record.submission.view);
+    }
+    for (const row of this.constructions.views(undefined, false))
+      views.set(identityKey(row.identity), row.view);
+    return [...views.keys()]
       .sort()
-      .map((key) => `${key}:${this.records.get(key)?.submission.view.graphResourceGeneration}`)
+      .map((key) => `${key}:${views.get(key)?.graphResourceGeneration}`)
+      .join('|');
+  }
+  sourceTopologySignature(scene: GpuScene): string {
+    return this.sourceViews(scene)
+      .map((row) => `${identityKey(row.identity)}:${row.view.graphResourceGeneration}`)
+      .sort()
       .join('|');
   }
 
@@ -2038,6 +2217,7 @@ export class ShadowViewStatePool {
     this.staticLayers._commit();
     for (const [key, record] of this.retiring) {
       record.submission.view.dispose();
+      this.constructions.forget(record.submission.identity, record.submission.view);
       this.records.delete(key);
       this.retiring.delete(key);
     }
@@ -2149,12 +2329,23 @@ export class ShadowViewStatePool {
   }
 
   dispose(): void {
+    this.sourceLayers.clear();
     this.drawnByPlan = new WeakMap();
     this.planChanges.clear();
     this.planByProjection = new WeakMap();
     const views = new Set([...this.records.values()].map((record) => record.submission.view));
-    for (const view of views) view.dispose();
-    this.staticLayers.dispose();
+    const failures: unknown[] = [];
+    const attempt = (run: () => void) => {
+      try {
+        run();
+      } catch (cause) {
+        failures.push(cause);
+      }
+    };
+    attempt(() => this.constructions.dispose());
+    for (const view of views) attempt(() => view.dispose());
+    attempt(() => this.staticLayers.dispose());
+    if (failures.length > 0) throw new AggregateError(failures, 'Shadow pool disposal failed');
     this.records.clear();
     this.activeKeys.clear();
     this.retiring.clear();

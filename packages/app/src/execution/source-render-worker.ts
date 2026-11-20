@@ -19,6 +19,9 @@ import {
 import {
   captureMeshPipelinePreparation,
   createDynamicGeometrySourceHost,
+  prepareExtractContext,
+  renderMaterialContext,
+  StagedMeshSourceError,
 } from '@forgeax/engine-render/internal';
 import { ownPipelineLibrary, textureReadbackLayout } from '@forgeax/engine-rhi';
 import {
@@ -30,6 +33,7 @@ import { err, ok, type TaskExecutor, textureFormatBlock } from '@forgeax/engine-
 import { ConfigurationRequests, staleConfiguration } from '../configuration-apply';
 import type { EngineStartupPlan } from '../configuration-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
+import type { CandidateRenderHost } from '../levels/candidate-render-source';
 import { forwardGpuStub } from './gpu-stub';
 import {
   type EngineToHostMessage,
@@ -45,6 +49,7 @@ import {
   type RenderWorkerOutput,
 } from './render-worker-protocol';
 import { rendererInspectionFailure } from './renderer-inspection';
+import { SourceClosedLevelRows } from './source-closed-level-rows';
 import { SourceMeshResidency } from './source-mesh-residency';
 import type {
   ExecutionGeometryObservationResult,
@@ -53,6 +58,7 @@ import type {
   ExecutionRendererInspectionResult,
 } from './types';
 import { serializableDetail, workerError } from './worker-error';
+import { WorkerLevelRenderSource } from './worker-level-render-source';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
@@ -285,6 +291,56 @@ export class SourceRenderWorker {
   >();
   private capacityWaiters: (() => void)[] = [];
   private readonly meshResidency: SourceMeshResidency;
+  private readonly closedLevelEntities = new Set<number>();
+  private nextLevelInstance = 0;
+  private levelContext: (() => ReturnType<typeof prepareExtractContext>) | undefined;
+  readonly closedLevelRows = new SourceClosedLevelRows(() => {
+    const worker = this.worker;
+    if (worker === undefined || !this.inspectionReady || this.disposed) return undefined;
+    const epoch = this.epoch;
+    const isCurrent = () =>
+      this.worker === worker && this.epoch === epoch && this.inspectionReady && !this.disposed;
+    return {
+      publication: { source: this.source, epoch },
+      worldIdentity: this.world.identity,
+      isCurrent,
+      post: (message, transfer) => worker.postMessage(message, transfer ?? []),
+    };
+  });
+  levelRenderHost(): CandidateRenderHost | undefined {
+    const context = this.levelContext;
+    const epoch = this.epoch;
+    if (context === undefined || !this.inspectionReady || this.disposed) return undefined;
+    const current = () => this.epoch === epoch && this.inspectionReady && !this.disposed;
+    return {
+      current,
+      beginStagedGroup: (observation, content) => {
+        if (!current() || observation.world !== this.world)
+          return err(new StagedMeshSourceError({ reason: 'session' }));
+        if (observation.members.some((entity) => this.closedLevelEntities.has(entity)))
+          return err(new StagedMeshSourceError({ reason: 'collision' }));
+        const release = () => {
+          for (const entity of observation.members) this.closedLevelEntities.delete(entity);
+        };
+        try {
+          const source = new WorkerLevelRenderSource(
+            observation,
+            context,
+            content,
+            this.closedLevelRows,
+            { instance: ++this.nextLevelInstance, generation: 1, request: 1, attempt: 1 },
+            current,
+            release,
+          );
+          for (const entity of observation.members) this.closedLevelEntities.add(entity);
+          return ok({ source, prepareViews: (guard) => source.prepareViews(guard) });
+        } catch (cause) {
+          release();
+          return err(new StagedMeshSourceError({ reason: 'source' }, cause));
+        }
+      },
+    };
+  }
   readonly dynamicGeometry: ReturnType<typeof createDynamicGeometrySourceHost>;
   constructor(
     private readonly world: World,
@@ -348,7 +404,7 @@ export class SourceRenderWorker {
     });
   }
 
-  /** Load only this worker's module; initialization remains owned by start(). */
+  /** Admit CPU shader inputs in the child; device startup remains owned by start(). */
   preloadModule(): void {
     if (this.disposed || this.worker !== undefined || this.preloadFailure !== undefined) return;
     try {
@@ -363,6 +419,11 @@ export class SourceRenderWorker {
         if (this.worker === worker && this.preloadFailure === undefined)
           this.preloadFailure = { kind: 'module', cause: event.message };
       };
+      const shaderManifestUrl = this.init.shaderManifestUrl;
+      worker.postMessage({
+        kind: 'stage-shader-manifest',
+        ...(shaderManifestUrl === undefined ? {} : { url: shaderManifestUrl }),
+      } satisfies RenderWorkerInput);
     } catch (cause) {
       this.preloadFailure = { kind: 'constructor', cause };
     }
@@ -614,6 +675,14 @@ export class SourceRenderWorker {
             if (ready) return;
             clearTimeout(this.deadline);
             this.deviceGeneration = message.deviceGeneration;
+            const material = renderMaterialContext(message.capabilities, message.limits);
+            this.levelContext = () =>
+              prepareExtractContext(this.world, {
+                assets: this.assets,
+                ...material,
+                cull: 'none',
+                retainHidden: true,
+              });
             this.captureCandidatePipelines = (input) => {
               const captured = captureMeshPipelinePreparation({
                 ...input,
@@ -643,6 +712,7 @@ export class SourceRenderWorker {
               this.publicationCapacity,
               (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
               (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
+              (entity) => this.closedLevelEntities.has(entity),
             );
             ready = true;
             this.inspectionReady = true;
@@ -1000,6 +1070,8 @@ export class SourceRenderWorker {
       })
       .unwrap();
     const sourceFixedStep = this.world.getResource(FixedTime).tick;
+    const selected = this.closedLevelRows.takeSelection(frame.frameId, candidate.packet.revision);
+    const selection = selected === undefined ? undefined : { groupSelection: selected };
     this.publishedFrames.set(candidate.packet.revision, {
       frameId: frame.frameId,
       fixedStep: sourceFixedStep,
@@ -1014,6 +1086,7 @@ export class SourceRenderWorker {
             width: frame.canvasWidth,
             height: frame.canvasHeight,
             publication: candidate.message,
+            ...selection,
             sourceFixedStep,
             engineUpdateMs,
             engineCreditWaitMs,
@@ -1033,6 +1106,7 @@ export class SourceRenderWorker {
           width: frame.canvasWidth,
           height: frame.canvasHeight,
           publication: candidate.message,
+          ...selection,
           sourceFixedStep,
           engineUpdateMs,
           engineCreditWaitMs,
@@ -1050,6 +1124,7 @@ export class SourceRenderWorker {
       if (wasIdle) this.armFrameDeadline();
     } catch (cause) {
       this.publishedFrames.delete(candidate.packet.revision);
+      this.closedLevelRows.failSelection(frame.frameId, cause);
       candidate.observation?.count('send-or-accept-error');
       candidate.observation?.finish('discarded');
       candidate.discard();
@@ -1117,6 +1192,14 @@ export class SourceRenderWorker {
     });
   }
   private receiveResourceControl(message: RenderWorkerOutput): boolean {
+    if (message.kind === 'closed-level-selection-result') {
+      this.closedLevelRows.receiveSelection(message);
+      return true;
+    }
+    if (message.kind === 'closed-level-rows-result') {
+      this.closedLevelRows.receive(message);
+      return true;
+    }
     if (message.kind === 'mesh-ready' || message.kind === 'mesh-released') {
       this.meshResidency.receive(message);
       return true;
@@ -1420,6 +1503,7 @@ export class SourceRenderWorker {
     this.startupBackgroundPipelineLibrary = undefined;
     this.finishOneShotRequests();
     this.inspectionReady = false;
+    this.closedLevelRows.invalidate();
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;
     try {
@@ -1469,6 +1553,7 @@ export class SourceRenderWorker {
     const retirement = this.retirement;
     this.finishOneShotRequests();
     this.inspectionReady = false;
+    this.closedLevelRows.invalidate();
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;
     if (retirement === undefined) this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);

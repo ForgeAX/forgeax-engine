@@ -1,5 +1,9 @@
-import type { Component, EntityHandle, World } from '@forgeax/engine-ecs';
-import { readRenderArrayView, type StateProjection } from '@forgeax/engine-ecs/projection';
+import { type Component, Disabled, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import {
+  createStateProjection,
+  readRenderArrayView,
+  type StateProjection,
+} from '@forgeax/engine-ecs/projection';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
   CharacterController,
@@ -64,6 +68,11 @@ export interface PhysicsSyncDescriptor {
   readonly characterControllerOffset: number | undefined;
 }
 
+type PhysicsDescriptorReader = Pick<
+  PhysicsSyncState,
+  'world' | 'transformComponent' | 'globalTransformComponent'
+> & { readonly projection: Pick<StateProjection, 'changed'> };
+
 export function samePhysicsValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (
@@ -121,7 +130,7 @@ export function physicsRowIsStatic(row: PhysicsSyncQueryRow): boolean {
 
 function readPhysicsTransform(
   row: PhysicsSyncQueryRow,
-  state: PhysicsSyncState,
+  state: PhysicsDescriptorReader,
 ): PhysicsTransform3D | undefined {
   // Root TRS is already world-space; a parented row consumes Scene's matrix.
   const worldPose = row.has(ChildOf)
@@ -156,7 +165,7 @@ function readPhysicsTransform(
 
 function readRigidBodyConfig(
   row: PhysicsSyncQueryRow,
-  state: PhysicsSyncState,
+  state: PhysicsDescriptorReader,
   previous: PhysicsSyncDescriptor | undefined,
 ): PhysicsSyncDescriptor['rigidBody'] {
   // Membership is separate from surviving-value evidence: removals are structural.
@@ -206,7 +215,7 @@ function readRigidBodyConfig(
 
 function readColliderConfig(
   row: PhysicsSyncQueryRow,
-  state: PhysicsSyncState,
+  state: PhysicsDescriptorReader,
   previous: PhysicsSyncDescriptor | undefined,
 ): ColliderSnapshot | undefined {
   if (!row.has(Collider)) return undefined;
@@ -218,7 +227,7 @@ function readColliderConfig(
 
 function readCharacterControllerOffset(
   row: PhysicsSyncQueryRow,
-  state: PhysicsSyncState,
+  state: PhysicsDescriptorReader,
   previous: PhysicsSyncDescriptor | undefined,
 ): number | undefined {
   if (
@@ -231,7 +240,7 @@ function readCharacterControllerOffset(
 
 export function readPhysicsSyncDescriptor(
   row: PhysicsSyncQueryRow,
-  state: PhysicsSyncState,
+  state: PhysicsDescriptorReader,
   previous: PhysicsSyncDescriptor | undefined,
 ): PhysicsSyncDescriptor | undefined {
   if (!row.has(Collider) && !row.has(RigidBody)) return undefined;
@@ -248,4 +257,85 @@ export function readPhysicsSyncDescriptor(
       ? readCharacterControllerOffset(row, state, previous)
       : undefined,
   };
+}
+
+/** Explicit owned descriptor for a resident member, including Disabled rows. */
+export function readResidentPhysicsDescriptor(
+  world: World,
+  entity: EntityHandle,
+): PhysicsSyncDescriptor | undefined {
+  const transformComponent = world.components.resolve('Transform');
+  const globalTransformComponent = world.components.resolve('GlobalTransform');
+  if (transformComponent === undefined || globalTransformComponent === undefined) return;
+  if (!world.hasComponent(entity, transformComponent)) return;
+  return readPhysicsSyncDescriptor(
+    {
+      entity,
+      has: (component) => world.hasComponent(entity, component),
+      get: (component) => {
+        const result = world.get(entity, component);
+        return result.ok ? (result.value as Record<string, unknown>) : undefined;
+      },
+    },
+    { world, transformComponent, globalTransformComponent, projection: { changed: () => true } },
+    undefined,
+  );
+}
+
+/** Ordinary ECS readers and their accepted projection share one native sync owner. */
+export function createPhysicsSyncState(
+  world: World,
+  transformComponent: Component,
+  globalTransformComponent: Component,
+): PhysicsSyncState | undefined {
+  const queryResult = world.query({
+    read: [Collider],
+    optional: [
+      transformComponent,
+      globalTransformComponent,
+      RigidBody,
+      CharacterController,
+      ChildOf,
+    ],
+  });
+  if (!queryResult.ok) return undefined;
+  const bodyQuery = world.query({
+    read: [RigidBody],
+    without: [Collider],
+    optional: [transformComponent, globalTransformComponent, CharacterController, ChildOf],
+  });
+  if (!bodyQuery.ok) throw bodyQuery.error;
+  return {
+    world,
+    transformComponent,
+    globalTransformComponent,
+    queries: [queryResult.value, bodyQuery.value] as unknown as readonly PhysicsSyncQuery[],
+    projection: createStateProjection(
+      world,
+      [
+        transformComponent,
+        globalTransformComponent,
+        Collider,
+        RigidBody,
+        CharacterController,
+        ChildOf,
+        Disabled,
+      ],
+      [Collider, RigidBody],
+    ),
+    accepted: new Map(),
+  };
+}
+
+/** Exact authored pose key used to reject stale asynchronous solver output. */
+export function physicsSourcePoseKey(state: PhysicsSyncState | undefined, entity: number): string {
+  if (!state) return '';
+  const read = state.world.get(entity as EntityHandle, state.transformComponent);
+  if (!read.ok) return '';
+  const value = read.value as unknown as {
+    pos: ArrayLike<number>;
+    quat: ArrayLike<number>;
+    scale: ArrayLike<number>;
+  };
+  return JSON.stringify([Array.from(value.pos), Array.from(value.quat), Array.from(value.scale)]);
 }

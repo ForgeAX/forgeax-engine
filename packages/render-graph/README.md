@@ -32,6 +32,23 @@ observe the current frame on every execution. Recursive execution of that same
 graph is rejected before resource resolution, including calls from an imported
 resolver. A failed resolution releases admission so the next frame can retry.
 
+## Native resource preparation
+
+`compiled.prepareResources(current)` runs only explicitly declared native Pass
+recipes and `NativeTextureImport` producers. It never receives an execution frame,
+resolves ordinary imports, records commands or submits a warm draw. Each resume
+releases graph admission before yielding; return, throw and reentrant cancellation
+close the original recipe and its currency predicate. Recipes keep native work
+bounded and retain their own real completion and retirement responsibility.
+
+An import may explicitly supply its original owner's `prepare` generator and a
+pure `current` texture lookup. Graph-owned views of that import are prepared in
+the same physical-texture/descriptor cache ordinary execution uses. Ordinary
+execution still resolves the real import; a different texture cannot consume the
+old prepared view. Unknown dynamic imports retain their ordinary execution path.
+`preparedResourcesCurrent()` checks only this declared preparation coverage; it
+is not whole-Renderer, Level or gameplay readiness.
+
 ## Primary API
 
 ```ts
@@ -268,6 +285,16 @@ Consumers must accept the retained/initial contents, share the producer's condit
 or declare an unconditional clear/write before reading. Imported contents remain
 the importing owner's responsibility. Dawn and browser byte-readback regressions
 cover first skip, write, later skip and first execution after rebuild.
+
+`compiled.createdTextureView(view)` borrows the exact live native view of a
+graph-created texture before any execution. It returns `undefined` for foreign,
+imported, unallocated or retiring resources. The lookup neither allocates nor
+invokes import resolvers; retiring one graph does not invalidate another graph's
+shared lease. Callers must not destroy the borrowed view. This ownership fact is
+not GPU-content readiness or permission to bypass a Pass's declared accesses.
+`compiled.isRetired()` reads the same monotonic owner state: it becomes true
+synchronously when retirement starts, before its completion fence settles.
+Neither read creates a lease, prepares GPU contents or authorizes execution.
 
 `resources.textureViewExtent(view)` returns the declared view’s compiled pixel width and height, including its base mip. It applies the same graph ownership and exact pass-access checks as `textureView(view)` and derives from existing allocation facts, including imported surface extents; consumers do not keep a second size catalogue.
 

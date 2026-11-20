@@ -29,13 +29,14 @@ function option(name, fallback) {
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   process.stdout.write(
-    'Usage: node scripts/build-shared-inputs.mjs [--root <dir>] [--out <dir>] [--no-point-shadows] [--no-hdrp-ssao] [--fingerprint]\n',
+    'Usage: node scripts/build-shared-inputs.mjs [--root <dir>] [--out <dir>] [--no-point-shadows] [--no-hdrp-ssao] [--compiled-shaders] [--fingerprint]\n',
   );
   process.exit(0);
 }
 
 const root = resolve(option('--root', '.'));
 const output = resolve(root, option('--out', 'shared-build-inputs'));
+const compiled = process.argv.includes('--compiled-shaders');
 const staging = join(output, '.build');
 const virtualEntry = 'virtual:forgeax/repo-build-inputs-entry';
 const sourceRoots = [
@@ -86,15 +87,18 @@ function writeProductionFacts(compileCount, duration) {
 // The producer loads built compiler/plugin packages plus authored shader sources.
 // Declarations and timing reports are excluded: they are not compiler inputs.
 const engineEntries = {
-  // Every app reuses this closure, including consumers that enable these
-  // public capabilities. Feature pruning belongs to an app-specific build.
-  pointShadows: !process.argv.includes('--no-point-shadows'),
+  // The shared source catalog serves the ordinary Engine template request.
+  // Explicit composed producers retain their historical option.
+  pointShadows: compiled && !process.argv.includes('--no-point-shadows'),
   hdrpSsao: !process.argv.includes('--no-hdrp-ssao'),
 };
 // This is the source producer: packaged release profiles must never hide a
 // source edit. Verified receipts are its only shortcut around compilation.
 process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1';
-const inputFingerprint = sharedShaderInputFingerprint(root, engineEntries);
+const inputFingerprint = sharedShaderInputFingerprint(
+  root,
+  compiled ? engineEntries : { ...engineEntries, publication: 'source' },
+);
 if (process.argv.includes('--fingerprint')) {
   process.stdout.write(`${inputFingerprint}\n`);
   process.exit(0);
@@ -114,46 +118,47 @@ if (process.env.FORGEAX_BUILD_NO_TASK_CACHE === '1')
     `[shared-build] shader reuse disabled by FORGEAX_BUILD_NO_TASK_CACHE; expected=${inputFingerprint}`,
   );
 
-admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });
-const { forgeaxShader } = await import('@forgeax/engine-vite-plugin-shader');
-const { build } = await import('vite');
-rmSync(output, { recursive: true, force: true });
-mkdirSync(output, { recursive: true });
 const startedAt = performance.now();
-await build({
-  configFile: false,
-  root,
-  logLevel: 'warn',
-  plugins: [
-    {
-      name: 'forgeax:repo-build-inputs-entry',
-      resolveId(id) {
-        return id === virtualEntry ? id : null;
-      },
-      load(id) {
-        return id === virtualEntry ? 'export {};' : null;
-      },
-    },
-    forgeaxShader({
-      engineEntries,
-    }),
-  ],
-  build: {
-    emptyOutDir: true,
-    outDir: staging,
-    assetsInlineLimit: 0,
-    rollupOptions: { input: virtualEntry },
-  },
-});
-
-const shaderManifest = join(staging, 'shaders/manifest.json');
-if (!statSync(shaderManifest).isFile())
-  throw new Error('shared shader producer did not emit manifest.json');
+const shaderManifest = join(output, 'shaders/manifest.json');
+if (compiled) admitShaderSourceBudget({ workerBudget: shaderProducerCompileWorkers });
+const { buildEngineShaderTemplateManifest, forgeaxShader } = await import(
+  '@forgeax/engine-vite-plugin-shader'
+);
+rmSync(output, { recursive: true, force: true });
 mkdirSync(join(output, 'shaders'), { recursive: true });
-// The manifest embeds all source/variant/binding data. Compilation sidecars
-// are diagnostics, not part of the shared consumer closure.
-cpSync(shaderManifest, join(output, 'shaders/manifest.json'));
-rmSync(staging, { recursive: true, force: true });
+if (compiled) {
+  const { build } = await import('vite');
+  await build({
+    configFile: false,
+    root,
+    logLevel: 'warn',
+    plugins: [
+      {
+        name: 'forgeax:repo-build-inputs-entry',
+        resolveId(id) {
+          return id === virtualEntry ? id : null;
+        },
+        load(id) {
+          return id === virtualEntry ? 'export {};' : null;
+        },
+      },
+      forgeaxShader({ engineEntries, publication: 'compiled' }),
+    ],
+    build: {
+      emptyOutDir: true,
+      outDir: staging,
+      assetsInlineLimit: 0,
+      rollupOptions: { input: virtualEntry },
+    },
+  });
+  cpSync(join(staging, 'shaders/manifest.json'), shaderManifest);
+  rmSync(staging, { recursive: true, force: true });
+} else {
+  writeFileSync(
+    shaderManifest,
+    JSON.stringify(await buildEngineShaderTemplateManifest(engineEntries)),
+  );
+}
 
 const outputRelative = relative(root, output).replaceAll('\\', '/');
 const inventory = files(output)
@@ -164,11 +169,15 @@ const manifest = {
   producer: 'repo-build-inputs',
   inputFingerprint: fingerprint(sourceRoots),
   shaderBuild: sharedShaderReceipt(root, join(output, 'shaders/manifest.json'), inputFingerprint),
+  ...(compiled ? {} : { shaderPublication: 'source' }),
   payload: { engineShaderManifest: `${outputRelative}/shaders/manifest.json` },
   inventory: inventory.length > 0 ? inventory : [`${outputRelative}/shaders/manifest.json`],
 };
 writeFileSync(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-const facts = writeProductionFacts(1, Number((performance.now() - startedAt).toFixed(1)));
+const facts = writeProductionFacts(
+  compiled ? 1 : 0,
+  Number((performance.now() - startedAt).toFixed(1)),
+);
 process.stdout.write(
   `${JSON.stringify({ manifest: join(output, 'manifest.json'), files: inventory.length, facts })}\n`,
 );

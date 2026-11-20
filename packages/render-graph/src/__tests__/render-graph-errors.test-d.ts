@@ -147,6 +147,8 @@ describe('RenderGraphError code/detail correlation', () => {
       | 'resource-allocation-failed'
       | 'resource-resolution-failed'
       | 'pass-encode-failed'
+      | 'pass-preparation-failed'
+      | 'graph-preparation-invalid'
       | 'compiled-graph-retired'
       | 'resource-retire-failed'
     >();

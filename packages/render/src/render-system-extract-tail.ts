@@ -627,10 +627,41 @@ function createWorldExtraction(
     // feat-20260528-frustum-culling M3 / w11: frustum culling counters.
     frustumCulled: 0,
     frustumTotal: 0,
+    preparedPose: false,
   };
 }
 
 type WorldExtraction = ReturnType<typeof createWorldExtraction>;
+
+/** Engine-only roster read; ordinary extraction retains its Query filtering. */
+export function extractInactiveMeshMember(
+  world: World,
+  context: PreparedExtractContext,
+  entity: EntityHandle,
+) {
+  const internal = createWorldInternalView(world);
+  const scope = createWorldExtraction(
+    world,
+    { ...context, cull: 'none', retainHidden: true },
+    {
+      ...internal,
+      _routeError(error, ctx) {
+        if (ctx.severity === Severity.Warning) internal._routeError(error, ctx);
+        else throw error;
+      },
+    },
+    emptyExtractedFrame().lights,
+    [],
+  );
+  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  scope.preparedPose = true;
+  extractMeshRendererRow(scope, entity, skin);
+  return {
+    renderables: scope.renderables,
+    dispatch: scope.dispatch,
+    hidden: scope.explicitlyHidden.has(entity),
+  };
+}
 
 // tweak-20260611 M1: MeshRenderer renderable archetype walk routes through one
 // World-owned Query. Variable-length array reads (`MeshRenderer.materials`,
@@ -1945,7 +1976,9 @@ function readMeshRendererRow(
   participation: ReturnType<typeof readShadowParticipation>,
 ) {
   const preparationMesh =
-    scope.context.preparationMesh?.entity === entity ? scope.context.preparationMesh : undefined;
+    !scope.preparedPose && scope.context.preparationMesh?.entity === entity
+      ? scope.context.preparationMesh
+      : undefined;
   const scalar = scope.world[worldRead];
   const meshHandle = scalar.getFieldValue(entity, MeshFilter, 'assetHandle');
   const hasInstances = scope.world.hasComponent(entity, Instances);
@@ -2477,7 +2510,11 @@ function publishRenderable(
   }
   // feat-20260601 D-3: the resolved world mat4 feeds the record stage with
   // zero per-snapshot compose. A stale slot (generation gone) skips the entity.
-  const worldView = readPresentationWorldMatrix(scope.world, read.entity);
+  const worldView = scope.preparedPose
+    ? (scope.worldInternal._getArrayView(read.entity, GlobalTransform, 'world') as
+        | Float32Array
+        | undefined)
+    : readPresentationWorldMatrix(scope.world, read.entity);
   if (worldView === undefined) return;
   const transform: TransformSnapshot = { world: ownPose(worldView) };
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);

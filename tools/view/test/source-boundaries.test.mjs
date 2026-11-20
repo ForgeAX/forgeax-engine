@@ -168,7 +168,7 @@ it('scopes the browser bundle exemption to one existing call site', () => {
   assert.equal(parseImports('src/copied.ts', source).imports.some(item => item.bridge), false);
   const changed = parseImports(file, source.replace("globalThis.__forgeaxViewPanelsUrl ?? '/panels.js'", 'otherUrl'));
   assert.equal(changed.imports.some(item => item.bridge), false);
-  const second = parseImports(file, source.replace('return await import(', 'await import(target); return await import('));
+  const second = parseImports(file, source.replace('return connectPanelLocale(await import(', 'await import(target); return connectPanelLocale(await import('));
   assert.equal(second.imports.filter(item => item.specifier === undefined && !item.bridge).length, 1);
 });
 

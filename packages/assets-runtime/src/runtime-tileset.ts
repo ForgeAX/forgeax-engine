@@ -12,7 +12,7 @@ import {
 /** Link the atlas closure once at asset admission; Tilemap instances are never visited. */
 export function linkRuntimeTileset(
   tileset: TilesetAsset,
-  owner: AssetReferenceOwner,
+  owner: Pick<AssetReferenceOwner, 'validate'>,
   source: (guid: string) => AssetHandle | undefined,
 ): Result<{ value: TilesetAsset; dependencies: readonly number[] }, AssetError> {
   const atlases: AssetHandle<'texture'>[] = [];

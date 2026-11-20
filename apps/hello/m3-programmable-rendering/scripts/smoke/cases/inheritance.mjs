@@ -1,4 +1,3 @@
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import {
   compareDawnReadbacks,
   comparePngs,
@@ -14,7 +13,7 @@ import {
 } from '../lib/runtime.mjs';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { readShaderManifestText } from '../../../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText } from '../../../../../../scripts/lib/shader-manifest.mjs';
 
 const CHURN_RESIZE_HISTORY = '640x360>480x270>720x405>640x360>480x270>720x405>640x360';
 
@@ -778,7 +777,7 @@ function runMultiUvFalsifier() {
 
 async function readMultiUvManifest() {
   try {
-    return await readShaderManifestPublication(
+    return await readCookedShaderManifestPublication(
       JSON.parse(readShaderManifestText(resolve(multiUvRoot(), 'dist', 'shaders', 'manifest.json'))),
     );
   } catch (error) {

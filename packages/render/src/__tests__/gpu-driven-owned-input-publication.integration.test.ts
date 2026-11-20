@@ -104,7 +104,7 @@ it('retains receiver-owned inputs through native publication, scene ownership an
       const programs = scene.shadowCasterProjection()?.materialPrograms;
       if (programs === undefined) throw Error('missing accepted material programs');
       return collectGpuDrivenMaterialArtifacts({
-        batches: topology.query(topology.sourcePlan(), undefined).batches,
+        batches: topology.query(topology.sourcePlan(), undefined).active.batches,
         programs,
         resolve,
         clustered: false,

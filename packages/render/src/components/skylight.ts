@@ -121,6 +121,8 @@ export const Skylight = defineComponent('Skylight', {
   // state. Record/restore preserves the portable lighting controls while the
   // render owner resolves this asset again on the target world.
   equirect: { type: 'asset<equirect>', simulationTransient: true },
+  /** Linear rgba16float 2D panorama produced by a runtime GPU texture generator. */
+  generatedEquirect: { type: 'asset<gpu-texture>', simulationTransient: true },
   // color carries an explicit layer-2 default [1,1,1] (white); the array
   // layer-3 fallback is all-zero, so the default MUST be explicit (D-5).
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },

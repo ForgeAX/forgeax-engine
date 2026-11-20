@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-scriptable-pack-review
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 **Scriptable Pack** is a code-authored asset format; **procedural** describes content created by rules and algorithms. Build-time `*.pack.ts`, directly generated runtime assets, and executable runtime generators are eligible for review. A valid Pack, successful execution, or accepted publication can still wrap prefabricated data or Base64. Assess format and procedural provenance separately.
 
 This file includes the [Engine contract](#engine-contract) and [historical Palace evidence](#historical-palace-evidence), so it can be shared alone. Repository ownership is Engine `skills/forgeax-scriptable-pack-review`; Harness distributes shared workflow skills.

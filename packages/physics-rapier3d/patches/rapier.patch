@@ -7860,3 +7860,203 @@ index 48bbae9..3880da6 100644
          handle
      }
  
+diff --git a/src/geometry/broad_phase_bvh/mod.rs b/src/geometry/broad_phase_bvh/mod.rs
+--- a/src/geometry/broad_phase_bvh/mod.rs
++++ b/src/geometry/broad_phase_bvh/mod.rs
+@@ -171,6 +171,81 @@
+ }
+ 
+ impl BroadPhaseBvh {
++    /// Accept a closed roster of fixed single-collider bodies and make their query
++    /// participation current without stepping time, contacts, forces or solvers.
++    /// Modified body/collider queues and pair work remain pending for the next step.
++    /// Callers must exclude simultaneous simulation and queries until this returns.
++    fn prepare_static_body_participation(
++        &self,
++        params: &IntegrationParameters,
++        bodies: &crate::dynamics::RigidBodySet,
++        colliders: &crate::geometry::ColliderSet,
++        transitions: &[(crate::dynamics::RigidBodyHandle, bool)],
++    ) -> Option<Vec<(crate::dynamics::RigidBodyHandle, bool, ColliderHandle, Option<Aabb>)>> {
++        let mut seen = HashMap::default();
++        let mut prepared = Vec::with_capacity(transitions.len());
++        for (handle, enabled) in transitions {
++            let Some(body) = bodies.get(*handle) else { return None; };
++            if !body.is_fixed() || body.colliders().len() != 1 || seen.insert(*handle, ()).is_some() {
++                return None;
++            }
++            let collider_handle = body.colliders()[0];
++            let Some(collider) = colliders.get(collider_handle) else { return None; };
++            if collider.parent() != Some(*handle) { return None; }
++            let aabb = if *enabled {
++                let Some(shape) = colliders.resolved_shape(collider_handle) else { return None; };
++                let aabb = collider.compute_broad_phase_aabb(shape.as_ref(), params, bodies);
++                if !(aabb.mins.is_finite() && aabb.maxs.is_finite()) { return None; }
++                Some(aabb)
++            } else { None };
++            prepared.push((*handle, *enabled, collider_handle, aabb));
++        }
++        Some(prepared)
++    }
++
++    /// Pure readiness check using exactly the same complete bounds/identity preflight as acceptance.
++    pub fn validate_static_body_participation(
++        &self,
++        params: &IntegrationParameters,
++        bodies: &crate::dynamics::RigidBodySet,
++        colliders: &crate::geometry::ColliderSet,
++        transitions: &[(crate::dynamics::RigidBodyHandle, bool)],
++    ) -> bool {
++        self.prepare_static_body_participation(params, bodies, colliders, transitions).is_some()
++    }
++
++    pub fn set_static_body_participation(
++        &mut self,
++        params: &IntegrationParameters,
++        bodies: &mut crate::dynamics::RigidBodySet,
++        colliders: &mut crate::geometry::ColliderSet,
++        transitions: &[(crate::dynamics::RigidBodyHandle, bool)],
++    ) -> bool {
++        let Some(prepared) = self.prepare_static_body_participation(params, bodies, colliders, transitions) else {
++            return false;
++        };
++        for (handle, enabled, collider_handle, aabb) in prepared {
++            bodies.get_mut(handle).unwrap().set_enabled(enabled);
++            let collider = colliders.get_mut(collider_handle).unwrap();
++            collider.flags.enabled = if enabled {
++                crate::geometry::ColliderEnabled::Enabled
++            } else {
++                crate::geometry::ColliderEnabled::DisabledByParent
++            };
++            collider.changes.insert(crate::geometry::ColliderChanges::ENABLED_OR_DISABLED);
++            colliders.refresh_shared_geometry_pose(collider_handle);
++            if colliders.shared_geometry_binding(collider_handle).is_some() {
++                self.shared_instance_moved(collider_handle);
++            } else if let Some(aabb) = aabb {
++                self.set_aabb(params, collider_handle, aabb);
++            } else {
++                self.tree.remove(collider_handle.into_raw_parts().0);
++                self.pending_set_aabb.push(collider_handle);
++            }
++        }
++        true
++    }
++
+     /// Actual changed-geometry pair work, including unchanged-AABB edits.
+     pub fn geometry_changed_pairs(&self) -> &[ColliderPair] {
+         &self.geometry_changed_pairs
+diff --git a/typescript/src/geometry/broad_phase.rs b/typescript/src/geometry/broad_phase.rs
+--- a/typescript/src/geometry/broad_phase.rs
++++ b/typescript/src/geometry/broad_phase.rs
+@@ -23,6 +23,27 @@
+         RawBroadPhase(DefaultBroadPhase::new())
+     }
+ 
++    pub fn setStaticBodyParticipation(
++        &mut self,
++        parameters: &crate::dynamics::RawIntegrationParameters,
++        bodies: &mut RawRigidBodySet,
++        colliders: &mut RawColliderSet,
++        handles: &[FlatHandle],
++        enabled: &[u8],
++        apply: bool,
++    ) -> bool {
++        if handles.len() != enabled.len() || enabled.iter().any(|value| *value > 1) {
++            return false;
++        }
++        let transitions: Vec<_> = handles.iter().zip(enabled)
++            .map(|(handle, enabled)| (utils::body_handle(*handle), *enabled != 0)).collect();
++        if apply {
++            self.0.set_static_body_participation(&parameters.0, &mut bodies.0, &mut colliders.0, &transitions)
++        } else {
++            self.0.validate_static_body_participation(&parameters.0, &bodies.0, &colliders.0, &transitions)
++        }
++    }
++
+     pub fn castRay(
+         &self,
+         narrow_phase: &RawNarrowPhase,
+diff --git a/typescript/src.ts/pipeline/world.ts b/typescript/src.ts/pipeline/world.ts
+--- a/typescript/src.ts/pipeline/world.ts
++++ b/typescript/src.ts/pipeline/world.ts
+@@ -289,6 +289,20 @@
+      * generally automatically done at the beginning and the end of each simulation step with World.step.
+      * If the positions need to be updated without running a simulation step this method can be called manually.
+      */
++    /** Fixed single-collider roster participation, including immediate native scene queries.
++     * Does not advance the timestep or publish contact/solver effects. */
++    public validateStaticBodyParticipation(handles: Float64Array, enabled: Uint8Array): boolean {
++        return this.broadPhase.raw.setStaticBodyParticipation(
++            this.integrationParameters.raw, this.bodies.raw, this.colliders.raw, handles, enabled, false,
++        );
++    }
++
++    public setStaticBodyParticipation(handles: Float64Array, enabled: Uint8Array): boolean {
++        return this.broadPhase.raw.setStaticBodyParticipation(
++            this.integrationParameters.raw, this.bodies.raw, this.colliders.raw, handles, enabled, true,
++        );
++    }
++
+     public propagateModifiedBodyPositionsToColliders() {
+         this.bodies.raw.propagateModifiedBodyPositionsToColliders(
+             this.colliders.raw,
+diff --git a/crates/rapier3d/tests/shared_geometry.rs b/crates/rapier3d/tests/shared_geometry.rs
+--- a/crates/rapier3d/tests/shared_geometry.rs
++++ b/crates/rapier3d/tests/shared_geometry.rs
+@@ -1026,3 +1026,56 @@
+             "a changed region must query the other root's whole shape, even when that root also changed elsewhere");
+     }
+ }
++
++#[test]
++fn static_participation_refreshes_ordinary_and_shared_queries_without_simulation() {
++    for shared in [false, true] {
++        let mut bodies = RigidBodySet::new();
++        let mut colliders = ColliderSet::new();
++        let mut broad = BroadPhaseBvh::new();
++        let narrow = NarrowPhase::new();
++        let params = IntegrationParameters::default();
++        let body = bodies.insert(RigidBodyBuilder::fixed().enabled(false).translation(Vector::new(5.0, 0.0, 0.0)));
++        let collider = colliders.insert_with_parent(ColliderBuilder::ball(0.5).enabled(false), body, &mut bodies);
++        if shared {
++            let geometry = colliders.shared_geometry.insert(SharedShape::ball(0.5));
++            assert!(colliders.bind_shared_geometry(collider, geometry, Vector::ONE));
++        }
++        let ray = Ray::new(Vector::ZERO, Vector::X);
++        let hit = |broad: &BroadPhaseBvh, bodies: &RigidBodySet, colliders: &ColliderSet| {
++            broad.as_query_pipeline(narrow.query_dispatcher(), bodies, colliders, QueryFilter::default())
++                .cast_ray(&ray, 10.0, true).map(|hit| hit.0)
++        };
++        assert_eq!(hit(&broad, &bodies, &colliders), None);
++        for enabled in [true, false, true] {
++            assert!(broad.set_static_body_participation(&params, &mut bodies, &mut colliders, &[(body, enabled)]));
++            assert_eq!(hit(&broad, &bodies, &colliders), enabled.then_some(collider));
++            let count = broad.as_query_pipeline(narrow.query_dispatcher(), &bodies, &colliders, QueryFilter::default())
++                .intersect_ray(ray, 10.0, true).count();
++            assert_eq!(count, usize::from(enabled), "a shared instance must not also enter the ordinary tree");
++        }
++    }
++}
++
++#[test]
++fn static_participation_rejects_complete_roster_before_nonfinite_bounds_or_duplicate_writes() {
++    for shared in [false, true] {
++        let mut bodies = RigidBodySet::new();
++        let mut colliders = ColliderSet::new();
++        let mut broad = BroadPhaseBvh::new();
++        let params = IntegrationParameters::default();
++        let first = bodies.insert(RigidBodyBuilder::fixed().enabled(false));
++        colliders.insert_with_parent(ColliderBuilder::ball(0.5), first, &mut bodies);
++        let second = bodies.insert(RigidBodyBuilder::fixed().enabled(false).translation(Vector::new(3.0e38, 0.0, 0.0)));
++        let collider = colliders.insert_with_parent(ColliderBuilder::cuboid(1.0e38, 1.0, 1.0), second, &mut bodies);
++        if shared {
++            let geometry = colliders.shared_geometry.insert(SharedShape::cuboid(1.0, 1.0, 1.0));
++            assert!(colliders.bind_shared_geometry(collider, geometry, Vector::new(1.0e38, 1.0, 1.0)));
++        }
++        assert!(!broad.set_static_body_participation(&params, &mut bodies, &mut colliders, &[(first, true), (second, true)]));
++        assert!(!bodies[first].is_enabled());
++        assert!(!bodies[second].is_enabled());
++        assert!(!broad.set_static_body_participation(&params, &mut bodies, &mut colliders, &[(first, true), (first, false)]));
++        assert!(!bodies[first].is_enabled());
++    }
++}

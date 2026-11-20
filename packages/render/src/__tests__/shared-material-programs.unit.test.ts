@@ -143,7 +143,7 @@ function fixture(count = 1) {
     })),
   );
   const input = {
-    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    batches: topology.query(topology.sourcePlan(), undefined).active.batches,
     probeBlend: false,
     programs,
     resolve,
@@ -505,7 +505,7 @@ it('distinguishes skin and color ABI variants under one material identity', () =
 
 it('keeps geometry membership while Forward switches between transparent and opaque', () => {
   const f = fixture(128);
-  const before = f.topology.query(f.topology.sourcePlan(), undefined);
+  const before = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const transparent = {
     ...f.snapshot,
     passes: f.snapshot.passes?.map((pass) =>
@@ -539,7 +539,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
   });
   expect(result.batchExecutions.values().next().value?.forward.route).toBe('direct');
   expect(result.batchExecutions.values().next().value?.shadow.route).toBe('gpu');
-  expect(f.topology.query(f.topology.sourcePlan(), undefined)).toBe(before);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active).toBe(before);
   const fresh = new BatchTopology();
   fresh.rebuild(
     f.rows.map((row, index) => ({
@@ -550,7 +550,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
       snapshot: row.source,
     })),
   );
-  expect(fresh.query(fresh.sourcePlan(), undefined).candidateCount).toBe(128);
+  expect(fresh.query(fresh.sourcePlan(), undefined).active.candidateCount).toBe(128);
   f.material.adopt(f.snapshot);
   f.owner.adopt(f.material);
   const opaque = collectGpuDrivenMaterialArtifacts({
@@ -558,7 +558,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
     programs: f.projection.project(f.guarded, f.owner.materials()),
   });
   expect(opaque.batchExecutions.values().next().value?.forward.route).toBe('gpu');
-  expect(f.topology.query(f.topology.sourcePlan(), undefined)).toBe(before);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active).toBe(before);
 });
 
 it('observes replacement program bytes without changing the fixed material root', () => {

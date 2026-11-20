@@ -1,4 +1,21 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-devkit
+
+Workspace project status optionally includes `preparation`: project and Vite
+setup, Shader input/variant compilation, Pack stages, bounded active sources,
+recent completed sources and host timestamps. Shader counts describe one source,
+not a whole-project completion percentage.
+It is available before project Vite readiness through the existing backend
+status subscription and snapshot. Source changes are coalesced over 200 ms;
+stage changes publish immediately. Closing a session retires its observer.
+An asset task ends at readiness; scene attachment does not extend its clock.
+New production after a terminal stage starts a fresh clock and recent-source list,
+including work within the same producer generation. Reloading a presentation
+does not restart an active backend task.
+Pack readiness does not establish a rendered frame; the existing project
+lifecycle remains the readiness authority.
 
 Ordinary project build, development and packaging publish native shader source
 templates by default. Pack remains the material program authority; selected
@@ -9,10 +26,10 @@ validation. Single-HTML browser and Worker process compatibility objects do not
 advertise a Node version, so portable WASM loaders use embedded browser resources
 rather than Node filesystem imports.
 
-Resource and workspace previews publish their tool-owned texture-view materials
-through the complete compiled manifest route. These programs are supplied as
-material packages, outside the Engine source-family library. Ordinary Play and
-game builds retain the project's selected publication.
+Resource and workspace previews publish Engine templates alongside their cooked
+texture-view materials. Their host supplies these tool-owned material packages
+for resource inspection. Ordinary Play and game builds use Pack to publish
+project materials.
 
 Custom build hosts use `readProjectFacts` from the package root and
 `loadProjectCookers` from `@forgeax/engine-devkit/plugin-build` to execute the
@@ -1810,6 +1827,9 @@ An Engine-aware presentation such as the SDK's embedded View borrows the executi
 source Host's Engine graph. Its own installed Engine dependency supplies the default
 for a packaged Host. The game must match that selected graph by binding or runtime
 bytes; a conflicting game Engine still fails before frontend startup.
+The failure names the conflicting Engine paths and directs npm games to their own
+installed `tools/view/start.mjs`. Source-development games can explicitly select
+the Host's Engine through the binding commands above.
 
 `forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
 registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
@@ -2039,13 +2059,19 @@ startup-module refresh also prevent reuse of stale HTTP entry bytes. The Engine
 never deletes arbitrary CacheStorage or unregisters Service Workers.
 
 Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
-`loading`, `elapsed`, `slow`, `reload`) over the English defaults. Its optional
+`loading`, `elapsed`, `slow`, `reload`) over the English defaults. Set
+`loadingLabels: { lang: 'zh-CN' }` to select the complete Simplified Chinese
+catalog; `zh`, `zh-SG` and `zh-Hans` also select Simplified Chinese. Other languages
+fall back to English unless the project supplies translations. Its optional
 `host` group also supplies the version labels, completed-frame accessibility
 label, failure and diagnostic controls, no-script notice and cache-recovery text.
-Both groups accept partial overrides; omitted Host fields retain their English
-defaults. The build rejects unknown Host keys and non-string labels and emits
+Both groups accept partial overrides; omitted fields retain the selected
+language's defaults. The build rejects unknown Host keys and non-string labels and emits
 the same resolved text into the HTML, the native WeChat cover and the generated
-module. Original error codes, causes and stacks remain unchanged.
+module. Early native WeChat failure modals use the same configuration, including
+`host.nativeStartupFailureTitle`, `host.nativePackageFailureTitle`,
+`host.nativeReloadHint`, `host.confirm` and `reload`. Original error codes,
+causes and stacks remain unchanged.
 
 ### Project-owned loading and failure screens
 
@@ -2342,9 +2368,11 @@ contracts. `createNodePackProgramImports` rebinds recorded imports in a fresh Ho
 Generic npm imports retain a project package authority, dependency route and selected
 entry, preserving distinct installed instances even when their bytes match. Content
 identities include runtime peers; Node builtins and Cordis use their actual identities.
-嵌套作者包的 locator 使用 slash 分隔的项目相对 anchor（如 `plugins/local`），
-恢复时仍逐边检查声明权限并核验原生真实路径。分隔符统一不折叠 `..`、盘符或包身份；
-反斜杠、相对盘符、目录逃逸和未声明依赖均拒绝，源码快照仍校验原始字节。
+Nested authored-package locators use slash-separated project-relative anchors
+(for example `plugins/local`). Recovery checks declared permissions at every edge
+and verifies native real paths. Separator normalization never collapses `..`, drive
+letters or package identities. Backslashes, drive-relative paths, directory escapes
+and undeclared dependencies are rejected; source snapshots still verify original bytes.
 Declared npm dependencies retain their installed package authority even when their
 names also identify Node builtins, such as the `punycode` package.
 Missing dependencies or changed bytes cannot satisfy the archived import contract.

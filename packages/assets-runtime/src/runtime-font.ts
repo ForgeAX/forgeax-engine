@@ -43,7 +43,7 @@ function validMetric(value: GlyphMetric): boolean {
 /** Font edges join the same owner closure as Mesh and Material; no label is visited. */
 export function linkRuntimeFont(
   font: FontAsset,
-  owner: AssetReferenceOwner,
+  owner: Pick<AssetReferenceOwner, 'validate'>,
   source: (guid: string) => AssetHandle | undefined,
 ): Result<{ value: FontAsset; dependencies: readonly number[] }, AssetError> {
   const common = font.common;

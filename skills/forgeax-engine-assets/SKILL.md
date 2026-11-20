@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-assets
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Engine Content textures
 
 Author procedural textures as ordinary ScriptablePack sources returning

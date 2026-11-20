@@ -87,7 +87,14 @@ describe('single-worker source compilation budget', () => {
 
   it('Vite buildStart preserves both variants within one compiler operation at a time', async () => {
     const { forgeaxShader } = await import('../index.js');
-    const plugin = forgeaxShader();
+    const progress: import('../index.js').ShaderPreparationProgress[] = [];
+    const plugin = forgeaxShader({
+      publication: 'compiled',
+      onProgress: (event) => {
+        progress.push(event);
+        throw new Error('observer failure');
+      },
+    });
     const emitted: Array<{ fileName: string; source: string }> = [];
     const emitFile = (asset: { fileName: string; source: string }) => emitted.push(asset);
     await plugin.buildStart.call({ emitFile } as never);
@@ -96,6 +103,17 @@ describe('single-worker source compilation budget', () => {
     expect(compilation.active).toBe(0);
     expect(compilation.peak).toBe(1);
     expect([...new Set(compilation.projectedAt)].slice(0, 2)).toEqual([0, 1]);
+    expect(progress[0]).toEqual({ phase: 'inputs' });
+    expect(
+      progress.some(
+        (event) => event.phase === 'compile' && event.completed === 0 && event.total === 2,
+      ),
+    ).toBe(true);
+    expect(
+      progress.some(
+        (event) => event.phase === 'ready' && event.completed === 2 && event.total === 2,
+      ),
+    ).toBe(true);
     const manifestAsset = emitted.find((asset) => asset.fileName === 'shaders/manifest.json');
     expect(manifestAsset).toBeDefined();
     const manifest = JSON.parse(manifestAsset?.source ?? '{}') as {

@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-performance
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Identify the expensive owner, remove redundant work at its actual change
 frequency, and verify the requested workload. Follow the checkout's
 [delivery and rendering gates](../../AGENTS.md).

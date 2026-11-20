@@ -3,6 +3,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { RenderScene } from '../scene/render-scene';
@@ -31,7 +32,7 @@ it('encodes material addresses per execution batch without reading members', asy
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
   const perMember = vi.spyOn(gpu, 'materialIndexForSlot');
   let candidateReads = 0;
-  const before = topology.query(topology.sourcePlan(), undefined);
+  const before = topology.query(topology.sourcePlan(), undefined).active;
   const stopObservingCandidates = observeCandidateReads(
     before.batches.map((batch) => batch.candidates),
     () => {
@@ -45,13 +46,17 @@ it('encodes material addresses per execution batch without reading members', asy
     assert(uploads > 0);
     expect(candidateReads).toBeGreaterThan(0);
     candidateReads = 0;
+    const memberNodes = gpu.inputs.memberNodesWritten;
+    const headers = gpu.inputs.taskHeadersWritten;
     const after = {
       ...before,
       batches: before.batches.map((batch) => ({ ...batch, materialAddress: 17 })),
     };
     updateGpuView(view, after, gpu, planes).unwrap();
     expect(perMember.mock.calls.length).toBe(0);
-    expect(view.inspect().sharedInputUploadBytes).toBe(0);
+    expect(gpu.inputs.memberNodesWritten).toBe(memberNodes);
+    expect(gpu.inputs.taskHeadersWritten - headers).toBe(1);
+    expect(view.inspect().sharedInputUploadBytes).toBe(GPU_TASK_HEADER_BYTES);
     expect(candidateReads).toBe(0);
     expect(after.batches.at(0)?.candidates).toBe(before.batches.at(0)?.candidates);
   } finally {

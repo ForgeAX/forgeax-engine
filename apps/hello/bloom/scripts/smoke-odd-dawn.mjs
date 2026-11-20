@@ -8,16 +8,15 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readBuiltinShaderEntries, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
-const manifest = await readShaderManifestPublication(
-  JSON.parse(readShaderManifestText(resolve(appRoot, 'dist/shaders/manifest.json'))),
+const [entry] = await readBuiltinShaderEntries(
+  readShaderManifestText(resolve(appRoot, 'dist/shaders/manifest.json')),
+  ['bloomHorizontal'],
 );
-const entry = manifest.entries.find((candidate) => candidate.wgsl.includes('BloomHorizontalParams'));
 if (entry === undefined) throw new Error('cooked bloom-horizontal shader is missing from the manifest');
 
 const { create, globals } = await import('@forgeax/engine-dawn-node');

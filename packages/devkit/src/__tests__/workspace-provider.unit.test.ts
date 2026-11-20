@@ -36,7 +36,7 @@ import type { ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  createViteConfig: vi.fn(async () => ({})),
+  createViteConfig: vi.fn(async (..._args: unknown[]) => ({})),
 }));
 
 vi.mock('../host.js', async (importOriginal) => ({
@@ -2435,6 +2435,62 @@ describe('DevKit workspace provider', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await provider.closeProject({ project: opened.project, handle: opened.handle });
     await provider.dispose?.();
+  });
+
+  it('publishes preparation before Vite exists and ignores progress after session close', async () => {
+    const root = await projectRoot();
+    let report: NonNullable<
+      Parameters<typeof import('../host.js').createViteConfig>[3]
+    >['onPackProgress'];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mocks.createViteConfig.mockImplementationOnce(async (...args) => {
+      const preparationOptions = args[3] as NonNullable<
+        Parameters<typeof import('../host.js').createViteConfig>[3]
+      >;
+      report = preparationOptions.onPackProgress;
+      preparationOptions.onPreparation?.('vite-server');
+      preparationOptions.onShaderProgress?.({
+        phase: 'compile',
+        sourcePath: 'engine/standard.wgsl',
+        completed: 3,
+        total: 16,
+      });
+      await blocked;
+      return {};
+    });
+    const createServer = vi.fn(async () => fakeServer());
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => createBackendHost(),
+      viteServerFactory: createServer,
+    });
+    const opened = await provider.openProject({ root, generation: 46 });
+    try {
+      await vi.waitFor(() => expect(opened.status.preparation?.active).toHaveLength(1));
+      expect(opened.status.phase).toBe('preparing');
+      expect(createServer).not.toHaveBeenCalled();
+      expect(opened.status.preparation).toMatchObject({
+        stage: 'shader',
+        active: [
+          {
+            source: 'engine/standard.wgsl',
+            phase: 'shader',
+            progress: { completed: 3, total: 16 },
+          },
+        ],
+      });
+      release();
+      await vi.waitFor(() => expect(opened.status.phase).toBe('starting'));
+      await provider.closeProject({ project: opened.project, handle: opened.handle });
+      const before = opened.status;
+      report?.({ generation: 2, kind: 'stage', stage: 'ready' });
+      expect(opened.status).toBe(before);
+    } finally {
+      release();
+      await provider.dispose?.();
+    }
   });
 
   it('rejects workspace results from an old or unassociated caller', async () => {

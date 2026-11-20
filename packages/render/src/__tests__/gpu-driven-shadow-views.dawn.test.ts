@@ -30,7 +30,11 @@ import {
   preparedPbrSnapshot,
   standardPbrInputs,
 } from './gpu-driven-production-fixture';
-import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
+import {
+  releaseGpuFixtureReads,
+  updateGpuView,
+  updateShadowView,
+} from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 const GPU_MAP_MODE_READ = 0x0001;
@@ -235,7 +239,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
           shadowViews: true,
           scene: {
             scene,
-            plan: source.query(source.sourcePlan(), undefined),
+            plan: source.query(source.sourcePlan(), undefined).active,
             slots,
             slotAt: projection.slotAt,
           },
@@ -366,7 +370,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         pool.invalidate('view-clipping-changed');
         const input = {
           identity,
-          sourcePlan: topology.query(topology.sourcePlan(), undefined),
+          sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
           scene,
           planes,
           matrix,
@@ -499,7 +503,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     availability.scene.sync(delta).unwrap();
     const topologyOwner = new BatchTopology();
     topologyOwner.rebuild(projection.slotsSnapshot());
-    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
+    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined).active;
     const plan = {
       ...source,
       batches: source.batches.map((batch) => ({
@@ -571,7 +575,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     availability.scene.sync(delta).unwrap();
     const topologyOwner = new BatchTopology();
     topologyOwner.rebuild(projection.slotsSnapshot());
-    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
+    const source = topologyOwner.query(topologyOwner.sourcePlan(), undefined).active;
     const plan = {
       ...source,
       batches: source.batches.map((batch) => ({
@@ -705,7 +709,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
     }).unwrap();
     const inputs = identities.map((identity) => ({
       identity,
-      sourcePlan: topologyOwner.query(topologyOwner.sourcePlan(), undefined),
+      sourcePlan: topologyOwner.query(topologyOwner.sourcePlan(), undefined).active,
       scene: sceneAvailability.scene,
       planes,
       candidatePrimitiveIndices: [0, 1],
@@ -908,7 +912,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       matrix[12] = frame % 2 === 0 ? 0.125 : 0;
       const movedPlanes = frustum.fromViewProjection(frustum.create(), matrix);
       for (const [index, input] of inputs.entries()) {
-        const sourcePlan = topologyOwner.query(topologyOwner.sourcePlan(), undefined);
+        const sourcePlan = topologyOwner.query(topologyOwner.sourcePlan(), undefined).active;
         const update = updateShadowView(
           pool,
           { ...input, sourcePlan, matrix, planes: movedPlanes },
@@ -930,6 +934,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       }
       device.queue.submit([movedEncoder.finish().unwrap()]).unwrap();
       await device.queue.onSubmittedWorkDone();
+      releaseGpuFixtureReads(sceneAvailability.scene);
       pool._commitResourceReplacement();
       for (const target of countReadbacks) {
         const mapped = (await target.mapAsync(GPU_MAP_MODE_READ)).unwrap();

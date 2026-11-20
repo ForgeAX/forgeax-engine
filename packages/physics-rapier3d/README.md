@@ -490,3 +490,25 @@ bindings when geometry changes. Listeners only enqueue work, never read during
 admission or mutate the world. Release the returned subscription with the consumer;
 backend disposal releases all subscriptions. Backends without this capability
 require polling. This does not change simulation, collision or writeback policy.
+
+## Internal static residency
+
+The App integration can use the backend's internal static-residency group for
+Disabled static solids (`cuboid`, `sphere`, `capsule`, produced-Mesh `trimesh`).
+The native owner prepares bodies and colliders disabled, retains them across
+ordinary query absence, and retires actual identities incrementally. Exact source
+and member guards stay mandatory. Captured Mesh versions must match the actual
+shared native cache after its ordinary fixed-sync adoption; preparation never
+relabels an older cached root as ready. A caller preflights its complete source writes
+and supplies the exclusive legal fixed boundary; the public App Level service is
+still pending.
+
+Native participation refreshes ordinary/shared queries without advancing time or
+solvers, after complete identity and finite-bounds preflight. Normal step owns
+contact computation. Stopped logical pairs have one reconciliation task
+at the next completed step, so zero-tick stop/reactivation cannot lose contact
+membership. Unexpected partial acceptance stops native progress and requires
+rebuild; no gameplay rollback is claimed. Owner disposal closes tokens only after
+native release succeeds. These internal operations have no performance or public
+Level support qualification yet; see the
+implementation evidence.

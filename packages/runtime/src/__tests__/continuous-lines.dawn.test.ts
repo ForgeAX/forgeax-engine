@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, it } from 'vitest';
 import { verifyContinuousLines } from './continuous-lines.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -7,7 +7,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 let manifestUrl: string;
 // Cold source compilation is preparation; CI reuses its validated shared inputs.
 beforeAll(async () => {
-  manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+  manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 }, 300_000);
 
 it('renders continuous and dashed lines and proves RHI replay on Dawn', async () => {

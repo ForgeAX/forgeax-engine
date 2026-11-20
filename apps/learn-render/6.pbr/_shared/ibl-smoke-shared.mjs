@@ -244,9 +244,9 @@ async function constructIblRenderer(canvas, originalAmbientRequestAdapter) {
   const { constructRuntimeRendererHost } = await import(
     engineDist('runtime', 'renderer-host.mjs'),
   );
-  const { buildEngineShaderManifest } = await import(engineDist('vite-plugin-shader'));
+  const { buildEngineShaderTemplateManifest } = await import(engineDist('vite-plugin-shader'));
 
-  const ENGINE_MANIFEST = await buildEngineShaderManifest();
+  const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
   const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
   process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

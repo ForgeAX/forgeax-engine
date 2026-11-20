@@ -8,6 +8,8 @@ description: >-
 
 # ForgeaX View API and CLI
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 For startup, first use [View startup](../forgeax-view-start/SKILL.md): run the
 game's installed `tools/view/start.mjs` with explicit `--project`. The operations
 below target a running View on the returned Backend root H. They are not the

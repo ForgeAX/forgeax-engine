@@ -112,9 +112,10 @@ function residentScene(query: () => PersistentGpuDrivenState['plan']) {
   let queries = 0;
   const scene = {
     plan,
-    queryPlan: () => {
+    queryExecution: () => {
       queries += 1;
-      return query();
+      const plan = query();
+      return { active: plan, resident: plan };
     },
   } as unknown as PersistentGpuDrivenState;
   return { scene, plan, queries: () => queries };
@@ -234,7 +235,7 @@ describe('render-gpu-driven-prepare system', () => {
     const consumed = consumeViewGpuDriven(internals, { scene: resident.scene }, () => {});
     expect(resident.queries()).toBe(1);
     expect(consumed.input?.scene?.plan).toBe(queried);
-    expect(consumed.input?.scene?.queryPlan).toBeUndefined();
+    expect(consumed.input?.scene?.queryExecution).toBeUndefined();
     expect(consumed.frame).toBeUndefined();
   });
 

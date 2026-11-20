@@ -145,7 +145,10 @@ it('does not let a native nested module error bypass a deferred Native root fail
       gpuCalls: 0,
       childCount: 1,
       primary: { code: 'plugin-startup-failed' },
-      child: { requestedOptions: { type: 'module', name: 'forgeax-render' }, inputs: [] },
+      child: {
+        requestedOptions: { type: 'module', name: 'forgeax-render' },
+        inputs: [{ kind: 'stage-shader-manifest' }],
+      },
     });
     expect(JSON.stringify(terminal.primary)).toContain('fixture-native-root-failure');
     expect(JSON.stringify(terminal.primary)).not.toContain('fixture-native-module-failure');
@@ -170,7 +173,7 @@ it('reports the identical retained native module cause only after a successful N
       rootActive: true,
       childCount: 1,
       primary: { code: 'render-worker-failed', detail: error.message },
-      child: { inputs: [] },
+      child: { inputs: [{ kind: 'stage-shader-manifest' }] },
     });
     expect(control.ancestorErrors).toEqual([]);
   });

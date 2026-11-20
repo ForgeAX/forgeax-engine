@@ -77,8 +77,8 @@ gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 // --- engine shader manifest (shared by both paths) ---
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

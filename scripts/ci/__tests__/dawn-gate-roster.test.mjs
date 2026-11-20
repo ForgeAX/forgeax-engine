@@ -1343,6 +1343,7 @@ test('planar capture and low-limit transmission share serial Surface admission',
     'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
     'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
     'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
+    'packages/render/src/__tests__/standard-lean-inputs.dawn.test.ts',
   ]) {
     assert.ok(owner.files.includes(file), file);
     assert.equal(DAWN_GATE_GROUPS.filter((group) => group.files.includes(file)).length, 1);

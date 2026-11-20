@@ -1,4 +1,30 @@
 import type { RenderBundle } from '@forgeax/engine-rhi';
+import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import { publishReadonlyMap } from './shadow-projection-publication';
+
+export interface RetainedRasterInputPreparation {
+  isCurrent(): boolean;
+  publish(): Result<void, RhiError>;
+  release(): void;
+}
+
+interface RetainedPassInputs {
+  readonly identities: readonly unknown[];
+  readonly blocks: ReadonlyMap<object, RetainedRasterBlock>;
+}
+
+interface RetainedPassState {
+  readonly inputs: RetainedPassInputs;
+  frame: number;
+}
+
+function stalePreparation(): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'unchanged retained raster facts and their input preparation',
+    hint: 'release this private retained projection and prepare at an idle recording boundary',
+  });
+}
 
 type MaterialOwner = { readonly group: object; readonly offset: number };
 export type ClassOwner = { readonly pipeline: object; readonly mesh: object };
@@ -33,6 +59,14 @@ export interface RetainedRasterBlock {
   readonly commands: readonly object[];
   /** Ordered physical-buffer and material-selection facts of this run. */
   readonly physical: readonly unknown[];
+  readonly materials: ReadonlyMap<number, MaterialOwner>;
+  readonly classes: ReadonlyMap<object, ClassOwner>;
+  readonly bundle: RenderBundle | undefined;
+  readonly draws: number;
+}
+
+/** Mutable only while the pass owns a private native recording. */
+export interface RasterRunRecording extends RetainedRasterBlock {
   readonly materials: Map<number, MaterialOwner>;
   readonly classes: Map<object, ClassOwner>;
   bundle: RenderBundle | undefined;
@@ -48,6 +82,59 @@ function sameList(left: readonly unknown[], right: readonly unknown[]): boolean 
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++)
     if (!Object.is(left[index], right[index])) return false;
+  return true;
+}
+
+function publishRun(recording: RasterRunRecording): RetainedRasterBlock {
+  Object.defineProperties(recording, {
+    commands: { value: Object.freeze([...recording.commands]) },
+    physical: { value: Object.freeze([...recording.physical]) },
+    materials: {
+      value: publishReadonlyMap(
+        new Map(
+          Array.from(recording.materials, ([key, value]) => [key, Object.freeze({ ...value })]),
+        ),
+      ),
+    },
+    classes: {
+      value: publishReadonlyMap(
+        new Map(
+          Array.from(recording.classes, ([key, value]) => [key, Object.freeze({ ...value })]),
+        ),
+      ),
+    },
+  });
+  return Object.freeze(recording);
+}
+
+function sameOwners<K, V>(
+  left: ReadonlyMap<K, V>,
+  right: ReadonlyMap<K, V>,
+  equal: (actual: V | undefined, expected: V) => boolean,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [key, owner] of right) if (!equal(left.get(key), owner)) return false;
+  return true;
+}
+
+function sameRun(recording: RasterRunRecording, previous: RetainedRasterBlock): boolean {
+  return (
+    recording.bundle === previous.bundle &&
+    recording.draws === previous.draws &&
+    sameList(recording.commands, previous.commands) &&
+    sameList(recording.physical, previous.physical) &&
+    sameOwners(recording.materials, previous.materials, sameMaterial) &&
+    sameOwners(recording.classes, previous.classes, sameClass)
+  );
+}
+
+function samePasses(
+  current: ReadonlyMap<object, RetainedPassState>,
+  before: ReadonlyMap<object, RetainedPassState>,
+): boolean {
+  if (current.size !== before.size) return false;
+  for (const [key, expected] of before)
+    if (current.get(key)?.inputs !== expected.inputs) return false;
   return true;
 }
 
@@ -79,11 +166,12 @@ function sameFacts(
  * at most once per encode.
  */
 export class RetainedPassEncode {
-  readonly #next = new Map<object, RetainedRasterBlock>();
+  #next: Map<object, RetainedRasterBlock> | undefined = new Map();
+  #recorded: Map<object, RasterRunRecording> | undefined;
   readonly #materials: ResolvedOwners<number, MaterialOwner>;
   readonly #classes: ResolvedOwners<object, ClassOwner>;
   constructor(
-    private readonly previous: ReadonlyMap<object, RetainedRasterBlock> | undefined,
+    private readonly previous: RetainedPassInputs | undefined,
     resolveMaterial: (slot: number) => MaterialOwner | undefined,
     resolveClass: (rasterClass: object) => ClassOwner | undefined,
   ) {
@@ -99,14 +187,14 @@ export class RetainedPassEncode {
     physicalOf: ReadFacts,
   ): RetainedRasterBlock | undefined {
     const first = lives[start];
-    const block = first === undefined ? undefined : this.previous?.get(commandOf(first));
+    const block = first === undefined ? undefined : this.previous?.blocks.get(commandOf(first));
     if (block === undefined || block.commands.length !== end - start) return undefined;
     for (let index = start; index < end; index++)
       if (block.commands[index - start] !== commandOf(lives[index] as object)) return undefined;
     if (!sameFacts(lives, start, end, physicalOf, block.physical)) return undefined;
     if (!this.#materials.matches(block.materials) || !this.#classes.matches(block.classes))
       return undefined;
-    this.#next.set(commandOf(first as object), block);
+    this.openBlocks().set(commandOf(first as object), block);
     return block;
   }
 
@@ -116,7 +204,8 @@ export class RetainedPassEncode {
     start: number,
     end: number,
     physicalOf: ReadFacts,
-  ): RetainedRasterBlock {
+  ): RasterRunRecording {
+    const next = this.openBlocks();
     const physical: unknown[] = [];
     const append = (value: unknown): void => {
       physical.push(value);
@@ -126,7 +215,7 @@ export class RetainedPassEncode {
       physicalOf(lives[index] as object, append);
       commands.push(commandOf(lives[index] as object));
     }
-    const block: RetainedRasterBlock = {
+    const block: RasterRunRecording = {
       commands,
       physical,
       materials: new Map(),
@@ -134,13 +223,52 @@ export class RetainedPassEncode {
       bundle: undefined,
       draws: 0,
     };
-    this.#next.set(commandOf(lives[start] as object), block);
+    const key = commandOf(lives[start] as object);
+    this.#recorded ??= new Map();
+    this.#recorded.set(key, block);
+    next.set(key, block);
     return block;
   }
 
-  /** Runs of this encode; every other retained run is released. */
-  get blocks(): ReadonlyMap<object, RetainedRasterBlock> {
+  private openBlocks(): Map<object, RetainedRasterBlock> {
+    if (this.#next === undefined) throw stalePreparation();
     return this.#next;
+  }
+
+  /** Transfer only this encode's runs and keep the accepted identity on unchanged replay. */
+  finish(identities: readonly unknown[]): RetainedPassInputs {
+    const next = this.openBlocks();
+    const { previous } = this;
+    const recorded = this.#recorded;
+    this.#next = undefined;
+    this.#recorded = undefined;
+    if (recorded !== undefined) {
+      for (const [key, block] of recorded) {
+        if (next.get(key) !== block) continue;
+        const retained = previous?.blocks.get(key);
+        next.set(
+          key,
+          retained !== undefined && sameRun(block, retained) ? retained : publishRun(block),
+        );
+      }
+    }
+    if (
+      previous !== undefined &&
+      next.size === previous.blocks.size &&
+      sameList(identities, previous.identities)
+    ) {
+      let reused = true;
+      for (const [key, block] of next) {
+        if (previous.blocks.get(key) === block) continue;
+        reused = false;
+        break;
+      }
+      if (reused) return previous;
+    }
+    return Object.freeze({
+      identities: Object.freeze([...identities]),
+      blocks: publishReadonlyMap(next),
+    });
   }
 }
 
@@ -151,15 +279,145 @@ export class RetainedPassEncode {
  * owner stays reachable.
  */
 export class RetainedRasterEncodes {
-  readonly #passes = new Map<
-    object,
-    {
-      identities: readonly unknown[];
-      blocks: ReadonlyMap<object, RetainedRasterBlock>;
-      frame: number;
-    }
-  >();
+  #passes = new Map<object, RetainedPassState>();
+  #preparingInputs: RetainedRasterInputPreparation | undefined;
   #frame = 0;
+
+  /** Capture in the caller's idle Production boundary; preserves unchanged ordinary replays. */
+  prepareInputs(
+    replaceIdentities: ReadonlyMap<unknown, unknown>,
+    replaceBundle: (bundle: RenderBundle) => RenderBundle | undefined,
+    current: () => boolean,
+    replacePass: (values: readonly unknown[]) => readonly unknown[] = (values) => values,
+  ): Result<RetainedRasterInputPreparation, RhiError> {
+    if (this.#preparingInputs !== undefined) return err(stalePreparation());
+    let before: Map<object, RetainedPassState> | undefined = new Map(this.#passes);
+    let next: Map<object, RetainedPassState> | undefined = new Map();
+    let owner: RetainedRasterEncodes | undefined = this;
+    let observe: (() => boolean) | undefined = current;
+    let mapPass: typeof replacePass | undefined = replacePass;
+    let mapBundle: ((bundle: RenderBundle) => RenderBundle | undefined) | undefined = replaceBundle;
+    let ready = false;
+    let closed = false;
+    let observing = false;
+    const live = () => {
+      const active = owner;
+      if (closed || active === undefined || active.#preparingInputs !== api || observe?.() !== true)
+        return false;
+      return (
+        !closed &&
+        active.#preparingInputs === api &&
+        before !== undefined &&
+        samePasses(active.#passes, before)
+      );
+    };
+    const check = () => {
+      if (!live()) throw stalePreparation();
+    };
+    const release = () => {
+      closed = true;
+      ready = false;
+      before = undefined;
+      next = undefined;
+      observe = undefined;
+      mapPass = undefined;
+      mapBundle = undefined;
+      if (owner !== undefined && owner.#preparingInputs === api) owner.#preparingInputs = undefined;
+      owner = undefined;
+    };
+    const api: RetainedRasterInputPreparation = Object.freeze({
+      isCurrent: () => {
+        if (observing) return false;
+        observing = true;
+        try {
+          return ready && live();
+        } finally {
+          observing = false;
+        }
+      },
+      publish: () => {
+        if (observing) return err(stalePreparation());
+        observing = true;
+        try {
+          if (!ready || !live() || next === undefined || owner === undefined)
+            return err(stalePreparation());
+          const active = owner;
+          // Unchanged frames may have refreshed the age of a retained pass.
+          for (const [key, entry] of next) {
+            const entryState = active.#passes.get(key);
+            if (entryState === undefined) return err(stalePreparation());
+            entry.frame = entryState.frame;
+          }
+          active.#passes = next;
+          release();
+          return ok(undefined);
+        } finally {
+          observing = false;
+        }
+      },
+      release,
+    });
+    this.#preparingInputs = api;
+    let accepted = false;
+    try {
+      check();
+      // Own the remap before walking immutable passes. Lookups cannot reenter
+      // the renderer. Keep the currency checks around borrowed callbacks.
+      const remaps = new Map(replaceIdentities);
+      const identity = (value: unknown) => remaps.get(value) ?? value;
+      check();
+      for (const [key, { inputs: entry, frame }] of before) {
+        const blocks = new Map<object, RetainedRasterBlock>();
+        const pass = Array.from(mapPass?.(entry.identities) ?? entry.identities);
+        check();
+        const identities = Object.freeze(pass.map(identity));
+        for (const [command, block] of entry.blocks) {
+          const physical = Object.freeze(block.physical.map(identity));
+          let replacement: RenderBundle | undefined;
+          if (block.bundle !== undefined) {
+            check();
+            replacement = mapBundle?.(block.bundle);
+            check();
+          }
+          // Changed facts cannot certify an unmapped native command. A caller
+          // may explicitly return the old bundle only when it proved it reusable.
+          if (
+            block.bundle !== undefined &&
+            replacement === undefined &&
+            (!sameList(identities, entry.identities) || !sameList(physical, block.physical))
+          )
+            throw stalePreparation();
+          const bundle = replacement ?? block.bundle;
+          const classes = new Map(
+            [...block.classes].map(([key, value]) => [
+              key,
+              Object.freeze({
+                pipeline: identity(value.pipeline) as object,
+                mesh: identity(value.mesh) as object,
+              }),
+            ]),
+          );
+          blocks.set(
+            command,
+            Object.freeze({ ...block, physical, bundle, classes: publishReadonlyMap(classes) }),
+          );
+        }
+        next.set(key, {
+          inputs: Object.freeze({ identities, blocks: publishReadonlyMap(blocks) }),
+          frame,
+        });
+      }
+      check();
+      ready = true;
+      accepted = true;
+      return ok(api);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      if (!accepted) release();
+    }
+  }
 
   beginFrame(): void {
     this.#frame++;
@@ -175,17 +433,20 @@ export class RetainedRasterEncodes {
   ): RetainedPassEncode {
     const entry = this.#passes.get(key);
     const previous =
-      entry !== undefined && sameList(entry.identities, identities) ? entry.blocks : undefined;
+      entry !== undefined && sameList(entry.inputs.identities, identities)
+        ? entry.inputs
+        : undefined;
     // A failed encode leaves no partially recorded runs behind.
     this.#passes.delete(key);
     return new RetainedPassEncode(previous, resolveMaterial, resolveClass);
   }
 
   finish(key: object, identities: readonly unknown[], encode: RetainedPassEncode): void {
-    this.#passes.set(key, { identities, blocks: encode.blocks, frame: this.#frame });
+    this.#passes.set(key, { inputs: encode.finish(identities), frame: this.#frame });
   }
 
   clear(): void {
+    this.#preparingInputs?.release();
     this.#passes.clear();
   }
 

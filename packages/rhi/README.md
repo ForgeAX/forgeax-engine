@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-rhi
 
 > Pure-interface RHI; zero impl. spec-aligned with `@webgpu/types`; wgpu-superset op-set capability-gated; opaque handles; math-free.
@@ -15,18 +18,18 @@ that does not implement that feature level. Only the admitted device's features
 and limits establish its execution contract; requesting a mode is not evidence
 that it ran. Optional Renderer effects retain their own feature/limit admission.
 
-## Charter propositions (顶部命题 / AI users read AGENTS.md §RHI first)
+## Charter Propositions (AI users: read AGENTS.md RHI guidance first)
 
 | Proposition | This package's contract |
 |:--|:--|
-| 1 渐进披露 | Single `import { rhi } from '@forgeax/engine-rhi-webgpu'` reaches opaque handles + 7 main interfaces + descriptor projections + 22 `RhiErrorCode` members in one read. Top-level table of contents below precedes detail. |
-| 2 业界实践 | Descriptor projections use `Pick<GPUXxxDescriptor, ...>` byte-aligned with `@webgpu/types`; mirrors typescript-eslint / `@microsoft/api-extractor` selection patterns (S-2 ts-morph). |
-| 3 机读 union > 散文 | `RhiErrorCode` is a closed string-literal union (22 members); AI users `switch (err.code)` is TypeScript-exhaustive with no `default` fallback. Tables below are machine-readable, not paragraphs. |
-| 4 显式失败 | Every method returns `Result<T, RhiError>`. Errors carry `.code` + `.expected` + `.hint` (and optional `.detail` for compile-failed). QuerySet creation, occlusion begin/end, resolve, and timestamp writes are implemented or capability-gated; render bundles expose typed creation, immutable finish and repeated execution. |
-| 5 一致抽象 | opaque handles use brand-only `Id<T>`; the shim never renames fields; `caps.X = false` is the same signal shape as a value field. Single hatch: `_internal_getRawDevice` (D-S1; no other escape). |
+| 1 Progressive disclosure | Single `import { rhi } from '@forgeax/engine-rhi-webgpu'` reaches opaque handles + 7 main interfaces + descriptor projections + 22 `RhiErrorCode` members in one read. Top-level table of contents below precedes detail. |
+| 2 Established practice | Descriptor projections use `Pick<GPUXxxDescriptor, ...>` byte-aligned with `@webgpu/types`; mirrors typescript-eslint / `@microsoft/api-extractor` selection patterns (S-2 ts-morph). |
+| 3 Machine-readable unions over prose | `RhiErrorCode` is a closed string-literal union (22 members); AI users `switch (err.code)` is TypeScript-exhaustive with no `default` fallback. Tables below are machine-readable, not paragraphs. |
+| 4 Explicit failures | Every method returns `Result<T, RhiError>`. Errors carry `.code` + `.expected` + `.hint` (and optional `.detail` for compile-failed). QuerySet creation, occlusion begin/end, resolve, and timestamp writes are implemented or capability-gated; render bundles expose typed creation, immutable finish and repeated execution. |
+| 5 Consistent abstractions | Opaque handles use brand-only `Id<T>`; the shim never renames fields; `caps.X = false` is the same signal shape as a value field. Single hatch: `_internal_getRawDevice` (D-S1; no other escape). |
 | 6 (candidate) mock vs real-GPU | dawn.node integration tests trigger the 4 D-S3 error codes against a real GPU adapter (`packages/rhi-webgpu/src/__tests__/dawn-real-gpu.dawn.test.ts`); mock-only coverage is monitored as a silent-pass blind spot (plan-strategy R-7). |
 
-> AI users: read [AGENTS.md §RHI / WebGPU](../../AGENTS.md) first; the铁律 (spec-alignment / capability-gated / opaque handle / math-free) is the SSOT and supersedes any divergence in this README.
+> AI users: read [AGENTS.md](../../AGENTS.md) first. Its RHI invariants (spec alignment, capability gates, opaque handles and math-free APIs) are authoritative over any divergence in this README.
 
 ## Pipeline source and action ownership
 
@@ -156,7 +159,7 @@ markers when they need an encoder-level copy envelope.
 | `RenderPassColorAttachment` | spec-aligned color attachment slot (`view` = `Texture`, `resolveTarget` = `Texture` when present, `clearValue` / `loadOp` / `storeOp`) |
 | `RenderPassDepthStencilAttachment` | spec-aligned depth-stencil slot (`view` = `Texture`, `depthClearValue` / `depthLoadOp` / `depthStoreOp` / `depthReadOnly`, similar for stencil) |
 
-### ExplicitUndefined<> 桥接
+### ExplicitUndefined<> Bridge
 
 The descriptor projections above are wrapped by an internal `ExplicitUndefined<T>` mapped type that converts every `?: T` optional field into `?: T | undefined`. This is the **shape bridge** between `@webgpu/types` (W3C spec form) and the forgeax RHI surface.
 
@@ -175,7 +178,7 @@ such as `featureLevel` remains optional even when the bundled DOM library predat
 **Three SSOT anchors**:
 
 1. Mapped type definition — [`packages/rhi/src/index.ts:118-143`](./src/index.ts) (`type ExplicitUndefined<T> = { [K in keyof T]: T[K] | undefined }`).
-2. AGENTS.md `§RHI / WebGPU` 形态铁律 #1 (`spec 对齐` — optional fields uniformly `?: T | undefined`, decision S-7 / research F-3).
+2. AGENTS.md RHI invariant #1 (spec alignment: optional fields uniformly use `?: T | undefined`, decision S-7 / research F-3).
 3. Shim runtime guard — `@forgeax/engine-rhi-webgpu` shim uses `'x' in src` to forward only fields the writer actually set (avoids leaking spurious `undefined` into native `GPUDevice.createXxx(...)` calls).
 
 **Upgrade path**: once upstream `@webgpu/types` v0.2.x ships `?: T | undefined` uniformly (L-P4 widening contract), `ExplicitUndefined<>` can be removed without changing forgeax's public descriptor types.
@@ -475,19 +478,19 @@ that writes the surface owns the gamut conversion.
 | Version bump | Allowed changes | Disallowed |
 |:--|:--|:--|
 | minor | add new `RhiErrorCode` member; widen a descriptor field type (e.g. broaden a single brand to a union `T -> T \| U`) | rename / delete / reorder existing members; narrow types |
-| major | any breaking change with a "破坏点列表" entry | — |
+| major | Any breaking change with an entry in the breaking-change list | - |
 
 ## AI user trial (charter proposition 1-5 walk)
 
 > 1-3 sentence dry run for an LLM agent landing on this package for the first time.
 
 ```ts
-// proposition 1 (渐进披露): one import reaches the entire surface.
+// Proposition 1 (progressive disclosure): one import reaches the entire surface.
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-// proposition 2 (业界实践): same shape as @webgpu/types descriptors.
+// Proposition 2 (established practice): same shape as @webgpu/types descriptors.
 const dr = await rhi.requestDevice();
 if (!dr.ok) {
-  // proposition 3 (机读 union > 散文): switch on closed RhiErrorCode is exhaustive.
+  // Proposition 3 (machine-readable unions): switch on closed RhiErrorCode is exhaustive.
   switch (dr.error.code) {
     case 'adapter-unavailable':       /* recover by suggesting RhiAdapter probe */ break;
     case 'feature-not-enabled':       /* recover by re-requesting with explicit features */ break;
@@ -514,13 +517,13 @@ if (!dr.ok) {
   return;
 }
 const device = dr.value;
-// proposition 4 (显式失败): every step returns Result; .err carries .code/.expected/.hint.
+// Proposition 4 (explicit failures): every step returns Result; .err carries .code/.expected/.hint.
 const encR = device.createCommandEncoder({ label: 'frame' });
 if (!encR.ok) return;
 const enc = encR.value;
 const finishR = enc.finish();
 if (!finishR.ok) return;
-// proposition 5 (一致抽象): submit accepts the opaque CommandBuffer; no raw GPU* leak.
+// Proposition 5 (consistent abstractions): submit accepts the opaque CommandBuffer; no raw GPU* leak.
 const submitR = device.queue.submit([finishR.value]);
 if (!submitR.ok && submitR.error.code === 'queue-submit-failed') {
   // structured recovery — no try/catch needed for expected failures.

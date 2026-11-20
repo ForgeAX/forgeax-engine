@@ -1,5 +1,5 @@
 import { WebGPURenderer } from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
@@ -24,7 +24,7 @@ export function dawnRendererFixture(materialPrograms?: () => Promise<readonly st
   return async () => {
     pending ??= (async () => {
       const programs = await materialPrograms?.();
-      const manifest = await buildEngineShaderManifest();
+      const manifest = await buildEngineShaderTemplateManifest();
       const surface = offscreenCanvas(128);
       return {
         surface,

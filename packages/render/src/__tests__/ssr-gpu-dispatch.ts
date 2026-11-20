@@ -86,6 +86,14 @@ fn seed_ssr_occluder(@builtin(vertex_index) index : u32) -> @builtin(position) v
 }
 `;
 
+export const SSR_PROBE_SHADER_IDENTIFIERS = [
+  'forgeax_depth_pyramid::seed',
+  'forgeax_depth_pyramid::reduce',
+  'forgeax_ssr::trace',
+  'forgeax_ssr::temporal',
+  'forgeax_ssr::compose',
+] as const;
+
 export interface SsrShaderManifest {
   readonly entries: readonly { readonly wgsl: string }[];
 }

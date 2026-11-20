@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-render';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -21,7 +21,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { RESPONSE_SIZE, renderWorldResponse, responsePanorama } from './skylight-response.fixture';
 import { unwrap } from './specular-aa.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 // A fully rough white conductor reduces to cosine-weighted environment light.
 // Looking at the same flat patch from the front or a grazing angle must not

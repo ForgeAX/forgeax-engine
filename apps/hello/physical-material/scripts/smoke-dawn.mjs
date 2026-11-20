@@ -20,7 +20,7 @@ import { buildFrameModel, decodeTape, readbackTexturePixels } from '@forgeax/eng
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { physicalMaterialChild, physicalMaterialRoots, withPhysicalMaterialModule } from '../src/material-contract.ts';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const caseInputPath = resolve(here, '..', 'evidence', 'case-input.json');
@@ -165,9 +165,8 @@ const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspecti
 const { Transform } = await import('@forgeax/engine-scene');
 const { resolveMaterialAsset } = await import('@forgeax/engine-types');
 const { Skin } = await import('@forgeax/engine-skinning');
-const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
 const productManifestBytes = readShaderManifestText(manifestPath);
-const productManifest = await readShaderManifestPublication(JSON.parse(productManifestBytes));
+const productManifest = await readCookedShaderManifestPublication(JSON.parse(productManifestBytes));
 const shaderManifest = structuredClone(productManifest);
 const PHYSICAL_MATERIAL_MODULES = {
   scalar: 'physical-material::standard-clearcoat',

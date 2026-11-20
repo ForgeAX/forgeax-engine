@@ -13,7 +13,7 @@ export function CloudMaterialDetails({ details, client, reader, workspace, asset
   details: WorkspaceCloudMaterialInspection['meta']; client: ViewWorkspaceClient; reader: WorkspaceStateReader;
   workspace: WorkspaceState | null; assetActions?: ResourceAssetActionResolver;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const [query, setQuery] = useState('');
   const [lease, restart] = useReducer((value: number) => value + 1, 0);
@@ -57,7 +57,7 @@ export function CloudMaterialDetails({ details, client, reader, workspace, asset
           const current = () => dependencyScope !== null && cloudThumbnailScope(reader.getSnapshot(), dependencyGuids) === dependencyScope;
           return <PropertyRow key={`${dependency.declaredBy}:${dependency.kind}:${dependency.guid}`}
             label={t(dependency.declaredBy === 'material' ? 'asset.materialDeclaration' : 'asset.instanceDeclaration')}>
-            <AssetReferenceField readOnly value={value}
+            <AssetReferenceField readOnly value={value} locale={locale}
               onOpen={actions?.onOpen ? () => { if (current()) actions.onOpen?.(); } : undefined}
               onReveal={actions?.onBrowse ? () => { if (current()) actions.onBrowse?.(); } : undefined} />
           </PropertyRow>;
@@ -86,11 +86,11 @@ export function CloudMaterialDetails({ details, client, reader, workspace, asset
         return <PropertyRow key={row.name} className="fx-cloud-parameter" label={<span title={row.name}>{label}</span>}>
           <div className="fx-cloud-parameter__value" title={definition.kind === 'scalar' ? `${definition.unit}${definition.range ? ` [${definition.range.join(', ')}]` : ''}` : row.name}>
             <Checkbox checked={row.overridden} disabled hideLabel label={t('asset.overridden')} />
-            {definition.kind === 'texture' ? <AssetReferenceField readOnly value={value}
+            {definition.kind === 'texture' ? <AssetReferenceField readOnly value={value} locale={locale}
               onOpen={actions?.onOpen ? () => { if (current()) actions.onOpen?.(); } : undefined}
               onReveal={actions?.onBrowse ? () => { if (current()) actions.onBrowse?.(); } : undefined}
               thumbnail={{ state: !thumbnail || thumbnail.state === 'queued' || thumbnail.state === 'cooking' ? 'loading' : thumbnail.state, src: thumbnail?.dataUrl, hint: thumbnail?.error?.hint }} />
-              : <InspectorFieldControl field={field} />}
+              : <InspectorFieldControl locale={locale} field={field} />}
           </div>
         </PropertyRow>;
       })}

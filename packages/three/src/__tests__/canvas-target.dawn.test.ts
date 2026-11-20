@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { WebGPURenderer } from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it, vi } from 'vitest';
 import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
@@ -15,7 +15,7 @@ it('shares CanvasTarget authoring through resize, validation, Dawn submission an
   const renderer = new WebGPURenderer({
     canvas: surface.canvas as unknown as OffscreenCanvas,
     forgeax: {
-      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     },
   });
   try {

@@ -35,6 +35,32 @@ export interface ScenePublicationObservation {
   readonly outputs: readonly string[];
 }
 
+/** Both synchronous spawning and fixed-content preparation validate the same producer edge. */
+export function compareNestedScenePublication(
+  parent: AssetPublicationEnvelope,
+  child: AssetPublicationEnvelope,
+  childGuid: string,
+  address: string,
+): Result<void, ScenePublicationFenceError> {
+  const key = childGuid.toLowerCase();
+  const evidence = parent.externalEvidence.find((item) => item.guid.toLowerCase() === key);
+  const output = child.outputs.find((item) => item.guid.toLowerCase() === key);
+  if (
+    evidence !== undefined &&
+    ((evidence.generation !== undefined && evidence.generation !== child.generation) ||
+      (evidence.digest !== undefined && evidence.digest !== output?.digest))
+  ) {
+    return err({
+      ...errorFor('instantiate', `nested SceneAsset publication changed at ${address}`, {
+        publication: child,
+        retryable: true,
+      }),
+      currentGeneration: child.generation,
+    });
+  }
+  return ok(undefined);
+}
+
 function errorFor(
   phase: ScenePublicationFencePhase,
   hint: string,
@@ -181,6 +207,26 @@ export function compareScenePublicationFences(
   );
 }
 
+function alignedPublications(
+  entries: readonly CatalogEntry[],
+  expected: ScenePublicationFence,
+): boolean {
+  // This cache lives for one synchronous check; it never accepts a later Catalog observation.
+  const checked = new Map<AssetPublicationEnvelope, ScenePublicationFence>();
+  for (const entry of entries) {
+    if (entry.publication === undefined) return false;
+    let fence = checked.get(entry.publication);
+    if (fence === undefined) {
+      const created = createScenePublicationFence(entry.publication);
+      if (!created.ok) return false;
+      fence = created.value;
+      checked.set(entry.publication, fence);
+    }
+    if (!sameFence(expected, fence)) return false;
+  }
+  return true;
+}
+
 /** Derive a fence only when every Catalog row for the source publication is present and aligned. */
 export function scenePublicationFenceFromCatalog(
   entries: readonly CatalogEntry[],
@@ -191,25 +237,18 @@ export function scenePublicationFenceFromCatalog(
   if (publication === undefined) {
     return err(errorFor('catalog', 'Catalog row has no complete publication tuple'));
   }
+  const created = createScenePublicationFence(publication);
+  if (!created.ok) return created;
   const expected = new Set(publication.outputs.map((output) => output.guid.toLowerCase()));
   const observed = entries.filter((entry) => expected.has(entry.guid.toLowerCase()));
-  if (
-    observed.length !== expected.size ||
-    observed.some(
-      (entry) =>
-        entry.publication?.sourcePath !== publication.sourcePath ||
-        entry.publication?.generation !== publication.generation ||
-        entry.publication?.digest !== publication.digest ||
-        entry.publication?.outputSetDigest !== publication.outputSetDigest,
-    )
-  ) {
+  if (observed.length !== expected.size || !alignedPublications(observed, created.value)) {
     return err(
       errorFor('catalog', 'Catalog does not contain one complete publication tuple', {
         publication,
       }),
     );
   }
-  return createScenePublicationFence(publication);
+  return created;
 }
 
 export async function observeScenePublication(input: {

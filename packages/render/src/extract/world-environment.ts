@@ -1605,15 +1605,9 @@ function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapsho
           ] as const,
         }),
     equirectHandle:
-      (world[worldRead].getFieldValue(entity, Skylight, 'equirect') as ShapeOf<
-        SchemaOf<typeof Skylight>
-      >['equirect']) !== undefined
-        ? Math.round(
-            world[worldRead].getFieldValue(entity, Skylight, 'equirect') as ShapeOf<
-              SchemaOf<typeof Skylight>
-            >['equirect'],
-          )
-        : 0,
+      Number(world[worldRead].getFieldValue(entity, Skylight, 'generatedEquirect')) ||
+      Number(world[worldRead].getFieldValue(entity, Skylight, 'equirect')) ||
+      0,
     color: [
       world[worldRead].getArrayElement(entity, Skylight, 'color', 0) as number,
       world[worldRead].getArrayElement(entity, Skylight, 'color', 1) as number,
@@ -1694,17 +1688,19 @@ function extractSkybox(world: World) {
   let skybox: SkyboxSnapshot | undefined;
   let skyboxCount = 0;
   skyboxQuery.forEach((row) => {
-    const sEquirect = world[worldRead].getFieldValue(
-      row.entity,
-      SkyboxBackground,
-      'equirect',
-    ) as ShapeOf<SchemaOf<typeof SkyboxBackground>>['equirect'];
+    const generatedEquirect = Number(
+      world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'generatedEquirect'),
+    );
+    const sEquirect = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'equirect');
     const sMode = world[worldRead].getFieldValue(row.entity, SkyboxBackground, 'mode') as number;
     skyboxCount += 1;
     const featureEnvironment = world.get(row.entity, RenderFeatureEnvironment);
-    if (skybox === undefined && (sEquirect !== undefined || featureEnvironment.ok)) {
+    if (
+      skybox === undefined &&
+      (generatedEquirect || sEquirect !== undefined || featureEnvironment.ok)
+    ) {
       skybox = {
-        equirectHandle: sEquirect === undefined ? 0 : Math.round(sEquirect),
+        equirectHandle: generatedEquirect || Number(sEquirect) || 0,
         ...(featureEnvironment.ok ? { featureEnvironment: { ...featureEnvironment.value } } : {}),
         mode: sMode,
         rotation: quaternionOf(world, row.entity, SkyboxBackground),

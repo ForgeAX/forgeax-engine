@@ -10,7 +10,7 @@ import {
   MeshRenderer,
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -19,7 +19,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const SIZE = 64;
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 /**
  * A closed box cut by a camera plane: without caps the cut shows the hollow

@@ -175,8 +175,21 @@ export interface RenderPublication extends RenderPublicationIdentity {
   readonly retiredAssets: readonly number[];
 }
 
+/** Exact CPU content in a publication namespace, independent of participation. */
+export type PublishedAssetVersion = NonNullable<RenderPublication['assetVersions']>[number];
+
+/** One owned static row chunk. Materials and template indices are chunk-local. */
+export type RenderPublicationRows = Pick<
+  RenderPublication,
+  'materials' | 'templates' | 'upserts' | 'transformEntities' | 'transforms'
+>;
+
 export interface PublishedRenderFrameInput {
   readonly publication: import('./record').RenderPublicationMessage;
+  /** Apply a realm-local selection before this accepted revision captures its Scene and Views. */
+  readonly onPublicationAccepted?: (
+    accepted: RenderPublicationIdentity & { readonly revision: number },
+  ) => void;
   readonly geometryObservation?: true;
   /** Diagnostic identity of the World that produced this publication. The
    * transport's publication namespace is not an ECS World identity. */

@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-types
 
 `ImporterCapabilities.sourceFormats` declares producer-owned single-output source extensions, output kind, semantic sourceKey and default settings. Tool adapters consume these facts without maintaining a second format registry. `PackSchemaDiagnostic` preserves optional AJV keyword, schemaPath and params alongside its path/message.
@@ -109,9 +112,10 @@ source sidecars.
 
 ## Volumetric fog MVD contract
 
-体纹理的公开数据只保留 `shape.extent`、`shape.viewDimension` 与 `mips`。
-AI 用户应沿以下单一链路传递同一 GUID；`generation`、`digest` 和 `sourceKey`
-是 producer/Pack receipt 的证据，不是 TextureAsset 的平行尺寸字段。
+Public volume texture data retains only `shape.extent`, `shape.viewDimension`
+and `mips`. Pass the same GUID along the following single path; `generation`,
+`digest` and `sourceKey` are producer/Pack receipt evidence, not parallel
+dimension fields on TextureAsset.
 
 ```mermaid
 flowchart LR
@@ -119,8 +123,8 @@ flowchart LR
   D --> E["World shared handle"] --> F["VolumetricFog"] --> G["inspect / verify"]
 ```
 
-遇到结构化错误时先读取 `code`、`detail`、`hint`；修复 source 或 producer 后以原 GUID
-重新 cook，并验证新的 receipt。
+For structured errors, first read `code`, `detail` and `hint`; repair source
+or the producer, recook with the original GUID and verify the new receipt.
 
 ### `texture2d_array` / `texture3d` literal recipe
 
@@ -169,15 +173,15 @@ Omitted means every authored level is uploaded.
 
 ## Material contract index
 
-## 灯光与资产入口
+## Lighting and Asset Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. `RectAreaLight` 通过 `@forgeax/engine-render` 声明 `color`、`intensity`、`width`、`height`、`range`。
-2. `SpotLight` 通过 `iesProfile` 绑定 `IesProfileAsset`，通过 `cookie` 绑定现有 `TextureAsset`，并用 `rollDeg` 指定方位角。
-3. `LightProbe` 只声明 `irradiance` 与 `radius`；运行时从同一 GUID Catalog 读取已验证的资产。
+1. `RectAreaLight` declares `color`, `intensity`, `width`, `height` and `range` through `@forgeax/engine-render`.
+2. `SpotLight` binds `IesProfileAsset` through `iesProfile`, an existing `TextureAsset` through `cookie`, and orientation through `rollDeg`.
+3. `LightProbe` declares only `irradiance` and `radius`; runtime reads verified assets from the same GUID Catalog.
 
-这些字段是 authored POD；Pack/producer 生成 published 记录，Catalog 只提供定位，runtime 只接受 admitted/accepted 的只读投影。`current`、`stale`、`lastKnownGood` 与 `verified` 是不同证据层，不能互相替代。
+These fields are authored POD. Pack/producers emit published records, Catalog supplies locations, and runtime accepts only admitted/accepted read-only projections. `current`, `stale`, `lastKnownGood` and `verified` represent distinct evidence levels and are not interchangeable.
 
 ### Extended-lighting evidence layers
 
@@ -196,12 +200,13 @@ The identity layers are `materialContractDigest`, `sourceClosureDigest`,
 `generation`, repair the first producer divergence, cold-cook the same GUID,
 then verify receipt, artifact, and provenance before retrying.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-是从作者声明到 GPU draw 的唯一主线。`coordinateSet` 与
-`physicalUvScale` 随每个纹理槽进入派生记录；`layoutIdentity` 与 cook receipt
-绑定，发生 source、schema 或 WGSL 变化时必须修复 producer 并 recook。
+is the single path from authored declarations to GPU draws. Each texture slot
+carries `coordinateSet` and `physicalUvScale` into derived records;
+`layoutIdentity` binds the cook receipt. Source, schema or WGSL changes require
+repairing the producer and recooking.
 
 ```mermaid
 flowchart LR
@@ -210,8 +215,9 @@ flowchart LR
 ```
 
 > [!CAUTION]
-> 诊断只读取结构化 `code`、`detail` 与 `hint`。先 inspect，再修复 producer
-> 或 cook 输入并重跑；不要从 URL、数组位置或非结构化文本推断 material identity。
+> Diagnostics consume structured `code`, `detail` and `hint` only. Inspect first,
+> repair producer or cook inputs and rerun; never infer material identity from URLs,
+> array positions or unstructured text.
 
 > [!IMPORTANT]
 > MaterialAsset is the one authored material entry point. Author `passes`, `parameters`, `values`, `parent`, and structured texture `coordinates`; the build cooks the resolved contract and runtime loads that record by GUID. Shader source identity, pack identity, and runtime handles remain derived or injected facts.
@@ -546,12 +552,14 @@ for Deferred; a declared physical group or physical texture is Forward-only.
 The recovery route is always `inspect → repair the producer/root → recook →
 load the new receipt`; no runtime mask or layout patch is valid.
 
-当参数声明为 `type: 'texture'` 时，`values` 支持直接使用纹理 GUID 字符串简写；省略
-`parameters` 的默认材质也会对 `MATERIAL_TEXTURE_SLOTS` 中的纹理槽启用该简写。字符串
-不会在颜色、标量、向量或其他字段上获得纹理语义。需要 sampler、强度或非默认坐标时使用结构化
-`MaterialTextureValue`。坐标及其字段均可省略，运行时解析为 `set=0`、
-`offset=[0,0]`、`scale=[1,1]`、`rotation=0`；cook/load 保持紧凑的字符串或结构化表达，
-不把 identity 默认坐标写回创作资产。
+When a parameter declares `type: 'texture'`, `values` accepts a texture GUID string
+as shorthand. Default materials without `parameters` also enable this shorthand
+for slots in `MATERIAL_TEXTURE_SLOTS`. Strings gain no texture semantics in color,
+scalar, vector or other fields. Use structured `MaterialTextureValue` for samplers,
+intensity or nondefault coordinates. Coordinates and their fields are optional;
+runtime resolves them to `set=0`, `offset=[0,0]`, `scale=[1,1]`, `rotation=0`.
+Cook/load preserves the compact string or structured representation, without
+writing identity coordinates back into authored assets.
 
 | Field | Type | Description |
 |:--|:--|:--|

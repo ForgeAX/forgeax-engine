@@ -552,15 +552,61 @@ export class InstanceProjectionStore {
     return { ...this.work };
   }
 
-  release(world: object, entity: number): void {
+  release(
+    world: object,
+    entity: number,
+    expected?: {
+      readonly collectionId?: InstanceCollectionId;
+      readonly revision?: number;
+      readonly transforms: Float32Array;
+      readonly generations?: Uint32Array;
+    },
+  ): void {
     const entities = this.identities.get(world);
     const id = entities?.get(entity);
     if (id === undefined) return;
+    const current = this.records.get(id);
+    if (
+      expected !== undefined &&
+      (current === undefined ||
+        id !== expected.collectionId ||
+        current.revision !== expected.revision ||
+        current.transforms !== expected.transforms ||
+        current.generations !== expected.generations)
+    )
+      return;
     entities?.delete(entity);
     this.records.delete(id);
     this.candidates.delete(id);
     this.backs.delete(id);
     this.residency.delete(id);
+  }
+  /** Cancel only the exact detached producer result, including before its first accept. */
+  discardProjection(
+    world: object,
+    entity: number,
+    expected: {
+      readonly collectionId?: InstanceCollectionId;
+      readonly revision?: number;
+      readonly transforms: Float32Array;
+      readonly generations?: Uint32Array;
+    },
+  ): void {
+    const id = expected.collectionId;
+    if (id === undefined) return;
+    const candidate = this.candidates.get(id);
+    if (
+      candidate === undefined ||
+      candidate.world !== world ||
+      candidate.entity !== entity ||
+      candidate.revision !== expected.revision ||
+      candidate.transforms !== expected.transforms ||
+      candidate.generations !== expected.generations
+    )
+      return;
+    this.candidates.delete(id);
+    const back = this.backs.get(id);
+    if (back?.candidate === candidate) back.candidate = undefined;
   }
   retain(ids: ReadonlySet<InstanceCollectionId>): void {
     for (const record of this.records.values()) {

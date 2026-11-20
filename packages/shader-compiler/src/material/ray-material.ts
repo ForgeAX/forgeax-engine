@@ -15,10 +15,10 @@ import {
   selectMaterialStaticContract,
   stripWgslComments,
 } from '@forgeax/engine-types';
-import { compileShader } from '../compile.js';
+import { compileShader, type PreparedShaderCompiler } from '../compile.js';
 import type { ShaderError } from '../errors.js';
 import { composeSurfaceSource, digestMaterialSourceClosure } from './compose.js';
-import { generateParameterModule } from './cook.js';
+import { generateParameterModule, type MaterialCompilation } from './cook.js';
 import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
 import type { MaterialSourceCatalog } from './source-catalog.js';
 
@@ -45,11 +45,33 @@ export interface CookedRayMaterial {
   readonly program: RaySurfaceProgram;
   readonly sourceClosure: readonly string[];
 }
-/** Build-time derivative of the same resolved MaterialAsset; never called by the player. */
+type RayCookError = MaterialError | RayMaterialError | ShaderError;
+
+/** Build-time derivative of the same resolved MaterialAsset. */
 export async function cookRayMaterial(
   request: RayMaterialCookRequest,
   compile: typeof compileShader = compileShader,
-): Promise<Result<CookedRayMaterial, MaterialError | RayMaterialError | ShaderError>> {
+): Promise<Result<CookedRayMaterial, RayCookError>> {
+  const work = rayMaterialCompilation(request);
+  let next = work.next();
+  while (!next.done) next = work.next(await compile(...next.value));
+  return next.value;
+}
+
+/** Compile the selected Ray or Card context using the same MaterialAsset contract. */
+export function compileRayMaterialSelection(
+  request: RayMaterialCookRequest,
+  compiler: PreparedShaderCompiler,
+): Result<CookedRayMaterial, RayCookError> {
+  const work = rayMaterialCompilation(request);
+  let next = work.next();
+  while (!next.done) next = work.next(compiler.compile(...next.value));
+  return next.value;
+}
+
+function* rayMaterialCompilation(
+  request: RayMaterialCookRequest,
+): MaterialCompilation<CookedRayMaterial, RayCookError> {
   const resolved = resolveMaterialAsset(request.material, request.table);
   if (!resolved.ok) return resolved;
   const asset = selectMaterialStaticContract(resolved.value.asset);
@@ -98,21 +120,24 @@ export async function cookRayMaterial(
     RAY_SURFACE_CONTEXT: context === 'ray-hit',
     CARD_SURFACE_CONTEXT: context === 'card-capture',
   };
-  const compiled = await compile(source, {
-    // The template/context owns compiler identity; material identity stays in publication.
-    id: `forgeax_material::ray_surface::${context}`,
-    imports: { ...composed.value.imports },
-    defines,
-    ...(context === 'card-capture'
-      ? {
-          renderEntries: {
-            vertex: 'vs_card',
-            fragment: 'fs_card',
-            colorFormats: ['rgba16float', 'rgba16float', 'rgba16float', 'rgba16float'] as const,
-          },
-        }
-      : {}),
-  });
+  const compiled = yield [
+    source,
+    {
+      // The template/context owns compiler identity; material identity stays in publication.
+      id: `forgeax_material::ray_surface::${context}`,
+      imports: { ...composed.value.imports },
+      defines,
+      ...(context === 'card-capture'
+        ? {
+            renderEntries: {
+              vertex: 'vs_card',
+              fragment: 'fs_card',
+              colorFormats: ['rgba16float', 'rgba16float', 'rgba16float', 'rgba16float'] as const,
+            },
+          }
+        : {}),
+    },
+  ];
   if (!compiled.ok) return compiled;
   return ok({
     asset,

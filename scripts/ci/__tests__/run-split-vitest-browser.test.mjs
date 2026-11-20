@@ -121,6 +121,25 @@ test('Three output, rendering and texture journeys do not share one process dead
   for (const file of files) assert.ok(browserGroupWeight([file]) > 5);
 });
 
+test('each Three Node input and material instance journey owns its 300-second process', () => {
+  const files = ['node-inputs', 'node-material-instance'].map(
+    (name) => `packages/three/src/__tests__/${name}.browser.test.ts`,
+  );
+  for (const size of [1, 8, 24]) {
+    const groups = dryRunGroups(size);
+    for (const file of files)
+      assert.deepEqual(
+        groups.filter((group) => group.includes(file)),
+        [[file]],
+      );
+  }
+  assert.equal(browserGroupRequiresExclusiveRunner([files[0]]), true);
+  assert.deepEqual(
+    files.map((file) => browserGroupWeight([file], undefined, {})),
+    [225, 120],
+  );
+});
+
 test('Three flat-shading materials retain independent Browser and Dawn deadlines', () => {
   const browser = readFileSync('packages/three/src/__tests__/texture.browser.test.ts', 'utf8');
   const dawn = readFileSync('packages/three/src/__tests__/texture.dawn.test.ts', 'utf8');

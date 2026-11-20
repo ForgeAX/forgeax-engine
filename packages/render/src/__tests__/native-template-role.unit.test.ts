@@ -4,6 +4,7 @@ import { prewarmUtilityShaders } from '../assembly/utility-shader-prewarm';
 import {
   findEngineManifestEntry,
   prewarmShadowCasterModules,
+  prewarmStandardScenePrograms,
 } from '../assembly/webgpu-ready-shaders';
 
 it('uses a native program declaration to find the reserved Engine role without reading unselected WGSL', async () => {
@@ -205,5 +206,95 @@ it('prepares the boot shadow program once and leaves geometry and coverage selec
   expect(compose).toHaveBeenCalledTimes(1);
   expect(compile).toHaveBeenCalledTimes(1);
   expect(seed).toHaveBeenCalledTimes(1);
+  expect(registry.programTemplateInspection().selections).toBe(1);
+});
+
+it('leaves native Deferred recipes uncompiled until the selected pipeline reads their source', async () => {
+  const profile = {
+    id: 'deferred',
+    language: 'wgsl',
+    profileVersion: '1',
+    adapterVersion: '1',
+    compilerVersion: '1',
+    nagaVersion: '1',
+  } as const;
+  const identifier = 'forgeax::engine-standard-deferred-lighting';
+  const source = '@compute @workgroup_size(1) fn main() {}';
+  const selection = {
+    CLUSTER_FORWARD_AVAILABLE: false,
+    DIRECT_DFG_LUT_AVAILABLE: false,
+    ATMOSPHERE_AVAILABLE: false,
+    EXTENDED_LIGHTING_AVAILABLE: false,
+    PROJECTOR_AVAILABLE: false,
+  };
+  const library = publishShaderProgramTemplates(
+    new Map([
+      [
+        identifier,
+        {
+          schemaVersion: 'shader-program-template/1',
+          compilerProfile: profile,
+          source,
+          imports: {},
+          axes: Object.keys(selection),
+        },
+      ],
+    ]),
+  ).unwrap();
+  const manifest = {
+    schemaVersion: '7.0.0',
+    library,
+    entries: [],
+    materialShaders: [
+      {
+        identifier,
+        sourcePath: identifier,
+        paramSchema: '[]',
+        program: identifier,
+        selection,
+      },
+    ],
+  };
+  const compose = vi.fn((_template: unknown, _defines: Readonly<Record<string, boolean>>) =>
+    ok({
+      manifestEntry: { hash: 'deferred', wgsl: source, glsl: undefined, bindings: '[]' },
+      uvSetCount: 0,
+    }),
+  );
+  const registry = new ShaderRegistry({
+    manifestUrl: '/deferred',
+    readText: async () => JSON.stringify(manifest),
+    programCompiler: { profile, compile: compose },
+  });
+  (await registry.loadManifest()).unwrap();
+  const compile = vi.fn();
+  const seed = vi.fn();
+  const scenes = await prewarmStandardScenePrograms(
+    registry,
+    compile,
+    seed,
+    {
+      storageBuffer: true,
+      atmosphere: false,
+      webgl2Downlevel: false,
+      extendedLighting: false,
+      directionalPcss: false,
+      projector: false,
+    },
+    true,
+  );
+  expect(scenes?.deferred).toBeDefined();
+  expect(compose).not.toHaveBeenCalled();
+  expect(compile).not.toHaveBeenCalled();
+  expect(seed).not.toHaveBeenCalled();
+
+  const selected = scenes?.deferred?.clusteredLut;
+  expect(selected).toBeDefined();
+  expect(scenes?.deferred?.clusteredLut).toBe(selected);
+  expect(compose).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    ...selection,
+    CLUSTER_FORWARD_AVAILABLE: true,
+    DIRECT_DFG_LUT_AVAILABLE: true,
+  });
   expect(registry.programTemplateInspection().selections).toBe(1);
 });

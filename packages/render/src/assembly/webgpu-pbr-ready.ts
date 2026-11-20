@@ -7,7 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, type RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderManifestEntry, ShaderRegistry } from '@forgeax/engine-shader';
-import { materialShaderSource } from '@forgeax/engine-shader';
+import { isShaderTemplateManifestRow, materialShaderSource } from '@forgeax/engine-shader';
 import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
@@ -179,9 +179,20 @@ export async function buildGpuDrivenPbrReadyModules(
       }
     }
   }
-  // Synchronous module backends prepare optional material lanes at first use.
-  // Async-only backends prewarm admitted lanes before publishing readiness.
-  if (input.immediateCreateShaderModule === undefined) {
+  await prewarmLegacySkinModules(input, pbrSkinModule);
+  return { gpuDrivenPbrPrograms };
+}
+
+async function prewarmLegacySkinModules(
+  input: GpuDrivenPbrModuleInput,
+  pbrSkinModule: ShaderModule | null,
+): Promise<void> {
+  // Source templates and synchronous backends prepare optional lanes at first use.
+  if (
+    input.immediateCreateShaderModule === undefined &&
+    input.pbrSkinManifestEntry !== undefined &&
+    !isShaderTemplateManifestRow(input.pbrSkinManifestEntry)
+  ) {
     // Device capabilities are fixed for this ready generation. Keep both scene
     // topology/color/reflection lanes and every supported material lane warm;
     // compiling unreachable capability combinations delays even an unlit boot.
@@ -221,7 +232,6 @@ export async function buildGpuDrivenPbrReadyModules(
       input.admitsVariant,
     );
   }
-  return { gpuDrivenPbrPrograms };
 }
 
 export function buildGpuDrivenPbrReadyLayouts(

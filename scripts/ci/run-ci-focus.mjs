@@ -42,6 +42,9 @@ const packageOnlyUnitOwners = new Set([
 // These exact CPU fixtures own their complete publication/registry inputs.
 // Other shader tests still consume the prepared Engine profile.
 const packageOnlyUnitFiles = new Set([
+  'packages/vite-plugin-shader/src/__tests__/engine-template-manifest.unit.test.ts',
+  'packages/gltf/src/__tests__/meta-pack-ddc.integration.test.ts',
+  'packages/import/src/__tests__/meta-pack-ddc.integration.test.ts',
   'packages/pack/src/__tests__/runtime-publication.unit.test.ts',
   'packages/devkit/src/tools/__tests__/model-render-target.unit.test.ts',
   ...[
@@ -57,14 +60,21 @@ const packageOnlyUnitFiles = new Set([
 // These planner tests exercise source scripts and their own fixtures without
 // importing generated Engine packages or invoking the Engine toolchain.
 const sourceOnlyNodeFiles = new Set([
+  'scripts/ci/__tests__/artifact-range-download.test.mjs',
+  'scripts/ci/__tests__/artifact-upload-paths.test.mjs',
   'scripts/ci/__tests__/browser-work.test.mjs',
   'scripts/ci/__tests__/ci-focus.test.mjs',
   'scripts/ci/__tests__/core-validation.test.mjs',
+  'scripts/ci/__tests__/coverage-baseline.test.mjs',
   'scripts/ci/__tests__/download-artifact-with-retry.test.mjs',
   'scripts/ci/__tests__/prepare-ci-inputs.test.mjs',
   'scripts/ci/__tests__/recover-repair-shader-inputs.test.mjs',
   'scripts/ci/__tests__/run-split-vitest-browser.test.mjs',
+  'scripts/ci/__tests__/sdk-shader-artifacts.test.mjs',
+  'scripts/ci/__tests__/source-budget-progress.test.mjs',
   'scripts/ci/__tests__/view-diagnostic-workload.test.mjs',
+  'scripts/forgeax/__tests__/sdk-candidate-native-inputs.test.mjs',
+  'scripts/lib/__tests__/vite-http-readiness.test.mjs',
 ]);
 
 function nodeFocusPlan(selector) {
@@ -261,7 +271,9 @@ export function focusPlan(
       ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector, '--dry-run'],
       { cwd: root },
     );
-    return { args: ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector] };
+    return {
+      args: ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector],
+    };
   }
   if (kind === 'view') {
     const groups = JSON.parse(
@@ -271,7 +283,9 @@ export function focusPlan(
       }),
     );
     if (!groups.includes(selector)) throw new Error(`unknown View integration group: ${selector}`);
-    return { args: ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', selector] };
+    return {
+      args: ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', selector],
+    };
   }
   if (kind === 'smoke') {
     frames = parseSmokeFrameBudget(frames);
@@ -354,7 +368,9 @@ export async function main(argv = process.argv.slice(2)) {
   const env = {
     ...process.env,
     EXPECTED_PRODUCT_SHA: head,
-    FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(root, 'shared-build-inputs/manifest.json'),
+    ...(plan.apps?.length
+      ? { FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(root, 'shared-build-inputs/manifest.json') }
+      : {}),
     SMOKE_MIN_FRAMES: String(frames),
   };
   const output = join(root, 'artifacts/ci-focus/result.json');
@@ -383,13 +399,7 @@ export async function main(argv = process.argv.slice(2)) {
   let smoke;
   try {
     await prepareFocus(plan, options['assets-source-root'], run);
-    if (options.kind === 'compatibility')
-      await run([
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        '--profile',
-        'base-ssao',
-      ]);
+    if (plan.apps?.length) await run(['scripts/build-shared-inputs.mjs']);
     for (const app of plan.apps ?? [])
       await run([
         'scripts/build-apps.mjs',

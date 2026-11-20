@@ -6,6 +6,7 @@ import { RhiErrorListenerRegistry } from '../lifecycle';
 import { directionalShadowPreparationLimit } from '../record/frame';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import {
   discardCompiledFrameGraphs,
@@ -68,6 +69,8 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
     compiledFrameGraphGeneration: 0,
     standardLightingGraphSignature: '',
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
   } as unknown as RenderFrameState;

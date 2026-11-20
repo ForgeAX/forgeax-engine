@@ -1,5 +1,5 @@
 import type { SamplerDescriptor } from '@forgeax/engine-rhi';
-import type { TextureAsset } from '@forgeax/engine-types';
+import type { SampledTextureAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
 export type StandardLutAdmissionErrorCode =
@@ -16,7 +16,7 @@ export type StandardLutAdmissionError = {
 };
 
 export interface StandardColorLutAdmissionInput {
-  readonly texture: TextureAsset;
+  readonly texture: SampledTextureAsset;
   readonly maxTextureDimension3D: number;
   readonly rgba16floatFilterable: boolean;
   readonly bind: () => boolean;
@@ -62,7 +62,7 @@ export function admitStandardColorLut(
     return failure(
       'standard-lut-shape-invalid',
       'a linear rgba16float 3D texture with one resident mip level',
-      're-import the LUT as an ordinary linear 3D TextureAsset without generated mips',
+      're-import the LUT as an linear 3D texture without generated mips',
       {
         viewDimension: texture.shape.viewDimension,
         format: texture.format,

@@ -8,6 +8,7 @@ import type { InputBackend } from '@forgeax/engine-input';
 import type { Platform } from '@forgeax/engine-platform';
 import type { Context, Fiber, Plugin } from '@forgeax/engine-plugin';
 import type { FrameReceipt, RenderError, Renderer, RenderFrameInput } from '@forgeax/engine-render';
+import { levelSourceHost } from '@forgeax/engine-render/internal';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from './assets-runtime-assembly';
@@ -29,6 +30,8 @@ import { ErrorFanoutRegistry } from './internal/error-fanout';
 import { createFrameLoop } from './internal/frame-loop';
 import { remoteServerPlugin } from './internal/remote-server-plugin';
 import { bindRhiCaptureFrameDriver, type RhiCapture } from './internal/rhi-capture';
+import { AppLevelOwner, bindAppLevelOwner } from './levels/app-level-owner';
+import { localLevelRenderHost } from './levels/candidate-render-source';
 import { createAppObservation } from './observation';
 import type { RuntimePackOptions } from './runtime-packs';
 import type { App, AppAssembleArgs, AppDispatchError, AssembleAppError } from './types';
@@ -363,6 +366,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     },
     assets,
   );
+  let levels: AppLevelOwner | undefined;
   const captureSubmittedListeners = new Set<(receipt: FrameReceipt) => void>();
   const loopOpts: Parameters<typeof createFrameLoop>[0] = {
     world,
@@ -371,12 +375,15 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onError: dispatch,
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
+    beforeUpdate: (render) => levels?.beginFrame(render),
     beforeDraw: () => {
+      levels?.step();
       stepRetainedBytes();
       observation.prepareFrame();
       localHdr.beforeDraw(renderer);
     },
     onFrameSkipped: () => args.debugDraw?.discard(),
+    retainSourceOnStop: () => (levels?.inspect().live ?? 0) > 0,
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
@@ -614,7 +621,18 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       if (state === 'idle') loop.setStopped();
       try {
         await loop.drainFrameReceipts();
+        await levels?.closeStopped();
+        loop.releaseSource();
         await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      } catch (cause) {
+        return err(
+          makeAppError(
+            'app-system-update-failed',
+            'confirmed App Level and plugin retirement',
+            'retain the stopped App and resolve the owning cleanup failure',
+            { cause },
+          ),
+        );
       } finally {
         args.onTerminal?.();
       }
@@ -708,5 +726,20 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       },
     });
   }
+  bindAppLevelOwner(
+    stub,
+    () =>
+      (levels ??= new AppLevelOwner({
+        world,
+        render: () => {
+          const host = levelSourceHost(renderer, world);
+          return host === undefined ? undefined : localLevelRenderHost(host);
+        },
+        assets,
+        now: () => args.platform.now().unwrap(),
+        physics: readPhysicsWorld,
+        stopped: () => loop.getState() === 'stopped' && loop.inspect().inFlight === 0,
+      })),
+  );
   return ok(stub);
 }

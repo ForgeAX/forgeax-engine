@@ -1,6 +1,10 @@
 import { AssetError } from '../asset-error-contracts.js';
 import { err, ok, type Result } from '../result.js';
-import type { ShaderReflectionBoundGlobal, ShaderReflectionMember } from '../runtime-contracts.js';
+import type {
+  ShaderReflectionBoundGlobal,
+  ShaderReflectionMember,
+  ShaderReflectionTypeDescriptor,
+} from '../runtime-contracts.js';
 import { isShaderReflection, type ManifestEntry } from '../runtime-contracts.js';
 import { sha256 } from '../sha256.js';
 import type { TextureMipPolicy, TextureShape } from './asset.js';
@@ -9,7 +13,7 @@ import type { TextureMipPolicy, TextureShape } from './asset.js';
 export type GpuTextureMipFilter = 'box' | 'normal-roughness';
 
 export interface GeneratedTextureDescriptor {
-  readonly shape: Exclude<TextureShape, { readonly viewDimension: '3d' }>;
+  readonly shape: TextureShape;
   readonly format: GPUTextureFormat;
   readonly colorSpace: 'srgb' | 'linear';
   readonly mipFilter?: GpuTextureMipFilter;
@@ -58,6 +62,7 @@ export interface GeneratedTextureSource {
 
 const only = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).every((key) => keys.includes(key));
+const MAX_PARAMETER_WORDS = 65536 / 4;
 const NAME = /^[a-z][a-z0-9_-]*$/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FORMATS = new Set([
@@ -134,8 +139,8 @@ function validateParameters(
     typeof v === 'number'
       ? Number.isFinite(v)
       : Array.isArray(v) &&
-        v.length >= 2 &&
-        v.length <= 16 &&
+        v.length >= 1 &&
+        v.length <= MAX_PARAMETER_WORDS &&
         Array.from(v).every((n) => typeof n === 'number' && Number.isFinite(n));
   if (
     !Object.entries(values).every(
@@ -194,6 +199,11 @@ function collectResources(
     )
       return invalid('matching output color space and none/generate mip policy');
     if (Object.hasOwn(outputs, name)) {
+      if (
+        descriptor.shape.viewDimension === '3d' &&
+        (descriptor.mips as { kind: string }).kind !== 'none'
+      )
+        return invalid('3D generation targets have one mip level');
       const filtering = validateOutputMipFilter(descriptor);
       if (!filtering.ok) return filtering;
     }
@@ -257,27 +267,44 @@ function representable(number: unknown, scalarKind: string): boolean {
   );
 }
 
+/** Host and renderer agree on the layout of a generator's flat numeric parameters. */
+export function textureGeneratorParameterLayout(type: ShaderReflectionTypeDescriptor):
+  | {
+      readonly components: number;
+      readonly count: number;
+      readonly stride: number;
+      readonly scalarKind: string;
+    }
+  | undefined {
+  const array = type.kind === 'array' ? type : undefined;
+  if (array !== undefined && array.size.kind !== 'constant') return undefined;
+  const item = array?.element ?? type;
+  if ((item.kind !== 'scalar' && item.kind !== 'vector') || item.width !== 4) return undefined;
+  return {
+    components: item.kind === 'vector' ? item.components : 1,
+    count: array?.size.kind === 'constant' ? array.size.count : 1,
+    stride: array?.stride ?? item.byteSize,
+    scalarKind: item.scalarKind,
+  };
+}
+
 function validateParameter(
   member: ShaderReflectionMember,
   values: TextureGeneratorAsset['values'],
 ): Result<void, AssetError> {
-  const type = member.typeDescriptor;
+  const layout = textureGeneratorParameterLayout(member.typeDescriptor);
   const parameter =
     member.name === '_textureSize'
       ? [1, 1]
       : member.name === '_textureLayer'
         ? 0
         : values[member.name];
-  if (
-    (type.kind !== 'scalar' && type.kind !== 'vector') ||
-    type.width !== 4 ||
-    parameter === undefined
-  )
-    return invalid(`a declared 32-bit scalar/vector parameter ${member.name}`);
+  if (layout === undefined || parameter === undefined)
+    return invalid(`a declared 32-bit scalar, vector or fixed array parameter ${member.name}`);
   const numbers = typeof parameter === 'number' ? [parameter] : parameter;
-  if (!Array.isArray(numbers) || numbers.length !== (type.kind === 'vector' ? type.components : 1))
+  if (!Array.isArray(numbers) || numbers.length !== layout.count * layout.components)
     return invalid(`matching parameter arity for ${member.name}`);
-  if (!numbers.every((number) => representable(number, type.scalarKind)))
+  if (!numbers.every((number) => representable(number, layout.scalarKind)))
     return invalid(`representable numeric parameter ${member.name}`);
   return ok(undefined);
 }
@@ -416,15 +443,20 @@ function validateTargetShape(descriptor: Record<string, unknown>): Result<void, 
     !object(shape.extent) ||
     !only(
       shape.extent,
-      shape.viewDimension === '2d-array' ? ['width', 'height', 'layers'] : ['width', 'height'],
+      shape.viewDimension === '2d-array'
+        ? ['width', 'height', 'layers']
+        : shape.viewDimension === '3d'
+          ? ['width', 'height', 'depth']
+          : ['width', 'height'],
     ) ||
-    !['2d', '2d-array'].includes(String(shape.viewDimension))
+    !['2d', '2d-array', '3d'].includes(String(shape.viewDimension))
   )
-    return invalid('2D or 2D-array generation targets');
+    return invalid('2D, 2D-array or 3D generation targets');
   const dims = [
     shape.extent.width,
     shape.extent.height,
     ...(shape.viewDimension === '2d-array' ? [shape.extent.layers] : []),
+    ...(shape.viewDimension === '3d' ? [shape.extent.depth] : []),
   ];
   if (
     !dims.every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n > 0) ||

@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-import
 
 The IES importer declares `.ies` single-output registration through `capabilities.sourceFormats`. DevKit uses that declaration to author an `ies-profile` sidecar; native import still validates the LM-63 input and owns the cooked output.
@@ -9,15 +12,15 @@ the complete cooked output before runtime adoption.
 
 ## Authoring and recovery index
 
-## 灯光资产 producer 入口
+## Lighting Asset Producer Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. `RectAreaLight`、`SpotLight` 与 `LightProbe` 由 render 的 ECS schema 创作，scene producer 只外化 `shared<T>` GUID。
-2. `iesImporter` 只在 build-time 接受 LM-63 Type C `TILT=NONE`，输出固定 cooked `IesProfileAsset`；runtime 不解析 `.ies` 文本。
-3. `SpotLight.cookie` 走现有 `TextureAsset`/image producer；不要建立 Cookie registry 或第二条采样路径。
+1. Author `RectAreaLight`, `SpotLight` and `LightProbe` through render's ECS schemas; the scene producer externalizes only `shared<T>` GUIDs.
+2. At build time, `iesImporter` accepts LM-63 Type C `TILT=NONE` and emits a fixed cooked `IesProfileAsset`; runtime never parses `.ies` text.
+3. `SpotLight.cookie` uses the existing `TextureAsset`/image producer. Do not introduce a Cookie registry or a second sampling path.
 
-producer 持有 authored/source authority，Pack 产出 published 记录，Catalog 是 admitted/current 的投影；失败只返回结构化 `import-failed` 并保留原 GUID，修复 producer 后按同 GUID 重试。`lastKnownGood` 只可预览，不能冒充 verified/current。
+The producer owns authored/source authority, Pack emits published records, and Catalog projects admitted/current state. Failures return structured `import-failed` errors and preserve the original GUID; repair the producer and retry with that GUID. `lastKnownGood` supports preview only and cannot stand in for verified/current evidence.
 
 Extended-lighting imports keep the same source key across Rect, Spot modifier,
 Probe, and recovery carriers. IES is a build-time Type C `TILT=NONE` producer;

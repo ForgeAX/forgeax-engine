@@ -1,16 +1,18 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
-import { type AssetHandle, ok, type RenderPipelineAsset } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok, type RenderPipelineAsset } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
 import { CAMERA_VIEW_DEFAULTS, CameraView } from '../components/camera-view';
 import { StereoCamera } from '../components/stereo-camera';
-import type { DynamicGeometryRecordStageLane } from '../dynamic-geometry';
+import { DynamicGeometryError, type DynamicGeometryRecordStageLane } from '../dynamic-geometry';
 import {
   createFeatureGraphConformanceTrace,
   readFeatureGraphConformanceTrace,
 } from '../features/feature-graph-conformance-trace';
+import type { GpuScene, GpuSceneTableBindingTarget } from '../gpu-scene';
+import type { GpuSceneInputPreparation } from '../gpu-scene-inputs';
 import type { CameraViewInspection } from '../inspection-types';
 import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
@@ -81,9 +83,11 @@ import {
 import { recordContext } from '../world/view-record-context';
 import { createViewRecorder } from '../world/view-recorder';
 import { type ViewSettlementOwner, viewOwnerOf } from '../world/view-settlement';
+import { CameraInputBindings } from './camera-input-bindings';
 import { drainFramePreparation, type FramePreparation } from './frame-recording';
 import type { LodObservationCapture, LodObservationViewCapture } from './lod-observation';
 import { prepareRenderFrame } from './render-frame';
+import { prepareInitialSourceViews } from './source-view-preparation';
 import { createViewCompositor } from './view-compositor';
 
 /** Open this frame's GPU timing capture, recording why it could not begin. */
@@ -175,6 +179,50 @@ function captureCameras(
   );
 }
 
+/** A closed aggregate drops its children and the live CameraViews reader. */
+function candidatePipelineGroup(
+  captured: readonly ViewSettlementOwner[],
+  results: readonly Awaited<ReturnType<typeof prepareViewCandidatePipelines>>[],
+  readOwners: (() => readonly ViewSettlementOwner[]) | undefined,
+) {
+  const release = () => {
+    const held = results;
+    results = [];
+    captured = [];
+    readOwners = undefined;
+    for (const result of held) if (result.ok) result.value.release();
+  };
+  const current = () => {
+    if (readOwners === undefined) return false;
+    const actual = readOwners();
+    return (
+      captured.length > 0 &&
+      actual.length === captured.length &&
+      captured.every((owner, index) => owner === actual[index])
+    );
+  };
+  const failed = results.find((result) => !result.ok);
+  if (failed !== undefined && !failed.ok) {
+    release();
+    return failed;
+  }
+  if (!current()) {
+    release();
+    return err(
+      new DynamicGeometryError(
+        'dynamic-geometry-gpu-not-ready',
+        'the actual candidate view roster is unchanged',
+        'prepare again for the current display and capture views',
+        {},
+      ),
+    );
+  }
+  return ok({
+    isCurrent: () => current() && results.every((result) => result.ok && result.value.isCurrent()),
+    release,
+  });
+}
+
 /**
  * Renderer-owned views share one device, asset cache, frame encoder and
  * submission. Each view is a Render World entity ({@link RenderView}); its
@@ -226,6 +274,7 @@ export function createCameraViews(
     });
   };
   const clear = () => {
+    inputBindings.cancel();
     viewSource.clear();
     retireViews(renderWorld, views, internals);
   };
@@ -263,6 +312,12 @@ export function createCameraViews(
     recorders().filter((view) => view.capture === undefined);
   const captureRecorders = (): ViewRecorderState[] =>
     recorders().filter((view) => view.capture !== undefined);
+  const inputBindings = new CameraInputBindings({
+    world: renderWorld,
+    composition,
+    primary: primaryOwner,
+    recorders,
+  });
   /** Composed display views replace the primary display recording. */
   const active = (): boolean => views.displayCount > 0;
   /** The owners whose recordings produce this frame: composed views, else the primary and captures. */
@@ -337,24 +392,45 @@ export function createCameraViews(
   registerViewRecorderSystem(renderWorld, views, { internals, createRecorder });
   registerLodObservationSystem(renderWorld, views, { internals });
   return {
+    prepareInitialSourceViews(
+      ...args: Parameters<typeof prepareInitialSourceViews> extends [unknown, ...infer Rest]
+        ? Rest
+        : never
+    ) {
+      return prepareInitialSourceViews(
+        {
+          world: renderWorld,
+          composition,
+          inputBindings,
+          owners,
+          entity: (owner) =>
+            !active() && owner === primaryOwner
+              ? views.primary
+              : recorders().find((record) => record.owner === owner)?.entity,
+        },
+        ...args,
+      );
+    },
+    *prepareAddressCapacity(...args: Parameters<CameraInputBindings['prepareAddressCapacity']>) {
+      yield* inputBindings.prepareAddressCapacity(...args);
+    },
+    prepareInputBindings(
+      scene: GpuScene,
+      input: GpuSceneInputPreparation,
+      tables?: GpuSceneTableBindingTarget,
+    ) {
+      return inputBindings.prepare(scene, input, tables);
+    },
     async prepareCandidatePipelines(input: CandidatePipelineInput, signal?: AbortSignal) {
+      const captured = owners();
       const results = await Promise.all(
-        owners().map((owner) =>
+        captured.map((owner) =>
           prepareViewCandidatePipelines(owner, input, signal, demandReader(owner)),
         ),
       );
-      const failed = results.find((result) => !result.ok);
-      const release = () => {
-        for (const result of results) if (result.ok) result.value.release();
-      };
-      if (failed !== undefined && !failed.ok) {
-        release();
-        return failed;
-      }
-      return ok({
-        isCurrent: () => results.every((result) => result.ok && result.value.isCurrent()),
-        release,
-      });
+      // The returned capability must not share this async activation's input,
+      // which can hold a Source's actual Renderer service closures.
+      return candidatePipelineGroup(captured, results, owners);
     },
     terrainSections() {
       return active()
@@ -550,6 +626,7 @@ export function createCameraViews(
       });
     },
     dispose() {
+      inputBindings.dispose();
       clear();
       owner.compositor.dispose();
     },

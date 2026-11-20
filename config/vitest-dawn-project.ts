@@ -4,6 +4,7 @@ import { DAWN_COMPACT_TEST_FILES } from '../scripts/ci/dawn-compact-roster.mjs';
 import {
   DAWN_ISOLATED_TEST_FILES,
   DIRECT_LIGHT_DAWN_TEST_FILE,
+  dawnAuthoringCapturesOutsideCi,
 } from '../scripts/ci/dawn-gate-roster.mjs';
 import { dawnOrdinaryWorkers } from '../scripts/lib/runner-resources.mjs';
 
@@ -49,6 +50,7 @@ export const dawnProject = defineProject({
     ],
     exclude: [
       ...coreDeferredFiles(),
+      ...(RUNNING_DAWN_ISOLATED ? [] : dawnAuthoringCapturesOutsideCi()),
       '**/node_modules/**',
       '**/dist/**',
       '**/artifacts/**',

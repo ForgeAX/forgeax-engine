@@ -96,7 +96,7 @@ export function shadowSourceFixture(
     );
     return {
       identity,
-      sourcePlan: topology.query(topology.sourcePlan(), undefined),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
       scene,
       matrix,
       planes,

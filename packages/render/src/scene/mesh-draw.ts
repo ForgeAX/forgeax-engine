@@ -149,24 +149,7 @@ export function meshDrawSnapshot(
   // A Pass query can replace resolved material identities without replacing the
   // Mesh or the instance. Only reuse a draw from the same admitted binding.
   if (cached?.ordinaryMaterials === ordinaryMaterials.materials) return cached.value;
-  const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
-  // The rest object is fresh and unescaped; publish it after projecting shared geometry.
-  // Borrowed getter inputs can select the source itself, preserving their second spread/read.
-  const result: { -readonly [Key in keyof RenderableSnapshot]: RenderableSnapshot[Key] } =
-    materials === source ? { ...current, ...materials } : Object.assign(current, materials);
-  if (source.gpuDrivenDraws !== undefined) {
-    result.gpuDrivenDraws = meshGeometryDraws(
-      mesh,
-      ordinaryMaterials.materials,
-      source.skinBinding === undefined ? 'rigid' : 'skin',
-    );
-  }
-  // Morphed rows keep their weight-expanded producer bounds.
-  if (source.morph !== undefined) {
-    if (source.localAabb !== undefined) result.localAabb = source.localAabb;
-  } else if (mesh.bounds !== undefined) result.localAabb = mesh.bounds;
-  if (mesh.lods !== undefined) result.lods = mesh.lods;
-  if (mesh.lodHysteresis !== undefined) result.lodHysteresis = mesh.lodHysteresis;
+  const result = projectMeshDrawSnapshot(source, mesh, materials, ordinaryMaterials.materials);
   if (cached === undefined) {
     table.instances.set(source, {
       value: result,
@@ -179,5 +162,34 @@ export function meshDrawSnapshot(
     cached.value = result;
     cached.ordinaryMaterials = ordinaryMaterials.materials;
   }
+  return result;
+}
+
+/** Fixed shared geometry/material projection used by Source and ordinary rows. */
+export function projectMeshDrawSnapshot(
+  source: RenderableSnapshot,
+  mesh: MeshGeometry,
+  materials: Pick<RenderableSnapshot, 'material' | 'materials'>,
+  geometryMaterials = materials.materials,
+): RenderableSnapshot {
+  const { lods: _lods, lodHysteresis: _hysteresis, localAabb: _bounds, ...current } = source;
+  // The rest object is fresh and unescaped; publish it after projecting shared geometry.
+  // Borrowed getter inputs can select the source itself, preserving their second spread/read.
+  const result: { -readonly [Key in keyof RenderableSnapshot]: RenderableSnapshot[Key] } =
+    materials === source ? { ...current, ...materials } : Object.assign(current, materials);
+  if (source.gpuDrivenDraws !== undefined) {
+    result.gpuDrivenDraws = meshGeometryDraws(
+      mesh,
+      geometryMaterials,
+      source.skinBinding === undefined ? 'rigid' : 'skin',
+    );
+  }
+  // Morphed rows keep their weight-expanded producer bounds.
+  if (source.morph !== undefined) {
+    if (source.localAabb !== undefined) result.localAabb = source.localAabb;
+  } else if (mesh.bounds !== undefined) result.localAabb = mesh.bounds;
+  if (mesh.lods !== undefined) result.lods = mesh.lods;
+  if (mesh.lodHysteresis !== undefined) result.lodHysteresis = mesh.lodHysteresis;
+
   return result;
 }

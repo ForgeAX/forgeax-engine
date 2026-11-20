@@ -45,6 +45,66 @@ function classify(
 
 const rigid = (slot: number) => ({ slot, snapshot: {} });
 
+it('invalidates a suspended preparation before an existing caster settles on the next update', () => {
+  const classifier = new ShadowCasterClassifier(),
+    scene = fakeScene();
+  classify(classifier, [rigid(0)], scene.scene);
+  scene.change([1]);
+  const slots = [rigid(0), rigid(1)];
+  const expected = classify(classifier, slots, scene.scene);
+  scene.quiet();
+  const current = classifier.preparationCurrent(expected);
+  expect(current()).toBe(true);
+  let latest = classify(classifier, slots, scene.scene);
+  for (let frame = 0; current() && frame < SHADOW_CASTER_PROMOTE_WINDOW; frame++)
+    latest = classify(classifier, slots, scene.scene);
+  expect(current()).toBe(false);
+  expect(latest.dynamicSlots.has(1)).toBe(true);
+});
+
+it('keeps a preparation current after its exact prepared caster layout is accepted', () => {
+  const classifier = new ShadowCasterClassifier();
+  const scene = fakeScene();
+  const previous = [rigid(0)];
+  classify(classifier, previous, scene.scene);
+  const fixed = (slot: number) => ({ slot, snapshot: { mobility: 'static' as const } });
+  const slots = [...previous, fixed(1)];
+  scene.change([1]);
+  const expected = classifier.preview({ slots, slotAt: (slot) => slots[slot] }, scene.scene);
+  const current = classifier.preparationCurrent(expected);
+  expect(current()).toBe(true);
+  expect(classify(classifier, slots, scene.scene).staticSlots.has(1)).toBe(true);
+  expect(current()).toBe(true);
+
+  scene.change([1, 2]);
+  classify(classifier, [...previous, fixed(2)], scene.scene);
+  expect(current()).toBe(false);
+});
+
+it('previews the next real classification without advancing settling or changing owner facts', () => {
+  const classifier = new ShadowCasterClassifier(),
+    scene = fakeScene();
+  let slots = [rigid(0)];
+  const input = () => ({ slots, slotAt: (slot: number) => slots.find((row) => row.slot === slot) });
+  for (let frame = 0; frame < SHADOW_CASTER_SETTLE_FRAMES + 32; frame++) {
+    if (frame === 2) {
+      slots = [...slots, rigid(1)];
+      scene.change([1]);
+    }
+    if (frame === 5) scene.change([0]);
+    const before = classifier.inspect();
+    const projected = classifier.preview(input(), scene.scene);
+    expect(classifier.inspect()).toEqual(before);
+    const second = classifier.preview(input(), scene.scene);
+    const actual = classifier.update(input(), scene.scene);
+    for (const slot of [0, 1]) {
+      expect(projected.staticSlots.has(slot)).toBe(actual.staticSlots.has(slot));
+      expect(second.dynamicSlots.has(slot)).toBe(actual.dynamicSlots.has(slot));
+    }
+    scene.quiet();
+  }
+});
+
 /** Runs quiet frames so a later change is not a periodic mover's. */
 function rest(
   classifier: ShadowCasterClassifier,

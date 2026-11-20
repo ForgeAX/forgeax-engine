@@ -80,6 +80,7 @@ export interface RendererHostImplementation
     | 'observeGeometry'
     | 'observe'
   > {
+  readonly levelSourceAccess?: import('./level-source-access').LevelSourceAccess;
   publishDynamicGeometry: DynamicGeometryHostImplementation['publishDynamicGeometry'];
   /**
    * Internal bounded inspection for high-cardinality producers. The public

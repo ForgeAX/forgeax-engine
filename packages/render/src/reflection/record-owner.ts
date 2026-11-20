@@ -33,7 +33,11 @@ import {
   pmremExtent,
   pmremLevelCount,
 } from '../ibl/pmrem';
-import { SKYLIGHT_UNIFORM_BYTES, skylightGroundLane } from '../ibl/skylight-bind-group';
+import {
+  SKYLIGHT_UNIFORM_BYTES,
+  type SkylightBindGroupResources,
+  skylightGroundLane,
+} from '../ibl/skylight-bind-group';
 import type {
   ReflectionFallbackReadbackReceipt,
   ReflectionFallbackReceipt,
@@ -288,6 +292,18 @@ export class ReflectionProbeRecordOwner {
         ? {}
         : { reflectionFallbackReadback: this.fallbackReadback }),
     };
+  }
+
+  /** Only accepted physical bindings participate; filter preparation is not a publication. */
+  materialBindingCurrent(index: number, expected: SkylightBindGroupResources): boolean {
+    for (const resource of this.resources.values())
+      if (resource.index === index)
+        return (
+          this.acceptedAtlas(resource)?.view === expected.prefilterView &&
+          resource.sampler === expected.prefilterSampler &&
+          resource.uniformBuffer === expected.intensityBuffer
+        );
+    return false;
   }
 
   private createFallbackReceipt(
@@ -648,9 +664,7 @@ export class ReflectionProbeRecordOwner {
     }
     const rows = [...accepted.values()]
       .map((resource) => {
-        const active = resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])
-          ? this.activeAtlas(resource)
-          : undefined;
+        const active = this.acceptedAtlas(resource);
         if (active === undefined) return undefined;
         const array =
           resource.pmrem.kind === 'array' && resource.pmrem.active !== undefined
@@ -1384,6 +1398,12 @@ export class ReflectionProbeRecordOwner {
     this.arrays = new PmremArrayPool(this.resourceDevice, (error) =>
       this.internals.errorRegistry.fire(error),
     );
+  }
+
+  private acceptedAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {
+    return resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])
+      ? this.activeAtlas(resource)
+      : undefined;
   }
 
   private activeAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {

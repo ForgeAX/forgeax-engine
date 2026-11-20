@@ -5,6 +5,8 @@ description: ForgeAX MaterialAsset authoring and visibility route. Use when crea
 
 # forgeax-engine-material
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Optional River `transitionContinuity` uses the accepted end-spline position and
 actual current-generation Ocean coverage adjacency. Author finite meter reach
 and blend width; the complete shared triangle is closed inside the inner reach
@@ -13,7 +15,7 @@ adjacent ordinary patches of the same River and shares its target wave row,
 without changing their material. Source flow/depth remain
 native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
 support offset in byte 92; vertex and fragment share its original-grid policy.
-Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+Use `material-pack-cooker/7` to recook. Compiled publications use `material-cook/5`.
 GPU traversal, independent Baked depth, custom deformation and independent
 advanced displacement are outside this initial continuity contract. See the
 [owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)

@@ -563,6 +563,16 @@ describe('WaterMesh source extraction', () => {
     expect(off.frame.dispatch).toEqual([
       { ...dispatch, renderableIndex: 0, entityIndex: ordinary.entityKey },
     ]);
+    const scan = vi.spyOn(off.frame.renderables, 'some');
+    try {
+      expect(projectWaterMeshView(off.frame, off.materials, viewIdentity, [], false)).toEqual({
+        frame: off.frame,
+        materials: off.materials,
+      });
+      expect(scan).not.toHaveBeenCalled();
+    } finally {
+      scan.mockRestore();
+    }
     const display = projectDisplayRenderables(off.frame.renderables, off.frame.dispatch);
     expect(display).toEqual([ordinary]);
     expect(
@@ -622,6 +632,7 @@ describe('WaterMesh source extraction', () => {
       noWater.materials,
       viewIdentity,
       restored.renderables,
+      false,
     );
     expect(on.frame.renderables.length).toBeGreaterThan(0);
     expect(

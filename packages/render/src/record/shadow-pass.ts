@@ -5,6 +5,7 @@ import {
   type Buffer,
   type RenderBundle,
   type RenderPipeline,
+  type RenderPipelineDescriptor,
   type RhiDevice,
   RhiError,
   type RhiRenderPassEncoder,
@@ -108,6 +109,7 @@ import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { directionalShadowCasterOffset, spotShadowCasterOffset } from './shadow-caster-uniforms';
 import { shadowViewContains } from './shadow-culling';
+import { captureShadowMaterialBinding } from './shadow-material-table-bindings';
 import { capturesShadowBundleWorkload, recordShadowBundleWorkload } from './shadow-raster-ledger';
 import { shadowViewBindingKeys } from './shadow-view-resources';
 import { SingleMaterialHandleSet } from './single-material-handle-set';
@@ -149,8 +151,11 @@ type PreparedGpuDrivenShadowSubmission =
       readonly workload?: { readonly indirect: number; readonly indexedIndirect: number };
     };
 
-function ensureTypedShadowViewBg(
-  c: _InternalRenderPipelineContext,
+export function ensureTypedShadowViewBg(
+  c: Pick<
+    _InternalRenderPipelineContext,
+    'runtime' | 'frameState' | 'pipelineState' | 'bindGroupCounts'
+  >,
   viewOffset: number,
   cascadeOffset: number,
   variant: string,
@@ -408,35 +413,6 @@ function shadowViewVariantSet(
   ).variantSet;
 }
 
-function shadowPipeline(
-  c: _InternalRenderPipelineContext,
-  reflected = false,
-): RenderPipeline | null {
-  return (
-    c.runtime.getMaterialShaderPipeline?.(
-      SHADOW_CASTER_SHADER_ID,
-      false,
-      reflectedRenderState(undefined, reflected),
-      'triangle-list',
-      undefined,
-      shadowViewVariantSet(
-        shadowCasterVariantSet(c.runtime.device.caps.storageBuffer, false),
-        c.camera.clipping,
-      ),
-      'shadow-caster',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'pbr',
-    ) ?? null
-  );
-}
-
 function gpuShadowSkinOffsets(view: import('../gpu-driven/view-gpu').GpuDrivenView) {
   const task = view.skinTaskBinding();
   if (task === undefined)
@@ -627,7 +603,7 @@ export function shadowCasterDepthOnly(
 }
 
 /** The same native specification is used for explicit preparation and real shadow encoding. */
-function requestGpuDrivenShadowPipeline(
+export function requestGpuDrivenShadowPipeline(
   c: {
     readonly runtime: PipelineRequestRuntime;
     // Hidden-shadow preparation has no camera; it prepares the unclipped lane.
@@ -1095,7 +1071,7 @@ function shadowBatchPipeline(
 }
 
 /** Custom programs, alpha-masked and displaced casters bind their own material group. */
-function shadowBatchOwnsMaterial(
+export function shadowBatchOwnsMaterial(
   batch: GpuDrivenBatch,
   projection: GpuDrivenShadowBatchProjection,
 ): boolean {
@@ -1232,7 +1208,7 @@ function shadowBatchMaterialGroup(
   return materialGroup;
 }
 
-function assignShadowBatchBindings(
+export function assignShadowBatchBindings(
   view: GpuDrivenView,
   batch: GpuDrivenBatch,
   projection: GpuDrivenShadowBatchProjection,
@@ -1261,6 +1237,13 @@ function assignShadowBatchBindings(
   observed.indexed = batch.key.drawKind === 'indexed';
   observed.windows = projection.visibleBindGroups;
   return observed as PreparedRasterBindings;
+}
+
+export function shadowsRecordDirectly(
+  identity: ShadowViewIdentity,
+  caps: RhiDevice['caps'],
+): boolean {
+  return identity.kind === 'directional' && caps.nativeVertexOnlyRenderBundles === false;
 }
 
 function prepareShadowBatchBindings(
@@ -1408,10 +1391,12 @@ function prepareGpuDrivenShadowIfPublished(
   // The WebGPU implementation that rejects vertex-only bundles also
   // serializes many small directional shadow bundles poorly. Keep the same
   // indirect draws and depth coverage in the pass's direct command stream.
-  const directBatches: PreparedRasterBindings[] | undefined =
-    identity.kind === 'directional' && c.runtime.device.caps.nativeVertexOnlyRenderBundles === false
-      ? []
-      : undefined;
+  const directBatches: PreparedRasterBindings[] | undefined = shadowsRecordDirectly(
+    identity,
+    c.runtime.device.caps,
+  )
+    ? []
+    : undefined;
   const bundles: RenderBundle[] = [];
   const workload =
     directBatches === undefined && captureWorkload
@@ -1626,16 +1611,75 @@ function depthClearPipeline(c: _InternalRenderPipelineContext): RenderPipeline {
     bindGroupLayouts: [],
   });
   if (!layout.ok) throw layout.error;
-  const created = device.createRenderPipeline({
-    label: STATIC_SHADOW_DEPTH_CLEAR_SHADER.label,
-    layout: layout.value,
-    vertex: { module: module.value, entryPoint: 'depth_clear_vs', buffers: [] },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
-  });
+  const created = device.createRenderPipeline(depthClearDescriptor(layout.value, module.value));
   if (!created.ok) throw created.error;
   depthClearPipelines.set(device, created.value);
   return created.value;
+}
+
+function depthClearDescriptor(
+  layout: import('@forgeax/engine-rhi').PipelineLayout,
+  module: import('@forgeax/engine-rhi').ShaderModule,
+): RenderPipelineDescriptor {
+  return {
+    label: STATIC_SHADOW_DEPTH_CLEAR_SHADER.label,
+    layout,
+    vertex: { module, entryPoint: 'depth_clear_vs', buffers: [] },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
+  };
+}
+const qualifiedDepthClear = new WeakMap<RhiDevice, RenderPipeline>();
+export function* prepareStaticShadowDepthClear(
+  runtime: _InternalRenderPipelineContext['runtime'],
+  current: () => boolean,
+): Generator<void | Promise<void>, () => boolean> {
+  const device = runtime.device;
+  const live = () => current() && runtime.device === device;
+  if (!live()) throw shadowProgramError('current shadow program device');
+  const cached = qualifiedDepthClear.get(device);
+  if (cached !== undefined && depthClearPipelines.get(device) === cached)
+    return () => depthClearPipelines.get(device) === cached;
+  const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
+  const create = device.createRenderPipelineAsync;
+  if (factory === undefined || create === undefined)
+    throw shadowProgramError('completion-qualified static shadow program');
+  const module = factory.createShaderModule(STATIC_SHADOW_DEPTH_CLEAR_SHADER).unwrap();
+  if (!live()) throw shadowProgramError('current shadow module owner');
+  yield;
+  const layout = device
+    .createPipelineLayout({ label: 'shadow-static-depth-clear.layout', bindGroupLayouts: [] })
+    .unwrap();
+  if (!live()) throw shadowProgramError('current shadow layout owner');
+  yield;
+  let result: import('@forgeax/engine-rhi').Result<RenderPipeline, RhiError> | undefined;
+  const failure: unknown[] = [];
+  if (!live()) throw shadowProgramError('current shadow compile owner');
+  const completion = Promise.resolve(
+    create.call(device, depthClearDescriptor(layout, module)),
+  ).then(
+    (value) => {
+      result = value;
+    },
+    (cause) => {
+      failure.push(cause);
+    },
+  );
+  while (result === undefined && failure.length === 0) yield completion;
+  if (failure.length > 0) throw failure[0];
+  if (!live() || result === undefined) throw shadowProgramError('current completed shadow program');
+  const pipeline = result.unwrap();
+  depthClearPipelines.set(device, pipeline);
+  qualifiedDepthClear.set(device, pipeline);
+  return () => depthClearPipelines.get(device) === pipeline;
+}
+
+function shadowProgramError(expected: string): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected,
+    hint: 'prepare the current actual static shadow program before accepting this Source',
+  });
 }
 
 /** The texel scissor of a normalized rect on a square target; undefined when empty. */
@@ -1755,7 +1799,6 @@ export function encodeDirectionalShadowPass(
   const directionalIdentity = reuseAdjacentShadow
     ? directionalShadowViewIdentity(cascadeIndex)
     : { kind: 'directional' as const, index: cascadeIndex };
-  const pipeline = shadowPipeline(c);
   const viewBg = ensureTypedShadowViewBg(
     c,
     0,
@@ -1781,7 +1824,6 @@ export function encodeDirectionalShadowPass(
     c,
     pass,
     directionalIdentity,
-    pipeline,
     viewBg,
     materialBg,
     capable,
@@ -1811,7 +1853,6 @@ export function encodePointShadowPass(
   reuseAdjacentShadow = false,
 ): void {
   if (pointShadowAt(c, layer) === undefined) return;
-  const pipeline = shadowPipeline(c, true);
   const viewBg = ensureTypedShadowViewBg(
     c,
     pointShadowViewOffset(layer, face),
@@ -1831,13 +1872,10 @@ export function encodePointShadowPass(
       });
     return;
   }
-  if (pipeline === null && !capable && !hasExpectedShadowCasters(c) && drawFeatures === undefined)
-    return;
   recordAdmittedShadowView(
     c,
     pass,
     pointIdentity,
-    pipeline,
     viewBg,
     materialBg,
     capable,
@@ -1854,7 +1892,6 @@ export function encodeSpotShadowPass(
   reuseAdjacentShadow = false,
 ): void {
   if (spotShadowAt(c, tile) === undefined) return;
-  const pipeline = shadowPipeline(c);
   const viewBg = ensureTypedShadowViewBg(
     c,
     0,
@@ -1874,13 +1911,10 @@ export function encodeSpotShadowPass(
       });
     return;
   }
-  if (pipeline === null && !capable && !hasExpectedShadowCasters(c) && drawFeatures === undefined)
-    return;
   recordAdmittedShadowView(
     c,
     pass,
     spotIdentity,
-    pipeline,
     viewBg,
     materialBg,
     capable,
@@ -1894,7 +1928,6 @@ function recordAdmittedShadowView(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
   identity: ShadowViewIdentity,
-  pipeline: RenderPipeline | null,
   viewBg: BindGroup,
   materialBg: BindGroup,
   capable: boolean,
@@ -1928,7 +1961,7 @@ function recordAdmittedShadowView(
   recordShadowCasterDraws(
     c,
     pass,
-    pipeline,
+    null,
     c.meshBindGroup,
     gpuRecord?.selections,
     identity.kind === 'point',
@@ -2015,6 +2048,12 @@ export function buildMatchedMaterialHandlesByRenderable(
   return handlesByRenderable;
 }
 
+function stockShadowDispatch(pass: MaterialDispatchPass): MaterialDispatchPass {
+  return pass.materialShaderId === 'forgeax::default-standard-pbr'
+    ? { ...pass, materialShaderId: SHADOW_CASTER_SHADER_ID }
+    : pass;
+}
+
 /** The request is shared by hidden preparation and the real ShadowCaster draw. */
 function resolveShadowMaterialPipeline(
   c: {
@@ -2068,9 +2107,8 @@ function resolveShadowMaterialPipeline(
       undefined,
       undefined,
       entry.mesh.layoutProjection,
-      // Built-in variants reuse validated prewarm modules, including
-      // adapters with no synchronous shader factory. Visible authored residuals
-      // validate through preflight before recording reuses their prepared PSO.
+      // Preparation validates the selected WGSL with the actual device before
+      // the raster pass needs its pipeline synchronously.
       preparation || entryShadowShaderId === SHADOW_CASTER_SHADER_ID ? 'validated' : 'immediate',
       entryShadowShaderId === SHADOW_CASTER_SHADER_ID ? (skinned ? 'pbr-skin' : 'pbr') : undefined,
       undefined, // vertexEntryPoint
@@ -2491,10 +2529,7 @@ export function prepareHiddenShadowMaterialPipelines(
       const material = accepted.snapshot;
       for (const authored of accepted.passes) {
         if (authored.tags.LightMode !== 'ShadowCaster') continue;
-        const pass =
-          authored.materialShaderId === 'forgeax::default-standard-pbr'
-            ? { ...authored, materialShaderId: SHADOW_CASTER_SHADER_ID }
-            : authored;
+        const pass = stockShadowDispatch(authored);
         for (const reflected of reflections.size === 0 ? [false] : reflections) {
           if (
             resolveShadowMaterialPipeline(
@@ -2523,7 +2558,7 @@ export function prepareHiddenShadowMaterialPipelines(
 }
 
 /** Follow authored module ownership even when the cooked key is content-addressed. */
-function authoredShadowRequiresPreparation(
+function shadowDispatchRequiresPreparation(
   material: MaterialSnapshot,
   pass: MaterialDispatchPass,
 ): boolean {
@@ -2532,7 +2567,7 @@ function authoredShadowRequiresPreparation(
     pass.materialShaderId === 'forgeax::default-standard-pbr' ||
     pass.materialShaderId === SHADOW_CASTER_SHADER_ID
   )
-    return false;
+    return true;
   const program = material.passes[pass.passIndex]?.program;
   return (
     program === undefined ||
@@ -2542,7 +2577,7 @@ function authoredShadowRequiresPreparation(
   );
 }
 
-/** Validate authored residual modules before shadow recording can synchronously use them. */
+/** Prepare visible residual ShadowCaster pipelines before synchronous recording. */
 function prepareVisibleShadowMaterialPipelines(
   c: _InternalRenderPipelineContext,
   reflections: ReadonlySet<boolean>,
@@ -2558,7 +2593,8 @@ function prepareVisibleShadowMaterialPipelines(
       if (submesh === undefined || !isTriangleTopology(submesh.topology)) continue;
       const accepted = shadowMaterial(c, entry.source, submesh.materialSlot);
       for (const pass of accepted.passes) {
-        if (!authoredShadowRequiresPreparation(accepted.snapshot, pass)) continue;
+        if (!shadowDispatchRequiresPreparation(accepted.snapshot, pass)) continue;
+        const shadowDispatch = stockShadowDispatch(pass);
         pipelines ??= new ShadowPipelineSelections();
         for (const reflected of reflections) {
           if (
@@ -2569,7 +2605,7 @@ function prepareVisibleShadowMaterialPipelines(
               submesh.topology,
               accepted.snapshot,
               pass,
-              pass,
+              shadowDispatch,
               reflected,
               false,
               true,
@@ -2615,7 +2651,7 @@ export function prepareShadowMaterialPipelines(
 export function recordShadowCasterDraws(
   c: _InternalRenderPipelineContext,
   shadowPass: RhiRenderPassEncoder,
-  shadowPipeline: RenderPipeline | null,
+  boundPipeline: RenderPipeline | null,
   shadowMeshBindGroup: BindGroup | null,
   gpuSelections: readonly GpuDrawSelection[] | undefined,
   reflected = false,
@@ -2630,7 +2666,7 @@ export function recordShadowCasterDraws(
     recordShadowCasterDrawsBody(
       c,
       shadowPass,
-      shadowPipeline,
+      boundPipeline,
       shadowMeshBindGroup,
       gpuSelections,
       reflected,
@@ -2648,7 +2684,7 @@ export function recordShadowCasterDraws(
 function recordShadowCasterDrawsBody(
   c: _InternalRenderPipelineContext,
   shadowPass: RhiRenderPassEncoder,
-  shadowPipeline: RenderPipeline | null,
+  boundPipeline: RenderPipeline | null,
   shadowMeshBindGroup: BindGroup | null,
   gpuSelections: readonly GpuDrawSelection[] | undefined,
   reflected: boolean,
@@ -2672,12 +2708,9 @@ function recordShadowCasterDrawsBody(
   // setVertexBuffer / setIndexBuffer call.
   let shadowLastVertexBuffer: GpuBuffer | null = null;
   let shadowLastIndexBuffer: GpuBuffer | null = null;
-  // bug-20260619-csm RC-3 (D-3): track the currently-bound shadow PSO so
-  // per-entity setPipeline only fires on change (same de-dup discipline as
-  // vertex/index buffers above). The default-shadow-caster PSO is already
-  // bound by the setPipeline call above; the loop switches to a custom
-  // ShadowCaster PSO when a material supplies one.
-  let shadowLastPipeline = shadowPipeline;
+  // Each residual draw selects its exact pipeline; the supplied pipeline is
+  // only a binding already installed by the caller.
+  let shadowLastPipeline = boundPipeline;
   let materialDeps: PerSubmeshMaterialBgDeps | undefined;
   const identityInstanceDraws = [
     { buffer: pipelineState.identityInstanceBuffer, instanceCount: 1 },
@@ -2777,10 +2810,7 @@ function recordShadowCasterDrawsBody(
         for (const authoredPass of passes) {
           if (authoredPass.tags.LightMode !== 'ShadowCaster') continue;
           const selectAuthoredShadowCasterPipeline = () => {
-            const shadowDispatch: MaterialDispatchPass =
-              authoredPass.materialShaderId === 'forgeax::default-standard-pbr'
-                ? { ...authoredPass, materialShaderId: SHADOW_CASTER_SHADER_ID }
-                : authoredPass;
+            const shadowDispatch = stockShadowDispatch(authoredPass);
             const entryShadowShaderId = shadowDispatch.materialShaderId;
             const receiver =
               terrainReceiver !== undefined &&
@@ -2977,9 +3007,23 @@ function recordShadowCasterDrawsBody(
  * matches; scene-table growth or recovery must create a fresh bind group.
  */
 function ensureSpotShadowMaterialBg(c: _InternalRenderPipelineContext): BindGroup | null {
-  const { runtime, frameState, pipelineState } = c;
+  return prepareShadowSingletonMaterialBinding(
+    c.runtime,
+    c.frameState,
+    c.pipelineState,
+    shadowSingletonSceneMaterialBuffer(c),
+    c.bindGroupCounts,
+  );
+}
+
+export function prepareShadowSingletonMaterialBinding(
+  runtime: _InternalRenderPipelineContext['runtime'],
+  frameState: _InternalRenderPipelineContext['frameState'],
+  pipelineState: _InternalRenderPipelineContext['pipelineState'],
+  sceneMaterialBuffer: Buffer,
+  counts: _InternalRenderPipelineContext['bindGroupCounts'],
+): BindGroup | null {
   const fb = pipelineState.skylightFallback;
-  const sceneMaterialBuffer = shadowSingletonSceneMaterialBuffer(c);
   const handles = [
     pipelineState.materialBindGroupLayout,
     meshSsboBufferBinding(pipelineState.materialUniformBuffer, 0).buffer,
@@ -3068,22 +3112,28 @@ function ensureSpotShadowMaterialBg(c: _InternalRenderPipelineContext): BindGrou
       },
     });
   }
+  const descriptor = {
+    label: 'shadow-material-bg',
+    layout: pipelineState.materialBindGroupLayout,
+    entries: merged,
+  };
   const r = getOrCreateFromChainResult(
     frameState.shadowMaterialBindGroups,
     handles,
     'shadow-material-singleton',
-    () =>
-      runtime.device.createBindGroup({
-        label: 'shadow-material-bg',
-        layout: pipelineState.materialBindGroupLayout,
-        entries: merged,
-      }),
-    c.bindGroupCounts,
+    () => runtime.device.createBindGroup(descriptor),
+    counts,
   );
   if (!r.ok) {
     runtime.errorRegistry.fire(r.error);
     return null;
   }
+  captureShadowMaterialBinding(r.value, {
+    cache: frameState.shadowMaterialBindGroups,
+    handles,
+    descriptor,
+    sceneBuffer: sceneMaterialBuffer,
+  });
   return r.value;
 }
 

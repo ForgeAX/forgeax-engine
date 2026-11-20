@@ -7,8 +7,29 @@ import {
   standardSurfaceParameters,
   unlitMaterialParameters,
 } from '@forgeax/engine-types';
+import type { MaterialCookedPass } from './cook.js';
+import { terrainProgramSource } from './terrain-program.js';
 
 export const UNLIT_ROOT_MODULES = new Set(['forgeax_material::unlit', 'forgeax::default-unlit']);
+
+export function supportsMaterialViewClipping(module: string): boolean {
+  return (
+    isStandardRootModule(terrainProgramSource(module)?.module ?? module) ||
+    UNLIT_ROOT_MODULES.has(module) ||
+    module === 'forgeax::default-shadow-caster'
+  );
+}
+
+export function supportsMaterialLodCoverage(pass: MaterialCookedPass): boolean {
+  return (
+    pass.sceneCompile !== undefined &&
+    pass.context.capability !== 'uniform-fallback' &&
+    (pass.context.geometry === 'mesh' || pass.context.geometry === 'skinned') &&
+    (pass.module === 'forgeax::default-shadow-caster' ||
+      UNLIT_ROOT_MODULES.has(pass.module) ||
+      (isStandardRootModule(pass.module) && pass.context.geometry !== 'skinned'))
+  );
+}
 
 /**
  * Pack JSON keeps the authored pass intentionally small, but the renderer's

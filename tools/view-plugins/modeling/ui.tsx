@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { createRoot } from 'react-dom/client';
 import {
  type CheckpointRow, checkpointRows, draftValues, type DraftHandle, type FacePick, highlightOverlays, mergePick, type ModelingHost,
- pickSize, pixelBox, pixelRay, type RenderedView, selectorReference, sliderValue, slidersOf, stabilityNotes, type SynthesisReport,
+ pickSize, pixelBox, pixelRay, type RenderedView, selectorReference, sliderValue, slidersOf, type SynthesisReport,
 } from './model.ts';
+import { useDiagnosticTranslation } from '../i18n.ts';
 import './style.css';
 
 const VIEWS = ['iso', 'front', 'top', 'right', 'back', 'left', 'bottom'] as const;
@@ -17,8 +18,18 @@ function useDraft(handle: DraftHandle | undefined) {
  return useSyncExternalStore(l => handle?.subscribe(l) ?? (() => {}), () => handle?.getSnapshot() ?? empty, () => empty);
 }
 
+function localizedStabilityNotes(report: SynthesisReport | undefined, t: ReturnType<typeof useDiagnosticTranslation>): string[] {
+ if (!report) return [];
+ if (report.fallback) return [t('fallbackNote')];
+ if (report.jaccard < 1) return [t('bestCombination', { jaccard: report.jaccard.toFixed(3) })];
+ return report.checks.filter(c => c.error !== undefined || c.jaccard !== 1).map(c => c.error
+  ? t('rebuildFailed', { parameter: c.parameter, value: c.value, code: c.error.code })
+  : `${c.parameter} = ${c.value}: J = ${c.jaccard}`);
+}
+
 /** Checkpoints, sliders and pick -> selector; every value comes from an Engine operation. */
 function ModelingPanel({ host }: { host: ModelingHost }) {
+ const t = useDiagnosticTranslation();
  const context = useSyncExternalStore(l => host.subscribe(l), () => host.context(), () => host.context());
  const [sources, setSources] = useState<string[]>([]);
  const [source, setSource] = useState('');
@@ -31,9 +42,9 @@ function ModelingPanel({ host }: { host: ModelingHost }) {
  const [rendered, setRendered] = useState<{ view: RenderedView; url: string; key: string }>();
  const [pick, setPick] = useState<FacePick>({});
  const [report, setReport] = useState<SynthesisReport>();
- const [recheck, setRecheck] = useState<{ key: string; expression: string; text: string }>();
+ const [recheck, setRecheck] = useState<{ key: string; expression: string } & ({ count: number } | { error: string })>();
  const [busy, setBusy] = useState('');
- const [error, setError] = useState('');
+ const [error, setError] = useState<string | { key: 'pickingUnavailable' | 'openPreview' }>('');
  const [preview, setPreview] = useState('');
  const drag = useRef<[number, number] | undefined>(undefined);
  const [box, setBox] = useState<[number, number, number, number]>();
@@ -95,8 +106,8 @@ function ModelingPanel({ host }: { host: ModelingHost }) {
   const key = valuesKey;
   const expression = report.expression;
   void host.operations.select({ ...where(state), selector: expression }).then(
-   out => { if (live) setRecheck({ key, expression, text: `${out.selected.count} faces at the current parameters` }); },
-   e => { if (live) setRecheck({ key, expression, text: message(e) }); });
+   out => { if (live) setRecheck({ key, expression, count: out.selected.count }); },
+   e => { if (live) setRecheck({ key, expression, error: message(e) }); });
   return () => { live = false; };
  }, [host, valuesKey, report?.expression]);
 
@@ -125,61 +136,61 @@ function ModelingPanel({ host }: { host: ModelingHost }) {
   const end = local(event);
   const moved = Math.hypot(end[0] - start[0], end[1] - start[1]) > 4;
   const added = moved ? pixelBox(rendered.view, start, end, !event.altKey) : pixelRay(rendered.view, end[0], end[1]);
-  if (!added) { setError('Picking needs an orthographic view mapping from model.render.'); return; }
+  if (!added) { setError({ key: 'pickingUnavailable' }); return; }
   const next = mergePick(pick, 'halfWidth' in added ? { boxes: [added] } : { rays: [added] }, !event.shiftKey);
   setPick(next); synthesize(next);
  };
  const highlight = async (clear = false) => {
   const target = context.previews.find(p => p.targetId === preview) ?? context.previews.find(p => rows.some(r => r.checkpoint === undefined && r.name === p.label)) ?? context.previews[0];
-  if (!target) { setError('Open the Pack output in a preview to highlight it there.'); return; }
+  if (!target) { setError({ key: 'openPreview' }); return; }
   try { await host.setOverlays(target, highlightOverlays(clear ? undefined : report)); } catch (e) { setError(message(e)); }
  };
- if (!context.projectId) return <p className="fx-model-note">Open a project to inspect its modeling Packs.</p>;
- const notes = report ? stabilityNotes(report) : [];
+ if (!context.projectId) return <p className="fx-model-note">{t('openProject')}</p>;
+ const notes = localizedStabilityNotes(report, t);
  return <div className="fx-model" data-modeling-status={busy || (error ? 'error' : 'idle')}>
   <header className="fx-model-bar">
-   <label>Pack <select aria-label="Modeling Pack" value={source} onChange={e => { setSource(e.target.value); setPick({}); setReport(undefined); }}>
+   <label>{t('pack')} <select aria-label={t('modelingPack')} value={source} onChange={e => { setSource(e.target.value); setPick({}); setReport(undefined); }}>
     {sources.map(s => <option key={s} value={s}>{s}</option>)}</select></label>
-   <label>View <select aria-label="View" value={view} onChange={e => setView(e.target.value as (typeof VIEWS)[number])}>{VIEWS.map(v => <option key={v}>{v}</option>)}</select></label>
-   <span role="status">{busy}</span>
+   <label>{t('view')} <select aria-label={t('view')} value={view} onChange={e => setView(e.target.value as (typeof VIEWS)[number])}>{VIEWS.map(v => <option key={v} value={v}>{t(v)}</option>)}</select></label>
+   <span role="status">{busy === 'Inspecting' ? t('inspecting') : busy === 'Synthesizing' ? t('synthesizing') : ''}</span>
   </header>
-  {error ? <p role="alert" className="fx-model-error">{error}</p> : null}
+  {error ? <p role="alert" className="fx-model-error">{typeof error === 'string' ? error : t(error.key)}</p> : null}
   <div className="fx-model-columns">
-   <section aria-label="Checkpoints" className="fx-model-checkpoints">
-    <h2>Checkpoints</h2>
+   <section aria-label={t('checkpoints')} className="fx-model-checkpoints">
+    <h2>{t('checkpoints')}</h2>
     {rows.map(row => <button key={row.key} className={row.key === state?.key ? 'selected' : ''} data-checkpoint={row.checkpoint ?? 'final'} onClick={() => { setSelected(row.key); setPick({}); setReport(undefined); }}>
      {thumbs[`${source}|${row.key}:${valuesKey}`] ? <img alt="" src={thumbs[`${source}|${row.key}:${valuesKey}`]} /> : <span className="fx-model-thumb" />}
-     <span>{row.name}</span><small>{row.faces} faces{row.opIndex === undefined ? '' : ` · op ${row.opIndex}`}</small>
+     <span>{row.name}</span><small>{t('faces', { count: row.faces })}{row.opIndex === undefined ? '' : ` · op ${row.opIndex}`}</small>
     </button>)}
    </section>
-   <section aria-label="Pick" className="fx-model-view">
+   <section aria-label={t('pick')} className="fx-model-view">
     <div className="fx-model-image" onPointerDown={e => { drag.current = local(e); }} onPointerMove={e => { if (drag.current) { const p = local(e); setBox([drag.current[0], drag.current[1], p[0], p[1]]); } }} onPointerUp={onPointerUp}>
-     {rendered ? <img alt={`${state?.name ?? ''} ${view}`} src={rendered.url} draggable={false} data-rendered={rendered.key} /> : <span className="fx-model-thumb" />}
+     {rendered ? <img alt={`${state?.name ?? ''} ${t(view)}`} src={rendered.url} draggable={false} data-rendered={rendered.key} /> : <span className="fx-model-thumb" />}
      {box ? <span className="fx-model-box" style={{ left: `${Math.min(box[0], box[2]) / SIZE * 100}%`, top: `${Math.min(box[1], box[3]) / SIZE * 100}%`, width: `${Math.abs(box[2] - box[0]) / SIZE * 100}%`, height: `${Math.abs(box[3] - box[1]) / SIZE * 100}%` }} /> : null}
     </div>
-    <p className="fx-model-note">Click a face, drag a box (Alt: include hidden faces), Shift adds. {pickSize(pick)} picks.</p>
+    <p className="fx-model-note">{t('pickCount', { count: pickSize(pick) })}</p>
    </section>
-   <section aria-label="Selector" className="fx-model-side">
-    <h2>Parameters</h2>
-    {sliders.length === 0 ? <p className="fx-model-note">No ranged numeric parameters.</p> : sliders.map(s => {
+   <section aria-label={t('selector')} className="fx-model-side">
+    <h2>{t('parameters')}</h2>
+    {sliders.length === 0 ? <p className="fx-model-note">{t('noParameters')}</p> : sliders.map(s => {
      const value = typeof draft?.values[s.name] === 'number' ? draft.values[s.name] as number : s.min;
      return <label key={s.name} className="fx-model-slider">{s.name}
       <input type="range" aria-label={s.name} min={s.min} max={s.max} step={s.step} value={value} onChange={e => { handle?.edit(s.name, sliderValue(s, Number(e.target.value))); void handle?.flush().catch(err => setError(message(err))); }} />
       <output>{value}</output></label>;
     })}
-    {draft?.unsaved ? <button onClick={() => void handle?.save().catch(e => setError(message(e)))}>Save parameters</button> : null}
-    <h2>Selector</h2>
+    {draft?.unsaved ? <button onClick={() => void handle?.save().catch(e => setError(message(e)))}>{t('saveParameters')}</button> : null}
+    <h2>{t('selector')}</h2>
     {report ? <div className="fx-model-report" data-stability={report.stability}>
      <code data-selector>{report.expression}</code>
-     <p>J = {report.jaccard} · {report.matched}/{report.picked} faces · <strong>{report.stability}</strong>{report.fallback ? ' (positional fallback)' : ''}</p>
+     <p>J = {report.jaccard} · {t('faces', { count: `${report.matched}/${report.picked}` })} · <strong>{t(report.stability)}</strong>{report.fallback ? t('positionalFallback') : ''}</p>
      {notes.map(n => <p key={n} className="fx-model-note">{n}</p>)}
-     {recheck?.expression === report.expression ? <p className="fx-model-note" data-recheck={recheck.key}>{recheck.text}</p> : null}
-     <button onClick={() => void host.copy(selectorReference(report, { source, values }).text)}>Copy for AI</button>
-     {context.previews.length > 1 ? <select aria-label="Preview" value={preview} onChange={e => setPreview(e.target.value)}>{context.previews.map(p => <option key={p.targetId} value={p.targetId}>{p.label}</option>)}</select> : null}
-     <button disabled={context.previews.length === 0} onClick={() => void highlight()}>Highlight in preview</button>
-     <button disabled={context.previews.length === 0} onClick={() => void highlight(true)}>Clear</button>
-     {report.alternatives.length > 0 ? <details><summary>Alternatives</summary>{report.alternatives.map(a => <p key={a.expression}><code>{a.expression}</code> J = {a.jaccard}</p>)}</details> : null}
-    </div> : <p className="fx-model-note">Pick faces to synthesize a selector.</p>}
+     {recheck?.expression === report.expression ? <p className="fx-model-note" data-recheck={recheck.key}>{'count' in recheck ? t('recheck', { count: recheck.count }) : recheck.error}</p> : null}
+     <button onClick={() => void host.copy(selectorReference(report, { source, values }).text)}>{t('copyAi')}</button>
+     {context.previews.length > 1 ? <select aria-label={t('preview')} value={preview} onChange={e => setPreview(e.target.value)}>{context.previews.map(p => <option key={p.targetId} value={p.targetId}>{p.label}</option>)}</select> : null}
+     <button disabled={context.previews.length === 0} onClick={() => void highlight()}>{t('highlight')}</button>
+     <button disabled={context.previews.length === 0} onClick={() => void highlight(true)}>{t('clear')}</button>
+     {report.alternatives.length > 0 ? <details><summary>{t('alternatives')}</summary>{report.alternatives.map(a => <p key={a.expression}><code>{a.expression}</code> J = {a.jaccard}</p>)}</details> : null}
+    </div> : <p className="fx-model-note">{t('pickFaces')}</p>}
    </section>
   </div>
  </div>;

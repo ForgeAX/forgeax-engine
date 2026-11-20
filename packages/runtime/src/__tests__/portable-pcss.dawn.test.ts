@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -15,7 +15,9 @@ it('qualifies PCSS blocker-distance penumbra on Dawn', { timeout: 180_000 }, asy
     target.canvas,
     { rhi: recorder.backend.rhi },
     {
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true })),
+      shaderManifestUrl: shaderManifestUrl(
+        await buildEngineShaderTemplateManifest({ pointShadows: true }),
+      ),
     },
   );
   if (!created.ok) {

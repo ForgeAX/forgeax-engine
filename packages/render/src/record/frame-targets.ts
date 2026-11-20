@@ -28,6 +28,7 @@ import {
   type PipelineState,
   type RenderSystemInternals,
 } from './render-context';
+import { surfaceTextureView } from './surface-views';
 import { hasShadowPipelineDemand } from './view-pipeline-demand';
 
 /** The stable Render owner dimension for a compiled graph: a view entity or the primary owner. */
@@ -432,31 +433,17 @@ export function acquireSwapChainTarget(
   };
 }
 
-// A surface that hands back the same texture again (native hosts, headless
-// carriers) reuses its view; a browser's per-frame texture misses and is
-// released with that texture.
-const swapChainViews = new WeakMap<
-  Texture,
-  { readonly format: GPUTextureFormat | undefined; readonly view: TextureView }
->();
-
 function swapChainView(
   internals: RenderSystemInternals,
   texture: Texture,
   format: GPUTextureFormat | undefined,
 ): TextureView | null {
-  const cached = swapChainViews.get(texture);
-  if (cached !== undefined && cached.format === format) return cached.view;
-  const viewResult = internals.device.createTextureView(
-    texture,
-    format === undefined ? {} : { format },
-  );
-  if (!viewResult.ok) {
-    internals.errorRegistry.fire(viewResult.error);
+  const result = surfaceTextureView(internals, texture, format);
+  if (!result.ok) {
+    internals.errorRegistry.fire(result.error);
     return null;
   }
-  swapChainViews.set(texture, { format, view: viewResult.value });
-  return viewResult.value;
+  return result.value;
 }
 
 /** Preparation reads dimensions without acquiring the canvas's next texture. */

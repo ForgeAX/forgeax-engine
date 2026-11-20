@@ -1,10 +1,10 @@
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { Terrain } from '@forgeax/engine-terrain';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
-
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 
@@ -49,7 +49,7 @@ export async function verifyRuntimeTerrain(
     (await createRenderer(
       { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
       undefined,
-      { shaderManifestUrl: url },
+      { shaderManifestUrl: url, prepareShaderProgramCompiler },
       {
         rhi,
         createShaderModule: (device, descriptor) => rhi.createShaderModule(device, descriptor),

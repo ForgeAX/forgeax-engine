@@ -218,11 +218,12 @@ function highlighted(value: string, query: string) {
 }
 
 export function SceneTreePanel(props: { client?: SceneSelectionClient } & AssetBrowserActions) {
+  const { t } = useTranslation();
   if (!props.client) {
     return (
       <EmptyState
-        title="Scene hierarchy unavailable"
-        description="Connect to the View workspace API to load the Engine scene tree."
+        title={t('sceneTree.unavailable')}
+        description={t('sceneTree.unavailableDescription')}
       />
     );
   }
@@ -324,7 +325,7 @@ function SceneTreeLivePanel({ client, browseAsset, canBrowseAsset, assetReferenc
     return (
       <EmptyState
         title={t('sceneTree.unavailable')}
-        description="Open a scene preview from the Content Browser to load the Engine hierarchy."
+        description={t('sceneTree.openPreview')}
       />
     );
   }
@@ -336,9 +337,9 @@ function SceneTreeLivePanel({ client, browseAsset, canBrowseAsset, assetReferenc
       />
     );
   }
-  if (rows.length === 0) return <EmptyState title="Loading hierarchy" description="Reading the selected Engine target." />;
+  if (rows.length === 0) return <EmptyState title={t('sceneTree.loading')} description={t('sceneTree.loadingDescription')} />;
   return <>
-    {hasMore && <button type="button" onClick={loadMore}>Showing {Math.max(0, rows.length - 1)} entities. Load more</button>}
+    {hasMore && <button type="button" onClick={loadMore}>{t('sceneTree.loadMore', { count: Math.max(0, rows.length - 1) })}</button>}
     <SceneTreeRowsPanel key={`${workspace.preview?.target?.targetId}:${workspace.preview?.target?.generation}`}
       client={client} rows={rows} filterOptions={filterOptions} browseAsset={browseAsset} canBrowseAsset={canBrowseAsset} assetReferences={assetReferences} />
   </>;
@@ -679,7 +680,7 @@ function SceneTreeRowsPanel({
           </Toolbar>
         )}
         center={(
-          <SearchField
+          <SearchField clearLabel={t('sceneTree.clearSearch')}
             className="fx-hier-search"
             data-testid="hier-search"
             data-action={SCENE_TREE_ACTIONS.search}

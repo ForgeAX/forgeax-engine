@@ -1,5 +1,10 @@
 import { box3, frustum } from '@forgeax/engine-math';
 import { buildCameraFrusta } from '../camera-frusta';
+import {
+  assertRenderResidencySelection,
+  type RenderResidencySelection,
+  residencySelected,
+} from '../gpu-driven/batch-residency';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type {
   CameraAdmission,
@@ -33,6 +38,7 @@ let cullProjectedIndexScratch = new Int32Array(0);
  * projection, residency validation, render bundles) on its cached path.
  */
 export interface PersistentCullMemo {
+  readonly residencySelection: RenderResidencySelection | undefined;
   readonly meshes: MeshFrame | undefined;
   readonly sourceSubsurface: SubsurfaceSelection;
   readonly authorSubsurface: SubsurfaceSelection;
@@ -55,6 +61,19 @@ interface PersistentCullResult {
 }
 
 const casterIndexCache = new WeakMap<DispatchList, ReadonlySet<number>>();
+
+function assertResidencyCurrent(selection: RenderResidencySelection | undefined): void {
+  if (selection !== undefined) assertRenderResidencySelection(selection);
+}
+
+function activeResidencyRecord(
+  record: RenderSceneSlot | undefined,
+  selection: RenderResidencySelection | undefined,
+): RenderSceneSlot | undefined {
+  return record !== undefined && residencySelected(selection, record.snapshot.residencyGroup)
+    ? record
+    : undefined;
+}
 
 /** Fixed dispatch lists are retained across pose frames; scan their casters once. */
 function shadowCasterIndices(dispatch: DispatchList): ReadonlySet<number> {
@@ -90,7 +109,9 @@ export function cullPersistentFrame(
   meshes?: MeshFrame,
   sourceOwner: object = frame.renderables,
   sourceRevision = 0,
+  residencySelection?: RenderResidencySelection,
 ): PersistentCullResult {
+  assertResidencyCurrent(residencySelection);
   return new PersistentFrameCull(
     frame,
     materials,
@@ -100,6 +121,7 @@ export function cullPersistentFrame(
     meshes,
     sourceOwner,
     sourceRevision,
+    residencySelection,
   ).run();
 }
 
@@ -153,12 +175,14 @@ class PersistentFrameCull {
     private readonly meshes: MeshFrame | undefined,
     private readonly sourceOwner: object,
     private readonly sourceRevision: number,
+    private readonly residencySelection: RenderResidencySelection | undefined,
   ) {
     const previous = memo?.value;
     this.previous = previous;
     this.newSources =
       previous?.sourceOwner !== sourceOwner ||
       previous?.sourceRevision !== sourceRevision ||
+      previous?.residencySelection !== residencySelection ||
       previous?.meshes !== meshes;
     this.sourceSubsurface =
       this.newSources || previous === undefined
@@ -217,6 +241,10 @@ class PersistentFrameCull {
   }
 
   private projectCandidate(candidate: RenderableSnapshot, index: number): void {
+    if (!residencySelected(this.residencySelection, candidate.residencyGroup)) {
+      this.noteDropped(index);
+      return;
+    }
     if (this.newSources) {
       this.sourceSubsurface.add(candidate, this.materials, this.meshes);
       if (candidate.authorVisible !== false)
@@ -323,6 +351,7 @@ class PersistentFrameCull {
   }
 
   readonly cameraVisible = (source: RenderableSnapshot): boolean => {
+    if (!residencySelected(this.residencySelection, source.residencyGroup)) return false;
     const deferred = this.deferredAt(source);
     if (deferred !== undefined) return this.testDeferred(deferred) !== false;
     const key = source.entityKey;
@@ -365,6 +394,7 @@ class PersistentFrameCull {
   }
 
   private testDeferred(position: number): boolean | undefined {
+    assertResidencyCurrent(this.residencySelection);
     if (this.deferredVisible.has(position)) return this.deferredVisible.get(position);
     const source = this.deferredSources[position] as RenderableSnapshot;
     const visible = this.boundsOf(
@@ -379,6 +409,7 @@ class PersistentFrameCull {
   }
 
   private deferredStatistics(): { readonly culled: number; readonly total: number } {
+    assertResidencyCurrent(this.residencySelection);
     if (this.deferredStats === undefined) {
       let deferredCulled = 0;
       let deferredTotal = 0;
@@ -413,6 +444,7 @@ class PersistentFrameCull {
     frame: ExtractedFrame,
     admittedSubsurface: SubsurfaceSelection,
   ): PersistentCullResult {
+    assertResidencyCurrent(this.residencySelection);
     return {
       frame,
       subsurface: {
@@ -436,6 +468,7 @@ class PersistentFrameCull {
         meshes: this.meshes,
         sourceOwner: this.sourceOwner,
         sourceRevision: this.sourceRevision,
+        residencySelection: this.residencySelection,
         sourceSubsurface: this.sourceSubsurface,
         authorSubsurface: this.authorSubsurface,
       };
@@ -468,6 +501,7 @@ class PersistentFrameCull {
         sourceRenderables: frame.renderables,
         sourceOwner: this.sourceOwner,
         sourceRevision: this.sourceRevision,
+        residencySelection: this.residencySelection,
         shadowOnly: this.shadowOnly,
         renderables: selected,
       };
@@ -527,6 +561,7 @@ class PersistentFrameCull {
         sourceRenderables: frame.renderables,
         sourceOwner: this.sourceOwner,
         sourceRevision: this.sourceRevision,
+        residencySelection: this.residencySelection,
         sourceDispatch: frame.dispatch,
         projectedIndex: this.projectedIndex.slice(0, frame.renderables.length),
         shadowOnly: this.shadowOnly,
@@ -550,6 +585,7 @@ class PersistentFrameCull {
 
 /** Fixed camera admission over native Scene slots; shared by display and capture views. */
 export interface SlotCullState {
+  readonly residencySelection: RenderResidencySelection | undefined;
   readonly admission: CameraAdmission;
   readonly planes: readonly Float32Array[];
   readonly slots: SceneSlotFrame;
@@ -569,6 +605,7 @@ export interface ResidualCullMemo extends SlotCullState {
 }
 
 interface ResidualCullBounds {
+  readonly residencySelection?: RenderResidencySelection;
   readonly meshes: MeshFrame;
   readonly skin: SkinSceneFrame | undefined;
   readonly unavailable: FrameSet;
@@ -651,6 +688,7 @@ function testResidualRows(
   boundsOf: SlotCullInput['boundsOf'],
   intersects: (aabb: box3.Box3) => boolean,
   meshes: MeshFrame,
+  residencySelection: RenderResidencySelection | undefined,
 ): ResidualCullFacts {
   if (dirty?.size === 0 && before !== undefined) return before;
   const aabb = box3.create();
@@ -666,6 +704,7 @@ function testResidualRows(
     const bounded: number[] = [];
     const skin: number[] = [];
     for (const record of records()) {
+      if (!residencySelected(residencySelection, record.snapshot.residencyGroup)) continue;
       if (record.snapshot.skinBinding !== undefined) skin.push(record.slot);
       if (!test(record)) continue;
       bounded.push(record.slot);
@@ -682,7 +721,8 @@ function testResidualRows(
   const bounded = new Map<number, boolean>();
   const skin = new Map<number, boolean>();
   for (const slot of dirty) {
-    const record = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
+    const candidate = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
+    const record = activeResidencyRecord(candidate, residencySelection);
     const known = record !== undefined && test(record);
     skin.set(slot, record?.snapshot.skinBinding !== undefined);
     bounded.set(slot, known);
@@ -726,10 +766,12 @@ export function cameraBoundsVisible(planes: readonly Float32Array[], aabb: box3.
 export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): SlotCullState {
   const { planes, materials, slots, candidates: residual, boundsOf } = input;
   const bounds = input;
+  assertResidencyCurrent(bounds.residencySelection);
   const sameFrusta = before !== undefined && samePlanes(before.planes, planes);
   const fixedBounds = !materials.hasBorrowedValues && before?.materials.hasBorrowedValues === false;
   let dirty =
     before !== undefined &&
+    before.residencySelection === bounds.residencySelection &&
     sameResidualMaterials(before.materials, materials) &&
     (before.meshes === bounds.meshes ||
       (fixedBounds && before.facts.bounds.meshesUnchanged(before.meshes, bounds.meshes)))
@@ -753,6 +795,7 @@ export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): Sl
     boundsOf,
     (aabb) => cameraBoundsVisible(planes, aabb),
     bounds.meshes,
+    bounds.residencySelection,
   );
   const hiddenSlots = facts.hiddenSlots;
   const admission: CameraAdmission =
@@ -766,7 +809,9 @@ export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): Sl
           residual,
           frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
         };
+  assertResidencyCurrent(bounds.residencySelection);
   return {
+    residencySelection: bounds.residencySelection,
     admission,
     planes,
     slots,
@@ -795,6 +840,7 @@ export function cullResidualFrame(
   memo: { value: ResidualCullMemo | undefined },
   bounds: ResidualCullBounds,
 ): PersistentCullResult {
+  assertResidencyCurrent(bounds.residencySelection);
   const planes = buildCameraFrusta(frame.cameras);
   const state = cullSceneSlots(
     {
@@ -821,6 +867,7 @@ export function cullResidualFrame(
   const ownedVisible = new Map<number, boolean | undefined>();
   const ownedAabb = box3.create();
   const ownedVisibility = (source: RenderableSnapshot, key: number): boolean | undefined => {
+    if (!residencySelected(bounds.residencySelection, source.residencyGroup)) return false;
     if (ownedVisible.has(key)) return ownedVisible.get(key);
     const visible = boundsOf(source, -1, ownedAabb)
       ? cameraBoundsVisible(planes, ownedAabb)
@@ -829,18 +876,21 @@ export function cullResidualFrame(
     return visible;
   };
   const cameraVisible = (source: RenderableSnapshot): boolean => {
+    if (!residencySelected(bounds.residencySelection, source.residencyGroup)) return false;
     const slot = gpuOwned.slots.identitySlot(source.entityKey);
     if (slot !== undefined && hiddenSlots.has(slot)) return false;
     return isResidualSlot(slot) || ownedVisibility(source, source.entityKey) !== false;
   };
   let ownedStats: { readonly culled: number; readonly total: number } | undefined;
   const ownedStatistics = () => {
+    assertResidencyCurrent(bounds.residencySelection);
     if (ownedStats !== undefined) return ownedStats;
     let ownedCulled = 0;
     let ownedTotal = 0;
     for (const source of frame.renderables) {
       const key = source.entityKey;
       if (
+        !residencySelected(bounds.residencySelection, source.residencyGroup) ||
         source.authorVisible === false ||
         isResidualSlot(gpuOwned.slots.identitySlot(source.entityKey))
       )
@@ -871,6 +921,7 @@ export function cullResidualFrame(
     },
     subsurface: { source: demand, authorVisible: demand, admitted: demand },
   };
+  assertResidencyCurrent(bounds.residencySelection);
   memo.value = { ...state, subsurface };
   return result;
 }

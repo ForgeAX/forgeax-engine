@@ -17,7 +17,7 @@ export function MaterialTextureReferences({ client, reader, workspace, reference
   loading: boolean;
   assetActions?: ResourceAssetActionResolver;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const [lease, restartLease] = useReducer((value: number) => value + 1, 0);
   const [thumbnails, setThumbnails] = useState<{ scope: string; rows: ReadonlyMap<string, WorkspaceThumbnail> }>();
@@ -45,7 +45,7 @@ export function MaterialTextureReferences({ client, reader, workspace, reference
               && materialThumbnailScope(reader.getSnapshot(), guids) === thumbnailScope;
             const thumbnail = visible && thumbnails?.scope === thumbnailScope ? thumbnails.rows.get(asset.guid) : undefined;
             return <div className="material-texture-reference" key={asset.guid} data-testid={`material-texture-${asset.guid}`}>
-              <AssetReferenceField value={value}
+              <AssetReferenceField value={value} locale={locale}
                 onOpen={actions?.onOpen ? () => { if (current()) actions.onOpen?.(); } : undefined}
                 onBrowse={actions?.onBrowse ? () => { if (current()) actions.onBrowse?.(); } : undefined}
                 labels={{ open: t('material.openTexture'), browse: t('material.browseTexture'), readOnly: t('material.readOnlyTexture'),

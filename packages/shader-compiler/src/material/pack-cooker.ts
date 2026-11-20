@@ -25,7 +25,13 @@ import type {
 import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
 import { withNodeMaterialWorkers } from './node-material-cooker.js';
 import { createNodeMaterialProgramCompiler, mapMaterialVariants } from './node-program-compiler.js';
-import { normalizeMaterialAsset, UNLIT_ROOT_MODULES } from './pack-material-contract.js';
+import {
+  normalizeMaterialAsset,
+  supportsMaterialLodCoverage,
+  supportsMaterialViewClipping,
+  UNLIT_ROOT_MODULES,
+} from './pack-material-contract.js';
+import { createMaterialTemplateDraft } from './pack-template.js';
 import {
   createMaterialPackVariantCompiler,
   materialPackSourceIdentity,
@@ -58,6 +64,7 @@ interface MaterialPackCookInput {
   /** Authored Pack publication generation; retained by material receipt identity. */
   readonly cookGeneration?: number;
   readonly table?: MaterialTable;
+  readonly publication?: 'templates';
 }
 
 /** Explicit build targets; the default remains the complete portable publication. */
@@ -246,6 +253,25 @@ function materialInput(value: unknown): MaterialPackCookInput {
     throw new Error('material cooker expected a MaterialAsset source');
   }
   return input as MaterialPackCookInput;
+}
+
+function materialInputRoots(
+  roots: readonly string[],
+  packagedRoots: readonly string[],
+  input: MaterialPackCookInput,
+): readonly string[] {
+  return [
+    ...roots,
+    ...(input.sourcePath === undefined ? [] : [dirname(resolve(input.sourcePath))]),
+    ...packagedRoots,
+  ];
+}
+
+function selectsMaterialTemplate(
+  input: MaterialPackCookInput,
+  profile: MaterialPackCookProfile | undefined,
+): boolean {
+  return input.publication === 'templates' && profile === undefined;
 }
 
 function unique(values: readonly string[]): readonly string[] {
@@ -452,7 +478,7 @@ export function createMaterialPackCooker(
           )
           .sort(),
       ];
-      const hash = createHash('sha256').update('material-pack-cooker/6');
+      const hash = createHash('sha256').update('material-pack-cooker/7');
       if (options.profile !== undefined) hash.update(`\0profile:${options.profile}`);
       const native = await getCompilerFingerprint();
       if (!native.ok) throw native.error;
@@ -494,11 +520,7 @@ export function createMaterialPackCooker(
         source: normalizeMaterialAsset(input.source),
       };
       const packagedRoots = materialShaderSourceRoots();
-      const sourceRoots = [
-        ...cookRoots,
-        ...(input.sourcePath === undefined ? [] : [dirname(resolve(input.sourcePath))]),
-        ...packagedRoots,
-      ];
+      const sourceRoots = materialInputRoots(cookRoots, packagedRoots, input);
       const sources = await collectSources(sourceRoots, packagedRoots);
       const aliases = materialModuleAliases(sources, normalizedInput);
       // An alias of an Engine-owned template retains that template's identity.
@@ -539,6 +561,9 @@ export function createMaterialPackCooker(
         templateAliases,
         input,
       });
+      const table = { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source };
+      if (selectsMaterialTemplate(input, options.profile))
+        return createMaterialTemplateDraft({ ...normalizedInput, table }, catalog.value);
       // The source catalog and material inputs are fixed for this publication.
       // Variant selection and native validation still run for each actual program.
       const preparedSurfaces: MaterialSurfacePreparation = {
@@ -555,7 +580,6 @@ export function createMaterialPackCooker(
         if (!cooked.ok) throw cooked.error;
         return cooked.value;
       };
-      const table = { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source };
       const resolved = resolveMaterialAsset(normalizedInput.guid, table);
       if (!resolved.ok) throw resolved.error;
       // The root selects skinning for every raster pass, including its shadow
@@ -739,20 +763,9 @@ export function createMaterialPackCooker(
       }
       // Publish independent receiving-view and scene-index coverage beside the
       // ordinary program, using the existing compiler cache and runtime selector.
-      const clippable = (module: string) =>
-        isStandardRootModule(terrainProgramSource(module)?.module ?? module) ||
-        UNLIT_ROOT_MODULES.has(module) ||
-        module === 'forgeax::default-shadow-caster';
-      const lodCapable = (pass: MaterialCookedPass) =>
-        pass.sceneCompile !== undefined &&
-        pass.context.capability !== 'uniform-fallback' &&
-        (pass.context.geometry === 'mesh' || pass.context.geometry === 'skinned') &&
-        (pass.module === 'forgeax::default-shadow-caster' ||
-          UNLIT_ROOT_MODULES.has(pass.module) ||
-          (isStandardRootModule(pass.module) && pass.context.geometry !== 'skinned'));
       const clippingContexts = new Map(
         passes
-          .filter((pass) => clippable(pass.module))
+          .filter((pass) => supportsMaterialViewClipping(pass.module))
           .map((pass) => [
             JSON.stringify([
               pass.context.backend,
@@ -777,7 +790,7 @@ export function createMaterialPackCooker(
             pass.context.geometry === plain.geometry &&
             (pass.context.visibleSurface === true) === (plain.visibleSurface === true),
         );
-        return candidates.some(lodCapable)
+        return candidates.some(supportsMaterialLodCoverage)
           ? [
               clipped,
               { ...plain, lodCoverage: true as const },
@@ -806,8 +819,8 @@ export function createMaterialPackCooker(
                       pass.context.geometry === clippingContext.geometry &&
                       (clippingContext.visibleSurface !== true ||
                         pass.context.visibleSurface === true) &&
-                      clippable(pass.module) &&
-                      (clippingContext.lodCoverage !== true || lodCapable(pass)),
+                      supportsMaterialViewClipping(pass.module) &&
+                      (clippingContext.lodCoverage !== true || supportsMaterialLodCoverage(pass)),
                   )
                   .map((pass) => pass.pass),
               ),
@@ -818,8 +831,8 @@ export function createMaterialPackCooker(
         passes.push(
           ...clipped.passes.filter(
             (pass) =>
-              clippable(pass.module) &&
-              (pass.context.lodCoverage !== true || lodCapable(pass)) &&
+              supportsMaterialViewClipping(pass.module) &&
+              (pass.context.lodCoverage !== true || supportsMaterialLodCoverage(pass)) &&
               (clippingRows[index]?.visibleSurface !== true ||
                 pass.context.visibleSurface === true),
           ),

@@ -98,6 +98,8 @@ export const SkyboxBackground = defineComponent('SkyboxBackground', {
   // keeps the portable mode/rotation controls and lets the owner re-resolve
   // the environment asset on the target world.
   equirect: { type: 'asset<equirect>', simulationTransient: true },
+  /** Linear rgba16float 2D panorama produced by a runtime GPU texture generator. */
+  generatedEquirect: { type: 'asset<gpu-texture>', simulationTransient: true },
   mode: { type: 'f32', default: SKYBOX_MODE_CUBEMAP },
   rotation: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
 });

@@ -248,3 +248,80 @@ it('pins earlier versions across suspended preparation without leaking into anot
     1,
   );
 });
+
+it('holds a prepared uniform address across inactive frames and transfers it back to active ownership', () => {
+  const { deps, world } = fixture();
+  const a = material(),
+    b = material(),
+    c = material(),
+    d = material();
+  const resources = materialUniformResources([]);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(b));
+  prepareMaterialUniform(deps, b.snapshot, world, resources);
+  const held = new MaterialUniformRecording();
+  const slot = held.hold(deps.runtime, b.snapshot);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a));
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(c));
+  expect(materialUniformSlot(deps.runtime, c.snapshot)).not.toBe(slot);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(b).with(c));
+  expect(materialUniformSlot(deps.runtime, b.snapshot)).toBe(slot);
+  held.complete();
+  held.complete();
+  prepareMaterialUniformFrame(
+    deps.runtime,
+    new MaterialFrame(undefined).with(a).with(b).with(c).with(d),
+  );
+  expect(materialUniformSlot(deps.runtime, d.snapshot)).not.toBe(slot);
+  expect(materialUniformSlot(deps.runtime, b.snapshot)).toBe(slot);
+});
+
+it('keeps an adopted old uniform version active after its prepared hold transfers', () => {
+  const { deps, world } = fixture();
+  const root = material(),
+    other = material();
+  const old = root.snapshot;
+  const oldFrame = new MaterialFrame(undefined).with(root);
+  prepareMaterialUniformFrame(deps.runtime, oldFrame);
+  prepareMaterialUniform(deps, old, world, materialUniformResources([]));
+  const held = new MaterialUniformRecording();
+  const oldSlot = held.hold(deps.runtime, old);
+  root.adopt({ ...old, roughness: 0.25 });
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(root));
+  expect(materialUniformSlot(deps.runtime, root.snapshot)).not.toBe(oldSlot);
+  prepareMaterialUniformFrame(deps.runtime, oldFrame);
+  expect(materialUniformSlot(deps.runtime, old)).toBe(oldSlot);
+  held.complete();
+  expect(materialUniformSlot(deps.runtime, other.snapshot)).not.toBe(oldSlot);
+  expect(materialUniformSlot(deps.runtime, old)).toBe(oldSlot);
+});
+
+it('releases a canceled cold uniform root that never entered the active MaterialFrame', () => {
+  const { deps, world } = fixture();
+  const a = material(),
+    b = material(),
+    c = material();
+  const active = new MaterialFrame(undefined).with(a);
+  prepareMaterialUniformFrame(deps.runtime, active);
+  const held = new MaterialUniformRecording();
+  prepareMaterialUniform(deps, b.snapshot, world, materialUniformResources([]));
+  const prepared = held.hold(deps.runtime, b.snapshot);
+  prepareMaterialUniformFrame(deps.runtime, active);
+  held.complete();
+  expect(
+    prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(c)),
+  ).toBe(2);
+  expect(materialUniformSlot(deps.runtime, c.snapshot)).toBe(prepared);
+});
+
+it('releases a canceled native preparation before any MaterialFrame was adopted', () => {
+  const { deps, world } = fixture();
+  const cold = material(),
+    next = material();
+  const held = new MaterialUniformRecording();
+  held.runPrepared(() =>
+    prepareMaterialUniform(deps, cold.snapshot, world, materialUniformResources([])),
+  );
+  const slot = held.hold(deps.runtime, cold.snapshot);
+  held.complete();
+  expect(materialUniformSlot(deps.runtime, next.snapshot)).toBe(slot);
+});

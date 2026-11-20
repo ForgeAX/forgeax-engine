@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-cli
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Quick contract
 
 Covers routine game work; stop here unless a task needs a section below. Run from the

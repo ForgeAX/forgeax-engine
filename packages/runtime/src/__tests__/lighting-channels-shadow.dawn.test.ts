@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
@@ -21,7 +21,7 @@ it('keeps direct matching independent of directional, spot and point shadow cast
       { rhi: recorder.backend.rhi },
       {
         shaderManifestUrl: shaderManifestUrl(
-          await buildEngineShaderManifest({ pointShadows: true }),
+          await buildEngineShaderTemplateManifest({ pointShadows: true }),
         ),
       },
     ),

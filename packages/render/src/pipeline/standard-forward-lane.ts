@@ -456,6 +456,7 @@ function addForwardSurfacePasses(
   const depth = graph.view(targets.depth.texture, { dimension: '2d', aspect: 'depth-only' });
   if (!depth.ok) return depth;
   const late = addGpuLateOcclusion(graph, {
+    nativeInputs: context.nativeInputs,
     gpuDriven,
     depth: depth.value,
     multisampled: targets.depth.sampleCount > 1,
@@ -779,6 +780,7 @@ function addForwardOpaquePasses(
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
   copySize: { readonly width: number; readonly height: number },
   occlusionResolved: boolean,
+  nativeInputs: StandardPipelineBuildContext['nativeInputs'],
 ): Result<void, RenderGraphError> {
   const main = addTypedScenePass(graph, mainOptions);
   if (!main.ok || occlusionResolved) return main;
@@ -789,6 +791,7 @@ function addForwardOpaquePasses(
   });
   if (!depthSample.ok) return depthSample;
   const late = addGpuLateOcclusion(graph, {
+    nativeInputs,
     gpuDriven,
     depth: depthSample.value,
     multisampled: scene.msaa,
@@ -1262,6 +1265,7 @@ function addForwardOpaqueStage(
     gpuDriven,
     renderInternalCopySize(topology),
     cloud.occlusionResolved,
+    context.nativeInputs,
   );
   if (!opaque.ok) return opaque;
   const opaquePair =
@@ -1652,9 +1656,7 @@ export function buildStandardForwardLane(
     return opaqueOptions;
   };
   const opaqueOptions = resolveForwardOpaqueOptions();
-  // The surface-data prepass already rasterized the opaque depth `main`
-  // would produce; seeding it lets `main` reject hidden fragments before
-  // shading instead of shading them and overwriting them later.
+  // A compatible surface-data prepass already wrote the exact main depth.
   const finishForwardScene = () => {
     const seeded = ssao.value.predepth === scene.depth;
     const unfoggedOpaque = forwardUnfoggedOpaqueOptions(

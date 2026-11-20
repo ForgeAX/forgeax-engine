@@ -146,7 +146,7 @@ async function fixture(materialIndices?: readonly number[]) {
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
+  expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(2);
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
@@ -162,7 +162,7 @@ async function fixture(materialIndices?: readonly number[]) {
     ...standardPbrInputs(device, shader, viewLayout),
     scene: {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     },
@@ -170,10 +170,10 @@ async function fixture(materialIndices?: readonly number[]) {
     meshBySlot: bySlot,
     viewBindGroupLayout: viewLayout,
   };
-  const prepare = () => {
+  const prepare = (commit = true) => {
     const frame = production.prepare(admitGpuFixture(input)).unwrap();
     if (frame === undefined) throw new Error('Expected admitted prepared frame');
-    frame._commitResourceReplacement();
+    if (commit) frame._commitResourceReplacement();
     return frame;
   };
   const unrelatedUpload = () => {
@@ -217,7 +217,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
     const vertices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setVertexBuffer');
     let compiled: ReturnType<RenderGraphBuilder<RenderPipelineFrame>['compile']> | undefined;
     try {
-      let current = f.prepare();
+      let current = f.prepare(false);
       const firstSignature = current.topologySignature();
       const recordingSignature = current._recordingTopologySignature?.();
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -255,9 +255,11 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       compiled = graph.compile({ device: f.device, surfaceSize: { width: 1, height: 1 } });
       const retained = compiled.unwrap();
       const encode = () => {
+        current._sealResourceReads().unwrap();
         const encoder = f.device.createCommandEncoder().unwrap();
         retained.execute({ encoder } as RenderPipelineFrame).unwrap();
         f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        current._commitResourceReplacement();
       };
       encode();
       f.store.trackMeshSubmission(oldCompleted);
@@ -276,7 +278,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(replacement.vertexBuffer).not.toBe(old.vertexBuffer);
       expect(old.vertexBuffer.isDestroyed).toBe(false);
       f.bySlot.set(0, replacement);
-      current = f.prepare();
+      current = f.prepare(false);
       expect(current.topologySignature()).not.toBe(firstSignature);
       expect(current._recordingTopologySignature?.()).toBe(recordingSignature);
       vertices.mockClear();
@@ -314,7 +316,6 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       current = changedProgram;
       encode();
       expect(f.production.lateRasterClasses.projected).toBe(late + 1);
-      changedProgram._commitResourceReplacement();
     } finally {
       completeOld();
       vertices.mockRestore();
@@ -410,7 +411,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       const delta = f.projection.apply(changes);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       f.bySlot.clear();
       for (const slot of f.input.scene.slots)
@@ -896,12 +897,12 @@ describe('selected GPU material graph dependencies', () => {
             .prepare(admitGpuFixture({ ...f.input, materialArtifacts, shadowMaterialArtifacts }))
             .unwrap(),
         );
-        frame._commitResourceReplacement();
         return frame;
       };
       const first = prepare(),
         signature = first.topologySignature(),
         facts = projectFacts(first);
+      first._commitResourceReplacement();
       const unused = {
         ...artifact,
         material: 'fixture::unused',
@@ -913,6 +914,7 @@ describe('selected GPU material graph dependencies', () => {
       const second = prepare();
       expect(second.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(second));
+      second._commitResourceReplacement();
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 0,
         filteredPlanBuilds: 0,
@@ -1002,12 +1004,12 @@ describe('selected GPU material graph dependencies', () => {
             )
             .unwrap(),
         );
-        frame._commitResourceReplacement();
         return { frame, selected };
       };
       const first = prepare(),
         signature = first.frame.topologySignature(),
         facts = projectFacts(first.frame);
+      first.frame._commitResourceReplacement();
       const roster = f.input.scene.plan.batches.map((batch) => ({
         id: batch.batchId,
         generation: batch.generation,
@@ -1017,7 +1019,7 @@ describe('selected GPU material graph dependencies', () => {
       const delta = f.projection.apply([{ kind: 'remove', entityKey: 1 }]);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       const next = prepare();
       expect([...defined(next.selected.materialArtifacts).keys()].sort()).toEqual(
@@ -1033,6 +1035,7 @@ describe('selected GPU material graph dependencies', () => {
       ).toEqual(roster);
       expect(next.frame.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(next.frame));
+      next.frame._commitResourceReplacement();
       expect(f.production.inspect()).toMatchObject({
         candidateCapacity: before.candidateCapacity,
         batchCapacity: before.batchCapacity,
@@ -1139,7 +1142,7 @@ describe('selected GPU material graph dependencies', () => {
       Object.assign(f.input.scene, { skin: skinFrames.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       const materialArtifacts = new Map(
         f.input.scene.plan.batches.map((batch) => [

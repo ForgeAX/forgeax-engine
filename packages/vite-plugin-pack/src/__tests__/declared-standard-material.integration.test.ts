@@ -1,21 +1,34 @@
 import { readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
+import {
+  AssetRegistry,
+  createMaterialLoader,
+  materialPassOwnsProgram,
+  selectMaterialPassProgram,
+} from '@forgeax/engine-assets-runtime';
 import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineComponent, World } from '@forgeax/engine-ecs';
 import * as naga from '@forgeax/engine-naga';
 import { type CookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import {
+  materialProgramContextForPass,
+  validateMaterialTemplatePublication,
+} from '@forgeax/engine-pack/material-cook';
 import { parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import { Materials, MeshRenderer } from '@forgeax/engine-render';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { type MaterialAsset, resolveMaterialAsset, type SceneAsset } from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
-import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import {
+  prepareRuntimeAssetPublication,
+  publishRuntimeAssets,
+} from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { AssetOutputProducerRegistry } from '../../../import/src/scriptable-pack';
 import { buildScriptablePack } from '../../../import/src/scriptable-pack-build';
 import {
@@ -27,6 +40,7 @@ import { materialAssetOutputProducer } from '../../../import/src/scriptable-pack
 import { materialSampledTextureBudget } from '../../../render/src/material-sampled-texture-budget';
 import * as compiler from '../../../shader-compiler/src/compile.js';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
+import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../../../shader-compiler/src/material/variant-context';
 
 // The observing realm's compiler is selected at import time. Restore ordinary
 // Worker admission before each case; only the call-count case opts back in.
@@ -103,7 +117,9 @@ it.each([
   30_000,
 );
 
-it('publishes the Bevy clearcoat material before admitting its physical layer', async () => {
+it('publishes the Bevy clearcoat template before selecting its WebGPU programs', async ({
+  onTestFinished,
+}) => {
   const sourcePath = fileURLToPath(
     new URL('../../../../apps/bevy/clearcoat/assets/materials.pack.ts', import.meta.url),
   );
@@ -120,46 +136,42 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
     sourcePath,
     outputs,
     publicationGeneration: 7,
-    cookers: [publicationCooker],
+    cookers: [createMaterialPackCooker()],
   });
   expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
   if (!result.ok) throw result.error;
   const [material] = result.value.product.assets;
-  if (material === undefined) throw new Error('cooked clearcoat material required');
+  if (material === undefined) throw new Error('Published clearcoat material required');
   expect(material.guid).toBe(AssetGuid.format(CLEARCOAT_MATERIAL_GUID));
-  const record = validateCookedMaterialRecord(
-    (material.payload as { cooked: unknown }).cooked,
-  ).unwrap();
-  expectWebGpuPublication(record);
-  expect(record.resolved.staticSwitches).toEqual({
+  const payload = material.payload as MaterialAsset & { cooked?: unknown; template?: unknown };
+  expect(payload.cooked).toBeUndefined();
+  const template = validateMaterialTemplatePublication(payload.template).unwrap();
+  expect(template.guid).toBe(material.guid);
+  expect(template.resolved.staticSwitches).toEqual({
     clearcoat: true,
     sheen: false,
     anisotropy: false,
     iridescence: false,
     diffuseTransmission: false,
   });
-  expect(record.resolved.passes.map((pass) => pass.renderState?.tags)).toEqual([
+  const passes = template.resolved.passes ?? [];
+  expect(passes.map((pass) => pass.renderState?.tags)).toEqual([
     { LightMode: 'Forward' },
     { LightMode: 'ShadowCaster' },
   ]);
-  expect(
-    new Set(
-      record.programs.flatMap((program) => program.selections.map((selection) => selection.pass)),
-    ),
-  ).toEqual(new Set(['forward', 'shadow-caster']));
-  expect((material.payload as MaterialAsset).colorSpace).toBe('linear');
-  expect(record.resolved.values).toMatchObject({
+  expect(passes.map((pass) => pass.name)).toEqual(['forward', 'shadow-caster']);
+  expect(payload.colorSpace).toBe('linear');
+  expect(template.resolved.values).toMatchObject({
     baseColor: [0.62, 0.045, 0.018, 1],
     metallic: 0.15,
     roughness: 0.4,
     clearcoat: 1,
     clearcoatRoughness: 0.08,
   });
-  const ready = await createMaterialLoader({
-    loadPublication: async () => ({ guid: material.guid, record, artifacts: material.artifacts }),
-  }).load({ guid: material.guid, specializationKey: record.specializationKey ?? '' });
-  expect(ready.status).toBe('Ready');
-  if (ready.status !== 'Ready') throw new Error('production material loader required');
+  const { path, digest } = template.sourceArtifact;
+  expect(Object.keys(material.artifacts)).toEqual([path]);
+  const artifact = material.artifacts[path];
+  if (artifact === undefined) throw new Error('Clearcoat shader sources required');
   const registry = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({
       device: {
@@ -168,12 +180,54 @@ it('publishes the Bevy clearcoat material before admitting its physical layer', 
         },
       },
       manifestUrl: undefined,
+      prepareProgramCompiler: prepareShaderProgramCompiler,
     }),
   });
-  const { payload, handle } = (await loadMaterialFixture(registry, ready.record)).unwrap();
-  expect(registry.getMaterialProjectionForPayload(payload)?.staticSelection).toContain(
-    'static-switch:clearcoat=true',
-  );
+  onTestFinished(() => registry.dispose());
+  prepareRuntimeAssetPublication(
+    [
+      {
+        guid: material.guid,
+        asset: payload,
+        refs: material.refs.map((reference) => reference.guid),
+        artifacts: {
+          [path]: {
+            path,
+            mediaType: artifact.mediaType,
+            contentEncoding: 'identity',
+            byteLength: artifact.bytes.byteLength,
+            integrity: { algorithm: 'sha256', digest },
+          },
+        },
+      },
+    ],
+    { [path]: artifact.bytes },
+  )(registry);
+  const handle = (await registry.load(material.guid, 'material')).unwrap();
+  const projection = registry.getMaterialProjection(handle).unwrap();
+  if (projection === undefined) throw new Error('Clearcoat material projection required');
+  expect(projection.staticSelection).toContain('static-switch:clearcoat=true');
+  expect(projection.passes.flatMap((pass) => pass.programs)).toEqual([]);
+  for (const [name, lightMode] of [
+    ['forward', 'Forward'],
+    ['shadow-caster', 'ShadowCaster'],
+  ] as const) {
+    const context = materialProgramContextForPass(DEFAULT_MATERIAL_VARIANT_CONTEXT, lightMode);
+    const program = selectMaterialPassProgram(projection, name, context);
+    expect(program.context).toMatchObject({ backend: 'webgpu', capability: 'storage-buffer' });
+    expect(registry.getMaterialArtifact(program.specializationKey)?.digest).toBe(
+      program.artifactHash,
+    );
+    expect(materialPassOwnsProgram(projection, name, program.specializationKey)).toBe(true);
+    expect(
+      materialPassOwnsProgram(
+        projection,
+        name === 'forward' ? 'shadow-caster' : 'forward',
+        program.specializationKey,
+      ),
+    ).toBe(false);
+    expect(materialPassOwnsProgram(projection, name, template.sourceArtifact.digest)).toBe(false);
+  }
   const world = new World({ assets: registry });
   expect(readMaterialContent(runtimeAssets(world.assets), handle).unwrap().values).toMatchObject({
     clearcoat: 1,

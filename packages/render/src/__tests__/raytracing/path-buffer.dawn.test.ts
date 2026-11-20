@@ -2,10 +2,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { it } from 'vitest';
 import { verifyGpuPathSource } from './path-buffer.fixture';
-import { prepareRayPathFixture } from './path-tracer.commands';
+import { prepareRayPublicationFixture } from './path-tracer.commands';
 
 it('consumes GPU-written receiver rays in command order and replays both source generations', async () => {
-  const result = await verifyGpuPathSource(await prepareRayPathFixture());
+  const result = await verifyGpuPathSource(await prepareRayPublicationFixture('emission'));
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
   if (dir) {
     await mkdir(dir, { recursive: true });
@@ -16,7 +16,7 @@ it('consumes GPU-written receiver rays in command order and replays both source 
 }, 120000);
 
 it('declares real producer and transport work in RenderGraph without hiding compute in copy passes', async () => {
-  const result = await verifyGpuPathSource(await prepareRayPathFixture(), true);
+  const result = await verifyGpuPathSource(await prepareRayPublicationFixture('emission'), true);
   const dir = process.env.FORGEAX_RAY_EVIDENCE;
   if (dir) {
     await mkdir(dir, { recursive: true });

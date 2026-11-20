@@ -6,7 +6,7 @@ import {
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { lowerStandardContract } from '../lower-standard-contract.js';
-import { createMaterialPackCooker } from '../pack-cooker.js';
+import { createMaterialPackCooker, type MaterialPackCookProfile } from '../pack-cooker.js';
 
 const parameters = standardSurfaceParameters([
   { name: 'baseColor', type: 'color' },
@@ -30,8 +30,9 @@ const passes: NonNullable<MaterialAsset['passes']> = [
 async function cook(
   staticSwitches: MaterialStaticSwitches,
   inspectRefs?: (refs: readonly string[]) => void,
+  profile?: MaterialPackCookProfile,
 ) {
-  const result = await createMaterialPackCooker().cook({
+  const result = await createMaterialPackCooker([], profile === undefined ? {} : { profile }).cook({
     guid: 'static-switch-test',
     refs: ['unused-base', 'unused-normal', 'unused-height', 'unused-coat', 'external-keep'],
     source: {
@@ -140,17 +141,21 @@ describe('static Standard feature compilation', { timeout: 30_000 }, () => {
   });
 
   it('changes the compiled layout and program identity while retaining enabled code at zero weight', async () => {
-    const disabled = await cook({ textures: false, clearcoat: false });
-    const enabled = await cook({ textures: true, clearcoat: true }, (refs) =>
-      expect(refs).toEqual(
-        expect.arrayContaining([
-          'unused-base',
-          'unused-normal',
-          'unused-height',
-          'unused-coat',
-          'external-keep',
-        ]),
-      ),
+    const profile = 'webgpu-storage';
+    const disabled = await cook({ textures: false, clearcoat: false }, undefined, profile);
+    const enabled = await cook(
+      { textures: true, clearcoat: true },
+      (refs) =>
+        expect(refs).toEqual(
+          expect.arrayContaining([
+            'unused-base',
+            'unused-normal',
+            'unused-height',
+            'unused-coat',
+            'external-keep',
+          ]),
+        ),
+      profile,
     );
     expect(enabled.receipt.identity.layoutIdentity).not.toBe(
       disabled.receipt.identity.layoutIdentity,

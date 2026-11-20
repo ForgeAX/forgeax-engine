@@ -5,6 +5,8 @@ description: ForgeAX render pipelines, post-processing, and typed RenderGraph ow
 
 # forgeax-engine-render-pipeline
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 One full-size, full-rate, all-channel display CameraView uses the native surface
 directly. Partial/scaled, held, stereo-channel and multiple display views retain
 composition. Keep the view's preparation barrier, history, target readbacks and

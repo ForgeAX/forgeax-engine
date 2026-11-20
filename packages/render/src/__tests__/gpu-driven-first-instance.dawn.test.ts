@@ -276,7 +276,7 @@ describe('GPU-driven native first-instance addressing', () => {
         pyramid.write(frame < 2);
         updateGpuView(
           view,
-          topology.query(topology.sourcePlan(), undefined),
+          topology.query(topology.sourcePlan(), undefined).active,
           scene,
           cameras.planes,
           cameras.lod,
@@ -342,7 +342,7 @@ describe('GPU-driven native first-instance addressing', () => {
           tables.primitive.bytes,
           surface,
         );
-        const plan = topology.query(topology.sourcePlan(), undefined);
+        const plan = topology.query(topology.sourcePlan(), undefined).active;
         // Distinct managed material roots retain independent execution groups.
         expect(plan.batches).toHaveLength(frame < 2 ? 3 : 22);
         for (const batch of plan.batches.slice(1)) expect(batch.visibleBase).toBeGreaterThan(0);

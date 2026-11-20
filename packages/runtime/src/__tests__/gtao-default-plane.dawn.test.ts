@@ -17,7 +17,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -67,7 +67,7 @@ function planeWorld() {
 it('default zero-bias GTAO leaves an unoccluded tilted receiver unchanged', async () => {
   const target = offscreenCanvas(RESPONSE_SIZE);
   const recorder = attachRecorder(webgpu).unwrap();
-  const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+  const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
   const host = await constructRuntimeRendererHost(
     target.canvas as unknown as HTMLCanvasElement,
     { rhi: recorder.backend.rhi },

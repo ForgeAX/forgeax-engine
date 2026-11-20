@@ -64,7 +64,13 @@ test('source coverage observes exact module/case identity and streams before fai
   const caseIdentity = {
     module,
     fullName: 'source > exact manifest',
-    result: () => ({ state: 'failed' }),
+    result: () => ({
+      state: 'failed',
+      errors: [
+        { name: 'Error', message: 'Test timed out in 30000ms.' },
+        { name: 'AssertionError', message: 'Internal assertion details' },
+      ],
+    }),
   };
   reporter.onTestModuleQueued(module);
   reporter.onTestCaseReady(caseIdentity);
@@ -77,8 +83,11 @@ test('source coverage observes exact module/case identity and streams before fai
   );
   assert.equal(records[2].test, caseIdentity.fullName);
   assert.equal(records[2].state, 'failed');
+  assert.deepEqual(records[2].failures, ['timeout', 'assertion']);
+  assert.equal(records[1].failures, undefined);
+  assert.ok(lines.every((line) => !line.includes('Internal assertion details')));
   let closed = false;
-  const record = `${sourceCompilationPhasePrefix}${JSON.stringify(records[1])}\n`;
+  const record = `${sourceCompilationPhasePrefix}${JSON.stringify(records[2])}\n`;
   const child = runChild(
     [
       '-e',
@@ -151,7 +160,7 @@ test('public Vitest reporter preserves a real failed assertion while recording c
     );
     await writeFile(
       resolve(root, 'phase.test.mjs'),
-      `import {test} from ${JSON.stringify(import.meta.resolve('vitest'))};test('original source assertion',()=>{throw Error('original source failure');});`,
+      `import {expect,test} from ${JSON.stringify(import.meta.resolve('vitest'))};test('original source assertion',()=>{expect(false, 'original source failure').toBe(true);});`,
     );
     let result;
     try {
@@ -185,6 +194,7 @@ test('public Vitest reporter preserves a real failed assertion while recording c
     );
     assert.equal(records[4].state, 'failed');
     assert.equal(records[4].test, 'original source assertion');
+    assert.deepEqual(records[4].failures, ['assertion']);
   } finally {
     assert.equal(dirname(root), resolve(tmpdir()));
     assert.ok(basename(root).startsWith('source-phase-vitest-'));

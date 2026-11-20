@@ -1,5 +1,37 @@
 {
   "view": {
+    "preparation": {
+      "project": "正在准备项目输入",
+      "vite": "正在准备项目服务",
+      "shader": "正在准备 Shader",
+      "waiting": "等待后端提供具体准备状态",
+      "variants": "当前源文件已编译 {{completed}} / {{total}} 个变体",
+      "operation": {
+        "project-config": "读取项目配置并准备项目 Host",
+        "source-inventory": "收集项目与资产库的源文件",
+        "plugin-programs": "发现项目插件及其输入文件",
+        "project-cookers": "加载项目 Cooker 与构建配置",
+        "host-files": "生成项目页面与运行入口",
+        "vite-server": "创建 Vite 并启动各生产插件",
+        "shader-inputs": "检查 Shader 源文件与预编译产物",
+        "scene-connection": "等待场景页面连接后端"
+      },
+      "label": "项目准备进度",
+      "preparing": "正在准备项目",
+      "inventory": "正在扫描资产源文件",
+      "produce": "正在准备资产",
+      "publish": "正在发布资产目录",
+      "connecting": "资产已就绪，正在连接场景",
+      "failed": "项目准备失败",
+      "offline": "Host 已断开，进度暂停更新",
+      "elapsed": "{{seconds}} 秒",
+      "active": "{{count}} 个源文件处理中",
+      "expand": "展开准备详情",
+      "collapse": "收起准备详情",
+      "cached": "缓存命中",
+      "task": { "cache": "检查缓存", "cook": "编译", "persist": "写入", "import": "导入", "shader": "编译 Shader" }
+    },
+    "dismissClipboardError": "关闭剪贴板错误",
     "resourceOpening": "正在打开资产…",
     "resourceFailed": "资产预览不可用",
     "appTitle": "ForgeaX View",
@@ -84,7 +116,10 @@
       }
     },
     "pages": {
-      "scene": "Scene",
+      "scene": "场景",
+      "profiler": "CPU 性能分析器",
+      "modeling": "建模",
+      "rhiDebug": "RHI 调试",
       "display": "运行观察",
       "plugins": "插件",
       "material": "材质",

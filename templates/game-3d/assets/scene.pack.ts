@@ -170,12 +170,9 @@ function showcaseScene(): SceneAsset {
             ],
           },
           Camera: {
-            // Auto exposure meters the frame; no compensation bias. The fallback
-            // applies until the first adaptation and on devices without compute.
             ...perspective({
               fov: Math.PI / 4,
               aspect: 16 / 9,
-              exposure: { kind: 'auto', fallback: 0.95, compensationEv: 0, rangeEv: [-12, 4], rates: [3, 1] },
             }),
             // Explicit presentation style; generic Camera defaults remain neutral.
             tonemap: TONEMAP_ACES_FILMIC,

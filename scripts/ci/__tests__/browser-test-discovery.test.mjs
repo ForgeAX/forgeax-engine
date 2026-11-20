@@ -83,6 +83,12 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
           ['packages/water/package.json', 'clipper2-ts'],
           ['packages/geometry/package.json', 'earcut'],
         ]],
+      ['packages/audio-webaudio/src/__tests__/source-pose.browser.test.ts',
+        'config/vitest.browser-host.config.ts', [
+          ['packages/pack/package.json', 'acorn'],
+          ['packages/water/package.json', 'clipper2-ts'],
+          ['packages/geometry/package.json', 'earcut'],
+        ]],
       ['packages/ui-blitz/src/__tests__/dom.browser.test.ts',
         'config/vitest.browser.config.ts', [...runtime,
           // The guide fixture owns its channel protocol; it reaches UI, not Pack.
@@ -204,7 +210,7 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
     timeout: 60_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).length, 5);
+  assert.equal(JSON.parse(result.stdout).length, 6);
 });
 
 test('closed Browser optimizer cache cleanup retires a late asynchronous publication', () => {

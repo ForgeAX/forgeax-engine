@@ -130,6 +130,13 @@ const dynamicGeometryBrowserFile =
   'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
 const threeSurfaceExpressionBrowserFile =
   'packages/three/src/__tests__/surface-expression.browser.test.ts';
+const threeNodeInputsBrowserFile = 'packages/three/src/__tests__/node-inputs.browser.test.ts';
+// Run 44619143909 completed the 210.285 s node-inputs file, then interrupted
+// the independent instance journey at their shared 300 s process deadline.
+const threeNodeBrowserFileSeconds = new Map([
+  [threeNodeInputsBrowserFile, 225],
+  ['packages/three/src/__tests__/node-material-instance.browser.test.ts', 120],
+]);
 const exclusiveRunnerBrowserFiles = new Set([
   // Run 44402862972 exceeded the original Standard Surface case budget
   // beside another live browser. Keep its existing group and drain neighbors.
@@ -229,6 +236,7 @@ const browserProcessIsolatedFiles = new Set([
   'packages/three/src/__tests__/interop.browser.test.ts',
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
+  ...threeNodeBrowserFileSeconds.keys(),
   'packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts',
   ...advancedLightingBrowserFiles,
   iblIrradianceBrowserFile,
@@ -449,7 +457,7 @@ function estimatedThreeBrowserFileSeconds(file) {
   if (file === 'packages/three/src/__tests__/transmission-output.browser.test.ts') return 90;
   // Run 43745792265 overflowed an eight-file native/reference/replay child.
   // Forecast unmeasured Three owners conservatively; preserve measured receipts.
-  return 60;
+  return threeNodeBrowserFileSeconds.get(file) ?? 60;
 }
 
 function estimatedBrowserFileSeconds(file) {
@@ -701,6 +709,9 @@ export function browserGroupRequiresExclusiveRunner(group) {
   return (
     browserProducerReadiness(group, undefined) === 'before-consume' ||
     browserGroupRequiresForeground(group) ||
+    // The independent Node inputs process needs the runner for its 30 s
+    // cold producer. Retain the admission of historical mixed groups.
+    (group.length === 1 && group[0] === threeNodeInputsBrowserFile) ||
     group.some(
       (file) =>
         shortRendererBootstrapBrowserFiles.has(file) ||
@@ -853,29 +864,6 @@ async function main() {
     return;
   }
 
-  const profileInputs = path.join(rootDir, 'node_modules/.cache/forgeax-build/browser-shaders');
-  let shaderPreparation;
-  const prepareShaders = () =>
-    (shaderPreparation ??= (async () => {
-      const prepared = await runBrowserCommand(
-        [
-          process.execPath,
-          'scripts/forgeax/prepare-shader-release-inputs.mjs',
-          '--build',
-          '--profile',
-          'point-ssao',
-          '--input',
-          profileInputs,
-          ...(process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST
-            ? ['--shared-input-manifest', process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST]
-            : []),
-        ],
-        { cwd: rootDir, label: 'browser point-shadow shader producer' },
-      );
-      if (prepared.status !== 0)
-        throw new Error(`browser shader preparation failed; ${prepared.failure}`);
-    })());
-
   const cliPath = resolveCliPath();
   const selectedIndexes = groups
     .map((_group, index) => index)
@@ -891,10 +879,10 @@ async function main() {
       isExclusive: (index) => browserGroupRequiresExclusiveRunner(groups[index]),
       runGroupImpl: async (index) => {
         try {
-          if (!browserGroupIsHostOnly(groups[index])) await prepareShaders();
+          const group = groups[index];
           const observation = await runGroup({
             cliPath,
-            group: groups[index],
+            group,
             groupIndex: index + 1,
             groupCount: groups.length,
             maxWorkers: options.maxWorkers,

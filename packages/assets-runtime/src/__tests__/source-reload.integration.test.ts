@@ -21,6 +21,22 @@ afterEach(() => {
   for (const owner of owners.splice(0)) owner.dispose();
 });
 
+it('resolves published inheritance from captured source while preserving separately edited runtime parents', async () => {
+  const f = fixture(true);
+  f.publish(1);
+  const parent = (await f.registry.load(PARENT, 'material')).unwrap();
+  f.registry.update(parent, { values: { roughness: 0.9 } }).unwrap();
+  const root = (await f.registry.load(ROOT, 'material')).unwrap();
+  expect(f.registry.read(root).unwrap().values?.roughness).toBe(0.1);
+  expect(f.registry.read(parent).unwrap().values?.roughness).toBe(0.9);
+  f.publish(2, { roughness: 0.3 });
+  (await f.registry.reload(root, { conflict: 'overwrite' })).unwrap();
+  expect(f.registry.read(root).unwrap().values?.roughness).toBe(0.3);
+  expect(f.registry.read(parent).unwrap().values?.roughness).toBe(0.9);
+  f.registry.release(root).unwrap();
+  f.registry.release(parent).unwrap();
+});
+
 function fixture(inherited = false, pushed = true) {
   let rows: CatalogEntry[] = [];
   const packages = new Map<string, string>();

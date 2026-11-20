@@ -10,7 +10,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { createStandardPbrArtifactReceipt } from '@forgeax/engine-shader';
 import { deriveMaterialDynamicInputLayout, err } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
 import { buildSurfaceDirectInstancesBindGroupLayout } from '../pbr-pipeline';
@@ -497,5 +497,195 @@ describe('Surface dynamic input GPU buffer lifecycle', () => {
     expect(device.bindGroupDescriptors).toHaveLength(bindGroupsBeforeMissing);
     adapter.dispose();
     noProbeAdapter.dispose();
+  });
+});
+
+async function directSurfaceFixture() {
+  const queue = new DeferredQueue();
+  const device = createLifecycleDevice(queue);
+  const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+  const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
+  const inputs = standardPbrInputs(device, shader, viewLayout);
+  if (inputs.materialPipelineState === undefined || inputs.materialArtifact === undefined)
+    throw new Error('Surface fixture requires the actual material ABI');
+  const storage = () =>
+    device.createBuffer({ size: 4096, usage: GPU_BUFFER_USAGE_STORAGE }).unwrap();
+  const instanceBuffer = storage();
+  const adapter = MaterialAbiRasterAdapter.create({
+    device,
+    pipelineState: {
+      ...inputs.materialPipelineState,
+      surfaceDirectInstancesBindGroupLayout: buildSurfaceDirectInstancesBindGroupLayout(device, {
+        storageBuffer: true,
+      }),
+    },
+    artifact: { ...inputs.materialArtifact, receipt: surfaceReceipt },
+    visibleBuffer: storage(),
+    probeBlendRecordBuffer: storage(),
+  }).unwrap();
+  return { queue, device, adapter, instanceBuffer };
+}
+
+describe('Surface direct-address projection reuse', () => {
+  it('keeps equal physical addresses through re-projection while uploading and consuming new content', async () => {
+    const f = await directSurfaceFixture();
+    const inputPage = page(21, 1);
+    const range = inputPage
+      .reserveRange({
+        domain: 'a',
+        recordStart: 0,
+        recordCount: 1,
+        instanceIndex: 3,
+        member: { worldIdentity: 'world-a', entityKey: 8, drawItemIndex: 9, instanceOrdinal: 0 },
+      })
+      .unwrap();
+    const rows = [{ frameIndex: 65, range, directMember: range.member }];
+    const frame = { page: inputPage, ranges: [range], projectionRevision: 1, frameTime: 0 };
+    const direct = () =>
+      f.adapter
+        .directSurfaceInstances({
+          entityKey: 8,
+          drawItemIndex: 9,
+          instanceCount: 1,
+          instanceBuffer: f.instanceBuffer,
+        })
+        .unwrap();
+    const writes = vi.spyOn(f.queue, 'writeBuffer');
+    try {
+      f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 1, rows).unwrap();
+      f.adapter.commitSurfaceDynamicInput().unwrap();
+      const before = direct();
+      const buffers = f.device.createdBuffers.length;
+      const groups = f.device.bindGroupDescriptors.length;
+      writes.mockClear();
+      inputPage.writeRecord(0, { strength: 0.25 }).unwrap();
+      f.adapter
+        .ensureSurfaceDynamicInput(
+          { ...frame, ranges: [range], projectionRevision: 2 },
+          1,
+          0,
+          dynamicLayout,
+          1,
+          rows.map((row) => ({ ...row, directMember: { ...row.directMember } })),
+        )
+        .unwrap();
+      f.adapter.commitSurfaceDynamicInput().unwrap();
+      expect(direct().bindGroup).toBe(before.bindGroup);
+      expect(f.device.createdBuffers).toHaveLength(buffers);
+      expect(f.device.bindGroupDescriptors).toHaveLength(groups);
+      expect(writes).toHaveBeenCalledTimes(1);
+      const payload = writes.mock.calls[0]?.[2];
+      expect(payload).toBeInstanceOf(Uint8Array);
+      if (payload instanceof Uint8Array)
+        expect(
+          new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getFloat32(0, true),
+        ).toBe(0.25);
+      expect(inputPage.uploadedRevision).toBe(inputPage.contentRevision);
+      expect(inputPage.consume(range, 2)).toMatchObject({
+        ok: true,
+        value: { uploadedRevision: inputPage.contentRevision },
+      });
+      expect(f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 2, rows).ok).toBe(
+        false,
+      );
+      expect(
+        f.adapter.ensureSurfaceDynamicInput({ ...frame, ranges: [] }, 1, 0, dynamicLayout, 1, rows)
+          .ok,
+      ).toBe(false);
+      const wrongLayout = deriveMaterialDynamicInputLayout({
+        ...dynamicSchema,
+        fields: [{ name: 'strength', type: 'u32' }],
+      }).unwrap();
+      expect(f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, wrongLayout, 1, rows).ok).toBe(false);
+      inputPage.reconfigureDevice(2).unwrap();
+      expect(f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 2, rows).ok).toBe(
+        false,
+      );
+    } finally {
+      writes.mockRestore();
+      f.adapter.dispose();
+      await f.queue.drain();
+    }
+  });
+
+  it.each([
+    'offset',
+    'count',
+    'member',
+    'base',
+  ] as const)('replaces direct bindings when projected %s changes', async (change) => {
+    const f = await directSurfaceFixture();
+    const inputPage = page(22, 1);
+    const frame = { page: inputPage, ranges: [], projectionRevision: 1, frameTime: 0 };
+    const a0 = {
+      frameIndex: 65,
+      directMember: { entityKey: 8, drawItemIndex: 9, instanceOrdinal: 0 },
+    };
+    const a1 = {
+      frameIndex: 66,
+      directMember: { entityKey: 8, drawItemIndex: 9, instanceOrdinal: 1 },
+    };
+    const b = {
+      frameIndex: 67,
+      directMember: { entityKey: 9, drawItemIndex: 9, instanceOrdinal: 0 },
+    };
+    const direct = (entityKey: number, instanceCount: number) =>
+      f.adapter
+        .directSurfaceInstances({
+          entityKey,
+          drawItemIndex: 9,
+          instanceCount,
+          instanceBuffer: f.instanceBuffer,
+        })
+        .unwrap();
+    try {
+      f.adapter.ensureSurfaceDynamicInput(frame, 1, 0, dynamicLayout, 1, [a0, a1, b]).unwrap();
+      f.adapter.commitSurfaceDynamicInput().unwrap();
+      const before = direct(8, 2);
+      const rows =
+        change === 'offset'
+          ? [b, a0, a1]
+          : change === 'count'
+            ? [a0, b]
+            : change === 'member'
+              ? [{ ...a0, directMember: { ...a0.directMember, entityKey: 10 } }, b]
+              : [{ ...a0, frameIndex: 62 }, { ...a1, frameIndex: 63 }, b];
+      f.adapter
+        .ensureSurfaceDynamicInput(
+          { ...frame, projectionRevision: 2 },
+          1,
+          0,
+          dynamicLayout,
+          1,
+          rows,
+        )
+        .unwrap();
+      f.adapter.commitSurfaceDynamicInput().unwrap();
+      const next = direct(
+        change === 'member' ? 10 : 8,
+        change === 'count' || change === 'member' ? 1 : 2,
+      );
+      expect(next.bindGroup).not.toBe(before.bindGroup);
+      expect(next.frameBase).toBe(change === 'base' ? 62 : 65);
+      const address = [...(f.device.bindGroupDescriptors.at(-1)?.entries ?? [])].find(
+        (entry) => entry.binding === 6,
+      )?.resource;
+      expect(address).toMatchObject({
+        kind: 'buffer',
+        value: { offset: change === 'offset' ? 256 : 0 },
+      });
+      if (change === 'member')
+        expect(
+          f.adapter.directSurfaceInstances({
+            entityKey: 8,
+            drawItemIndex: 9,
+            instanceCount: 1,
+            instanceBuffer: f.instanceBuffer,
+          }).ok,
+        ).toBe(false);
+    } finally {
+      f.adapter.dispose();
+      await f.queue.drain();
+    }
   });
 });

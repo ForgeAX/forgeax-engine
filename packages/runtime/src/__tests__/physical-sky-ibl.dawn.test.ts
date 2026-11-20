@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -17,7 +17,9 @@ it('qualifies raster physical sky IBL with frozen cube/filter generations on Daw
     target.canvas,
     { rhi: recorder.backend.rhi },
     {
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true })),
+      shaderManifestUrl: shaderManifestUrl(
+        await buildEngineShaderTemplateManifest({ pointShadows: true }),
+      ),
     },
   );
   if (!created.ok) {

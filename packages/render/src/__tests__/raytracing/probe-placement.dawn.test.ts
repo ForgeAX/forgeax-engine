@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { prepareProbePlacementFixture } from './probe-placement.commands';
@@ -8,7 +8,7 @@ import { verifyProbePlacement } from './probe-placement.fixture';
 import { loadPublishedRayKernels } from './published-kernels.fixture';
 
 const published = await loadPublishedRayKernels(
-  shaderManifestUrl(await buildEngineShaderManifest()),
+  shaderManifestUrl(await buildEngineShaderTemplateManifest()),
 );
 
 it('places candidate probes from native raster inputs without publishing accepted state', async () => {

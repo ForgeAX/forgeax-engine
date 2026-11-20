@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view';
 import { Button } from '@forgeax/view-components';
 import { RotateCcw, WandSparkles } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useViewerTranslation } from '../i18n';
 import { previewCanvasAnchor } from '../selectors';
 import type { PreviewError } from '../shader-preview/errors';
 import {
@@ -36,6 +37,7 @@ function sourceDiagnostic(view: EditorView, error: PreviewError): Diagnostic {
 }
 
 export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
+  const t = useViewerTranslation();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const previewCanvas = useRef<HTMLCanvasElement>(null);
@@ -43,7 +45,7 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
   const mounted = useRef(false);
   const requestId = useRef(0);
   const [editing, setEditing] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<'compiling' | 'ready' | 'error' | null>(null);
   const [error, setError] = useState<PreviewError | null>(null);
   const [preview, setPreview] = useState<ShaderPreviewArtifact | null>(null);
   const selectionKey = makeShaderPreviewKey(selection);
@@ -101,7 +103,7 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
     const view = editor.current;
     if (!view) return;
     const currentRequestId = ++requestId.current;
-    setMessage('Compiling WGSL and rendering a temporary preview...');
+    setMessage('compiling');
     setError(null);
     view.dispatch(setDiagnostics(view.state, []));
     const canvas = previewCanvas.current;
@@ -115,15 +117,13 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
     if (!result.ok) {
       setPreview(null);
       setError(result.error);
-      setMessage(result.error.detail ?? result.error.code);
+      setMessage('error');
       view.dispatch(setDiagnostics(view.state, [sourceDiagnostic(view, result.error)]));
       return;
     }
     setPreview(result.value);
     setError(null);
-    setMessage(
-      `Preview ready (${result.value.provenance}); pixels ${result.value.pixelDigest}; canonical tape unchanged.`,
-    );
+    setMessage('ready');
   }
 
   function reset() {
@@ -170,7 +170,7 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
           {selection.stage} / {selection.entryPoint}
         </span>
         <Button variant="quiet" onClick={() => setEditing((value) => !value)}>
-          {editing ? 'Done' : 'Edit'}
+          {t(editing ? 'done' : 'edit')}
         </Button>
         {editing && (
           <Button
@@ -178,30 +178,26 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
             leadingIcon={<WandSparkles className="fx-icon" />}
             onClick={() => void apply()}
           >
-            Apply
+            {t('apply')}
           </Button>
         )}
         {editing && (
           <Button variant="quiet" leadingIcon={<RotateCcw className="fx-icon" />} onClick={reset}>
-            Reset
+            {t('reset')}
           </Button>
         )}
       </div>
-      {editing && (
-        <p className="text-caption text-muted-foreground">
-          Preview only. No tape, model, replay, or canonical pixels are written.
-        </p>
-      )}
+      {editing && <p className="text-caption text-muted-foreground">{t('previewOnly')}</p>}
       <div ref={host} className="max-h-64 overflow-auto border border-border text-code" />
       <canvas
         ref={previewCanvas}
         className={preview === null ? 'hidden' : 'mt-fx-8 h-48 w-48 border border-border'}
         {...(preview === null ? {} : { [previewCanvasAnchor()]: '' })}
-        aria-label="Viewer-private shader preview"
+        aria-label={t('shaderPreview')}
       />
       {preview !== null && (
         <p className="text-caption text-muted-foreground">
-          preview provenance · {preview.width}x{preview.height} · {preview.pixelDigest}
+          {t('previewProvenance')} · {preview.width}x{preview.height} · {preview.pixelDigest}
         </p>
       )}
       {message && (
@@ -210,7 +206,13 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
           role="status"
           data-forgeax-preview-error={error?.code}
         >
-          <p>{message}</p>
+          <p>
+            {message === 'compiling'
+              ? t('compiling')
+              : message === 'ready' && preview
+                ? t('previewReady', { provenance: preview.provenance, digest: preview.pixelDigest })
+                : (error?.detail ?? error?.code)}
+          </p>
           {error !== null && (
             <>
               <p data-forgeax-preview-code>{error.code}</p>
@@ -218,10 +220,14 @@ export function CodeMirrorShader({ selection }: CodeMirrorShaderProps) {
               <p data-forgeax-preview-expected>{error.expected}</p>
               <p data-forgeax-preview-hint>{error.hint}</p>
               {error.line !== undefined && (
-                <p data-forgeax-preview-line={String(error.line)}>line {error.line}</p>
+                <p data-forgeax-preview-line={String(error.line)}>
+                  {t('line', { line: error.line })}
+                </p>
               )}
               {error.column !== undefined && (
-                <p data-forgeax-preview-column={String(error.column)}>column {error.column}</p>
+                <p data-forgeax-preview-column={String(error.column)}>
+                  {t('column', { column: error.column })}
+                </p>
               )}
             </>
           )}

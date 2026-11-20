@@ -1,5 +1,5 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { readEngineTemplates } from '../../__tests__/engine-shader-templates.dawn.fixture';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 
 const SIZE = 4;
@@ -23,8 +23,8 @@ function nonnegativeHalf(bits: number): number {
 }
 
 it('reads the cooked Standard analytic cloud MRT and clips all transport at foreground depth', async () => {
-  const manifest = await buildEngineShaderManifest();
-  const entry = manifest.materialShaders.find(
+  const registry = await readEngineTemplates();
+  const entry = [...registry.materialShaderManifestEntries()].find(
     (value) => value.identifier === 'forgeax::cloud-analytic-view',
   );
   expect(entry?.composedWgsl).toBeTruthy();

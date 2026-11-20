@@ -9,7 +9,7 @@ export default {
   const node = document.createElement('section');
   node.dataset.forgeaxDiagnostic = 'rhi-debug';
   node.style.cssText = 'height:100%;min-height:0;overflow:auto';
-  const unregister = page.registerType({ typeId: 'rhi-debug', context: 'artifact', title: 'RHI Debug', order: 40,
+  const unregister = page.registerType({ typeId: 'rhi-debug', context: 'artifact', titleKey: 'view.pages.rhiDebug', order: 40,
    closable: true, singleton: true, initial: true, openable: true, layout: 'surface', showPanelRail: false, hideWhenInactive: true });
   const unmount = page.mount('rhi-debug', node);
   let dispose: Dispose | undefined;

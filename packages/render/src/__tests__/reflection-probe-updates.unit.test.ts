@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
+import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import type { RenderSystemInternals } from '../record/render-context';
 import { createProbeFilterState } from '../reflection/filter';
 import type { ReflectionProbeFact } from '../reflection/projection';
@@ -11,6 +12,7 @@ type ProbeOwnerFixture = {
   resources: ReflectionProbeRecordOwner['resources'];
   resourceFor: ReflectionProbeRecordOwner['resourceFor'];
   completeSubmission: ReflectionProbeRecordOwner['completeSubmission'];
+  materialBindingCurrent: ReflectionProbeRecordOwner['materialBindingCurrent'];
 };
 
 function fixture(intent: 'once' | 'on-change' | 'continuous') {
@@ -59,6 +61,25 @@ function fixture(intent: 'once' | 'on-change' | 'continuous') {
 }
 
 describe('ReflectionProbe real resource update ownership', () => {
+  it('rejects the old active binding while a moved probe awaits its next capture', () => {
+    const { owner, fact, resource } = fixture('on-change');
+    if (resource.pmrem.kind !== 'atlas') throw new Error('expected a standalone atlas');
+    Object.assign(resource.pmrem, { active: { view: {} } });
+    Object.assign(resource, {
+      activeFact: fact,
+      sampler: {},
+      uniformBuffer: {},
+    });
+    const expected = {
+      prefilterView: resource.pmrem.active?.view,
+      prefilterSampler: resource.sampler,
+      intensityBuffer: resource.uniformBuffer,
+    } as SkylightBindGroupResources;
+    expect(owner.materialBindingCurrent(0, expected)).toBe(true);
+    owner.resourceFor('1', { ...fact, center: [1, 0, 0], revision: 2 }, 0, '2');
+    expect(resource.pmrem.active?.view).toBe(expected.prefilterView);
+    expect(owner.materialBindingCurrent(0, expected)).toBe(false);
+  });
   it.each([
     'continuous',
     'on-change',

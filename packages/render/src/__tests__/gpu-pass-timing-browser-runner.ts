@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { createRenderer, exposeRenderer } from '../assembly/factory.js';
 import { Camera } from '../components/camera.js';
 import type { GpuPassTimingFrame } from '../record/gpu-pass-timing/contract.js';
@@ -69,7 +70,7 @@ async function createBrowserTimingFixture(timingEnabled: boolean): Promise<Brows
             gpuPassTiming: { maxPassesPerFrame: 64, maxFramesInFlight: 2, retentionFrames: 8 },
           }
         : { rhi },
-      { shaderManifestUrl: '/shaders/manifest.json' },
+      { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
     );
     const ready = await implementation.initialization;
     if (!ready.ok) throw new Error(`${ready.error.code}: ${ready.error.hint}`);
@@ -227,7 +228,7 @@ export async function runBrowserGpuPassTiming(
   const implementation = await createRenderer(
     canvas,
     { rhi, gpuPassTiming: { maxPassesPerFrame: 64, maxFramesInFlight: 2, retentionFrames: 8 } },
-    { shaderManifestUrl: '/shaders/manifest.json' },
+    { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
   );
   const ready = await implementation.initialization;
   if (!ready.ok) throw new Error(`${ready.error.code}: ${ready.error.hint}`);

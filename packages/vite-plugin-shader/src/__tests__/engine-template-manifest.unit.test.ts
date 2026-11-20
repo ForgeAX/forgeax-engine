@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as naga from '@forgeax/engine-naga';
 import { findVariantByKey, materialShaderAxes, ShaderRegistry } from '@forgeax/engine-shader';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler';
 import { expect, it, vi } from 'vitest';
-import { buildEngineShaderTemplateManifest } from '../index.js';
+import { buildEngineShaderManifest, buildEngineShaderTemplateManifest } from '../index.js';
+import { loadSharedEngineShaderTemplates } from '../shared-engine-inputs.js';
 
 it('publishes Engine modules and axes without composing any variant, then prepares only the requested Standard program', async () => {
   const compose = vi.spyOn(naga, 'composeShader');
@@ -74,6 +79,42 @@ it('prepares every built-in source declaration from its published default withou
   expect(registry.programTemplateInspection().selections).toBe(wire.entries.length);
 }, 60_000);
 
+it('changes only clustered-lighting source recipes when offering point shadows', async () => {
+  const base = await buildEngineShaderTemplateManifest();
+  const point = await buildEngineShaderTemplateManifest({ pointShadows: true });
+  expect(point.entries.map((entry) => entry.identifier)).toEqual(
+    base.entries.map((entry) => entry.identifier),
+  );
+  for (const [index, entry] of base.entries.entries()) {
+    const withPoint = point.entries[index];
+    if (withPoint === undefined)
+      throw new Error(`Missing point-shadow recipe for ${entry.identifier}`);
+    if ('CLUSTER_FORWARD_AVAILABLE' in entry.selection) {
+      expect(withPoint.program, entry.identifier).not.toBe(entry.program);
+    } else {
+      expect(withPoint, entry.identifier).toEqual(entry);
+    }
+  }
+
+  const compiler = (await prepareShaderProgramCompiler()).unwrap();
+  for (const [wire, available] of [
+    [base, false],
+    [point, true],
+  ] as const) {
+    const registry = new ShaderRegistry({ manifestUrl: undefined, programCompiler: compiler });
+    registry.installProgramTemplates(wire.library).unwrap();
+    const pbr = wire.materialShaders.find(
+      (entry) => entry.identifier === 'forgeax::default-standard-pbr',
+    );
+    if (pbr === undefined) throw new Error('Missing Standard recipe');
+    const prepared = registry
+      .resolveProgramTemplate(pbr.program, { ...pbr.selection, CLUSTER_FORWARD_AVAILABLE: true })
+      .unwrap();
+    expect(prepared.manifestEntry.wgsl.includes('texture_depth_cube_array')).toBe(available);
+    expect(registry.programTemplateInspection().selections).toBe(1);
+  }
+}, 60_000);
+
 it('keeps native Grade/Final in one source recipe and prepares it only when consumed', async () => {
   const wire = await buildEngineShaderTemplateManifest();
   const entry = wire.entries.find((row) => row.identifier === 'forgeax::standard-output-v2');
@@ -101,3 +142,56 @@ it('keeps native Grade/Final in one source recipe and prepares it only when cons
   ).toBe(prepared.manifestEntry.wgsl);
   expect(registry.programTemplateInspection().selections).toBe(1);
 }, 60_000);
+
+it('admits the shared source payload by producer path and digest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-engine-templates-'));
+  const output = join(root, 'shared-app-inputs');
+  const receipt = join(output, 'manifest.json');
+  const payload = 'shared-app-inputs/shaders/manifest.json';
+  try {
+    await mkdir(join(output, 'shaders'), { recursive: true });
+    const expected = await buildEngineShaderTemplateManifest();
+    const text = JSON.stringify(expected);
+    const outputFingerprint = `sha256:${createHash('sha256').update(payload).update('\0').update(text).update('\0').digest('hex')}`;
+    const envelope = {
+      schemaVersion: 1,
+      producer: 'shared-app-inputs',
+      shaderPublication: 'source',
+      payload: { engineShaderManifest: payload },
+      inventory: [payload],
+      shaderBuild: { outputFingerprint },
+    };
+    await writeFile(receipt, JSON.stringify(envelope));
+    await writeFile(join(root, payload), text);
+    const options = { pointShadows: false, hdrpSsao: true } as const;
+    const engineWorkspace = join(root, 'engine-source');
+    expect(loadSharedEngineShaderTemplates(receipt, options)).toEqual(expected);
+    expect(
+      loadSharedEngineShaderTemplates(receipt, { ...options, pointShadows: true }),
+    ).toBeUndefined();
+    const compose = vi.spyOn(naga, 'composeShader');
+    vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', receipt);
+    try {
+      const input = await buildEngineShaderManifest({ workspaceRoot: engineWorkspace });
+      expect(JSON.stringify(input)).toBe(text);
+      expect(
+        input.materialShaders.some((row) => row.identifier === 'forgeax::default-standard-pbr'),
+      ).toBe(true);
+      expect(compose).not.toHaveBeenCalled();
+    } finally {
+      compose.mockRestore();
+      vi.unstubAllEnvs();
+    }
+    await writeFile(receipt, JSON.stringify(envelope).replaceAll('shared-app-inputs/', 'other/'));
+    expect(() => loadSharedEngineShaderTemplates(receipt, options)).toThrow(
+      'Shared shader template payload path mismatch',
+    );
+    await writeFile(receipt, JSON.stringify(envelope));
+    await writeFile(join(root, payload), `${text} `);
+    expect(() => loadSharedEngineShaderTemplates(receipt, options)).toThrow(
+      'Shared shader template payload digest mismatch',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

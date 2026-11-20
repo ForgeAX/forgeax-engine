@@ -3,6 +3,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, withVertexColor } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { assert, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
@@ -19,7 +20,7 @@ import { loadBackendPack } from '../backend-selection';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const manifestUrl = shaderManifestUrl(
-  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderManifest(),
+  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderTemplateManifest(),
 );
 const SIZE = 128;
 const FRAMES = 60;
@@ -71,7 +72,7 @@ it('renders opaque unlit rows identically from the GPU-driven lane and the direc
   const constructed = await constructRendererHost(
     canvas,
     {},
-    { shaderManifestUrl: manifestUrl },
+    { shaderManifestUrl: manifestUrl, prepareShaderProgramCompiler },
     backend.value,
   );
   assert(constructed.ok, constructed.ok ? undefined : JSON.stringify(constructed.error));

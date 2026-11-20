@@ -119,6 +119,18 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     })), { timeout: 120_000 }).toBe(true);
     const read = () => inspectWithinDeadline(page.evaluate(() => __forgeaxGameInspection.read('game-3d.runtime-vase')));
     const result = await probeRuntimeVase(page, read, evidence);
+    if (!worker && process.env.FORGEAX_CI_CORE_VALIDATION === '1') {
+      const renderer = await inspectWithinDeadline(
+        page.evaluate(() => __forgeaxGameInspection.renderer()),
+      );
+      expect(renderer.state).toBe('alive');
+      expect(renderer.execution.engine).toEqual({ realm: 'host', health: 'running' });
+      expect(renderer.execution.fault).toBeNull();
+      expect(errors).toEqual([]);
+      expect(browser.report().pageErrors).toEqual([]);
+      await writeFile(resolve(evidence, 'result.json'), JSON.stringify({ worker, ...result, renderer, errors }, null, 2));
+      return;
+    }
     const mobile = await probeMobileControls(page, () => inspectWithinDeadline(page.evaluate(async () => ({
       player: await __forgeaxGameInspection.read('game-3d.player'),
       renderer: __forgeaxGameInspection.renderer(),

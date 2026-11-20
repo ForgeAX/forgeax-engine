@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-physics
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > Physics attaches `Transform + RigidBody + Collider` to an entity. Static/kinematic colliders synchronize resolved world TRS; dynamic bodies write simulated pose back to `Transform`. `@forgeax/engine-physics` defines component schemas (`RigidBody` / `Collider` / `CollidingEntities`), `PhysicsWorld` / `PhysicsWorld2D` resources, and the closed `PhysicsErrorCode` union. Implementations live in the WASM backends `@forgeax/engine-physics-rapier2d` and `@forgeax/engine-physics-rapier3d`. Import the default plugin from `@forgeax/engine/physics-rapier3d` or `@forgeax/engine/physics-rapier2d` and pass it in `createApp` plugins. The module statically selects one backend; activation initializes its WASM and installs the three-phase tick systems.
 
 ## Mental model

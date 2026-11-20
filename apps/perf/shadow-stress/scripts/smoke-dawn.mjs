@@ -131,7 +131,7 @@ globalThis.MutationObserver = class {
   observe() {}
 };
 globalThis.document = {
-  querySelector: () => mockCanvas,
+  querySelector: (selector) => (selector === '#app' ? mockCanvas : null),
   querySelectorAll: () => [],
 };
 bindSmokeCanvasWindow(mockCanvas, globalThis.window, globalThis.document);
@@ -143,11 +143,14 @@ globalThis.fetch = async (input) => {
   throw new Error(`unexpected fetch in Dawn smoke: ${url}`);
 };
 
-await import(`${pathToFileURL(entryPath).href}?dawnSmoke=${Date.now()}`);
+// Split Vite chunks can import this same entry. Keep one module identity.
+await import(pathToFileURL(entryPath).href);
 
 const waitDeadline = Date.now() + 60_000;
 while (globalThis.__forgeaxShadowStress === undefined && Date.now() < waitDeadline) await delay(10);
-if (globalThis.__forgeaxShadowStress === undefined) fail('app did not finish bootstrap within 60s');
+if (globalThis.__forgeaxShadowStress === undefined) {
+  fail(`app did not finish bootstrap within 60s; shader publication: ${JSON.stringify(globalThis.__forgeaxShaderManifest ?? null)}`);
+}
 const evidence = globalThis.__forgeaxShadowStress;
 for (const field of ['completedFrames', 'preparationCompletedFrames', 'warmupFrames', 'profileFrames', 'sampleFrames']) {
   if (!Number.isSafeInteger(evidence[field]) || evidence[field] < 0) {

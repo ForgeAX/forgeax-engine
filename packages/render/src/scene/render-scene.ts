@@ -9,6 +9,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { renderFeatureViewIdentity } from '../features/view';
 import { projectGlyphView } from '../glyph-source';
+import { type RenderResidencyGroup, residencySelected } from '../gpu-driven/batch-residency';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import {
@@ -16,6 +17,7 @@ import {
   GpuDrivenMaterialProgramProjection,
   gpuShadowProgramsCompatible,
 } from '../gpu-driven/material-artifacts';
+import type { MeshExecutionPlans } from '../gpu-driven/mesh-batches';
 import type { GpuScene } from '../gpu-scene';
 import type {
   FrameCacheCounters,
@@ -173,6 +175,8 @@ export interface PersistentGpuDrivenState {
   /** Fixed numeric roots borrowed through this physical recording. */
   readonly skin?: SkinSceneFrame | undefined;
   readonly meshes?: MeshFrame;
+  /** Prospective fixed material demand from this same Scene owner. */
+  readonly materialPrograms?: GpuDrivenMaterialProgramIndex;
   readonly completeGeometry?: boolean;
   /** Geometry rows without native batch membership, maintained by Scene changes. */
   readonly unbatchedSlots?: ReadonlySet<number>;
@@ -183,7 +187,9 @@ export interface PersistentGpuDrivenState {
   readonly scene: GpuScene;
   readonly plan: SubmissionPlan;
   /** Native source plans expand only when a recording actually requests tasks. */
-  readonly queryPlan?: () => SubmissionPlan;
+  readonly queryExecution?: () => MeshExecutionPlans;
+  /** Present after native execution query; distinct from a source-only resident link. */
+  readonly residentExecution?: SubmissionPlan;
   readonly slots: FrameList<RenderSceneSlot>;
   /**
    * Fixed-frame record by stable slot address, resolving one indexed page path.
@@ -403,7 +409,7 @@ export class PersistentRenderScene {
       if (advance.remapped) projection.observeRemap();
       projection.observe(advance.delta);
     }
-    if (projection.observedRows !== projection.sceneRows.revision) projection.observeBaseline();
+    if (projection.observedRows !== projection.sceneRows.revision) projection.observeCurrentRows();
     view.seq = advance.seq;
     return view;
   }
@@ -442,7 +448,8 @@ export class PersistentRenderScene {
     frame: ExtractedFrame,
     view: ViewEntry,
     viewIdentity: string | undefined,
-    publishedWaterMeshOwners: Iterable<RenderableSnapshot>,
+    publishedWaterMeshOwners: Iterable<RenderableSnapshot> | undefined,
+    retainedWaterPresent: boolean,
   ) {
     const entry = view.shared;
     const shared = this.shared;
@@ -479,6 +486,7 @@ export class PersistentRenderScene {
       tilemapView.materials,
       viewIdentity,
       publishedWaterMeshOwners,
+      retainedWaterPresent,
     );
   }
 
@@ -897,24 +905,39 @@ export class PersistentRenderScene {
     return { scene, slotForEntity: view.projection.slotsSnapshot().lookup };
   }
 
-  compositionGpuDrivenState(): PersistentGpuDrivenState | undefined {
+  /** A requested group derives prospective demand without changing ordinary visibility. */
+  compositionGpuDrivenState(
+    preparing?: RenderResidencyGroup,
+  ): PersistentGpuDrivenState | undefined {
     const view = this.view;
     const scene = this.shared.gpuSceneResident;
     if (view === undefined || scene === undefined || view.shared !== this.shared.entry)
       return undefined;
     const entry = view.shared;
-    const slots = view.projection.slotsSnapshot();
-    const meshes = view.projection.meshFrame();
-    const materials = entry.materialDispatch.materials();
-    const retained = this.compositionRetainedScene();
+    const projection = preparing === undefined ? view.projection : entry.projection;
+    const slots = projection.slotsSnapshot();
+    const meshes = projection.meshFrame();
+    const demand =
+      preparing === undefined
+        ? undefined
+        : entry.materialDispatch.queryResident(
+            slots,
+            entry.topology.captureResidentSelection(),
+            meshes,
+          );
+    const materials = demand?.materials ?? entry.materialDispatch.materials();
+    const retained = preparing === undefined ? this.compositionRetainedScene() : undefined;
     const unavailable = entry.unavailableSlots;
-    const sourcePlan = this.shared.batchPlan(entry);
+    const sourcePlan =
+      preparing === undefined
+        ? this.shared.batchPlan(entry)
+        : entry.topology.preparationSourcePlan(preparing);
     const draws: DrawEvidence = {
       slots,
       meshes,
       unavailable,
       probe: entry.probeProjection.recordBufferProjection(),
-      temporal: view.projection.temporalDrawInputs(),
+      temporal: projection.temporalDrawInputs(),
     };
     return {
       draws,
@@ -923,13 +946,24 @@ export class PersistentRenderScene {
       scene,
       meshes,
       plan: sourcePlan,
-      queryPlan: () => entry.topology.query(sourcePlan, meshes, materials),
+      queryExecution: () => entry.topology.query(sourcePlan, meshes, materials),
+      ...(demand === undefined
+        ? {}
+        : {
+            materialPrograms: this.materialProgramProjection.project(demand.dispatch, materials),
+          }),
       completeGeometry: entry.topology.completeGeometry,
       unbatchedSlots: entry.topology.unbatchedSlots,
-      pipelinePreparationSlots: view.projection.pipelinePreparationSlots,
+      ...(preparing === undefined
+        ? {
+            pipelinePreparationSlots: entry.topology
+              .captureResidencySelection()
+              .selectSlots(projection.pipelinePreparationSlots),
+          }
+        : {}),
       slots,
       slotAt: slots.slotAt,
-      drawSnapshotAt: this.slotDraws(view),
+      drawSnapshotAt: this.slotDraws(view, projection, materials),
       slotForEntity: slots.lookup,
       sourceIdentity: entry.source.identity,
       structureMetrics: this.shared.structureMetrics,
@@ -942,14 +976,14 @@ export class PersistentRenderScene {
    * temporal and probe facts, undefined for absent or unavailable rows.
    * Readers address rows by slot (entity) and never by frame rank.
    */
-  private slotDraws(view: ViewEntry): (slot: number) => RenderableSnapshot | undefined {
+  private slotDraws(
+    view: ViewEntry,
+    projection = view.projection,
+    materials = view.shared.materialDispatch.materials(),
+  ): (slot: number) => RenderableSnapshot | undefined {
     const entry = view.shared;
     const unavailable = entry.unavailableSlots;
-    const drawAt = view.projection.drawFrame(
-      entry.materialDispatch.materials(),
-      this.temporalCounters,
-      view.projection.meshFrame(),
-    );
+    const drawAt = projection.drawFrame(materials, this.temporalCounters, projection.meshFrame());
     const probeAt = entry.probeProjection.captureRecordLookup();
     const probeMemo = this.probeAttachMemo.bySnapshot;
     return (slot) => {
@@ -1043,6 +1077,7 @@ export class PersistentRenderScene {
     const entry = view.shared;
     const projection = view.projection;
     const dispatch = this.shared.materialPasses(entry);
+    const residencySelection = entry.topology.captureResidencySelection();
     const candidateFrame: ExtractedFrame = {
       ...resourceFrame,
       hiddenEntityReports: entry.hiddenEntityReports,
@@ -1058,12 +1093,13 @@ export class PersistentRenderScene {
     );
     projection.setTemporalTracking(view.temporalDemanded);
     this.shared.projectProbes(entry, candidateFrame);
-    const materialized = projection.materialize();
+    const materialized = projection.materialize(residencySelection);
     const candidates = view.temporalDemanded
       ? projection.materializeTemporal(
           this.temporalCounters,
           entry.materialDispatch.materials(),
           entry.unavailableSlots.size === 0 ? undefined : entry.unavailableSlots,
+          residencySelection,
         )
       : materialized;
     const acceptedSlots = projection.slotsSnapshot();
@@ -1085,13 +1121,19 @@ export class PersistentRenderScene {
       this.probeAttachMemo,
     );
     // Publication frames carry deltas; their complete owners live in the adopted scene rows.
+    const retainedWaterPresent = projection.hasSource('waterMeshSource');
     const waterMeshOwners =
-      entry.publicationRevision === undefined ? resourceFrame.renderables : materialized;
+      entry.publicationRevision === undefined
+        ? resourceFrame.renderables
+        : retainedWaterPresent
+          ? materialized
+          : undefined;
     const { frame: ownedFrame, materials: materialFrame } = this.projectSceneSources(
       frameWithProbes,
       view,
       viewIdentity,
       waterMeshOwners,
+      retainedWaterPresent,
     );
     const resource = entry.source;
     const publicationRevision = entry.publicationRevision;
@@ -1119,7 +1161,7 @@ export class PersistentRenderScene {
       projection.hasSource('terrain') ||
       projection.hasSource('glyph') ||
       projection.hasSource('tilemap') ||
-      frameWithProbes.renderables.some((source) => source.waterMeshSource !== undefined);
+      ownedFrame.renderables !== frameWithProbes.renderables;
     const skinFrame = this.prepareSkinFrame(view);
     const { frame: result, subsurface } = view.cull.cull({
       shared: entry,
@@ -1186,6 +1228,7 @@ export class PersistentRenderScene {
         return materialProgramProjection.project(ownedFrame.dispatch, materialFrame);
       },
       worldBoundsOf: (source, out, row) => {
+        if (!residencySelected(residencySelection, source.residencyGroup)) return false;
         const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.entityKey);
         return source.terrainSection !== undefined || source.generatedMesh !== undefined
           ? writeBounds(worldBounds(source), out)

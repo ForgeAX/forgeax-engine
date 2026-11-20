@@ -5,6 +5,7 @@ import type { WorkspaceEntityInspection, WorkspaceProject, WorkspaceTarget } fro
 import { createPackAuthoringClient, packParameterReference, type PackDraftField } from '@forgeax/view-workspace-core/pack-authoring';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { InspectorField } from '../inspection';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Author = ReturnType<typeof createPackAuthoringClient>;
 
@@ -19,6 +20,7 @@ export function useInspectorAuthoring(input: {
   targetId?: string;
   addConversationReference?: (reference: { title: string; text: string }) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const { client, projectId, sessionId, targetId } = input;
   const source = input.inspection?.source;
   const [author, setAuthor] = useState<Author>();
@@ -57,11 +59,11 @@ export function useInspectorAuthoring(input: {
     });
   };
   return {
-    toolbar: source ? <div className="insp-authoring" aria-label="Source draft">
-      {state.draft ? <Toolbar><span>{state.draft.unsaved || state.pending ? 'Unsaved source changes' : 'Source saved'}</span>
-        <Button size="compact" disabled={(!state.draft.unsaved && !state.pending) || state.draft.conflicts.length > 0} onClick={() => act('save')}>Save</Button>
-        <Button size="compact" disabled={!state.draft.canUndo} onClick={() => act('undo')}>Undo</Button>
-        <Button size="compact" disabled={!state.draft.canRedo} onClick={() => act('redo')}>Redo</Button>
+    toolbar: source ? <div className="insp-authoring" aria-label={t('inspector.authoring.sourceDraft')}>
+      {state.draft ? <Toolbar><span>{t(state.draft.unsaved || state.pending ? 'inspector.authoring.unsaved' : 'inspector.authoring.saved')}</span>
+        <Button size="compact" disabled={(!state.draft.unsaved && !state.pending) || state.draft.conflicts.length > 0} onClick={() => act('save')}>{t('inspector.authoring.save')}</Button>
+        <Button size="compact" disabled={!state.draft.canUndo} onClick={() => act('undo')}>{t('inspector.authoring.undo')}</Button>
+        <Button size="compact" disabled={!state.draft.canRedo} onClick={() => act('redo')}>{t('inspector.authoring.redo')}</Button>
       </Toolbar> : null}
       {error || state.draft?.error ? <span role="alert">{error || state.draft?.error?.hint}</span> : null}
     </div> : null,
@@ -74,24 +76,25 @@ export function useInspectorAuthoring(input: {
       const binding = path === undefined ? undefined : fields.get(JSON.stringify([source.sourceKey, path]));
       if (binding && state.draft) return <AuthorField field={binding} value={state.draft.values[binding.name]} onChange={value => edit(binding.name, value)} />;
       if (!input.addConversationReference || !source.sourcePath.endsWith('.pack.ts') || field.rawValue === undefined || ['Entity', 'ChildOf', 'Children', 'SceneInstance', 'GlobalTransform'].includes(component)) return fallback;
-      return <span className="insp-author-field">{fallback}<button type="button" className="insp-author-expose" title="Expose as a Pack parameter with Agent" aria-label={`Expose ${component}.${field.key} with Agent`} onClick={() => {
+      return <span className="insp-author-field">{fallback}<button type="button" className="insp-author-expose" title={t('inspector.authoring.exposeHint')} aria-label={t('inspector.authoring.exposeField', { field: `${component}.${field.key}` })} onClick={() => {
         void input.addConversationReference!(packParameterReference({
           sourcePath: source.sourcePath, project: input.project, target: input.target, draft: state.draft, error,
           field: { component, key: field.key, value: field.rawValue,
             schema: input.inspection?.components.find(value => value.name === component)?.fields?.[field.key],
             asset: source.sourceKey, address: source.address, path },
         })).catch(cause => setError(String(cause)));
-      }}>Expose</button></span>;
+      }}>{t('inspector.authoring.expose')}</button></span>;
     },
   };
 }
 
 function AuthorField({ field, value, onChange }: { field: PackDraftField; value: unknown; onChange(value: unknown): void }) {
+  const { t } = useTranslation();
   const [text, setText] = useState(JSON.stringify(value));
   const [invalid, setInvalid] = useState(false);
   const focused = useRef(false);
   useEffect(() => { if (!focused.current) { setText(JSON.stringify(value)); setInvalid(false); } }, [value]);
-  return <input className="insp-author-input" aria-label={`Runtime ${field.name}`} aria-invalid={invalid} value={text} onFocus={() => { focused.current = true; }} onBlur={() => { focused.current = false; }} onChange={event => {
+  return <input className="insp-author-input" aria-label={t('inspector.authoring.runtimeField', { field: field.name })} aria-invalid={invalid} value={text} onFocus={() => { focused.current = true; }} onBlur={() => { focused.current = false; }} onChange={event => {
     setText(event.target.value);
     try {
       const checked = normalizeParameterValue(field, JSON.parse(event.target.value), field.name);

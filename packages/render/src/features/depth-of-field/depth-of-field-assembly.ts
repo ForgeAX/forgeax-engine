@@ -105,10 +105,9 @@ export async function prewarmDepthOfField(
       singleSample ??= entry;
     }
   }
-  if (singleSample !== undefined && !isShaderTemplateManifestRow(singleSample))
-    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(singleSample, id);
-  if (multisampled !== undefined && !isShaderTemplateManifestRow(multisampled))
-    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(multisampled, `${id}.msaa`);
+  // Each attachment topology shares one shader module across all DoF passes.
+  await prewarm(singleSample, 'forgeax.dof');
+  await prewarm(multisampled, 'forgeax.dof.msaa');
   const single = singleSample,
     multi = multisampled;
   register({

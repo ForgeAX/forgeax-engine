@@ -382,11 +382,10 @@ export async function verifySurfaceMaterialPublication(options: {
       if (selectedArtifact === undefined) {
         throw new Error('Surface HMR selected artifact receipt unavailable');
       }
-      expect(
-        projection.passes
-          .flatMap((pass) => pass.programs)
-          .some((program) => program.specializationKey === selectedArtifact.specializationKey),
-      ).toBe(true);
+      expect(projection.sourceTemplate?.publication.guid).toBe(projection.materialGuid);
+      const program = assets.getMaterialArtifact(selectedArtifact.specializationKey);
+      expect(program?.metadata?.templateIdentity).toBe(projection.specializationKey);
+      expect(program?.bytes.byteLength).toBeGreaterThan(0);
       if (lane === 'gpu-driven') {
         expect(submission?.resourceGeneration).toBeGreaterThan(0);
         expect(

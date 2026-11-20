@@ -2,11 +2,13 @@ import type { ReplayReadbackResult, RhiDebugError } from '@forgeax/engine-rhi-de
 import { EmptyState, SearchField } from '@forgeax/view-components';
 import { useEffect, useMemo, useState } from 'react';
 import { bufferRange, formatBufferHex, formatBufferTyped } from '../buffer-view';
+import { useViewerTranslation } from '../i18n';
 import { useSelection } from '../selection-context';
 import { resourceInspectorAnchor, resourceRowAnchor } from '../selectors';
 import { useReadResource, useViewModel } from '../viewer-context';
 
 export function ResourceInspector(_props?: { readonly className?: string }) {
+  const t = useViewerTranslation();
   const model = useViewModel();
   const readResource = useReadResource();
   const { selectedWorkIndex, selectedResourceId, selectResource, selectWork } = useSelection();
@@ -64,23 +66,24 @@ export function ResourceInspector(_props?: { readonly className?: string }) {
     >
       <div className="forgeax-panel-toolbar gap-fx-8">
         <SearchField
+          clearLabel={t('clearSearch')}
           className="flex-1"
-          label="Filter resource IDs"
+          label={t('filterResources')}
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           onClear={() => setFilter('')}
           placeholder="texture:, buffer:, pipeline:..."
         />
         <span className="shrink-0 text-caption text-muted-foreground">
-          {resources.length} shown
+          {t('shown', { count: resources.length })}
         </span>
       </div>
       <div className="flex flex-1 flex-col overflow-auto p-fx-12">
         <div className="flex flex-1 flex-col space-y-fx-4 pr-fx-4">
           {resources.length === 0 ? (
             <EmptyState
-              title={filter ? 'No matching resources' : 'No resources in tape'}
-              description={filter ? 'Try another resource ID' : ''}
+              title={t(filter ? 'noMatching' : 'noResources')}
+              description={filter ? t('tryResource') : ''}
             />
           ) : (
             resources.map((resource) => (
@@ -103,17 +106,17 @@ export function ResourceInspector(_props?: { readonly className?: string }) {
         </div>
         {selected && (
           <p className="pt-fx-12 text-caption text-muted-foreground">
-            Linked from workIndex {selectedWorkIndex}
+            {t('linkedWork', { index: selectedWorkIndex })}
           </p>
         )}
         {focusedResource !== undefined && (
           <div className="mt-fx-12 space-y-fx-4 border-t border-border pt-fx-12 text-compact">
-            <div className="text-caption font-medium text-foreground">Resource facts</div>
+            <div className="text-caption font-medium text-foreground">{t('resourceFacts')}</div>
             <pre className="forgeax-code-block">
               {JSON.stringify(focusedResource.descriptor, null, 2)}
             </pre>
-            <div>lifecycle {focusedResource.lifecycle.state}</div>
-            <div>consumers {focusedResource.consumers.length}</div>
+            <div>{t('lifecycle', { state: focusedResource.lifecycle.state })}</div>
+            <div>{t('consumers', { count: focusedResource.consumers.length })}</div>
             {focusedResource.consumers.map((consumer) => (
               <div key={`${consumer.eventIndex}:${consumer.access}`} className="font-mono">
                 eventIndex {consumer.eventIndex} workIndex {consumer.workIndex ?? 'none'}{' '}
@@ -124,7 +127,7 @@ export function ResourceInspector(_props?: { readonly className?: string }) {
         )}
         {readsBytes && selectedResourceId !== null && readback !== null && (
           <div className="mt-fx-12 border-t border-border pt-fx-12 text-compact">
-            <div className="text-success">Readback {selectedResourceId}</div>
+            <div className="text-success">{t('readback', { id: selectedResourceId })}</div>
             {readback.kind === 'texture' ? (
               <div className="font-mono">
                 {readback.format ?? 'texture'} {readback.width ?? 0}x{readback.height ?? 0}
@@ -152,7 +155,7 @@ export function ResourceInspector(_props?: { readonly className?: string }) {
               className="mt-fx-12 text-caption text-muted-foreground"
               data-forgeax-buffer-status="pending"
             >
-              Readback pending
+              {t('readbackPending')}
             </div>
           )}
       </div>

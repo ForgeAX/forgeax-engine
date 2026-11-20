@@ -1,4 +1,3 @@
-import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
 import { useBuiltAssetSource, useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -164,10 +163,9 @@ export function createCanvas(width, height, onDevice = () => {}) {
 let manifestUrl;
 export async function engineManifestUrl() {
   if (manifestUrl) return manifestUrl;
-  await ensureShaderManifestProfile('point-ssao');
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
   manifestUrl = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest({ pointShadows: true }))], {
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest({ pointShadows: true }))], {
       type: 'application/json',
     }),
   );

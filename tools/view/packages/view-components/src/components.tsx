@@ -524,7 +524,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
   );
 });
 
-export function Spinner({ label = '正在加载', className }: { label?: string; className?: string }) {
+export function Spinner({ label = 'Loading', className }: { label?: string; className?: string }) {
   return <span className={classes('fx-spinner', className)} role="status" aria-label={label} />;
 }
 
@@ -622,7 +622,7 @@ export function EmptyState({
 }
 
 export function LoadingState({
-  title = '正在加载',
+  title = 'Loading',
   description,
 }: {
   title?: ReactNode;
@@ -630,7 +630,7 @@ export function LoadingState({
 }) {
   return (
     <div className="fx-empty" role="status" aria-live="polite">
-      <Spinner label={typeof title === 'string' ? title : '正在加载'} />
+      <Spinner label={typeof title === 'string' ? title : 'Loading'} />
       <Text as="strong" variant="heading">{title}</Text>
       {description && <p>{description}</p>}
     </div>
@@ -660,10 +660,11 @@ export function Toolbar({ className, ...props }: HTMLAttributes<HTMLDivElement>)
 export type SearchFieldProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & {
   label?: string;
   onClear?: () => void;
+  clearLabel?: string;
 };
 
 export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(function SearchField(
-  { label = '搜索', onClear, value, className, ...props },
+  { label = 'Search', clearLabel = 'Clear search', onClear, value, className, ...props },
   ref,
 ) {
   const hasValue = value != null && String(value).length > 0;
@@ -674,7 +675,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
       {hasValue && onClear && (
         <IconButton
           className="fx-search__clear"
-          label="清除搜索"
+          label={clearLabel}
           icon={<X className="fx-icon" />}
           variant="quiet"
           size="compact"
@@ -705,7 +706,7 @@ export type MenuItem =
 
 export function Menu({
   items,
-  label = '菜单',
+  label = 'Menu',
   className,
 }: {
   items: MenuItem[];
@@ -872,7 +873,7 @@ export type MenuDropdownProps = {
   }>;
 };
 
-export function MenuDropdown({ label = '菜单', items, align = 'end', className, trigger }: MenuDropdownProps) {
+export function MenuDropdown({ label = 'Menu', items, align = 'end', className, trigger }: MenuDropdownProps) {
   const overlayRoot = useOverlayRoot();
   const anchorRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1084,7 +1085,7 @@ export function Dialog({
   dismissible = true,
   onClose,
   initialFocusRef,
-  closeLabel = '关闭弹窗',
+  closeLabel = 'Close dialog',
 }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -1359,7 +1360,7 @@ type ToastContextValue = {
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
-export function ToastProvider({ children, duration = 4000 }: { children: ReactNode; duration?: number }) {
+export function ToastProvider({ children, duration = 4000, dismissLabel = 'Dismiss notification' }: { children: ReactNode; duration?: number; dismissLabel?: string }) {
   const overlayRoot = useOverlayRoot();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const id = useRef(0);
@@ -1396,7 +1397,7 @@ export function ToastProvider({ children, duration = 4000 }: { children: ReactNo
                   {toast.description && <Text variant="caption">{toast.description}</Text>}
                 </div>
                 <IconButton
-                  label="关闭通知"
+                  label={dismissLabel}
                   icon={<X className="fx-icon" />}
                   variant="quiet"
                   size="compact"
@@ -1428,7 +1429,7 @@ export function NavigationRail({
   items,
   activeId,
   onSelect,
-  label = '主导航',
+  label = 'Main navigation',
 }: {
   items: NavigationItem[];
   activeId: string;
@@ -1587,13 +1588,13 @@ export type Message = {
   content: ReactNode;
 };
 
-export function Conversation({ messages, label = '对话' }: { messages: Message[]; label?: string }) {
+export function Conversation({ messages, label = 'Conversation', userLabel = 'You' }: { messages: Message[]; label?: string; userLabel?: string }) {
   return (
     <div className="fx-conversation" aria-label={label}>
       {messages.map((message) => (
         <article className={classes('fx-message', `fx-message--${message.role}`)} key={message.id}>
           <Text as="span" variant="caption">
-            {message.role === 'user' ? '你' : 'ForgeaX'}
+            {message.role === 'user' ? userLabel : 'ForgeaX'}
           </Text>
           <div className="fx-message__bubble">{message.content}</div>
         </article>
@@ -1610,16 +1611,18 @@ export type ComposerProps = {
   disabled?: boolean;
   tools?: ReactNode;
   submitLabel?: string;
+  inputLabel?: string;
 };
 
 export function Composer({
   value,
   onChange,
   onSubmit,
-  placeholder = '描述你想做什么…',
+  placeholder = 'Describe what you want to do…',
   disabled,
   tools,
-  submitLabel = '发送',
+  submitLabel = 'Send',
+  inputLabel = 'Message',
 }: ComposerProps) {
   return (
     <div className="fx-composer">
@@ -1627,7 +1630,7 @@ export function Composer({
         value={value}
         disabled={disabled}
         placeholder={placeholder}
-        aria-label="消息"
+        aria-label={inputLabel}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey) {

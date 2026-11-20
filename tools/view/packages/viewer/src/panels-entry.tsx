@@ -1,4 +1,5 @@
 import '@forgeax/view-components/styles.css';
+export { setViewLocale } from '@forgeax/view-workspace-core/locale-bridge';
 import './styles.css';
 import '@forgeax/view-plugin-display/ui';
 

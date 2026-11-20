@@ -195,10 +195,10 @@ try {
   const { gltfDocToSceneAsset, meshIrToMeshAsset, parseGlb, toMaterialAsset } = await import(
     '@forgeax/engine-gltf'
   );
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 
   const manifestUrl = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], { type: 'application/json' }),
   );
   smokeCleanup.own(() => URL.revokeObjectURL(manifestUrl));
 

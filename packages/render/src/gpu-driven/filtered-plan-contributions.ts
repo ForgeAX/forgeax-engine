@@ -1,72 +1,87 @@
+import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { StableRangeAllocator } from '../stable-range-allocator';
-import { batchLodLevelCount } from './batch-layout';
+import { capturedGpuDrivenBatchKey } from './batch-key';
 import { MemberCandidates } from './batch-members';
-import type { GpuDrivenBatch } from './batch-topology';
+import type { GpuDrivenBatch, SubmissionPlan } from './batch-topology';
 import {
-  assembleFilteredBatch,
+  type FilteredGeometry,
+  type FilteredPartition,
+  type FilteredRow,
+  type FilteredRowStage,
+  type FilteredWindow,
+  filteredWindowConflicts,
+  stageFilteredRow,
+} from './filtered-contribution';
+import { type FilteredTaskContext, FilteredTaskHeaders } from './filtered-task-headers';
+import { hasCapturedTaskMembership } from './fixed-task-plan';
+import {
   assembleFilteredGroups,
-  type BatchPartition,
   type FilteredProductionPlan,
-  groupForPartition,
+  isPreparedBatchRows,
+  isPreparedProductionPlan,
   type PreparedBatch,
   type PreparedBatchRows,
   type PreparedProductionPlan,
-  partitionBatch,
 } from './production-raster-prepare';
 
 type ProfilePart = <T>(part: 'groups' | 'group-key' | 'batches', action: () => T) => T;
-interface Window {
-  readonly id: number;
-  readonly generation: number;
-  readonly sourceGeneration: number;
-  readonly visibleStart: number;
-  readonly levelCapacity: number;
-  readonly indirectStart: number;
-  readonly levels: number;
+interface RangeReceipt {
+  readonly allocator: StableRangeAllocator;
+  readonly count: number;
+  start: number | undefined;
+  state: 'allocating' | 'held' | 'releasing' | 'released';
 }
-interface GeometryPartition {
-  readonly source: GpuDrivenBatch;
-  readonly partitions: readonly BatchPartition[];
-  readonly bindings: ReadonlyMap<string, string> | undefined;
+interface RowTransaction {
+  headers?: FilteredTaskHeaders;
+  previousHeaders?: FilteredTaskHeaders;
+  readonly epoch: number;
+  readonly ranges: RangeReceipt[];
+  readonly ids: number[];
+  readonly retired: Set<FilteredWindow>;
+  committed: boolean;
+}
+export interface FilteredResidentContribution {
+  readonly taskContext?: FilteredTaskContext;
+  readonly plan: SubmissionPlan;
+  readonly index: number;
+  /** Absence is a completed negative Pass contribution, not a missing preparation. */
+  readonly row: PreparedBatchRows | undefined;
+  readonly isCurrent: () => boolean;
+}
+
+/** One filtered resident projection and its whole-contribution execution selection. */
+export interface FilteredExecutionPlans {
+  readonly resident: FilteredProductionPlan;
+  readonly active: FilteredProductionPlan;
 }
 
 /** Object binding partitions survive every material and residency edit. */
 export class FilteredPlanContributionOwner {
-  private readonly geometry = new Map<number, GeometryPartition>();
-  private readonly windows = new Map<string, Window>();
-  private readonly prepared = new Map<
-    string,
-    {
-      row: PreparedBatchRows;
-      partition: BatchPartition;
-      window: Window;
-      batch: PreparedBatch | undefined;
-      topology: GpuDrivenBatch;
-    }
-  >();
-  /**
-   * One row's complete projection. An identical prepared row with the same object
-   * bindings selects the same partitions, windows and assembled batches, so a
-   * retained row publishes its last outputs without recomputing any key.
-   */
-  private readonly rows = new Map<
-    number,
-    {
-      readonly row: PreparedBatchRows;
-      readonly bindings: ReadonlyMap<string, string> | undefined;
-      readonly windowKeys: readonly string[];
-      readonly topology: readonly GpuDrivenBatch[];
-      readonly batches: readonly PreparedBatch[];
-      seen: number;
-    }
-  >();
+  private readonly geometry = new Map<number, FilteredGeometry>();
+  private readonly windows = new Map<string, FilteredWindow>();
+  private readonly prepared = new Map<string, FilteredPartition>();
+  private readonly rows = new Map<number, FilteredRow>();
+  private active:
+    | { readonly sourceIds: ReadonlySet<number>; readonly plan: SubmissionPlan }
+    | undefined;
+  private epoch = 0;
+  private busy = false;
+  /** Unknown allocator effects require explicit owner reset, never a guessed rollback. */
+  private failure:
+    | {
+        readonly causes: unknown[];
+        readonly transactions: Set<RowTransaction>;
+        readonly headers: Set<FilteredTaskHeaders>;
+      }
+    | undefined;
   private pass = 0;
   private readonly visibleRanges = new StableRangeAllocator();
   private readonly indirectRanges = new StableRangeAllocator();
   private nextId = 0;
   private readonly freeIds: number[] = [];
   private generation = 0;
-  private publication: FilteredProductionPlan | undefined;
+  private publication: FilteredExecutionPlans | undefined;
   readonly windowCounters = { relocations: 0, compactions: 0 };
   readonly assemblyCounters = {
     publicationHits: 0,
@@ -77,30 +92,63 @@ export class FilteredPlanContributionOwner {
   lastWork = { projectedBatches: 0, projectedCandidates: 0, copiedCandidates: 0, reusedGroups: 0 };
 
   clear(): void {
-    this.geometry.clear();
-    this.windows.clear();
-    this.prepared.clear();
-    this.rows.clear();
-    this.visibleRanges.reset();
-    this.indirectRanges.reset();
-    this.nextId = 0;
-    this.freeIds.length = 0;
-    this.publication = undefined;
+    const wasBusy = this.busy;
+    this.busy = true;
+    try {
+      const headers = new Set<FilteredTaskHeaders>(this.failure?.headers);
+      for (const row of this.rows.values()) if (row.headers !== undefined) headers.add(row.headers);
+      for (const transaction of this.failure?.transactions ?? []) {
+        if (transaction.headers !== undefined) headers.add(transaction.headers);
+        if (transaction.previousHeaders !== undefined) headers.add(transaction.previousHeaders);
+      }
+      this.epoch++;
+      // Numeric allocator reconstruction cannot confirm unknown physical effects.
+      if (this.failure?.headers.size === 0) this.failure = undefined;
+      this.active = undefined;
+      this.geometry.clear();
+      this.windows.clear();
+      this.prepared.clear();
+      this.rows.clear();
+      this.visibleRanges.reset();
+      this.indirectRanges.reset();
+      this.nextId = 0;
+      this.freeIds.length = 0;
+      this.publication = undefined;
+      for (const held of headers)
+        try {
+          this.retireHeaders(held);
+        } catch {
+          /* The physical journal retains every cause. */
+        }
+      if (this.failure !== undefined)
+        throw new AggregateError(
+          this.failure.causes,
+          'Filtered physical retirement remains unconfirmed',
+        );
+    } finally {
+      this.busy = wasBusy;
+    }
   }
 
   update(
     prepared: PreparedProductionPlan,
     bindings?: ReadonlyMap<string, string>,
     profile?: ProfilePart,
-  ): FilteredProductionPlan {
+    taskContext?: FilteredTaskContext,
+  ): FilteredExecutionPlans {
+    if (this.busy || this.failure !== undefined) throw unavailable();
+    if (!isPreparedProductionPlan(prepared))
+      throw new Error('Filtered projection requires an owned assemblePreparedPlan result');
+    const epoch = this.epoch;
+    this.busy = true;
     this.lastWork = {
       projectedBatches: 0,
       projectedCandidates: 0,
       copiedCandidates: 0,
       reusedGroups: 0,
     };
-    const objectBindings = bindings?.size === 0 ? undefined : bindings;
     const build = () => {
+      const objectBindings = bindings?.size === 0 ? undefined : bindings;
       const pass = ++this.pass;
       // Window keys are owned by one source batch; only rows that dropped or
       // retired a key can release a window. Duplicate rows fall back to a scan.
@@ -110,14 +158,13 @@ export class FilteredPlanContributionOwner {
       const topology: GpuDrivenBatch[] = [];
       let fixedCandidates = true;
       let seenRows = 0;
-      for (const row of prepared.batchRows) {
+      for (const row of this.residentRows(prepared, objectBindings)) {
+        this.assertEpoch(epoch);
         const source = row.source;
         const retainedRow = this.rows.get(source.batchId);
         if (
           retainedRow !== undefined &&
-          retainedRow.row === row &&
-          retainedRow.bindings === objectBindings &&
-          retainedRow.seen !== pass
+          this.canReuseRow(retainedRow, row, objectBindings, pass, taskContext)
         ) {
           retainedRow.seen = pass;
           seenRows++;
@@ -130,122 +177,26 @@ export class FilteredPlanContributionOwner {
           this.lastWork.reusedGroups += retainedRow.topology.length;
           continue;
         }
-        const rowWindowKeys: string[] = [];
-        const rowTopology: GpuDrivenBatch[] = [];
-        const rowBatches: PreparedBatch[] = [];
-        let geometry = this.geometry.get(source.batchId);
-        if (
-          geometry === undefined ||
-          !MemberCandidates.is(source.candidates) ||
-          geometry.source.generation !== source.generation ||
-          geometry.source.members !== source.members ||
-          geometry.source.candidates !== source.candidates ||
-          geometry.source.binding !== source.binding ||
-          geometry.bindings !== objectBindings
-        ) {
-          geometry = {
-            source,
-            partitions: partitionBatch(source, objectBindings),
-            bindings: objectBindings,
-          };
-          this.geometry.set(source.batchId, geometry);
-          this.lastWork.projectedCandidates +=
-            objectBindings === undefined ? 0 : source.candidates.length;
+        const projected = this.reconcileRow(
+          row,
+          objectBindings,
+          pass,
+          () => true,
+          false,
+          taskContext,
+          prepared.residentSource,
+        );
+        for (const batch of projected.topology) {
+          topology.push(batch);
+          fixedCandidates &&= MemberCandidates.is(batch.candidates);
         }
-        for (const partition of geometry.partitions) {
-          const group = groupForPartition(row, partition);
-          const key = `${source.batchId}:${partition.key}`;
-          // Geometry windows stay allocated while a Pass temporarily selects the direct lane.
-          rowWindowKeys.push(key);
-          const lod = group?.lod ?? row.lod;
-          const levels = batchLodLevelCount({ ...(lod === undefined ? {} : { lod }) });
-          // 64-entry units sized by actual membership. Growth reserves 1.5x of
-          // the outgrown window, so relocations stay amortized O(1) per member.
-          const capacity = Math.max(1, Math.ceil(partition.candidates.length / 64));
-          let window = this.windows.get(key);
-          if (
-            window === undefined ||
-            window.sourceGeneration !== source.generation ||
-            window.levelCapacity < capacity ||
-            window.levelCapacity > capacity * 4 ||
-            window.levels !== levels
-          ) {
-            const reserved =
-              window !== undefined &&
-              window.sourceGeneration === source.generation &&
-              window.levels === levels &&
-              window.levelCapacity < capacity
-                ? Math.max(capacity, Math.ceil(window.levelCapacity * 1.5))
-                : capacity;
-            if (window !== undefined) {
-              this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
-              this.indirectRanges.release(window.indirectStart, window.levels);
-              this.windowCounters.relocations++;
-            }
-            window = {
-              id: window?.id ?? this.freeIds.pop() ?? this.nextId++,
-              sourceGeneration: source.generation,
-              generation: ++this.generation,
-              visibleStart: this.visibleRanges.allocate(reserved * levels),
-              levelCapacity: reserved,
-              indirectStart: this.indirectRanges.allocate(levels),
-              levels,
-            };
-            this.windows.set(key, window);
-          }
-          let cached = this.prepared.get(key);
-          if (cached?.row !== row || cached.partition !== partition || cached.window !== window) {
-            const allocation = {
-              batchId: window.id,
-              generation: window.generation,
-              visibleBase: window.visibleStart * 64,
-              visibleAllocationCapacity: window.levelCapacity * 64,
-              indirectOffset: window.indirectStart * 20,
-            };
-            const batch =
-              group === undefined ? undefined : assembleFilteredBatch({ ...group, allocation });
-            const { lod: _borrowedLod, ...sourceFacts } = source;
-            const projected =
-              batch?.batch ??
-              Object.freeze({
-                ...sourceFacts,
-                ...allocation,
-                candidates: partition.candidates,
-                ...(partition.members === undefined ? {} : { members: partition.members }),
-                visibleCapacity: 0,
-                materialAddress: 0,
-                ...(lod === undefined ? {} : { lod }),
-              });
-            cached = { row, partition, window, batch, topology: projected };
-            this.prepared.set(key, cached);
-            this.assemblyCounters.batchBuilds++;
-            this.lastWork.projectedBatches++;
-          } else {
-            this.assemblyCounters.batchHits++;
-            this.lastWork.reusedGroups++;
-          }
-          topology.push(cached.topology);
-          rowTopology.push(cached.topology);
-          fixedCandidates &&= MemberCandidates.is(cached.topology.candidates);
-          if (cached.batch !== undefined) {
-            batches.push(cached.batch);
-            rowBatches.push(cached.batch);
-          }
-        }
+        for (const batch of projected.batches) batches.push(batch);
         if (retainedRow !== undefined && retainedRow.seen !== pass) {
           // A replaced row may retire partition windows its last projection owned.
           for (const key of retainedRow.windowKeys)
-            if (!rowWindowKeys.includes(key)) releasedWindows.push(key);
+            if (!projected.windowKeys.includes(key)) releasedWindows.push(key);
         } else if (retainedRow !== undefined) scanWindows = true;
         if (retainedRow?.seen !== pass) seenRows++;
-        this.rows.set(source.batchId, {
-          row,
-          bindings: objectBindings,
-          windowKeys: rowWindowKeys,
-          topology: rowTopology,
-          batches: rowBatches,
-          seen: pass,
-        });
       }
       // Retired rows release their geometry, windows and assembled batches.
       // Every retained row was seen when the counts agree.
@@ -254,46 +205,510 @@ export class FilteredPlanContributionOwner {
           if (retained.seen === pass) continue;
           this.rows.delete(id);
           this.geometry.delete(id);
+          this.retireHeaders(retained.headers);
           for (const key of retained.windowKeys) releasedWindows.push(key);
         }
-      const releaseWindow = (key: string) => {
-        const window = this.windows.get(key);
-        if (window === undefined) return;
-        this.visibleRanges.release(window.visibleStart, window.levelCapacity * window.levels);
-        this.indirectRanges.release(window.indirectStart, window.levels);
-        this.freeIds.push(window.id);
-        this.windows.delete(key);
-        this.prepared.delete(key);
-      };
       if (scanWindows) {
         const liveWindows = new Set<string>();
         for (const retained of this.rows.values())
           for (const key of retained.windowKeys) liveWindows.add(key);
-        for (const key of [...this.windows.keys()]) if (!liveWindows.has(key)) releaseWindow(key);
-      } else for (const key of releasedWindows) releaseWindow(key);
+        for (const key of [...this.windows.keys()])
+          if (!liveWindows.has(key)) this.releaseWindow(key);
+      } else for (const key of releasedWindows) this.releaseWindow(key);
+      this.assertEpoch(epoch);
       const previous = this.publication;
-      if (
-        previous !== undefined &&
-        (previous.projectionSource !== undefined) === fixedCandidates &&
-        previous.plan.revision === prepared.source.revision &&
-        topology.length === previous.plan.batches.length &&
-        topology.every((batch, index) => batch === previous.plan.batches.at(index))
-      ) {
-        this.assemblyCounters.publicationHits++;
-        return previous;
-      }
-      const assembled = assembleFilteredGroups(prepared.source, batches, topology);
-      const value: FilteredProductionPlan = fixedCandidates
-        ? { ...assembled, projectionSource: assembled.plan }
-        : assembled;
-      this.publication = value;
-      return value;
+      const resident = this.publish(
+        prepared.residentSource,
+        batches,
+        topology,
+        fixedCandidates,
+        previous?.resident,
+      );
+      const active = this.selectActive(prepared, resident, fixedCandidates, previous?.active);
+      this.assertEpoch(epoch);
+      this.active = {
+        sourceIds: new Set(prepared.batchRows.map((row) => row.source.batchId)),
+        plan: active.plan,
+      };
+      if (previous?.resident === resident && previous.active === active) return previous;
+      this.publication = Object.freeze({ resident, active });
+      return this.publication;
     };
     try {
-      return profile === undefined ? build() : profile('batches', build);
+      const result = profile === undefined ? build() : profile('batches', build);
+      this.assertEpoch(epoch);
+      return result;
     } catch (error) {
-      this.clear();
+      try {
+        this.clear();
+      } catch (cleanup) {
+        throw new AggregateError([error, cleanup], 'Filtered update and cleanup failed');
+      }
       throw error;
+    } finally {
+      this.busy = false;
     }
   }
+
+  /** One unbound inactive contribution; neither retirement of other rows nor publication. */
+  prepareContribution(
+    input: FilteredResidentContribution,
+  ): Result<void, RhiError | GpuDrivenPreparationError> {
+    if (this.busy || this.failure !== undefined) return err(unavailable());
+    this.busy = true;
+    const epoch = this.epoch;
+    try {
+      const { plan, index, row } = input;
+      const guard = input.isCurrent.bind(input);
+      const current = () => this.current(epoch, guard);
+      if (!current()) return err(stale());
+      if (!hasCapturedTaskMembership(plan) || !Number.isSafeInteger(index) || index < 0)
+        return err(unavailable());
+      const origin = plan.batches.at(index);
+      if (!validContribution(plan, index, origin, row)) return err(unavailable());
+      if (this.active?.sourceIds.has(origin.batchId)) return err(unavailable());
+      if (!current()) return err(stale());
+      if (row === undefined) {
+        this.removeRow(origin.batchId);
+      } else {
+        const previous = this.rows.get(origin.batchId);
+        const projected = this.reconcileRow(
+          row,
+          undefined,
+          this.pass,
+          current,
+          true,
+          input.taskContext,
+          plan,
+        );
+        this.releaseWindows(
+          (previous?.windowKeys ?? []).filter((key) => !projected.windowKeys.includes(key)),
+        );
+      }
+      return current() ? ok(undefined) : err(stale());
+    } catch (cause) {
+      if (cause instanceof RhiError || cause instanceof GpuDrivenPreparationError)
+        return err(cause);
+      throw cause;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private current(epoch: number, guard: () => boolean): boolean {
+    if (this.epoch !== epoch || this.failure !== undefined) return false;
+    const accepted = guard() === true;
+    return accepted && this.epoch === epoch && this.failure === undefined;
+  }
+
+  private reconcileRow(
+    row: PreparedBatchRows,
+    bindings: ReadonlyMap<string, string> | undefined,
+    pass: number,
+    guard: () => boolean,
+    background = false,
+    taskContext?: FilteredTaskContext,
+    source?: SubmissionPlan,
+  ): FilteredRow {
+    const transaction: RowTransaction = {
+      epoch: this.epoch,
+      ranges: [],
+      ids: [],
+      retired: new Set(),
+      committed: false,
+    };
+    const previousHeaders = this.rows.get(row.source.batchId)?.headers;
+    if (previousHeaders !== undefined) transaction.previousHeaders = previousHeaders;
+    try {
+      const stage = stageFilteredRow(row, bindings, {
+        geometry: this.geometry.get(row.source.batchId),
+        partition: (key) => this.prepared.get(key),
+        window: (key) => this.windows.get(key),
+        allocate: (previous, capacity, levels) =>
+          this.allocateWindow(
+            transaction,
+            row.source.generation,
+            previous,
+            capacity,
+            levels,
+            background,
+          ),
+      });
+      if (background && this.active !== undefined)
+        for (const partition of stage.partitions.values())
+          if (filteredWindowConflicts(partition.window, this.active.plan)) throw unavailable();
+      this.stageHeaders(stage, transaction, background, taskContext, source);
+      if (!this.current(transaction.epoch, guard)) throw stale();
+      transaction.committed = true;
+      this.commitRow(stage, pass, transaction);
+      this.assertEpoch(transaction.epoch);
+      return stage.row;
+    } catch (cause) {
+      if (transaction.committed) this.poison(transaction, cause);
+      else {
+        let headerRetirement: unknown;
+        try {
+          this.retireHeaders(transaction.headers);
+        } catch (failure) {
+          headerRetirement = failure;
+        }
+        try {
+          this.releaseRanges(transaction, transaction.ranges);
+          if (this.epoch === transaction.epoch && this.failure === undefined)
+            this.freeIds.push(...transaction.ids);
+        } catch (retirement) {
+          throw new AggregateError(
+            [cause, retirement, ...(headerRetirement === undefined ? [] : [headerRetirement])],
+            'Filtered row rollback failed',
+          );
+        }
+        if (headerRetirement !== undefined)
+          throw new AggregateError([cause, headerRetirement], 'Filtered header rollback failed');
+      }
+      throw cause;
+    }
+  }
+
+  private assertEpoch(epoch: number): void {
+    if (this.epoch !== epoch || this.failure !== undefined) throw stale();
+  }
+
+  private stageHeaders(
+    stage: FilteredRowStage,
+    transaction: RowTransaction,
+    background: boolean,
+    context: FilteredTaskContext | undefined,
+    source: SubmissionPlan | undefined,
+  ): void {
+    const previous = transaction.previousHeaders;
+    if (
+      (!background && previous === undefined) ||
+      (context === undefined && previous === undefined)
+    )
+      return;
+    if (context === undefined || source === undefined) throw unavailable();
+    if (previous?.matches(context, stage.row.topology)) {
+      stage.row.headers = previous;
+      return;
+    }
+    const headers = new FilteredTaskHeaders(context.scene, context.device, stage.row.topology);
+    transaction.headers = headers;
+    headers.prepare(source, stage.row.batches, previous);
+    stage.row.headers = headers;
+  }
+
+  private canReuseRow(
+    retained: FilteredRow | undefined,
+    row: PreparedBatchRows,
+    bindings: ReadonlyMap<string, string> | undefined,
+    pass: number,
+    context?: FilteredTaskContext,
+  ): boolean {
+    return (
+      retained !== undefined &&
+      retained.row === row &&
+      retained.bindings === bindings &&
+      retained.seen !== pass &&
+      (retained.headers === undefined ||
+        (context !== undefined && retained.headers.matches(context, retained.topology)))
+    );
+  }
+
+  private retireHeaders(held: FilteredTaskHeaders | undefined): void {
+    if (held === undefined) return;
+    try {
+      held.dispose();
+    } catch (cause) {
+      this.failure ??= { causes: [], transactions: new Set(), headers: new Set() };
+      this.failure.causes.push(cause);
+      this.failure.headers.add(held);
+      throw cause;
+    }
+  }
+
+  private allocateWindow(
+    transaction: RowTransaction,
+    sourceGeneration: number,
+    previous: FilteredWindow | undefined,
+    capacity: number,
+    levels: number,
+    background: boolean,
+  ): FilteredWindow {
+    if (transaction.epoch !== this.epoch) throw stale();
+    if (previous !== undefined && !background) {
+      // The admitted ordinary frame keeps its original range-reuse policy.
+      const ranges = this.windowRanges(previous);
+      transaction.ranges.push(...ranges);
+      this.releaseRanges(transaction, ranges);
+      transaction.retired.add(previous);
+    }
+    const reserved =
+      previous !== undefined &&
+      previous.sourceGeneration === sourceGeneration &&
+      previous.levels === levels &&
+      previous.levelCapacity < capacity
+        ? Math.max(capacity, Math.ceil(previous.levelCapacity * 1.5))
+        : capacity;
+    const id = previous?.id ?? this.freeIds.pop() ?? this.nextId++;
+    if (previous === undefined) transaction.ids.push(id);
+    return {
+      id,
+      sourceGeneration,
+      generation: ++this.generation,
+      visibleStart: this.allocateRange(transaction, this.visibleRanges, reserved * levels),
+      levelCapacity: reserved,
+      indirectStart: this.allocateRange(transaction, this.indirectRanges, levels),
+      levels,
+    };
+  }
+
+  private allocateRange(
+    transaction: RowTransaction,
+    allocator: StableRangeAllocator,
+    count: number,
+  ): number {
+    if (transaction.epoch !== this.epoch) throw stale();
+    const receipt: RangeReceipt = { allocator, count, start: undefined, state: 'allocating' };
+    transaction.ranges.push(receipt);
+    try {
+      receipt.start = allocator.allocate(count);
+      receipt.state = 'held';
+      return receipt.start;
+    } catch (cause) {
+      this.poison(transaction, cause);
+      throw cause;
+    }
+  }
+
+  private commitRow(stage: FilteredRowStage, pass: number, transaction: RowTransaction): void {
+    const id = stage.row.row.source.batchId;
+    const retired: FilteredWindow[] = [];
+    this.geometry.set(id, stage.geometry);
+    for (const [key, partition] of stage.partitions) {
+      const window = this.windows.get(key);
+      if (window !== undefined && window !== partition.window) {
+        if (!transaction.retired.has(window)) retired.push(window);
+        this.windowCounters.relocations++;
+      }
+      this.windows.set(key, partition.window);
+      this.prepared.set(key, partition);
+    }
+    stage.row.seen = pass;
+    this.rows.set(id, stage.row);
+    this.assemblyCounters.batchBuilds += stage.built;
+    this.assemblyCounters.batchHits += stage.reused;
+    this.lastWork.projectedBatches += stage.built;
+    this.lastWork.reusedGroups += stage.reused;
+    this.lastWork.projectedCandidates += stage.projectedCandidates;
+    const ranges = retired.flatMap((window) => this.windowRanges(window));
+    transaction.ranges.push(...ranges);
+    const failures: unknown[] = [];
+    try {
+      this.releaseRanges(transaction, ranges);
+    } catch (cause) {
+      failures.push(cause);
+    }
+    if (transaction.previousHeaders !== stage.row.headers)
+      try {
+        this.retireHeaders(transaction.previousHeaders);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    if (failures.length > 0) throw new AggregateError(failures, 'Filtered row retirement failed');
+  }
+
+  private windowRanges(window: FilteredWindow): RangeReceipt[] {
+    return [
+      {
+        allocator: this.visibleRanges,
+        start: window.visibleStart,
+        count: window.levelCapacity * window.levels,
+        state: 'held',
+      },
+      {
+        allocator: this.indirectRanges,
+        start: window.indirectStart,
+        count: window.levels,
+        state: 'held',
+      },
+    ];
+  }
+
+  private releaseRanges(transaction: RowTransaction, ranges: readonly RangeReceipt[]): void {
+    const failures: unknown[] = [];
+    for (const range of ranges) {
+      if (transaction.epoch !== this.epoch) return;
+      if (range.state !== 'held' || range.start === undefined) continue;
+      range.state = 'releasing';
+      try {
+        range.allocator.release(range.start, range.count);
+        range.state = 'released';
+      } catch (cause) {
+        failures.push(cause);
+        this.poison(transaction, cause);
+      }
+    }
+    if (failures.length !== 0)
+      throw new AggregateError(failures, 'Filtered range retirement failed');
+  }
+
+  private releaseWindow(key: string): void {
+    const window = this.windows.get(key);
+    if (window === undefined) return;
+    const transaction: RowTransaction = {
+      epoch: this.epoch,
+      ranges: this.windowRanges(window),
+      ids: [],
+      retired: new Set(),
+      committed: true,
+    };
+    this.releaseRanges(transaction, transaction.ranges);
+    if (transaction.epoch !== this.epoch) return;
+    this.freeIds.push(window.id);
+    this.windows.delete(key);
+    this.prepared.delete(key);
+  }
+
+  private removeRow(id: number): void {
+    const held = this.rows.get(id);
+    if (held === undefined) return;
+    const failures: unknown[] = [];
+    try {
+      this.releaseWindows(held.windowKeys);
+    } catch (cause) {
+      failures.push(cause);
+    }
+    try {
+      this.retireHeaders(held.headers);
+    } catch (cause) {
+      failures.push(cause);
+    }
+    if (failures.length > 0)
+      throw new AggregateError(failures, 'Filtered contribution retirement failed');
+    this.rows.delete(id);
+    this.geometry.delete(id);
+  }
+
+  private releaseWindows(keys: readonly string[]): void {
+    const failures: unknown[] = [];
+    for (const key of keys)
+      try {
+        this.releaseWindow(key);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    if (failures.length !== 0)
+      throw new AggregateError(failures, 'Filtered window retirement failed');
+  }
+
+  private poison(transaction: RowTransaction, cause: unknown): void {
+    if (transaction.epoch !== this.epoch) return;
+    this.failure ??= { causes: [], transactions: new Set(), headers: new Set() };
+    this.failure.causes.push(cause);
+    this.failure.transactions.add(transaction);
+  }
+
+  /** Native omitted rows may survive; raw object binding maps carry no version proof. */
+  private residentRows(
+    prepared: PreparedProductionPlan,
+    bindings: ReadonlyMap<string, string> | undefined,
+  ): readonly PreparedBatchRows[] {
+    if (
+      prepared.source === prepared.residentSource ||
+      bindings !== undefined ||
+      !hasCapturedTaskMembership(prepared.residentSource) ||
+      prepared.residentRows.length === prepared.residentSource.batches.length
+    )
+      return prepared.residentRows;
+    const active = new Set(prepared.source.batches);
+    const supplied = new Map(prepared.residentRows.map((row) => [row.origin, row]));
+    const rows: PreparedBatchRows[] = [];
+    for (const origin of prepared.residentSource.batches) {
+      const row = supplied.get(origin);
+      if (row !== undefined) {
+        rows.push(row);
+        continue;
+      }
+      const held = this.rows.get(origin.batchId);
+      if (!active.has(origin) && held?.row.origin === origin && held.bindings === bindings)
+        rows.push(held.row);
+    }
+    return rows;
+  }
+
+  private selectActive(
+    prepared: PreparedProductionPlan,
+    resident: FilteredProductionPlan,
+    fixedCandidates: boolean,
+    previous: FilteredProductionPlan | undefined,
+  ): FilteredProductionPlan {
+    if (prepared.source === prepared.residentSource && prepared.batchRows === prepared.residentRows)
+      return resident;
+    const topology: GpuDrivenBatch[] = [];
+    const batches: PreparedBatch[] = [];
+    for (const row of prepared.batchRows) {
+      const held = this.rows.get(row.source.batchId);
+      if (held?.row !== row)
+        throw new Error('Active filtered rows must select their exact resident contribution');
+      for (const batch of held.topology) topology.push(batch);
+      for (const batch of held.batches) batches.push(batch);
+    }
+    return this.publish(prepared.source, batches, topology, fixedCandidates, previous);
+  }
+
+  private publish(
+    source: SubmissionPlan,
+    batches: readonly PreparedBatch[],
+    topology: readonly GpuDrivenBatch[],
+    fixedCandidates: boolean,
+    previous: FilteredProductionPlan | undefined,
+  ): FilteredProductionPlan {
+    if (
+      previous !== undefined &&
+      (previous.projectionSource !== undefined) === fixedCandidates &&
+      previous.plan.revision === source.revision &&
+      topology.length === previous.plan.batches.length &&
+      topology.every((batch, index) => batch === previous.plan.batches.at(index))
+    ) {
+      this.assemblyCounters.publicationHits++;
+      return previous;
+    }
+    const assembled = assembleFilteredGroups(source, batches, topology);
+    return fixedCandidates ? { ...assembled, projectionSource: assembled.plan } : assembled;
+  }
+}
+
+function validContribution(
+  plan: SubmissionPlan,
+  index: number,
+  origin: GpuDrivenBatch | undefined,
+  row: PreparedBatchRows | undefined,
+): origin is GpuDrivenBatch {
+  if (
+    !hasCapturedTaskMembership(plan) ||
+    !Number.isSafeInteger(index) ||
+    index < 0 ||
+    origin === undefined ||
+    capturedGpuDrivenBatchKey(origin) === undefined ||
+    !MemberCandidates.is(origin.candidates) ||
+    origin.members !== origin.candidates.membersFrame()
+  )
+    return false;
+  return row === undefined || (isPreparedBatchRows(row) && row.origin === origin);
+}
+
+function stale(): GpuDrivenPreparationError {
+  return new GpuDrivenPreparationError('stale-generation', {
+    reason: 'generation-stale',
+    owner: 'generation',
+    expected: 'the same live Filtered owner and current inactive contribution',
+  });
+}
+
+function unavailable(): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'one current owned inactive native contribution at an exclusive Filtered boundary',
+    hint: 'finish active recording, discard invalid work, or reset a failed owner before preparing again',
+  });
 }

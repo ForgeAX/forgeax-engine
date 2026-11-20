@@ -5,6 +5,8 @@ description: ForgeAX code-first GPU VFX authoring, cooking, playback, and render
 
 # ForgeAX VFX
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Choose the path first
 
 | Effect | Path |

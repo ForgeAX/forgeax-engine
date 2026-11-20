@@ -23,7 +23,6 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
@@ -314,38 +313,8 @@ export const displayedFrame = (frame: Float32Array) => Float32Array.from(frame, 
 const ROUGHNESS_CALL = /fn (specularAntiAliasedRoughness\w*)\(\s*(\w+)\s*:\s*f32[^{]*\{/;
 
 /** Turns the composed specular AA definition into an identity; nothing else changes. */
-const stripSpecularAa = (wgsl: string) =>
+export const stripSpecularAa = (wgsl: string) =>
   wgsl.replace(ROUGHNESS_CALL, (head, _name, roughness) => `${head} return ${roughness};`);
-
-/** The same engine manifest with specular AA removed from every composed program. */
-export function withoutSpecularAaManifest(
-  manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>,
-) {
-  let patched = 0;
-  const sources = new Map<string, string>();
-  const replace = (source: string) => {
-    let stripped = sources.get(source);
-    if (stripped === undefined) {
-      stripped = stripSpecularAa(source);
-      sources.set(source, stripped);
-    }
-    if (stripped !== source) patched++;
-    return stripped;
-  };
-  const changed = {
-    ...manifest,
-    entries: manifest.entries.map((entry) => ({ ...entry, wgsl: replace(entry.wgsl) })),
-    materialShaders: manifest.materialShaders.map((material) => ({
-      ...material,
-      composedWgsl: replace(material.composedWgsl),
-      variants: material.variants.map((variant) => ({
-        ...variant,
-        composedWgsl: replace(variant.composedWgsl),
-      })),
-    })),
-  };
-  return { manifest: changed, patched };
-}
 
 /** Removes only specular AA from the recorded G-buffer shader module, leaving every other resource intact. */
 function withoutSpecularAa(tape: V7Tape, geometry: WorkEntry): V7Tape {

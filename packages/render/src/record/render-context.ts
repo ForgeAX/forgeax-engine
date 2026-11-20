@@ -75,18 +75,25 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { ReflectionProbeTable } from '../reflection/gpu-table';
 import type { ReflectionProbeSelectionResult } from '../reflection/projection';
 import type {
+  AtmosphereShaderSources,
+  DepthPyramidShaderSources,
   FrameObservationDomain,
   RenderPipelineObservationCaptureOwner,
+  SsrShaderSources,
+  VolumetricFogShaderSources,
 } from '../render-contract';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { SsrAdmissionIdentity } from '../ssr/identity';
+import type { RenderTarget } from '../targets/contracts';
+import type { RenderTargetPhysical } from '../targets/physical';
 import type { GpuPassTimingError } from './gpu-pass-timing/errors';
 import type {
   GpuPassTimingCapture,
   GpuPassTimingFrameIdentity,
   GpuPassTimingSession,
 } from './gpu-pass-timing/session';
+import type { GraphBindingViews } from './graph-binding-views';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 
 export interface PointsLinesRecordSubmission {
@@ -140,14 +147,10 @@ export interface MaterialShaderPipelineEntry {
 }
 
 import type {
-  AtmosphereShaderSources,
-  DepthPyramidShaderSources,
   RenderDebugOverlay,
   RendererOptions,
   RenderPipelineContext,
   RenderRecordPhase,
-  SsrShaderSources,
-  VolumetricFogShaderSources,
 } from '../render-contract';
 import type { GpuDrivenStandardPbrFrameResources } from '../render-pipeline';
 import type {
@@ -156,8 +159,6 @@ import type {
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
-import type { RenderTarget } from '../targets/contracts';
-import type { RenderTargetPhysical } from '../targets/physical';
 import type {
   BindGroupCounts,
   BloomFrameReceipts,
@@ -285,7 +286,10 @@ export interface RenderSystemRuntime {
   /** Exact ordinary preparation request lookup; misses must not compile or allocate a PSO. */
   readonly lookupMaterialShaderPipeline?: RenderSystemInternals['getMaterialShaderPipeline'];
   readonly lookupMaterialShaderPipelineEntry?: RenderSystemInternals['getMaterialShaderPipelineEntry'];
-  readonly withPipelinePreparationErrors?: (action: () => void, onPending?: () => void) => void;
+  readonly withPipelinePreparationErrors?: (
+    action: () => void,
+    onPending?: (completion: Promise<Result<void, RhiError>> | undefined) => void,
+  ) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
   readonly getMaterialShaderPipeline?: (
@@ -340,6 +344,11 @@ export interface RenderSystemRuntime {
   ) => import('../features/plan').RenderFeatureMaterialShaderContract;
   readonly getParamSchema?: (materialShaderId: string) => readonly ParamSchemaEntry[] | undefined;
   readonly getMaterialBindGroupLayout?: (
+    materialShaderId: string,
+    materialParamSchema?: readonly ParamSchemaEntry[],
+  ) => BindGroupLayout | undefined;
+  /** Observe only an existing layout for the accepted program; never creates native work. */
+  readonly lookupMaterialBindGroupLayout?: (
     materialShaderId: string,
     materialParamSchema?: readonly ParamSchemaEntry[],
   ) => BindGroupLayout | undefined;
@@ -664,6 +673,22 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
         label: string,
       ) => RhiRenderPipeline | null)
     | undefined;
+  rendererFrameNumber?: number | undefined;
+  readonly prepareSceneAddressCapacity?: (
+    scene: import('../gpu-scene').GpuScene,
+    extent: number,
+    current: () => boolean,
+    capture?: (settle: () => Promise<Result<void, import('@forgeax/engine-rhi').RhiError>>) => void,
+  ) => Generator<void>;
+  readonly prepareSceneInputBindings?: (
+    scene: import('../gpu-scene').GpuScene,
+    input: import('../gpu-scene-inputs').GpuSceneInputPreparation,
+    tables?: import('../gpu-scene').GpuSceneTableBindingTarget,
+  ) => Result<
+    import('../gpu-driven/view-input-bindings').GpuViewInputPreparation,
+    import('@forgeax/engine-rhi').RhiError
+  >;
+
   /** The Renderer's one scene composition, shared by every system and CameraView. */
   sceneComposition?: import('../scene/scene-composition').SceneComposition | undefined;
   /** Renderer-owned diffuse GI budget split shared by every CameraView's field. */
@@ -722,6 +747,8 @@ export interface _StandardForwardSceneView {
   readonly assets: AssetRegistry;
   readonly store: import('../device/gpu-residency').GpuResidencyCache;
   readonly planarReflectionView?: TextureView;
+  /** A target-writing capture explicitly disables sampling its own planar output. */
+  readonly planarReflectionAllowed?: boolean;
   /** Records this frame's planar mirror on the display view's resolved shadow layers. */
   planarReflectionCapture?:
     | ((shadows: import('../typed-shadow-passes').ResolvedShadowTargets) => void)
@@ -865,6 +892,7 @@ export interface _StandardForwardSceneView {
   ) => void;
   readonly reflectionProbes?: ReflectionProbeRecordState;
   hdrpSsaoBlurredView?: TextureView;
+  hdrpSsaoGraphViews?: GraphBindingViews;
 }
 
 export interface WaterMaterialRecordCacheCandidate {

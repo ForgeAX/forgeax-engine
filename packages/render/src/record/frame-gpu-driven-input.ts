@@ -106,9 +106,10 @@ export function buildFrameGpuDrivenInput(
   frame: GpuDrivenRecordInput | undefined,
   standard: StandardTopologyInputValue,
   pipelineState: PipelineState,
+  meshPolicy: 'prepare' | 'resident-only' = 'prepare',
 ): FrameGpuDrivenInput {
   const { internals, frameState, sourceScope, renderables, shadowCasterProjection } = sources;
-  const meshes = gpuDrivenMeshesForFrame(internals, sourceScope, input?.scene);
+  const meshes = gpuDrivenMeshesForFrame(internals, sourceScope, input?.scene, meshPolicy);
   const visibleSurface = projectFrameVisibleSurface(internals, frame?.scene, renderables);
   const deferredProbeBuffer = prepareDeferredProbeBuffer(
     internals,
@@ -138,7 +139,7 @@ export function buildFrameGpuDrivenInput(
   const artifacts = collectFrameGpuDrivenArtifacts(
     internals,
     frame.scene,
-    shadowCasterProjection?.materialPrograms,
+    frame.scene?.materialPrograms ?? shadowCasterProjection?.materialPrograms,
     standard,
     hasShadows,
   );

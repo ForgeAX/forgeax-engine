@@ -5,6 +5,8 @@ description: ForgeAX consumer evidence and Engine improvement. Use when reviewin
 
 # Evolve Engine from real use
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Establish the case
 
 Honor the requested scope: analysis alone does not authorize implementation, issue publication or a delivery loop. When fixes are authorized, continue through verification. Route implementation through the repository's normal delivery rules; this skill adds no approval stage.

@@ -2,7 +2,7 @@ import type { RenderSceneResyncReason } from '../inspection-types';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
-import type { MeshFrame } from './mesh-frame';
+import type { MeshFrame, MeshGeometry } from './mesh-frame';
 
 export type { RenderSceneResyncReason } from '../inspection-types';
 
@@ -25,6 +25,17 @@ export type RenderSceneOperation =
 export interface RenderSceneRecord extends RenderSceneIdentity {
   readonly slot: number;
   readonly generation: number;
+}
+
+/** Final owner-issued identity and owned source facts, still absent from active Scene rows. */
+export interface ReservedSceneRow extends RenderSceneRecord {
+  readonly snapshot: RenderableSnapshot;
+}
+
+/** Captured geometry for the exact reserved identity; authored row data stays with Scene. */
+export interface SceneRowGeometry {
+  readonly source: ReservedSceneRow;
+  readonly geometry: MeshGeometry;
 }
 
 export interface RenderSceneSlot extends RenderSceneRecord {

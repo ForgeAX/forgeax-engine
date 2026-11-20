@@ -121,6 +121,7 @@ export class ViewCull {
 
   cull(input: ViewCullInput): ViewCullResult {
     const { frame, materials, meshes, skin, projection, shared } = input;
+    const residencySelection = shared.topology.captureResidencySelection();
     // Frame rank is roster rank, so a ranked candidate verifies its row
     // instead of searching the identity tree.
     const roster = projection.slotsSnapshot();
@@ -149,7 +150,7 @@ export class ViewCull {
         this.gpuOwnedFrame(input, selection),
         selection,
         this.residualMemo,
-        { meshes, skin, unavailable: shared.unavailableSlots },
+        { meshes, skin, unavailable: shared.unavailableSlots, residencySelection },
       );
     }
     this.residualMemo.value = undefined;
@@ -164,6 +165,7 @@ export class ViewCull {
         ? frame.renderables
         : shared.materialDispatch,
       shared.materialDispatch.revisionValue(),
+      residencySelection,
     );
   }
 

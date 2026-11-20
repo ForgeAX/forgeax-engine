@@ -8,6 +8,17 @@ export const DIRECT_LIGHT_DAWN_TEST_FILE =
 export const VFX_DEPTH_DAWN_TEST_FILE =
   'packages/runtime/src/__tests__/vfx-depth-material.dawn.test.ts';
 
+// Modeling's full example captures remain local authoring tools. Engine CI
+// uses the portable model-render fixtures and the 60-frame Modeling Show.
+const modelingAuthoringCaptures = [
+  'packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts',
+  'packages/modeling/examples/mech-gt/__tests__/s6b-paint.case.dawn.test.ts',
+];
+
+export function dawnAuthoringCapturesOutsideCi(environment = process.env) {
+  return environment.FORGEAX_DAWN_OMIT_AUTHORING_CAPTURES === '1' ? modelingAuthoringCaptures : [];
+}
+
 // Every file excluded from the ordinary Dawn project has one execution owner.
 // Vitest configuration and local/PR/nightly execution derive from these groups.
 export const DAWN_ISOLATED_GROUPS = [
@@ -92,6 +103,7 @@ export const DAWN_ISOLATED_GROUPS = [
       'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
       // Same cold Surface Pack and renderer path as the planar carriers.
       'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
+      'packages/render/src/__tests__/standard-lean-inputs.dawn.test.ts',
     ],
   },
   {

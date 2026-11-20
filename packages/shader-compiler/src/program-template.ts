@@ -1,4 +1,8 @@
-import type { ShaderProgramCompiler, ShaderProgramTemplate } from '@forgeax/engine-shader';
+import type {
+  MaterialShaderTemplate,
+  ShaderProgramCompiler,
+  ShaderProgramTemplate,
+} from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { prepareShaderCompiler, shaderImportClosure } from './compile.js';
 import {
@@ -9,6 +13,7 @@ import {
 } from './engine-program.js';
 import { ShaderError } from './errors.js';
 import { MATERIAL_WGSL_PROFILE } from './material/profile.js';
+import { prepareMaterialShaderTemplate } from './material/template-compiler.js';
 
 /** One initialized compiler service; source/reflection cache and GPU lifetime remain Registry-owned. */
 export async function prepareShaderProgramCompiler(): Promise<
@@ -21,6 +26,8 @@ export async function prepareShaderProgramCompiler(): Promise<
   return ok(
     Object.freeze({
       profile,
+      prepareMaterial: (template: MaterialShaderTemplate) =>
+        prepareMaterialShaderTemplate(compiler, template),
       compile(template: ShaderProgramTemplate, defines: Readonly<Record<string, boolean>>) {
         const engine = template.engine;
         const effectiveDefines =

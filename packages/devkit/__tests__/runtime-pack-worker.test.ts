@@ -89,12 +89,14 @@ const pixels = (png: Buffer) => {
 // Explicit graphics gate: run under an owned display (for example xvfb-run -a).
 // Mac/Windows use native Metal/D3D12; Linux uses SwiftShader for WebGPU correctness.
 // This gate does not measure hardware performance.
-it.each([
-  ['build', 'js'],
-  ['build', 'ts'],
-  ['dev', 'js'],
-  ['dev', 'ts'],
-] as const)('%s %s generates assets and a native plugin after Engine Worker startup and renders 60 completed frames', async (mode, language) => {
+const core = process.env.FORGEAX_CI_CORE_VALIDATION === '1';
+const cases = [
+  ['build', 'js', core ? 'delivery' : 'lifecycle'],
+  ['build', 'ts', 'lifecycle'],
+  ['dev', 'js', 'lifecycle'],
+  ['dev', 'ts', core ? 'delivery' : 'lifecycle'],
+] as const;
+it.each(cases)('%s %s delivers generated assets and a native plugin in the Engine Worker (%s)', async (mode, language, scope) => {
   const repository = resolve(import.meta.dirname, '../../..');
   const directory = await createLiveSyncProjectDirectory('forgeax-runtime-worker-', repository, process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST);
   const root = await realpath(directory.root);
@@ -268,6 +270,22 @@ it.each([
       result: { value: 42, active: 1 },
     });
     const first = await inspect(page);
+    if (scope === 'delivery') {
+      await expect
+        .poll(async () => (await inspect(page)).frames.ready, { timeout: 90000 })
+        .toBeGreaterThan(first.frames.ready);
+      expect(first.frames.errors).toEqual([]);
+      expect(first.frames.backends).toEqual(['webgpu']);
+      expect(await call(page, 'disposePlugin')).toMatchObject({ state: 'disposed', pluginActive: 0 });
+      expect(await host(page, 'close')).toMatchObject({ errors: [], pending: 0 });
+      await expect.poll(() => workers.size).toBe(0);
+      expect(errors).toEqual([]);
+      await writeFile(
+        resolve(evidence, `${mode}-${language}-result.json`),
+        JSON.stringify({ scope, initial, first, errors }, null, 2),
+      );
+      return;
+    }
     // Cold GPU preparation can hold World frame credits. Check gameplay
     // progress after the existing completed-frame gate releases them.
     await expect

@@ -1,14 +1,16 @@
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it, vi } from 'vitest';
-import { buildEngineShaderManifest } from '../../../vite-plugin-shader/src/index';
+import { buildEngineShaderTemplateManifest } from '../../../vite-plugin-shader/src/index';
 import { prepareMaterialShaders } from '../assembly/material-shader-policy';
 
 it('loads the published fit/LUT manifest through ordinary renderer boot without admitting ray kernels as materials', async () => {
-  const published = JSON.stringify(await buildEngineShaderManifest());
+  const published = JSON.stringify(await buildEngineShaderTemplateManifest());
   const registry = new ShaderRegistry({
     manifestUrl: 'memory://engine-shaders/manifest.json',
     readText: async () => published,
+    prepareProgramCompiler: prepareShaderProgramCompiler,
   });
   const device = (await new RhiNullAdapter().requestDevice()).unwrap();
   // The simulator has no storage buffers. A storage-capable null backend
@@ -19,10 +21,9 @@ it('loads the published fit/LUT manifest through ordinary renderer boot without 
     storageBuffer: false,
   });
   await prepareMaterialShaders(device, () => registry, new Map());
-  const ray = [...registry.materialShaderManifestEntries()].find((entry) =>
-    entry.sourcePath.replaceAll('\\', '/').endsWith('/ray-path-tracer.wgsl'),
+  const ray = [...registry.materialShaderManifestEntries()].find(
+    ({ identifier }) => identifier === 'forgeax::engine-ray-path-tracer',
   );
-  expect(ray?.identifier).toBe('forgeax::engine-ray-path-tracer');
   expect(ray?.variants.map((variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE).sort()).toEqual([
     false,
     true,

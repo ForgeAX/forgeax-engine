@@ -119,7 +119,7 @@ function validTextureSourceToken(token: RenderTextureSourceToken): boolean {
 /** Resolve authored texture references once; runtime material values contain owner identities. */
 export function linkRuntimeMaterial(
   material: MaterialAsset,
-  owner: AssetReferenceOwner,
+  owner: Pick<AssetReferenceOwner, 'validate'>,
   source: (guid: string) => AssetHandle | undefined,
   textureFields: ReadonlySet<string>,
 ): Result<

@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { discardHttpResponse, withinHttpDeadline } from './http-deadline.mjs';
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Vite colors its Local origin with ANSI escapes.
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
@@ -68,8 +69,9 @@ export function observeViteHttpReadiness(
   return {
     async wait() {
       const startedAt = Date.now();
+      const remainingMs = () => Math.max(0, timeoutMs - (Date.now() - startedAt));
       let lastStatus;
-      while (Date.now() - startedAt < timeoutMs) {
+      while (remainingMs() > 0) {
         if (spawnError !== undefined || exit !== undefined) {
           throw new Error(
             `Vite exited before readiness: ${JSON.stringify(diagnostics(startedAt, lastStatus))}`,
@@ -77,11 +79,15 @@ export function observeViteHttpReadiness(
         }
         if (origin !== undefined) {
           try {
-            const response = await fetch(origin, {
-              signal: AbortSignal.timeout(requestTimeoutMs),
-            });
+            const controller = new AbortController();
+            const response = await withinHttpDeadline(
+              () => fetch(origin, { signal: controller.signal }),
+              controller,
+              Math.min(requestTimeoutMs, remainingMs()),
+              'Vite HTTP readiness request timed out',
+            );
             lastStatus = response.status;
-            await response.body?.cancel();
+            discardHttpResponse(response, controller);
             if (response.ok) {
               return { origin: origin.replace(/\/$/, ''), elapsedMs: Date.now() - startedAt };
             }
@@ -89,7 +95,8 @@ export function observeViteHttpReadiness(
             // Vite advertised its origin but has not completed the HTTP response.
           }
         }
-        await sleep(pollIntervalMs);
+        const remaining = remainingMs();
+        if (remaining > 0) await sleep(Math.min(remaining, pollIntervalMs));
       }
       throw new Error(
         `Vite did not become HTTP-ready: ${JSON.stringify(diagnostics(startedAt, lastStatus))}`,

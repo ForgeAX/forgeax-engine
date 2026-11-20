@@ -35,9 +35,9 @@ afterEach(() => vi.restoreAllMocks());
     ];
   }
 
-  describe('Camera schema (36 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
-    it('Camera.schema has 36 fields including auto exposure and color grading state', () => {
-      expect(Object.keys(Camera.fields).length).toBe(36);
+  describe('Camera schema (37 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
+    it('Camera.schema has 37 fields including auto exposure and color grading state', () => {
+      expect(Object.keys(Camera.fields).length).toBe(37);
       expect(componentFieldType(Camera, 'cullMask')).toBe('f64');
       expect(componentFieldType(Camera, 'targetLayer')).toBe('u32');
       expect(componentFieldType(Camera, 'postProcessing')).toBe('bool');
@@ -62,6 +62,7 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldType(Camera, 'temperature')).toBe('f32');
       expect(componentFieldType(Camera, 'tint')).toBe('f32');
       expect(componentFieldType(Camera, 'colorLut')).toBe('asset<texture>');
+      expect(componentFieldType(Camera, 'generatedColorLut')).toBe('asset<gpu-texture>');
       expect(componentFieldType(Camera, 'colorLutStrength')).toBe('f32');
       expect(componentFieldType(Camera, 'antialias')).toBe('f32');
       expect(componentFieldType(Camera, 'historyVersion')).toBe('u32');

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
 // Point-shadow recipe smoke.
 //
 // This is intentionally a consumer-shaped check, not only a cube-array
@@ -207,7 +206,6 @@ try {
     removeEventListener() {},
   };
 
-  await ensureShaderManifestProfile('point-ssao');
   const [app, ecs, render, scene, runtime, shader, geometry] = await Promise.all([
     import('@forgeax/engine-app'),
     import('@forgeax/engine-ecs'),
@@ -218,7 +216,7 @@ try {
     import('@forgeax/engine-geometry'),
   ]);
   atlasCapacity = render.SHADOW_ATLAS_DEFAULT_LAYERS;
-  const manifest = await shader.buildEngineShaderManifest({ pointShadows: true });
+  const manifest = await shader.buildEngineShaderTemplateManifest({ pointShadows: true });
   const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
   process.once('exit', () => URL.revokeObjectURL(manifestUrl));
   const constructed = await runtime.constructRuntimeRendererHost(

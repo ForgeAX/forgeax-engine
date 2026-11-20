@@ -71,6 +71,12 @@ const packageManagerMatch = /^pnpm@(\d+)\.(\d+)\.(\d+)$/.exec(
 if (packageManagerMatch === null) throw new Error('sdk-package-manager-invalid');
 const pnpmVersion = packageManagerMatch.slice(1).join('.');
 const version = value('--version') ?? `0.0.0-dev.${await git(['rev-parse', '--short=12', 'HEAD'])}`;
+const skipGame3dTemplateCache = args.includes('--skip-game-3d-template-cache');
+if (
+  skipGame3dTemplateCache &&
+  (!args.includes('--reuse-core-build') || !/^0\.0\.0-pr\.[0-9a-f]{40}$/.test(version))
+)
+  throw new Error('sdk-compact-template-cache-requires-pr-build');
 const outputRoot = resolve(root, value('--output') ?? 'artifacts/sdk');
 const stage = resolve(outputRoot, 'forgeax-sdk');
 const archive = resolve(outputRoot, `forgeax-sdk-v${version}.zip`);
@@ -255,7 +261,9 @@ try {
 } finally {
   await rm(nativeInputs, { recursive: true, force: true });
 }
-await run('pnpm', ['build:engine'], {
+const engineBuildArgs = ['build:engine'];
+if (args.includes('--reuse-core-build')) engineBuildArgs.push('--reuse-core-build');
+await run('pnpm', engineBuildArgs, {
   streamOutput: true,
   // Stage the selected environment and receipt together. The SDK transport
   // variant is overlaid only while the Preview package is packed.
@@ -278,39 +286,6 @@ await run('node', [
 await run('node', ['packages/preview/scripts/build-canonical-kit.mjs'], {
   env: { ...process.env, FORGEAX_SDK_BUILD: '1', FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitRoot },
 });
-// Keep generated profile inputs as acceleration. The producer validates the
-// current compiler/source/profile and payload bytes before any reuse; disabled
-// task caches still compile from source. These inputs never enter the archive.
-const preparedShaders = await run(
-  'node',
-  [
-    'scripts/forgeax/prepare-shader-release-inputs.mjs',
-    '--build',
-    '--shared-input-manifest',
-    process.env.FORGEAX_SDK_SHADER_INPUTS
-      ? 'shared-app-inputs/manifest.json'
-      : 'shared-build-inputs/manifest.json',
-  ],
-  { env: sdkBuildEnvironment() },
-);
-// Keep cache admission visible without changing the builder's final JSON stdout.
-for (const line of preparedShaders.stdout.split('\n')) {
-  if (line.startsWith('[shader-profile]')) console.error(line);
-}
-for (const profile of ['base-ssao', 'point-ssao']) {
-  await sdkStage(`admit ${profile} shader publication within memory budget`, () =>
-    run(
-      'node',
-      [
-        '--expose-gc',
-        'scripts/forgeax/check-shader-publication.mjs',
-        'packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz',
-        profile,
-      ],
-      { env: sdkBuildEnvironment() },
-    ),
-  );
-}
 const publicPackages = [];
 for (const entry of await readdir(resolve(root, 'packages'), { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
@@ -670,24 +645,25 @@ await copySdkTemplateResources(stage);
 for (const sdkTemplate of SDK_TEMPLATES) {
   const template = resolve(stage, sdkTemplate.sourceRoot);
   const { FORGEAX_BUILD_CACHE_DIR: _sharedCache, ...seedEnv } = process.env;
-  await seedTemplateBuildCache(template, () =>
-    sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
-      execFileAsync(
-        process.execPath,
-        [
-          resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
-          'project',
-          'build',
-          '--json',
-        ],
-        {
-          cwd: template,
-          maxBuffer: 64 * 1024 * 1024,
-          env: { ...seedEnv, CI: 'true', FORGEAX_DISABLE_UPDATE_CHECK: '1' },
-        },
+  if (!skipGame3dTemplateCache || sdkTemplate.id !== 'game-3d')
+    await seedTemplateBuildCache(template, () =>
+      sdkStage(`seed ${sdkTemplate.id} template build cache`, () =>
+        execFileAsync(
+          process.execPath,
+          [
+            resolve(template, 'node_modules/@forgeax/engine/dist/bin/forgeax.mjs'),
+            'project',
+            'build',
+            '--json',
+          ],
+          {
+            cwd: template,
+            maxBuffer: 64 * 1024 * 1024,
+            env: { ...seedEnv, CI: 'true', FORGEAX_DISABLE_UPDATE_CHECK: '1' },
+          },
+        ),
       ),
-    ),
-  );
+    );
   await rm(resolve(template, 'node_modules'), { recursive: true, force: true });
 }
 await rm(pnpmMetadataCache, { recursive: true, force: true });

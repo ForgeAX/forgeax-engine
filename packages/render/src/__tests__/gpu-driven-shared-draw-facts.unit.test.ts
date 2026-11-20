@@ -98,7 +98,7 @@ async function fixture(instanceCount = 64, separateMeshes = false, drawCount = 1
       bindings?: ReadonlyMap<string, string>;
     } = {},
   ) => {
-    const source = topology.query(topology.sourcePlan(), undefined);
+    const source = topology.query(topology.sourcePlan(), undefined).active;
     const rows = source.batches.map((batch) => {
       const binding = batch.binding;
       assert(binding);
@@ -205,8 +205,8 @@ describe('GPU-driven shared draw preparation', () => {
         ]);
       }
       const slots = f.projection.slotsSnapshot();
-      expect(suppressedPrimitiveWords(slots, new Set(), 64)[0]).toBe(3);
-      expect(suppressedPrimitiveWords(slots, new Set([1]), 64)[0]).toBe(2);
+      expect(suppressedPrimitiveWords(slots, new Set(), identityAddresses(64))[0]).toBe(3);
+      expect(suppressedPrimitiveWords(slots, new Set([1]), identityAddresses(64))[0]).toBe(2);
     } finally {
       f.close();
     }
@@ -503,3 +503,7 @@ describe('GPU-driven shared draw preparation', () => {
     }
   });
 });
+
+function identityAddresses(rowAddressExtent: number) {
+  return { rowAddressExtent, allocationRevision: 0, primitiveIndexForSlot: (slot: number) => slot };
+}

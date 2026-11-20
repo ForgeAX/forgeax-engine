@@ -29,7 +29,9 @@ def main():
         paths = [
             name for name in tracked if name and (
                 Path(name).name in {"AGENTS.md", "SKILL.md"}
-                or (name.startswith("skills/") and Path(name).suffix.lower() in SKILL_TEXT_EXTENSIONS)
+                or (name.startswith("skills/")
+                    and Path(name).suffix.lower() in SKILL_TEXT_EXTENSIONS
+                    and Path(name).name not in {"SKILL.zh-CN.md", "SDK-AGENTS.zh-CN.md"})
             )
         ]
         # The shared scanner skips unreadable inputs. CI must not silently pass

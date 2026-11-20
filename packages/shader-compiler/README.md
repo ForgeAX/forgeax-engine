@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-shader-compiler
 
 ## Portable program compiler
@@ -149,16 +152,17 @@ The receiver selects the immutable program against its actual texture limit; a m
 device can support storage buffers while lacking the extended View bindings. Producer input
 identity changes with this publication roster, invalidating older incomplete DDC records.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
-编译器位于 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-主线的 compile/reflect 阶段：它校验 WGSL producer 与派生 schema，产出可供
-cook 使用的 reflection 与 artifact 输入。`coordinateSet`、transform 和
-`physicalUvScale` 是 schema/data contract 的字段，不是 app 侧补写的偏移。
+The compiler owns the compile/reflect stage of
+`paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`:
+it validates the WGSL producer and derived schema, then emits reflection and
+artifact inputs for cooking. `coordinateSet`, transform and `physicalUvScale`
+are schema/data contract fields, not offsets patched in by an app.
 
 > [!CAUTION]
-> 失败时按结构化 error `code`、`detail`、`hint` 修复 WGSL 或 schema 输入，
-> 然后 recook；不要复制 source-owned error union。
+> On failure, use structured error `code`, `detail` and `hint` to repair WGSL
+> or schema inputs, then recook. Do not copy the source-owned error union.
 
 > **build-time WGSL compilation core with naga_oil 0.23 composition + 7-member error taxonomy + cross-file HMR propagation support.** AI users call a single pure-function entry; errors are machine-readable `Result.err(ShaderError)` with typed `.detail` discriminated union; no `err.message.match()` anywhere downstream (charter proposition 3 + AC-15).
 
@@ -266,7 +270,7 @@ program publishes the same address pair from the root parameter schema. Its
 default opaque coverage requires position and vertex normal (plus skin attributes when
 selected), while retaining native transforms, clipping and LOD coverage.
 
-Material publications use `material-cook/5`: one validated root contract and a
+Compiled material publications use `material-cook/5`: one validated root contract and a
 complete program set selected by Pass and compiler context. Pack and Native
 cookers share the publication builder. Independent modules retain independent
 WGSL; shared modules reuse code while entry choices remain pipeline facts.
@@ -276,10 +280,14 @@ parameter encodings. Parameter defaults remain material values and do not split
 program identity. Raster variants use producer fingerprint `material-raster-variants/6`
 to retire products created before this identity boundary.
 
-The Pack cooker producer identity is `material-pack-cooker/6`. It invalidates
-older derived products without changing the durable `material-cook/5` wire
-schema; source, canonical deformation layout and compiler fingerprints still
-participate in the normal identity. Re-cook affected Water publications.
+Ordinary `.pack.ts` materials publish `material-template/1`. Pack resolves the
+material contract and captures its reachable WGSL modules with their provenance.
+The runtime compiler selects the pass, device context, vertex inputs and
+submission address requested by Render. The selected program and its reflection
+use the same validation as a compiled publication.
+
+The Pack producer identity is `material-pack-cooker/7`. Existing compiled
+`material-cook/5` publications remain readable.
 
 Water's `waterVertexMapping` defaults to true. The compiler enables
 `WATER_HEIGHT_MAPPING_AVAILABLE` only when that choice and a selected
@@ -301,7 +309,7 @@ normal recomputation; custom deformation normals remain authoritative. An unused
 optional deformation slot does not revoke Standard's position-bounds proof, but
 any selected deformation still prevents that undeformed-position certification.
 
-Standard Pack materials publish both plain and vertex-color programs, including
+Compiled Standard Pack materials publish both plain and vertex-color programs, including
 matching direct and scene-index address pairs. The ABI receipt's vertex inputs
 own this distinction; no second color flag is persisted in the cook context.
 Runtime selection uses the mesh's color attribute, and extraction caches separate

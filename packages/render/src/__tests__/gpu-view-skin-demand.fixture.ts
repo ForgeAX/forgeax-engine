@@ -81,7 +81,7 @@ export async function verifyGpuViewSkinDemandBoundary(): Promise<void> {
     throw Error('Unrelated Scene Skin demand must exist');
   gpu.sync(delta).unwrap();
   topology.apply(delta);
-  const source = topology.query(topology.sourcePlan(), undefined);
+  const source = topology.query(topology.sourcePlan(), undefined).active;
   const select = (deformation: 'rigid' | 'skin'): SubmissionPlan => {
     const batches = source.batches.filter(
       (batch) => batch.binding?.geometry.deformation === deformation,

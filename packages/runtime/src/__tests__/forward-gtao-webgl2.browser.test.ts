@@ -22,8 +22,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { expandShaderManifestPublication } from '@forgeax/engine-shader';
-import type { ShaderReflection } from '@forgeax/engine-types';
+import { materialShaderPreparedSourceRows, type ShaderRegistry } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
@@ -450,26 +449,16 @@ function prepareClusterCapture(host: DebugDrawHost) {
   return { buffer, bytesPerRow, width, height, target, expectedRecordFrameNumber, request };
 }
 
-function derivePublishedStandardClusterAbi(manifestBytes: Uint8Array) {
-  const expandedManifest = expandShaderManifestPublication(
-    JSON.parse(new TextDecoder().decode(manifestBytes)),
-  ).manifest as {
-    readonly materialShaders?: readonly {
-      readonly identifier: string;
-      readonly variants: readonly {
-        readonly defines: Readonly<Record<string, boolean>>;
-        readonly reflection?: ShaderReflection;
-      }[];
-    }[];
-  };
-  const standardPbr = expandedManifest.materialShaders?.find(
+function derivePublishedStandardClusterAbi(registry: ShaderRegistry) {
+  const standardPbr = [...registry.materialShaderManifestEntries()].find(
     (entry) => entry.identifier === 'forgeax::default-standard-pbr',
   );
   if (standardPbr === undefined) throw new Error('published Standard PBR material is missing');
   const reflectedAbi = deriveStandardClusterReflectedAbi(
-    standardPbr.variants
+    materialShaderPreparedSourceRows(standardPbr)
       .filter(
         (variant) =>
+          'defines' in variant &&
           variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
           variant.defines.STORAGE_BUFFER_AVAILABLE === true,
       )
@@ -1242,7 +1231,7 @@ it.each([
       });
       expect(stableOwnerWrite.calls).toBe(0);
       expect(stableOwnerWrite.bytes).toBe(0);
-      const reflectedAbi = derivePublishedStandardClusterAbi(manifestBytes);
+      const reflectedAbi = derivePublishedStandardClusterAbi(hostAssembly.assets.shaderRegistry);
       const clusterUniformResourceId = recordedBufferResourceId(frameModel, 'hdrp-cluster-uniform');
       const standardMainEventIndex = recordedShaderWorkEventIndex(
         frameModel,

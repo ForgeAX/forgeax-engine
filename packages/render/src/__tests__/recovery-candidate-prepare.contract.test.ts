@@ -87,7 +87,10 @@ describe('recovery generation contract', () => {
 
   it('forks the validated shader catalog onto a recovery device', () => {
     expect(rendererSource).toContain('activeCatalog.forkForDevice(getShaderModuleAdapter())');
-    expect(rendererSource).toContain('state === candidateShaderState && activeCatalog !== null');
+    expect(rendererSource).toContain('const state = candidateShaderState ?? activeShaderState;');
+    expect(rendererSource).toContain(
+      'activeShaderState.shaderInstance ?? internals.bundler?.admittedShaderCatalog',
+    );
   });
 
   it('resolves recovery variants from the candidate device capabilities', () => {

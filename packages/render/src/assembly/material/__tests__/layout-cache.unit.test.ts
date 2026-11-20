@@ -402,6 +402,23 @@ it('retains reads from every shared Surface variant and stays conservative for m
   );
 });
 
+it('observes only an existing current material layout without constructing one on a miss', () => {
+  const owner = setup();
+  owner.setSchema([{ name: 'baseColorTexture', type: 'texture2d' }]);
+  expect(owner.cache.lookupMaterialBindGroupLayout('game::effect')).toBeUndefined();
+  expect(owner.createBindGroupLayout).not.toHaveBeenCalled();
+  const layout = owner.cache.getOrBuildPerShaderMaterialLayout('game::effect');
+  expect(layout).not.toBeNull();
+  const created = owner.createBindGroupLayout.mock.calls.length;
+  expect(owner.cache.lookupMaterialBindGroupLayout('game::effect')).toBe(layout?.materialBgl);
+  owner.setSource('new accepted program');
+  expect(owner.cache.lookupMaterialBindGroupLayout('game::effect')).toBeUndefined();
+  expect(owner.createBindGroupLayout).toHaveBeenCalledTimes(created);
+  owner.state.perShaderMaterialLayoutCache.clear();
+  expect(owner.cache.lookupMaterialBindGroupLayout('game::effect')).toBeUndefined();
+  expect(owner.createBindGroupLayout).toHaveBeenCalledTimes(created);
+});
+
 it('keeps custom lit parameters and native IBL slots without Standard tails', () => {
   const owner = setup();
   owner.setBindings('render-lit-material-and-scene-depth');

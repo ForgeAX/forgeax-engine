@@ -37,6 +37,16 @@ function coversRecordingClasses(
 
 /** One raster publication, with the original and stock-recorder dependency projections. */
 export class RasterGraphIdentity {
+  private readonly sceneIdentities = new WeakMap<object, number>();
+  private nextSceneIdentity = 1;
+  sceneIdentity(scene: object): number {
+    const existing = this.sceneIdentities.get(scene);
+    if (existing !== undefined) return existing;
+    const identity = this.nextSceneIdentity;
+    this.nextSceneIdentity += 1;
+    this.sceneIdentities.set(scene, identity);
+    return identity;
+  }
   private current: Publication | undefined;
   /** Diagnostic counts of which input replaced the raw or recording identity. */
   readonly changes: Record<string, number> = {};

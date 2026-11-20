@@ -9,9 +9,14 @@ import { createServer as createNetServer } from 'node:net';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
+import type { EngineWorkspaceProjectPreparation } from '@forgeax/engine-app';
 import { defaultBuildCacheRoot } from '@forgeax/engine-ddc';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
-import { createHostAssembly, type HostAssembly } from '@forgeax/engine-host/protocol';
+import {
+  createHostAssembly,
+  type HostAssembly,
+  HostAssemblyError,
+} from '@forgeax/engine-host/protocol';
 import { attachHostWebSocketServer, createHostTransport } from '@forgeax/engine-host/transport';
 import {
   createScriptablePackProductCache,
@@ -42,9 +47,9 @@ import {
   resolveLoadProgressLabels,
 } from '@forgeax/engine-types';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
-import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
+import { type PluginPackProgress, pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
-import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
+import { forgeaxShader, type ShaderPreparationProgress } from '@forgeax/engine-vite-plugin-shader';
 import {
   createLogger,
   createServer as createViteServer,
@@ -534,8 +539,13 @@ async function hostEngineAliases(
       (await enginePackageRuntimeIdentity(actual)) !==
         (await enginePackageRuntimeIdentity(selected))
     ) {
-      hostBindingError(
-        `frontend Engine source conflict for ${name}: host=${selected}; project=${actual}. Select the same Engine build before opening this target.`,
+      throw new HostAssemblyError(
+        'host-assembly-invalid',
+        'the project and View Host to use the same Engine build',
+        "Start View from the project's own Engine installation, or explicitly bind the project to this source Engine for source development.",
+        {
+          reason: `frontend Engine source conflict for ${name}: host=${selected}; project=${actual}. Select the same Engine build before opening this target.`,
+        },
       );
     }
     const selectedManifest = JSON.parse(await readFile(resolve(selected, 'package.json'), 'utf8'));
@@ -3226,9 +3236,8 @@ export function projectShaderOptions(
   resourcePreview = false,
 ): Parameters<typeof forgeaxShader>[0] {
   return {
-    ...(!resourcePreview && facts.shaderPublication !== 'compiled'
-      ? ({ publication: 'source', publishAuthoredMaterialShaders: false } as const)
-      : {}),
+    publication: facts.shaderPublication ?? 'source',
+    publishAuthoredMaterialShaders: resourcePreview || facts.shaderPublication === 'compiled',
     materialPackages,
     ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     ...(facts.pointShadows === true ? { engineEntries: { pointShadows: true } } : {}),
@@ -3279,6 +3288,11 @@ export async function createViteConfig(
     readonly htmlHead?: BuildOptions['htmlHead'];
     readonly server?: ProjectPortOptions;
     readonly host?: DevKitHostBinding;
+    readonly onPackProgress?: (event: PluginPackProgress) => void;
+    readonly onPreparation?: (
+      operation: NonNullable<EngineWorkspaceProjectPreparation['operation']>,
+    ) => void;
+    readonly onShaderProgress?: (event: ShaderPreparationProgress) => void;
     readonly sessionGeneration?: number;
     readonly animation?: AnimationPlaybackOptions;
     readonly target?: BuildOptions['target'];
@@ -3293,6 +3307,16 @@ export async function createViteConfig(
     readonly scriptablePackMetadata?: ScriptablePackMetadataCache;
   } = {},
 ): Promise<InlineConfig> {
+  const preparation = (
+    operation: NonNullable<EngineWorkspaceProjectPreparation['operation']>,
+  ): void => {
+    try {
+      options.onPreparation?.(operation);
+    } catch {
+      /* Observations cannot fail host preparation. */
+    }
+  };
+  preparation('project-config');
   assertMaterialProfileTarget(options.materialProfile, options.target);
   const htmlHead = await readBuildHtmlHead(facts, options.target, options.htmlHead);
   const animation =
@@ -3316,6 +3340,7 @@ export async function createViteConfig(
     const sourceRoots = projectSourceRoots(facts);
     const failedSources = new Set<string>();
     const ignorePath = projectSourceIgnorePath(bootstrapRoot, failedSources);
+    preparation('source-inventory');
     const sourceSnapshot = await admitInitialSourceSnapshot(
       facts,
       options.initialSources,
@@ -3374,6 +3399,7 @@ export async function createViteConfig(
     // The plugin scan is a superset of the builtins/material scan. Reuse its
     // validated declarations instead of loading every authored Pack twice.
     timing('plugin-assets-start');
+    preparation('plugin-programs');
     const sourceInventory =
       options.initialSources ??
       (await discoverPluginAssets(facts, scanned.value, sourceSnapshot, productCache));
@@ -3390,6 +3416,7 @@ export async function createViteConfig(
     timing('consumer-aliases');
     const frontendAlias = await hostFrontendModuleAlias(options.host);
     timing('frontend-alias');
+    preparation('project-cookers');
     const cookerSession = await loadProjectCookers(
       facts,
       builtinCookers,
@@ -3541,6 +3568,7 @@ export async function createViteConfig(
         ),
       ]);
     };
+    preparation('host-files');
     await writeHostEntries();
     timing('generated-files');
     const wechat =
@@ -3562,7 +3590,27 @@ export async function createViteConfig(
     let sessionClosed = false;
     assertNoBuiltinImporterOverride(cookerSession.importers);
     let initialSourceSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
+    const sourceIdentityFor = (sourcePath: string) =>
+      assetLibrarySourceIdentity(facts.assetLibraries, sourcePath) ??
+      filesystemPathRelative(facts.root, sourcePath, false) ??
+      sourcePath;
     const pack = pluginPack({
+      onProgress:
+        options.onPackProgress === undefined
+          ? undefined
+          : (event) => {
+              options.onPackProgress?.(
+                event.kind === 'stage'
+                  ? event
+                  : {
+                      ...event,
+                      source: {
+                        ...event.source,
+                        sourcePath: sourceIdentityFor(event.source.sourcePath),
+                      },
+                    },
+              );
+            },
       roots,
       enginePackageRoot: await localEnginePackageRoot(facts.root),
       takeInitialSourceSnapshot: () => {
@@ -3576,10 +3624,7 @@ export async function createViteConfig(
       // project assets rooted in the authored project and mounted libraries
       // under their forge.json specifier; other external dependencies retain
       // their physical identity and the Pack fallback policy.
-      sourceIdentityFor: (sourcePath) =>
-        assetLibrarySourceIdentity(facts.assetLibraries, sourcePath) ??
-        filesystemPathRelative(facts.root, sourcePath, false) ??
-        sourcePath,
+      sourceIdentityFor,
       ...devPackReadinessOptions(facts),
       ddc: devKitDdcRoots(facts.root),
       watch: false,
@@ -3676,9 +3721,20 @@ export async function createViteConfig(
       ...engineWorkspacePlugins,
 
       ...(serving ? rhiDebugPlugins(facts.root) : []),
-      forgeaxShader(
-        projectShaderOptions(facts, materialPackages, engineWorkspaceRoot, !activatesProjectRoots),
-      ) as Plugin,
+      forgeaxShader({
+        ...projectShaderOptions(
+          facts,
+          materialPackages,
+          engineWorkspaceRoot,
+          !activatesProjectRoots,
+        ),
+        onProgress: (event: ShaderPreparationProgress) =>
+          options.onShaderProgress?.(
+            event.phase === 'inputs'
+              ? event
+              : { ...event, sourcePath: sourceIdentityFor(event.sourcePath) },
+          ),
+      }) as Plugin,
       pack,
       ...(serving ? [workspacePackCookPlugin(cookerSession.cookers)] : []),
       ...(serving

@@ -1,6 +1,7 @@
 import {
   type AssetRegistry,
   type MaterialRenderProjection,
+  materialPassOwnsProgram,
   runtimeMaterialShaderId,
 } from '@forgeax/engine-assets-runtime';
 
@@ -994,9 +995,8 @@ export function isNativePlacementMaterial(
     );
   }
   if (
-    projection === undefined ||
-    (projection.surface !== undefined &&
-      (projection.surface.model !== 'standard' || projection.surface.dynamicInput !== undefined))
+    projection.surface !== undefined &&
+    (projection.surface.model !== 'standard' || projection.surface.dynamicInput !== undefined)
   )
     return false;
   const color = projection.passes.filter((pass) => isColorPass(pass));
@@ -1021,7 +1021,7 @@ export function isNativePlacementMaterial(
         tags?.SurfaceKind !== 'full-custom' &&
         (key === undefined
           ? material.materialShaderId === 'forgeax::default-standard-pbr'
-          : pass.programs.some((program) => program.specializationKey === key))
+          : materialPassOwnsProgram(projection, pass.name, key))
       );
     })
   );

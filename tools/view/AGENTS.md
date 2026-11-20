@@ -1,5 +1,7 @@
 # ForgeaX View
 
+[Simplified Chinese](AGENTS.zh-CN.md)
+
 View is an optional asset viewer, Pack authoring client and read-only observer of Engine AI runs.
 AI is the primary user. Engine owns execution in a separate browser, normally
 headless, with fixed project inputs. View owns its browser resources, workspace

@@ -1,30 +1,23 @@
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { beforeAll, describe, expect, it } from 'vitest';
-
-type EngineShaderManifest = Awaited<
-  ReturnType<typeof import('../index.js').buildEngineShaderManifest>
->;
-
-async function engineManifest(): Promise<EngineShaderManifest> {
-  const { buildEngineShaderManifest } = await import('../index.js');
-  return buildEngineShaderManifest();
-}
-
-let engineManifestPromise: Promise<EngineShaderManifest> | undefined;
-
-function sharedEngineManifest(): Promise<EngineShaderManifest> {
-  engineManifestPromise ??= engineManifest();
-  return engineManifestPromise;
-}
+import { buildEngineShaderTemplateManifest } from '../index.js';
 
 describe('Standard transmission manifest producer', () => {
-  let manifest: EngineShaderManifest;
+  let registry: ShaderRegistry;
 
   beforeAll(async () => {
-    manifest = await sharedEngineManifest();
+    const manifest = await buildEngineShaderTemplateManifest();
+    registry = new ShaderRegistry({
+      manifestUrl: 'memory://engine/shaders/manifest.json',
+      readText: async () => JSON.stringify(manifest),
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    });
+    (await registry.loadManifest()).unwrap();
   }, 180_000);
 
   it('emits one Standard row with both transmission states', async () => {
-    const rows = manifest.materialShaders.filter(
+    const rows = [...registry.materialShaderManifestEntries()].filter(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(rows).toHaveLength(1);
@@ -40,7 +33,7 @@ describe('Standard transmission manifest producer', () => {
   }, 180_000);
 
   it('keeps the canonical entry on the ordinary non-transmission variant', async () => {
-    const standard = manifest.materialShaders.find(
+    const standard = [...registry.materialShaderManifestEntries()].find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
@@ -69,11 +62,12 @@ describe('Standard transmission manifest producer', () => {
         entry.defines.VERTEX_COLOR_AVAILABLE === true,
     );
     expect(ordinary).toBeDefined();
-    const direct = manifest.entries.find(
+    const direct = [...registry.entries()].find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(direct).toBeDefined();
-    expect(direct?.hash).toBe(ordinary?.hash);
+    expect(direct?.defines).toEqual(ordinary?.defines);
+    expect(direct?.sourceDigest).toBe(ordinary?.sourceDigest);
     expect(direct?.wgsl).toBe(ordinary?.composedWgsl);
   }, 180_000);
 });

@@ -99,7 +99,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     const dispatch = new MaterialDispatch();
     for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
     dispatch.prepare(retained.meshes);
-    const plan = topology.query(topology.sourcePlan(), retained.meshes);
+    const plan = topology.query(topology.sourcePlan(), retained.meshes).active;
     const selected = collectGpuDrivenMaterialArtifacts({
       batches: plan.batches,
       programs: new GpuDrivenMaterialProgramProjection().project(

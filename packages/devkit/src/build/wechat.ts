@@ -35,13 +35,23 @@ function nativeFailureDefault(appOptions: DevKitAppOptions): boolean {
 }
 
 /** Consume the build plugin's derived policy before collecting package artifacts. */
-async function consumeStartupPresentation(outDir: string): Promise<boolean> {
+async function consumeStartupPresentation(outDir: string): Promise<{
+  defaultFailure: boolean;
+  packageFailureTitle: string;
+  confirm: string;
+}> {
   const path = resolve(outDir, STARTUP_PRESENTATION_FILE);
+  const defaults = resolveLoadProgressLabels().host;
   let text: string;
   try {
     text = await readFile(path, 'utf8');
   } catch (cause) {
-    if ((cause as { code?: string }).code === 'ENOENT') return true;
+    if ((cause as { code?: string }).code === 'ENOENT')
+      return {
+        defaultFailure: true,
+        packageFailureTitle: defaults.nativePackageFailureTitle,
+        confirm: defaults.confirm,
+      };
     throw cause;
   }
   const value: unknown = JSON.parse(text);
@@ -54,7 +64,15 @@ async function consumeStartupPresentation(outDir: string): Promise<boolean> {
     throw new Error('Invalid WeChat startup presentation handoff');
   }
   await rm(path);
-  return value.defaultFailure;
+  return {
+    defaultFailure: value.defaultFailure,
+    packageFailureTitle:
+      'packageFailureTitle' in value && typeof value.packageFailureTitle === 'string'
+        ? value.packageFailureTitle
+        : defaults.nativePackageFailureTitle,
+    confirm:
+      'confirm' in value && typeof value.confirm === 'string' ? value.confirm : defaults.confirm,
+  };
 }
 
 /** Native package preparation consumes the same SDK-owned payloads as public source builds. */
@@ -64,6 +82,7 @@ export async function prepareWechatBuild(
   inventory: PluginSourceInventory,
   appOptions: DevKitAppOptions = {},
 ) {
+  const labels = resolveLoadProgressLabels(appOptions.loadingLabels);
   const fontRoot = dirname(
     createRequire(import.meta.url).resolve('@fontsource-variable/noto-sans-sc/package.json'),
   );
@@ -122,7 +141,7 @@ import('@forgeax/engine/platform-wechat/standards').then(({ installWechatStandar
   const inspection = globalThis.__forgeaxGameInspection ?? entryInspection;
   if (inspection) { inspection.phase = 'failed'; inspection.error = diagnostic; }
   if (!${nativeFailureDefault(appOptions)}) return;
-  let reason = 'The game could not start.';
+  let reason = ${JSON.stringify(labels.host.startupFailed)};
   for (let current = diagnostic, depth = 0; current != null && depth < 16; depth++) {
     if (typeof current === 'string') {
       if (current !== '[circular]' && current.trim()) reason = current;
@@ -135,9 +154,9 @@ import('@forgeax/engine/platform-wechat/standards').then(({ installWechatStandar
   }
   reason = reason.replace(/\\s+/g, ' ').trim();
   if (reason.length > 160) reason = reason.slice(0, 157) + '...';
-  wx.showModal?.({ title: 'Unable to start',
-    content: reason + '\\n\\nTap Reload to try again. If it fails again, close and reopen the game.',
-    confirmText: 'Reload', showCancel: false,
+  wx.showModal?.({ title: ${JSON.stringify(labels.host.nativeStartupFailureTitle)},
+    content: reason + '\\n\\n' + ${JSON.stringify(labels.host.nativeReloadHint)},
+    confirmText: ${JSON.stringify(labels.reload)}, showCancel: false,
     success(result) { if (result.confirm) launch(); },
   });
 });
@@ -230,7 +249,11 @@ launch();`,
       this.emitFile({
         type: 'asset',
         fileName: STARTUP_PRESENTATION_FILE,
-        source: JSON.stringify({ defaultFailure: nativeFailureDefault(appOptions) }),
+        source: JSON.stringify({
+          defaultFailure: nativeFailureDefault(appOptions),
+          packageFailureTitle: labels.host.nativePackageFailureTitle,
+          confirm: labels.host.confirm,
+        }),
       });
     },
     async closeBundle() {
@@ -246,7 +269,7 @@ export async function writeWechatProject(
   outDir: string,
 ) {
   await mkdir(outDir, { recursive: true });
-  const defaultFailure = await consumeStartupPresentation(outDir);
+  const presentation = await consumeStartupPresentation(outDir);
   const entries = await readdir(outDir);
   const payload = resolve(outDir, 'payload');
   const player = await prepareDist(
@@ -309,7 +332,7 @@ const task = wx.loadSubpackage({ name: 'payload', success() { if (inspection.pha
   inspection.phase = 'failed';
   inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
   console.error('ForgeAX package failed', error);
-  if (${defaultFailure}) wx.showModal({ title: 'Unable to load', content: message, showCancel: false });
+  if (${presentation.defaultFailure}) wx.showModal({ title: ${JSON.stringify(presentation.packageFailureTitle)}, content: message, confirmText: ${JSON.stringify(presentation.confirm)}, showCancel: false });
 } });
 try {
   packageLoad.progressAvailable = !!task && typeof task.onProgressUpdate === 'function';

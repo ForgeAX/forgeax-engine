@@ -62,7 +62,7 @@ import {
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
-import { renderExtentSize, temporalAnalysisCapacity } from './render-extent';
+import { renderExtentSize, renderInternalSize, temporalAnalysisCapacity } from './render-extent';
 import { addSsaoSceneColorPass, type SceneColorAo } from './ssao-scene-color';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 import {
@@ -494,6 +494,7 @@ interface StandardPostRoute {
   readonly rawOnly: boolean;
   readonly motionBlur: boolean;
   readonly outputDither: boolean;
+  readonly distanceOutlineFirstStep: number | undefined;
   readonly editorAssistance: boolean;
   readonly editorOutline: boolean;
   readonly preTemporalEffects: readonly string[];
@@ -536,6 +537,8 @@ function standardPostRoute(
     rawOnly,
     motionBlur: postProcessing && topology.temporal?.motionBlur === true,
     outputDither: resolveOutputDither(topology.config),
+    distanceOutlineFirstStep:
+      postProcessing && typeof camera.outline === 'object' ? camera.outline.firstStep : undefined,
     editorAssistance: !clearOnly && camera.editorAssistance === true,
     editorOutline: !clearOnly && camera.editorOutline === true,
     preTemporalEffects,
@@ -569,7 +572,7 @@ function standardOutputFeatures(
     exposure: postProcessing && topology.output?.autoExposure === true,
     whiteBalance: postProcessing && topology.output?.whiteBalance === true,
     lut: postProcessing && topology.output?.colorLut === true,
-    outline: postProcessing && camera.outline === true,
+    outline: postProcessing && (camera.outline === true || typeof camera.outline === 'object'),
     barrelDistortion: postProcessing && camera.barrelDistortion === true,
     lensEffects: postProcessing && camera.lensEffects === true,
     fxaa: postProcessing && isFxaaAntialias(camera.antialias),
@@ -1143,6 +1146,7 @@ function addEditorAssistanceStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
@@ -1150,7 +1154,7 @@ function addEditorAssistanceStages(
     route.editorAssistance &&
     context.hasFeatureRasterWork?.(EDITOR_ASSISTANCE_FEATURE_IDENTITY) === true;
   if (route.editorOutline && editorReady) {
-    const outlined = addOutlinePasses(context.graph, postInput, depth, {
+    const outlined = addOutlinePasses(context.graph, postInput, depth, internalSize, {
       prefix: 'editor-outline',
       programPrefix: 'forgeax.editor-outline',
       selection: (frame) => frame.editorAssistance?.source.outline,
@@ -1187,6 +1191,7 @@ function addLinearLdrStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
   input: RenderPipelineTarget,
   finalPresent: RenderPipelineTarget,
@@ -1200,23 +1205,33 @@ function addLinearLdrStages(
     if (!lut.ok) return lut;
     postInput = lut.value;
   }
-  return addLinearLdrExtensions(context, route, depth, featureTargets, postInput, waterInfoTargets);
+  return addLinearLdrExtensions(
+    context,
+    route,
+    depth,
+    internalSize,
+    featureTargets,
+    postInput,
+    waterInfoTargets,
+  );
 }
 
 function addLinearLdrExtensions(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
   input: RenderPipelineTarget,
   waterInfoTargets?: WaterInfoGraphTargets,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   let postInput = input;
-  if (route.features.outline) {
+  if (route.features.outline && route.distanceOutlineFirstStep === undefined) {
     const outlined = addOutlinePasses(
       context.graph,
       postInput,
       depth,
+      internalSize,
       route.editorAssistance
         ? {
             selection: (frame) => {
@@ -1233,7 +1248,14 @@ function addLinearLdrExtensions(
     if (!outlined.ok) return outlined;
     postInput = outlined.value;
   }
-  const assistance = addEditorAssistanceStages(context, route, depth, featureTargets, postInput);
+  const assistance = addEditorAssistanceStages(
+    context,
+    route,
+    depth,
+    internalSize,
+    featureTargets,
+    postInput,
+  );
   if (!assistance.ok) return assistance;
   postInput = assistance.value;
   // Debug geometry is world-space scene content. Insert it before the spatial
@@ -1644,6 +1666,7 @@ function addNativeStandardOutput(
       context,
       route,
       depth,
+      renderInternalSize(topology),
       featureTargets,
       gradeOutput.value,
       waterInfoTargets,
@@ -1850,8 +1873,13 @@ export function addStandardPost(
   const observed = addSceneObservation(context, route, scene);
   if (!observed.ok) return observed;
   let highlighted = featured.value;
-  if (route.features.outline) {
-    const outlined = addDistanceOutlinePasses(context.graph, highlighted, depth);
+  if (route.distanceOutlineFirstStep !== undefined) {
+    const outlined = addDistanceOutlinePasses(
+      context.graph,
+      highlighted,
+      depth,
+      route.distanceOutlineFirstStep,
+    );
     if (!outlined.ok) return outlined;
     highlighted = outlined.value;
   }
@@ -1927,6 +1955,7 @@ export function addStandardPost(
         context,
         route,
         depth,
+        renderInternalSize(topology),
         featureTargets,
         checkedExposure.value,
         finalPresent,

@@ -9,7 +9,7 @@ import { Terrain, terrainHeight } from '@forgeax/engine-terrain';
 import { querySubmittedTerrainHeight } from '@forgeax/engine-render';
 import { vec3 } from '@forgeax/engine-math';
 import { buildTerrainWorld } from '../src/scene.ts';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readShaderManifestRegistry, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 import { createDistAssetFetch } from '../../../../scripts/lib/dist-asset-fetch.mjs';
 
 export async function terrainHarness({
@@ -24,11 +24,11 @@ export async function terrainHarness({
     existsSync(resolve(dist, 'pack-index.json')),
     'build hello-terrain before running its Dawn smoke',
   );
-  const shaderManifest = JSON.parse(readShaderManifestText(resolve(dist, 'shaders/manifest.json')));
+  const shaderRegistry = await readShaderManifestRegistry(
+    readShaderManifestText(resolve(dist, 'shaders/manifest.json')),
+  );
   assert(
-    shaderManifest.materialShaders.some(
-      (entry) => entry.identifier === 'forgeax::default-shadow-caster',
-    ),
+    shaderRegistry.materialShaderManifestEntry('forgeax::default-shadow-caster') !== undefined,
     'complete the app shader producer before GPU acceptance; use a full app build or materialize its CI transport',
   );
   const previousFetch = globalThis.fetch;

@@ -1,6 +1,7 @@
 import { ok } from '@forgeax/engine-rhi';
 import {
   findVariantByKey,
+  type MaterialShaderManifestEntry,
   materialShaderSource,
   publishShaderProgramTemplates,
   type ShaderProgramCompiler,
@@ -358,6 +359,49 @@ it('retains cooked family backdrop bindings below the dedicated transmission bud
   ).toBeUndefined();
 });
 
+it('retains declared backdrop bindings without resolving unused runtime coverage programs', () => {
+  const registry = new ShaderRegistry({});
+  const identifier = 'game::runtime-coverage';
+  const source =
+    '@group(1) @binding(0) var<uniform> tint: vec4<f32>; @group(1) @binding(7) var backdropSampler: sampler; @group(1) @binding(8) var backdrop: texture_2d<f32>; @fragment fn fs_main() -> @location(0) vec4<f32> { return tint + textureSample(backdrop, backdropSampler, vec2<f32>(0.5)); }';
+  registry.installMaterialArtifact(identifier, {
+    source,
+    paramSchema: [],
+    entryPoints: [{ name: 'fs_main', stage: 'fragment', bindings: [{ group: 1, binding: 0 }] }],
+  });
+  const select = vi.fn((_lod: boolean) => identifier);
+  registry.installMaterialTemplateVariants(
+    identifier,
+    [false, true].map((lod) => ({
+      defines: { LOD_DITHER: lod },
+      select: () => select(lod),
+    })),
+  );
+  expect(sharedMaterialBindingDeclarations(registry, identifier)).toEqual([0, 7, 8]);
+  const layout = buildBindGroupLayoutDescriptor(
+    {
+      shader: { id: identifier, passKind: 'forward', variantSet: undefined },
+      attachments: { colorFormats: [], depthFormat: undefined, sampleCount: 1 },
+      geometry: { topology: 'triangle-list', vertexLayout: {} },
+      renderState: undefined,
+    },
+    {
+      kind: 'pbr-material-merged',
+      registry,
+      materialParamSchema: [],
+      caps: { storageBuffer: true, transmissionBackdrop: false },
+    },
+  );
+  expect(layout.entries.map(({ binding }) => binding)).toEqual(expect.arrayContaining([7, 8]));
+  expect(select).not.toHaveBeenCalled();
+  const row = registry.materialShaderManifestEntry(identifier);
+  if (row === undefined) throw new Error('Runtime coverage family missing');
+  const selected = findVariantByKey(row, '');
+  if (selected === undefined) throw new Error('Requested LOD program missing');
+  expect(materialShaderSource(selected).read()).toBe(source);
+  expect(select.mock.calls).toEqual([[true]]);
+});
+
 it('ranks an unkeyed native material without expanding its feature table', async () => {
   const { family, compile } = await templateFamily([
     'STORAGE_BUFFER_AVAILABLE',
@@ -545,4 +589,61 @@ it('keeps the fallback direct layout free of scene-index and discard bindings', 
       'GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LOD_DITHER=true+CLIPPING_PLANES=true',
     ),
   ).toBe(variants[0]);
+});
+
+it('selects a published variant without rereading the roster per request axis', () => {
+  const direct = {
+    definesKey: 'direct',
+    defines: { GPU_DRIVEN_SCENE_INDEX_AVAILABLE: false, CLUSTER_FORWARD_AVAILABLE: false },
+    composedWgsl: '',
+  };
+  const indexed = {
+    definesKey: 'indexed',
+    defines: { GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true, CLUSTER_FORWARD_AVAILABLE: true },
+    composedWgsl: '',
+  };
+  const variants = [direct, indexed] as MaterialShaderManifestEntry['variants'];
+  const read = vi.fn(() => variants);
+  const family = {
+    identifier: 'game::published',
+    sourcePath: '',
+    paramSchema: '',
+    composedWgsl: '',
+    get variants() {
+      return read();
+    },
+  };
+  expect(selectPublishedVariant(family, { address: 'scene-index', clustered: true })).toBe(indexed);
+  // One pass to read the roster and one to discover axes for an unsealed caller.
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it('evaluates published lean fallback before discarding coverage-only selections', () => {
+  const general = {
+    definesKey: 'general',
+    defines: { STANDARD_LEAN_INPUTS: false },
+    composedWgsl: '',
+  };
+  const coverage = {
+    definesKey: 'coverage',
+    defines: { STANDARD_LEAN_INPUTS: true, COVERAGE_ONLY: true },
+    composedWgsl: '',
+  };
+  const family: MaterialShaderManifestEntry = {
+    identifier: 'game::published',
+    sourcePath: '',
+    paramSchema: '',
+    composedWgsl: '',
+    variants: [general, coverage] as MaterialShaderManifestEntry['variants'],
+  };
+  expect(selectPublishedVariant(family, { leanInputs: true })).toBeUndefined();
+  expect(selectPublishedVariant(family, { leanInputs: false })).toBe(general);
+  expect(
+    selectPublishedVariant(
+      { ...family, variants: [general] as typeof family.variants },
+      {
+        leanInputs: true,
+      },
+    ),
+  ).toBe(general);
 });

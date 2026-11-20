@@ -1,6 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { runBrowserCommand } from '../ci/run-browser-gate-with-retry.mjs';
 
 export {
   decodeArtifactJsonText as decodeShaderManifestText,
@@ -22,30 +20,40 @@ export function processShaderManifestUrl(path) {
   return publication.url;
 }
 
-/** Consumers own their optional profile; shard placement never implies readiness. */
-export async function ensureShaderManifestProfile(
-  profile,
-  {
-    sharedInputManifest = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
-    run = runBrowserCommand,
-  } = {},
-) {
-  const script = fileURLToPath(
-    new URL('../forgeax/prepare-shader-release-inputs.mjs', import.meta.url),
+/** Inspect cooked rows while retaining support for compiled-only publications. */
+export async function readCookedShaderManifestPublication(publication) {
+  const { readShaderManifestPublication, SHADER_PROJECT_MANIFEST_VERSION } = await import(
+    '@forgeax/engine-shader'
   );
-  const result = await run(
-    [
-      process.execPath,
-      script,
-      '--build',
-      '--profile',
-      profile,
-      ...(sharedInputManifest ? ['--shared-input-manifest', sharedInputManifest] : []),
-    ],
-    { env: process.env, timeoutMs: 300_000, label: `Shader profile ${profile}`, gpuLease: false },
+  return readShaderManifestPublication(
+    publication?.schemaVersion === SHADER_PROJECT_MANIFEST_VERSION
+      ? publication.cooked
+      : publication,
   );
-  if (result.status !== 0)
-    throw new Error(
-      `Shader profile preparation failed: ${profile} (${result.signal ?? result.status})`,
-    );
+}
+
+/** Admit the same publication bytes and compiler as the runtime smoke. */
+export async function readShaderManifestRegistry(text) {
+  const { ShaderRegistry } = await import('@forgeax/engine-shader');
+  // Resolve the owning package's ESM entry even in an app-only install.
+  const compilerPackage = new URL('../../packages/shader-compiler/package.json', import.meta.url);
+  const programExport = JSON.parse(readFileSync(compilerPackage, 'utf8')).exports['./program']
+    .import;
+  const { prepareShaderProgramCompiler } = await import(
+    new URL(programExport, compilerPackage).href
+  );
+  const registry = new ShaderRegistry({
+    manifestUrl: '/shaders/manifest.json',
+    readText: async () => text,
+    prepareProgramCompiler: prepareShaderProgramCompiler,
+  });
+  (await registry.loadManifest()).unwrap();
+  return registry;
+}
+
+/** Read only the named built-ins in a diagnostic or GPU fixture. */
+export async function readBuiltinShaderEntries(text, roles) {
+  const registry = await readShaderManifestRegistry(text);
+  const entries = [...registry.entries()];
+  return roles.map((role) => entries.find((entry) => entry.role === role));
 }

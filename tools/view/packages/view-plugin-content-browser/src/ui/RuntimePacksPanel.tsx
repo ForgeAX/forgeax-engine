@@ -14,13 +14,14 @@ type Installation = { uid: number; state: string };
 type Asset = { guid: string; kind: string; name?: string; sourceKey?: string; packageId?: string };
 
 export function RuntimePacksPanel({ client }: { client: ViewWorkspaceClient }) {
+  const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
   const target = runtimePackTarget(workspace);
   const key = target ? `${target.projectId}/${target.targetId}/${target.worldId}` : '';
   // A replacement project gets fresh drafts and cancels all old requests.
   return target ? <BoundRuntimePacks key={key} client={client} target={target} /> :
-    <EmptyState title="Runtime content unavailable" description="Wait for the project target to be ready." />;
+    <EmptyState title={t('contentBrowser.runtime.unavailable')} description={t('contentBrowser.runtime.waitForTarget')} />;
 }
 
 function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; target: { projectId: string; targetId: string; worldId: string } }) {
@@ -102,12 +103,12 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
       throw error;
     }
   }
-  return <section className="cb-runtime" aria-label="Runtime content" data-testid="runtime-content">
+  return <section className="cb-runtime" aria-label={t('contentBrowser.runtime.title')} data-testid="runtime-content">
     <Toolbar>
       <strong>{t('contentBrowser.runtimeTools')}</strong>
-      <Button size="compact" disabled={busy} onClick={() => void act(async () => {})}>Refresh</Button>
-      <Button size="compact" disabled={busy} onClick={() => upload.current?.click()}>Import content</Button>
-      <Button size="compact" disabled={busy} onClick={() => void act(save)}>Save content</Button>
+      <Button size="compact" disabled={busy} onClick={() => void act(async () => {})}>{t('contentBrowser.refresh')}</Button>
+      <Button size="compact" disabled={busy} onClick={() => upload.current?.click()}>{t('contentBrowser.runtime.import')}</Button>
+      <Button size="compact" disabled={busy} onClick={() => void act(save)}>{t('contentBrowser.runtime.save')}</Button>
       <input ref={upload} type="file" accept=".json,application/json" hidden onChange={event => {
         const file = event.target.files?.[0]; event.target.value = '';
         if (file) void act(async () => {
@@ -117,22 +118,22 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
       }} />
     </Toolbar>
     {error ? <p role="alert">{error}</p> : null}
-    {busy ? <p role="status">Waiting for Engine...</p> : null}
-    <details><summary>Admitted packs ({packs.length})</summary>
+    {busy ? <p role="status">{t('contentBrowser.runtime.waiting')}</p> : null}
+    <details><summary>{t('contentBrowser.runtime.admitted', { count: packs.length })}</summary>
       {packs.map(pack => <PropertyRow key={pack.source.packageId} label={pack.source.source ?? pack.source.packageId}>
-        <Button size="compact" disabled={busy} onClick={() => void act(() => call('withdraw', { packageId: pack.source.packageId }))}>Withdraw pack</Button>
+        <Button size="compact" disabled={busy} onClick={() => void act(() => call('withdraw', { packageId: pack.source.packageId }))}>{t('contentBrowser.runtime.withdrawPack')}</Button>
       </PropertyRow>)}
     </details>
     <div className="cb-runtime-columns">
       <fieldset disabled={busy}>
-        <legend>Generate assets</legend>
-        <PropertyRow label="Generator"><select aria-label="Generator" value={selected} onChange={event => choose(event.target.value)}>
-          <option value="">Choose a generator</option>
+        <legend>{t('contentBrowser.runtime.generateAssets')}</legend>
+        <PropertyRow label={t('contentBrowser.runtime.generator')}><select aria-label={t('contentBrowser.runtime.generator')} value={selected} onChange={event => choose(event.target.value)}>
+          <option value="">{t('contentBrowser.runtime.chooseGenerator')}</option>
           {generators.map(pack => <option key={pack.source.packageId} value={pack.source.packageId}>{pack.source.source ?? pack.source.packageId}</option>)}
         </select></PropertyRow>
         {generator ? <>
-          <PropertyRow label="Instance"><select aria-label="Instance" value={instanceId} onChange={event => choose(selected, event.target.value)}>
-            <option value="">New instance</option>
+          <PropertyRow label={t('contentBrowser.runtime.instance')}><select aria-label={t('contentBrowser.runtime.instance')} value={instanceId} onChange={event => choose(selected, event.target.value)}>
+            <option value="">{t('contentBrowser.runtime.newInstance')}</option>
             {executions.map(item => <option key={item.instance.packageId} value={item.instance.packageId}>{item.instance.packageId}</option>)}
           </select></PropertyRow>
           {parameters.map(parameter => <PropertyRow key={parameter.name} label={parameter.name}>
@@ -146,22 +147,21 @@ function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; ta
             const instance: Instance = { schemaVersion: '3.0.0', packageId: id, parent: selected, values: parameterValues(parameters, drafts) };
             setInstanceId(id);
             await call('generate', { instance });
-          })}>Generate</Button>
-          {execution ? <p role="status">{execution.status}{execution.lastKnownGood ? ` · Published generation ${execution.lastKnownGood.generation}` : ''}{execution.status !== 'current' && execution.lastKnownGood ? ' · Previous successful result' : ''}</p> : null}
+          })}>{t('contentBrowser.runtime.generate')}</Button>
+          {execution ? <p role="status">{execution.status}{execution.lastKnownGood ? ` · ${t('contentBrowser.runtime.publishedGeneration', { generation: execution.lastKnownGood.generation })}` : ''}{execution.status !== 'current' && execution.lastKnownGood ? ` · ${t('contentBrowser.runtime.previousResult')}` : ''}</p> : null}
           {execution?.error ? <pre>{JSON.stringify(execution.error, null, 2)}</pre> : null}
-          {instanceId ? <Button size="compact" onClick={() => void act(async () => { await call('withdraw', { packageId: instanceId }); choose(selected); })}>Withdraw instance</Button> : null}
-        </> : <p>{generators.length ? 'Select an admitted definition to edit parameters.' : 'No runtime generators have been admitted.'}</p>}
+          {instanceId ? <Button size="compact" onClick={() => void act(async () => { await call('withdraw', { packageId: instanceId }); choose(selected); })}>{t('contentBrowser.runtime.withdrawInstance')}</Button> : null}
+        </> : <p>{t(generators.length ? 'contentBrowser.runtime.selectDefinition' : 'contentBrowser.runtime.noGenerators')}</p>}
       </fieldset>
       <fieldset disabled={busy}>
-        <legend>Plugin assets</legend>
+        <legend>{t('contentBrowser.runtime.pluginAssets')}</legend>
         {assets.filter(asset => asset.kind === 'plugin').map(asset => <PropertyRow key={asset.guid} label={asset.name ?? asset.sourceKey ?? asset.guid}>
-          <Button size="compact" onClick={() => void act(() => call('plugin-install', { guid: asset.guid }))}>Install</Button>
+          <Button size="compact" onClick={() => void act(() => call('plugin-install', { guid: asset.guid }))}>{t('contentBrowser.runtime.install')}</Button>
         </PropertyRow>)}
-        <p>Installations owned by this View connection</p>
+        <p>{t('contentBrowser.runtime.installations')}</p>
         {plugins.length ? plugins.map(plugin => <PropertyRow key={plugin.uid} label={`#${plugin.uid} · ${plugin.state}`}>
-          <Button size="compact" onClick={() => void act(() => call('plugin-dispose', { uid: plugin.uid }))}>Dispose</Button>
-        </PropertyRow>) : <p>No installations.</p>}
-        <p>Generated outputs appear in the asset browser below. Open an output for its dedicated preview.</p>
+          <Button size="compact" onClick={() => void act(() => call('plugin-dispose', { uid: plugin.uid }))}>{t('contentBrowser.runtime.dispose')}</Button>
+        </PropertyRow>) : <p>{t('contentBrowser.runtime.noInstallations')}</p>}
       </fieldset>
     </div>
   </section>;

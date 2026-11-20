@@ -37,7 +37,9 @@ export function isSurfaceRecordMode(mode: MaterialRecordMode | undefined): boole
   );
 }
 
-export function isMediumMaterial(material: MaterialSnapshot): boolean {
+export function isMediumMaterial(
+  material: Pick<MaterialSnapshot, 'surfaceModel' | 'materialShaderId'>,
+): boolean {
   return (
     material.surfaceModel === 'single-layer-medium' ||
     material.surfaceModel === 'single-layer-water' ||

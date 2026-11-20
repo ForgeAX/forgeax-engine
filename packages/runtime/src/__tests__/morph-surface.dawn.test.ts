@@ -1,5 +1,5 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -22,7 +22,9 @@ it.each([false, true])('feeds the GPU Morph surface to AO and SSR (skin=%s)', {
       },
     },
     {
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true })),
+      shaderManifestUrl: shaderManifestUrl(
+        await buildEngineShaderTemplateManifest({ pointShadows: true }),
+      ),
     },
   );
   if (!created.ok) throw created.error;

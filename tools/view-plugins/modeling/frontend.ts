@@ -84,7 +84,7 @@ export default {
   const node = document.createElement('section');
   node.dataset.forgeaxViewSurface = 'modeling';
   node.style.cssText = 'height:100%;min-height:0;overflow:auto';
-  const unregister = page.registerType({ typeId: 'modeling', context: 'project', title: 'Modeling', order: 12,
+  const unregister = page.registerType({ typeId: 'modeling', context: 'project', titleKey: 'view.pages.modeling', order: 12,
    closable: true, singleton: true, initial: false, openable: true, layout: 'surface', showPanelRail: false, hideWhenInactive: true });
   const unmount = page.mount('modeling', node);
   let dispose: Dispose | undefined;

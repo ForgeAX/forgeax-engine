@@ -77,12 +77,14 @@ falloff and atmosphere-driven source color.
 | Sun | Slightly warm linear RGB `(1,0.95,0.87)`, intensity 12 lux | A creative showcase key within the current HDR working range; this is not a measured daylight calibration |
 | Shadows | 56 m cascade distance | Spend near-field shadow resolution on the character and sphere |
 | ReflectionProbe | 128 px, local to the sphere, on-change updates | Reflect the real lit ground into the metal rather than leaving its underside at sky-only black |
-| Camera | ACES, FXAA, auto exposure, compensation 0, range `[-12,4]`, Bloom off | Preserve bright color and readable highlights without a glow wash |
+| Camera | ACES, FXAA, neutral fixed exposure (Engine default `1.0`), Bloom off | Keep brightness stable as the camera or background changes |
 
 Engine light APIs retain lux/candela meanings. The starter's creative intensity
 is not a redefinition of those units. Raising it to real daylight values requires
-checking HDR headroom, exposure limits and fallback together. `rangeEv` is log2
-of the exposure multiplier, not Unreal's camera EV100.
+checking HDR headroom and camera exposure together. Start with the neutral fixed exposure when
+comparing materials, lighting, effects, or water. Opt in to automatic exposure
+for a scene that needs eye adaptation and validate the brightest and darkest
+views. Its `rangeEv` bounds the base-2 logarithm of the exposure multiplier.
 
 The initial 12-degree orbit pitch, 6.5 m distance and 0.7 m target-height offset
 are shared between scene bootstrap and the runtime follow camera in

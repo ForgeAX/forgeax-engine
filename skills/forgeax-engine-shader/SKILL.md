@@ -5,19 +5,27 @@ description: ForgeAX WGSL composition, reflection, and cooked shader contracts. 
 
 # forgeax-engine-shader
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Optional River `transitionContinuity` uses the accepted end-spline position and
 actual current-generation Ocean coverage adjacency. Author finite meter reach
 and blend width; the complete shared triangle is closed inside the inner reach
 and upstream height is retained outside support. Source flow/depth remain
 native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
 support offset in byte 92; vertex and fragment share its original-grid policy.
-Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+Use `material-pack-cooker/7` to recook. Compiled publications use `material-cook/5`.
 GPU traversal, independent Baked depth, custom deformation and independent
 advanced displacement are outside this initial continuity contract. See the
 [owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)
 and execute the nearest production Dawn gate before claiming pixels accepted.
 
 ## Contract index
+
+Ordinary `.pack.ts` materials ship a resolved source template and its WGSL
+imports. Check asset admission first, then the program picked by the actual
+render pass, geometry and device. Use the GPU capture to verify the selected
+reflection and pixels. Direct and explicitly compiled material assets retain
+their existing program receipts.
 
 For a textured single-layer medium Surface, declare textures in the material parameters and sample the generated texture/sampler symbols. The compiler and Render derive the author region and relocate native optical resources together; never copy fixed IBL, backdrop, depth or planar bindings into a game shader.
 
@@ -39,8 +47,8 @@ does not prune fragment reads or waves. `waterDynamicBoundsClip` lowers to
 `WATER_DYNAMIC_BOUNDS_CLIP` with default false, independently of mapping/Info.
 Its stock consumer uses post-WPO fragment position and the generation-qualified
 Body row's `dynamicBoundsCenterExtentXZ`, without requiring an Info texture.
-Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/6` producer to
-invalidate older derived bytes; the durable publication stays `material-cook/5`.
+Absent bounds bypass clipping. Use the compiler's `material-pack-cooker/7`
+producer to invalidate older derived bytes. Compiled publications use `material-cook/5`.
 `WATER_TRANSITION_AVAILABLE` derives from disabled ordinary waves plus an enabled
 transition. Its default deformation requires the authored `f32` wave-mask speed
 and, when vertex flow can be selected, the `f32` maximum decoded-flow speed.
@@ -77,19 +85,21 @@ converts E/pi to isotropic ambient with a factor of one quarter. Keep the
 existing receiver AO on surface diffuse only; precomputed bent-normal lighting
 is unavailable without a lighting-owned producer.
 
-The shader compiler is build-time only: it composes real module slots, reflects
-the closed compiler context, and records actual WASM provenance. Material
+The shader compiler composes real module slots, reflects the closed compiler
+context, and records actual WASM provenance. The runtime template path uses the
+host-supplied portable compiler for selected Engine programs. Cooked MaterialAsset
+programs retain their Pack producer. Material
 identity is layered across `materialContractDigest`, `sourceClosureDigest`,
 `layoutIdentity`, `programIdentity`, `cookIdentity`, and
-`materialPublicationIdentity`; runtime receives the Pack projection and never
-compiles, cooks, or interprets feature macros.
+`materialPublicationIdentity`. The runtime receives the Pack projection for
+cooked programs.
 
 Standard's raster interface reserves one default-device inter-stage input for
 `front_facing`. Fragment position and NDC reconstruct from builtin position and
 the inverse view projection. Water-only coverage/grid inputs retain their own
 lane, and the wave mask shares the Water normal's fourth component. Keep
 vertex color, all eight UV sets, object basis and scene indexing within the
-remaining fifteen locations, and rebuild cooked profiles after template edits.
+remaining fifteen locations, and verify the affected runtime selections after template edits.
 
 > [!IMPORTANT]
 > The authoring route is WGSL source plus one MaterialAsset contract. Build-time composition and reflection publish a module manifest entry; material cook publishes the artifact and receipt; runtime resolves both through the catalog. App code never installs or duplicates a shader artifact. The recovery route is source or cook repair.
@@ -257,17 +267,12 @@ fixed by changing the demo's material data. This is the recovery route.
 
 ## Routing
 
-For an external Vite source consumer, build the Engine packages and run
-`node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile base-ssao`
-in its Engine checkout. Keep `forgeaxShader()` in the app. Inspect the resolved
-plugin's profile/source diagnostics; missing rows and stale compiler facts
-select source compilation. Packaging without `--build` requires the producer's
-current receipt and payload digest. See the plugin README for preparation/reuse.
-
-In an Engine contributor checkout, standalone Dawn fixtures with authored
-material packages use `buildEngineShaderManifest` with the CI-admitted shared
-inputs: built-in rows are reused while custom materials still compile from
-source. Point-shadow requests require their source profile. See the
+`pnpm build:engine` prepares the Engine packages for Vite and DevKit.
+`forgeaxShader()` publishes built-in templates and the runtime prepares selected
+programs. Standalone Dawn fixtures use `buildEngineShaderTemplateManifest` for
+built-ins and `buildProjectShaderTemplateManifest` when the fixture declares
+material packages. Cook the declared material closure and retain its receipts.
+Opt into `publication: 'compiled'` for an explicit composed-source contract. See the
 [shader plugin contract](../../packages/vite-plugin-shader/README.md) and
 [CI operating guide](../../scripts/ci/README.md) before changing preparation.
 Standalone Dawn tests reuse the existing `shaderManifestUrl` fixture, which

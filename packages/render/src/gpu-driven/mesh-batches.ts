@@ -1,6 +1,7 @@
 import type { MaterialResource } from '../material-resource';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { GpuDrivenDrawSnapshot } from '../render-system-extract';
+import { changes, type Node } from '../scene/frame-tree';
 import { TreeFrame } from '../scene/frame-tree-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame, MeshGeometry } from '../scene/mesh-frame';
@@ -16,7 +17,16 @@ import type {
   MeshBatchSource,
   SubmissionPlan,
 } from './batch-topology';
+import { captureTaskMembership } from './fixed-task-plan';
 import { rowMaterialSlot } from './row-materials';
+
+/** These branches come only from this owner's path-copying execution tree. */
+function sealPublishedTasks(root: Node<GpuDrivenBatch> | undefined): void {
+  if (root === undefined || Object.isFrozen(root)) return;
+  sealPublishedTasks(root.left);
+  sealPublishedTasks(root.right);
+  Object.freeze(root);
+}
 
 const geometryDraws = new WeakMap<
   MeshGeometry,
@@ -137,6 +147,9 @@ function meshDraws(source: MeshBatchSource, mesh: MeshGeometry): readonly Eligib
       key: Object.freeze({
         drawItemIndex,
         assetHandle: mesh.handle,
+        ...(template.key.residencyGroup === undefined
+          ? {}
+          : { residencyGroup: template.key.residencyGroup }),
         drawKind: draw.kind,
         first: draw.first,
         count: draw.count,
@@ -198,6 +211,54 @@ interface ExecutionGroup {
   readonly windows: Map<number, ExecutionWindow>;
 }
 
+/** Both outputs belong to one source join and share its physical command windows. */
+export interface MeshExecutionPlans {
+  readonly resident: SubmissionPlan;
+  readonly active: SubmissionPlan;
+}
+
+interface PreviousWindowSelection {
+  readonly source: BatchSources;
+  readonly active: TreeFrame<GpuDrivenBatch>;
+  readonly resident: TreeFrame<GpuDrivenBatch>;
+}
+
+interface SelectedSourceRoots {
+  readonly source: BatchSources;
+  readonly complete: BatchSources;
+}
+
+function validateExecutionSelection(
+  selected: BatchSources,
+  complete: BatchSources,
+  before: SelectedSourceRoots | undefined,
+): void {
+  const validate = (candidate: GpuDrivenBatch | undefined) => {
+    if (candidate !== undefined && complete.get(candidate.batchId) !== candidate)
+      throw new Error('Execution selection must retain the exact resident source batch');
+  };
+  selected.changesSince(before?.source ?? complete, (_before, after) => validate(after));
+  // A previously selected source can become stale through a resident edit even
+  // when the selected tree kept its identity. Check only those edited keys.
+  if (before !== undefined) {
+    complete.changesSince(before.complete, (left, right) => {
+      const id = (right ?? left)?.batchId;
+      if (id !== undefined) validate(selected.get(id));
+    });
+  }
+}
+
+function previousWindowSelection(
+  source: BatchSources | undefined,
+  execution: MeshExecutionPlans | undefined,
+): PreviousWindowSelection | undefined {
+  return source !== undefined &&
+    execution?.active.batches instanceof TreeFrame &&
+    execution.resident.batches instanceof TreeFrame
+    ? { source, active: execution.active.batches, resident: execution.resident.batches }
+    : undefined;
+}
+
 /** Stable physical command windows for the last actual task query, never source maintenance. */
 export class MeshBatchProjection {
   private readonly groups = new Map<number, ExecutionGroup>();
@@ -208,6 +269,8 @@ export class MeshBatchProjection {
   private published = new TreeFrame<GpuDrivenBatch>();
   private sourceRoot: BatchSources | undefined;
   private plan: SubmissionPlan | undefined;
+  private selection: SelectedSourceRoots | undefined;
+  private execution: MeshExecutionPlans | undefined;
   // Lookup qualification only: neither this memo nor GC owns output windows.
   // It deliberately cannot retain an unrelated MeshFrame's payload closure.
   private queriedMeshes = new WeakSet<MeshFrame>();
@@ -229,6 +292,8 @@ export class MeshBatchProjection {
     this.published = new TreeFrame();
     this.sourceRoot = undefined;
     this.plan = undefined;
+    this.selection = undefined;
+    this.execution = undefined;
     this.queriedMeshes = new WeakSet();
     this.queriedWithoutMeshes = false;
     this.meshes = undefined;
@@ -245,8 +310,89 @@ export class MeshBatchProjection {
     source: SubmissionPlan,
     meshes: MeshFrame | undefined,
     materials?: MaterialFrame,
+  ): MeshExecutionPlans {
+    const baseline = source.resident;
+    if (baseline === undefined) {
+      this.selection = undefined;
+      const resident = this.queryResident(source, meshes, materials);
+      if (this.execution?.resident === resident && this.execution.active === resident)
+        return this.execution;
+      this.execution = Object.freeze({ resident, active: resident });
+      return this.execution;
+    }
+    if (baseline.resident !== undefined)
+      throw new Error('Execution selection requires one resident source baseline');
+    const selected = querySources(source);
+    const complete = querySources(baseline);
+    const previous = this.selection;
+    const execution = this.execution;
+    validateExecutionSelection(selected, complete, previous);
+    const resident = this.queryResident(baseline, meshes, materials);
+    if (execution?.resident === resident && previous?.source === selected) return execution;
+    const batches = this.selectWindows(
+      previousWindowSelection(previous?.source, execution),
+      complete,
+      selected,
+    );
+    const active: SubmissionPlan = captureTaskMembership(
+      Object.freeze({
+        revision: resident.revision,
+        batches,
+        candidateCount: batches.weight,
+        visibleCapacity: resident.visibleCapacity,
+        sourceGroups: selected,
+      }),
+    );
+    this.selection = { source: selected, complete };
+    this.execution = Object.freeze({ resident, active });
+    return this.execution;
+  }
+
+  private selectWindows(
+    before: PreviousWindowSelection | undefined,
+    complete: BatchSources,
+    selected: BatchSources,
+  ): TreeFrame<GpuDrivenBatch> {
+    // Physical windows are already resident. The selection only changes references to them.
+    let batches = before?.active ?? this.published;
+    if (before !== undefined) {
+      // Only previously selected sources can have stale windows in the active
+      // tree. Native changes to dormant sources leave that tree untouched.
+      changes(before.resident.root, this.published.root, (left, right, ordinal, sourceId) => {
+        if (before.source.get(sourceId) === undefined) return;
+        if (right !== undefined && selected.get(sourceId) !== undefined)
+          batches = batches.with(right, sourceId, ordinal, right.candidates.length);
+        else if (left !== undefined) batches = batches.without(sourceId, ordinal);
+      });
+    }
+    selected.changesSince(before?.source ?? complete, (left, right) => {
+      if (left !== undefined && right !== undefined) return;
+      const id = (right ?? left)?.batchId;
+      if (id === undefined) return;
+      for (const window of this.groups.get(id)?.windows.values() ?? []) {
+        if (right === undefined) batches = batches.without(id, window.ordinal);
+        else {
+          const batch = window.published;
+          if (batch === undefined) throw new Error('Execution selection lost its resident window');
+          batches = batches.with(batch, id, window.ordinal, batch.candidates.length);
+        }
+      }
+    });
+    sealPublishedTasks(batches.root);
+    Object.freeze(batches);
+    return batches;
+  }
+
+  private queryResident(
+    source: SubmissionPlan,
+    meshes: MeshFrame | undefined,
+    materials: MaterialFrame | undefined,
   ): SubmissionPlan {
     const batches = querySources(source);
+    if (this.sourceRoot !== batches) {
+      this.selection = undefined;
+      this.execution = undefined;
+    }
     const rebindMaterials = materialBindingsChanged(this.materials, materials);
     if (
       this.plan !== undefined &&
@@ -262,6 +408,43 @@ export class MeshBatchProjection {
     // group repair runs from Mesh adoption, publication, or a skipped view.
     // A retained baseline re-joins only edited sources and sources whose Mesh
     // changed; every other window and publication is unchanged by definition.
+    this.reconcileSources(batches, meshes, rebindMaterials);
+    this.meshes = meshes;
+    this.materials = materials;
+    this.meshKnown = true;
+    sealPublishedTasks(this.published.root);
+    Object.freeze(this.published);
+    const previous = this.plan;
+    const plan =
+      previous?.batches === this.published && previous.sourceGroups === batches
+        ? previous
+        : captureTaskMembership(
+            Object.freeze({
+              revision: (previous?.revision ?? -1) + 1,
+              batches: this.published,
+              candidateCount: this.published.weight,
+              visibleCapacity: this.visibleRanges.requiredCapacity() * 64,
+              sourceGroups: batches,
+            }),
+          );
+    this.sourceRoot = batches;
+    this.queriedMeshes = new WeakSet();
+    this.queriedWithoutMeshes = meshes === undefined;
+    if (meshes !== undefined) this.queriedMeshes.add(meshes);
+    this.plan = plan;
+    return plan;
+  }
+
+  /** Exact current complete execution output, excluding active selections and other owners. */
+  isResidentPlan(plan: SubmissionPlan): boolean {
+    return this.meshKnown && this.plan === plan;
+  }
+
+  private reconcileSources(
+    batches: BatchSources,
+    meshes: MeshFrame | undefined,
+    rebindMaterials: boolean,
+  ): void {
     const baseline = this.sourceRoot;
     const patch =
       baseline !== undefined &&
@@ -299,26 +482,6 @@ export class MeshBatchProjection {
       }
       for (const member of batches) this.update(member, meshes);
     }
-    this.meshes = meshes;
-    this.materials = materials;
-    this.meshKnown = true;
-    const previous = this.plan;
-    const plan =
-      previous?.batches === this.published && previous.sourceGroups === batches
-        ? previous
-        : Object.freeze({
-            revision: (previous?.revision ?? -1) + 1,
-            batches: this.published,
-            candidateCount: this.published.weight,
-            visibleCapacity: this.visibleRanges.requiredCapacity() * 64,
-            sourceGroups: batches,
-          });
-    this.sourceRoot = batches;
-    this.queriedMeshes = new WeakSet();
-    this.queriedWithoutMeshes = meshes === undefined;
-    if (meshes !== undefined) this.queriedMeshes.add(meshes);
-    this.plan = plan;
-    return plan;
   }
 
   private unindex(batchId: number): void {

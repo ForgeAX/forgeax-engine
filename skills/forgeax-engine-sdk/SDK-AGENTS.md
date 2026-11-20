@@ -1,5 +1,7 @@
 # ForgeAX SDK: AI entry
 
+[Simplified Chinese](https://github.com/ForgeAX/forgeax-engine/blob/main/skills/forgeax-engine-sdk/SDK-AGENTS.zh-CN.md)
+
 Read this first. Both SDK transports extend the built Engine with editable source
 and that release's prebuilt module outputs. Rebuild only changed owners and bind
 the game to `source/engine/`; see [source iteration](README.md#bind-local-engine-source).

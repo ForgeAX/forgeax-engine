@@ -2,12 +2,12 @@ import { probeR32FloatRenderCapability } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect, it, onTestFinished } from 'vitest';
 import * as wgpu from '../../../rhi-wgpu/src/index';
-import { readOwnedShaderManifestPublication } from '../../../shader/src/manifest-publication';
 import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
+import { browserShaderEntries } from './browser-shader-entries.fixture';
 import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
 import {
   runSsrGpuDispatch,
-  type SsrShaderManifest,
+  SSR_PROBE_SHADER_IDENTIFIERS,
   sourcesFromManifest,
   ssrCoordinateErrors,
 } from './ssr-gpu-dispatch';
@@ -16,19 +16,21 @@ it.each([
   'webgpu',
   'wgpu-webgl2',
 ] as const)('qualifies Hi-Z, SSR and exact histogram exposure on %s raster execution', async (backend) => {
-  const publication = await fetch('/shaders/manifest.json');
-  expect(publication.ok).toBe(true);
-  // Fresh JSON has one owner, matching ShaderRegistry's publication admission.
-  const manifest = (await readOwnedShaderManifestPublication(
-    await publication.json(),
-  )) as SsrShaderManifest;
+  const entries = await browserShaderEntries([
+    ...SSR_PROBE_SHADER_IDENTIFIERS,
+    'forgeax::depth-pyramid-seed-fragment',
+    'forgeax::depth-pyramid-reduce-fragment',
+    'forgeax::ssr-trace-fragment',
+    'forgeax::ssr-temporal-fragment',
+    'forgeax::ssr-compose-fragment',
+  ]);
   const find = (entry: string) => {
-    const source = manifest.entries.find(({ wgsl }) => wgsl.includes(`fn ${entry}(`))?.wgsl;
+    const source = entries.find(({ wgsl }) => wgsl.includes(`fn ${entry}(`))?.wgsl;
     if (source === undefined) throw new Error(`missing published ${entry}`);
     return source;
   };
   const sources = {
-    ...sourcesFromManifest(manifest),
+    ...sourcesFromManifest({ entries }),
     seedFragment: find('depth_pyramid_seed_fragment'),
     reduceFragment: find('depth_pyramid_reduce_fragment'),
     traceFragment: find('ssr_trace_fragment'),

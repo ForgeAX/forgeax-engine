@@ -457,7 +457,7 @@ describe('GpuScene', () => {
     created.scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     expect(plan.candidateCount).toBe(1);
     queue.writes.length = 0;
     const changedMaterial = {
@@ -468,7 +468,7 @@ describe('GpuScene', () => {
     source.material.adopt(changedMaterial);
     const delta = { ...projection.apply([]), materialUpdates: [source.material] };
     expect(topology.apply(delta)).toBe(false);
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(plan);
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(plan);
     created.scene.sync(delta).unwrap();
     const writes = queue.writes.filter((write) => write.buffer === created.scene.materialBuffer);
     expect(writes).toHaveLength(1);
@@ -1803,6 +1803,37 @@ describe('GpuScene', () => {
     });
   });
 
+  it('preserves the exact lighting mask next to resident primitive bounds', () => {
+    const queue = new RecordingQueue();
+    const created = GpuScene.create(createDevice(queue), 4).unwrap();
+    if (created.status !== 'available') throw new Error('RHI null must expose storage tables');
+    const projection = new RenderScene();
+    const minimum = [-1, -2, -3];
+    const maximum = [1, 2, 3];
+    const bounds = new Float32Array([...minimum, ...maximum]);
+    const masks = [0xffffffff, 0x80000001, 0];
+    created.scene
+      .sync(
+        projection.apply(
+          masks.map((lightingChannels, slot) =>
+            updateSnapshot({ ...snapshot(slot), localAabb: bounds, lightingChannels }),
+          ),
+        ),
+      )
+      .unwrap();
+
+    const layout = GPU_SCENE_LAYOUTS.primitive;
+    const min = gpuSceneFieldOffset(layout, 'localBoundsMin');
+    const max = gpuSceneFieldOffset(layout, 'localBoundsMax');
+    const channels = gpuSceneFieldOffset(layout, 'lightingChannels');
+    for (const [slot, mask] of masks.entries()) {
+      const row = primitiveView(queue, created.scene, slot);
+      expect(row.getUint32(channels, true)).toBe(mask);
+      expect([0, 1, 2].map((axis) => row.getFloat32(min + axis * 4, true))).toEqual(minimum);
+      expect([0, 1, 2].map((axis) => row.getFloat32(max + axis * 4, true))).toEqual(maximum);
+    }
+  });
+
   it('resets previous transform when a slot generation is recreated', () => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 1).unwrap();
@@ -2832,5 +2863,150 @@ it('publishes morph weights as per-row inputs beside shared Mesh deltas, uploadi
     expect(input(morphRow(1)).getUint32(8, true)).toBe(deltas);
   } finally {
     scene.dispose();
+  }
+});
+
+it('retains a late table destruction failure without unhandled rejection or blind retry', async () => {
+  const queue = new RecordingQueue();
+  const device = createDevice(queue);
+  const created = GpuScene.create(device, 4).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const projection = new RenderScene();
+  scene.sync(projection.apply([updateSnapshot(snapshot(1))])).unwrap();
+  const previous = scene.primitiveBuffer;
+  let finish!: () => void;
+  const covered = new Promise<undefined>((resolve) => {
+    finish = () => resolve(undefined);
+  });
+  const fence = vi.spyOn(queue, 'onSubmittedWorkDone').mockReturnValue(covered);
+  const failure = new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'injected old table failure',
+    hint: 'retain',
+  });
+  const native = device.destroyBuffer.bind(device);
+  const destroy = vi
+    .spyOn(device, 'destroyBuffer')
+    .mockImplementation((buffer) => (buffer === previous ? err(failure) : native(buffer)));
+  try {
+    scene
+      .sync(
+        projection.apply(
+          Array.from({ length: 32 }, (_, index) => updateSnapshot(snapshot(index + 2))),
+        ),
+      )
+      .unwrap();
+    finish();
+    await covered;
+    await Promise.resolve();
+    expect(() => scene.dispose()).toThrow('GPU table retirement remains unconfirmed');
+    expect(() => scene.dispose()).toThrow();
+    expect(destroy.mock.calls.filter(([buffer]) => buffer === previous)).toHaveLength(1);
+  } finally {
+    finish();
+    fence.mockRestore();
+    destroy.mockRestore();
+    projection.dispose();
+  }
+});
+
+it.each([
+  'error',
+  'throw',
+] as const)('attempts every private growth cleanup after upload %s while retaining the first failed allocation', (mode) => {
+  const queue = new RecordingQueue();
+  const device = createDevice(queue);
+  const created = GpuScene.create(device, 4).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const projection = new RenderScene();
+  scene.sync(projection.apply([updateSnapshot(snapshot(1))])).unwrap();
+  const targets: Buffer[] = [];
+  const nativeCreate = device.createBuffer.bind(device);
+  const create = vi.spyOn(device, 'createBuffer').mockImplementation((descriptor) => {
+    const result = nativeCreate(descriptor);
+    if (result.ok) targets.push(result.value);
+    return result;
+  });
+  const failure = new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'injected private cleanup failure',
+    hint: 'retain',
+  });
+  const nativeDestroy = device.destroyBuffer.bind(device);
+  const destroy = vi
+    .spyOn(device, 'destroyBuffer')
+    .mockImplementation((buffer) => (buffer === targets[0] ? err(failure) : nativeDestroy(buffer)));
+  const nativeWrite = queue.writeBuffer.bind(queue);
+  const write = vi.spyOn(queue, 'writeBuffer').mockImplementation((...args) => {
+    if (targets.length < 2) return nativeWrite(...args);
+    if (mode === 'throw') throw failure;
+    return err(failure);
+  });
+  try {
+    expect(
+      scene.sync(
+        projection.apply(
+          Array.from({ length: 32 }, (_, index) => updateSnapshot(snapshot(index + 2))),
+        ),
+      ).ok,
+    ).toBe(false);
+    expect(targets).toHaveLength(2);
+    for (const buffer of targets)
+      expect(destroy.mock.calls.filter(([target]) => target === buffer)).toHaveLength(1);
+    expect(() => scene.dispose()).toThrow();
+    expect(destroy.mock.calls.filter(([target]) => target === targets[0])).toHaveLength(1);
+  } finally {
+    create.mockRestore();
+    destroy.mockRestore();
+    write.mockRestore();
+    projection.dispose();
+  }
+});
+
+it('keeps suffix table writes dirty when an earlier ordinary upload fails', async () => {
+  const queue = new RecordingQueue();
+  const device = createDevice(queue);
+  const created = GpuScene.create(device, 4).unwrap();
+  assert(created.status === 'available');
+  const scene = created.scene;
+  const projection = new RenderScene();
+  scene.sync(projection.apply([updateSnapshot(snapshot(1))])).unwrap();
+  let task: import('../gpu-scene-capacity').GpuSceneCapacityPreparation | undefined;
+  const work = scene.prepareSourceCapacity(
+    Array.from({ length: 32 }, (_, index) => snapshot(index + 2)),
+    (value) => {
+      task = value;
+    },
+    () => true,
+  );
+  for (let step = 0; step < 1000; step++) if (work.next().done) break;
+  assert(task);
+  expect(task.isCurrent()).toBe(true);
+  const failure = new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'injected first-table write failure',
+    hint: 'retry',
+  });
+  const write = vi.spyOn(queue, 'writeBuffer').mockReturnValueOnce(err(failure));
+  try {
+    expect(
+      scene.sync(projection.apply([updateSnapshot({ ...snapshot(1, 5), shadowReceiver: false })]))
+        .ok,
+    ).toBe(false);
+    write.mockRestore();
+    task.step().unwrap();
+    expect(task.isCurrent()).toBe(false);
+    for (let step = 0; !task.isCurrent() && step < 10; step++) task.step().unwrap();
+    expect(task.isCurrent()).toBe(true);
+  } finally {
+    write.mockRestore();
+    await queue.onSubmittedWorkDone();
+    while (!task.retireStep()) {
+      /* no frame needed */
+    }
+    scene.dispose();
+    projection.dispose();
   }
 });

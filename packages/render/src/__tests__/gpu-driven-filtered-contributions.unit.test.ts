@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
+import { assemblePreparedPlan } from '../gpu-driven/production-raster-prepare';
 import {
   expectFilteredPlanContent as compare,
   createFilterPlanFixture,
@@ -10,8 +11,11 @@ it('retains the accepted publication and geometry arrays on an unchanged frame',
   const f = createFilterPlanFixture();
   const p = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const first = owner.update(p, f.bindings);
-  for (let frame = 0; frame < 60; frame++) expect(owner.update({ ...p }, f.bindings)).toBe(first);
+  const first = owner.update(p, f.bindings).active;
+  for (let frame = 0; frame < 60; frame++)
+    expect(
+      owner.update(assemblePreparedPlan(p.residentSource, p.residentRows), f.bindings).active,
+    ).toBe(first);
   expect(owner.lastWork).toMatchObject({
     projectedBatches: 0,
     projectedCandidates: 0,
@@ -24,10 +28,10 @@ it('rebuilds only changed material execution while retaining object partitions a
   const f = createFilterPlanFixture();
   const p = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const first = owner.update(p, f.bindings);
-  const next = {
-    ...p,
-    batchRows: p.batchRows.map((row, index) =>
+  const first = owner.update(p, f.bindings).active;
+  const next = assemblePreparedPlan(
+    p.residentSource,
+    p.residentRows.map((row, index) =>
       index === 1
         ? {
             ...row,
@@ -38,8 +42,8 @@ it('rebuilds only changed material execution while retaining object partitions a
           }
         : row,
     ),
-  };
-  const accepted = owner.update(next, f.bindings);
+  );
+  const accepted = owner.update(next, f.bindings).active;
   compare(accepted, freshFilteredPlan(next, f.bindings));
   expect(owner.lastWork).toMatchObject({
     projectedBatches: 1,
@@ -59,25 +63,28 @@ it('adopts replacement object-binding publications without changing their prior 
   const f = createFilterPlanFixture({ sharedGeometry: true });
   const p = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const first = owner.update(p, f.bindings);
+  const first = owner.update(p, f.bindings).active;
   const original = first.plan.batches.map((row) => row.candidates);
   const replacement = new Map(f.bindings);
   replacement.set('1', 'C');
-  const next = owner.update(p, replacement);
+  const next = owner.update(p, replacement).active;
   compare(next, freshFilteredPlan(p, replacement));
   expect(next.plan.batches).toHaveLength(3);
   expect(first.plan.batches.map((row) => row.candidates)).toEqual(original);
   expect(owner.lastWork.projectedCandidates).toBe(6);
-  compare(owner.update(p, f.bindings), freshFilteredPlan(p, f.bindings));
+  compare(owner.update(p, f.bindings).active, freshFilteredPlan(p, f.bindings));
 });
 
 it('advances source revision while preserving unchanged prepared rows', () => {
   const f = createFilterPlanFixture();
   const p = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const first = owner.update(p);
-  const next = { ...p, source: { ...p.source, revision: p.source.revision + 1 } };
-  const accepted = owner.update(next);
+  const first = owner.update(p).active;
+  const next = assemblePreparedPlan(
+    { ...p.residentSource, revision: p.residentSource.revision + 1 },
+    p.residentRows,
+  );
+  const accepted = owner.update(next).active;
   expect(accepted.plan.revision).toBe(next.source.revision);
   expect(first.plan.revision).toBe(p.source.revision);
   accepted.batches.forEach((row, index) => {

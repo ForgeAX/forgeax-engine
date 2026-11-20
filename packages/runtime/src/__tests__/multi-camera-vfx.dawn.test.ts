@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { verifyMultiCameraVfx } from './multi-camera-vfx.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -32,7 +32,7 @@ it('simulates shared World VFX and replays two Dawn camera views', {
   try {
     await verifyMultiCameraVfx({
       canvas,
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()),
+      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
       publication: false,
       warmupFrames: process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1' ? 12 : 60,
       cook: cookParticleCodeEffect,

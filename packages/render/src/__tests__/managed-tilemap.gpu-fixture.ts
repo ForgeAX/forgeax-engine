@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -48,7 +49,7 @@ export async function verifyRuntimeTilemap(
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
     { ...(mode === 'worker' ? { publicationSource: identity } : {}) },
-    { shaderManifestUrl: url },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
     loadRhiPack(
       { ...recorder.backend },
       {

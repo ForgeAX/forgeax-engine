@@ -660,6 +660,8 @@ export const Camera = defineComponent('Camera', {
   temperature: { type: 'f32', default: 6504 },
   tint: { type: 'f32', default: 0 },
   colorLut: { type: 'asset<texture>', default: 0 as never },
+  /** Runtime GPU-generated LUT. Takes precedence when both sources are assigned. */
+  generatedColorLut: { type: 'asset<gpu-texture>', default: 0 as never },
   colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
   // TAA only: 1 enables the Unreal TSR flickering temporal analysis
@@ -797,13 +799,14 @@ interface CameraColorGradingOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 
 function cameraColorGradingColumns(
   opts: CameraColorGradingOpts,
 ): ReturnType<typeof cameraExposureColumns> &
-  Pick<CameraData, 'temperature' | 'tint' | 'colorLut' | 'colorLutStrength'> {
+  Pick<CameraData, 'temperature' | 'tint' | 'colorLut' | 'generatedColorLut' | 'colorLutStrength'> {
   const exposure = opts.exposure ?? { kind: 'manual', multiplier: 1 };
   const temperature = opts.temperature ?? 6504;
   const tint = opts.tint ?? 0;
@@ -815,6 +818,7 @@ function cameraColorGradingColumns(
     temperature,
     tint,
     colorLut: opts.colorLut ?? (0 as CameraPod['colorLut']),
+    generatedColorLut: opts.generatedColorLut ?? (0 as CameraPod['generatedColorLut']),
     colorLutStrength,
   };
 }
@@ -866,6 +870,7 @@ interface CameraPerspectiveOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 
@@ -882,6 +887,7 @@ interface CameraOrthographicOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 

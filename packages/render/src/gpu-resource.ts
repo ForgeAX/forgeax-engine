@@ -82,6 +82,7 @@ export class GpuBuffer {
   // BUFFER_META_MAP. This local flag is a derived view written only on
   // the success branch of `device.destroyBuffer(...)`; charter §F1.
   private destroyed = false;
+  private destroyFailure: RhiError | undefined;
   private releaseScope: (() => void) | undefined;
 
   constructor(device: RhiDevice, handle: Buffer, scope?: DeviceScope) {
@@ -93,6 +94,11 @@ export class GpuBuffer {
       });
       this.releaseScope = () => scope._release(ref);
     }
+  }
+
+  /** First actual native destruction failure, retained across later owner cleanup. */
+  get destructionFailure(): RhiError | undefined {
+    return this.destroyFailure;
   }
 
   get isDestroyed(): boolean {
@@ -107,6 +113,7 @@ export class GpuBuffer {
    */
   destroy(): Result<void, RhiError> {
     const r = this.device.destroyBuffer(this.handle);
+    if (!r.ok) this.destroyFailure ??= r.error;
     if (r.ok) {
       this.destroyed = true;
       this.releaseScope?.();
@@ -136,6 +143,7 @@ export class GpuTexture {
   readonly device: RhiDevice;
   readonly handle: Texture;
   private destroyed = false;
+  private destroyFailure: RhiError | undefined;
   private releaseScope: (() => void) | undefined;
 
   constructor(device: RhiDevice, handle: Texture, scope?: DeviceScope) {
@@ -149,6 +157,11 @@ export class GpuTexture {
     }
   }
 
+  /** First actual native destruction failure, retained across later owner cleanup. */
+  get destructionFailure(): RhiError | undefined {
+    return this.destroyFailure;
+  }
+
   get isDestroyed(): boolean {
     return this.destroyed;
   }
@@ -159,6 +172,7 @@ export class GpuTexture {
    */
   destroy(): Result<void, RhiError> {
     const r = this.device.destroyTexture(this.handle);
+    if (!r.ok) this.destroyFailure ??= r.error;
     if (r.ok) {
       this.destroyed = true;
       this.releaseScope?.();

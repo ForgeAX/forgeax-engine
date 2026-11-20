@@ -64,6 +64,7 @@ it('uses current source imports with explicit shared rows instead of mixing a pa
     process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = manifest;
     const { forgeaxShader } = await import('../index.js');
     const plugin = forgeaxShader({
+      publication: 'compiled',
       engineEntries: { pointShadows: true },
       engineShaderRoots: [sources],
       materialPackages: [material],

@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -17,7 +17,7 @@ it('renders Unlit and PBR-Skin AO with exact rigid, masked and posed surface nor
     target.canvas,
     { rhi: recorder.backend.rhi },
     {
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()),
+      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
     },
   );
   if (!created.ok) throw created.error;

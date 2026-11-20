@@ -1,4 +1,7 @@
-import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
+import {
+  type MaterialCookRasterContext,
+  materialProgramContextKey,
+} from '@forgeax/engine-pack/material-cook';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../assembly/shader-prewarm-policy';
 import { atmosphereAvailable } from '../environment/capability';
@@ -8,24 +11,31 @@ interface MaterialContextProjection {
   readonly materialContext: MaterialCookRasterContext;
 }
 
+const ownedContextKeys = new WeakMap<MaterialCookRasterContext, string>();
+
+/** Borrowed contexts can change. Render's own frozen definitions keep their canonical key. */
+export function renderMaterialContextKey(context: MaterialCookRasterContext): string {
+  return ownedContextKeys.get(context) ?? materialProgramContextKey(context);
+}
+
 function materialContextDefinition(
   backend: MaterialCookRasterContext['backend'],
   capability: MaterialCookRasterContext['capability'],
   visibleSurface: boolean,
 ): MaterialContextProjection {
-  return Object.freeze({
-    materialContext: Object.freeze({
-      backend,
-      capability,
-      pipeline: 'forward',
-      geometry: 'mesh',
-      pass: 'forward',
-      profile: 'forgeax-material-wgsl-v1',
-      toolchain: 'naga-oil',
-      instrumentation: 'none',
-      ...(visibleSurface ? { visibleSurface: true } : {}),
-    }),
+  const materialContext = Object.freeze<MaterialCookRasterContext>({
+    backend,
+    capability,
+    pipeline: 'forward',
+    geometry: 'mesh',
+    pass: 'forward',
+    profile: 'forgeax-material-wgsl-v1',
+    toolchain: 'naga-oil',
+    instrumentation: 'none',
+    ...(visibleSurface ? { visibleSurface: true } : {}),
   });
+  ownedContextKeys.set(materialContext, materialProgramContextKey(materialContext));
+  return Object.freeze({ materialContext });
 }
 
 function materialContextPair(

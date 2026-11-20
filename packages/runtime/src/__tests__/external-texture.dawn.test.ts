@@ -4,7 +4,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, MeshFilter, MeshRenderer, type RenderError } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { createServer } from 'vite';
 import { expect, it } from 'vitest';
 import {
@@ -19,7 +19,7 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 const SIZE = 64;
 const EPSILON = Math.round(0.05 * 255);
 const EVIDENCE = 'artifacts/pr-evidence/external-texture-video';
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 function halves(device: GPUDevice, top: number[], bottom: number[], usage = 0x04 | 0x02) {
   const texture = device.createTexture({

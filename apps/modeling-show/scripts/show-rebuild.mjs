@@ -24,7 +24,6 @@ import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   acquirePidLock,
   branchFailure,
@@ -74,8 +73,6 @@ const dryRun = args.includes('--dry-run');
 const MIN_FREE_GB = Number(process.env.FORGEAX_SHOW_MIN_FREE_GB ?? 16);
 const ENGINE_REFRESH_HOURS = Number(process.env.FORGEAX_SHOW_ENGINE_REFRESH_HOURS ?? 6);
 const FULL_JOURNEY_HOURS = Number(process.env.FORGEAX_SHOW_FULL_JOURNEY_HOURS ?? 3);
-/** Packaged engine shader profile of `forgeax project package` (no point shadows, with SSAO). */
-const SHADER_PROFILE = 'base-ssao';
 /** Engine packages that only build, cook or package (never in the page's runtime bundle). */
 const BUILD_SIDE = new Set([
   'devkit', 'import', 'pack', 'ddc', 'shader-compiler', 'naga', 'vfx-compiler', 'mesh-io', 'image',
@@ -260,25 +257,7 @@ function prepareEngine(lane, head) {
   lane.heavy(['pnpm', 'build:engine']);
 }
 
-/**
- * The package build reuses the packaged engine shader profile instead of compiling every engine
- * shader from source (about 80 s per build). Prepare it only when its recorded source digest is
- * not the current one: the same check the shader plugin makes before trusting the profile.
- */
-async function prepareShaderProfile(lane) {
-  const plugin = join(lane.repo, 'packages/vite-plugin-shader/dist');
-  const { engineShaderSourceDigest, PACKAGED_SOURCE_RECORD } = await import(pathToFileURL(join(plugin, 'source-digest.mjs')).href);
-  let recorded;
-  try {
-    recorded = JSON.parse(readFileSync(join(plugin, 'engine-inputs', SHADER_PROFILE, PACKAGED_SOURCE_RECORD), 'utf8')).shaderSourceDigest;
-  } catch {
-    recorded = undefined;
-  }
-  const current = engineShaderSourceDigest(join(lane.repo, 'packages/shader/src'));
-  if (current !== undefined && recorded === current) return;
-  log('shader profile', SHADER_PROFILE, 'prepare');
-  lane.heavy(['node', 'scripts/forgeax/prepare-shader-release-inputs.mjs', '--build', '--profile', SHADER_PROFILE]);
-}
+
 
 /** Subjects whose Show project is newer than the checkout (a subject added mid-cycle) need the current Show app. */
 function overlayShowApp(lane) {
@@ -296,7 +275,6 @@ async function prepareLane(lane, job) {
   lane.buildEngine = job.useHead ? job.engineHead : lane.sh('git', ['rev-parse', 'HEAD']);
   prepareEngine(lane, lane.buildEngine);
   overlayShowApp(lane);
-  await prepareShaderProfile(lane);
 }
 
 /** The geometry sources the project's Show program declares (subject name -> source line), via the program table. */

@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { OIT_SIZE, verifyOit, verifyOitFog } from './oit.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 function dawnCanvas() {
   let texture: GPUTexture | undefined;

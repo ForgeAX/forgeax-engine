@@ -16,7 +16,7 @@ import {
   type PluginPackFailure,
 } from '../errors.js';
 import type { HttpArtifactCompression } from '../http-artifact.js';
-import type { PluginPackInternalOptions } from '../plugin-contract.js';
+import type { PluginPackInternalOptions, PluginPackSourceProgress } from '../plugin-contract.js';
 import { projectRuntimeDiagnostics } from '../runtime-diagnostics.js';
 import type { DispatcherServer, MiddlewareDispatcher } from './dispatcher.js';
 import { createMiddlewareDispatcher } from './dispatcher.js';
@@ -114,6 +114,7 @@ export interface PluginServerCallbacks {
     declarations?: ReadonlyMap<string, ScanSourceDeclaration>,
     signal?: AbortSignal,
     runtimeBinding?: RuntimeAssetBinding,
+    onProgress?: (event: PluginPackSourceProgress) => void,
   ): Promise<readonly PackIndexEntry[]>;
   ensureMetaImport(
     metaPath: string,
@@ -197,6 +198,7 @@ export function createPluginServer(context: PluginServerContext) {
   };
   const productionBridge: ProductionBridge = createProductionBridge({
     producerReadiness: opts.producerReadiness,
+    onProgress: opts.onProgress,
     enginePackageRoot: opts.enginePackageRoot,
     takeInitialSourceSnapshot: opts.takeInitialSourceSnapshot,
     ignorePath: opts.ignorePath,

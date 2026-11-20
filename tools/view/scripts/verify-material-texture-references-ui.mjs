@@ -35,6 +35,19 @@ try {
   assert.equal(await page.locator('.material-texture-reference').count(), 3);
   const headings = page.locator('.material-properties-body > .fx-inspector-form > .fx-inspector-form__group > .fx-collapsible > .fx-collapsible__heading > .fx-collapsible__trigger');
   assert.deepEqual((await headings.allTextContents()).map(text => text.trim()), ['Material facts', 'Texture references', 'Passes']);
+  const readsBeforeLocaleChange = await page.evaluate(() => globalThis.materialTexturesFixture.calls.length);
+  await thumb.evaluate(element => { globalThis.retainedTextureThumbnail = element; });
+  await fixture('setLocale', 'zh');
+  await first.getByRole('button', { name: '更多引用操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '复制 GUID', exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await thumb.evaluate(element => element === globalThis.retainedTextureThumbnail), true,
+    'locale changes retain the admitted asset reference and thumbnail');
+  assert.equal(await page.evaluate(() => globalThis.materialTexturesFixture.calls.length), readsBeforeLocaleChange,
+    'locale changes do not restart resource reads');
+  await page.locator('#app').screenshot({ path: resolve(output, 'references-zh.png') });
+  await fixture('setLocale', 'en');
+  await first.getByRole('button', { name: 'More reference actions', exact: true }).waitFor();
   const openCount = () => page.evaluate(() => globalThis.materialTexturesFixture.calls.filter(call => call.operation === 'asset.open').length);
   await first.getByRole('textbox').dblclick(); await thumb.click(); assert.equal(await openCount(), 0);
   await thumb.dblclick(); assert.equal(await openCount(), 1);

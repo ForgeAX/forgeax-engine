@@ -132,7 +132,7 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   topology.rebuild(scene.slotsSnapshot());
   const executions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
   const meshes = new Map<GpuDrivenBatchBinding, MeshGpuHandles>();
-  for (const batch of topology.query(topology.sourcePlan(), undefined).batches) {
+  for (const batch of topology.query(topology.sourcePlan(), undefined).active.batches) {
     assert(batch.binding);
     executions.set(batch.binding, { forward: direct, shadow: direct });
     meshes.set(batch.binding, mesh);
@@ -150,7 +150,7 @@ it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances',
     ...Array.from({ length: count }, (_, index) => source(index)),
     source(count, [2, 1]),
   ]);
-  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const batches = plan.batches.map((batch) => {
     assert(batch.binding);
     if (batch.binding.drawItemIndex === 0) {
@@ -193,7 +193,7 @@ it('uses fixed executions, preserves source instances and rejects recycled slots
   const value = source(7);
   const f = setup([value]);
   const state = {
-    plan: f.topology.query(f.topology.sourcePlan(), undefined),
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
     slotAt: f.scene.slotAt,
     drawSnapshotAt: f.scene.drawSnapshotAt,
     unbatchedSlots: f.topology.unbatchedSlots,
@@ -214,13 +214,13 @@ it('uses fixed executions, preserves source instances and rejects recycled slots
 it('publishes unbatched additions/removals even when GPU plan revision does not change', () => {
   const f = setup([]);
   const before = f.topology.unbatchedSlots;
-  const revision = f.topology.query(f.topology.sourcePlan(), undefined).revision;
+  const revision = f.topology.query(f.topology.sourcePlan(), undefined).active.revision;
   const value = { ...source(3), gpuDrivenDraws: [] };
   f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 3, snapshot: value }]));
   const added = f.topology.unbatchedSlots;
   expect([...before]).toEqual([]);
   expect([...added]).toEqual([f.scene.slot(3)?.slot]);
-  expect(f.topology.query(f.topology.sourcePlan(), undefined).revision).toBe(revision);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active.revision).toBe(revision);
   expect(f.topology.unbatchedSlots).toBe(added);
   f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 3 }]));
   expect([...f.topology.unbatchedSlots]).toEqual([]);
@@ -255,7 +255,7 @@ it('prepares only unbatched geometry and keeps Terrain sections distinct', () =>
   );
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -318,7 +318,7 @@ it.each([
   f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 7, snapshot: next }]));
   const shadow = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -353,7 +353,7 @@ it('does not revive a source that the Scene drawable owner withheld', () => {
   const prepare = vi.fn(() => []);
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: () => undefined,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -381,7 +381,7 @@ it('prepares nine-slice geometry once per shared direct binding from its fixed m
     passes: [{ name: 'Forward', program: { module: 'forgeax_material::sprite-lit' } }],
     paramSnapshot: { slicesAndMode: [0.1, 0.1, 0.1, 0.1] },
   };
-  for (const batch of f.topology.query(f.topology.sourcePlan(), undefined).batches) {
+  for (const batch of f.topology.query(f.topology.sourcePlan(), undefined).active.batches) {
     assert(batch.binding);
     f.executions.set(batch.binding, { forward: direct, shadow: { ...direct, material: fixed } });
     f.meshes.set(batch.binding, base);
@@ -389,7 +389,7 @@ it('prepares nine-slice geometry once per shared direct binding from its fixed m
   const prepare = vi.fn(() => sliced);
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -432,7 +432,7 @@ it('records native view geometry without re-admitting its non-drawing source roo
   );
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -471,7 +471,7 @@ it('reprojects retained instance LOD runs when the camera moves without changing
   for (const binding of f.meshes.keys()) f.meshes.set(binding, resident);
   const phase = new DirectDrawPhase();
   const state = {
-    plan: f.topology.query(f.topology.sourcePlan(), undefined),
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
     slotAt: f.scene.slotAt,
     drawSnapshotAt: f.scene.drawSnapshotAt,
     unbatchedSlots: f.topology.unbatchedSlots,

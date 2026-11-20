@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { ensureShaderManifestProfile } from '../../../../../scripts/lib/shader-manifest.mjs';
 import { defineSystem } from "@forgeax/engine-ecs";
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
@@ -154,9 +153,8 @@ const mockCanvas = {
 
 // --- 3. Shader manifest ---
 
-await ensureShaderManifestProfile('point-ssao');
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest({ pointShadows: true });
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest({ pointShadows: true });
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

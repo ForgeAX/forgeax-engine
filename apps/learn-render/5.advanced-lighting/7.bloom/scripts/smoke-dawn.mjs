@@ -21,7 +21,7 @@ import { existsSync } from 'node:fs';
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
-import { readShaderManifestText } from '../../../../../scripts/lib/shader-manifest.mjs';
+import { processShaderManifestUrl } from '../../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10));
@@ -220,9 +220,7 @@ if (!existsSync(DEMO_MANIFEST_PATH)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing at ${DEMO_MANIFEST_PATH}`);
   process.exit(1);
 }
-const demoManifest = JSON.parse(readShaderManifestText(DEMO_MANIFEST_PATH));
-const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(demoManifest)], { type: 'application/json' }));
-process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
+const MANIFEST_URL = processShaderManifestUrl(DEMO_MANIFEST_PATH);
 
 let renderer;
 let assets;

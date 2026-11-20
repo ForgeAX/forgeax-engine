@@ -16,6 +16,14 @@ export function validatePublicationReferences(
   row: PublicationRow | undefined,
   lookup: (guid: string) => PublicationRow | undefined,
 ): Result<void, AssetLoadError> {
+  return validatePublicationReferenceRoots([[guid, row]], lookup);
+}
+
+/** One synchronous observation of several roots; no visited/table state survives this call. */
+export function validatePublicationReferenceRoots(
+  roots: Iterable<readonly [string, PublicationRow | undefined]>,
+  lookup: (guid: string) => PublicationRow | undefined,
+): Result<void, AssetLoadError> {
   const visited = new Set<string>();
   const checkedEvidence = new Set<readonly AssetPublicationExternalEvidence[]>();
   // A large generated Pack shares one output table across all referenced rows.
@@ -46,6 +54,7 @@ export function validatePublicationReferences(
     return index.get(key);
   };
   const visit = (
+    guid: string,
     current: string,
     row: PublicationRow | undefined,
   ): Result<void, AssetLoadError> => {
@@ -77,10 +86,14 @@ export function validatePublicationReferences(
       }
     }
     for (const ref of findOutput(publication.outputs, current)?.refs ?? []) {
-      const result = visit(ref, lookup(ref));
+      const result = visit(guid, ref, lookup(ref));
       if (!result.ok) return result;
     }
     return ok(undefined);
   };
-  return visit(guid, row);
+  for (const [guid, row] of roots) {
+    const valid = visit(guid, guid, row);
+    if (!valid.ok) return valid;
+  }
+  return ok(undefined);
 }

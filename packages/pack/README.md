@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-pack
 
 ## Authoring diagnostics and discovery
@@ -27,6 +30,11 @@ Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and
 `PACK_AUTHORING_OPERATION_DESCRIPTORS` is the operation-semantic authority. Source operations may write; values/apply, rebuild and cold-cook require an inspected `expectedRevision`. Create, clone/import and draft operations retain their own identity and document revision contracts. DevKit projects this metadata into operation help and required inputs.
 
 ## Shared material program transport
+
+Ordinary `.pack.ts` materials publish a `material-template/1` contract and a
+content-addressed WGSL source library. Asset loading verifies the source
+artifact before making the contract available to Render. Runtime selection
+uses the current pass and renderer context to compile and cache the requested program.
 
 Player delivery may group complete WGSL artifacts into bounded Zstd streams.
 The existing stored `byteRange` locates a stream in an `FXBUNDL1` Bundle; optional
@@ -141,17 +149,18 @@ The Node-only `./build` entry exposes `AssetCliContext` and
 trailing LF. Source producers share these rules while retaining their own
 parsers, sidecar identity checks and filesystem writes.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
-Pack 承载 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-中的 cook/load 边界：producer 先发布含 `coordinateSet`、transform、
-`physicalUvScale`、artifact 与 `layoutIdentity` 的 receipt，再由 catalog 按 GUID
-提供给 runtime。identity 或 receipt 过期时 inspect producer evidence，修复后
-recook 并重新验证，不手改 cooked payload。
+Pack owns the cook/load boundary in
+`paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`:
+the producer first publishes a receipt containing `coordinateSet`, transform,
+`physicalUvScale`, artifact and `layoutIdentity`; catalog then serves it to runtime
+by GUID. When identity or receipts expire, inspect producer evidence, repair,
+recook and verify again. Never edit cooked payloads manually.
 
 > [!IMPORTANT]
-> Pack 是发布与证据边界，不是第二份 schema；恢复动作依赖结构化状态与 receipt，
-> 并沿 producer owner 回到源输入。
+> Pack is a publication and evidence boundary, not a second schema. Recovery uses
+> structured state and receipts and follows producer ownership back to source inputs.
 
 ## Authoring and recovery index
 
@@ -173,15 +182,16 @@ instances, isolated worker lifetimes, deferred content reads and complete final
 reference validation keep their existing owners. Direct Pack JSON plugin
 outputs remain explicit in their source entries.
 
-## ScriptablePack 与 Pack authoring
+## ScriptablePack and Pack Authoring
 
 A `terrain` ScriptablePack output supplies a validated `TerrainSource`. The terrain producer derives subsection meshes, height/control mips and Standard material arrays as one GUID-linked closure; the existing Pack cook, Catalog and runtime loader own publication. See [the terrain contract](../terrain/README.md) for bounds and layer semantics.
 
 > [!IMPORTANT]
-> 这里有两个一等 source 实体，且必须保持可见区别：`ScriptablePack` 是可执行的
-> `*.pack.ts` TypeScript source；`Pack` 是可编辑、可持久化的 `*.pack.json` JSON
-> source。参数化只是 ScriptablePack/Pack instance 的可选能力，不是第三种实体。
-> 构建后的 Pack v2 是 transport 产物；runtime 只按 GUID 加载产物。
+> Keep the two first-class source entities visibly distinct: `ScriptablePack` is
+> executable `*.pack.ts` TypeScript source; `Pack` is editable, persistable
+> `*.pack.json` JSON source. Parameterization is an optional capability of
+> ScriptablePack/Pack instances, not a third entity. Built Pack v2 is a transport
+> artifact; runtime loads artifacts by GUID only.
 
 The current authoring contract keeps one Pack identity and derives every output
 identity from the author-owned pair `(packageId, sourceKey)`:
@@ -284,15 +294,15 @@ keep strict whole-project admission, including global identity checks.
 reports only `identity`; `present` and `ready` require current materialization
 and validated Pack/artifact evidence respectively.
 
-## 灯光 Pack/Catalog 入口
+## Lighting Pack/Catalog Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. scene Pack 只保存 `RectAreaLight`、`SpotLight`、`LightProbe` 的 authored 字段，并把 `iesProfile`/`cookie` 写入 `refs`。
-2. `IesProfileAsset` 由 `iesImporter` 在 build-time 生成 fixed cooked payload；`SpotLight.cookie` 仍是普通 `TextureAsset`。
-3. runtime 按 GUID 读取 Catalog/Pack 记录；`current`、`accepted`、`lastKnownGood`、`verified` 分层检查，缺失时回到 producer 重建。
+1. Scene Packs retain authored `RectAreaLight`, `SpotLight` and `LightProbe` fields and put `iesProfile`/`cookie` into `refs`.
+2. `iesImporter` produces a fixed cooked `IesProfileAsset` payload at build time; `SpotLight.cookie` remains an ordinary `TextureAsset`.
+3. Runtime reads Catalog/Pack records by GUID. Check `current`, `accepted`, `lastKnownGood` and `verified` separately; return to the producer to rebuild missing evidence.
 
-Pack 是 published 边界，不是 author authority、runtime registry 或 GPU owner。源文件与 Meta 保留 authored identity，DDC/Catalog 是可丢弃或可重建的 projection；`sourceKey` 只表达 producer 语义，不是 URL 替身。
+Pack is the published boundary, not authoring authority, a runtime registry or a GPU owner. Source files and Meta retain authored identity; DDC/Catalog are disposable or rebuildable projections. `sourceKey` expresses producer semantics and is not a URL substitute.
 
 ## Material contract index
 
@@ -426,10 +436,12 @@ generated descriptor file.
 
 Put the material payload in the package `assets[]` row and keep its `refs[]` graph complete. The `passes`, `values`, `parent`, and texture `coordinates` remain one authored route. A valid cooked material record contains `resolved`, `refs`, `artifact`, and `receipt`. If any part is absent, recover by fixing the producer payload or re-running the cook; this is the recovery route. Then repeat `lookup/verify --guid --project --catalog --json`.
 
-当 `parameters` 将字段声明为 `texture` 时，`values` 可保留纹理 GUID 字符串简写；省略
-`parameters` 的默认材质也只对 `MATERIAL_TEXTURE_SLOTS` 中的纹理槽启用该简写。只有
-sampler、强度或非默认坐标等附加元数据才使用结构化纹理对象。坐标字段的省略由运行时
-统一解析为 identity，但 cook/load 不得把 identity 坐标自动展开并写回创作 payload。
+When `parameters` declares a `texture` field, `values` can retain the texture GUID
+string shorthand. Default materials without `parameters` enable it only for texture
+slots in `MATERIAL_TEXTURE_SLOTS`. Structured texture objects carry additional
+metadata such as sampler, intensity or nondefault coordinates. Runtime resolves
+omitted coordinates to identity; cook/load must not expand and write identity
+coordinates back into authored payloads.
 
 > [!IMPORTANT]
 > The producer publishes facts; the consumer does not guess. `packageId`,
@@ -836,7 +848,12 @@ When `kind: 'material'`, the `payload` object carries `passes[]` + `values` (fea
 | `values` | `Record<string, unknown>` | Child-owned values, including per-slot texture coordinates. |
 | `parent` | `AssetGuid` | Optional serialized parent edge. |
 
-**Validation** is performed by the material schema and build-time cook. The cook resolves the parent chain, validates values and pass programs, and emits a `material-cook/5` record, artifact, references, and receipt. The receipt keeps material, source, layout, program, pipeline, publication, and cook identities together with compiler/WASM provenance and generation counters. Runtime reports a structured missing-cook error instead of compiling a material; stale generations are recooked by the producer.
+**Validation** starts with the material schema and the Pack producer. The
+producer resolves the parent chain and validates values. Scriptable Packs
+publish the resolved source template. Compiled publications emit a
+`material-cook/5` record, artifacts, references and receipt. The receipt binds
+material, source, layout, program, pipeline and publication identities to
+compiler/WASM provenance and generation counters.
 
 Raster program contexts distinguish `storage-buffer-minimum`,
 `storage-buffer-projector`, `storage-buffer`, `storage-buffer-atmosphere` and

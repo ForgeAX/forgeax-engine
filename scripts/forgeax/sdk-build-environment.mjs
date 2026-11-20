@@ -1,4 +1,8 @@
-import { runnerResources, shaderProducerHeapSize } from '../lib/runner-resources.mjs';
+import {
+  runnerResources,
+  shaderProducerCompileWorkers,
+  shaderProducerHeapSize,
+} from '../lib/runner-resources.mjs';
 
 /** Keep the SDK's cold declaration and profile children inside one runner budget. */
 export function sdkBuildEnvironment(environment = process.env, resources = runnerResources()) {
@@ -10,6 +14,8 @@ export function sdkBuildEnvironment(environment = process.env, resources = runne
     ]
       .filter(Boolean)
       .join(' '),
-    FORGEAX_SHADER_COMPILE_WORKERS: '1',
+    FORGEAX_SHADER_COMPILE_WORKERS: String(
+      shaderProducerCompileWorkers(resources, environment.FORGEAX_SHADER_COMPILE_WORKERS),
+    ),
   };
 }

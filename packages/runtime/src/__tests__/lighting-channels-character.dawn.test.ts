@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -20,7 +20,7 @@ it('keeps character fill while removing it from the visible environment in both 
       { rhi: recorder.backend.rhi },
       {
         shaderManifestUrl: shaderManifestUrl(
-          await buildEngineShaderManifest({ pointShadows: true }),
+          await buildEngineShaderTemplateManifest({ pointShadows: true }),
         ),
       },
     ),

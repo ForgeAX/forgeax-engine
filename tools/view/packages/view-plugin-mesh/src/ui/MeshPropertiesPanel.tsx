@@ -34,7 +34,7 @@ export function MeshPropertiesPanel({
 }
 
 function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   useEffect(() => () => reader.dispose(), [reader]);
@@ -105,12 +105,12 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
       <PanelHeader start={<span className="mesh-properties-name" title={name}><strong>{name}</strong></span>} />
       <div className="mesh-properties-body">
       {binding?.publication && <dl className="mesh-bound-identity">
-        <div><dt>Bound generation</dt><dd>{binding.publication.generation}</dd></div>
-        <div><dt>Bound digest</dt><dd title={binding.publication.digest}>{binding.publication.digest}</dd></div>
+          <div><dt>{t('mesh.boundGeneration')}</dt><dd>{binding.publication.generation}</dd></div>
+          <div><dt>{t('mesh.boundDigest')}</dt><dd title={binding.publication.digest}>{binding.publication.digest}</dd></div>
       </dl>}
-      <InspectorForm assetActions={assetActions} groups={groups.slice(0, splitAt)} />
+      <InspectorForm locale={locale} assetActions={assetActions} groups={groups.slice(0, splitAt)} />
       {slots && <MeshMaterialSlots client={client} reader={reader} workspace={workspace} slots={slots} assetActions={assetActions} />}
-      <InspectorForm assetActions={assetActions} groups={groups.slice(splitAt)} />
+      <InspectorForm locale={locale} assetActions={assetActions} groups={groups.slice(splitAt)} />
       </div>
     </div>
   );

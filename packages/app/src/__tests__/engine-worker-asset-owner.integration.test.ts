@@ -25,7 +25,10 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async () => {
     return assets;
   };
   return {
-    createPublicationAssets: async () => createAssets(),
+    stagePublicationAssets: () => {
+      const assets = createAssets();
+      return { assets, ready: Promise.resolve(assets.shaderRegistry) };
+    },
     constructRuntimeRendererHost: async () => {
       const assets = createAssets();
       return ok({

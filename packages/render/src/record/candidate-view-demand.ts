@@ -4,8 +4,8 @@ import { CAMERA_VIEW_DEFAULTS, cameraViewExtent } from '../components/camera-vie
 import type { MaterialResource } from '../material-resource';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
-import type { MeshPipelinePreparation } from '../publication/contract';
-import type { RenderPublicationReceiver } from '../publication/receiver';
+import type { MeshPipelinePreparation, RenderPublicationMetadata } from '../publication/contract';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type { LightRoster, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { resolveCameraTarget } from '../render-system-extract';
@@ -38,9 +38,14 @@ import {
   visibleSurfacePipelineDemand,
 } from './view-pipeline-demand';
 
-export type AcceptedViewDemandSource = NonNullable<
-  ReturnType<RenderPublicationReceiver['borrowAcceptedDemand']>
->;
+export interface AcceptedViewDemandSource {
+  readonly metadata: Pick<
+    RenderPublicationMetadata,
+    'cameras' | 'lights' | 'reflectionProbes' | 'skylight'
+  >;
+  readonly resources: RenderResourceScope;
+  isCurrent(): boolean;
+}
 
 export interface CandidateViewDemand {
   readonly selectionCamera: ScenePassSelectionCamera;
@@ -56,14 +61,12 @@ export interface CandidateViewDemand {
   /** Only validates this synchronous borrow. A lease must call the reader again. */
   sourceCurrent(): boolean;
 }
-
 export interface CandidateViewDemandInput {
   readonly world?: World;
   readonly materials: MaterialFrame;
   readonly preparation: MeshPipelinePreparation;
   readonly view?: EntityHandle;
 }
-
 function candidateSceneInput(input: CandidateViewDemandInput) {
   // Novel pass families require the ordinary graph producer. Candidate ids are local to this recipe.
   if (
@@ -300,8 +303,6 @@ function currentAcceptedScene(owner: ViewSettlementOwner, accepted: AcceptedView
   );
   return lights === undefined ? undefined : { lights };
 }
-
-/** Derive actual demand from the accepted source and its already-adopted persistent products. */
 export function readCandidateViewDemand(
   owner: ViewSettlementOwner,
   accepted: AcceptedViewDemandSource,

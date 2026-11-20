@@ -387,3 +387,89 @@ it('keeps numeric scopes separate from handle generations and sweeps exact ident
   scope.retire();
   expect(scope.resourceDelta()).toBe(0);
 });
+
+it('transfers exact private texture cleanup before a preparation wrapper throws', async () => {
+  const { store, scope, world } = await setup();
+  const source = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
+  let captured: import('../device/gpu-residency').GraphTextureResidencyPreparation | undefined;
+  const failure = Error('consumer failed after texture preparation');
+  try {
+    expect(() => {
+      store
+        .prepareTextureResidencyForGraph(handle, source, worldRenderResources(world), (value) => {
+          captured = value;
+        })
+        .unwrap();
+      throw failure;
+    }).toThrow(failure);
+    assert(captured);
+    expect(captured.current()).toBe(true);
+    expect(store.getTextureGpuView(handle, worldRenderResources(world))).toBeUndefined();
+    await captured.lease.release(false);
+    expect(captured.entry.texture.isDestroyed).toBe(true);
+    expect(captured.entry.texture.destructionFailure).toBeUndefined();
+  } finally {
+    store.destroyAll();
+    scope.retire();
+  }
+});
+
+it('keeps the actual texture destruction Result failure observable after lease release', async () => {
+  const { store, scope, world, device } = await setup();
+  const source = texture();
+  const handle = runtimeAssetRegistry(world.assets).create(source).unwrap();
+  const prepared = store
+    .prepareTextureResidencyForGraph(handle, source, worldRenderResources(world))
+    .unwrap();
+  const { RhiError, err } = await import('@forgeax/engine-rhi');
+  const failure = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'physical texture retirement',
+    hint: 'retain this exact failed allocation',
+  });
+  const destroy = vi.spyOn(device, 'destroyTexture').mockReturnValueOnce(err(failure));
+  try {
+    await prepared.lease.release(false);
+    expect(prepared.entry.texture.isDestroyed).toBe(false);
+    expect(prepared.entry.texture.destructionFailure).toBe(failure);
+    prepared.entry.texture.destroy().unwrap();
+    expect(prepared.entry.texture.isDestroyed).toBe(true);
+    expect(prepared.entry.texture.destructionFailure).toBe(failure);
+  } finally {
+    destroy.mockRestore();
+    if (!prepared.entry.texture.isDestroyed) prepared.entry.texture.destroy().unwrap();
+    store.destroyAll();
+    scope.retire();
+  }
+});
+
+it('prepares fixed texture copies with an explicit checked revision without weakening ordinary identity proof', async () => {
+  const { store, scope, world, device } = await setup();
+  const handle = runtimeAssetRegistry(world.assets).create(texture()).unwrap();
+  const source = worldRenderResources(world);
+  const version = source.assetRevision(handle);
+  assert(version !== undefined);
+  const copied = structuredClone(source.resolveAsset<TextureAsset>(handle).unwrap());
+  const ordinary = store.prepareTextureResidencyForGraph(handle, copied, source).unwrap();
+  expect(ordinary.entry.receipt.sourceRevision).toBeUndefined();
+  await ordinary.lease.release(false);
+  const create = vi.spyOn(device, 'createTexture');
+  try {
+    expect(
+      store.prepareTextureResidencyForGraph(handle, copied, source, undefined, version + 1).ok,
+    ).toBe(false);
+    expect(create).not.toHaveBeenCalled();
+    const fixed = store
+      .prepareTextureResidencyForGraph(handle, copied, source, undefined, version)
+      .unwrap();
+    expect(fixed.entry.receipt.sourceRevision).toBe(version);
+    expect(store.getTextureGpuView(handle, source)).toBeUndefined();
+    await fixed.lease.release(false);
+    expect(fixed.entry.texture.isDestroyed).toBe(true);
+  } finally {
+    create.mockRestore();
+    store.destroyAll();
+    scope.retire();
+  }
+});

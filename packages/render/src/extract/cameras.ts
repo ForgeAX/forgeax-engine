@@ -156,6 +156,13 @@ function cameraSceneEffects(
   };
 }
 
+function readCameraColorLut(world: World, entity: EntityHandle): number {
+  return (
+    Number(world[worldRead].getFieldValue(entity, Camera, 'generatedColorLut')) ||
+    Number(world[worldRead].getFieldValue(entity, Camera, 'colorLut'))
+  );
+}
+
 function buildCameraSnapshots(world: World, selection: ActiveCamera | undefined): CameraSnapshot[] {
   const cameras: CameraSnapshot[] = [];
   const override = viewpointSelection(world, selection);
@@ -212,9 +219,7 @@ function buildCameraSnapshots(world: World, selection: ActiveCamera | undefined)
       const camTarget = world[worldRead].getFieldValue(entity, Camera, 'target') as ShapeOf<
         SchemaOf<typeof Camera>
       >['target'];
-      const camColorLut = world[worldRead].getFieldValue(entity, Camera, 'colorLut') as ShapeOf<
-        SchemaOf<typeof Camera>
-      >['colorLut'];
+      const camColorLut = readCameraColorLut(world, entity);
       const camProjectionOffset = readRenderArrayView(
         world,
         entity,

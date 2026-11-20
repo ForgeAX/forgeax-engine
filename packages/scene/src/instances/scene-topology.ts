@@ -15,46 +15,82 @@ export function sceneTopoSort(
   if (!world.frameArena.isActive)
     return world.withFrameArena(() => ok(sceneTopoSort(world, nodes))).unwrap();
   const n = nodes.length;
-  const childrenOf: number[][] = Array.from({ length: n }, () => []);
   const indeg = world.frameArena.alloc(Uint32Array, n).unwrap();
   indeg.fill(0);
   const visited = world.frameArena.alloc(Uint8Array, n).unwrap();
   visited.fill(0);
-  collectParentEdges(nodes, childrenOf, indeg);
+  const steps = sceneTopoSortWithStorage(nodes, indeg, visited, false);
+  let next = steps.next();
+  while (!next.done) next = steps.next();
+  return next.value;
+}
+
+/** Owned scratch may span continuations; no FrameArena view escapes a frame. */
+export function* sceneTopoSortSteps(
+  nodes: readonly CompiledSceneEntity[],
+): Generator<void, readonly number[], void> {
+  yield;
+  return yield* sceneTopoSortWithStorage(
+    nodes,
+    new Uint32Array(nodes.length),
+    new Uint8Array(nodes.length),
+    true,
+  );
+}
+
+function* sceneTopoSortWithStorage(
+  nodes: readonly CompiledSceneEntity[],
+  indeg: Uint32Array,
+  visited: Uint8Array,
+  incremental: boolean,
+): Generator<void, readonly number[], void> {
+  const n = nodes.length;
+  const childrenOf: number[][] = Array.from({ length: n }, () => []);
+  yield* collectParentEdgesSteps(nodes, childrenOf, indeg, incremental);
   const order: number[] = [];
   const queue: number[] = [];
-  for (let i = 0; i < n; i += 1) if ((indeg[i] ?? 0) === 0) queue.push(i);
-  while (queue.length > 0) {
-    const head = queue.shift();
+  for (let i = 0; i < n; i += 1) {
+    if (incremental) yield;
+    if ((indeg[i] ?? 0) === 0) queue.push(i);
+  }
+  let cursor = 0;
+  while (cursor < queue.length) {
+    if (incremental) yield;
+    const head = queue[cursor++];
     if (head === undefined) break;
     order.push(head);
     visited[head] = 1;
     for (const c of childrenOf[head] ?? []) {
+      if (incremental) yield;
       indeg[c] = (indeg[c] ?? 0) - 1;
       if ((indeg[c] ?? 0) === 0) queue.push(c);
     }
   }
   // Append any nodes left unvisited (defensive — cycle would surface here).
   for (let i = 0; i < n; i += 1) {
+    if (incremental) yield;
     if (visited[i] === 0 && nodes[i] !== undefined) order.push(i);
   }
   return order;
 }
 
 /** Build parent adjacency once before Kahn traversal. */
-function collectParentEdges(
+function* collectParentEdgesSteps(
   nodes: readonly CompiledSceneEntity[],
   childrenOf: number[][],
   indeg: Uint32Array,
-): void {
+  incremental: boolean,
+): Generator<void, void, void> {
   const n = nodes.length;
   const localIdToIdx = new Map<number, number>();
   for (let i = 0; i < n; i += 1) {
+    if (incremental) yield;
     const node = nodes[i];
     if (node === undefined) continue;
     localIdToIdx.set(node.localId as unknown as number, i);
   }
   for (let i = 0; i < n; i += 1) {
+    if (incremental) yield;
     const node = nodes[i];
     if (node === undefined) continue;
     const child = node.components.ChildOf;

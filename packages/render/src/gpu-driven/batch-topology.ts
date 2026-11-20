@@ -8,6 +8,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
+import { TreeFrame } from '../scene/frame-tree-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame } from '../scene/mesh-frame';
 import { hasRasterDemand } from '../scene/raster-demand';
@@ -16,8 +17,13 @@ import { projectedHeight as measureProjectedHeight } from '../scene/visibility/l
 import { type BatchGeometry, captureBatchGeometry } from './batch-execution';
 import { batchVisibleSpan } from './batch-layout';
 import { BatchSources, MemberCandidates } from './batch-members';
+import {
+  BatchResidency,
+  type RenderResidencyGroup,
+  type RenderResidencySelection,
+} from './batch-residency';
 import { inheritTaskHeaders } from './fixed-task-plan';
-import { MeshBatchProjection } from './mesh-batches';
+import { MeshBatchProjection, type MeshExecutionPlans } from './mesh-batches';
 import type { PreparedGpuDrivenDraw } from './prepared-draw';
 import {
   type RowMaterialGroup,
@@ -53,6 +59,8 @@ export interface GpuDrivenBatchBinding {
 export interface GpuDrivenBatchKey {
   readonly drawItemIndex?: number;
   readonly assetHandle: number;
+  /** Source-local residency partition; distinct groups never share a candidate domain. */
+  readonly residencyGroup?: number;
   readonly drawKind: 'indexed' | 'non-indexed';
   readonly first: number;
   readonly count: number;
@@ -153,6 +161,34 @@ export interface SubmissionPlan {
   readonly visibleCapacity: number;
   /** The canonical source root precedes per-view Mesh execution expansion. */
   readonly sourceGroups?: BatchSources;
+  /** Source-only execution selection over this exact resident source baseline. */
+  readonly resident?: SubmissionPlan;
+}
+
+/** Fixed definition whose membership currency is proved by its issuing topology. */
+export interface ResidentGroupPlan {
+  readonly plan: SubmissionPlan;
+  matches(current: SubmissionPlan): boolean;
+}
+
+const residentGroupPlans = new WeakMap<ResidentGroupPlan, RenderResidencyGroup>();
+
+export function matchesResidentGroupPlan(
+  captured: ResidentGroupPlan,
+  plan: SubmissionPlan,
+  current: SubmissionPlan,
+): boolean {
+  return residentGroupPlans.has(captured) && captured.plan === plan && captured.matches(current);
+}
+
+/** Constrain an already-resolved native contribution to the issuing group's partition. */
+export function matchesResidentGroupBatch(
+  captured: ResidentGroupPlan,
+  plan: SubmissionPlan,
+  batch: GpuDrivenBatch,
+): boolean {
+  const group = residentGroupPlans.get(captured);
+  return group !== undefined && captured.plan === plan && batch.key.residencyGroup === group.id;
 }
 
 /** Actual view work, including source-only selector plans before receipt preparation. */
@@ -415,6 +451,7 @@ function sameEligibleInputs(a: RenderableSnapshot, b: RenderableSnapshot): boole
     a.lods === b.lods &&
     a.lodHysteresis === b.lodHysteresis &&
     a.authorVisible === b.authorVisible &&
+    a.residencyGroup === b.residencyGroup &&
     a.skinBinding === b.skinBinding &&
     (a.localAabb === undefined) === (b.localAabb === undefined) &&
     a.morph === undefined &&
@@ -476,6 +513,9 @@ function eligibleDrawsUncached(
       key: {
         ...first.key,
         drawItemIndex: 0,
+        ...(snapshot.residencyGroup === undefined
+          ? {}
+          : { residencyGroup: snapshot.residencyGroup.id }),
         ...(rowClass === undefined ? {} : { rowMaterial: true as const }),
         materialResourceClass:
           rowClass ??
@@ -563,6 +603,9 @@ export function eligibleGpuDrivenDraws(
       key: {
         drawItemIndex,
         assetHandle: snapshot.assetHandle,
+        ...(snapshot.residencyGroup === undefined
+          ? {}
+          : { residencyGroup: snapshot.residencyGroup.id }),
         drawKind: draw.kind,
         first: draw.first,
         count: draw.count,
@@ -652,6 +695,7 @@ function membershipProjectionUncached(
               draw.binding.geometry.deformation,
               draw.key.materialResourceClass,
               draw.key.morph === true,
+              draw.key.residencyGroup,
             ]),
     })),
   };
@@ -736,6 +780,9 @@ export function projectedHeightForSnapshot(
 export class BatchTopology {
   private readonly batches = new Map<string, MutableBatch>();
   private sources = new BatchSources();
+  // Both roots borrow the same published batches. A gate edit touches only its indexed batches.
+  private activeSources = this.sources;
+  private readonly sourceBatchesByGroup = new Map<number, Set<number>>();
   private readonly changedBatches = new Set<MutableBatch>();
   private readonly membershipByPrimitive = new MembershipColumn();
   /** Geometry rows without native batch membership; a fixed set diffs against earlier frames. */
@@ -755,13 +802,19 @@ export class BatchTopology {
   private candidateAdds = 0;
   private candidateRemoves = 0;
   private cachedPlan: SubmissionPlan | undefined;
+  private executionPlan: SubmissionPlan | undefined;
+  private readonly residency = new BatchResidency(() => this.health === 'ready');
   private readonly meshBatches = new MeshBatchProjection();
 
   rebuild(slots: FrameList<RenderSceneSlot>): void {
     try {
       this.meshBatches.reset();
+      this.executionPlan = undefined;
+      this.residency.reset();
       this.batches.clear();
       this.sources = new BatchSources();
+      this.activeSources = this.sources;
+      this.sourceBatchesByGroup.clear();
       this.changedBatches.clear();
       this.membershipByPrimitive.clear();
       this.unbatched = new FrameSet();
@@ -772,10 +825,16 @@ export class BatchTopology {
       for (let batchId = this.generationByBatchId.length - 1; batchId >= 0; batchId -= 1) {
         this.freeBatchIds.push(batchId);
       }
-      for (const slot of slots) this.add(slot);
+      const pendingMembers = new Map<MutableBatch, GpuDrivenBatchMember | GpuDrivenBatchMember[]>();
+      for (const slot of slots) this.add(slot, undefined, undefined, pendingMembers);
+      for (const [batch, members] of pendingMembers)
+        batch.members = Array.isArray(members)
+          ? MemberCandidates.fromMembers(members)
+          : batch.members.with(members);
       this.revision += 1;
       this.rebuilds += 1;
       this.cachedPlan = undefined;
+      this.executionPlan = undefined;
       this.health = 'ready';
     } catch (cause) {
       this.fail(cause);
@@ -787,6 +846,7 @@ export class BatchTopology {
     try {
       let changed = false;
       let topologyChanged = false;
+      this.residency.beginDelta(delta);
       for (const removed of delta.removedSlots) {
         const removedChanged = this.remove(removed.slot);
         changed = removedChanged || changed;
@@ -798,25 +858,9 @@ export class BatchTopology {
         changed = removedChanged || addedChanged || changed;
         topologyChanged = removedChanged || addedChanged || topologyChanged;
       }
-      // Membership depends on source descriptors and instance cardinality.
-      // Root matrices feed visibility without changing this dependency.
-      const contentUpdatedSlots = delta.contentUpdatedSlots;
-      const instanceUpdatedSlots = delta.instanceUpdatedSlots;
-      const membershipUpdates = new Map<number, { slot: RenderSceneSlot; content: boolean }>();
-      for (const slot of contentUpdatedSlots) {
-        membershipUpdates.set(slot.slot, { slot, content: true });
-      }
-      // Instance cardinality is a membership input, including in mixed updates.
-      for (const slot of instanceUpdatedSlots) {
-        if (!membershipUpdates.has(slot.slot)) {
-          membershipUpdates.set(slot.slot, { slot, content: false });
-        }
-      }
-      for (const update of membershipUpdates.values()) {
-        const moved = this.updateMembership(update.slot, update.content);
-        changed = moved !== 'none' || changed;
-        topologyChanged = moved === 'topology' || topologyChanged;
-      }
+      const impact = this.applyMembershipUpdates(delta);
+      changed = impact !== 'none' || changed;
+      topologyChanged = impact === 'topology' || topologyChanged;
       for (const slot of delta.createdSlots) {
         const addedChanged = this.add(slot);
         changed = addedChanged || changed;
@@ -826,11 +870,35 @@ export class BatchTopology {
         this.revision += 1;
         this.patches += 1;
         this.cachedPlan = undefined;
+        this.executionPlan = undefined;
       }
       return changed;
     } catch (cause) {
       this.fail(cause);
     }
+  }
+
+  private applyMembershipUpdates(delta: RenderSceneApplyResult): 'none' | 'content' | 'topology' {
+    let impact: 'none' | 'content' | 'topology' = 'none';
+    // Membership depends on source descriptors and instance cardinality.
+    // Root matrices feed visibility without changing this dependency.
+    const contentUpdatedSlots = delta.contentUpdatedSlots;
+    const instanceUpdatedSlots = delta.instanceUpdatedSlots;
+    const membershipUpdates = new Map<number, { slot: RenderSceneSlot; content: boolean }>();
+    for (const slot of contentUpdatedSlots) {
+      membershipUpdates.set(slot.slot, { slot, content: true });
+    }
+    // Instance cardinality is a membership input, including in mixed updates.
+    for (const slot of instanceUpdatedSlots) {
+      if (!membershipUpdates.has(slot.slot)) {
+        membershipUpdates.set(slot.slot, { slot, content: false });
+      }
+    }
+    for (const update of membershipUpdates.values()) {
+      const moved = this.updateMembership(update.slot, update.content);
+      if (moved === 'topology' || impact === 'none') impact = moved;
+    }
+    return impact;
   }
 
   /** Re-project one slot's membership; a stable projection patches its members in place. */
@@ -936,6 +1004,7 @@ export class BatchTopology {
         this.revision += 1;
         this.patches += 1;
         this.cachedPlan = undefined;
+        this.executionPlan = undefined;
       }
       return changed;
     } catch (cause) {
@@ -943,17 +1012,106 @@ export class BatchTopology {
     }
   }
 
-  /**
-   * Publish the immutable plan. Clean batches keep their frozen object while
-   * their aligned visible base is unchanged, so downstream per-batch memos
-   * survive unrelated membership edits.
-   */
-  sourcePlan(): SubmissionPlan {
+  /** Source-local owner capability; the initial execution intent is closed. */
+  createResidencyGroup(): RenderResidencyGroup {
+    if (this.health !== 'ready') throw this.health.cause;
+    return this.residency.create();
+  }
+
+  /** The same gate observation drives material demand and batch selection. */
+  captureResidencySelection(): RenderResidencySelection {
+    if (this.health !== 'ready') throw this.health.cause;
+    return this.residency.captureSelection();
+  }
+
+  /** Resident data qualification does not change when execution gates toggle. */
+  captureResidentSelection(): RenderResidencySelection {
+    if (this.health !== 'ready') throw this.health.cause;
+    return this.residency.captureSelection('resident');
+  }
+
+  hasResidencyGroup(group: RenderResidencyGroup): boolean {
+    return this.health === 'ready' && this.residency.owns(group);
+  }
+
+  /** Compare only this fixed group's source/physical facts; unrelated edits keep their owners. */
+  captureResidencyGroupPlan(
+    group: RenderResidencyGroup,
+    plan: SubmissionPlan,
+  ): ResidentGroupPlan | undefined {
+    if (
+      !this.hasResidencyGroup(group) ||
+      !this.meshBatches.isResidentPlan(plan) ||
+      plan.sourceGroups !== this.residentSourcePlan().batches ||
+      !(plan.batches instanceof TreeFrame)
+    )
+      return undefined;
+    const claimRevision = this.residency.claimRevision(group);
+    let sources = plan.sourceGroups;
+    let executions = plan.batches;
+    if (sources === undefined) return undefined;
+    const captured = Object.freeze({
+      plan,
+      matches: (current: SubmissionPlan) => {
+        if (
+          !this.hasResidencyGroup(group) ||
+          this.residency.claimRevision(group) !== claimRevision ||
+          !this.meshBatches.isResidentPlan(current) ||
+          current.sourceGroups !== this.residentSourcePlan().batches ||
+          current.sourceGroups === undefined ||
+          !(current.batches instanceof TreeFrame)
+        )
+          return false;
+        let changed = false;
+        const inspect = (before: GpuDrivenBatch | undefined, after: GpuDrivenBatch | undefined) => {
+          if (before?.key.residencyGroup === group.id || after?.key.residencyGroup === group.id)
+            changed = true;
+        };
+        current.sourceGroups.changesSince(sources, inspect);
+        current.batches.changesSince(executions, inspect);
+        if (changed) return false;
+        // Only an already-proved equivalent immutable root becomes the next diff baseline.
+        sources = current.sourceGroups;
+        executions = current.batches;
+        return true;
+      },
+    });
+    residentGroupPlans.set(captured, group);
+    return captured;
+  }
+
+  /** Internal execution intent only; this is not a preparation/commit receipt. */
+  setResidencyGroupActive(group: RenderResidencyGroup, active: boolean): void {
+    if (this.health !== 'ready') throw this.health.cause;
+    if (!this.residency.setActive(group, active)) return;
+    this.activeSources = this.selectGroup(this.activeSources, group.id, active);
+    this.executionPlan = undefined;
+  }
+
+  /** Forget only an empty group, after the same Scene delta retired every claim. */
+  retireResidencyGroup(group: RenderResidencyGroup): void {
+    this.residency.retire(group);
+    this.executionPlan = undefined;
+  }
+
+  /** Resident source facts retain inactive candidates, without claiming GPU readiness. */
+  residentSourcePlan(): SubmissionPlan {
     if (this.health !== 'ready') throw this.health.cause;
     try {
       if (this.cachedPlan === undefined) {
         this.planBuilds++;
-        for (const batch of this.changedBatches) this.publish(batch);
+        if (this.sources.length === 0 && this.changedBatches.size > 0) {
+          const { resident, active } = BatchSources.fromBatches(
+            this.initialSourceBatches(),
+            (batch) =>
+              batch.key.residencyGroup === undefined ||
+              this.residency.isActive(batch.key.residencyGroup),
+          );
+          this.sources = resident;
+          this.activeSources = active;
+        } else {
+          for (const batch of this.changedBatches) this.publish(batch);
+        }
         this.changedBatches.clear();
         this.cachedPlan = Object.freeze({
           revision: this.revision,
@@ -969,12 +1127,51 @@ export class BatchTopology {
     }
   }
 
+  /** The execution source is derived from the same resident batches, never re-admitted. */
+  sourcePlan(): SubmissionPlan {
+    const resident = this.residentSourcePlan();
+    if (this.activeSources.length === this.sources.length) {
+      this.executionPlan = undefined;
+      return resident;
+    }
+    this.executionPlan ??= this.selectSourcePlan(resident, this.activeSources);
+    return this.executionPlan;
+  }
+
+  /** Prospective demand only: preserve active rows and add exactly one closed group. */
+  preparationSourcePlan(group: RenderResidencyGroup): SubmissionPlan {
+    if (!this.hasResidencyGroup(group))
+      throw new Error('Preparation requires a live owned residency group');
+    const resident = this.residentSourcePlan();
+    if (this.residency.isActive(group.id)) return this.sourcePlan();
+    return this.selectSourcePlan(resident, this.selectGroup(this.activeSources, group.id, true));
+  }
+
+  private selectGroup(selected: BatchSources, group: number, active: boolean): BatchSources {
+    for (const batchId of this.sourceBatchesByGroup.get(group) ?? [])
+      selected = active ? selected.withPublished(this.sources, batchId) : selected.without(batchId);
+    return selected.length === this.sources.length ? this.sources : selected;
+  }
+
+  private selectSourcePlan(resident: SubmissionPlan, selected: BatchSources): SubmissionPlan {
+    return selected !== this.sources
+      ? Object.freeze({
+          revision: resident.revision,
+          batches: selected,
+          sourceGroups: selected,
+          candidateCount: selected.weight,
+          visibleCapacity: 0,
+          resident,
+        })
+      : resident;
+  }
+
   /** Actual execution owns draw expansion and physical output-window lifetime. */
   query(
     source: SubmissionPlan,
     meshes: MeshFrame | undefined,
     materials?: MaterialFrame,
-  ): SubmissionPlan {
+  ): MeshExecutionPlans {
     if (this.health !== 'ready') throw this.health.cause;
     try {
       return this.meshBatches.query(source, meshes, materials);
@@ -985,11 +1182,16 @@ export class BatchTopology {
 
   /** Maintained by geometry changes; material adoption never inspects primitives. */
   get completeGeometry(): boolean {
-    return this.unbatched.size === 0;
+    return this.unbatchedSlots.size === 0;
   }
 
   /** Geometry-only roster. Its publication changes independently of GPU batch membership. */
   get unbatchedSlots(): FrameSet {
+    return this.residency.selectUnbatched(this.unbatched);
+  }
+
+  /** Background preparation reads the complete resident residual footprint. */
+  get residentUnbatchedSlots(): FrameSet {
     return this.unbatched;
   }
 
@@ -1003,7 +1205,7 @@ export class BatchTopology {
   }
 
   inspect(): BatchTopologyInspection {
-    const plan = this.sourcePlan();
+    const plan = this.residentSourcePlan();
     const candidateCount = this.sources.weight;
     const resourceClasses = inspectResourceClassSplits(plan);
     return {
@@ -1030,9 +1232,12 @@ export class BatchTopology {
 
   private add(
     slot: RenderSceneSlot,
-    draws = eligibleDraws(slot, this.rowMaterials),
+    draws?: readonly EligibleGpuDrivenDraw[],
     projection?: MembershipProjection,
+    pendingMembers?: Map<MutableBatch, GpuDrivenBatchMember | GpuDrivenBatchMember[]>,
   ): boolean {
+    this.residency.admit(slot);
+    draws ??= eligibleDraws(slot, this.rowMaterials);
     if (draws.length === 0) {
       this.unbatched = hasRasterDemand(slot.snapshot)
         ? this.unbatched.with(slot.slot)
@@ -1075,15 +1280,20 @@ export class BatchTopology {
           draw.binding,
           draw.key.materialResourceClass,
         );
-      const previousCount = batch.members.length;
-      batch.contentEpoch += instanceCount - (previousCount === 0 ? 1 : 0);
-      batch.members = batch.members.with({
+      const pending = pendingMembers?.get(batch);
+      const firstMember = pending === undefined && batch.members.length === 0;
+      batch.contentEpoch += instanceCount - (firstMember ? 1 : 0);
+      const member = {
         primitiveIndex: slot.slot,
         generation: slot.generation,
         entityKey: slot.snapshot.entityKey,
         drawItemIndex: draw.sourceDrawIndex,
         instanceCount,
-      });
+      };
+      if (pendingMembers === undefined) batch.members = batch.members.with(member);
+      else if (pending === undefined) pendingMembers.set(batch, member);
+      else if (Array.isArray(pending)) pending.push(member);
+      else pendingMembers.set(batch, [pending, member]);
       this.candidateAdds += instanceCount;
       this.changedBatches.add(batch);
     }
@@ -1093,18 +1303,14 @@ export class BatchTopology {
 
   private fail(cause: unknown): never {
     this.cachedPlan = undefined;
+    this.executionPlan = undefined;
     this.health = { cause };
     throw cause;
   }
 
-  private publish(batch: MutableBatch): void {
+  private sourceBatch(batch: MutableBatch): GpuDrivenBatch {
     const candidates = batch.members;
-    if (this.sources.get(batch.batchId) !== undefined && !batch.bindingChanged) {
-      this.sources = this.sources.withMembers(batch.batchId, candidates, batch.contentEpoch);
-      this.batchesRebuilt++;
-      return;
-    }
-    const published: GpuDrivenBatch = Object.freeze({
+    return {
       batchId: batch.batchId,
       generation: batch.generation,
       key: batch.key,
@@ -1116,9 +1322,45 @@ export class BatchTopology {
       indirectOffset: 0,
       ...(batch.lod === undefined ? {} : { lod: batch.lod }),
       contentEpoch: batch.contentEpoch,
-    });
+    };
+  }
+
+  private indexSourceBatch(batch: MutableBatch): void {
+    const group = batch.key.residencyGroup;
+    if (group === undefined) return;
+    let ids = this.sourceBatchesByGroup.get(group);
+    if (ids === undefined) {
+      ids = new Set();
+      this.sourceBatchesByGroup.set(group, ids);
+    }
+    ids.add(batch.batchId);
+  }
+
+  private *initialSourceBatches(): IterableIterator<GpuDrivenBatch> {
+    for (const batch of this.changedBatches) {
+      this.indexSourceBatch(batch);
+      batch.bindingChanged = false;
+      this.batchesRebuilt++;
+      yield this.sourceBatch(batch);
+    }
+  }
+
+  private publish(batch: MutableBatch): void {
+    const candidates = batch.members;
+    const previous = this.sources;
+    const existing = previous.get(batch.batchId);
+    const group = batch.key.residencyGroup;
+    if (existing === undefined) this.indexSourceBatch(batch);
+    this.sources =
+      existing !== undefined && !batch.bindingChanged
+        ? previous.withMembers(batch.batchId, candidates, batch.contentEpoch)
+        : previous.with(this.sourceBatch(batch));
     batch.bindingChanged = false;
-    this.sources = this.sources.with(published);
+    if (group === undefined || this.residency.isActive(group))
+      this.activeSources =
+        this.activeSources === previous
+          ? this.sources
+          : this.activeSources.withPublished(this.sources, batch.batchId);
     this.batchesRebuilt++;
   }
 
@@ -1137,12 +1379,28 @@ export class BatchTopology {
       this.candidateRemoves += memberships.instanceCount;
       if (batch.members.memberCount === 0) {
         this.batches.delete(membership.batchText);
-        this.sources = this.sources.without(batch.batchId);
+        this.removePublished(batch);
         this.changedBatches.delete(batch);
         this.freeBatchIds.push(batch.batchId);
       } else this.changedBatches.add(batch);
     }
 
     return true;
+  }
+
+  private removePublished(batch: MutableBatch): void {
+    const previous = this.sources;
+    if (previous.get(batch.batchId) === undefined) return;
+    const group = batch.key.residencyGroup;
+    if (group !== undefined) {
+      const ids = this.sourceBatchesByGroup.get(group);
+      ids?.delete(batch.batchId);
+      if (ids?.size === 0) this.sourceBatchesByGroup.delete(group);
+    }
+    this.sources = previous.without(batch.batchId);
+    if (this.activeSources === previous) this.activeSources = this.sources;
+    else if (this.activeSources.get(batch.batchId) !== undefined)
+      this.activeSources = this.activeSources.without(batch.batchId);
+    if (this.activeSources.length === this.sources.length) this.activeSources = this.sources;
   }
 }

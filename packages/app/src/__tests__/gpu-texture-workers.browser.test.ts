@@ -2,6 +2,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import type {} from '../../../render/src/__tests__/texture-generators.commands';
+import { observeReadyPictures } from '../../__tests__/ready-picture-count';
 import localBootstrap from './gpu-texture-worker-bootstrap';
 
 async function color(canvas: HTMLCanvasElement) {
@@ -49,11 +50,10 @@ it('transports GPU-only texture recipes through real Engine and Render Workers a
   );
   if (!result.ok) throw new Error(JSON.stringify({ startup: result.error, messages }));
   const app = result.value;
+  const readyPictures = observeReadyPictures(canvas);
   try {
     app.start().unwrap();
-    await expect
-      .poll(() => app.execution.report().render?.completedFrame, { timeout: 60_000 })
-      .toBeGreaterThanOrEqual(60);
+    await expect.poll(() => readyPictures.count, { timeout: 60_000 }).toBeGreaterThanOrEqual(60);
     expect(messages).toContainEqual({ ready: true, cpuPixels: false });
     const initial = await color(canvas);
     expect(initial[0]).toBeGreaterThan(240);
@@ -69,6 +69,7 @@ it('transports GPU-only texture recipes through real Engine and Render Workers a
     expect(messages).toContainEqual({ updated: true, cpuPixels: false });
     expect(app.execution.report().fault).toBeNull();
   } finally {
+    readyPictures.dispose();
     (await app.dispose()).unwrap();
     channel.port1.close();
     canvas.remove();

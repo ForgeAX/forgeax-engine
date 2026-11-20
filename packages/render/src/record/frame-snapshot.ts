@@ -8,6 +8,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
+  BindGroupDescriptor,
   BindGroupEntry,
   BindGroupLayout,
   Buffer,
@@ -42,6 +43,7 @@ import type { SsrSpatialAdmission } from '../ssr/admission';
 import type { SsrHistoryOwner } from '../ssr/history';
 import type { TemporalGpuState } from '../temporal/gpu';
 import type { CpuLodSelection } from './cpu-lod';
+import type { GraphBindingViews } from './graph-binding-views';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 
 /** CPU transaction metadata staged beside the renderer-owned GPU candidate. */
@@ -85,8 +87,10 @@ export function instanceCollectionCacheKey(instance: {
  * after all explicit resource handles resolve to resident GPU objects.
  */
 export interface MaterialBgAssemblyCacheEntry {
-  /** Actual submitted bindings; no frame or World observation is retained. */
-  readonly bindingEntries: readonly BindGroupEntry[];
+  readonly graphViews?: GraphBindingViews;
+  readonly descriptor: BindGroupDescriptor & { readonly entries: readonly BindGroupEntry[] };
+  /** Accepted source and physical binding currency, without a frame or old table binding. */
+  readonly bindingsCurrent: () => boolean;
   readonly skylightBindingStart: number;
   /** Derived once on first observed hit; cold miss receipts stay detached. */
   iblMaterial?: IblBindingInspection['material'];
@@ -459,6 +463,7 @@ export interface FrameGraphTargets {
 export interface InstalledFrameGraph {
   readonly configurationRevision?: number | undefined;
   readonly waterFluidBodyDescriptor?: import('../water/fluid-graph').WaterFluidBodyDescriptorReader;
+  readonly prepareGpuDrivenSource?: import('../render-pipeline').RenderPipelineGpuDrivenProjection['prepareSource'];
   readonly scenePipelinePreparations?: readonly import('./scene-pipeline-preparation').ScenePipelinePreparation[];
   /** Pure demand from the same graph's retained shadow target/raster owner. */
   readonly requiresShadowPipelinePreparation?: (

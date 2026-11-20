@@ -61,6 +61,7 @@ export function emitGpuDrivenDrawReceipts(
 export function summarizeGpuDrivenDraws(
   renderables: FrameList<RenderableSnapshot>,
   selection: GpuDrawSelection,
+  admitsCpu: (source: RenderableSnapshot) => boolean = () => true,
 ): GpuDrawSummary {
   const deformationReasons = new Map<
     'skin-bounds-missing' | 'skin-address-missing' | 'resource-not-ready',
@@ -80,18 +81,21 @@ export function summarizeGpuDrivenDraws(
   for (const source of rasterRowsOf(renderables)) {
     if (!hasRasterDemand(source)) continue;
     const draws = source.gpuDrivenDraws;
+    const admitsCpuDraw = admitsCpu(source);
     let gpuDraws = 0;
     let cpuDraws = 0;
     for (let index = 0; index < Math.max(1, draws?.length ?? 0); index++) {
       const draw = draws?.[index];
-      summary.totalDraws++;
       if (draw !== undefined && selection.owns(source, draw, index)) {
         gpuDraws++;
         summary.gpuDraws++;
+        summary.totalDraws++;
         continue;
       }
+      if (!admitsCpuDraw) continue;
       cpuDraws++;
       summary.cpuDraws++;
+      summary.totalDraws++;
       if (draw?.preparationError?.detail.owner === 'skin') {
         const reason =
           draw?.preparationError?.detail.reason === 'skin-address-missing'

@@ -26,3 +26,10 @@ export {
   validateMaterialCookProgramContext,
   withMaterialPublicationGeneration,
 } from './evidence/material-cook.js';
+export {
+  MATERIAL_TEMPLATE_SOURCES_MEDIA_TYPE,
+  type MaterialTemplatePublication,
+  type MaterialTemplateSources,
+  readMaterialTemplateSources,
+  validateMaterialTemplatePublication,
+} from './evidence/material-template.js';

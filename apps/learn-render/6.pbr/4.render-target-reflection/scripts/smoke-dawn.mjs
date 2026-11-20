@@ -158,9 +158,9 @@ globalThis.cancelAnimationFrame = (id) => {
 let now = 0;
 globalThis.performance.now = () => now;
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const { buildProjectShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const demoDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const manifest = await buildEngineShaderManifest({
+const manifest = await buildProjectShaderTemplateManifest({
   materialPackages: [resolve(demoDir, 'src/cube-reflection.pack.json')],
 });
 const shaderManifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));

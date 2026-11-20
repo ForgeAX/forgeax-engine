@@ -13,7 +13,7 @@ import type { RetainedRowFacts } from './frame-list';
 import { FrameSet } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
 import { meshDrawSnapshot } from './mesh-draw';
-import { MeshFrame } from './mesh-frame';
+import { MeshFrame, type MeshGeometry } from './mesh-frame';
 import {
   boundsFromArray,
   cullingDisplacementRadius,
@@ -28,11 +28,19 @@ import type {
   RenderSceneBounds,
   RenderSceneOperation,
   RenderSceneSlot,
+  ReservedSceneRow,
+  SceneRowGeometry,
 } from './render-scene-types';
 import type { RowContent } from './row-contents';
 import { RowContents } from './row-contents';
 import { scenePoseChunk, scenePoseOffset, stageScenePoses } from './scene-pose-admission';
-import { reflectedPose, type SceneSlotFrame, SceneSlots } from './scene-slots';
+import {
+  reflectedPose,
+  type SceneGeneratedSource,
+  type SceneSlotFrame,
+  type SceneSlotReservation,
+  SceneSlots,
+} from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
 /**
@@ -43,6 +51,16 @@ import type { SkinSceneFrame } from './skin-scene-inputs';
 const BOUNDS_SCRATCH = new Float64Array(6);
 /** Consumed before the next derivation: copied into the column and the caller's box. */
 const WORLD_BOUNDS_SCRATCH: RenderSceneBounds = { min: [0, 0, 0], max: [0, 0, 0] };
+
+/** Exact original publication facts, not a currentness or resource-residency authority. */
+const publications = new WeakMap<ReservedSceneRow, WeakRef<RenderSceneSlot>>();
+
+export function sceneRowPublicationMatches(
+  source: ReservedSceneRow,
+  record: RenderSceneSlot,
+): boolean {
+  return publications.get(source)?.deref() === record;
+}
 
 class RowBounds {
   /** Row version that proved each box; 0 = none. */
@@ -135,6 +153,13 @@ export interface WorldTransformSpan {
   readonly rows?: readonly number[];
 }
 
+export interface SceneRowPreparation {
+  readonly row: ReservedSceneRow;
+  isCurrent(): boolean;
+  publish(geometry?: SceneRowGeometry): RenderSceneApplyResult;
+  release(): void;
+}
+
 const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
   created: 0,
   updated: 0,
@@ -175,6 +200,8 @@ function localDisplacedBounds(
  * and a `RenderSceneSlot` is a read view built on request. Views keep only
  * view-private derived state over these rows.
  */
+export type SceneRowWriteAccess = Pick<SceneRows, 'prepareRow' | 'apply'>;
+
 export class SceneRows {
   private meshes = new MeshFrame();
   /** Holder counts per Mesh handle; numeric keys, no per-row key string. */
@@ -191,10 +218,115 @@ export class SceneRows {
   /** Commit-local pending identities by live slot; emptied when each commit ends. */
   private readonly pendingBySlot: (PendingIdentity | number | undefined)[] = [];
   private committing = false;
+  private readonly preparedRows = new Map<number, SceneRowPreparation>();
 
   constructor(private source?: RenderResourceScope) {}
   setSource(source: RenderResourceScope | undefined): void {
     this.source = source;
+  }
+
+  /** Reserve identity without accepting content, geometry, a journal change or a view row. */
+  prepareRow(snapshot: RenderableSnapshot): SceneRowPreparation {
+    const entityKey = snapshot.entityKey;
+    this.assertUnreserved(entityKey);
+    if (this.committing || this.lookup(entityKey) !== undefined)
+      throw new Error('Scene row preparation requires an absent identity and an idle owner');
+    const owned = Object.freeze(ownSnapshot(snapshot));
+    if (owned.entityKey !== entityKey) throw new Error('Scene row identity changed during capture');
+    this.assertUnreserved(entityKey);
+    if (this.committing || this.lookup(entityKey) !== undefined)
+      throw new Error('Scene row preparation changed during source capture');
+    const allocation = this.slots.reserve();
+    let scope: { owner: SceneRows; row: ReservedSceneRow } | undefined = {
+      owner: this,
+      row: Object.freeze({
+        entityKey,
+        slot: allocation.slot,
+        generation: allocation.generation,
+        snapshot: owned,
+      }),
+    };
+    const current = () =>
+      scope?.owner.preparedRows.get(entityKey) === api && allocation.isCurrent();
+    const api: SceneRowPreparation = Object.freeze({
+      get row() {
+        if (scope === undefined) throw new Error('Scene row preparation is closed');
+        return scope.row;
+      },
+      isCurrent: current,
+      publish: (publication?: SceneRowGeometry) => {
+        const target = scope;
+        if (target === undefined || !current() || target.owner.committing)
+          throw new Error('Scene row preparation is not current');
+        target.owner.committing = true;
+        try {
+          const geometry =
+            publication === undefined
+              ? undefined
+              : target.owner.publicationGeometry(target.row, publication);
+          if (scope !== target || !current())
+            throw new Error('Scene row preparation changed during geometry qualification');
+          const source = target.row.snapshot;
+          const record = target.owner.allocate(
+            source,
+            source.transform.world,
+            0,
+            allocation,
+            geometry,
+          );
+          publications.set(target.row, new WeakRef(record));
+          target.owner.revisionValue++;
+          target.owner.preparedRows.delete(entityKey);
+          scope = undefined;
+          return {
+            ...EMPTY_APPLY,
+            created: 1,
+            createdSlots: [record],
+            journal: target.owner.slots.journal,
+          };
+        } finally {
+          target.owner.committing = false;
+        }
+      },
+      release: () => {
+        const target = scope;
+        if (
+          target?.owner.preparedRows.get(entityKey) === api &&
+          target.owner.lookup(entityKey) !== undefined
+        )
+          throw new Error('A partially published Scene row retains its cleanup responsibility');
+        allocation.release();
+        if (target?.owner.preparedRows.get(entityKey) === api)
+          target.owner.preparedRows.delete(entityKey);
+        scope = undefined;
+      },
+    });
+    this.preparedRows.set(entityKey, api);
+    return api;
+  }
+
+  private assertUnreserved(entityKey: number): void {
+    if (this.preparedRows.has(entityKey))
+      throw new Error('Scene identity belongs to an unpublished row preparation');
+  }
+
+  private publicationGeometry(row: ReservedSceneRow, publication: SceneRowGeometry): MeshGeometry {
+    const { source, geometry } = publication;
+    const scope = this.source;
+    const handle = row.snapshot.assetHandle;
+    if (source !== row || handle !== geometry.handle || scope === undefined)
+      throw new Error('Prepared Scene publication does not match its reserved source');
+    const revision = scope.assetRevision(handle);
+    const accepted = this.meshes.get(handle);
+    const provenance = geometry.source;
+    if (
+      this.source !== scope ||
+      provenance?.identity !== scope.identity ||
+      provenance.revision !== revision ||
+      (accepted !== undefined && accepted !== geometry)
+    )
+      throw new Error('Prepared Scene geometry is not the current canonical source');
+    return geometry;
   }
 
   get revision(): number {
@@ -221,22 +353,59 @@ export class SceneRows {
   }
 
   private setMesh(handle: number, mesh: MeshAsset | undefined): void {
-    this.meshes = mesh === undefined ? this.meshes.without(handle) : this.meshes.with(handle, mesh);
-    this.slots.setMeshLods(
-      handle,
-      mesh === undefined ? undefined : (this.meshes.get(handle)?.lods?.length ?? 0) > 0,
-    );
+    const before = this.meshes;
+    const scope = this.source;
+    const revision = mesh === undefined ? undefined : scope?.assetRevision(handle);
+    const resolved = revision === undefined ? undefined : scope?.resolveAsset<MeshAsset>(handle);
+    const provenance =
+      scope !== undefined && revision !== undefined && resolved?.ok && resolved.value === mesh
+        ? { identity: scope.identity, revision }
+        : undefined;
+    const captured = before.get(handle);
+    const sameSource =
+      provenance !== undefined &&
+      captured?.source?.identity === provenance.identity &&
+      captured.source.revision === provenance.revision &&
+      captured.materials.length === 0;
+    const next =
+      mesh === undefined
+        ? before.without(handle)
+        : sameSource
+          ? before
+          : before.with(handle, mesh, undefined, provenance);
+    const lods = mesh === undefined ? undefined : (next.get(handle)?.lods?.length ?? 0) > 0;
+    if (
+      this.meshes !== before ||
+      this.source !== scope ||
+      (revision !== undefined && scope?.assetRevision(handle) !== revision)
+    )
+      throw new Error('Scene Mesh ownership changed during geometry capture');
+    this.slots.setMeshLods(handle, lods);
+    this.meshes = next;
   }
 
-  private acquireMesh(assetHandle: number | undefined): void {
+  private acquireMesh(assetHandle: number | undefined, geometry?: MeshGeometry): void {
     if (assetHandle === undefined) return;
     const holders = this.meshHolders.get(assetHandle) ?? 0;
-    this.meshHolders.set(assetHandle, holders + 1);
-    if (holders > 0) return;
+    if (holders > 0) {
+      this.meshHolders.set(assetHandle, holders + 1);
+      return;
+    }
+    if (geometry !== undefined) {
+      this.meshes = this.meshes.withGeometry(geometry);
+      this.slots.setMeshLods(assetHandle, (geometry.lods?.length ?? 0) > 0);
+      this.meshHolders.set(assetHandle, 1);
+      return;
+    }
     const scope = this.source;
-    if (scope === undefined) return;
-    const asset = scope.resolveAsset<MeshAsset>(assetHandle);
-    if (asset.ok && asset.value.kind === 'mesh') this.setMesh(assetHandle, asset.value);
+    const before = this.meshes;
+    if (scope !== undefined) {
+      const asset = scope.resolveAsset<MeshAsset>(assetHandle);
+      if (this.source !== scope || this.meshes !== before)
+        throw new Error('Scene Mesh ownership changed during asset resolution');
+      if (asset.ok && asset.value.kind === 'mesh') this.setMesh(assetHandle, asset.value);
+    }
+    this.meshHolders.set(assetHandle, 1);
   }
 
   private releaseMesh(assetHandle: number | undefined): void {
@@ -280,7 +449,7 @@ export class SceneRows {
     return this.slots.freeCount;
   }
 
-  hasSource(kind: 'terrain' | 'glyph' | 'tilemap'): boolean {
+  hasSource(kind: SceneGeneratedSource): boolean {
     return this.slots.hasSource(kind);
   }
 
@@ -300,6 +469,9 @@ export class SceneRows {
     memory?: World,
   ): RenderSceneApplyResult {
     if (operations.length === 0 && spans.length === 0) return EMPTY_APPLY;
+    for (const operation of operations)
+      if (operation.kind === 'update' && operation.snapshot !== undefined)
+        this.assertUnreserved(operation.entityKey);
     if (owned && operations.length === 0 && memory !== undefined)
       return this.commitTransformSpans(spans, memory);
 
@@ -325,6 +497,9 @@ export class SceneRows {
               : { instances: ownInstances(operation.instances) }),
           };
         });
+    for (const operation of preparedOperations)
+      if (operation.kind === 'update' && operation.snapshot !== undefined)
+        this.assertUnreserved(operation.entityKey);
     return this.commit(preparedOperations, spans);
   }
 
@@ -631,7 +806,11 @@ export class SceneRows {
   /** Reconcile the current identity set while retaining slots for survivors. */
   reconcile(snapshots: Iterable<RenderableSnapshot>): void {
     const desired = new Map<number, RenderableSnapshot>();
-    for (const snapshot of snapshots) desired.set(snapshot.entityKey, ownSnapshot(snapshot));
+    for (const snapshot of snapshots) {
+      this.assertUnreserved(snapshot.entityKey);
+      desired.set(snapshot.entityKey, ownSnapshot(snapshot));
+    }
+    for (const entity of desired.keys()) this.assertUnreserved(entity);
     for (const slot of this.slots.capture()) {
       if (slot === undefined) continue;
       if (!desired.has(slot.entityKey)) this.release(slot.slot);
@@ -663,6 +842,7 @@ export class SceneRows {
 
   /** Release every row. */
   dispose(): void {
+    this.preparedRows.clear();
     this.slots.clear();
     this.contents.clear();
     this.bounds = new RowBounds();
@@ -678,20 +858,48 @@ export class SceneRows {
     snapshot: RenderableSnapshot,
     pose: ArrayLike<number> = snapshot.transform.world,
     poseOffset = 0,
+    reservation?: SceneSlotReservation,
+    geometry?: MeshGeometry,
   ): RenderSceneSlot {
     const content = this.contents.acquire(snapshot);
-    this.acquireMesh(content.assetHandle);
-    const { slot, generation } = this.slots.allocate();
-    const record = this.slots.write(slot, {
-      entityKey: snapshot.entityKey,
-      generation,
-      content,
-      pose,
-      poseOffset,
-    });
-    this.bounds.invalidate(slot);
-    this.updatePreparation(slot, content);
-    return record;
+    const before = this.meshes;
+    let acquired = false;
+    let after = before;
+    let address: Pick<SceneSlotReservation, 'slot' | 'generation'> | undefined = reservation;
+    try {
+      this.acquireMesh(content.assetHandle, geometry);
+      acquired = true;
+      after = this.meshes;
+      address ??= this.slots.allocate();
+      const { slot, generation } = address;
+      const write = { entityKey: snapshot.entityKey, generation, content, pose, poseOffset };
+      const record =
+        reservation === undefined ? this.slots.write(slot, write) : reservation.publish(write);
+      this.bounds.invalidate(slot);
+      this.updatePreparation(slot, content);
+      return record;
+    } catch (cause) {
+      // A written/unknown row retains its content, Mesh and address responsibility.
+      if (address !== undefined && this.slots.content(address.slot) !== undefined) throw cause;
+      const failures = [cause];
+      const restore = this.meshes === after;
+      if (acquired) {
+        try {
+          this.releaseMesh(content.assetHandle);
+        } catch (cleanup) {
+          failures.push(cleanup);
+        }
+      }
+      try {
+        this.contents.release(content);
+      } catch (cleanup) {
+        failures.push(cleanup);
+      }
+      if (restore && failures.length === 1) this.meshes = before;
+      if (failures.length > 1)
+        throw new AggregateError(failures, 'Scene row allocation and rollback failed', { cause });
+      throw cause;
+    }
   }
 
   private release(slot: number): void {

@@ -10,6 +10,7 @@ export function gpuDrivenMeshesForFrame(
   internals: RenderSystemInternals,
   sourceScope: RenderResourceScope,
   scene: Pick<PersistentGpuDrivenState, 'plan' | 'meshes'> | undefined,
+  policy: 'prepare' | 'resident-only' = 'prepare',
 ): ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles> {
   // One resolution per world and mesh; numeric keys avoid a string per batch.
   const resolved = new Map<number, MeshGpuHandles | null>();
@@ -25,6 +26,10 @@ export function gpuDrivenMeshesForFrame(
     const needsLodResidency =
       lods?.some((_, level) => (gpu?.lodRanges?.[level + 1]?.length ?? 0) === 0) === true;
     if (gpu === undefined || needsLodResidency) {
+      if (policy === 'resident-only') {
+        resolved.set(binding.assetHandle, null);
+        return undefined;
+      }
       const asset = world.resolveAsset<MeshAsset>(handle);
       if (asset.ok) {
         const lodMeshes = lods?.map((guid) => renderAsset<MeshAsset>(world, guid));
@@ -104,6 +109,8 @@ function weakBatches(batches: object | undefined): WeakRef<object> | undefined {
 
 /** Called by a recording that will consume real geometry queries/commands. */
 export function querySceneExecution(scene: PersistentGpuDrivenState): PersistentGpuDrivenState {
-  const { queryPlan, ...source } = scene;
-  return queryPlan === undefined ? scene : { ...source, plan: queryPlan() };
+  const { queryExecution, ...source } = scene;
+  if (queryExecution === undefined) return scene;
+  const plans = queryExecution();
+  return { ...source, plan: plans.active, residentExecution: plans.resident };
 }

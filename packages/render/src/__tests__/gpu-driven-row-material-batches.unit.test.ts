@@ -206,7 +206,7 @@ it('selects both executed mesh groups when one material has different binding so
   const projection = new RenderScene();
   const topology = new BatchTopology();
   topology.apply(projection.apply([update(a), update(b)]));
-  const batches = topology.query(topology.sourcePlan(), undefined).batches;
+  const batches = topology.query(topology.sourcePlan(), undefined).active.batches;
   expect(batches).toHaveLength(2);
   expect(batches.at(0)?.binding?.rowGroup).not.toBe(batches.at(1)?.binding?.rowGroup);
   const selection = new GpuDrawSelection(batches);

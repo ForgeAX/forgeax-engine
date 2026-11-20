@@ -24,12 +24,10 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import {
-  type buildEngineShaderManifest,
-  publishShaderManifest,
-} from '@forgeax/engine-vite-plugin-shader';
+import type { ShaderTemplateManifest } from '@forgeax/engine-shader';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
+import { rewriteShaderTemplateSources } from './shader-manifest-url.fixture';
 import { type SaveEvidence, unwrap } from './specular-aa.fixture';
 
 export type RenderPath = 'forward' | 'deferred';
@@ -53,55 +51,15 @@ const COMPENSATED = /return (EnvironmentScattering\w*)\((single\w*), ([A-Za-z_]\
 const singleScatter = (wgsl: string) =>
   wgsl.replace(COMPENSATED, 'return $1($2, vec3<f32>(0.0), $4);');
 
-/** The same engine manifest with every composed program reduced to single scattering. */
-export function singleScatterPublication(
-  manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>,
-) {
-  let patched = 0;
-  const replace = (source: string) => {
+/** Publish the same programs with only their shared IBL source changed. */
+export function singleScatterPublication(manifest: ShaderTemplateManifest) {
+  const { manifest: publication, patched } = rewriteShaderTemplateSources(manifest, (source) => {
     const stripped = singleScatter(source);
     if (stripped.search(COMPENSATED) >= 0)
       throw new Error('Furnace control retains irradiance compensation');
-    if (stripped !== source) patched++;
     return stripped;
-  };
-  // The publisher interns each transformed source immediately. Holding every
-  // reconstructed WGSL body and its patched copy would expand the full fleet.
-  const descriptor = (read: () => string): PropertyDescriptor => ({
-    enumerable: true,
-    get: () => replace(read()),
   });
-  const withSource = <T extends object>(
-    row: T,
-    source: 'wgsl' | 'composedWgsl',
-    read: () => string,
-  ): T =>
-    Object.defineProperties(
-      {},
-      {
-        ...Object.getOwnPropertyDescriptors(row),
-        [source]: descriptor(read),
-      },
-    ) as T;
-  const materials = manifest.materialShaders.map((material) => {
-    const variants = material.variants.map((variant) =>
-      withSource(variant, 'composedWgsl', () => variant.composedWgsl),
-    );
-    return Object.defineProperties(
-      {},
-      {
-        ...Object.getOwnPropertyDescriptors(material),
-        composedWgsl: descriptor(() => material.composedWgsl),
-        variants: { value: variants, enumerable: true },
-      },
-    ) as typeof material;
-  });
-  const entries = manifest.entries.map((entry) => withSource(entry, 'wgsl', () => entry.wgsl));
-  const publication = publishShaderManifest(entries, materials);
-  return {
-    publication,
-    patched,
-  };
+  return { publication, patched };
 }
 
 /** A panorama of constant linear radiance one: the white furnace. */

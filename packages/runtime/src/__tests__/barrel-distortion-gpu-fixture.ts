@@ -5,7 +5,7 @@ import {
   type BarrelDistortionMapping,
   mapDisplayUvToSceneUv,
 } from '@forgeax/engine-render';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -31,7 +31,7 @@ const BUFFER_USAGE_MAP_READ = 0x0001;
 const BUFFER_USAGE_COPY_DST = 0x0008;
 const MAP_MODE_READ = 0x0001;
 
-const engineManifest = await buildEngineShaderManifest();
+const engineManifest = await buildEngineShaderTemplateManifest();
 export const BARREL_ENGINE_MANIFEST_URL = shaderManifestUrl(engineManifest);
 
 export interface BarrelRendererFixture {

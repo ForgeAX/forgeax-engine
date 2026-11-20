@@ -8,7 +8,7 @@ import {
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid, definePackageId, gpuTextureOutputs } from '@forgeax/engine-pack/source';
 import { type RhiDevice, RhiError, type Texture } from '@forgeax/engine-rhi';
-import type { TextureGeneratorPrograms } from '@forgeax/engine-types';
+import type { AssetHandle, TextureGeneratorPrograms } from '@forgeax/engine-types';
 import { err, srgbChannelToLinear } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
 import { prepareRuntimePackContent, RuntimePackProducer } from '../../../import/src/runtime-pack';
@@ -131,8 +131,8 @@ export async function verifyGpuTextureGeneration(
   let activeDevice = device;
   let target: Texture | undefined;
   try {
-    const derivedContent = gpuTextureOutputs(packageId, 'derived', {
-      values: {},
+    const derivedRecipe = {
+      values: { sliceValues: [0, 0, 0, 0, 0, 1, 0, 0] },
       inputs: { source: guid('gpu-texture/paint/albedo') },
       programs: derivedPrograms,
       outputs: {
@@ -150,6 +150,17 @@ export async function verifyGpuTextureGeneration(
           writes: ['result'],
         },
       ],
+    } as const;
+    const derivedContent = gpuTextureOutputs(packageId, 'derived', derivedRecipe);
+    const volumeContent = gpuTextureOutputs(packageId, 'volume', {
+      ...derivedRecipe,
+      outputs: {
+        result: {
+          ...linear,
+          shape: { viewDimension: '3d', extent: { width: 4, height: 4, depth: 2 } },
+          mips: { kind: 'none' },
+        },
+      },
     });
     const content = gpuTextureOutputs(packageId, 'paint', {
       values: { seed: 42, wear: 0 },
@@ -177,7 +188,11 @@ export async function verifyGpuTextureGeneration(
       ],
     });
     const prepared = (
-      await prepareRuntimePackContent(packageIdText, { ...content, ...derivedContent })
+      await prepareRuntimePackContent(packageIdText, {
+        ...content,
+        ...derivedContent,
+        ...volumeContent,
+      })
     ).unwrap();
     (await producer.admit(prepared)).unwrap();
     const handles = await Promise.all(
@@ -340,8 +355,8 @@ export async function verifyGpuTextureGeneration(
     const derivedHandle = (
       await assets.load(guid('gpu-texture/derived/result'), 'gpu-texture')
     ).unwrap();
-    const derivedSource = () => assets.read(derivedHandle).unwrap();
-    const generateDerived = async () => {
+    const generateDerived = async (derivedHandle: AssetHandle<'gpu-texture'>) => {
+      const derivedSource = () => assets.read(derivedHandle).unwrap();
       let resident = store.ensureResident(derivedHandle, derivedSource(), scope);
       for (
         let attempt = 0;
@@ -359,7 +374,7 @@ export async function verifyGpuTextureGeneration(
       await device.queue.onSubmittedWorkDone();
       return next;
     };
-    const derived = await generateDerived();
+    const derived = await generateDerived(derivedHandle);
     const inputRed = await sampledMipRed(
       device,
       store.ensureResident(handle, source(), scope).unwrap().texture.handle,
@@ -367,9 +382,16 @@ export async function verifyGpuTextureGeneration(
     );
     expect(await pixel(device, derived.texture.handle, 2, 0)).toEqual([inputRed, 0, 0, 255]);
     expect(await pixel(device, derived.texture.handle, 2, 1)).toEqual([inputRed, 255, 0, 255]);
+    const volumeHandle = (
+      await assets.load(guid('gpu-texture/volume/result'), 'gpu-texture')
+    ).unwrap();
+    expect(assets.read(volumeHandle).unwrap()).not.toHaveProperty('data');
+    const volume = await generateDerived(volumeHandle);
+    expect(await pixel(device, volume.texture.handle, 0, 0)).toEqual([inputRed, 0, 0, 255]);
+    expect(await pixel(device, volume.texture.handle, 0, 1)).toEqual([inputRed, 255, 0, 255]);
     // Effective input-version propagation invalidates the downstream output too.
     assets.update(generator, { values: { seed: 42, wear: 0 } }).unwrap();
-    const changedDerived = await generateDerived();
+    const changedDerived = await generateDerived(derivedHandle);
     expect(changedDerived.texture).not.toBe(derived.texture);
     const changedInputRed = await sampledMipRed(
       device,

@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { cpus, platform } from 'node:os';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -12,7 +12,7 @@ it.skipIf(process.env.IES_PERF !== '1')(
   'measures Point/Rect IES at 1, 32 and 256 lights',
   { timeout: 900_000, retry: 0 },
   async () => {
-    const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+    const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
     const adapter = await navigator.gpu.requestAdapter();
     if (adapter === null) throw new Error('missing performance adapter');
     const directory = 'artifacts/ies-point-area/performance-dawn';

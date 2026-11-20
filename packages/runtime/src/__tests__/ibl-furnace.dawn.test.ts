@@ -3,7 +3,7 @@ import type { Renderer } from '@forgeax/engine-render';
 import type { RhiInstance } from '@forgeax/engine-rhi';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
@@ -21,7 +21,7 @@ import { unwrap } from './specular-aa.fixture';
 
 // A uniform white panorama is indistinguishable from the white fallback cube,
 // so readiness comes from the renderer's IBL binding receipt.
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const compensatedUrl = shaderManifestUrl(manifest);
 const single = singleScatterPublication(manifest);
 const singleScatterUrl = shaderPublicationUrl(single.publication);
@@ -93,8 +93,7 @@ function expectFurnace(label: string, withMs: Metrics, withoutMs: Metrics) {
   expect(smooth - rough, `${label} single-scatter loss`).toBeGreaterThan(0.3);
 }
 
-it('reduces every composed specular IBL program to single scattering for the falsifier', () => {
-  // Publication validates each complete source before interning its fragments.
+it('publishes a single-scattering template source for the falsifier', () => {
   expect(single.patched).toBeGreaterThan(0);
 });
 

@@ -90,7 +90,7 @@ export function PluginsPanel(props: PluginSnapshotOptions & { workspaceClient?: 
         start={<Text as="h2" variant="heading">{t('plugins.title')}</Text>}
         center={(
           <Toolbar className="fx-plugins-toolbar" aria-label={t('plugins.toolbar')}>
-            <SearchField
+            <SearchField clearLabel={t('plugins.clearSearch')}
               data-action={PLUGINS_ACTIONS.search}
               label={t('plugins.filterLabel')}
               value={query}

@@ -5,18 +5,29 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { type GraphBuffer, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type Buffer, ok, type RenderPipeline, type RhiCommandEncoder } from '@forgeax/engine-rhi';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it, vi } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { emit_reflection, parse, parseReflectionWire, validate } from '../../../naga/src/index';
+import { loadRhiPack } from '../assembly/backend-contract';
+import { CameraView } from '../components/camera-view';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { batchLodLevelCount } from '../gpu-driven/batch-layout';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
+import type { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import type { FilteredProductionPlan } from '../gpu-driven/production-raster-prepare';
 import { shadowViewIdentityKey } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
-import { GpuScene } from '../gpu-scene';
+import type { GpuViewInputPreparation } from '../gpu-driven/view-input-bindings';
+import { GpuScene, type GpuSceneTableBindingTarget } from '../gpu-scene';
+import type { GpuSceneCapacityPreparation } from '../gpu-scene-capacity';
+import { GPU_MATERIAL_DESCRIPTOR, type GpuSceneInputPreparation } from '../gpu-scene-inputs';
+import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
 import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -24,6 +35,7 @@ import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { recordGpuDrivenShadowIndirect } from '../record/shadow-pass';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import {
   admitGpuFixture,
@@ -32,6 +44,7 @@ import {
 } from './gpu-driven-production-fixture';
 import { duplicateMeshVertices, editResidentMesh } from './managed-mesh-edit';
 import { nativeDeviceFixture } from './native-device-fixture';
+import { finishRendererInput, rendererInputHandoffFixture } from './renderer-input-handoff-fixture';
 
 // A geometry witness, not a lighting surrogate: real production admission,
 // compaction, mesh pipeline/BGs, indirect raster and GPU pixels are exercised.
@@ -42,7 +55,7 @@ const WITNESS_WGSL = `
 }
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 `;
-async function fixture(mergedSources = false) {
+async function fixture(mergedSources = false, inputWitness = false) {
   const { device, native } = await nativeDeviceFixture({
     requiredFeatures: ['depth32float-stencil8'],
   });
@@ -57,7 +70,12 @@ async function fixture(mergedSources = false) {
     for (let i = 0; i < vertices.length; i += 12) vertices[i] = (vertices[i] ?? 0) + x;
     const position = new Float32Array(defined(pod.attributes.position) as Float32Array);
     for (let i = 0; i < position.length; i += 3) position[i] = (position[i] ?? 0) + x;
-    return { ...pod, vertices, attributes: { ...pod.attributes, position } };
+    return {
+      ...pod,
+      vertices,
+      attributes: { ...pod.attributes, position },
+      ...(inputWitness ? { morphTargets: [{ position: new Float32Array(position.length) }] } : {}),
+    };
   });
   const handles = pods.map((pod) => assets.create(pod).unwrap());
   const meshes = pods.map((pod, index) =>
@@ -99,6 +117,7 @@ async function fixture(mergedSources = false) {
       materials: [material],
       materialBindingSources: ['engine-default'],
       instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 },
+      ...(inputWitness ? { morph: { weights: new Float32Array([1]), targetCount: 1 } } : {}),
       ...(mergedSources
         ? { lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.5 }] }
         : {}),
@@ -129,13 +148,39 @@ async function fixture(mergedSources = false) {
   );
   const availability = GpuScene.create(device, 16).unwrap();
   if (availability.status !== 'available') throw new Error('Expected native GPU Scene capability');
-  availability.scene.sync(delta).unwrap();
+  let sourceMeshes: MeshFrame | undefined;
+  if (inputWitness) {
+    sourceMeshes = new MeshFrame();
+    for (const [index, pod] of pods.entries())
+      sourceMeshes = sourceMeshes.with(Number(handles[index]), pod);
+  }
+  availability.scene
+    .sync({ ...delta, ...(sourceMeshes === undefined ? {} : { meshes: sourceMeshes }) })
+    .unwrap();
+  const inputAddress = inputWitness
+    ? availability.scene.inputs.arena.allocateDescriptor(4)
+    : undefined;
+  if (inputAddress !== undefined)
+    availability.scene.inputs.arena.writeDescriptorWord(inputAddress, 4, 0, 1);
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(
+  expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(
     mergedSources ? 1 : 2,
   );
-  const shader = (await rhi.createShaderModule(device, { code: WITNESS_WGSL })).unwrap();
+  const inputShader = `
+@group(3) @binding(8) var<storage,read> inputs: array<u32>;
+struct V { @builtin(position) p: vec4<f32>, @location(0) color: vec4<f32> }
+@vertex fn vs_scene_index(@location(0) p: vec3<f32>) -> V {
+  var out: V;
+  out.p = vec4<f32>(p.xy, select(0.25, 0.75, inputs[${inputAddress ?? 0}u] == 9u), 1.0);
+  out.color = select(vec4<f32>(1.0), vec4<f32>(0,1,0,1), inputs[${inputAddress ?? 0}u] == 9u);
+  return out;
+}
+@fragment fn fs_main(input: V) -> @location(0) vec4<f32> { return input.color; }
+`;
+  const shader = (
+    await rhi.createShaderModule(device, { code: inputWitness ? inputShader : WITNESS_WGSL })
+  ).unwrap();
   const selector = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
   const viewLayout = device
     .createBindGroupLayout({
@@ -181,9 +226,22 @@ async function fixture(mergedSources = false) {
     .createBindGroup({ layout: materialLayout, entries: [entry(0)] })
     .unwrap();
   const programs = standardPbrInputs(device, shader, viewLayout);
+  let program = createMaterialShaderProgram(WITNESS_WGSL);
+  if (inputWitness) {
+    const checked = (await validate((await parse(inputShader)).unwrap())).unwrap();
+    try {
+      const reflection = parseReflectionWire((await emit_reflection(checked, '{}')).unwrap());
+      expect(
+        reflection.entryPoints?.find((entry) => entry.name === 'vs_scene_index')?.bindings,
+      ).toContainEqual({ group: 3, binding: 8 });
+      program = createMaterialShaderProgram(inputShader, reflection.entryPoints);
+    } finally {
+      checked.free();
+    }
+  }
   const artifact = {
     ...programs.materialArtifact,
-    program: createMaterialShaderProgram(WITNESS_WGSL),
+    program,
   } as MaterialShaderArtifact;
   const state = {
     ...defined(programs.materialPipelineState),
@@ -207,9 +265,10 @@ async function fixture(mergedSources = false) {
     materialPipelineState: state,
     scene: {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
+      ...(sourceMeshes === undefined ? {} : { meshes: sourceMeshes }),
     },
     camera: makeZeroCameraFallbackSnapshot(),
     meshBySlot: bySlot,
@@ -219,7 +278,8 @@ async function fixture(mergedSources = false) {
   const prepare = () => {
     input.meshResidencyEpoch = store.meshResidencyEpoch;
     const frame = production.prepare(admitGpuFixture(input)).unwrap();
-    if (frame === undefined) throw new Error('Expected admitted prepared frame');
+    if (frame === undefined)
+      throw new Error(`Expected admitted prepared frame: ${JSON.stringify(production.inspect())}`);
     return frame;
   };
   const unrelatedUpload = () => {
@@ -238,6 +298,7 @@ async function fixture(mergedSources = false) {
     scene: availability.scene,
     topology,
     selector,
+    shader,
     store,
     world,
     pods,
@@ -246,6 +307,7 @@ async function fixture(mergedSources = false) {
     bySlot,
     input,
     production,
+    inputAddress,
     configure,
     prepare,
     unrelatedUpload,
@@ -691,7 +753,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       }
       f.input.scene = {
         ...f.input.scene,
-        plan: f.topology.query(f.topology.sourcePlan(), undefined),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
         slots: f.projection.slotsSnapshot(),
       };
       const lodWorld = new Float32Array(camera.world);
@@ -808,7 +870,7 @@ describe('incremental filtered contributions on native Dawn', () => {
         );
       f.input.scene = {
         ...f.input.scene,
-        plan: f.topology.query(f.topology.sourcePlan(), undefined),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
         slots: f.projection.slotsSnapshot(),
       };
     };
@@ -1156,7 +1218,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
         shadowMaterialArtifacts: shadows,
         scene: {
           ...f.input.scene,
-          plan: f.topology.query(f.topology.sourcePlan(), undefined),
+          plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
           slots,
         },
         shadowViews: true,
@@ -1331,3 +1393,573 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
     f.close();
   }
 }, 60000);
+
+it.each([
+  'reset',
+  'foreign',
+] as const)('rejects stale actual Production raster windows after %s', async (mode) => {
+  const f = await fixture(false, true);
+  const retained: RetainedWitness = {};
+  let input: GpuSceneInputPreparation | undefined;
+  const probe = f.device.createBuffer({ size: 256, usage: 128 | 8 }).unwrap();
+  let other: GpuScene | undefined;
+  let otherRead: ReturnType<GpuScene['inputs']['capture']> | undefined;
+  f.native.pushErrorScope('validation');
+  try {
+    await pixels(f, f.prepare(), undefined, undefined, retained, f.production, true);
+    const raster = Reflect.get(f.production, 'materialRaster') as MaterialAbiRasterAdapter;
+    if (mode === 'reset') raster.ensureProbeBlendRecordBuffer(probe).unwrap();
+    else {
+      const created = GpuScene.create(f.device, 16).unwrap();
+      if (created.status !== 'available') throw new Error('Missing second native Scene');
+      other = created.scene;
+      otherRead = other.inputs.capture();
+      const buffer = otherRead.buffer().unwrap().buffer;
+      otherRead.seal().unwrap();
+      raster.ensureSceneTables(
+        other.instanceBuffer,
+        other.rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
+        other.primitiveBuffer,
+        other.rowCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
+        undefined,
+        buffer,
+        other.inputs,
+      );
+    }
+    input = f.scene.inputs.prepareBuffer().unwrap();
+    for (let step = 0; step < 10000; step++) if (input.step(64).unwrap().phase === 'current') break;
+    const result = f.production.prepareInputBindings(f.scene, input);
+    if (result.ok) result.value.release();
+    expect(result.ok).toBe(false);
+    expect(await f.native.popErrorScope()).toBeNull();
+  } finally {
+    input?.release();
+    await retained.dispose?.();
+    f.production.dispose();
+    otherRead?.release();
+    other?.dispose();
+    f.device.destroyBuffer(probe).unwrap();
+    f.close();
+  }
+});
+
+it('publishes actual Production arena windows and retained stock bundles without rebuilding the graph', async () => {
+  const f = await fixture(false, true);
+  const retained: RetainedWitness = {};
+  let input: GpuSceneInputPreparation | undefined;
+  let binding: GpuViewInputPreparation | undefined;
+  f.native.pushErrorScope('validation');
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  const encoders = vi.spyOn(f.device, 'createRenderBundleEncoder');
+  const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+  try {
+    expect(f.scene.hasMorphRows).toBe(true);
+    const before = await pixels(f, f.prepare(), undefined, undefined, retained, f.production, true);
+    expect(before.some((value) => value > 0)).toBe(true);
+    input = f.scene.inputs.prepareBuffer().unwrap();
+    groups.mockClear();
+    expect(f.production.prepareInputBindings(f.scene, input).ok).toBe(false);
+    expect(groups).not.toHaveBeenCalled();
+    for (let step = 0; step < 10000; step++) if (input.step(64).unwrap().phase === 'current') break;
+    expect(input.isCurrent()).toBe(true);
+    binding = f.production.prepareInputBindings(f.scene, input).unwrap();
+    expect(binding.isCurrent()).toBe(true);
+    expect(binding.publish().ok).toBe(false);
+    groups.mockClear();
+    encoders.mockClear();
+    writes.mockClear();
+    input.commitPrepared().unwrap();
+    binding.publish().unwrap();
+    expect(groups).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    f.scene.inputs.arena.writeDescriptorWord(defined(f.inputAddress), 4, 0, 9);
+    const after = await pixels(f, f.prepare(), undefined, undefined, retained, f.production, true);
+    expect(after).not.toEqual(before);
+    expect(after.some((value, index) => index % 4 === 1 && value === 255)).toBe(true);
+    expect(groups).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(retained.compilations).toBe(1);
+    expect(binding.isCurrent()).toBe(false);
+    expect(await f.native.popErrorScope()).toBeNull();
+  } finally {
+    groups.mockRestore();
+    encoders.mockRestore();
+    writes.mockRestore();
+    binding?.release();
+    input?.release();
+    await retained.dispose?.();
+    f.close();
+  }
+});
+
+it('publishes native shadow arena bindings for active and retiring owned Views', async () => {
+  const f = await fixture(false, true);
+  const targets = [0, 1].map(() =>
+    f.device
+      .createTexture({ size: { width: 32, height: 16 }, format: 'depth32float', usage: 16 | 1 })
+      .unwrap(),
+  );
+  const targetViews = targets.map((texture) => f.device.createTextureView(texture, {}).unwrap());
+  const readback = f.device.createBuffer({ size: 8192, usage: 1 | 8 }).unwrap();
+  let compute:
+    | ReturnType<ReturnType<RenderGraphBuilder<RenderPipelineFrame>['compile']>['unwrap']>
+    | undefined;
+  let input: GpuSceneInputPreparation | undefined;
+  let binding: GpuViewInputPreparation | undefined;
+  const groups = vi.spyOn(f.device, 'createBindGroup');
+  const encoders = vi.spyOn(f.device, 'createRenderBundleEncoder');
+  const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+  f.native.pushErrorScope('validation');
+  try {
+    for (const snapshot of f.snapshots) {
+      const material = snapshot.material.snapshot;
+      snapshot.material.adopt({
+        ...material,
+        passes: [
+          ...defined(material.passes),
+          {
+            name: 'shadow',
+            program: { module: defined(material.materialShaderId) },
+            renderState: { tags: { LightMode: 'ShadowCaster' } },
+          },
+        ],
+        materialProgramKeys: {
+          ...material.materialProgramKeys,
+          shadow: defined(material.materialShaderId),
+        },
+      });
+    }
+    const delta = f.projection.apply(
+      f.snapshots.map((snapshot) => ({
+        kind: 'update' as const,
+        entityKey: snapshot.entityKey,
+        snapshot,
+      })),
+    );
+    f.scene.sync(delta).unwrap();
+    f.topology.apply(delta);
+    const frame = defined(
+      f.production
+        .prepare(
+          admitGpuFixture({
+            ...f.input,
+            shadowViews: true,
+            scene: {
+              ...f.input.scene,
+              slots: f.projection.slotsSnapshot(),
+              plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
+            },
+          }),
+        )
+        .unwrap(),
+    );
+    const requests = [0, 1].map((index) => ({
+      identity: { kind: 'directional' as const, index, layer: 'static' as const },
+      planes: new Float32Array(24),
+      candidatePrimitiveIndices: [index],
+    }));
+    frame.updateShadowViews?.(requests).unwrap();
+    const pool = defined(frame.shadowViewPool);
+    const submissions = requests.map(({ identity }) => defined(pool.submission(identity)));
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    for (const { identity } of requests) pool.project(graph, identity, true).unwrap();
+    compute = graph.compile({ device: f.device, surfaceSize: { width: 32, height: 16 } }).unwrap();
+    const pipeline = f.device
+      .createRenderPipeline({
+        layout: f.input.materialPipelineState.pbrPipelineLayout,
+        vertex: {
+          module: f.shader,
+          entryPoint: 'vs_scene_index',
+          buffers: [
+            {
+              arrayStride: defined(f.meshes[0]).layoutProjection.arrayStride,
+              attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+            },
+          ],
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+        depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
+      })
+      .unwrap();
+    const capture = async (
+      selection: NonNullable<ReturnType<NonNullable<typeof frame.shadowBatchProjections>>>,
+      runCompute: boolean,
+    ) => {
+      const encoder = f.device.createCommandEncoder().unwrap();
+      if (runCompute)
+        defined(compute)
+          .execute({ encoder } as RenderPipelineFrame)
+          .unwrap();
+      for (const [index, submitted] of submissions.entries()) {
+        const projections = defined(selection.get(shadowViewIdentityKey(submitted.identity)));
+        const batches = submitted.plan.batches.map((batch) => {
+          const projection = defined(projections.get(batch.batchId));
+          return {
+            indirectOffset: batch.indirectOffset,
+            pipeline,
+            meshBindGroup: projection.meshBindGroup,
+            visibleBindGroups: projection.visibleBindGroups,
+            deformation: projection.deformation,
+            materialGroup: f.materialGroup,
+            vertexBuffer: projection.mesh.vertexBuffer.handle,
+            indexBuffer: defined(projection.mesh.indexBuffer).handle,
+            indexFormat: projection.mesh.indexFormat,
+          };
+        });
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view: defined(targetViews[index]),
+            depthClearValue: 0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+          },
+        });
+        pass.setBindGroup(0, f.viewGroup, [0, 0]);
+        recordGpuDrivenShadowIndirect(pass, { view: submitted.view, batches });
+        pass.end();
+        encoder.copyTextureToBuffer(
+          { texture: defined(targets[index]) },
+          {
+            buffer: readback,
+            offset: index * 4096,
+            bytesPerRow: 256,
+            rowsPerImage: 16,
+          },
+          { width: 32, height: 16, depthOrArrayLayers: 1 },
+        );
+      }
+      f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await f.device.queue.onSubmittedWorkDone();
+      const mapped = (await readback.mapAsync(1)).unwrap();
+      try {
+        return new Float32Array(mapped.getMappedRange().unwrap().slice(0));
+      } finally {
+        mapped.unmap();
+      }
+    };
+    const before = await capture(defined(frame.shadowBatchProjections?.()), true);
+    frame._sealResourceReads().unwrap();
+    frame._commitResourceReplacement();
+    pool.retain([defined(requests[0]).identity]);
+    expect(pool.inputBindingViews(f.scene)).toHaveLength(2);
+    expect(pool.submission(defined(requests[1]).identity)).toBeUndefined();
+    input = f.scene.inputs.prepareBuffer().unwrap();
+    for (let step = 0; step < 10000; step++) if (input.step(64).unwrap().phase === 'current') break;
+    expect(input.isCurrent()).toBe(true);
+    binding = f.production.prepareInputBindings(f.scene, input).unwrap();
+    groups.mockClear();
+    encoders.mockClear();
+    writes.mockClear();
+    input.commitPrepared().unwrap();
+    binding.publish().unwrap();
+    expect(groups).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    // Distinguish the accepted physical target from the old arena without
+    // asking ordinary preparation to repair an omitted shadow binding.
+    f.device.queue
+      .writeBuffer(input.buffer, defined(f.inputAddress) * 4, new Uint32Array([9]))
+      .unwrap();
+    const after = await capture(defined(frame.shadowBatchProjections?.()), false);
+    for (let index = 0; index < 2; index++) {
+      const start = index * 1024;
+      const oldDepth = before.subarray(start, start + 1024);
+      const newDepth = after.subarray(start, start + 1024);
+      expect(oldDepth.some((value) => value === 0.25)).toBe(true);
+      expect([...newDepth]).toEqual([...oldDepth].map((value) => (value === 0.25 ? 0.75 : value)));
+    }
+    expect(groups).not.toHaveBeenCalled();
+    expect(encoders).not.toHaveBeenCalled();
+    expect(await f.native.popErrorScope()).toBeNull();
+  } finally {
+    groups.mockRestore();
+    encoders.mockRestore();
+    writes.mockRestore();
+    binding?.release();
+    input?.release();
+    await compute?.retire();
+    for (const texture of targets) f.device.destroyTexture(texture).unwrap();
+    f.device.destroyBuffer(readback).unwrap();
+    f.close();
+  }
+});
+
+it('publishes actual Production View inputs without rebuilding its retained rigid raster graph', async () => {
+  const f = await fixture();
+  const retained: RetainedWitness = {};
+  let task: GpuSceneInputPreparation | undefined;
+  let binding: GpuViewInputPreparation | undefined;
+  f.native.pushErrorScope('validation');
+  const creates = vi.spyOn(f.device, 'createBindGroup');
+  const writes = vi.spyOn(f.device.queue, 'writeBuffer');
+  try {
+    const initial = f.prepare();
+    const commands: number[] = [];
+    const before = await pixels(
+      f,
+      initial,
+      commands,
+      f.production.inspect().indirectDrawCount,
+      retained,
+    );
+    expect(before.some((value) => value > 0)).toBe(true);
+    task = f.scene.inputs.prepareBuffer().unwrap();
+    binding = f.production.prepareInputBindings(f.scene, task).unwrap();
+    let oldFrames = 0;
+    for (let step = 0; step < 10000; step++) {
+      if (step % 32 === 0) {
+        const frame = f.prepare();
+        expect(
+          await pixels(f, frame, undefined, f.production.inspect().indirectDrawCount, retained),
+        ).toEqual(before);
+        oldFrames++;
+      }
+      if (task.step(64).unwrap().phase === 'current') break;
+    }
+    expect(oldFrames).toBeGreaterThan(0);
+    expect(binding.isCurrent()).toBe(true);
+    creates.mockClear();
+    writes.mockClear();
+    task.commitPrepared().unwrap();
+    expect(binding.isCurrent()).toBe(true);
+    binding.publish().unwrap();
+    expect(creates).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    const afterCommands: number[] = [];
+    const after = f.prepare();
+    expect(
+      await pixels(f, after, afterCommands, f.production.inspect().indirectDrawCount, retained),
+    ).toEqual(before);
+    expect(afterCommands).toEqual(commands);
+    expect(retained.compilations).toBe(1);
+    expect(await f.native.popErrorScope()).toBeNull();
+  } finally {
+    binding?.release();
+    task?.release();
+    await retained.dispose?.();
+    creates.mockRestore();
+    writes.mockRestore();
+    f.close();
+  }
+}, 30000);
+
+function prepareRendererTableCapacity(
+  f: Awaited<ReturnType<typeof rendererInputHandoffFixture>>,
+  capture: (task: GpuSceneCapacityPreparation) => void,
+): GpuSceneTableBindingTarget {
+  const row = [...defined(f.internals.sceneComposition?.entry).projection.slotsSnapshot()][0]
+    ?.snapshot;
+  if (row === undefined) throw new Error('Missing current Renderer row');
+  let capacity: GpuSceneCapacityPreparation | undefined;
+  const work = f.scene.prepareSourceCapacity(
+    Array.from({ length: f.scene.rowCapacity + 4 }, () => {
+      const material = new MaterialResource(row.material.snapshot);
+      return { ...row, material, materials: [material] };
+    }),
+    (task) => {
+      capacity = task;
+      capture(task);
+    },
+    () => true,
+  );
+  let result = work.next();
+  for (let count = 0; !result.done && count < 10000; count++) result = work.next();
+  if (!result.done || capacity === undefined) throw new Error('Table copy did not settle');
+  const tables = f.scene.prepareCapacityBindingTarget(capacity).unwrap();
+  expect(capacity.inspect().tables).toBe(4);
+  expect(tables.materialBuffer).not.toBe(f.scene.materialBuffer);
+  return tables;
+}
+
+it.each([
+  'inputs',
+  'tables',
+  'resource-tables',
+] as const)('hands actual Renderer camera consumers to prepared %s and completes 60 native pictures', async (mode) => {
+  const manifest = URL.createObjectURL(
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], {
+      type: 'application/json',
+    }),
+  );
+  let native: GPUDevice | undefined, target: GPUTexture | undefined;
+  const errors: unknown[] = [];
+  const context = {
+    configure(configuration: GPUCanvasConfiguration) {
+      native = configuration.device;
+      native.addEventListener('uncapturederror', (event) => errors.push(event.error));
+      target?.destroy();
+      target = native.createTexture({
+        size: [64, 64],
+        format: configuration.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        viewFormats: configuration.viewFormats ?? [],
+      });
+    },
+    getCurrentTexture() {
+      return defined(target);
+    },
+    unconfigure() {},
+  };
+  let f: Awaited<ReturnType<typeof rendererInputHandoffFixture>> | undefined;
+  let input: GpuSceneInputPreparation | undefined;
+  let capacity: GpuSceneCapacityPreparation | undefined;
+  let releaseResource: (() => void) | undefined;
+  try {
+    f = await rendererInputHandoffFixture({
+      manifestUrl: manifest,
+      canvas: { width: 64, height: 64, getContext: () => context },
+      backend: loadRhiPack(webgpu),
+    });
+    const device = defined(native);
+    device.pushErrorScope('validation');
+    expect(f.initialReceipt.presentation).toBe('ready');
+    let pictures = 1;
+    const primary = f.manager.currentOwner;
+    expect(primary.gpuDriven.inspect().gpuOwnedEntityCount).toBeGreaterThan(0);
+    f.world.addComponent(f.camera, { component: CameraView, data: {} }).unwrap();
+    await f.draw();
+    pictures++;
+    const composed = f.manager.currentOwner;
+    expect(composed).not.toBe(primary);
+    expect(composed.gpuDriven.inspect().gpuOwnedEntityCount).toBeGreaterThan(0);
+    const capture = async () => {
+      const buffer = device.createBuffer({
+        size: 64 * 256,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      try {
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer(
+          { texture: defined(target) },
+          { buffer, bytesPerRow: 256 },
+          [64, 64],
+        );
+        device.queue.submit([encoder.finish()]);
+        await buffer.mapAsync(GPUMapMode.READ);
+        const pixels = new Uint8Array(buffer.getMappedRange().slice(0));
+        buffer.unmap();
+        return pixels;
+      } finally {
+        buffer.destroy();
+      }
+    };
+    const before = await capture();
+    expect([...before.subarray((32 * 64 + 32) * 4, (32 * 64 + 32) * 4 + 3)]).not.toEqual([
+      ...before.subarray(0, 3),
+    ]);
+    let tables: GpuSceneTableBindingTarget | undefined;
+    if (mode !== 'inputs') {
+      tables = prepareRendererTableCapacity(f, (task) => {
+        capacity = task;
+      });
+    }
+    if (mode === 'resource-tables') {
+      const receiver = f;
+      const material = defined(receiver.internals.sceneComposition?.entry)
+        .projection.slotsSnapshot()
+        .at(0)?.snapshot.material;
+      if (material === undefined) throw new Error('Missing accepted material');
+      const frame = receiver.scene.captureResources().unwrap();
+      const original = defined(frame.indexForResource(material, material.snapshot));
+      frame.seal().unwrap();
+      const held = receiver.scene.holdMaterialRoots(frame).unwrap();
+      frame.release();
+      const descriptor = receiver.scene.inputs.arena.reserveDescriptor(
+        GPU_MATERIAL_DESCRIPTOR.words,
+        (_address, target) => {
+          for (let word = 0; word < GPU_MATERIAL_DESCRIPTOR.words; word++)
+            target.setUint32(word * 4, receiver.scene.inputs.arena.readWord(original + word), true);
+        },
+      );
+      const mapping = receiver.scene.inputs.reserveResource(descriptor);
+      releaseResource = () => {
+        if (input?.inspect().phase === 'committed') {
+          receiver.scene.inputs.releaseResource(mapping.logicalSlot);
+          receiver.scene.inputs.arena.releaseDescriptor(descriptor.address, descriptor.wordCount);
+        } else {
+          mapping.release();
+          descriptor.release();
+        }
+        held.release();
+      };
+      const work = receiver.scene.inputs.prepareResourceBuffer(
+        [mapping],
+        () => held.isCurrent(),
+        (value) => {
+          input = value;
+        },
+      );
+      for (let count = 0; !work.next().done && count < 16; count++) {
+        /* one private root */
+      }
+      input = defined(input);
+    } else input = f.scene.inputs.prepareBuffer().unwrap();
+    finishRendererInput(input);
+    const task = f.manager.prepareInputBindings(f.scene, input, tables).unwrap();
+    const groups = vi.spyOn(f.internals.device, 'createBindGroup');
+    const writes = vi.spyOn(f.internals.device.queue, 'writeBuffer');
+    const encoders = vi.spyOn(f.internals.device, 'createRenderBundleEncoder');
+    try {
+      task.publish().unwrap();
+      expect(groups).not.toHaveBeenCalled();
+      expect(writes).not.toHaveBeenCalled();
+      expect(encoders).not.toHaveBeenCalled();
+      for (const owner of [primary, composed])
+        for (const view of owner.gpuDriven.inputBindingViews(f.scene))
+          expect(view.sceneInputBuffer).toBe(input.buffer);
+      for (let index = 0; index < 28; index++) {
+        await f.draw();
+        pictures++;
+      }
+      expect(equalBytes(await capture(), before)).toBe(true);
+      f.world.removeComponent(f.camera, CameraView).unwrap();
+      for (let index = 0; index < 30; index++) {
+        await f.draw();
+        pictures++;
+      }
+      expect(f.manager.currentOwner).toBe(primary);
+      expect(equalBytes(await capture(), before)).toBe(true);
+      expect(
+        groups.mock.calls.filter(([descriptor]) => descriptor.label === 'gpu-driven-view-bg'),
+      ).toHaveLength(0);
+      if (tables !== undefined) {
+        const targetBuffers = new Set([
+          tables.primitiveBuffer,
+          tables.instanceBuffer,
+          tables.transformBuffer,
+          tables.materialBuffer,
+        ]);
+        expect(
+          groups.mock.calls.filter(([descriptor]) =>
+            [...descriptor.entries].some(
+              (entry) =>
+                entry.resource.kind === 'buffer' && targetBuffers.has(entry.resource.value.buffer),
+            ),
+          ),
+        ).toHaveLength(0);
+        expect(encoders).not.toHaveBeenCalled();
+      }
+      expect(pictures).toBe(60);
+      expect(await device.popErrorScope()).toBeNull();
+      expect(errors).toEqual([]);
+    } finally {
+      task.release();
+      groups.mockRestore();
+      writes.mockRestore();
+      encoders.mockRestore();
+    }
+  } finally {
+    input?.release();
+    if (f !== undefined) await f.internals.device.queue.onSubmittedWorkDone();
+    releaseResource?.();
+    if (capacity !== undefined)
+      for (let count = 0; !capacity.retireStep() && count < 100; count++) {
+        /* bounded metadata retirement */
+      }
+    if (f !== undefined) expect((await f.close()).ok).toBe(true);
+    target?.destroy();
+    URL.revokeObjectURL(manifest);
+  }
+}, 120_000);

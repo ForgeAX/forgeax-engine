@@ -23,7 +23,7 @@ import {
   type MaterialCookRasterContext,
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
-import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset, SampledTextureAsset } from '@forgeax/engine-types';
 import { freezeJson } from '@forgeax/engine-types';
 import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
@@ -152,6 +152,8 @@ import {
   DEFAULT_SPRITE_PARAM_SCHEMA,
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_STANDARD_SURFACE_MODULE,
+  findVariantByDefines,
+  isShaderTemplateManifestRow,
   type MaterialShaderArtifact,
   rayMaterialNeedsCoverage,
   STANDARD_PIPELINE_PARAM_SCHEMA,
@@ -711,8 +713,8 @@ export interface ExtractedVolumetricFog {
   readonly additional?: readonly ExtractedVolumetricFog[];
   readonly status: 'off' | 'available' | 'degraded';
   readonly fog?: ValidatedVolumetricFog;
-  readonly densityHandle?: AssetHandle<'texture'>;
-  readonly densityAsset?: TextureAsset;
+  readonly densityHandle?: AssetHandle<'texture' | 'gpu-texture'>;
+  readonly densityAsset?: SampledTextureAsset;
   readonly guid?: string;
   readonly generation?: number;
   readonly digest?: string;
@@ -828,6 +830,8 @@ export interface RenderableSnapshot {
 
   /** Authored hierarchical visibility; retained hidden rows remain addressable. */
   readonly authorVisible?: boolean;
+  /** Internal source-session partition. Residency never overrides authored visibility. */
+  readonly residencyGroup?: import('./gpu-driven/batch-residency').RenderResidencyGroup;
   readonly assetHandle?: number;
   readonly transform: TransformSnapshot;
   /** Producer-authored lower-detail references projected from MeshAsset. */
@@ -1741,9 +1745,19 @@ export function skinnedPositionProof(
 ): boolean {
   if (receipt !== undefined && materialProgramUsesSkin(receipt))
     return receipt.positionBounds === 'standard-input';
-  const skinned = shaders
-    .materialShaderManifestEntry(key)
-    ?.variants.filter((variant) => variant.defines.SKINNING_DISABLED === false);
+  const manifest = shaders.materialShaderManifestEntry(key);
+  if (
+    key === 'forgeax::default-shadow-caster' &&
+    manifest !== undefined &&
+    isShaderTemplateManifestRow(manifest)
+  ) {
+    // The stock caster's producer supplies one position contract for every Skin recipe.
+    const selected = findVariantByDefines(manifest, { SKINNING_DISABLED: false })?.receipt;
+    return selected?.positionBounds === 'standard-input' && materialProgramUsesSkin(selected);
+  }
+  const skinned = manifest?.variants.filter(
+    (variant) => variant.defines.SKINNING_DISABLED === false,
+  );
   return (
     skinned !== undefined &&
     skinned.length > 0 &&
@@ -3771,15 +3785,23 @@ function resolveVolumeDensity(
   world: World,
   assets: AssetRegistry | null | undefined,
   worldInternal: WorldInternalView,
-  sourceDensity: unknown,
+  entity: EntityHandle,
 ): {
-  readonly handle: AssetHandle<'texture'>;
-  readonly asset: TextureAsset;
+  readonly handle: AssetHandle<'texture' | 'gpu-texture'>;
+  readonly asset: SampledTextureAsset;
   readonly density: VolumeDensityBinding;
+  readonly digest: string;
 } | null {
-  const densityHandle = Math.round(Number(sourceDensity)) as AssetHandle<'texture'>;
-  const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(densityHandle);
-  if (!resolved.ok || resolved.value.kind !== 'texture') {
+  const sourceDensity =
+    Number(world[worldRead].getFieldValue(entity, VolumetricFog, 'generatedDensity')) ||
+    Number(world[worldRead].getFieldValue(entity, VolumetricFog, 'density'));
+  const densityHandle = Math.round(sourceDensity) as AssetHandle<'texture' | 'gpu-texture'>;
+  const records = runtimeAssets(world.assets);
+  const resolved = records.resolveAsset<SampledTextureAsset>(densityHandle);
+  if (
+    !resolved.ok ||
+    (resolved.value.kind !== 'texture' && resolved.value.kind !== 'gpu-texture')
+  ) {
     worldInternal._routeError(
       resolved.ok
         ? new RhiError({
@@ -3795,12 +3817,14 @@ function resolveVolumeDensity(
   }
   const densityAsset = resolved.value;
   const guid = assets?.guidOf(densityHandle) ?? `handle:${Number(densityHandle)}`;
+  const revision = densityAsset.kind === 'gpu-texture' ? records.version(densityHandle) : undefined;
+  const generation = revision?.ok ? revision.value : 1;
   const shape = densityAsset.shape;
   const density: VolumeDensityBinding =
     shape.viewDimension === '3d'
       ? {
           guid,
-          generation: 1,
+          generation,
           shape: {
             viewDimension: '3d',
             extent: {
@@ -3814,7 +3838,7 @@ function resolveVolumeDensity(
         }
       : {
           guid,
-          generation: 1,
+          generation,
           shape: {
             viewDimension: shape.viewDimension,
             extent:
@@ -3829,7 +3853,11 @@ function resolveVolumeDensity(
           format: densityAsset.format,
           colorSpace: densityAsset.colorSpace,
         };
-  return { handle: densityHandle, asset: densityAsset, density };
+  const digest =
+    densityAsset.kind === 'texture'
+      ? textureDigest(densityAsset)
+      : ['generated', guid, generation].join(':');
+  return { handle: densityHandle, asset: densityAsset, density, digest };
 }
 
 export function extractVolumeSnapshot(
@@ -3867,11 +3895,6 @@ export function extractVolumeSnapshot(
     ) as number;
     const sourceSpotLight =
       sourceSpotLightRaw === ENTITY_NULL_RAW ? null : (sourceSpotLightRaw as EntityHandle);
-    const sourceDensity = world[worldRead].getFieldValue(
-      row.entity,
-      VolumetricFog,
-      'density',
-    ) as ShapeOf<SchemaOf<typeof VolumetricFog>>['density'];
     const sourceAnisotropy = world[worldRead].getFieldValue(
       row.entity,
       VolumetricFog,
@@ -3901,7 +3924,7 @@ export function extractVolumeSnapshot(
     const uniform = sourceSampling === VolumetricFogSamplingValue.uniform;
     const densitySource = uniform
       ? undefined
-      : resolveVolumeDensity(world, assets, worldInternal, sourceDensity);
+      : resolveVolumeDensity(world, assets, worldInternal, row.entity);
     if (densitySource === null) return { status: 'degraded', worldTimeSeconds };
     const authoring: VolumetricFogAuthoring = {
       light: sourceLight,
@@ -3947,7 +3970,7 @@ export function extractVolumeSnapshot(
             densityHandle: densitySource.handle,
             densityAsset: densitySource.asset,
             guid: densitySource.density.guid,
-            digest: textureDigest(densitySource.asset),
+            digest: densitySource.digest,
           }),
       generation: 1,
       ...(selectedLight === undefined

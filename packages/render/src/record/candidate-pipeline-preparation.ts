@@ -92,6 +92,7 @@ export interface CandidatePipelinePreparationInspection {
 }
 
 type Prepared = Result<PreparedCandidatePipelines, DynamicGeometryError>;
+
 type Request = {
   readonly input: CandidatePipelineInput;
   readonly resources: ReadonlyMap<number, MaterialResource>;
@@ -106,7 +107,28 @@ type Request = {
   };
   finish(result: Prepared): void;
   release(): void;
+  onClose?: () => void;
 };
+
+/** A closed public receipt retains neither its source callback nor its physical owner. */
+function candidatePipelineTicket(current: () => boolean, retire: () => void) {
+  const state: { current?: () => boolean; retire?: () => void } = { current, retire };
+  const close = () => {
+    delete state.current;
+    delete state.retire;
+  };
+  return {
+    close,
+    ticket: {
+      isCurrent: () => state.current?.() === true,
+      release: () => {
+        const release = state.retire;
+        close();
+        release?.();
+      },
+    },
+  };
+}
 
 function unavailable(actual: unknown): DynamicGeometryError {
   return new DynamicGeometryError(
@@ -148,7 +170,6 @@ export class CandidatePipelinePreparationOwner {
     private readonly currentGraph: () => InstalledFrameGraph | null | undefined,
     private readonly readDemand?: CandidatePipelineDemandReader,
   ) {}
-
   prepare(input: CandidatePipelineInput, signal?: AbortSignal): Promise<Prepared> {
     if (this.disposed || signal?.aborted || !input.isCurrent())
       return Promise.resolve(err(unavailable('cancelled or retired candidate')));
@@ -177,6 +198,9 @@ export class CandidatePipelinePreparationOwner {
       const release = () => {
         if (!this.releases.delete(release)) return;
         const pending = this.requests.delete(request);
+        delete request.projection;
+        request.onClose?.();
+        delete request.onClose;
         signal?.removeEventListener('abort', cancel);
         clearTimeout(timeout);
         for (const resource of demand)
@@ -212,7 +236,6 @@ export class CandidatePipelinePreparationOwner {
       }
     });
   }
-
   process(context: _InternalRenderPipelineContext, shadowViews: boolean): void {
     const graph = this.currentGraph();
     if (graph == null || this.requests.size === 0) return;
@@ -232,21 +255,13 @@ export class CandidatePipelinePreparationOwner {
         }
         const clustered = context.standardLighting?.kind === 'clustered';
         const reflectionFallback = context.reflectionFallbackDemand === true;
-        let projection = request.projection;
-        if (
-          projection === undefined ||
-          projection.graph !== graph ||
-          projection.clustered !== clustered ||
-          projection.reflectionFallback !== reflectionFallback ||
-          projection.shadowViews !== shadowViews
-        ) {
-          projection = request.projection = this.project(request, graph, {
-            clustered,
-            reflectionFallback,
-            shadowViews,
-            runtime: context.runtime,
-          });
-        }
+        const projection = this.project(request, graph, {
+          clustered,
+          reflectionFallback,
+          shadowViews,
+          runtime: context.runtime,
+        });
+        request.projection = projection;
         const { entry, artifacts } = projection;
         const { materials } = request;
         const state = { ...context.frameState, pipelinePreparationPending: false };
@@ -284,8 +299,21 @@ export class CandidatePipelinePreparationOwner {
           request.finish(err(unavailable('current graph has no raster lane for this candidate')));
           continue;
         }
-        if (!state.pipelinePreparationPending)
-          request.finish(ok(this.prepared(request, graph, this.warm(request, graph))));
+        if (!state.pipelinePreparationPending) {
+          const recheckDemand = this.warm(request, graph);
+          if (
+            this.disposed ||
+            !this.releases.has(request.release) ||
+            !input.isCurrent() ||
+            graph !== this.currentGraph()
+          ) {
+            request.finish(
+              err(unavailable('candidate or original view changed during native preparation')),
+            );
+            continue;
+          }
+          request.finish(ok(this.prepared(request, graph, recheckDemand)));
+        }
       } catch (cause) {
         request.finish(err(unavailable(cause)));
       }
@@ -412,8 +440,6 @@ export class CandidatePipelinePreparationOwner {
       graph === this.currentGraph()
     );
   }
-
-  /** All requests use the normal producer and existing PSO owner in lookup-only mode. */
   private lookupDemand(
     request: Request,
     graph: InstalledFrameGraph,
@@ -489,13 +515,6 @@ export class CandidatePipelinePreparationOwner {
     return matched && !frameState.pipelinePreparationPending;
   }
 
-  /**
-   * The prepared result fences its candidate until admission consumes the proof.
-   * Build it outside process(): a closure there shares that frame's scope (its context copy,
-   * selection and dispatch), which would pin one whole frame per live lease.
-   * The finished request also drops its frame projection, and the result
-   * observes its preparing graph only weakly.
-   */
   private prepared(
     request: Request,
     graph: InstalledFrameGraph,
@@ -506,26 +525,27 @@ export class CandidatePipelinePreparationOwner {
     // A replaced graph is never current again. Hold it weakly: its passes
     // capture their frame's GPU-driven projections and native plans.
     const preparedGraph = new WeakRef(graph);
-    return {
-      isCurrent: () => {
-        const current = preparedGraph.deref();
-        if (
-          this.disposed ||
-          !this.releases.has(release) ||
-          current === undefined ||
-          current !== this.currentGraph() ||
-          !input.isCurrent()
-        )
-          return false;
-        try {
-          return !recheckDemand || this.warm(request, current);
-        } catch {
-          // A changed or incomplete demand retires this receipt; it is never ready by exception.
-          return false;
-        }
-      },
-      release,
-    };
+    const prepared = candidatePipelineTicket(() => {
+      const current = preparedGraph.deref();
+      if (
+        this.disposed ||
+        !this.releases.has(release) ||
+        current === undefined ||
+        current !== this.currentGraph()
+      )
+        return false;
+      try {
+        const ready = recheckDemand ? this.warm(request, current) : input.isCurrent();
+        return (
+          ready && !this.disposed && this.releases.has(release) && current === this.currentGraph()
+        );
+      } catch {
+        // A changed or incomplete demand retires this receipt; it is never ready by exception.
+        return false;
+      }
+    }, release);
+    request.onClose = prepared.close;
+    return prepared.ticket;
   }
 
   dispose(): void {

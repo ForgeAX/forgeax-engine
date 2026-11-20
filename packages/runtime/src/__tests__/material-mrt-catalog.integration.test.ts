@@ -1,6 +1,8 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { materialContribution } from '@forgeax/engine-render';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it } from 'vitest';
 import { createDevImportTransport } from '../dev-import-transport';
 import { startMaterialMrtServer } from './material-mrt.server';
@@ -8,7 +10,10 @@ import { startMaterialMrtServer } from './material-mrt.server';
 it('admits the actual temporary MRT Pack and preserves all four authored outputs', async () => {
   const server = await startMaterialMrtServer();
   try {
-    const assets = new AssetRegistry({ importTransport: createDevImportTransport(server.binding) });
+    const assets = new AssetRegistry({
+      importTransport: createDevImportTransport(server.binding),
+      shaderRegistry: new ShaderRegistry({ prepareProgramCompiler: prepareShaderProgramCompiler }),
+    });
     assets.installDecoder(materialContribution.kind, materialContribution.decoder);
     assets.configureRuntimeBinding(server.binding);
     const parsed = AssetGuid.parse(server.guid);

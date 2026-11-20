@@ -40,6 +40,7 @@ import type {
   RecoveryRootRuntime,
 } from './recovery/types';
 import { ReflectionProbeRecordOwner } from './reflection/record-owner';
+import { MeshSourceResourceError, MeshSourceResources } from './scene/mesh-source-resources';
 import { TerrainLayers } from './terrain/layers';
 import { inspectVolumetricFog } from './volume/inspection';
 import { recordContext } from './world/view-record-context';
@@ -445,6 +446,39 @@ function createRenderOwner(
       assets: internals.assets,
       shaderRegistry: internals.assets.shaderRegistry,
       getDevice: () => internals.device,
+      prepareSourceResources: (input) => {
+        const store = internals.gpuStore,
+          device = internals.device,
+          scope = internals.deviceScope;
+        return new MeshSourceResources(input, {
+          store,
+          device,
+          scope,
+          prepareBindings: internals.prepareSceneInputBindings,
+          prepareAddressCapacity: internals.prepareSceneAddressCapacity,
+          prepareCapacity: function* (rows, capture, current, meshes) {
+            const scene =
+              internals.sceneComposition?.gpuSceneResident ??
+              internals.sceneComposition?.gpuSceneTextureResident;
+            if (scene === undefined) throw new MeshSourceResourceError({ reason: 'source' });
+            const task = yield* scene.prepareSourceRows(
+              rows,
+              capture,
+              () =>
+                current() &&
+                (internals.sceneComposition?.gpuSceneResident === scene ||
+                  internals.sceneComposition?.gpuSceneTextureResident === scene),
+              meshes,
+            );
+            return { scene, task };
+          },
+
+          current: () =>
+            internals.gpuStore === store &&
+            internals.device === device &&
+            internals.deviceScope === scope,
+        });
+      },
       onGpuError: (error) => internals.errorRegistry.fire(error),
       retainMaterialSource: (scope, source) =>
         internals.gpuStore.retainMaterialScope(materialSourceScope(scope, source)),

@@ -1,13 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifyDecals } from './decals.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
+const manifestUrl = shaderManifestUrl(
+  await buildEngineShaderTemplateManifest({ pointShadows: true }),
+);
 it('verifies mesh and projected decals and real RHI Debug replay', {
   timeout: 120_000,
   retry: 0,

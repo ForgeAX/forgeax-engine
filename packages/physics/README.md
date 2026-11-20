@@ -1,5 +1,7 @@
 # @forgeax/engine-physics
 
+**English** · [简体中文](README.zh-CN.md)
+
 Physics interface package: ECS component schemas, PhysicsWorld resource shape, error codes, and enum constants. Backend implementations live in `@forgeax/engine-physics-rapier3d` and `@forgeax/engine-physics-rapier2d`.
 
 Project configuration supplies solver iterations and async result interpolation

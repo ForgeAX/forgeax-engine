@@ -15,9 +15,11 @@ import {
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
 } from './program-template.js';
+import { supportedVariantDefines } from './supported-variant-defines.js';
 import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from './types.js';
 
 export const SHADER_TEMPLATE_MANIFEST_VERSION = '7.0.0' as const;
+export const SHADER_PROJECT_MANIFEST_VERSION = '8.0.0' as const;
 
 export interface ShaderTemplateManifest {
   readonly schemaVersion: typeof SHADER_TEMPLATE_MANIFEST_VERSION;
@@ -327,10 +329,9 @@ export function materializeShaderTemplateManifest(
       if (paramSchema === undefined) throw new Error('Admitted material schema is missing');
       const axes = program.template.axes;
       const choices = new Map<string, MaterialShaderManifestVariant>();
-      const select = (
+      const variant = (
         defines: Readonly<Record<string, boolean>>,
-      ): MaterialShaderManifestVariant | undefined => {
-        if (!selectShaderProgramDefines(program, defines).ok) return undefined;
+      ): MaterialShaderManifestVariant => {
         const key = keyOf(defines);
         let selected = choices.get(key);
         if (selected === undefined) {
@@ -339,6 +340,8 @@ export function materializeShaderTemplateManifest(
         }
         return selected;
       };
+      const select = (defines: Readonly<Record<string, boolean>>) =>
+        selectShaderProgramDefines(program, defines).ok ? variant(defines) : undefined;
       const base = select(declaration.selection);
       if (base === undefined) throw new Error('Admitted template default selection is missing');
       let variants: readonly MaterialShaderManifestVariant[] | undefined;
@@ -381,19 +384,7 @@ export function materializeShaderTemplateManifest(
             variants = Object.freeze([]);
             return variants;
           }
-          const rows: MaterialShaderManifestVariant[] = [];
-          const visit = (index: number, selection: Record<string, boolean>): void => {
-            const axis = axes[index];
-            if (axis === undefined) {
-              const selected = select(selection);
-              if (selected !== undefined) rows.push(selected);
-              return;
-            }
-            visit(index + 1, { ...selection, [axis]: true });
-            visit(index + 1, { ...selection, [axis]: false });
-          };
-          visit(0, {});
-          variants = Object.freeze(rows);
+          variants = Object.freeze(Array.from(supportedVariantDefines(axes), variant));
           return variants;
         },
       }) as MaterialShaderManifestEntry;
@@ -405,23 +396,8 @@ export function materializeShaderTemplateManifest(
         match(constraints) {
           if (Object.entries(constraints).some(([axis, value]) => !axes.includes(axis) && value))
             return undefined;
-          // Follow the publication's true-first order, stopping at the first legal
-          // selection. Partial lookup must not allocate the complete Cartesian table.
-          const selection: Record<string, boolean> = {};
-          const visit = (index: number): MaterialShaderManifestVariant | undefined => {
-            const axis = axes[index];
-            if (axis === undefined) return select(selection);
-            if (Object.hasOwn(constraints, axis)) {
-              selection[axis] = constraints[axis] as boolean;
-              return visit(index + 1);
-            }
-            selection[axis] = true;
-            const selected = visit(index + 1);
-            if (selected !== undefined) return selected;
-            selection[axis] = false;
-            return visit(index + 1);
-          };
-          return visit(0);
+          const first = supportedVariantDefines(axes, constraints).next().value;
+          return first === undefined ? undefined : variant(first);
         },
         select(key) {
           const defines: Record<string, boolean> = {};

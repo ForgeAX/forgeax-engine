@@ -68,6 +68,64 @@ export interface MaterialVariantSource {
   readonly entryPoints?: readonly ShaderEntryPointReads[];
 }
 
+const runtimeVariantFamilies = new WeakSet<MaterialShaderManifestEntry>();
+
+/** Reflection for a dormant runtime variant is part of its deferred compilation. */
+export function isRuntimeMaterialVariantFamily(entry: MaterialShaderManifestEntry): boolean {
+  return runtimeVariantFamilies.has(entry);
+}
+
+/** Runtime variants own their program only after a draw reads that selection. */
+export function materialTemplateVariantFamily(
+  identifier: string,
+  paramSchema: readonly ParamSchemaEntry[],
+  selections: readonly {
+    readonly defines: Readonly<Record<string, boolean>>;
+    readonly resolve: () => MaterialVariantSource;
+  }[],
+): MaterialShaderManifestEntry {
+  const variants = selections.map(({ defines: selection, resolve }) => {
+    let source: MaterialVariantSource | undefined;
+    const program = () => (source ??= resolve());
+    const readSource = () => program().read();
+    const entries = Object.entries(selection).sort(([a], [b]) => a.localeCompare(b));
+    const defines = Object.freeze(Object.fromEntries(entries));
+    const row = {
+      defines,
+      definesKey: entries.every(([, value]) => value)
+        ? ''
+        : entries.map(([axis, value]) => `${axis}=${value}`).join('+'),
+      get composedWgsl() {
+        return readSource().read();
+      },
+      get receipt() {
+        return program().receipt;
+      },
+      get entryPoints() {
+        return program().entryPoints;
+      },
+      get forwardFog() {
+        return program().forwardFog;
+      },
+    } as MaterialShaderManifestVariant;
+    bindManifestShaderSource(row, readSource);
+    return Object.freeze(row);
+  });
+  const primary = variants[0];
+  if (primary === undefined) throw new Error('ShaderRegistry: empty material variant family');
+  const family = Object.freeze({
+    identifier,
+    sourcePath: identifier,
+    paramSchema: JSON.stringify(paramSchema),
+    variants: Object.freeze(variants),
+    get composedWgsl() {
+      return primary.composedWgsl;
+    },
+  });
+  runtimeVariantFamilies.add(family);
+  return family;
+}
+
 /** Project immutable program owners into the existing manifest selection contract. */
 export function materialVariantFamily(
   identifier: string,

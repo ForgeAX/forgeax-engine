@@ -292,7 +292,7 @@ async function main() {
   const { Camera, HANDLE_NINESLICE_QUAD, Layer, MeshFilter, MeshRenderer, Transform } = engineMod;
   let ENGINE_MANIFEST;
   try {
-    ENGINE_MANIFEST = await manifestMod.buildEngineShaderManifest();
+    ENGINE_MANIFEST = await manifestMod.buildEngineShaderTemplateManifest();
   } catch (err) {
     const payload = errPayload('pixel-parity-capture-failed', {
       stage: 'shader-manifest-build',

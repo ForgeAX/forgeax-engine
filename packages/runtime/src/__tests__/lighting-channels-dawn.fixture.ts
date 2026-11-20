@@ -7,7 +7,7 @@ import {
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
@@ -44,7 +44,7 @@ export async function runChannelDawnCase(
         ...(loss === undefined ? {} : { rhiInstrumentation: loss.instrumentation }),
         ...(mode === 'publication' ? { publicationSource: identity } : {}),
       },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     ),
   );
   const directory = `artifacts/lighting-channels/dawn-${mode}-${receiver}`;

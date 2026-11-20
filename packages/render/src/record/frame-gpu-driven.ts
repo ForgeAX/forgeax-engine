@@ -317,7 +317,7 @@ function pushShadowViewRequest(
  * Every shadow view of this view: its directional cascades, then the Render
  * World's point-face and spot views, each keyed by its light's stable layer.
  */
-function gpuShadowViewRequests(
+export function gpuShadowViewRequests(
   lights: ViewLights,
   planesByView: ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,

@@ -332,8 +332,10 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
   worldActive=worldActive||shallowFoamSource>0.0;
 #endif
 #endif
-  let worldHeightResponse = waterFoamResponse(worldSource, input.positionWS, eraseMask);
-  let worldCoverageResponse = waterFoamCoverageResponse(residualFoamCoverage, input.positionWS, eraseMask);
+  // Leave space for local fluid foam only when that producer is active for this body.
+  let worldEraseMask = select(1.0, eraseMask, waterFluidFoamActive(bodyIndex));
+  let worldHeightResponse = waterFoamResponse(worldSource, input.positionWS, worldEraseMask);
+  let worldCoverageResponse = waterFoamCoverageResponse(residualFoamCoverage, input.positionWS, worldEraseMask);
   let worldResponse = max(worldHeightResponse,worldCoverageResponse);
   let response = max(legacyResponse, select(vec2<f32>(0.0), worldResponse, worldActive && input.frontFacing));
   let worldResponseSelected = worldActive && input.frontFacing && worldResponse.x >= legacyResponse.x;

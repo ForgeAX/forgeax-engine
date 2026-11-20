@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { readReadyCompletedFrame, waitForViewProjectReady } from '../../test/app/acceptance.mjs';
 
@@ -21,6 +22,7 @@ async function fixture({ connected = true, busy = false, restoring = false, erro
   await frame.evaluate(({ connected, busy, restoring, error, projectId, targetId, phase }) => {
     globalThis.__projectState = { busy, restoring, error,
       snapshot: { project: { id: projectId }, projectPhase: phase,
+        projectDocument: targetId && { targetId, url: 'http://localhost/?private-token=not-for-records' },
         projectTarget: targetId && { targetId, url: 'http://localhost/?private-token=not-for-records' } } };
     globalThis.__forgeaxViewReady = { mounted: { transport: { connected },
       frontendHost: { context: { get: () => ({ projectSession: { getSnapshot: () => globalThis.__projectState } }) } } } };
@@ -59,14 +61,21 @@ test('late target publication retains a separate bounded browser startup budget'
   const f = await fixture({ targetId: null, phase: 'starting', busy: true, restoring: true });
   const stages = [];
   try {
-    await f.frame.evaluate(() => {
-      setTimeout(() => { globalThis.__projectState.snapshot.projectTarget = {
-        targetId: 'target-ready', url: 'http://localhost/?private-token=not-for-records' }; }, 160);
-      setTimeout(() => { const state = globalThis.__projectState;
-        state.busy = false; state.restoring = false; state.snapshot.projectPhase = 'running'; }, 400);
-    });
     await waitForViewProjectReady(f.view, 'template-game-3d', performance.now() + 300,
-      { startupTimeoutMs: 600, onStage: row => stages.push(row) });
+      { startupTimeoutMs: 600, onStage: async row => {
+        stages.push(row);
+        if (row.stage === 'project-target') {
+          await delay(160);
+          await f.frame.evaluate(() => { globalThis.__projectState.snapshot.projectDocument = {
+            targetId: 'target-ready', url: 'http://localhost/?private-token=not-for-records' }; });
+        }
+        if (row.stage === 'project-startup') {
+          await delay(240);
+          await f.frame.evaluate(() => { const state = globalThis.__projectState;
+            state.snapshot.projectTarget = { ...state.snapshot.projectDocument };
+            state.busy = false; state.restoring = false; state.snapshot.projectPhase = 'running'; });
+        }
+      } });
     assert.deepEqual(stages.map(row => row.stage), ['project-target', 'project-startup', 'project-ready']);
     assert.equal(JSON.stringify(stages).includes('private-token'), false);
   } finally { await f.page.close(); }

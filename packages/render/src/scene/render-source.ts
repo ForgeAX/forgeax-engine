@@ -201,10 +201,7 @@ export function createRenderSourceState(world: World, additional: readonly Compo
   // runtime. Resolve the World-owned Skin token so the
   // retained projection observes the exact components the consumer registered,
   // even when module identity differs across those bundles.
-  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const renderableComponents = RENDERABLE_SOURCE_COMPONENTS.map((component) =>
-    component === Skin ? skin : component,
-  );
+  const renderableComponents = renderSourceComponents(world);
   const components = [...renderableComponents, ...additional];
   const projection = createStateProjection(world, components, [
     ...components,
@@ -226,6 +223,12 @@ export function createRenderSourceState(world: World, additional: readonly Compo
     renderableComponents,
     water: { rows: captureRenderWaterSources(world) },
   };
+}
+
+/** The same World-owned source vocabulary used by ordinary and staged extraction. */
+export function renderSourceComponents(world: World) {
+  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  return RENDERABLE_SOURCE_COMPONENTS.map((component) => (component === Skin ? skin : component));
 }
 
 export function isRenderableMember(world: World, entity: number): boolean {

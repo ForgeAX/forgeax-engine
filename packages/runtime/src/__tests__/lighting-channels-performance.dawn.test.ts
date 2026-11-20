@@ -20,7 +20,7 @@ import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal
 import { ok } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -176,7 +176,9 @@ it.skipIf(process.env.LIGHTING_CHANNEL_PERF !== '1')(
     mkdirSync(directory, { recursive: true });
     const adapter = await navigator.gpu.requestAdapter();
     if (adapter === null) throw new Error('missing physical performance adapter');
-    const manifest = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
+    const manifest = shaderManifestUrl(
+      await buildEngineShaderTemplateManifest({ pointShadows: true }),
+    );
     const sourceHash = createHash('sha256');
     const sourcePaths = execFileSync(
       'git',

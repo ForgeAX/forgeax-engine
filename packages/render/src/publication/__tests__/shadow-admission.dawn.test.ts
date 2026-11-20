@@ -14,10 +14,7 @@ import {
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import {
-  buildEngineShaderManifest,
-  publishShaderManifest,
-} from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
@@ -37,12 +34,7 @@ function required<T>(
 const path = process.env.SHADOW_ADMISSION_SHADER_MANIFEST;
 const contents =
   path === undefined
-    ? await (async () => {
-        const built = await buildEngineShaderManifest();
-        return JSON.stringify(
-          'toJSON' in built ? built : publishShaderManifest(built.entries, built.materialShaders),
-        );
-      })()
+    ? JSON.stringify(await buildEngineShaderTemplateManifest())
     : Uint8Array.from(readFileSync(path)).buffer;
 const manifestUrl = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
 afterAll(() => URL.revokeObjectURL(manifestUrl));

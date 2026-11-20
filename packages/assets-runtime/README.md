@@ -14,6 +14,12 @@ content intact; source Catalog/publication evidence remains unchanged and
 its existing collision and publication rules. App owns author preview lifetime;
 this capability does not introduce editor state into game registries.
 
+Acceptance may read candidate content and retain/release consumer references.
+It cannot change content, publish another transaction, capture versions or read
+an observer batch after dependency validation. A rejected callback leaves cleanup
+of its external consumers to the caller; restoring content does not undo World
+side effects or consume caller-owned consumer references.
+
 `AssetRegistry` owns runtime asset identity, content, revisions and lifetime.
 Games create or load one asset, bind its handle, and edit that same asset. A
 Renderer, physics world or player adopts changes at its own execution boundary.
@@ -201,7 +207,11 @@ accepted runtime closure.
 
 ## Domain preparation
 
-Freshly parsed Pack material programs share validated immutable ABI facts. Runtime edits and decoder payloads stay detached; source publication integrity checks still run before admission.
+Compiled Pack materials share validated immutable ABI facts. Scriptable Pack
+materials admit the verified WGSL source library before rendering. The Asset
+Registry resolves program requests in the renderer's context and shares the
+selected artifacts across equal source and static contracts. Runtime edits and
+decoded source data stay detached.
 
 Engine/Runtime installs the default domain contributions. A bare Registry must
 install the contributions used by source loading or custom content. For example,
@@ -446,11 +456,78 @@ ordinary numeric updates.
 Asset changes are retained in a bounded journal with independent consumer
 cursors. Repeated writes coalesce by identity; writing does not visit entity or
 consumer lists. Empty reads reuse an empty batch. Default limits are 65,536
-identities, 1 GiB of owned content, 128 snapshots, 64 ranges, 32 observer
+identities, 4 GiB of owned content, 128 snapshots, 64 ranges, 32 observer
 channels and 1,024 dependencies per asset. Exceeding a limit returns a structured
 failure before adoption.
 
 ### Internal readers across realms
+
+`runtimeAssets(owner).beginAdoption(check?)` starts one private ingestion candidate.
+Each `adopt` owns its captured payload; preparation uses the explicit candidate
+reader while ordinary owner reads remain committed. Initial committed inputs get
+protected holds and revision guards. Unrelated ordinary transactions can run
+between steps; they share the candidate's byte and identity budget. Commit checks
+the merged graph, exposes the synchronous acceptance view, rechecks inputs, then
+publishes records without another payload copy. Consumer references on existing
+targets use their current holder counts. Old dependency edges retire separately.
+
+On rejection, new private identities lose read/validate/retain access but keep a
+release-only settlement route for consumer cleanup after callback unwind. Such
+consumers own their grants; cancellation never decrements them automatically.
+`stepRetirement(maxWork)` bounds actual reference decrements and private record
+removal. Outstanding consumers and capacity remain inspectable; `closed` denotes
+owner termination, not proof that external consumers returned their grants.
+Ordinary Registry load/reload now drive this same private preparation route with
+one active ingestion and queued selection after concurrent source I/O. The default
+driver yields host tasks at a 2 ms launch threshold; it does not preempt a running
+item. Original reload conflict epochs and independent caller holds remain intact.
+Source expectations retain metadata/entry identity, not payload versions. Each
+step validates before and after synchronous source consumption, and extension
+context reads plus extension exit recheck source facts. GUID/provenance publication
+uses captured descriptors after record acceptance. Retired decoder cache entries
+are invalidated before reuse, rather than relabelled with a new lease.
+
+Final records retain their full logical byte charge. The known copy/take kernel
+accounts additional mutable capture storage and proves exact same-capture object/
+buffer transfer credit; it does not globally deduplicate equal record contents or
+claim a physical JS heap limit. Source/Cook payloads remain with their source/shader
+owners; ingestion generators do not keep their POD across yields.
+
+The App-frame-driven Level route is not integrated. Source I/O/decode, each single
+asset, initial metadata capture, graph/publication work and complete frames still
+require measured bounds. Cooperative preparation alone is not proof of nonblocking
+cold loading, GPU/native readiness or a supported Level size.
+
+Domain tasks that suspend drive `runtimeAssets(owner).beginContentCapture(root)`
+in bounded steps rather than retaining an ordinary borrowed value. Begin fixes
+the exact closure and reserves real holds and snapshot capacity; the final seal
+returns the engine-only fixed lease. Its `read` returns stable borrowed fixed
+values; do not edit or retain them after retirement. Public reads still return
+detached copies. Closure collection, each copy and `matchesCurrent` validation
+remain measured preparation work.
+
+Scene preparation additionally drives the internal
+`createSceneContentPublicationTask(registry, lease, root)` against that same
+Registry's sealed lease. It resolves nested GUIDs only within the captured
+closure and checks root/nested adopted receipts against complete current Catalog
+publications. Previously edited source Scenes cannot reuse an old producer
+receipt. Every resume and the returned guard's final `validate()` recheck content
+and publication facts; observed invalidation stays terminal. A healthy Catalog
+revision can reuse a complete row proof for roots with the same output set.
+Each root must match its accepted row, full output membership and publication
+fence. No current payload borrow or public read supplies nested
+content. Dispose the task before retiring its caller-owned lease to close suspended
+fixed-value readers. These are source-publication facts, not Render or native
+readiness; closure and publication scans remain measured work.
+
+`lease.retire()` transfers those holds to one idempotent retirement cursor.
+`deferRelease(handles)` similarly consumes already-owned references, without
+creating new assets or changing ordinary `release`. Drain the cursor with
+`step(maxReferences)`; the budget covers dependency decrements as well as roots.
+Custody cannot be consumed by an unrelated release. Pending holds remain live
+and charged until their owner processes them; another consumer may retain the
+same asset while retirement proceeds. Owner disposal is sufficient CPU retirement
+evidence, but does not replace a Render submission or receiver retirement proof.
 
 Domain owners that already reserve bytes for an exclusive content copy can
 capture a revision guard through the internal records owner. The guard retains
@@ -584,13 +661,19 @@ absence of WebCrypto never disables verification.
 All mipmap entrypoints consume `RhiDevice` and opaque RHI resource handles. The
 injected shader factory accepts that same device and returns `ShaderModule`, so
 backend factories pass directly through initialization and recovery. Async
-generation prewarms the pipeline and uses the synchronous submission path; errors
-remain `RhiError` throughout.
+generation prewarms the pipeline and uses the synchronous submission path.
+Ordinary preparation failures return `RhiError`; combined preparation and
+unconfirmed scratch retirement retain both causes in an aggregate failure.
 
 The internal `encodeMipmaps` helper records into a caller encoder and returns
 backend-temporary cleanup without finishing or submitting. `prepareMipmaps` delegates to
-it and retains its finish/discard transaction. Dynamic Canvas updates share the
-Renderer's submission rather than opening a separate queue path.
+it and retains its finish/discard transaction. Its optional capture callback
+transfers cleanup responsibility before encoding, not permission to finish or
+submit. Cancellation during encoding defers scratch release until encoding stops;
+failed cleanup attempts every owned scratch and remains faulted on repeat discard.
+The same receipt survives encoding failure so its caller can retain unconfirmed
+resources. Dynamic Canvas updates share the Renderer's submission rather than
+opening a separate queue path.
 
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
 cube textures; omission retains the single-layer 2D path. All layers retain the
@@ -647,3 +730,27 @@ Retiring a publication source releases its Catalog replica directory and cached
 snapshot. Runtime handles keep their accepted content and provenance; immutable
 observations already returned to callers remain valid. A retired source refuses
 new reads, and a replacement source builds its own current directory.
+
+`beginContentCapture` reserves the initial exact closure, snapshot capacity and
+real holds atomically before any copy. Each `step(maxAssets)` copies from
+committed records after checking the original revisions; only the final seal
+returns a readable lease. Staged adoption excludes begin, step, seal and custody
+changes. A replaced dependency invalidates the whole candidate; expected versions
+are never refreshed to mix sources. Pending cancellation/disposal clears its
+partial copies, guards and reservation, then retires real holds through the owner.
+The owner settles unfinished capture cleanup on close without a future frame or
+caller step. Registry root/nested publication fences remain a separate authority.
+`captureContent` synchronously drives the same algorithm and can still block;
+streaming scheduling must use the explicit continuation route. Per-asset copying,
+initial closure collection and guards remain measured, indivisible work.
+
+Scene publication continuations recheck fixed content, adopted source identity
+and modification, and the current root plus every required Catalog sibling.
+Catalog admission captures and freezes its own publication graph; it does not
+freeze the producer's observation. Source tuples share those immutable facts,
+while privately prepared publications use the Registry's owned captured rows.
+Unchanged inputs reuse successful normalization and complete-output checks.
+Multiple roots with the same exact accepted outputs can use one complete proof,
+including separately decoded wire envelopes. Changed rows rerun the full checker,
+and failure or disposal drops the derived caches. Acquisition/copying and cache
+misses remain real measured work; this is not native or streaming-budget proof.

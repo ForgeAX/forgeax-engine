@@ -1,13 +1,14 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import type { BindGroup, RenderBundle, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import type { ProjectedRasterClass } from '../gpu-driven/production-raster-classes';
 import { IndirectPassBindings } from '../gpu-driven/production-raster-encode';
 import {
   classOwner,
   livePhysical,
   RetainedRasterEncodes,
+  type RetainedRasterInputPreparation,
   runFacts,
 } from '../gpu-driven/retained-raster-encode';
 
@@ -22,6 +23,278 @@ const bundle = {} as RenderBundle;
 const material = () => ({ group, offset: 256 });
 const owners = () => ({ pipeline, mesh });
 const live = (vertex: object = {}) => ({ meshBinding: { vertex, index: undefined } });
+
+function preparedFixture() {
+  const encodes = new RetainedRasterEncodes();
+  const key = {},
+    identity = {},
+    nextIdentity = {},
+    vertex = {},
+    nextVertex = {};
+  const owner = live(vertex);
+  const identities: unknown[] = [identity, 'unchanged'];
+  const encode = encodes.begin(key, identities, material, owners);
+  const block = encode.record([owner], 0, 1, livePhysical);
+  block.materials.set(3, material());
+  block.classes.set(rasterClass, owners());
+  block.bundle = bundle;
+  block.draws = 1;
+  encodes.finish(key, identities, encode);
+  const nextBundle = {} as RenderBundle;
+  const prepare = (current = () => true) =>
+    encodes.prepareInputs(
+      new Map([
+        [identity, nextIdentity],
+        [vertex, nextVertex],
+      ]),
+      (value) => (value === bundle ? nextBundle : undefined),
+      current,
+    );
+  return {
+    encodes,
+    key,
+    identity,
+    nextIdentity,
+    vertex,
+    nextVertex,
+    owner,
+    identities,
+    block,
+    nextBundle,
+    prepare,
+  };
+}
+
+it('privately remaps retained bundle, pass identities and physical facts together', () => {
+  const f = preparedFixture();
+  const task = f.prepare().unwrap();
+  const previous = f.encodes.begin(f.key, f.identities, material, owners);
+  expect(previous.reuse([f.owner], 0, 1, livePhysical)).toBe(f.block);
+  f.encodes.finish(f.key, f.identities, previous);
+  expect(task.isCurrent()).toBe(true);
+  task.publish().unwrap();
+  expect(f.block.bundle).toBe(bundle);
+  expect(f.block.physical).toEqual([f.vertex, undefined]);
+  f.owner.meshBinding.vertex = f.nextVertex;
+  const next = f.encodes.begin(f.key, [f.nextIdentity, 'unchanged'], material, owners);
+  const accepted = next.reuse([f.owner], 0, 1, livePhysical);
+  expect(accepted?.bundle).toBe(f.nextBundle);
+  expect(accepted?.draws).toBe(1);
+  expect(accepted?.materials.get(3)).toEqual(material());
+  expect(accepted?.classes.get(rasterClass)).toEqual(owners());
+  expect(accepted?.commands).toEqual(f.block.commands);
+  expect(task.isCurrent()).toBe(false);
+  expect(task.publish().ok).toBe(false);
+  task.release();
+});
+
+it.each([
+  'pass',
+  'physical',
+  'both',
+] as const)('rejects incomplete native bundle coverage for changed %s facts and preserves accepted runs', (change) => {
+  const f = preparedFixture();
+  const missing = vi.fn(() => undefined);
+  const remaps = new Map<object, object>();
+  if (change !== 'physical') remaps.set(f.identity, f.nextIdentity);
+  if (change !== 'pass') remaps.set(f.vertex, f.nextVertex);
+  const prepared = f.encodes.prepareInputs(remaps, missing, () => true);
+  if (prepared.ok) prepared.value.release();
+  expect(prepared.ok).toBe(false);
+  expect(missing).toHaveBeenCalledTimes(1);
+  const previous = f.encodes.begin(f.key, f.identities, material, owners);
+  expect(previous.reuse([f.owner], 0, 1, livePhysical)).toBe(f.block);
+  expect(f.block.bundle).toBe(bundle);
+  f.encodes.finish(f.key, f.identities, previous);
+  f.prepare().unwrap().release();
+});
+
+it('preserves an unmapped native bundle only when all recorded facts are unchanged', () => {
+  const f = preparedFixture();
+  f.encodes
+    .prepareInputs(
+      new Map(),
+      () => undefined,
+      () => true,
+    )
+    .unwrap()
+    .publish()
+    .unwrap();
+  const next = f.encodes.begin(f.key, f.identities, material, owners);
+  expect(next.reuse([f.owner], 0, 1, livePhysical)?.bundle).toBe(bundle);
+});
+
+it('keeps a prepared replacement current through unchanged frames and preserves current age', () => {
+  const f = preparedFixture();
+  const task = f.prepare().unwrap();
+  for (let frame = 0; frame < 4; frame++) {
+    f.encodes.beginFrame();
+    const same = f.encodes.begin(f.key, f.identities, material, owners);
+    if (frame % 2 === 0) expect(same.reuse([f.owner], 0, 1, livePhysical)).toBe(f.block);
+    else {
+      const recording = same.record([f.owner], 0, 1, livePhysical);
+      recording.materials.set(3, material());
+      recording.classes.set(rasterClass, owners());
+      recording.bundle = bundle;
+      recording.draws = 1;
+    }
+    f.encodes.finish(f.key, f.identities, same);
+    expect(task.isCurrent()).toBe(true);
+  }
+  task.publish().unwrap();
+  f.encodes.beginFrame();
+  expect(f.encodes.size).toBe(1);
+  f.owner.meshBinding.vertex = f.nextVertex;
+  expect(
+    f.encodes
+      .begin(f.key, [f.nextIdentity, 'unchanged'], material, owners)
+      .reuse([f.owner], 0, 1, livePhysical)?.bundle,
+  ).toBe(f.nextBundle);
+});
+
+it.each([
+  'identity',
+  'command',
+  'physical',
+  'material',
+  'class',
+  'bundle',
+  'draws',
+] as const)('keeps accepted %s independent of edits to the original recording', (change) => {
+  const f = preparedFixture();
+  const task = f.prepare().unwrap();
+  if (change === 'identity') f.identities[0] = {};
+  else {
+    expect(() => {
+      if (change === 'command') (f.block.commands as object[])[0] = {};
+      else if (change === 'physical') (f.block.physical as unknown[])[0] = {};
+      else if (change === 'material') {
+        const value = f.block.materials.get(3);
+        assert(value !== undefined);
+        (value as { offset: number }).offset = 512;
+      } else if (change === 'class') {
+        const value = f.block.classes.get(rasterClass);
+        assert(value !== undefined);
+        (value as { pipeline: object }).pipeline = {};
+      } else if (change === 'bundle') f.block.bundle = {} as RenderBundle;
+      else f.block.draws++;
+    }).toThrow(TypeError);
+  }
+  expect(task.isCurrent()).toBe(true);
+  task.publish().unwrap();
+  f.owner.meshBinding.vertex = f.nextVertex;
+  const next = f.encodes.begin(f.key, [f.nextIdentity, 'unchanged'], material, owners);
+  const accepted = next.reuse([f.owner], 0, 1, livePhysical);
+  expect(accepted?.bundle).toBe(f.nextBundle);
+  expect(accepted?.draws).toBe(1);
+  expect(accepted?.commands).toEqual(f.block.commands);
+  expect(accepted?.materials.get(3)).toEqual(material());
+  expect(accepted?.classes.get(rasterClass)).toEqual(owners());
+});
+
+it.each(['clear', 'append', 'replace', 'prune'] as const)('refuses retained pass %s', (change) => {
+  const f = preparedFixture();
+  const task = f.prepare().unwrap();
+  if (change === 'clear') f.encodes.clear();
+  else if (change === 'append') recordRun(f.encodes, {}, [live()]);
+  else if (change === 'replace') recordRun(f.encodes, f.key, [live()]);
+  else {
+    f.encodes.beginFrame();
+    f.encodes.beginFrame();
+  }
+  expect(task.isCurrent()).toBe(false);
+  expect(task.publish().ok).toBe(false);
+  task.release();
+  f.encodes
+    .prepareInputs(
+      new Map(),
+      () => undefined,
+      () => true,
+    )
+    .unwrap()
+    .release();
+});
+
+it('stops borrowed callbacks after invalidation and releases thrown attempts', () => {
+  const f = preparedFixture();
+  const replacePass = vi.fn((values: readonly unknown[]) => {
+    f.encodes.clear();
+    return values;
+  });
+  const replaceBundle = vi.fn(() => undefined);
+  expect(f.encodes.prepareInputs(new Map(), replaceBundle, () => true, replacePass).ok).toBe(false);
+  expect(replacePass).toHaveBeenCalledTimes(1);
+  expect(replaceBundle).not.toHaveBeenCalled();
+  recordRun(f.encodes, f.key, [f.owner]);
+  expect(() =>
+    f.encodes.prepareInputs(
+      new Map(),
+      () => {
+        throw new Error('mapper failed');
+      },
+      () => true,
+    ),
+  ).toThrow('mapper failed');
+  f.encodes
+    .prepareInputs(
+      new Map(),
+      () => undefined,
+      () => true,
+    )
+    .unwrap()
+    .release();
+});
+
+it.each([
+  'query',
+  'publish',
+  'release',
+] as const)('closes observation reentry through %s', (operation) => {
+  const f = preparedFixture();
+  let task: RetainedRasterInputPreparation | undefined;
+  let reenter = false;
+  let nested: boolean | undefined;
+  task = f
+    .prepare(() => {
+      if (reenter) {
+        reenter = false;
+        if (operation === 'release') task?.release();
+        else nested = operation === 'publish' ? task?.publish().ok : task?.isCurrent();
+      }
+      return true;
+    })
+    .unwrap();
+  reenter = true;
+  const accepted = task.publish();
+  expect(accepted.ok).toBe(operation !== 'release');
+  if (operation !== 'release') expect(nested).toBe(false);
+  expect(task.isCurrent()).toBe(false);
+});
+
+it.each([
+  'publish',
+  'release',
+] as const)('drops the owner after %s even if the closed task is retained', async (operation) => {
+  const held = (() => {
+    const encodes = new RetainedRasterEncodes();
+    recordRun(encodes, {}, [live()]);
+    const owner = new WeakRef(encodes);
+    const task = encodes
+      .prepareInputs(
+        new Map(),
+        () => undefined,
+        () => true,
+      )
+      .unwrap();
+    if (operation === 'publish') task.publish().unwrap();
+    else task.release();
+    return { task, owner };
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  gc();
+  expect(held.owner.deref()).toBeUndefined();
+  expect(held.task.isCurrent()).toBe(false);
+});
 
 function recordRun(encodes: RetainedRasterEncodes, key: object, lives: object[]) {
   const encode = encodes.begin(key, ['view'], material, owners);
@@ -203,7 +476,7 @@ it.each([
   expect(resolve.mock.calls.map(([slot]) => slot)).toEqual(
     mode === 'throw' ? [1, 2, 2, 3] : [1, 2, 3],
   );
-  expect(first.materials.get(2)).toBe(mode === 'mismatch' ? old : next);
+  expect(first.materials.get(2)).toEqual(mode === 'mismatch' ? old : next);
 });
 
 it('preserves prefix memoization when an owner callback reenters the same encode', () => {
@@ -297,7 +570,10 @@ it('compares the complete ordered fact stream with Object.is and rejects a chang
   const changed = encodes.begin(key, ['view'], material, owners);
   expect(changed.reuse(lives, 0, 2, read)).toBeUndefined();
   expect(reads).toBe(2);
-  encodes.finish(key, ['view'], same);
+  facts = [Number.NaN, 0];
+  const restored = encodes.begin(key, ['view'], material, owners);
+  restored.record(lives, 0, 2, read);
+  encodes.finish(key, ['view'], restored);
   facts = [Number.NaN, 0, undefined];
   expect(encodes.begin(key, ['view'], material, owners).reuse(lives, 0, 2, read)).toBeUndefined();
   expect(block.physical).toEqual([Number.NaN, 0, Number.NaN, 0]);

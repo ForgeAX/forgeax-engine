@@ -1,5 +1,5 @@
 import { WebGPURenderer } from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
@@ -11,7 +11,9 @@ for (const mode of pointColorModes)
     const renderer = new WebGPURenderer({
       canvas: surface.canvas as unknown as OffscreenCanvas,
       forgeax: {
-        bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+        bundler: {
+          shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
+        },
       },
     });
     try {

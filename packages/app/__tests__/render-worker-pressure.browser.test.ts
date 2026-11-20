@@ -113,9 +113,7 @@ it.each([
       expect(final.frame.completed).toBeGreaterThan(initial.frame.completed);
       // The default render pipeline admits this many sealed pictures before
       // GPU completion; the measured window must never exceed it.
-      expect(
-        (final.render?.submittedFrame ?? 0) - (final.render?.completedFrame ?? 0),
-      ).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
+      expect(final.frame.highWater).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
     }
     const phaseTimings = await request('metrics');
     const rawPingMs = [...samples];

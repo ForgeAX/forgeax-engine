@@ -4,7 +4,14 @@
 // stub (no real GPU). Mirrors the runtime-project mipmap tests, but imports the
 // relative `../mipmap-generator` so coverage attributes to src/, not dist/.
 
-import { type RhiDevice, ok as rhiOk, type ShaderModule, type Texture } from '@forgeax/engine-rhi';
+import {
+  type RhiDevice,
+  RhiError,
+  err as rhiErr,
+  ok as rhiOk,
+  type ShaderModule,
+  type Texture,
+} from '@forgeax/engine-rhi';
 import { numMipLevels } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -390,6 +397,177 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     });
     expect(res.ok).toBe(true);
   });
+});
+
+it.each([
+  'result',
+  'throw',
+] as const)('retains a real scratch destruction %s failure across repeated discard', async (mode) => {
+  const device = makeBlitDevice();
+  const failure = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'native scratch destruction',
+    hint: 'retain unconfirmed scratch responsibility',
+  });
+  let attempts = 0;
+  device.destroyTexture = () => {
+    attempts++;
+    if (mode === 'throw') throw failure;
+    return rhiErr(failure);
+  };
+  await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory, 'normal-roughness');
+  const work = prepareMipmaps(device, {} as Texture, {
+    format: 'rgba8unorm',
+    filter: 'normal-roughness',
+    width: 2,
+    height: 2,
+  }).unwrap();
+  expect(work.finish().ok).toBe(true);
+  expect(() => work.discard()).toThrow(failure);
+  expect(() => work.discard()).toThrow(failure);
+  expect(attempts).toBe(1);
+});
+
+it.each([
+  ['webgpu', 'result'],
+  ['webgpu', 'throw'],
+  ['wgpu-webgl2', 'result'],
+  ['wgpu-webgl2', 'throw'],
+] as const)('preserves primary and all scratch retirement failures on %s with cleanup %s', async (backendKind, mode) => {
+  const device = makeBlitDevice();
+  Object.assign(device.caps, { backendKind });
+  const primary = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'mip bind group',
+    hint: 'encoding failed after scratch allocation',
+  });
+  const cleanup = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'scratch destruction',
+    hint: 'retain the failed scratch',
+  });
+  let attempts = 0;
+  device.createBindGroup = () => rhiErr(primary);
+  device.destroyTexture = () => {
+    attempts++;
+    if (mode === 'throw') throw cleanup;
+    return rhiErr(cleanup);
+  };
+  const filter = backendKind === 'webgpu' ? 'normal-roughness' : 'box';
+  await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory, filter);
+  let observed: unknown;
+  try {
+    const result = prepareMipmaps(device, {} as Texture, {
+      format: 'rgba8unorm',
+      filter,
+      width: backendKind === 'webgpu' ? 4 : 2,
+      height: 2,
+      arrayLayerCount: 2,
+    });
+    if (!result.ok) observed = result.error;
+  } catch (cause) {
+    observed = cause;
+  }
+  expect(observed).toBeInstanceOf(AggregateError);
+  const failures = (value: unknown): unknown[] =>
+    value instanceof AggregateError ? value.errors.flatMap(failures) : [value];
+  expect(failures(observed)).toContain(primary);
+  expect(failures(observed)).toContain(cleanup);
+  expect(attempts).toBe(2);
+});
+
+it('rejects finish and honours cancellation from the initial work transfer before allocating scratch', async () => {
+  const log: BlitLog = { copies: [], destroyed: [] };
+  const device = makeBlitDevice(undefined, log);
+  await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory);
+  let created = 0;
+  const create = device.createTexture.bind(device);
+  device.createTexture = (descriptor) => {
+    created++;
+    return create(descriptor);
+  };
+  let work: import('../mipmap-generator').MipmapEncoderWork | undefined;
+  const result = prepareMipmaps(
+    device,
+    {} as Texture,
+    { format: 'rgba8unorm', width: 4, height: 4 },
+    (value) => {
+      work = value;
+      expect(value.finish().ok).toBe(false);
+      value.discard();
+    },
+  );
+  expect(result.ok).toBe(false);
+  expect(created).toBe(0);
+  expect(log.destroyed).toHaveLength(0);
+  expect(work?.finish().ok).toBe(false);
+  expect(() => work?.discard()).not.toThrow();
+});
+
+it('defers reentrant discard until encoding stops appending scratch', async () => {
+  const log: BlitLog = { copies: [], destroyed: [] };
+  const device = makeBlitDevice(undefined, log);
+  await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory, 'normal-roughness');
+  let work: import('../mipmap-generator').MipmapEncoderWork | undefined;
+  const create = device.createTexture.bind(device);
+  let created = 0;
+  device.createTexture = (descriptor) => {
+    created++;
+    work?.discard();
+    expect(log.destroyed).toHaveLength(0);
+    return create(descriptor);
+  };
+  const result = prepareMipmaps(
+    device,
+    {} as Texture,
+    { format: 'rgba8unorm', filter: 'normal-roughness', width: 4, height: 4, arrayLayerCount: 2 },
+    (value) => {
+      work = value;
+    },
+  );
+  expect(result.ok).toBe(false);
+  expect(created).toBe(2);
+  expect(log.destroyed).toHaveLength(2);
+  expect(work?.finish().ok).toBe(false);
+  work?.discard();
+  expect(log.destroyed).toHaveLength(2);
+});
+
+it('retains the transferred scratch receipt when both encoding and its cleanup fail', async () => {
+  const device = makeBlitDevice();
+  const primary = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'mip bind group',
+    hint: 'encoding failed',
+  });
+  const cleanup = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'scratch destruction',
+    hint: 'keep the same receipt',
+  });
+  let attempts = 0;
+  device.createBindGroup = () => rhiErr(primary);
+  device.destroyTexture = () => {
+    attempts++;
+    return rhiErr(cleanup);
+  };
+  await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory, 'normal-roughness');
+  let work: import('../mipmap-generator').MipmapEncoderWork | undefined;
+  expect(() =>
+    prepareMipmaps(
+      device,
+      {} as Texture,
+      { format: 'rgba8unorm', filter: 'normal-roughness', width: 4, height: 4, arrayLayerCount: 2 },
+      (value) => {
+        work = value;
+      },
+    ),
+  ).toThrow(AggregateError);
+  expect(work).toBeDefined();
+  expect(work?.finish().ok).toBe(false);
+  expect(() => work?.discard()).toThrow(AggregateError);
+  expect(() => work?.discard()).toThrow(AggregateError);
+  expect(attempts).toBe(2);
 });
 
 describe('normal-roughness mip ownership', () => {

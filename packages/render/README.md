@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # `@forgeax/engine-render`
 
 ## Quality budgets
@@ -43,6 +46,318 @@ particle parameter prefix.
 Custom pipelines pass `topology.materialSceneDepth` to `addTypedScenePass`
 where the selected draws use this contract. An omitted or false flag leaves
 that pass on its ordinary attachment and batching path.
+
+## Internal Level render preparation
+
+The internal `streamingMaterialRejection` helper reuses Render's Surface and
+program semantics to reject blended, transmission, medium and sprite content
+from static Scene preparation. This is content eligibility; actual graph,
+resource, capacity and pipeline staging remains a separate owner obligation.
+
+The internal `prepareMeshSourceSteps` reads a caller-owned inactive Scene roster
+through the same Mesh extraction owner, without enabling its entities or reading
+the frame environment. It captures fresh author visibility, reads prepared
+GlobalTransform poses, owns Instances copies, and isolates candidate material
+snapshots from the ordinary source cache. Routed extraction errors reject the
+task rather than silently omitting required rows. The caller retains real asset
+holds and guards the fixed roster, ancestor inputs, content and compiler facts.
+Initial visibility capture and large per-member copies still count toward its
+budget. These CPU results are data, not admission capabilities or native
+readiness.
+
+`SceneComposition.beginStagedGroup` privately drives that extraction for an
+exact Scene roster observation, content lease and render-read session. It
+admits closed-group rows into the existing SceneRows, canonical material cache
+and Instances store. Ordinary source consumption reuses these same identities
+after an adjacent controlled Scene switch; background work does not accept the
+ordinary source cursor. Unsupported derived renderers reject preparation.
+The task borrows the caller's real content lease until retirement. Composition
+maintenance and disposal attempt safe retirement without another frame, retain
+unconfirmed source-stop responsibilities and preserve independent cleanup errors.
+A configured device without its actual Renderer resource adapter rejects at
+entry. The actual Renderer now drives private Mesh/Texture preparation after
+ordinary inactive extraction, with exact versions, submission leases, generated
+mips and real completion signals. Cold Mesh and ordinary Texture allocations stay
+unpublished during private preparation, then their original receipts commit at
+Data handoff; existing same-version resources retain ordinary cache ownership. Cancelling waits
+for queued work and advances exact resource retirement without new frames.
+The same task now passes its real Mesh receipts, material snapshots and dispatch
+through CameraViews to the existing candidate PSO owner. Local demand borrows
+actual staged View inputs, source light adoption, fitted views and the retained
+source session; no publication recipe is manufactured. Shared material demand
+survives until its last ticket releases. View roster, graph, source and device
+changes invalidate qualification. Cancellation waits for a late result and
+releases it before physical resources, without requiring another frame.
+Preparation checks progress guards per quantum, then performs full PSO receipt
+qualification in the measured final resume. That synchronous cohort bookends
+one physical/source observation and shares actual per-view demand facts while
+still classifying every recipe and performing every real pipeline lookup.
+The original View input/options, lane, probe demand, graph, owner roster and
+preparation-hold revisions must remain valid; callbacks cannot wash invalidation
+by recapturing newer facts. Nested checks reject, and finally closes all borrowed
+observations. Individual ticket checks retain full freshness and liveness
+validation. No observation survives a yield or becomes a second PSO cache.
+This qualifies the original pre-Data read domain; actual C1 pass demand must
+be qualified after Data handoff. Source Data does not grant Prepared.
+
+Fixed local Source pipeline requests retain their pure geometry/material projection
+until release. The existing request holds only a weak graph reference and records
+the actual compiler artifact arguments/results. Reuse rechecks those selections,
+graph and projection flags; qualification rechecks them again after actual native
+PSO lookup. Source currency still covers all owned source, Mesh and Material inputs.
+This preserves the existing hidden-execution retention without retaining a frame
+or adding a PSO cache. Borrowed materials and publication/dynamic recipes retain
+conservative rebuilding. Pure projection reuse grants no native row admission.
+
+The same fixed Source projection can retain complete typed-producer lookup
+arguments for immutable stock pass selectors. Qualification replays each actual
+native lookup; it never retains a PSO result or a Ready conclusion. Pure copied
+arguments are frozen, compiler reads must remain consistent, and both optional
+resolver availability and actual returned artifact identities are observed.
+The key includes all narrow geometry/view facts, actual entry selection, shadow
+reflection demand, device capability inputs, UV count and consumed native state
+fields. Graph/demand/native state observations are weak. Raw/custom selectors,
+borrowed materials and publication/dynamic inputs retain ordinary construction.
+Cancellation stops further native queries and release clears this data with the
+projection. Extra retained request bytes and complete frame/memory cost remain
+part of Level qualification; this optimization still grants no native admission.
+
+Scalar qualification uses compile-time exhaustive geometry/view field vectors,
+retaining value semantics, clipping copies and weak native identities without
+building temporary comparison records. The owned argument copy is consumed by
+actual native lookup during each request's preparation before its ticket is
+issued; aggregate qualification still performs actual native queries. Recorder
+invalidation is monotonic within that recording attempt, including seal-time
+revalidation. An unretainable trace still needs current ordinary qualification.
+
+The same Source task calls its actual GpuScene owner with final Scene-issued row
+identities. It reserves disjoint physical addresses in the existing allocators,
+without adding them to accepted high-water or active slot mappings, and encodes
+primitive/instance metadata, material payloads and root/local transforms into private tables.
+Cold Mesh/material descriptors and logical resource slots are reserved by the
+same Inputs allocators, with task-owned copied words. Accepted Mesh geometry is
+borrowed only with matching producer identity and revision; material borrowing
+also checks the exact schema used to pack the accepted payload. Ordinary and
+private paths share their ABI encoders and effective draw projection. The private
+geometry can now enter its exact reserved Scene row through the existing
+MeshFrame, without resolving the asset or capturing metadata again. This handoff
+contains only the original reserved identity and geometry; authored snapshot
+fields stay with Scene. Producer namespace/revision, current canonical geometry
+and row ownership are checked before publication and after callback observation.
+Actual Source now consumes this same geometry after the matching GPU
+row/resource custody has transferred. The private
+descriptor words now enter a task-private successor of the same Inputs resource
+tree and numeric backing. Source uploads that root, its private pages and exact
+Mesh/material descriptor words through the existing incremental upload algorithm.
+Active mappings and accepted backing stay unchanged. Source/address currency
+is independent from ordinary table catch-up:
+old-world frames may dirty a valid candidate while its private Inputs tree is
+constructed. Native binding preparation still requires both numeric uploads to
+be current at the common boundary. Nonempty row preparation owns private targets
+even when capacity does not grow. Ordinary
+uploads/stamps dirty the baseline copy; catch-up preserves encoded intervals.
+Each grant creates one table, copies at most 64 KiB, or encodes one pose/instance.
+Inspect separates table write traffic and private descriptor extents from retained
+native/CPU table bytes and uploaded bytes; Source separately reports the actual
+Inputs buffer extent, root, private page bytes and uploaded bytes. These are not
+a complete memory account.
+Cancellation fences queued writes, retires exact private tables and returns one
+address claim per grant without another frame. Partial resource claims enter the
+same task's custody before constructors allocate. An unknown rollback faults its
+owners and retains exact receipts; repeated retirement cannot claim success or
+blindly repeat the failed release. Ordinary new allocations can land
+beyond reserved addresses and require real backing growth; preparation does not
+guarantee unchanged frame cost under arbitrary concurrent edits.
+
+Capacity-only publication already hands off existing CameraViews/Production/View,
+Material and Retained consumers. Actual Source first prepares ordinary allocation
+shapes, numeric rows and resource claims, commits its original physical receipts,
+then consumes the matching Inputs/table/binding handoff. Scene's original row
+publication adopts the same addresses, packed versions and geometry. Data currency
+checks actual allocation stamps and resource claims across coherent later table
+replacement. Execution stays closed; App still refuses complete native preparation.
+
+Retirement detaches at most one Source row per grant and observes a fresh fence
+after final clear uploads before returning claims. Clean disposed settlement
+excludes every unknown disposal/retirement fault. Cold physical eviction checks
+the current exact ResourceScope closure and rechecks lifetime ownership after
+qualification callbacks. Shared current consumers retain the same native object.
+These are Data ownership rules, not C1 or complete cost qualification.
+
+The original Scene/storage/source guards and native failure responsibility remain.
+Before Data publication, Source drives actual Camera/Production View address
+preparation. Private batches/counters and compute groups grow to the Source table
+envelope; the exclusive final quantum copies latest history/order/Skin state and
+patches moving offsets while retaining raster storage and graph topology. View
+retirement journals exact native receipts, destroys one buffer per turn after its
+fence, and retains unknown failures. Source waits for the captured cohort before
+releasing Input/Capacity custody, including without future frames.
+
+Surface frame records use the full filtered candidate index, independently of
+physical Scene address extent. Equivalent direct-address mappings retain their
+buffer/groups; page/schema/device validation, content upload and consumption
+remain mandatory. The material binding owner retains the actual fixed graph
+variants (including backdrop/raw-depth/nearest-layer views) and transfers their
+Scene table bindings. The existing mesh binding owner also captures imperative
+clustered groups; migration no longer depends on a retained render bundle.
+Graph observations are separate when two live graphs share one native group.
+Native callbacks, new variants, empty-to-nonempty rosters and retirement can
+invalidate a private cohort; ordinary native results recheck the original graph
+before returning. Graph retirement removes its binding index. Imported/dynamic
+views do not acquire fixed-view qualification. Target View/Pass/topology,
+first-Level bootstrap and full frame/memory/budget acceptance remain incomplete. Cold Mesh
+packing and native creation also retain synchronous work; one asset per grant
+does not establish its bound. Execution and public Prepared remain refused.
+
+Cold native View creation now has one recipe shared by ordinary synchronous
+construction and continuable preparation. The latter advances one native
+layout/module call at a time and waits for actual completion of the eight
+compute pipelines; a synchronous-only backend does not qualify that preparation.
+Initial static-plan storage uses the ordinary capacity algorithm with one
+buffer allocation per resume. A View-owned private scope and the original
+retirement journal cover suspended and late-returning receipts; disposal and
+settlement need no iterator progress. Accepted storage transfers once.
+These internal stages are not connected to complete Source C1 yet. Topology,
+Inputs, constants, bindings, Skin/shadow demand and actual target Pass/graph
+preparation remain independent required stages; allocating storage does not grant
+execution or Prepared. A Camera-only permanent World can admit first Source
+Data without a previously drawn Mesh and still correctly refuses incomplete C1.
+
+The internal first-Source Camera path now prepares the prospective main topology,
+actual Inputs, the original compiled graph, material PSOs and fixed native Pass
+bindings without a target draw or a retained frame read. The real first ordinary
+raster test consumes that graph and native resources, changes actual pixels and
+asserts no extra native creation over the permanent-world frame baseline.
+This is a small first-Source Renderer witness. Existing-View and complete shadow
+coverage, App/static-Physics integration, repeated lifecycle and the frozen
+scale/cost envelope remain required; App keeps its native-incomplete refusal.
+The original resource owners retain exact cancellation and no-frame retirement
+receipts, including pending native compilation and allocated rejected graphs.
+
+`GpuSceneInputs.prepareResourceBuffer` captures its task before creating private
+resource paths. Ordinary and private roots use the same copy-on-write kernel;
+failed construction attempts every independent child release and retains exact
+unconfirmed pages. Private upload chunks merge current accepted bytes with the
+same arena's reserved descriptor words, including addresses beyond accepted
+backing. Ordinary numeric dirty tracking continues. Source/mapping revision,
+reservation release, owner disposal and actual device limits gate qualification.
+Cancelling retires the native buffer before returning at most one private page
+per retirement grant, without another frame. The Inputs owner can consume a
+complete successor's numeric addresses, CPU mirror, logical mappings, resource
+root and already-uploaded buffer together. Consumed private reservations become
+invalid and release becomes a no-op; ordinary ownership now retires those ranges.
+Old submitted reads keep their original buffer/root. For unchanged Inputs
+content, this owner transfer and its first ordinary read perform no native
+creation or upload; this is not a complete Source first-frame guarantee. Source qualification,
+observation and stepping share the task's busy boundary: nested commits reject,
+and cancellation defers physical retirement until the outer operation returns.
+This owner transfer alone does not admit Source rows. Actual Source pairs it
+with prebuilt row/resource custody before the Camera handoff; an unpaired Source
+table target rejects before consuming Inputs. Complete topology and pass custody
+remain required. A later unexpected handoff failure still faults its owner rather
+than claiming an atomic transfer across callbacks.
+
+World guards, native work, App/Worker coordination and complete Level acceptance
+remain unqualified against the streaming budgets.
+
+Material demand uses the existing BatchTopology residency authority. Its frozen,
+issuer-checked active observation gates ordinary material queries, CPU candidate
+reads, surface/temporal projection and native explicit preparation slots.
+Resident material queries use a separate data observation that survives pure
+execution toggles. Both query phases share one binding/hold authority and one
+incremental algorithm; only their derived work, material frames and entry caches
+are independent. `queryResident` returns its own data frame and never replaces
+the ordinary `materials()` result. A resident observation cannot authorize
+execution. These are internal demand boundaries; complete Source admission,
+native preparation, graph coverage and switching budgets remain unqualified.
+
+| Material query fact | Ordinary execution | Resident data preparation |
+|:--|:--|:--|
+| Group inclusion | Current active groups | All groups of the issuing owner |
+| Pure gate toggle | Invalidates the observation | Keeps the binding observation current |
+| Material frame | `materials()` | The explicit `queryResident` result |
+| Permission | Requires the active phase | Data only; rejected as execution permission |
+
+Resident batch-row acceptance uses `GpuScene.holdMaterialRoots` to retain the
+current logical material allocations as well as their fixed version pins. An
+ordinary material frame can drop a resource without retiring a resident row's
+logical root. Qualification checks the actual allocation, accepted snapshot,
+initialized descriptor and Inputs mapping without opening another read domain.
+Each holder releases once; Scene disposal settles its allocation owner before
+late lease release. Failed transfer cleanup remains owned and faulted.
+This holds existing initialized data only: new allocation, descriptor upload,
+capacity, native bindings, texture and PSO preparation remain separate work.
+
+Private numeric uploads can prepare a fresh target through bounded writes,
+retaining their own dirty observations while the active upload continues.
+`commitPrepared` consumes only a complete current upload from the original
+active session; it avoids a repeated full copy. Ordinary `activate` retains
+its cold recovery behavior. Cancelling preparation leaves active dirty work
+intact. This numeric fact does not qualify device/buffer lifetime or consumer
+bindings; the Inputs owner must coordinate those before publishing a target.
+
+`GpuSceneInputs.prepareBuffer` owns a fresh native target and a detached upload
+connection within the same Inputs authority. Existing reads and resource mappings
+remain valid; prepared publication swaps only the upload and physical buffer.
+Retirement waits for held reads and a queue fence, progresses without a new frame,
+and retains failed physical cleanup receipts. Upload accounting includes cancelled
+accepted writes. This internal mechanism does not qualify Device liveness or
+prebuild every View/bundle binding. Ordinary backing growth can still invalidate
+preparation and trigger the existing synchronous capacity path.
+
+Views can privately prepare cull and cached Skin binding pairs for an actual
+Inputs-issued target. Publication consumes the pair after the Inputs handoff;
+it acquires no read lease and changes no graph generation. Production's internal
+`prepareInputBindings` gathers its main and all owned shadow Views, including
+retiring records, and composes their actual existing raster demands. Ordinary
+same-storage frames can continue while the candidate remains current.
+
+MaterialABI can separately prebuild its existing cached main/shadow windows
+for the same Inputs issuer without changing active bindings. It preserves the
+portable offsets and shared-window demands; publication after the Inputs handoff
+only swaps prepared table/cache pointers. The caller supplies the real visible
+buffer roster, so this is neither future-demand preparation nor a roster proof.
+PreparedRasterBundleCache privately re-records its existing pass variants
+against replacement windows while old bundles remain usable. Failed or cancelled
+recordings release their private state; observation/publication reject reentry.
+Its supplied owner guard must remain valid through publication.
+
+RetainedRasterEncodes can prepare a private replacement of pass identities,
+physical facts and recorded bundles together. Changed facts with a recorded
+bundle require an explicit bundle mapping; a missing mapping rejects the whole
+candidate and preserves accepted runs. Unchanged ordinary encodes can refresh
+pass ages before publication. Production supplies the actual identity and
+native-cache mappings at its idle boundary. A missing or foreign binding in
+this Scene's actual main/shadow consumers rejects preparation; a cache miss
+never means an unaffected consumer.
+
+The aggregate validates its captured owners and publishes Retained runs, native
+bundle caches, Material windows, main/shadow projection facts and View bindings
+in dependency order after the actual Inputs commit. Publication only consumes
+private prepared state; it performs no native creation or upload. Old readonly
+shadow publications retain their own facts. Native tests cover main stock
+Retained raster and direct shadow arena reads for active/retiring Views; the
+latter is not a stock shadow retained-bundle or all-graph lifetime proof.
+
+CameraViews coordinates that handoff for the recoverable primary and its live
+camera recorders, including RenderTarget cameras. It derives a temporary roster
+from those owners and prebuilds only actual consumers of the issuing Scene's
+Inputs. A dormant nonconsumer does not acquire cold resources. Scene liveness,
+source, recorder, Production, device scope, installed graph and owned View facts
+must remain current through construction and publication. Reset cancels both
+accepted and still-constructing candidates. The aggregate commits numeric Inputs
+and all prepared consumer state at the same pure boundary. Terminated camera
+recorders keep old submission leases until settlement; resumable shadow records
+remain in their existing pool's preparation roster.
+
+This scope covers existing CameraViews GPU input consumers. Future pass/window
+demands, other capture/feature paths, complete Renderer Device qualification and
+Source native readiness remain separate obligations; configured-native Source
+refusal is unchanged. Closed tasks release owner/snapshot references; Material
+owner disposal also closes its private preparation. This is not native drain
+qualification. Native preparation is synchronous, and full checks around mapper
+callbacks can take quadratic validation work. Neither streaming budgets,
+working-set plateau nor Level Ready is established by this route.
 
 Local admission and Worker publication read the same source change candidate.
 The candidate captures membership, hierarchy, content and instance edits;
@@ -908,6 +1223,176 @@ manifest reflection as fallback. Geometry's existing vertex layout derivation al
 missing UV sets onto the last supplied set; startup never assumes that every
 built-in material consumes only UV0. The qualified layout also owns the prewarm
 cache key across attachment formats and device recovery.
+
+### Internal resident batch selection
+
+`BatchTopology` now owns a private source-local residency capability. A group
+starts closed, cannot be forged or reused after retirement/reset, and a live
+Scene row cannot change its claim. Hidden and zero-instance rows still own their
+claim until the actual Scene removal. `residentSourcePlan()` retains all source
+batches; `sourcePlan()` derives the active source subset. Ordinary unpartitioned
+sources keep their existing constant-time root publication. The active unbatched
+set follows the same authority; `residentUnbatchedSlots` retains the background
+preparation footprint.
+
+`MeshBatchProjection.query` and `BatchTopology.query` return one
+`MeshExecutionPlans { resident, active }` pair from the complete source join.
+Closing a group does not free its existing windows, change its member roots, or
+confuse source batch IDs with physical execution IDs. `querySceneExecution`
+consumes the source callback once and carries `residentExecution` separately from
+the active `plan`; execution plans are never reinterpreted as source-only resident
+links. Actual source retirement still releases windows and obsolete selection
+memos. Group identity splits membership, not Mesh/Material resources or shaders.
+
+Prepared rows preserve their exact execution origin through Pass/resource
+projection. `assemblePreparedPlan` can derive an ordered, unique whole-contribution
+subset of resident rows; inconsistent identities, order or candidate totals fail.
+Only constructor-issued outer preparations are accepted; copied/frozen wrappers
+have no qualification. This establishes selection structure, not source currentness,
+fixed task headers or GPU readiness. Its raw-input observation contract stays separate.
+`FilteredPlanContributionOwner.update` maintains the resident rows and windows
+once and returns `FilteredExecutionPlans { resident, active }`. The canonical
+GPU input source adopts the complete resident source before opening a read frame;
+the view still selects only active candidates.
+
+`GpuDrivenView.prepareResidentMembers(plan, scene)` explicitly encodes and retains
+member roots independently of active updates. It accepts only owned fixed task
+headers and canonical member roots on the same live device/input incarnation,
+including empty plans. It acquires replacements before releasing predecessors;
+cleanup attempts every receipt, retains failed responsibility and poisons reuse.
+Disposal drains these references without another frame. Existing per-read leases
+still protect in-flight work until completion. This method does not flush shared
+inputs, reserve View capacity or prepare material/PSO resources. Native object
+binding partitions preserve canonical subset roots only for the exact native
+candidate/member pair; raw inputs retain their observation path.
+
+`GpuDrivenView.prepareResidentHeaders(plan, scene)` additionally encodes and
+holds the fixed task's static columns in the same Scene Inputs arena. Each
+77-word header owns its member root; the active View table stores only an
+eight-byte work-prefix/header-address pair per active task. Ordinary GPU
+selection reads these actual shared headers through its existing input binding;
+counter, readback and ordering indices remain active ordinals. A header memo is
+lookup-only. Independent resident and read-frame leases protect actual node
+incarnations, and copied addresses cannot acquire custody. Fixed-plan reuse
+checks exact batch/member pairing; raw rows still observe their current fields
+and candidates on every encode. Equal captured columns may reuse the same live
+node without treating mutable row identity as proof.
+The previous View table retains a captured batch-ID lookup hint for rows moving
+between active ordinals. It never deduplicates work or grants custody; Inputs
+prefers its exact-row observation and still checks the complete captured value.
+
+Header preparation retires its temporary reads before its final Scene/Inputs
+and View-liveness check. A stale refusal may already have replaced the inactive
+resident lease; that actual lease remains View-owned for replacement or disposal,
+while the active lane is independent. Unknown rollback or retirement effects
+remain sticky owner failures with cleanup responsibility, rather than silently
+qualifying the next attempt. This entry does not flush Inputs, reserve native
+View buffers or acquire Mesh/Texture/PSO resources. Normal View update still
+performs its native upload and binding acceptance. Complete background source
+staging, native capacity, stop gates and Level readiness remain separate work.
+
+For actual View compute, Inputs checks private lifetime facts for the selected
+physical buffer and its captured mapping root. Copied, foreign or released reads
+cannot grant that custody; changing public reader methods grants none. A held old
+snapshot can remain usable after current inputs change, while a failed Scene or
+View owner refuses execution. Every Skin task stage checks its actual selected
+binding before encoding commands. Retained-shadow hits observe the frame's real
+read and refresh changed native input bindings without re-encoding headers or
+rewriting compute constants. Compute with a new mapping root still requires the
+ordinary full View update. These checks do not provide background native staging
+or Level readiness.
+
+`GpuDrivenProduction.prepareResidentBatch` probes one native contribution at an
+exclusive idle boundary. It opens a fresh resource read domain, rechecks the
+source owner's guard, seals, releases the temporary domain and only then accepts
+its deferred entry into the same per-Pass `BatchPreparation` cache. Results are
+`provisional` or `no-pass`; returned pins record versions and hold no physical
+reference. This operation does not publish an active aggregate or frame barrier.
+Missing inactive artifacts reject that contribution while the current active
+frame retains its ordinary path. The caller still owns budget admission and the
+actual source/attempt guard; no Level or Worker stage issuer is implied.
+
+The same call now stages an unbound inactive Filtered contribution using the
+ordinary row/window assembler. It preserves the accepted active publication,
+checks the actual issued row proof around staging and retirement, and acquires
+replacement CPU windows before releasing old ones. Expected refusal rolls back
+new ranges; unknown allocator effects retain all affected journals and require
+an explicit owner reset. Ordinary duplicate observations defer dropped-key
+retirement until their pass ends. Accepted active IDs and immutable output
+windows protect background work from borrowed-source edits and reused holes.
+Each staged row also owns its actual encoded task headers and member roots.
+Ordinary row rebases acquire successor custody before retiring the previous
+hold, so value-equivalent tasks retain their shared nodes through activation.
+Negative contributions, membership removal and clear/disposal retire these
+holds. Numeric allocator reset cannot clear unconfirmed physical retirement;
+that failure and its receipts remain owned. Ordinary update checks its epoch
+through callbacks and final publication; clean Scene replacement rebuilds
+custody on the new Inputs incarnation.
+This cache step does not upload headers, flush Inputs, reserve native View
+storage, acquire native Mesh/Texture/PSO leases or prove Render readiness.
+
+`GpuDrivenProduction.createResidentPreparation` advances one group's descriptor
+row work using fresh producer reads. It scans the captured resident membership,
+then prepares each selected Forward/Shadow contribution in the existing cache.
+Final acceptance adopts the exact issued version proofs in a fresh Scene read
+domain and transfers real Material/Mesh descriptor references into a hold. The
+transfer closes Input/table reads immediately, so held groups do not consume the
+128 ordinary read-domain slots or retain a complete old frame. A hold has no
+read/submission authority and does not retain native vertex/index buffers,
+textures or PSOs. `validate()` replaces custody only after fresh validation and
+returns frozen row observations; the task retains its sole release authority.
+Cancellation and Production disposal drain it without another frame, including
+synchronous cancellation during retirement of a previous hold.
+
+The existing `BatchTopology` issues an opaque group-plan qualification over the
+initial complete native execution. Each fresh read must be the exact current
+resident output of that topology's Mesh projection. Source and physical execution
+tree differences reject changes to the target group; unrelated spawn/removal and
+gate changes keep the original group definition and batch/window identities.
+A monotonic per-group claim revision also rejects hidden, zero-instance and
+unbatched member changes, including empty-group add/remove. Only proved equivalent
+immutable roots advance the difference baseline. Private target-group facts reject
+using the credential for another group's old index or contribution before resource
+acquisition. Cache retirement consumes the certified fresh complete resident
+roster, so the captured older plan cannot remove new unrelated cached batches.
+
+The work grant counts owner operations, not a time guarantee. Discovery visits
+the complete resident plan, and the final acceptance operation checks the whole
+selected contribution/version roster. These costs and retirement must pass the
+shared maintenance and indivisible-work budgets before App admission. A `held`
+progress status is not currentness or Render readiness; `validate()` is the fresh
+check. Ordinary unfinished recordings postpone task work without reading its
+producer. Source guards cannot certify Scene lifetime or execution identity:
+the owner checks those facts, and rejects synchronous Scene changes around the
+guard as well as changes during custody transfer.
+
+Tree-difference work, first full-roster retirement and retention of the initial
+complete CPU plan still require measurement under ongoing-world churn. This group
+qualification proves membership/window correspondence only; source/asset guards,
+fresh descriptor pins and actual native-resource/graph credentials stay separate.
+
+Native execution producers separately qualify immutable task membership. The
+Mesh owner seals its own path-copied tree/frame before issuing that fact. This
+qualification allows resident-cache retirement to reuse an unchanged roster;
+it does not qualify encoded headers, source currentness or resource residency.
+Unqualified raw rosters retain actual observation. Active assembly removes rows
+only when their resident membership retires. Retained address fast paths require
+exact coverage by the adopted active aggregate, and replacing that aggregate
+immediately drops its derived coverage memo.
+
+Resource-frame retirement attempts every input, material, Mesh and table release.
+An unknown failure retains its frame/pin responsibility, faults the Scene and
+keeps repeated retirement/disposal erroneous. Production also becomes terminal
+before disposal callbacks and attempts its remaining owners even after failure.
+Failed numeric releases are not blindly replayed: this state requires receiver
+recovery and is not evidence of successful group retirement.
+
+This is internal owner work, not a Level API or a `Prepared` receipt. App budget admission, complete Render acceptance, production adoption of real
+member holds, actual per-view capacity/uploads, all-pass/direct/bundle and shadow-history gates, source
+publication identity, Worker protocol and full frame qualification still need
+integration before a Level consumer may use it. Ordinary production preparation
+still assembles its active rows; the new pair is not proof of background readiness.
+A rebuilt source invalidates its old capabilities and requires fresh staging.
 
 ## Explicit material resources and depth versions
 
@@ -1937,15 +2422,15 @@ renderer-selected projector contract; only its selected light samples the map.
 > Translucent writers additionally receive the analytic `Fog` at their own depth. Software GPU readback is
 > correctness evidence, not hardware performance evidence.
 
-## 灯光最短入口
+## Lighting Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. `RectAreaLight`：在现有 `Transform` 上声明单面矩形发光体，尺寸由 `width` 与 `height` 持有；可选 `sourceTexture`（任意尺寸的 2D `TextureAsset`：rgba8/bgra8 的 sRGB 或 linear、r8 灰度、rgba16float/rgba32float 截断到 [0,1] 走 CPU 投影；KTX2 块压缩格式 BC/ETC2/ASTC 由一次 compute 提交在 GPU 上从 level 0 重采样进共享 slice，需要 compute 与设备的压缩 feature，否则报一次 `feature-not-enabled` 并回退白色 slice）按 Unreal SourceTexture 方式调制漫反射与高光（LTC 平均方向投影到灯平面取 UV，按 footprint 选 mip），与 Spot `cookie` 共享同一 light-texture 数组并按 handle 去重；不支持的格式报结构化错误并回退为均匀发光。
-2. `PointLight`、`SpotLight` 和 `RectAreaLight`：用 `iesProfile` 绑定配光资产。Spot 另有 `cookie` 和 `rollDeg`；缺席 handle 是乘法单位元。
-3. `LightProbe`：声明 27 个 `irradiance` 值和唯一的 `radius`，位置与朝向仍来自 `Transform`。
+1. `RectAreaLight`: declare a one-sided rectangular emitter on an existing `Transform`, with `width` and `height` owning its dimensions. Optional `sourceTexture` accepts any-sized 2D `TextureAsset`: rgba8/bgra8 sRGB or linear, r8 grayscale, and rgba16float/rgba32float clamped to [0,1] use CPU projection. KTX2 BC/ETC2/ASTC block compression uses one compute submission to resample level 0 into a shared slice, requiring compute and the device's compression feature; otherwise one `feature-not-enabled` error is reported and a white slice is used. Like Unreal SourceTexture, it modulates diffuse/specular lighting by projecting the LTC mean direction onto the light plane for UVs and choosing mip by footprint. It shares the light-texture array with Spot `cookie`, deduplicated by handle. Unsupported formats report structured errors and fall back to uniform emission.
+2. `PointLight`, `SpotLight` and `RectAreaLight`: bind photometric assets with `iesProfile`. Spot also has `cookie` and `rollDeg`; absent handles act as multiplicative identities.
+3. `LightProbe`: declare 27 `irradiance` values and one `radius`; position and orientation still come from `Transform`.
 
-这些是 authored/render 输入，不是 GPU slot、LTC、probe asset 或第二个 Renderer API。尺寸、半径和 `rollDeg` 在场景序列化中保留；资产 GUID 通过 Pack/Catalog 的 `refs` 往返，不能从 URL 或数组位置推断身份。
+These are authored/render inputs, not GPU slots, LTC, probe assets or a second Renderer API. Dimensions, radius and `rollDeg` survive scene serialization. Asset GUIDs round-trip through Pack/Catalog `refs`; never infer identity from URLs or array positions.
 
 ### Extended-lighting consumer route
 
@@ -9293,27 +9778,27 @@ cancel the still-prepared geometry using its normal owner. On a refused commit,
 inspect `getDerivedFailure` and cancel that prepared geometry. Success publication
 remains after physics writeback and the real Renderer submission, not callback return.
 
-### CPU 批次接纳
+### CPU Batch Admission
 
-`DynamicGeometryLifecycle.acceptCandidates(candidates, ordering)` 是无 GPU CPU 生命周期的唯一同步整批接纳入口。它只接纳已由同一 lifecycle `prepare` 并预留计数/字节预算的凭证；批次必须非空、属于同一 World，且每个 render entity 槽最多出现一次。`ordering` 必须指向同一 World 并携带非负整数 `fixedStep`。若候选准备时已记录 `fixedStep`，该步不能晚于接纳步。
+`DynamicGeometryLifecycle.acceptCandidates(candidates, ordering)` is the only synchronous whole-batch admission entry for the GPU-free CPU lifecycle. It accepts only tokens prepared by the same lifecycle with count/byte budgets reserved. Batches must be nonempty, belong to one World and contain each render-entity slot at most once. `ordering` must identify that World with a nonnegative integer `fixedStep`. A `fixedStep` recorded during preparation cannot exceed the admission step.
 
-入口会在写入前完整核对凭证标量、重复项、世代、输入及记录状态、history 过期、revision/topology 水位和现有预留预算。任何结构化拒绝都不消费凭证、不释放预算，也不改变 `inspect()`、旧记录或 history；新候选仍保持 prepared，持有原始凭证的 owner 可在外层逐项取消。成功时一次提交全部记录，返回与输入顺序一致的 accepted 凭证；`prepared` 减批次数、`accepted` 加批次数，`meshBytes` 不变。拓扑变化按各实体槽已有规则更新 history。
+Before writing, admission validates token scalars, duplicates, generations, input/record state, history expiry, revision/topology watermarks and existing budget reservations. Structured rejection consumes no tokens, releases no budget and changes neither `inspect()`, existing records nor history. New candidates stay prepared; the owner holding original tokens can cancel them individually. Success commits all records at once, returning accepted tokens in input order: `prepared` decreases and `accepted` increases by batch size, while `meshBytes` stays unchanged. Topology changes update history under existing per-entity-slot rules.
 
 ```ts
 const preparedCandidates = [candidateA, candidateB] as const;
 const admitted = lifecycle.acceptCandidates(preparedCandidates, { world, fixedStep });
 if (admitted.ok) {
   const acceptedCandidates = admitted.value;
-  // 后续配对的 owner 使用完整凭证继续执行发布流程。
+  // The paired owner continues publication using the complete accepted tokens.
 } else {
-  // 拒绝时仍使用原始 prepared 凭证清理本批新预留。
+  // Rejection leaves original prepared tokens available to release new reservations.
   for (const candidate of preparedCandidates) lifecycle.cancel(candidate);
 }
 ```
 
-旧 `accept(candidate, ordering?)` 仍是单项操作；逐项调用它不具备批次原子性，也不是该入口的实现方式。此 API 不创建事务令牌或第二套预算，不核验调用方 World 当前 tick 或 Physics admission；配对调用者需在进入前完成这些 owner 检查。返回值只证明 CPU lifecycle 接纳，不证明 ECS publication、Renderer draw、GPU 完成或 Physics fixed-step publication，也不创建 `DynamicGeometryReceipt`。CPU 测试不得调用 `publishFrame` 来制造 GPU 证据。
+The existing `accept(candidate, ordering?)` remains a single-item operation. Repeated calls provide no batch atomicity and do not implement this entry. This API creates no transaction token or second budget; it checks neither the caller World's current tick nor Physics admission. Paired callers perform those owner checks first. Returned evidence proves CPU lifecycle admission only, not ECS publication, Renderer draw, GPU completion or Physics fixed-step publication, and creates no `DynamicGeometryReceipt`. CPU tests must not call `publishFrame` to manufacture GPU evidence.
 
-接纳将准备事务转为 World 常驻资源，accepted 与 published 均不占 transient slot；不可见、尚无 draw receipt 的常驻网格不会阻塞下一次准备。两种状态在资源释放前仍计入 mesh byte 预算；等待 cancel/retire fence 的终态记录重新占用暂存槽位，不预支未来回收量。
+Admission converts a prepared transaction into a World-resident resource. Neither accepted nor published entries occupy transient slots; invisible resident meshes without draw receipts cannot block later preparation. Both states retain their mesh-byte allocation until resource release. Terminal records awaiting cancel/retire fences occupy transient slots again, without borrowing future reclaim capacity.
 
 `meshHandle` is mandatory on the public Renderer path. The pure
 `createDynamicGeometryLifecycle` helper may omit it for CPU-only validation, in
@@ -12325,26 +12810,26 @@ Layer Material and Texture changes enter their own renderer records. No reverse 
 
 A normal Catalog replacement isolates incoherent terrain source extraction until the scene binds a complete candidate. `frame-submit-rejected` carries `accepted:false` only for a failed submission stage; accepted-work and completion errors keep their existing failure behavior. LOD/root changes reject deformation history and mark reactive coverage. See [Terrain](../terrain/README.md).
 
-## 动态几何候选 CPU 容量
+## Dynamic Geometry Candidate CPU Capacity
 
-`createDynamicGeometryLifecycle(maxCandidates = 32, maxMeshBytes = 64 * 1024 * 1024, options?)` 分别限制独立候选的一次 `acceptCandidates` 批次数、暂存事务数和 mesh 字节。未提供 `options.maxRetainedCandidates` 时，它等于 `maxCandidates`，因此默认仍保留 32 个暂存事务槽位和 64 MiB 字节额度。单次 `prepare` 占一个槽位；`prepareCandidates` 声明的完整组占一个槽位，每项 mesh 字节仍分别计入原有总预算，且只能整组接纳。
+`createDynamicGeometryLifecycle(maxCandidates = 32, maxMeshBytes = 64 * 1024 * 1024, options?)` limits independent-candidate batch size for `acceptCandidates`, retained transaction count and mesh bytes separately. Omitted `options.maxRetainedCandidates` equals `maxCandidates`, preserving defaults of 32 transient transactions and 64 MiB. Each `prepare` occupies one slot; an entire group declared by `prepareCandidates` occupies one slot, while every member's mesh bytes still count toward the existing total budget and admission is whole-group only.
 
-`prepared` 与等待取消或退休完成栅栏的终态记录共用暂存额度。接纳后，`accepted` 与 `published` 均属于 World 常驻资源，不占暂存槽位；因此 CPU 裁剪或画面外的网格无需伪造 draw receipt，也不阻止后续爆破准备。常驻项的 mesh 字节、World 共享引用、GPU residency 与已有 fence 仍保留到真实 owner 清理完成；同实体替换会取消旧的未发布候选，离场则由 owner 取消或退休。清理入口不受暂存槽位上限拒绝；若大量常驻项同时进入待释放终态，新的准备须等其完成后再占用空槽。
+`prepared` entries and terminal records awaiting cancellation/retirement fences share transient capacity. After admission, `accepted` and `published` are World-resident resources and occupy no transient slots. CPU-culled or offscreen meshes need no fabricated draw receipt and do not block later fracture preparation. Resident mesh bytes, World shared references, GPU residency and existing fences remain until actual owner cleanup. Replacing the same entity cancels the old unpublished candidate; departure cancels or retires through its owner. Capacity never rejects cleanup. If many resident entries enter terminal cleanup together, new preparation waits for them to finish and release slots.
 
-例如，默认额度允许 33 个已接纳候选与 32 个独立准备候选并存；第 33 个独立准备事务会以 `dynamic-geometry-budget-exceeded` 拒绝，且不改变现有记录。`maxRetainedCandidates: 65` 允许 65 个暂存事务，独立候选的一次接纳仍不得超过 32 项。所有常驻项与暂存项共用 mesh 字节上限，接纳不会释放字节额度。容量配置必须为正安全整数，上限为 4096；完整声明组成员数上限同为 4096，mesh 字节上限为 512 MiB。公开 `validateDynamicGeometryMeshBudget(bytes)` 与生命周期、Renderer 构造共享此字节校验；构建工具可在分配 GPU 资源前验证项目配置。计数或字节拒绝的 `detail.reason` 分别为 `batch-count`、`retained-count` 或 `mesh-bytes`，并携带本次请求、已用额度、上限及等待 fence 的候选数。
+For example, default capacity allows 33 accepted candidates alongside 32 independently prepared candidates. A 33rd independent preparation rejects with `dynamic-geometry-budget-exceeded`, without changing existing records. `maxRetainedCandidates: 65` allows 65 transient transactions while independent-candidate admission still caps each batch at 32. All resident and transient entries share the mesh-byte limit; admission releases no bytes. Count limits must be positive safe integers up to 4096; complete declared groups also cap membership at 4096, and mesh bytes cap at 512 MiB. Public `validateDynamicGeometryMeshBudget(bytes)` shares byte validation with the lifecycle and Renderer construction so build tools can validate project configuration before GPU allocation. Count/byte rejection uses `detail.reason` values `batch-count`, `retained-count` or `mesh-bytes` and includes the request, used capacity, limit and candidates awaiting fences.
 
-候选几何的独占上传副本由上述 mesh 字节预算约束。Source Host 只额外保留资产及依赖的版本凭据，直到候选退休或取消；它不会为每个常驻地形体长期保留整份资产内容快照，也不占用普通 `assets.snapshot` 的 128 个默认槽位。网格写入、依赖替换与释放仍会让旧凭据失效，上传只移动独占副本，原始资产存储不会被转移。
+The mesh-byte budget bounds exclusive upload copies of candidate geometry. Source Host additionally retains only asset/dependency version credentials until candidate retirement or cancellation; it neither retains complete asset-content snapshots for each resident terrain body indefinitely nor occupies the default 128 ordinary `assets.snapshot` slots. Mesh writes, dependency replacement and release still invalidate old credentials. Upload moves only the exclusive copy, never transferring the original asset store.
 
-`createRenderer(canvas, { dynamicGeometryMeshBudgetBytes })` 将显式字节额度透传到同一生命周期；省略仍为 64 MiB。`renderer.inspect().dynamicGeometry.maxMeshBytes` 给出实际额度，`meshBytes` 给出包含等待 fence 退休记录在内的已用额度。提高字节额度不改变独立准备的 32 项批次/暂存事务限制、拒绝条件、退休或设备恢复语义，也不保证帧率。完整声明组通过已有 4096 项硬上限约束其成员数。
+`createRenderer(canvas, { dynamicGeometryMeshBudgetBytes })` forwards an explicit byte budget to the same lifecycle; omission retains 64 MiB. `renderer.inspect().dynamicGeometry.maxMeshBytes` reports the effective budget and `meshBytes` includes records awaiting retirement fences. Increasing byte capacity does not change the 32-item independent-preparation batch/transient limit, rejection conditions, retirement or device recovery semantics, and promises no frame rate. Complete declared groups retain their existing 4096-member hard limit.
 
-这些是 CPU 生命周期额度，不表示 GPU 驻留、FrameReceipt 或物理提交已完成。跨 owner 的替换、恢复与资源释放仍由调用方通过实际组合路径验证。
+These are CPU lifecycle limits, not proof of GPU residency, FrameReceipt completion or physics submission. Callers must still verify cross-owner replacement, recovery and release through actual composed paths.
 
-## 普通 MeshAsset / LOD 组合
+## Ordinary MeshAsset / LOD Composition
 
-根网格是 LOD0；`lods` 中每项以受管 Mesh 句柄引用已准备的低模，
-`screenCoverage` 是从近到远严格递减的绝对投影高度阈值。各层必须保持顶点布局、
-索引模式、子网格数量，以及逐子网格的 `materialSlot` 和 `topology` 一致。
-生产者负责生成这些普通 MeshAsset；Renderer 不解释其来源数据或生成策略。
+The root mesh is LOD0. Each `lods` entry references a prepared lower-detail mesh
+through a managed Mesh handle; `screenCoverage` is an absolute projected-height
+threshold strictly decreasing from near to far. Levels must share vertex layout,
+index mode, submesh count and each submesh's `materialSlot`/`topology`. Producers create these ordinary MeshAssets; Renderer does not interpret their source data or generation strategy.
 
 ```ts
 import type { MeshAsset } from '@forgeax/engine/types';
@@ -12361,41 +12846,41 @@ const mesh: MeshAsset = {
 };
 ```
 
-这里的 `assets` 是已绑定到当前 World 的 AssetRegistry，各层 MeshAsset 由调用方
-提供；用 `assets.create(mesh)` 创建根网格句柄。调用方复用已附接 World 的 Renderer、现有 MeshRenderer 材质句柄和普通
-MeshFilter 绑定；替换使用上文的动态几何准备、接纳、取消与退休流程。
+Here `assets` is the AssetRegistry bound to the current World; callers supply
+each MeshAsset and create the root handle with `assets.create(mesh)`. Reuse the
+Renderer already attached to that World, existing MeshRenderer material handles and ordinary MeshFilter bindings. Replacement uses the dynamic geometry preparation, admission, cancellation and retirement flow above.
 
-每个视图通过自己的相机和 `LodViewConstants` 选择层级。同一实体可在不同视图
-使用不同层级。低模必须先由该 Renderer 的 AssetRegistry 解析并达到可用状态；
-未就绪层级回退到更精细的就绪层级，LOD0 是保底。`Visibility.hidden` 只控制渲染
-参与，不释放受管资产句柄或 GPU 驻留。
+Each view chooses a level using its camera and `LodViewConstants`. The same entity
+can use different levels in different views. Lower-detail meshes must resolve
+through that Renderer's AssetRegistry and become ready. An unready level falls
+back to a finer ready level, with LOD0 as the baseline. `Visibility.hidden` only controls rendering participation; it releases neither managed asset handles nor GPU residency.
 
-一次替换若同时生成新低模，应先创建低模句柄，再使根网格候选引用它们。
-取消候选后，仅失效它独占且尚未被活动根引用的资产；旧 GUID 在旧根退出且相关
-Renderer 帧完成或退休后才可失效。实体的 `revision` 严格递增；`topologyRevision`
-不得倒退，子网格或索引拓扑变化时递增。拒绝接纳保留现有 MeshFilter 绑定。
+When replacement also generates new lower-detail meshes, create their handles
+first and reference them from the root candidate. After cancellation, invalidate
+only exclusively owned assets no longer referenced by active roots. Old GUIDs
+can be invalidated only after the old root leaves and relevant Renderer frames complete or retire. Entity `revision` strictly increases; `topologyRevision` cannot decrease and increases for submesh/index topology changes. Rejected admission preserves the existing MeshFilter binding.
 
-[LOD 样例](../../apps/hello/lod-occlusion/src/main.ts) 使用普通 glTF MeshAsset，
-提供双 Camera、低模延迟准入、显隐和新旧 revision 反序到达的控制。
-[Browser](../../apps/hello/lod-occlusion/scripts/smoke-browser.mjs) 与
-[Dawn](../../apps/hello/lod-occlusion/scripts/smoke-dawn.mjs) 检查同次提交的逐视图
-选择及每阶段完成帧；实际通过结果以对应源码版本的报告为准。
-增量输入说明 说明普通
-Pack producer / Catalog 的准备方式。
+The [LOD example](../../apps/hello/lod-occlusion/src/main.ts) uses ordinary glTF MeshAssets
+with two Cameras, delayed lower-detail admission, visibility and out-of-order revisions.
+[Browser](../../apps/hello/lod-occlusion/scripts/smoke-browser.mjs) and
+[Dawn](../../apps/hello/lod-occlusion/scripts/smoke-dawn.mjs) verify per-view selection
+from the same submission and completed frames at every stage. Actual passing evidence belongs to reports for the corresponding source revision.
+Incremental inputs describes ordinary
+Pack producer / Catalog preparation.
 
-## 完成帧的材质绘制观察
+## Material Draw Observation for Completed Frames
 
-`Renderer.observe(issuedReceipt, { include: ['draws'] })` 返回该完成帧的实际直接
-材质绘制：World、entity、submesh、已接纳材质 publication、pass/context/program，
-以及 RHI capture 中的 pipeline 引用。它从实际 record 回调取证，不从 WGSL 名称
-反推材质或用当前 extraction 代替已提交内容。
+`Renderer.observe(issuedReceipt, { include: ['draws'] })` returns actual direct
+material draws from that completed frame: World, entity, submesh, admitted material
+publication, pass/context/program and pipeline references from RHI capture.
+Evidence comes from actual record callbacks, never inferred from WGSL names or replaced by current extraction.
 
-只有同次提交的完整来源与 capture 才返回 `complete`。未完成 presentation、held
-view、失效的 lease/view/graph、缺失来源或 capture、不支持的绘制路径，以及超过
-64 项或 16 KiB UTF-8 上限均返回明确的 `unavailable` 原因。当前支持直接材质
-raster draw；其他路径不能被部分列表冒充为完整观察。
+Only complete provenance and capture from the same submission return `complete`.
+Incomplete presentation, held views, invalid lease/view/graph, missing provenance
+or capture, unsupported draw paths and limits above 64 entries or 16 KiB UTF-8
+return explicit `unavailable` reasons. Direct material raster draws are supported; partial lists cannot masquerade as complete observations for other paths.
 
-RHI Null 的记录只证明结构和生命周期；GPU 像素仍需实际后端的捕获与读回。
+RHI Null recording proves structure and lifecycle only. GPU pixels require capture and readback on a real backend.
 
 ## Static Standard material switches
 

@@ -30,6 +30,12 @@ export {
 } from './errors.js';
 export * from './particle-input.js';
 export * from './pass-tags.js';
+export type {
+  MaterialCookProgramContext,
+  MaterialCookRasterContext,
+  MaterialCookRayContext,
+  MaterialTemplateSources,
+} from './program-context.js';
 export {
   type MaterialTable,
   materialGuidText,

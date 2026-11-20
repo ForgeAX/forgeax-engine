@@ -53,6 +53,12 @@ and dependency waits, while native durations measure the actual recipe call.
 These observations leave cache identities, input bytes, concurrency, generation
 validation and readiness deadlines unchanged.
 
+Dev hosts may pass `onProgress` to observe inventory, source cache/cook/write,
+Meta import and publication stages without enabling timing logs. Source events
+refer to producer source files, not individual output assets or GPU compilation.
+Observer exceptions cannot reject production. Generations distinguish replaced
+sessions; hosts own snapshot retention, path presentation and notification rate.
+
 For production Meta imports, DevKit also supplies `producerIdentity` from its
 sealed build-program graph and plugin configuration. Custom hosts may supply
 the same evidence explicitly; it must change when importer code or configuration

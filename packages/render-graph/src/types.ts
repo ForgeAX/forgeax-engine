@@ -65,6 +65,13 @@ export interface GraphTextureDescriptor {
   readonly domain?: ColorValueDomain | undefined;
 }
 
+/** Explicit original owner for imports that can prepare without an execution frame. */
+export interface NativeTextureImport {
+  prepare(current: () => boolean): Generator<GraphPreparationStep, Texture>;
+  /** Pure physical identity lookup; it never allocates, resolves a frame or renews stale facts. */
+  current(): Texture | undefined;
+}
+
 export interface ImportedTextureDescriptor extends GraphTextureDescriptor {
   readonly usage: number;
 }
@@ -195,7 +202,20 @@ export type GraphPassEncoding<Context, Args extends readonly unknown[]> =
   | { encode(context: Context): void; readonly encodeDirect?: never }
   | { readonly encode?: never; encodeDirect(...args: Args): void };
 
-export type RasterGraphPass<FrameCtx> = {
+/** Fixed graph-created views only; imports retain their producer's preparation contract. */
+export interface GraphPreparationResources {
+  createdTextureView(resource: GraphTextureView): TextureView | undefined;
+}
+export type GraphPreparationStep = void | Promise<void>;
+export interface GraphPassPreparation {
+  readonly preparedResourcesCurrent?: () => boolean;
+  readonly prepareResources?: (
+    resources: GraphPreparationResources,
+    current: () => boolean,
+  ) => Generator<GraphPreparationStep>;
+}
+
+export type RasterGraphPass<FrameCtx> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly colorAttachments: readonly RasterColorAttachment<FrameCtx>[];
   readonly depthStencilAttachment?: RasterDepthStencilAttachment | undefined;
@@ -203,40 +223,40 @@ export type RasterGraphPass<FrameCtx> = {
   readonly occlusionQuerySet?: QuerySet | ((frame: FrameCtx) => QuerySet | undefined) | undefined;
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
 } & GraphPassEncoding<
-  {
-    readonly pass: RhiRenderPassEncoder;
-    readonly frame: FrameCtx;
-    readonly resources: GraphResourceResolver;
-  },
-  [pass: RhiRenderPassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
->;
+    {
+      readonly pass: RhiRenderPassEncoder;
+      readonly frame: FrameCtx;
+      readonly resources: GraphResourceResolver;
+    },
+    [pass: RhiRenderPassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+  >;
 
-export type ComputeGraphPass<FrameCtx> = {
+export type ComputeGraphPass<FrameCtx> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
   readonly begin?: ((frame: FrameCtx) => ComputePassDescriptor) | undefined;
   readonly onBeginError?: ((frame: FrameCtx, cause: unknown) => void) | undefined;
   readonly after?: ((frame: FrameCtx) => void) | undefined;
 } & GraphPassEncoding<
-  {
-    readonly pass: RhiComputePassEncoder;
-    readonly frame: FrameCtx;
-    readonly resources: GraphResourceResolver;
-  },
-  [pass: RhiComputePassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
->;
+    {
+      readonly pass: RhiComputePassEncoder;
+      readonly frame: FrameCtx;
+      readonly resources: GraphResourceResolver;
+    },
+    [pass: RhiComputePassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+  >;
 
-export type CopyGraphPass<FrameCtx> = {
+export type CopyGraphPass<FrameCtx> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
 } & GraphPassEncoding<
-  {
-    readonly encoder: RhiCommandEncoder;
-    readonly frame: FrameCtx;
-    readonly resources: GraphResourceResolver;
-  },
-  [encoder: RhiCommandEncoder, frame: FrameCtx, resources: GraphResourceResolver]
->;
+    {
+      readonly encoder: RhiCommandEncoder;
+      readonly frame: FrameCtx;
+      readonly resources: GraphResourceResolver;
+    },
+    [encoder: RhiCommandEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+  >;
 
 /**
  * Ordered import-only child work on the parent's device and encoder. Ports cover
@@ -267,26 +287,26 @@ export type RenderGraphNativePass =
  * port; undeclared resources must be caller-owned and disjoint from other graph
  * domains. The executor opens/closes native passes and preserves instrumentation.
  */
-export type SubgraphPass<FrameCtx extends RenderGraphFrame> = {
+export type SubgraphPass<FrameCtx extends RenderGraphFrame> = GraphPassPreparation & {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
 } & (
-  | {
-      readonly child: (
-        frame: FrameCtx,
-        resources: GraphResourceResolver,
-      ) => CompiledRenderGraph<FrameCtx>;
-      readonly commands?: never;
-    }
-  | {
-      readonly child?: never;
-      commands(context: {
-        readonly frame: FrameCtx;
-        readonly resources: GraphResourceResolver;
-        readonly execute: (pass: RenderGraphNativePass) => void;
-      }): void;
-    }
-);
+    | {
+        readonly child: (
+          frame: FrameCtx,
+          resources: GraphResourceResolver,
+        ) => CompiledRenderGraph<FrameCtx>;
+        readonly commands?: never;
+      }
+    | {
+        readonly child?: never;
+        commands(context: {
+          readonly frame: FrameCtx;
+          readonly resources: GraphResourceResolver;
+          readonly execute: (pass: RenderGraphNativePass) => void;
+        }): void;
+      }
+  );
 
 export type GraphPass<FrameCtx extends RenderGraphFrame> =
   | { readonly kind: 'raster'; readonly descriptor: RasterGraphPass<FrameCtx> }
@@ -487,6 +507,11 @@ export interface GraphTextureContentRange {
 }
 
 export interface CompiledRenderGraph<FrameCtx extends RenderGraphFrame> {
+  /** Step original Pass native recipes without a frame, encoder, import resolution or submission. */
+  prepareResources(
+    current: () => boolean,
+  ): Generator<GraphPreparationStep, Result<void, RenderGraphError>>;
+  preparedResourcesCurrent(): boolean;
   execute(
     frame: FrameCtx,
     runPass?: RenderGraphPassRunner,
@@ -499,5 +524,9 @@ export interface CompiledRenderGraph<FrameCtx extends RenderGraphFrame> {
   /** Graph-owned physical texture, available until the graph retires. */
   getColorTargetTexture(name: string): Texture | undefined;
   inspect(): CompiledRenderGraphInfo;
+  /** Retirement is monotonic and revokes ownership before the GPU fence settles. */
+  isRetired(): boolean;
+  /** Borrow a live graph-created native view without resolving imports or authorizing Pass access. */
+  createdTextureView(resource: GraphTextureView): TextureView | undefined;
   retire(): Promise<Result<void, RenderGraphError>>;
 }

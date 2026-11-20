@@ -1,9 +1,10 @@
 import { World } from '@forgeax/engine-ecs';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { Terrain } from '@forgeax/engine-terrain';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { basisImages } from '../../../app/__tests__/render-worker-basis-data';
@@ -15,7 +16,9 @@ import { perspective } from '../components/camera';
 
 it('rehydrates an encoded Terrain layer before publishing the same Renderer replacement generation', async () => {
   const manifest = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], {
+      type: 'application/json',
+    }),
   );
   let device: GPUDevice | undefined,
     target: GPUTexture | undefined,
@@ -44,7 +47,7 @@ it('rehydrates an encoded Terrain layer before publishing the same Renderer repl
   const implementation = await createRenderer(
     { width: 64, height: 64, getContext: () => context },
     {},
-    { shaderManifestUrl: manifest },
+    { shaderManifestUrl: manifest, prepareShaderProgramCompiler },
     loadRhiPack(webgpu, {
       deviceLost: () =>
         new Promise((resolve) => {

@@ -362,6 +362,7 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
     label: string,
     descriptor: ImportedTextureDescriptor,
     resolve: (frame: FrameCtx) => Texture,
+    native?: import('./types.js').NativeTextureImport,
   ): Result<GraphTexture, RenderGraphError> {
     if (this.sealed) return err(this.sealedError());
     const unique = this.reserveLabel(label);
@@ -374,6 +375,14 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       origin: 'imported',
       descriptor: snapshotTextureDescriptor(descriptor),
       resolve,
+      ...(native === undefined
+        ? {}
+        : {
+            native: Object.freeze({
+              prepare: native.prepare.bind(native),
+              current: native.current.bind(native),
+            }),
+          }),
     });
     return ok(textureHandle(this.owner, id));
   }

@@ -24,7 +24,7 @@ const BUFFER_USAGE_COPY_DST = 0x0008;
 const MAP_MODE_READ = 0x0001;
 
 const ENGINE_MANIFEST_URL = shaderManifestUrl(
-  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderManifest(),
+  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderTemplateManifest(),
 );
 
 const COLORS = [

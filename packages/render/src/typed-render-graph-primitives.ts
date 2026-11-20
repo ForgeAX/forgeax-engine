@@ -34,6 +34,7 @@ import {
 } from './gpu-texture-usage';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
 import { geometryPipelineRequestContext } from './record/geometry-pipeline-requests';
+import { type GraphBindingViews, graphBindingViewsCurrent } from './record/graph-binding-views';
 import {
   encodeMainPass,
   hasMainPassCpuWork,
@@ -483,6 +484,66 @@ function typedScenePassAccesses(
   return accesses;
 }
 
+function materialGraphViewsForPass(
+  frame: RenderPipelineFrame,
+  options: TypedScenePassOptions,
+  transmissionBackdrop: TextureView | null,
+  surfaceRawDepth: TextureView | null,
+  surfaceNearestLayer: TextureView | null,
+  surfaceNearestDepth: TextureView | null,
+): GraphBindingViews | undefined {
+  const compiled = (frame as _InternalRenderPipelineContext).frameState.compiledFrameGraph?.graph;
+  if (compiled !== undefined) {
+    const views: GraphBindingViews['views'][number][] = [];
+    if (options.transmissionBackdrop !== undefined && transmissionBackdrop !== null)
+      views.push(['backdrop', options.transmissionBackdrop, transmissionBackdrop]);
+    if (options.surfacePair?.rawDepth.status === 'available' && surfaceRawDepth !== null)
+      views.push(['raw-depth', options.surfacePair.rawDepth.view, surfaceRawDepth]);
+    if (options.surfaceNearestLayer !== undefined && surfaceNearestLayer !== null)
+      views.push(['nearest-layer', options.surfaceNearestLayer, surfaceNearestLayer]);
+    if (options.surfaceNearestDepth !== undefined && surfaceNearestDepth !== null)
+      views.push(['nearest-depth', options.surfaceNearestDepth, surfaceNearestDepth]);
+    const facts = { graph: compiled, views };
+    if (views.length > 0 && graphBindingViewsCurrent(facts)) return facts;
+  }
+  return undefined;
+}
+
+function publishPassSsaoViews(
+  context: _InternalRenderPipelineContext,
+  target: RenderPipelineTarget | undefined,
+  view: TextureView | undefined,
+): void {
+  if (view === undefined) return;
+  context.hdrpSsaoBlurredView = view;
+  const graph = context.frameState.compiledFrameGraph?.graph;
+  if (graph === undefined || target === undefined) return;
+  const facts: GraphBindingViews = { graph, views: [['ssao', target.view, view]] };
+  if (graphBindingViewsCurrent(facts)) context.hdrpSsaoGraphViews = facts;
+}
+
+function scenePassBindingDemand(
+  options: TypedScenePassOptions,
+): NonNullable<import('./record/scene-pipeline-preparation').ScenePipelineDemand['bindings']> {
+  const keys = [
+    'directionalShadow',
+    'spotShadow',
+    'shadowMoments',
+    'cloudShadow',
+    'ssao',
+    'environment',
+    'transmissionBackdrop',
+    'surfacePair',
+    'surfaceNearestLayer',
+    'surfaceNearestDepth',
+  ] as const;
+  return Object.freeze(
+    Object.fromEntries(
+      keys.filter((key) => options[key] !== undefined).map((key) => [key, options[key]]),
+    ),
+  );
+}
+
 function assignOptionalMaterialDepth(
   options: { materialSceneDepth?: TextureView },
   resources: GraphResourceResolver,
@@ -564,6 +625,18 @@ export function addTypedScenePass(
   const fragmentEntryPoint = scenePassFragmentEntryPoint(options);
   const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
+  const bundleDescriptor = {
+    colorFormats: formats,
+    depthStencilFormat: options.depth.format as GPUTextureFormat,
+    sampleCount,
+  };
+  const gpuFragmentEntryPoint = selectForwardFragmentEntry({
+    passKind: options.passKind ?? 'forward',
+    fragmentEntry: fragmentEntryPoint,
+    oitAccumulate: options.recordMode === 'oit-accumulate',
+    viewOffset: 0,
+    atmosphereCapture: false,
+  });
   registerScenePipelinePreparation(
     graph,
     (context, artifacts) => {
@@ -604,6 +677,7 @@ export function addTypedScenePass(
           coverageOnly: options.coverageOnly ?? false,
           transparentDepthWrite: options.transparentDepthWrite ?? false,
           seededDepth: options.seededDepth === true,
+          opaqueDepthPrimed: options.opaqueDepthPrimed === true,
           ...(options.selectEntities !== undefined || options.selection === undefined
             ? {}
             : { selection: options.selection }),
@@ -620,6 +694,10 @@ export function addTypedScenePass(
     },
     options.selectEntities === undefined
       ? {
+          bindings: scenePassBindingDemand(options),
+          bundleDescriptor,
+          gpuFragmentEntryPoint,
+          gpuPhase: options.gpuDrivenPhase ?? 'all',
           pass: request,
           formats,
           sampleCount,
@@ -627,6 +705,7 @@ export function addTypedScenePass(
           coverageOnly: options.coverageOnly ?? false,
           transparentDepthWrite: options.transparentDepthWrite ?? false,
           seededDepth: options.seededDepth === true,
+          opaqueDepthPrimed: options.opaqueDepthPrimed === true,
           ...(options.selection === undefined ? {} : { selection: options.selection }),
         }
       : undefined,
@@ -634,23 +713,12 @@ export function addTypedScenePass(
   options.gpuDriven?.registerPipelinePreparation?.(
     formats,
     options.gpuDrivenFilter,
-    selectForwardFragmentEntry({
-      passKind: options.passKind ?? 'forward',
-      fragmentEntry: fragmentEntryPoint,
-      oitAccumulate: options.recordMode === 'oit-accumulate',
-      viewOffset: 0,
-      atmosphereCapture: false,
-    }),
+    gpuFragmentEntryPoint,
     options.coverageOnly,
     sampleCount,
     options.seededDepth,
     options.opaqueDepthPrimed,
   );
-  const bundleDescriptor = {
-    colorFormats: formats,
-    depthStencilFormat: options.depth.format as GPUTextureFormat,
-    sampleCount,
-  };
   // One result object per recording; optional fields need no temporary spread objects.
   const recordOptions = (
     frame: RenderPipelineFrame,
@@ -684,13 +752,18 @@ export function addTypedScenePass(
     if (surfaceNearestLayer !== null) result.surfaceNearestLayerView = surfaceNearestLayer;
     if (surfaceNearestDepth !== null) result.surfaceNearestDepthView = surfaceNearestDepth;
     if (surfaceFoamSimulation !== null) result.surfaceFoamSimulationView = surfaceFoamSimulation;
-    if (options.surfaceFluidSimulation !== undefined)
-      result.surfaceFluidSimulation = {
-        fields: resolvedView(resources, options.surfaceFluidSimulation.fields),
-        descriptors: resources.buffer(options.surfaceFluidSimulation.descriptors).unwrap(),
-      };
+    applySurfaceFluidBindings(result, options.surfaceFluidSimulation, resources);
     if (options.waterInfoTargets !== undefined && options.waterInfoTargets.size > 0)
       result.waterFrame = { targets: options.waterInfoTargets, resources };
+    const graphViews = materialGraphViewsForPass(
+      frame,
+      options,
+      transmissionBackdrop,
+      surfaceRawDepth,
+      surfaceNearestLayer,
+      surfaceNearestDepth,
+    );
+    if (graphViews !== undefined) result.materialGraphViews = graphViews;
     if (fragmentEntryPoint !== undefined) result.fragmentEntryPoint = fragmentEntryPoint;
     if (options.gpuDriven !== undefined)
       result.gpuDriven = {
@@ -865,7 +938,7 @@ export function addTypedScenePass(
       passContext.meshBindGroup = groups.meshBindGroup;
       passContext.hdrpClusterBindGroup = groups.hdrpClusterBindGroup;
       passContext.hdrpClusterMembershipBindGroup = groups.hdrpClusterMembershipBindGroup;
-      if (ssao !== undefined) passContext.hdrpSsaoBlurredView = ssao;
+      publishPassSsaoViews(passContext, options.ssao, ssao);
       const record = (commands: RhiRenderPassEncoder) =>
         encodeMainPass(
           passContext,
@@ -1929,4 +2002,17 @@ export function addTypedOutputTransformPass(
     if (!finalCapture.ok) return finalCapture;
   }
   return ok(undefined);
+}
+
+/** Resolve the typed fluid ports through the current pass resource authority. */
+function applySurfaceFluidBindings(
+  result: { surfaceFluidSimulation?: MainPassOptions['surfaceFluidSimulation'] },
+  input: TypedScenePassOptions['surfaceFluidSimulation'],
+  resources: GraphResourceResolver,
+): void {
+  if (input === undefined) return;
+  result.surfaceFluidSimulation = {
+    fields: resolvedView(resources, input.fields),
+    descriptors: resources.buffer(input.descriptors).unwrap(),
+  };
 }

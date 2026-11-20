@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 import { coreValidationFiles } from '../core-validation.mjs';
 import deferred from '../core-validation-deferred.json' with { type: 'json' };
+import { dawnAuthoringCapturesOutsideCi } from '../dawn-gate-roster.mjs';
 import modelingTimings from '../modeling-coverage-file-seconds.json' with { type: 'json' };
 import { dawnExecutionGroups, selectDawnGroups } from '../run-dawn-gate.mjs';
 import { browserFileWeight, browserTestFiles } from '../run-split-vitest-browser.mjs';
@@ -24,6 +25,23 @@ test('Dawn core execution omits empty groups and explicit diagnosis always runs 
     selectDawnGroups('shadow-quality'),
   );
   assert.deepEqual(dawnExecutionGroups(undefined, undefined, {}), selectDawnGroups());
+});
+
+test('Engine Dawn keeps full example captures out of both automated profiles', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const hosted = {
+    FORGEAX_DAWN_OMIT_AUTHORING_CAPTURES:
+      workflow.jobs['vitest-dawn'].env.FORGEAX_DAWN_OMIT_AUTHORING_CAPTURES,
+  };
+  assert.deepEqual(dawnAuthoringCapturesOutsideCi({ GITHUB_ACTIONS: 'true' }), []);
+  const authoring = dawnAuthoringCapturesOutsideCi(hosted);
+  assert.equal(authoring.length, 2);
+  for (const env of [hosted, { ...hosted, ...core }]) {
+    const groups = dawnExecutionGroups(undefined, undefined, env);
+    for (const path of authoring) assert.ok(!groups.some(({ files }) => files.includes(path)));
+    assert.ok(groups.some(({ id }) => id === 'modeling-show'));
+  }
+  assert.ok(dawnExecutionGroups('modeling-s6', undefined, hosted)[0].files.includes(authoring[0]));
 });
 
 test('core selection is explicit, preserves new owners and leaves full validation intact', () => {
@@ -189,11 +207,13 @@ test('Project Play retains all native acceptance on View one and full-profile V8
   assert.match(play.run, /--maxWorkers=1/);
   assert.match(play.run, /--coverage.enabled=false/);
   assert.match(play.run, /--passWithNoTests=false/);
-  const point = view.steps.findIndex(
-    (step) => step.name === 'Prepare matching DevKit browser shader profile',
+  const preparation = view.steps.findIndex(
+    (step) => step.name === 'Prepare verified paired consumer inputs',
   );
-  assert.ok(point >= 0 && point < view.steps.indexOf(play));
-  assert.match(view.steps[point].if, /matrix.shard == '1'/);
+  assert.ok(preparation >= 0 && preparation < view.steps.indexOf(play));
+  assert.equal(view.steps[preparation].if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.equal(view.steps[preparation].with.consumer, 'view-integration-shards');
+  assert.match(play.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST, /shared-app-inputs\/manifest.json/);
   const full = coverageGroups(['@forgeax/engine-devkit'], 8, { environment: {} });
   const daily = coverageGroups(['@forgeax/engine-devkit'], 8, { environment: core });
   assert.equal(full.filter((group) => group.files.includes(file)).length, 1);
@@ -204,4 +224,48 @@ test('Project Play retains all native acceptance on View one and full-profile V8
       .every((group) => group.excludes.includes(file)),
   );
   assert.equal(view['timeout-minutes'], 30);
+});
+
+test('Core provenance records the shared template producer facts once', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  const step = workflow.jobs['core-build'].steps.find(({ id }) => id === 'write-shared-provenance');
+  assert.ok(step);
+  const fixture = mkdtempSync(join(tmpdir(), 'forgeax-shared-provenance-'));
+  try {
+    const inputs = join(fixture, 'shared-app-inputs');
+    mkdirSync(inputs);
+    const output = join(fixture, 'out');
+    const facts = { engineCompileCount: 0, buildDurationSeconds: 2.75 };
+    const fingerprints = { 'shared-asset-pack': 'assets', 'shared-engine-shaders': 'shaders' };
+    writeFileSync(join(inputs, 'manifest.json'), JSON.stringify({ inputFingerprint: 'test' }));
+    writeFileSync(join(inputs, 'production-facts.json'), JSON.stringify(facts));
+    writeFileSync(join(fixture, 'shared-input-fingerprints.json'), JSON.stringify(fingerprints));
+    const run = spawnSync(process.execPath, ['-e', step.run], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...step.env,
+        GITHUB_RUN_ATTEMPT: '2',
+        GITHUB_RUN_ID: '123',
+        GITHUB_OUTPUT: output,
+        SHARED_ARTIFACT_ID: '45',
+        UPLOAD_ELAPSED_SECONDS: '1.5',
+        UPLOAD_TRANSFER_ATTEMPT: '1',
+      },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const record = JSON.parse(readFileSync(join(fixture, 'provenance-shared-app-inputs-a2.json')));
+    assert.deepEqual(record.sharedProduction, facts);
+    assert.deepEqual(
+      record.artifacts.map(({ class: family, artifactId, inputFingerprint }) => [
+        family,
+        artifactId,
+        inputFingerprint,
+      ]),
+      Object.entries(fingerprints).map(([family, fingerprint]) => [family, '45', fingerprint]),
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });

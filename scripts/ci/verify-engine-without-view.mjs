@@ -4,10 +4,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { SDK_SOURCE_GIT_DEPENDENCIES, SDK_SOURCE_WASM } from '../forgeax/sdk-lib.mjs';
-import {
-  engineWithoutViewBuildEnvironment,
-  prepareEngineWithoutViewContent,
-} from './engine-without-view-source.mjs';
+import { prepareEngineWithoutViewContent } from './engine-without-view-source.mjs';
 import { runViewSourceCommand } from './view-source-command.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -34,10 +31,6 @@ const selected = spawnSync('git', ['ls-files', '--stage', '-z'], {
 });
 assert.equal(selected.status, 0);
 const entries = selected.stdout.split('\0').filter(Boolean);
-const revision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
-assert.equal(revision.status, 0, revision.stderr);
-const sourceRevision = revision.stdout.trim();
-assert.match(sourceRevision, /^[a-f0-9]{40}$/);
 try {
   const projectedAt = performance.now();
   console.error(
@@ -83,7 +76,6 @@ try {
   await prepareEngineWithoutViewContent({
     repositoryRoot: root,
     sourceRoot: scratch,
-    sharedInputsRoot: resolve(root, 'shared-app-inputs'),
   });
   console.error(
     JSON.stringify({
@@ -94,10 +86,7 @@ try {
   );
   for (const [name, args] of [
     ['install', ['install', '--frozen-lockfile', '--ignore-scripts']],
-    [
-      'build:engine',
-      ['build:engine', '--base-shader-input-root', root, '--source-revision', sourceRevision],
-    ],
+    ['build:engine', ['build:engine']],
   ]) {
     const start = performance.now();
     const run = await runViewSourceCommand('pnpm', args, {
@@ -105,7 +94,7 @@ try {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       env: {
-        ...(name === 'build:engine' ? engineWithoutViewBuildEnvironment(process.env) : process.env),
+        ...process.env,
         FORGEAX_SKIP_HARNESS_SYNC: '1',
       },
     });
@@ -127,6 +116,10 @@ try {
     `import assert from 'node:assert/strict';
 import {createProfiler,buildProfileModel} from './packages/engine/dist/facades/profiler.mjs';
 import {encodeTape,decodeTape} from './packages/engine/dist/facades/rhi-debug.mjs';
+import {existsSync} from 'node:fs';
+import {ShaderRegistry} from './packages/shader/dist/index.mjs';
+import {prepareShaderProgramCompiler} from './packages/shader-compiler/dist/index.mjs';
+import {buildEngineShaderTemplateManifest} from './packages/vite-plugin-shader/dist/index.mjs';
 const profiler=createProfiler({phaseCatalog:{app:['frame'],render:[]}});
 const started=profiler.startCapture({frameLimit:1,eventLimit:4,detail:'owner'});
 assert.equal(started.ok,true); const capture=started.value;
@@ -135,7 +128,21 @@ assert.equal(capture.endPhase().ok,true); assert.equal(capture.endFrame().ok,tru
 assert.equal(buildProfileModel(profiler.latestCapture()).ok,true);
 const tape=encodeTape({header:{formatVersion:7,rhiCaps:{},eventCount:1,blobCount:0},bootstrap:[],events:[{kind:'frameMark',frameIdx:0}],blobs:[]});
 assert.equal(tape.ok,true);assert.equal(decodeTape(tape.value).ok,true);
-console.log('Public profiler and RHI tape APIs work without View');`,
+assert.equal(existsSync('shared-build-inputs'),false);
+assert.equal(existsSync('packages/vite-plugin-shader/dist/engine-inputs/profiles.json.gz'),false);
+const wire=await buildEngineShaderTemplateManifest();
+const registry=new ShaderRegistry({
+  manifestUrl:'engine-templates',
+  readText:async()=>JSON.stringify(wire),
+  programCompiler:(await prepareShaderProgramCompiler()).unwrap(),
+});
+(await registry.loadManifest()).unwrap();
+assert.equal(registry.programTemplateInspection().selections,0);
+const pbr=wire.materialShaders.find(({identifier})=>identifier==='forgeax::default-standard-pbr');
+assert.ok(pbr);
+assert.ok(registry.resolveProgramTemplate(pbr.program,pbr.selection).unwrap().manifestEntry.reflection);
+assert.equal(registry.programTemplateInspection().selections,1);
+console.log('Profiler, RHI tape and shader templates work without View');`,
   );
   for (const [name, args] of [
     ['cli', ['packages/engine/dist/bin/forgeax.mjs', '--help']],

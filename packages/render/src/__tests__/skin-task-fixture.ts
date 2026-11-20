@@ -1,6 +1,8 @@
 import { mat4 } from '@forgeax/engine-math';
 import type { ShadowCapsuleSet } from '@forgeax/engine-types';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuInputArena } from '../gpu-input-arena';
+import type { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
@@ -61,4 +63,50 @@ export function skinTaskFixture(jointCount = 1, shadowCapsules?: ShadowCapsuleSe
       arena.dispose();
     },
   };
+}
+
+/** Two live selector candidates keep cull, Skin and finalize bindings in the observed View. */
+export function skinInputBindingPlan(source: RenderScene, scene: GpuScene) {
+  const topology = new BatchTopology();
+  const delta = source.apply(
+    [...source.slotsSnapshot()].map(({ entityKey, snapshot }) => ({
+      kind: 'update' as const,
+      entityKey,
+      snapshot: {
+        ...snapshot,
+        assetHandle: 3,
+        gpuDrivenDraws: [
+          {
+            kind: 'indexed' as const,
+            first: 0,
+            count: 3,
+            baseVertex: 0,
+            materialSlot: 0,
+            topology: 'triangle-list' as const,
+            pipelineClass: 'skin',
+            materialResourceClass: 'plain',
+            geometry: {
+              receipt: {
+                identity: 'skin-input-bindings',
+                vertexInputs: [],
+                topology: 'triangle-list' as const,
+                indexed: true,
+              },
+              draw: {
+                kind: 'indexed' as const,
+                first: 0,
+                count: 3,
+                baseVertex: 0,
+                topology: 'triangle-list' as const,
+              },
+              deformation: 'skin' as const,
+            },
+          },
+        ],
+      },
+    })),
+  );
+  scene.sync(delta).unwrap();
+  topology.apply(delta);
+  return topology.query(topology.sourcePlan(), undefined).active;
 }

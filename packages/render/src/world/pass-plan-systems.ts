@@ -269,7 +269,9 @@ export function consumeViewPassPlan(
 }
 
 /** Candidate pipeline preparations add their transmission demand to the scene's. */
-function planTransmission(input: PassPlanInput): TransmissionPassPlan {
+function planTransmission(
+  input: Pick<PassPlanInput, 'sceneTransmission' | 'preparation' | 'materials'>,
+): TransmissionPassPlan {
   const scene = input.sceneTransmission;
   const preparation = input.preparation;
   const prepared = preparation?.transmissionDemand;
@@ -284,6 +286,34 @@ function planTransmission(input: PassPlanInput): TransmissionPassPlan {
           },
     singleLayerMedium: input.materials.hasMedium || preparation?.hasMedium === true,
     ...(input.materials.hasWater || preparation?.hasWater === true ? { water: true as const } : {}),
+  };
+}
+
+/** Prospective opaque Source demand uses the same Pass family policies outside a recording. */
+export function planSourcePasses(
+  input: Pick<
+    PassPlanInput,
+    | 'requested'
+    | 'rgba16floatRenderable'
+    | 'renderables'
+    | 'dispatch'
+    | 'materials'
+    | 'renderPath'
+    | 'gpuOcclusion'
+  >,
+): ViewPassPlan {
+  return {
+    unfoggedOpaque: input.materials.hasUnfoggedOpaque,
+    opaque: planOpaque({ ...input, clearOnly: false }),
+    transparent: resolveTransparencyView({
+      ...input,
+      materialFrame: input.materials,
+    }),
+    transmission: planTransmission({
+      sceneTransmission: input.materials.transmissionDemand,
+      materials: input.materials,
+      preparation: undefined,
+    }),
   };
 }
 

@@ -14,6 +14,47 @@ export function takeAssetData<T>(input: T): T {
   return captureAssetData(input, new Set()) as T;
 }
 
+/** Same owned capture, with only storage actually allocated by this known clone charged as scratch. */
+export function captureAssetDataAllocated<T>(
+  input: T,
+  storage: 'copy' | 'take',
+): { value: T; bytes: number; reusedBy(value: unknown): number } {
+  const allocation: CaptureAllocation = { bytes: 0, nodes: new Map() };
+  const value = captureAssetData(
+    input,
+    storage === 'take' ? new Set() : undefined,
+    allocation,
+  ) as T;
+  return {
+    value,
+    bytes: allocation.bytes,
+    reusedBy: (value) => reusedCaptureBytes(value, allocation.nodes),
+  };
+}
+
+interface CaptureAllocation {
+  bytes: number;
+  readonly nodes: Map<object, number>;
+}
+
+/** Credit only nodes/buffers this exact clone allocated and the prepared result actually keeps. */
+function reusedCaptureBytes(value: unknown, allocations: ReadonlyMap<object, number>): number {
+  const seen = new Set<object>(),
+    pending = [value];
+  let bytes = 0;
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    bytes += allocations.get(node) ?? 0;
+    if (ArrayBuffer.isView(node)) pending.push(node.buffer);
+    else if (!(node instanceof ArrayBuffer))
+      for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(node)))
+        if (Object.hasOwn(descriptor, 'value')) pending.push(descriptor.value);
+  }
+  return bytes;
+}
+
 /**
  * The decoder boundary. The decoder gives up its output: plain nodes are
  * validated and frozen in place, bottom-up, and binary views keep their
@@ -63,7 +104,11 @@ export function adoptAssetData<T>(input: T): T {
   return input;
 }
 
-function captureAssetData(input: unknown, taken: Set<ArrayBuffer> | undefined): unknown {
+function captureAssetData(
+  input: unknown,
+  taken: Set<ArrayBuffer> | undefined,
+  allocation?: CaptureAllocation,
+): unknown {
   const active = new Set<object>();
   const takes = (buffer: ArrayBuffer): boolean => {
     if (
@@ -82,10 +127,33 @@ function captureAssetData(input: unknown, taken: Set<ArrayBuffer> | undefined): 
       return value;
     }
     if (active.has(value)) throw new TypeError('asset content contains a cycle');
-    if (value instanceof ArrayBuffer) return takes(value) ? value : value.slice(0);
-    if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes);
+    if (value instanceof ArrayBuffer) {
+      if (takes(value)) return value;
+      const result = value.slice(0);
+      if (allocation !== undefined) {
+        allocation.bytes += value.byteLength;
+        allocation.nodes.set(result, value.byteLength);
+      }
+      return result;
+    }
+    if (ArrayBuffer.isView(value)) return copyBinaryView(value, takes, allocation);
     active.add(value);
     const result = copyPlainNode(value, copy);
+    if (allocation !== undefined && result !== value) {
+      let bytes = 16;
+      for (const [key, field] of Object.entries(result as object)) {
+        // Strings are returned unchanged by copy(), not allocated again by this clone.
+        const scalar =
+          typeof field === 'number' || typeof field === 'bigint'
+            ? 8
+            : typeof field === 'boolean'
+              ? 1
+              : 0;
+        bytes += assetFieldBytes(key, scalar);
+      }
+      allocation.bytes += bytes;
+      allocation.nodes.set(result as object, bytes);
+    }
     active.delete(value);
     return result;
   };
@@ -95,6 +163,7 @@ function captureAssetData(input: unknown, taken: Set<ArrayBuffer> | undefined): 
 function copyBinaryView(
   value: ArrayBufferView,
   takes: (buffer: ArrayBuffer) => boolean,
+  allocation?: CaptureAllocation,
 ): ArrayBufferView {
   if (!(value.buffer instanceof ArrayBuffer))
     throw new TypeError('asset content requires private binary storage');
@@ -105,6 +174,10 @@ function copyBinaryView(
   const whole = value.byteOffset === 0 && value.byteLength === value.buffer.byteLength;
   if (whole && takes(value.buffer)) return new Constructor(value.buffer);
   const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+  if (allocation !== undefined) {
+    allocation.bytes += value.byteLength;
+    allocation.nodes.set(bytes.buffer, value.byteLength);
+  }
   return new Constructor(bytes.buffer);
 }
 
@@ -162,10 +235,11 @@ const ARRAY_TYPES = [
 /** Logical owned bytes, including scalar storage and keys; VM overhead is measured separately.
  * Validate descriptors before capture, without invoking getters or copying any binary data.
  * Repeated references are independent value occurrences, just as in copyAssetData.
+ * A record owner may also collect a plain object's root field sizes in the same traversal.
  */
-export function assetDataBytes(value: unknown): number {
+export function assetDataBytes(value: unknown, rootFields?: Map<string, number>): number {
   const active = new Set<object>();
-  const measure = (entry: unknown): number => {
+  const measure = (entry: unknown, fields?: Map<string, number>): number => {
     if (typeof entry === 'string') return entry.length * 2;
     if (typeof entry === 'number' || typeof entry === 'bigint') return 8;
     if (typeof entry === 'boolean') return 1;
@@ -195,14 +269,16 @@ export function assetDataBytes(value: unknown): number {
       const descriptor = descriptors[key];
       if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
         throw new TypeError('asset content requires enumerable data properties');
-      size += assetFieldBytes(key, measure(descriptor.value));
+      const bytes = assetFieldBytes(key, measure(descriptor.value));
+      size += bytes;
+      fields?.set(key, bytes);
     }
     active.delete(entry);
     if (!Number.isSafeInteger(size))
       throw new RangeError('asset content exceeds addressable storage');
     return size;
   };
-  return measure(value);
+  return measure(value, Array.isArray(value) ? undefined : rootFields);
 }
 
 export function assetFieldBytes(key: string, valueBytes: number): number {

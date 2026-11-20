@@ -196,6 +196,8 @@ export function routeWorldError(
 
 export {
   createStateProjection,
+  observeStateChanges,
+  type StateChangeObservation,
   type StateProjection,
   type StateProjectionBatch,
   StateProjectionExpiredError,

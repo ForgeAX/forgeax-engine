@@ -2,11 +2,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import type { Renderer, RendererOptions } from '@forgeax/engine-render';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { rewriteShaderTemplateSources, shaderManifestUrl } from './shader-manifest-url.fixture';
 import {
   BACKDROP_ROUGHNESS,
   compareToReference,
@@ -17,14 +17,14 @@ import {
   SPHERE_ROUGHNESS,
   SUPERSAMPLE,
   specularAaRegions,
+  stripSpecularAa,
   unwrap,
   verifySpecularAaGBuffer,
-  withoutSpecularAaManifest,
 } from './specular-aa.fixture';
 
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const withAaUrl = shaderManifestUrl(manifest);
-const stripped = withoutSpecularAaManifest(manifest);
+const stripped = rewriteShaderTemplateSources(manifest, stripSpecularAa);
 const withoutAaUrl = shaderManifestUrl(stripped.manifest);
 const directory = 'artifacts/specular-aa/dawn';
 
@@ -50,20 +50,15 @@ async function withRenderer<T>(
   }
 }
 
-it('strips specular AA from every composed Standard program for the baseline', () => {
+it('strips specular AA from the Standard template sources for the baseline', () => {
   expect(stripped.patched).toBeGreaterThan(0);
-  const sources = [
-    ...stripped.manifest.entries.map((entry) => entry.wgsl),
-    ...stripped.manifest.materialShaders.flatMap((material) => [
-      material.composedWgsl,
-      ...material.variants.map((variant) => variant.composedWgsl),
-    ]),
-  ];
+  const sources = Object.values(stripped.manifest.library.sources);
   const definitions = sources.flatMap(
     (source) => source.match(/fn specularAntiAliasedRoughness\w*\([^{]*\{/g) ?? [],
   );
   const identities = sources.flatMap(
-    (source) => source.match(/fn specularAntiAliasedRoughness\w*\((\w+)[^{]*\{ return \1;/g) ?? [],
+    (source) =>
+      source.match(/fn specularAntiAliasedRoughness\w*\(\s*(\w+)[^{]*\{ return \1;/g) ?? [],
   );
   expect(definitions.length).toBeGreaterThan(0);
   expect(identities.length).toBe(definitions.length);

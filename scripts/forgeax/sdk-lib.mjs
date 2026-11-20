@@ -814,10 +814,12 @@ export function isPnpmSqliteStoreArtifact(path) {
 }
 
 export async function normalizePnpmStore(storeRoot, storeFormat = 'v11') {
+  const store = resolve(storeRoot, storeFormat);
   // The pinned pnpm owns SQLite's binary page layout and write-ahead log.
-  await readFile(resolve(storeRoot, storeFormat, 'index.db'));
-  // Shared memory is live coordination state and is recreated on use.
-  await rm(resolve(storeRoot, storeFormat, 'index.db-shm'), { force: true });
+  await readFile(resolve(store, 'index.db'));
+  // pnpm recreates its shared memory and global virtual store projection.
+  await rm(resolve(store, 'index.db-shm'), { force: true });
+  await rm(resolve(store, 'links'), { force: true, recursive: true });
 }
 
 /** Report the store format actually written by pnpm instead of inferring it from its major. */

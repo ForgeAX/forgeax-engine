@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { World } from '@forgeax/engine-ecs';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, expect, it } from 'vitest';
 import { createBlitzUi, type UiWasmHost } from '../../../ui-blitz/src/index.js';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -18,7 +18,7 @@ const uiWasm: UiWasmHost = {
 
 let manifestUrl = '';
 beforeAll(async () => {
-  manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+  manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 }, 300_000);
 const directory = 'artifacts/cpu-ui/dawn';
 const save = (name: string, pixels: Uint8Array) => {

@@ -19,7 +19,10 @@ import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { Context } from '@forgeax/engine-plugin';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { RUNTIME_CATALOG_SNAPSHOT_SCHEMA } from '@forgeax/engine-types';
+import {
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
+} from '@forgeax/engine-types';
 import { transformWithOxc } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverPluginAssets } from '../build/plugin-assets.js';
@@ -1784,7 +1787,7 @@ describe('standalone host', () => {
     };
     runtimeErrorListener?.(runtimeFailure);
     expect(page.fatal.style.display).toBe('grid');
-    expect(page.fatalMessage.textContent).toBe('The game stopped because execution failed.');
+    expect(page.fatalMessage.textContent).toBe(DEFAULT_LOAD_PROGRESS_LABELS.host.runtimeFailed);
     expect(page.loading.style.display).toBe('none');
     expect(inputStates.at(-1)).toBe(false);
     expect(page.fatalDetails.textContent).toContain('detail.cause.phase: frame');
@@ -1820,11 +1823,13 @@ describe('standalone host', () => {
         detail: { status: 503, url: '/shaders/manifest.json' },
       },
     });
-    expect(publicationFailed.fatalMessage.textContent).toBe('Unable to start the game.');
+    expect(publicationFailed.fatalMessage.textContent).toBe(
+      DEFAULT_LOAD_PROGRESS_LABELS.host.startupFailed,
+    );
     expect(publicationFailed.fatalDetails.textContent).toContain('asset-read-failed');
     expect(publicationFailed.fatalDetails.textContent).toContain('cause.detail.status: 503');
     expect(publicationFailed.fatalDetails.textContent).toContain(
-      'supports browser WebGPU and a wgpu/WebGL2 fallback',
+      DEFAULT_LOAD_PROGRESS_LABELS.host.rendererDiagnosis,
     );
     publicationFailed.fatalReload.dispatch('click');
     expect(publicationFailed.location.reload).toHaveBeenCalledTimes(1);

@@ -1,7 +1,8 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { halfFloat } from '@forgeax/engine-math';
+import { halfFloat, quat } from '@forgeax/engine-math';
 import {
+  ANTIALIAS_MSAA,
   Camera,
   DirectionalLight,
   Materials,
@@ -166,6 +167,7 @@ export async function verifyOutline(
     await save('outline-csm-initial.rhitape', compactTape((await initialCapture).unwrap()).bytes);
     expect(both.counts.visible).toBeGreaterThan(30);
     expect(both.counts.hidden).toBeGreaterThan(30);
+    expect(renderer.inspect().perFramePassNames).not.toContain('outline-distance-seed');
     expect(
       renderer.inspect().directionalShadow.pixelEvidence,
       'Outline must preserve the actual same-frame CSM receiver',
@@ -325,7 +327,71 @@ export async function verifyOutline(
         shadows,
       });
     }
+    world
+      .set(selected, Transform, { quat: quat.fromAxisAngle(quat.create(), [0, 1, 0], 0.52) })
+      .unwrap();
+    world.set(occluder, Transform, { pos: [5, 0, 0.7] }).unwrap();
+    world.set(camera, Outline, { entities: [selected], occlusion: 0 }).unwrap();
     world.set(camera, Camera, { antialias: 0 }).unwrap();
+    const slopedSingle = await observe('sloped-single-sample');
+    expect(slopedSingle.counts.visible).toBeGreaterThan(100);
+    world.set(camera, Camera, { antialias: ANTIALIAS_MSAA }).unwrap();
+    const slopedMsaa = await observe('sloped-msaa');
+    expect(slopedMsaa.counts.visible).toBeGreaterThan(slopedSingle.counts.visible * 0.75);
+    world.set(occluder, Transform, { pos: [0, 0, 1], scale: [3, 3, 0.3] }).unwrap();
+    expect((await observe('sloped-msaa-occluded')).counts.visible).toBe(0);
+    world.set(camera, Outline, { occlusion: 1 }).unwrap();
+    expect((await observe('sloped-msaa-hidden')).counts.hidden).toBeGreaterThan(100);
+    reports.push({
+      slopedSingle: slopedSingle.counts.visible,
+      slopedMsaa: slopedMsaa.counts.visible,
+    });
+    world.set(selected, Transform, { quat: [0, 0, 0, 1] }).unwrap();
+    world.set(occluder, Transform, { pos: [0.6, 0, 0.7], scale: [1.1, 2, 0.3] }).unwrap();
+    world.set(camera, Outline, { entities: [selected, other], occlusion: 2 }).unwrap();
+    world.set(camera, Camera, { antialias: 0 }).unwrap();
+    world.set(camera, Outline, { distanceField: true }).unwrap();
+    await observe('distance-default');
+    const distanceRounds = () =>
+      renderer
+        .inspect()
+        .perFramePassNames.filter((name) => name.startsWith('outline-distance-flood-'));
+    const defaultDistance = await draw();
+    expect(defaultDistance.presentation).toBe('ready');
+    expect(renderer.inspect().perFramePassNames).toContain('outline-distance-seed');
+    expect(renderer.inspect().perFramePassNames).not.toContain('outline-selection');
+    expect(distanceRounds()).toHaveLength(4);
+    const distanceCapture = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
+    expect((await draw()).presentation).toBe('ready');
+    (await recorder.frameBoundary()).unwrap();
+    const distanceTape = buildFrameModel(
+      decodeTape((await distanceCapture).unwrap().bytes).unwrap(),
+    );
+    const distancePasses = summarizePasses(distanceTape).filter((pass) =>
+      pass.label.startsWith('outline-distance-flood-'),
+    );
+    expect(
+      distancePasses.map(
+        (pass) =>
+          distanceTape.works
+            .find((work) => work.passIndex === pass.passIndex)
+            ?.pipeline.shaders.find((shader) => shader.stage === 'fragment')?.entryPoint,
+      ),
+    ).toEqual(['fs_step_4', 'fs_step_2', 'fs_main', 'fs_main']);
+    world.set(camera, Outline, { width: 3 }).unwrap();
+    const sameSteps = await draw();
+    expect(sameSteps.presentation).toBe('ready');
+    expect(sameSteps.graphGeneration).toBe(defaultDistance.graphGeneration);
+    world.set(camera, Outline, { accentGlowRadius: 32 }).unwrap();
+    const longerDistance = await draw();
+    expect(longerDistance.presentation).toBe('ready');
+    expect(longerDistance.graphGeneration).not.toBe(defaultDistance.graphGeneration);
+    expect(distanceRounds()).toHaveLength(6);
+    world.set(camera, Outline, { width: 2, accentGlowRadius: 9 }).unwrap();
+    expect((await draw()).presentation).toBe('ready');
+    expect(distanceRounds()).toHaveLength(4);
+    world.set(camera, Outline, { distanceField: false }).unwrap();
     await draw();
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();

@@ -58,6 +58,8 @@ interface RenderGraphErrorDetailByCode {
   'resource-allocation-failed': ResourceAllocFailedDetail;
   'resource-resolution-failed': ResourceAccessDetail;
   'pass-encode-failed': PassFailureDetail;
+  'pass-preparation-failed': PassFailureDetail;
+  'graph-preparation-invalid': LifecycleDetail;
   'compiled-graph-retired': LifecycleDetail;
   'resource-retire-failed': LifecycleDetail;
 }

@@ -135,7 +135,7 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
     return new GpuDrawSelection(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.filter((batch) => {
+        .active.batches.filter((batch) => {
           const binding = batch.binding;
           if (binding === undefined) return false;
           const source = entries.find(

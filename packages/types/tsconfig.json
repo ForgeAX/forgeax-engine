@@ -9,6 +9,6 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "types": ["@webgpu/types"]
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "src/**/*.json"],
   "references": []
 }

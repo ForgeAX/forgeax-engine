@@ -44,12 +44,9 @@ const packaged = (output) => decodePackagedProfiles(readFileSync(join(output, 'p
 const profileMarker = (output, name) =>
   packagedProfilePublication(packaged(output), name)?.fragments[0];
 
-test('compatibility adopts the exact Core compiler and BASE before source preparation and GPU admission', () => {
-  const core = parse(readFileSync('.github/workflows/ci.yml', 'utf8')).jobs['core-build'];
+test('compatibility adopts the exact Core compiler before runtime template and GPU admission', () => {
   const compatibility = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'))
     .jobs.compatibility;
-  assert.equal(compatibility.env.SHADER_OUTPUT, core.env.SHADER_OUTPUT);
-  assert.equal(compatibility.env.SHADER_POINT_SHADOWS, core.env.SHADER_POINT_SHADOWS);
   const restore = compatibility.steps.find((step) =>
     step.run?.includes('node scripts/ci/restore-core-shader-inputs.mjs'),
   );
@@ -58,7 +55,7 @@ test('compatibility adopts the exact Core compiler and BASE before source prepar
     restore.run,
     /--artifact-id '\$\{\{ needs\.shader-producer-inputs\.outputs\.artifact_id \}\}'/,
   );
-  assert.match(restore.run, /--prepare-compiler/);
+  assert.match(restore.run, /--compiler-only --build-packages/);
   assert.equal(restore['timeout-minutes'], 5);
   assert.equal(restore['continue-on-error'], undefined);
   assert.equal(
@@ -74,21 +71,15 @@ test('compatibility adopts the exact Core compiler and BASE before source prepar
     false,
     'removed producer IDs cannot leave unreachable cache writes behind',
   );
-  const preparation = compatibility.steps.find((step) =>
-    step.name?.startsWith('Prepare the source-verified shader publication'),
+  assert.ok(
+    !compatibility.steps.some((step) => step.run?.includes('prepare-shader-release-inputs')),
   );
-  assert.equal(preparation['timeout-minutes'], 10);
-  assert.match(preparation.run, /prepare-shader-release-inputs\.mjs --build --profile base-ssao/);
-  assert.match(preparation.run, /--input packages\/vite-plugin-shader\/dist\/engine-inputs\/ci/);
-  for (const step of [restore, preparation]) {
-    assert.match(step.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
-    assert.match(step.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
-  }
+  assert.match(restore.if, /steps\.ci-repair\.outputs\.reused != 'true'/);
+  assert.match(restore.if, /matrix\.carrier == 'stable' \|\| matrix\.carrier == 'webkit'/);
   const gpu = compatibility.steps.find((step) =>
     step.name?.startsWith('Run actual GPU compatibility'),
   );
-  assert.ok(compatibility.steps.indexOf(restore) < compatibility.steps.indexOf(preparation));
-  assert.ok(compatibility.steps.indexOf(preparation) < compatibility.steps.indexOf(gpu));
+  assert.ok(compatibility.steps.indexOf(restore) < compatibility.steps.indexOf(gpu));
 });
 
 test('stock compatibility rejects missing producer identity before expensive preparation', () => {
@@ -265,26 +256,23 @@ test('packaging without a build cannot relabel unverified bytes with current sou
   }
 });
 
-test('SDK and browser use one profile producer and preserve source-build validation', () => {
+test('SDK and Browser use the standard source paths without a compiled profile prerequisite', () => {
   const sdk = readFileSync('scripts/forgeax/build-sdk.mjs', 'utf8');
+  const engine = readFileSync('scripts/build.mjs', 'utf8');
   const browser = readFileSync('scripts/ci/run-split-vitest-browser.mjs', 'utf8');
   const sourceProducer = readFileSync('scripts/build-shared-inputs.mjs', 'utf8');
-  assert.match(sdk, /prepare-shader-release-inputs\.mjs',\s*'--build'/);
-  assert.doesNotMatch(sdk, /\['point-base', '--point-shadows'\]/);
+  assert.match(sdk, /\['build:engine'\]/);
+  assert.doesNotMatch(sdk, /prepare-shader-release-inputs|--compiled-shaders/);
+  assert.doesNotMatch(engine, /prepare-shader-release-inputs\.mjs['"]|restoreCoreBaseShader/);
+  assert.doesNotMatch(browser, /prepare-shader-release-inputs|point-ssao/);
   assert.match(
-    browser,
-    /prepare-shader-release-inputs\.mjs'[\s\S]*'--build'[\s\S]*'--profile',[\s\S]*'point-ssao'/,
+    sourceProducer,
+    /writeFileSync\(\s*shaderManifest,\s*JSON.stringify\(await buildEngineShaderTemplateManifest/,
   );
-  assert.ok(browser.indexOf('const profileInputs =') > browser.indexOf('if (options.dryRun)'));
-  assert.ok(
-    browser.indexOf('const prepared =') < browser.indexOf('const cliPath = resolveCliPath()'),
-  );
-  const sourceMode = sourceProducer.indexOf("process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1'");
-  assert.ok(sourceMode >= 0 && sourceMode < sourceProducer.indexOf('await build('));
   assert.match(browser, /'--passWithNoTests=false'/);
 });
 
-test('point-shadow consumers own verified profile preparation independent of shard and caller', () => {
+test('native point-shadow smokes load templates independent of shard and caller', () => {
   const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
   assert.ok(
     !parse(workflow).jobs['smoke-fleet'].steps.some(
@@ -297,18 +285,21 @@ test('point-shadow consumers own verified profile preparation independent of sha
     'apps/learn-render/5.advanced-lighting/3.2.point-shadows/scripts/smoke.mjs',
   ]) {
     const source = readFileSync(file, 'utf8');
-    const prepare = source.indexOf("ensureShaderManifestProfile('point-ssao')");
-    const build = source.indexOf('await shader.buildEngineShaderManifest');
-    const directBuild = source.indexOf('await buildEngineShaderManifest');
-    assert.ok(prepare >= 0 && prepare < (build < 0 ? directBuild : build), file);
+    assert.doesNotMatch(
+      source,
+      /ensureShaderManifestProfile|buildEngineShaderManifest|point-ssao/,
+      file,
+    );
+    assert.match(source, /buildEngineShaderTemplateManifest\(\{ pointShadows: true \}\)/, file);
   }
 });
-test('Editor prerequisite prepares the default shader profile before recording engine dist', () => {
+test('Editor prerequisite records engine dist without compiling shader profiles', () => {
   const source = readFileSync('scripts/ci/build-editor-prerequisite.mjs', 'utf8');
-  const profile = source.indexOf("'scripts/forgeax/prepare-shader-release-inputs.mjs'");
-  assert.ok(profile > source.indexOf('contract.packageBuild.command'));
-  assert.ok(profile < source.indexOf("stageTimingsMs['engine-dist']"));
-  assert.match(source.slice(profile), /'--build', '--profile', 'base-ssao'/);
+  assert.doesNotMatch(source, /prepare-shader-release-inputs/);
+  assert.ok(
+    source.indexOf('contract.packageBuild.command') <
+      source.indexOf("stageTimingsMs['engine-dist']"),
+  );
 });
 
 test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrupt acceleration', () => {

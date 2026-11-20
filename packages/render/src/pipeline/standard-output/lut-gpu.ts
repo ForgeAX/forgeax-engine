@@ -8,7 +8,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
-import { err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import { err, ok, type Result, type SampledTextureAsset } from '@forgeax/engine-types';
 import type { GpuResidencyCache, TextureGpuEntry } from '../../device/gpu-residency';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
@@ -43,7 +43,7 @@ export interface StandardLutGraphProjection {
 
 export interface StandardLutGpuPreparationInput {
   readonly world: RenderResourceScope;
-  readonly handle: AssetHandle<'texture'>;
+  readonly handle: AssetHandle<'texture' | 'gpu-texture'>;
   readonly strength: number;
   readonly gpuStore: GpuResidencyCache;
   readonly device: RhiDevice;
@@ -62,6 +62,7 @@ export type StandardLutGpuErrorCode =
   | 'standard-lut-strength-invalid'
   | 'standard-lut-residency-failed'
   | 'standard-lut-not-resident'
+  | 'standard-lut-generation-pending'
   | 'standard-lut-3d-view-unavailable'
   | 'standard-lut-sampler-failed'
   | 'standard-lut-bind-group-layout-failed'
@@ -99,36 +100,24 @@ function causeDetail(cause: unknown): Readonly<Record<string, number | string | 
   };
 }
 
-/** Resolve, admit, make resident, and bind one ordinary TextureAsset LUT. */
-export function prepareStandardLutGpu(
+function resolveResidentLutTexture(
   input: StandardLutGpuPreparationInput,
-): Result<StandardLutGpuResources, StandardLutPreparationError> {
-  if (!Number.isFinite(input.strength) || input.strength <= 0) {
-    return failure(
-      'standard-lut-strength-invalid',
-      'the LUT blend strength must be finite and positive',
-      'set Camera.colorLutStrength to a value in (0, 1]',
-      { strength: String(input.strength) },
-    );
-  }
-  const asset = input.world.resolveAsset<TextureAsset>(input.handle);
-  if (!asset.ok) {
-    return failure(
-      'standard-lut-residency-failed',
-      'the authored TextureAsset handle resolves in the active RenderResourceScope',
-      'register or rebuild the TextureAsset, then retry the same camera generation',
-      causeDetail(asset.error),
-    );
-  }
-  const source = input.world.sourceForAsset(input.handle);
-  const guid = source?.guid;
-  const reference = `${input.world.identity}:${input.handle}`;
-  const sourceKey = source?.sourceKey ?? reference;
+  asset: SampledTextureAsset,
+  guid: string | undefined,
+  sourceKey: string,
+): Result<Texture, StandardLutGpuError> {
   const resident = input.gpuStore.getTextureGpuView(input.handle, input.world);
   let entry: TextureGpuEntry | undefined;
   if (resident === undefined) {
-    const prepared = input.gpuStore.ensureResident(input.handle, asset.value, input.world);
+    const prepared = input.gpuStore.ensureResident(input.handle, asset, input.world);
     if (!prepared.ok) {
+      if (asset.kind === 'gpu-texture' && prepared.error.code === 'asset-not-ready')
+        return failure(
+          'standard-lut-generation-pending',
+          'the GPU texture generation has been prepared',
+          'allow the normal frame preparation and generation submit to advance',
+          causeDetail(prepared.error),
+        );
       return failure(
         'standard-lut-residency-failed',
         'the LUT TextureAsset becomes resident through the producer-owned GPU store',
@@ -158,6 +147,36 @@ export function prepareStandardLutGpu(
       { guid: String(guid), sourceKey },
     );
   }
+  return ok(texture);
+}
+
+/** Resolve, admit, make resident, and bind a sampled 3D LUT. */
+export function prepareStandardLutGpu(
+  input: StandardLutGpuPreparationInput,
+): Result<StandardLutGpuResources, StandardLutPreparationError> {
+  if (!Number.isFinite(input.strength) || input.strength <= 0) {
+    return failure(
+      'standard-lut-strength-invalid',
+      'the LUT blend strength must be finite and positive',
+      'set Camera.colorLutStrength to a value in (0, 1]',
+      { strength: String(input.strength) },
+    );
+  }
+  const asset = input.world.resolveAsset<SampledTextureAsset>(input.handle);
+  if (!asset.ok) {
+    return failure(
+      'standard-lut-residency-failed',
+      'the authored TextureAsset handle resolves in the active RenderResourceScope',
+      'register or rebuild the TextureAsset, then retry the same camera generation',
+      causeDetail(asset.error),
+    );
+  }
+  const source = input.world.sourceForAsset(input.handle);
+  const reference = `${input.world.identity}:${input.handle}`;
+  const sourceKey = source?.sourceKey ?? reference;
+  const resident = resolveResidentLutTexture(input, asset.value, source?.guid, sourceKey);
+  if (!resident.ok) return resident;
+  const texture = resident.value;
   const cache =
     lutBindingCache.get(input.device) ??
     (() => {

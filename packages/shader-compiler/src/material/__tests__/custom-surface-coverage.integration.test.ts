@@ -4,8 +4,9 @@ import {
   type MaterialPass,
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { cookMaterialAsset } from '../cook';
+import { createNodeMaterialProgramCompiler } from '../node-program-compiler';
 import { collectMaterialSources } from '../pack-cooker';
 import { buildMaterialSourceCatalog } from '../source-catalog';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT, type MaterialVariantContext } from '../variant-context';
@@ -25,12 +26,16 @@ const sources = buildMaterialSourceCatalog({
   engine: collected.engine,
   project: [{ path: 'coverage-test.wgsl', source: surface }],
 }).unwrap();
+const compiler = createNodeMaterialProgramCompiler();
+afterAll(compiler.close);
 
 function body(source: string, name: string): string {
   const declaration = new RegExp(`fn ${name}\\w*\\([^]*?\\n}`).exec(source)?.[0];
   expect(declaration, `missing compiled ${name}`).toBeDefined();
   return declaration ?? '';
 }
+
+const opaquePasses = ['forward', 'deferred', 'shadow-caster'] as const;
 
 async function cook(
   alphaClip: boolean,
@@ -39,6 +44,7 @@ async function cook(
     readonly context?: Partial<MaterialVariantContext>;
     readonly hash?: boolean;
     readonly stockCutoff?: boolean;
+    readonly onlyPass?: (typeof opaquePasses)[number];
   } = {},
 ) {
   const pass = (name: string): MaterialPass => ({
@@ -63,6 +69,11 @@ async function cook(
         }
       : {}),
   });
+  const passes: NonNullable<MaterialAsset['passes']> = [
+    pass('forward'),
+    ...(!blend ? [pass('deferred')] : []),
+    pass('shadow-caster'),
+  ];
   const asset: MaterialAsset = {
     kind: 'material',
     staticSwitches: { alphaClipping: alphaClip, alphaHash: options.hash ?? false },
@@ -71,30 +82,41 @@ async function cook(
       { name: 'threshold', type: 'f32' },
     ]).filter((parameter) => options.stockCutoff !== false || parameter.name !== 'alphaCutoff'),
     values: { coverage: 0.4, threshold: 0.5 },
-    passes: [pass('forward'), ...(!blend ? [pass('deferred')] : []), pass('shadow-caster')],
+    passes,
   };
-  const cooked = await cookMaterialAsset({
+  const request = {
     material: 'coverage',
     table: { coverage: asset },
     sources,
     context: { ...DEFAULT_MATERIAL_VARIANT_CONTEXT, ...options.context },
+  };
+  // Each pass uses the complete material contract and the same bounded native
+  // pool. The independently checked passes can occupy it together.
+  const names =
+    options.onlyPass === undefined ? passes.map(({ name }) => name) : [options.onlyPass];
+  const cooked = await Promise.all(
+    names.map((name) => cookMaterialAsset(request, compiler.compile, [name])),
+  );
+  return cooked.flatMap((result) => {
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.error)).toBe(true);
+    return result.unwrap().passes;
   });
-  expect(cooked.ok, cooked.ok ? '' : JSON.stringify(cooked.error)).toBe(true);
-  return cooked.unwrap();
 }
 
 describe('authored custom Surface coverage', () => {
-  it.each([
-    false,
-    true,
-  ])('compiles alphaClip=%s consistently into color, GBuffer and shadow', async (alphaClip) => {
-    const cooked = await cook(alphaClip);
-    expect(cooked.passes.map((pass) => pass.pass)).toEqual([
-      'forward',
-      'deferred',
-      'shadow-caster',
-    ]);
-    for (const pass of cooked.passes) {
+  const alphaCases = opaquePasses.flatMap((onlyPass) =>
+    [false, true].map((alphaClip) => ({ alphaClip, onlyPass })),
+  );
+  it.each(alphaCases)('compiles alphaClip=$alphaClip in $onlyPass', async ({
+    alphaClip,
+    onlyPass,
+  }) => {
+    const passes = await cook(alphaClip, false, {
+      context: { capability: 'storage-buffer-minimum' },
+      onlyPass,
+    });
+    expect(passes.map((pass) => pass.pass)).toEqual([onlyPass]);
+    for (const pass of passes) {
       for (const compiled of [pass.compile, pass.sceneCompile]) {
         expect(compiled).toBeDefined();
         const gate = body(
@@ -109,9 +131,9 @@ describe('authored custom Surface coverage', () => {
   });
 
   it('does not silently add threshold clipping to a blended Surface', async () => {
-    const cooked = await cook(false, true);
-    expect(cooked.passes.map((pass) => pass.pass)).toEqual(['forward', 'shadow-caster']);
-    for (const pass of cooked.passes) {
+    const passes = await cook(false, true);
+    expect(passes.map((pass) => pass.pass)).toEqual(['forward', 'shadow-caster']);
+    for (const pass of passes) {
       expect(
         body(
           pass.compile.wgsl,
@@ -121,9 +143,16 @@ describe('authored custom Surface coverage', () => {
     }
   });
 
-  it('honors an explicit custom threshold without stock cutoff parameters', async () => {
-    const cooked = await cook(true, false, { stockCutoff: false });
-    for (const pass of cooked.passes) {
+  it.each(
+    opaquePasses,
+  )('honors a custom threshold without stock cutoff in %s', async (onlyPass) => {
+    const passes = await cook(true, false, {
+      context: { capability: 'storage-buffer-minimum' },
+      stockCutoff: false,
+      onlyPass,
+    });
+    expect(passes.map((pass) => pass.pass)).toEqual([onlyPass]);
+    for (const pass of passes) {
       expect(pass.abi.materialRow.fields).not.toContain('alphaCutoff');
       expect(
         body(
@@ -135,8 +164,8 @@ describe('authored custom Surface coverage', () => {
   });
 
   it('keeps explicit custom hash coverage when threshold coverage is disabled', async () => {
-    const cooked = await cook(false, false, { hash: true });
-    for (const pass of cooked.passes) {
+    const passes = await cook(false, false, { hash: true });
+    for (const pass of passes) {
       expect(
         body(
           pass.compile.wgsl,
@@ -150,10 +179,10 @@ describe('authored custom Surface coverage', () => {
     'skinned',
     'uniform-fallback',
   ] as const)('preserves opaque coverage in %s programs', async (profile) => {
-    const cooked = await cook(false, false, {
+    const passes = await cook(false, false, {
       context: profile === 'skinned' ? { geometry: 'skinned' } : { capability: 'uniform-fallback' },
     });
-    for (const pass of cooked.passes) {
+    for (const pass of passes) {
       expect(
         body(
           pass.compile.wgsl,
@@ -164,56 +193,54 @@ describe('authored custom Surface coverage', () => {
       else expect(pass.sceneCompile).toBeDefined();
     }
   });
-  it.each([
-    'mesh',
-    'skinned',
-  ] as const)('publishes native view-clipping entry effects independently of alpha coverage (%s)', async (geometry) => {
-    for (const enabled of [false, true]) {
-      const cooked = await cook(false, false, {
-        context: { geometry, ...(enabled ? { viewClipping: true as const } : {}) },
-      });
-      for (const pass of cooked.passes) {
-        for (const compiled of [pass.compile, pass.sceneCompile]) {
-          if (compiled === undefined) throw Error('Missing address program');
-          const name = pass.pass === 'shadow-caster' ? 'fs_shadow' : 'fs_opaque';
-          const entry = compiled.reflection.entryPoints?.find(
-            (entry) => entry.stage === 'fragment' && entry.name === name,
-          );
-          expect(entry?.effects, `${geometry}/${pass.pass}/${name} native facts`).toBeDefined();
-          expect(
-            entry?.effects?.mayDiscard,
-            `${geometry}/${pass.pass}/${compiled === pass.compile ? 'direct' : 'scene-index'}/${JSON.stringify(pass.context)}`,
-          ).toBe(enabled);
-        }
-      }
-    }
-  });
+  const geometryVariants = (['mesh', 'skinned'] as const).flatMap((geometry) =>
+    [false, true].map((viewClipping) => ({ geometry, viewClipping })),
+  );
+  it.each(
+    geometryVariants,
+  )('publishes view clipping $viewClipping on $geometry without LOD coverage', ({
+    geometry,
+    viewClipping,
+  }) => checkNativeCoverage({ geometry, viewClipping, lodCoverage: false }));
 });
 
-it('cooks independent LOD coverage in Forward, GBuffer and shadow with native effects', async () => {
-  for (const lodCoverage of [false, true])
-    for (const viewClipping of [false, true]) {
-      const cooked = await cook(false, false, {
-        context: {
-          ...(lodCoverage ? { lodCoverage: true as const } : {}),
-          ...(viewClipping ? { viewClipping: true as const } : {}),
-        },
-      });
-      for (const pass of cooked.passes)
-        for (const [address, compiled] of [
-          ['direct', pass.compile],
-          ['scene-index', pass.sceneCompile],
-        ] as const) {
-          if (compiled === undefined) throw Error('Missing address program');
-          const name = pass.pass === 'shadow-caster' ? 'fs_shadow' : 'fs_opaque';
-          const entry = compiled.reflection.entryPoints?.find((entry) => entry.name === name);
-          expect(
-            entry?.effects?.mayDiscard,
-            `${pass.pass}/${address}/${lodCoverage}/${viewClipping}`,
-          ).toBe(viewClipping || (address === 'scene-index' && lodCoverage));
-          if (!lodCoverage) expect(compiled.wgsl).not.toContain('applyLodCoverage');
-          else if (address === 'scene-index') expect(compiled.wgsl).toContain('applyLodCoverage');
-          expect(compiled.wgsl.includes('clippedByPlanes')).toBe(viewClipping);
-        }
+async function checkNativeCoverage({
+  geometry,
+  viewClipping,
+  lodCoverage,
+}: {
+  geometry: 'mesh' | 'skinned';
+  viewClipping: boolean;
+  lodCoverage: boolean;
+}) {
+  const passes = await cook(false, false, {
+    context: {
+      geometry,
+      ...(lodCoverage ? { lodCoverage: true as const } : {}),
+      ...(viewClipping ? { viewClipping: true as const } : {}),
+    },
+  });
+  for (const pass of passes) {
+    const name = pass.pass === 'shadow-caster' ? 'fs_shadow' : 'fs_opaque';
+    for (const [address, compiled] of [
+      ['direct', pass.compile],
+      ['scene-index', pass.sceneCompile],
+    ] as const) {
+      if (compiled === undefined) throw Error('Missing address program');
+      const entry = compiled.reflection.entryPoints?.find(
+        (entry) => entry.stage === 'fragment' && entry.name === name,
+      );
+      expect(
+        entry?.effects?.mayDiscard,
+        `${pass.pass}/${address}/${lodCoverage}/${viewClipping}`,
+      ).toBe(viewClipping || (address === 'scene-index' && lodCoverage));
+      if (!lodCoverage) expect(compiled.wgsl).not.toContain('applyLodCoverage');
+      else if (address === 'scene-index') expect(compiled.wgsl).toContain('applyLodCoverage');
+      expect(compiled.wgsl.includes('clippedByPlanes')).toBe(viewClipping);
     }
+  }
+}
+
+it.each([false, true])('publishes mesh LOD coverage with view clipping %s', (viewClipping) => {
+  return checkNativeCoverage({ geometry: 'mesh', viewClipping, lodCoverage: true });
 });

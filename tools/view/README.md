@@ -1,5 +1,7 @@
 # ForgeaX View
 
+English | [简体中文](README.zh-CN.md)
+
 View is an optional asset viewer and project workspace and read-only observer of Engine AI runs.
 The CLI and frontend are clients of Engine APIs. The Engine service owns runs,
 project facts, assets, scenes, observation, capture, and termination; View owns
@@ -84,8 +86,13 @@ precedence. Use the returned H explicitly for subsequent instance controls.
 Omitting G leaves a fresh owner unbound or preserves its existing project. The
 offline Shell can start the backend with optional G. A connected unbound Shell
 offers known/recent projects and a shallow folder picker; Next validates and
-opens the selection. A bound Shell retains the chooser in the header while
+opens the selection. Double-clicking a known project opens it directly through
+the same admission flow; single-clicking only selects it. A bound Shell retains the chooser in the header while
 showing Engine session preparation and readiness.
+Preparation feedback opens expanded for each project session, showing current
+work and original failure diagnostics. It can collapse to a single status row.
+Project selection stays above
+this feedback so preparation failures cannot block recovery controls.
 
 DevKit owns the durable catalogue outside H and G. `forgeax project list`,
 `project import --path G` and `project browse [--path D]` use that same owner.

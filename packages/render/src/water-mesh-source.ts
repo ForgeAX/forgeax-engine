@@ -17,6 +17,7 @@ import {
 } from './water/mesh-source-admission';
 
 const IDENTITY_MATRIX = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const NO_WATER_MESH_ROWS: ReadonlyMap<number, RenderableSnapshot> = new Map();
 
 type WaterMeshSource = NonNullable<RenderableSnapshot['waterMeshSource']>;
 
@@ -81,24 +82,28 @@ function mergeWaterMeshOwnerRow(
   };
 }
 
+function publishedWaterMeshRows(
+  publishedRows: Iterable<RenderableSnapshot>,
+): ReadonlyMap<number, RenderableSnapshot> {
+  let current: Map<number, RenderableSnapshot> | undefined;
+  for (const row of publishedRows) {
+    if (row.waterMeshSource !== undefined) {
+      current ??= new Map();
+      current.set(row.entityKey, row);
+    }
+  }
+  return current ?? NO_WATER_MESH_ROWS;
+}
+
 function currentWaterMeshOwnerRows(
   frame: ExtractedFrame,
-  publishedRows: Iterable<RenderableSnapshot>,
+  current: ReadonlyMap<number, RenderableSnapshot>,
 ): Pick<ExtractedFrame, 'renderables' | 'dispatch'> {
-  const current = new Map<string, RenderableSnapshot>();
-  for (const row of publishedRows) {
-    if (row.waterMeshSource !== undefined) current.set(`${row.entityKey}`, row);
-  }
-  // With no current or retained Water owner, ordinary rows and their Pass
-  // query already have the exact frame addresses. Preserve their identities.
-  if (current.size === 0 && !frame.renderables.some((row) => row.waterMeshSource !== undefined))
-    return { renderables: frame.renderables, dispatch: frame.dispatch };
-
   const result: RenderableSnapshot[] = [];
   const indices = new Map<number, number>();
-  const consumed = new Set<string>();
+  const consumed = new Set<number>();
   for (const [index, row] of frame.renderables.entries()) {
-    const key = `${row.entityKey}`;
+    const key = row.entityKey;
     const published = current.get(key);
     if (published !== undefined) {
       indices.set(index, result.length);
@@ -128,21 +133,37 @@ function currentWaterMeshOwnerRows(
   return { renderables: result, dispatch };
 }
 
-/** Turn one accepted WaterBody source row into its view's actual native draws. */
+/** Reconcile published owners before emitting their view's draws. */
 export function projectWaterMeshView(
   frame: ExtractedFrame,
   materials: MaterialFrame,
   viewIdentity: string | undefined,
   publishedOwnerRows?: Iterable<RenderableSnapshot>,
+  /** Absence supplied only by the owner of the complete retained row table. */
+  retainedWaterPresent?: boolean,
 ): { frame: ExtractedFrame; materials: MaterialFrame } {
-  if (publishedOwnerRows !== undefined) {
-    frame = {
-      ...frame,
-      ...currentWaterMeshOwnerRows(frame, publishedOwnerRows),
-    };
-  }
-  if (!frame.renderables.some((source) => source.waterMeshSource !== undefined))
+  const published =
+    publishedOwnerRows === undefined ? undefined : publishedWaterMeshRows(publishedOwnerRows);
+  if (
+    !published?.size &&
+    !(
+      retainedWaterPresent ??
+      frame.renderables.some((source) => source.waterMeshSource !== undefined)
+    )
+  )
     return { frame, materials };
+  if (published !== undefined) {
+    frame = { ...frame, ...currentWaterMeshOwnerRows(frame, published) };
+    if (published.size === 0) return { frame, materials };
+  }
+  return emitWaterMeshDrawRows(frame, materials, viewIdentity);
+}
+
+function emitWaterMeshDrawRows(
+  frame: ExtractedFrame,
+  materials: MaterialFrame,
+  viewIdentity: string | undefined,
+): { frame: ExtractedFrame; materials: MaterialFrame } {
   const renderables: RenderableSnapshot[] = [];
   const dispatch: DispatchEntry[] = [];
   const dispatchBySource = new Map<number, DispatchEntry[]>();

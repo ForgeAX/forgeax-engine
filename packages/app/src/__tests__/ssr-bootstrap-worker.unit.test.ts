@@ -62,8 +62,11 @@ it.each([
   const prepared = await prepareBootstrapEntry(bootstrapUrl, undefined);
   if (!prepared.ok) throw prepared.error;
   if (owner === 'engine') await import('../execution/engine-worker-runtime');
-  else await import('../execution/render-worker-runtime');
-  const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
+  const dispatch =
+    owner === 'engine'
+      ? globalThis.onmessage
+      : (await import('../execution/render-worker-runtime')).receiveRenderWorkerInput;
+  const receive = dispatch as unknown as (event: { data: unknown }) => void;
   receive({
     data: {
       kind: 'init',

@@ -59,12 +59,34 @@ export function createStateProjection(
   return new CurrentStateProjection(world, components, candidates);
 }
 
+export type StateChangeObservation = Pick<StateProjection, 'isCurrent' | 'read'>;
+
+/**
+ * Observe subsequent writes to an explicitly owned set of slot indices.
+ * Establish the baseline at the caller's synchronous boundary without
+ * discovering existing World rows. Slot identity retains deletion evidence
+ * even if the occupant changes generation. Change the set between accepted reads.
+ */
+export function observeStateChanges(
+  world: World,
+  components: readonly Component[],
+  indices: ReadonlySet<number>,
+): StateChangeObservation {
+  return new CurrentStateProjection(world, components, [], indices);
+}
+
 class CurrentStateProjection implements StateProjection {
   readonly #owner: World[typeof worldInternal];
   readonly #ids: number[];
   readonly #candidateIds: number[];
   readonly work: number[] = [];
   #flags = new Uint8Array(64);
+  readonly #observed:
+    | {
+        readonly flags: Map<number, number>;
+        enqueue(index: number): void;
+      }
+    | undefined;
   #membershipWork = false;
   #stamped = false;
   #acceptedEpoch = -1;
@@ -76,12 +98,38 @@ class CurrentStateProjection implements StateProjection {
 
   readonly #world: World;
   readonly #components: readonly Component[];
-  constructor(world: World, components: readonly Component[], candidates: readonly Component[]) {
+  constructor(
+    world: World,
+    components: readonly Component[],
+    candidates: readonly Component[],
+    observedIndices?: ReadonlySet<number>,
+  ) {
     this.#world = world;
     this.#components = Object.freeze(components.slice());
     this.#owner = world[worldInternal];
     this.#ids = this.#components.map(componentId);
     this.#candidateIds = candidates === components ? this.#ids : candidates.map(componentId);
+    if (observedIndices !== undefined) {
+      const flags = new Map<number, number>();
+      this.#observed = {
+        flags,
+        enqueue: (index) => {
+          if (!observedIndices.has(index)) return;
+          const previous = flags.get(index);
+          if (previous === undefined) {
+            this.#scannedRows++;
+            this.work.push(index);
+          }
+          flags.set(index, (previous ?? QUEUED) | (this.#membershipWork ? MEMBERSHIP : 0));
+        },
+      };
+      this.assertReadable();
+      const poisoned = worldPoisonedError(world.execution);
+      if (poisoned !== undefined) throw poisoned;
+      this.#acceptedEpoch = this.#owner.getMutationEpoch();
+      this.#acceptedStructure = this.#owner.getStructureEpoch();
+      this.#invalid = false;
+    }
     // Public callbacks keep their original detached-call behavior and identity.
     this.isCurrent = this.isCurrent.bind(this);
     this.read = this.read.bind(this);
@@ -157,7 +205,8 @@ class CurrentStateProjection implements StateProjection {
     const token = ++this.#readToken;
     const epoch = this.#owner.getMutationEpoch();
     const structure = this.#owner.getStructureEpoch();
-    if (this.#stamped)
+    if (this.#observed !== undefined) this.#observed.flags.clear();
+    else if (this.#stamped)
       for (let cursor = 0; cursor < this.work.length; cursor++) {
         const index = this.work[cursor] as number;
         this.#flags[index] = (this.#flags[index] ?? 0) & ACCEPTED;
@@ -166,18 +215,19 @@ class CurrentStateProjection implements StateProjection {
     this.#scannedRows = 0;
     this.#stamped = true;
     const changedComponents = this.#changedComponents();
+    const enqueue = this.#observed?.enqueue ?? this.#enqueue;
     const mutationEpochs = this.#owner.componentMutationEpochs;
     let checkedIndexEntries = 0;
     if (this.#invalid) {
       this.#membershipWork = true;
       for (let index = 0; index < this.#flags.length; index++)
-        if (((this.#flags[index] ?? 0) & ACCEPTED) !== 0) this.#enqueue(index);
+        if (((this.#flags[index] ?? 0) & ACCEPTED) !== 0) enqueue(index);
       for (let cursor = 0; cursor < this.#candidateIds.length; cursor++) {
         checkedIndexEntries += this.#owner.visitComponentChanged(
           this.#candidateIds[cursor] as number,
           -1,
           epoch,
-          this.#enqueue,
+          enqueue,
         );
       }
     } else {
@@ -189,13 +239,13 @@ class CurrentStateProjection implements StateProjection {
           id,
           this.#acceptedEpoch,
           epoch,
-          this.#enqueue,
+          enqueue,
         );
       }
       if (structure !== this.#acceptedStructure) {
         this.#membershipWork = true;
         const index = this.#owner.structuralChangeIndex;
-        index.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
+        index.visitSince(this.#acceptedEpoch, epoch, enqueue);
         checkedIndexEntries += index.checkedEntries;
       }
     }
@@ -256,15 +306,18 @@ class CurrentStateProjection implements StateProjection {
   }
   structuralChange(token: number, index: number): boolean {
     if (token !== this.#readToken) throw new StateProjectionExpiredError();
-    return ((this.#flags[index] ?? 0) & MEMBERSHIP) !== 0;
+    const flags = this.#observed?.flags.get(index) ?? this.#flags[index] ?? 0;
+    return (flags & MEMBERSHIP) !== 0;
   }
   commitCandidate(epoch: number, structure: number): void {
-    for (let cursor = 0; cursor < this.work.length; cursor++) {
-      const index = this.work[cursor] as number;
-      const state = this.#flags[index] ?? 0;
-      this.#flags[index] =
-        (state & MEMBERSHIP) !== 0 ? (this.#matches(index) ? ACCEPTED : 0) : state & ACCEPTED;
-    }
+    if (this.#observed !== undefined) this.#observed.flags.clear();
+    else
+      for (let cursor = 0; cursor < this.work.length; cursor++) {
+        const index = this.work[cursor] as number;
+        const state = this.#flags[index] ?? 0;
+        this.#flags[index] =
+          (state & MEMBERSHIP) !== 0 ? (this.#matches(index) ? ACCEPTED : 0) : state & ACCEPTED;
+      }
     this.#stamped = false;
     this.#acceptedEpoch = epoch;
     this.#acceptedStructure = structure;

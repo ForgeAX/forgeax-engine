@@ -42,6 +42,7 @@ export function projectLiveRaster(
   visibleBuffer: Buffer,
   rigidBindings: object,
   skinBindings: object | undefined,
+  borrow?: (prepared: PreparedBatch) => LiveRasterBatch | undefined,
 ): LiveRasterCache {
   if (cached?.filtered === filtered) {
     if (
@@ -72,26 +73,28 @@ export function projectLiveRaster(
     cached.rigidBindings === rigidBindings &&
     cached.skinBindings === skinBindings;
   for (const prepared of filtered.batches) {
-    const retained = previousById.get(prepared.batch.batchId);
+    const held = borrow?.(prepared);
+    const retained = previousById.get(prepared.batch.batchId) ?? held;
+    const retainedPhysical = samePhysical || retained === held;
     // An identical filtered row under unchanged physical bindings projects
     // exactly the retained owner; keep it and its mesh import row.
-    if (
-      samePhysical &&
-      retained?.prepared === prepared &&
-      retained.meshBinding === meshBindings.adopt(retained.meshBinding)
-    ) {
+    const reusable = retainedLiveRow(retained, prepared, meshBindings, retainedPhysical);
+    if (reusable !== undefined) {
       previousById.delete(prepared.batch.batchId);
-      value.push(retained);
+      value.push(reusable);
       continue;
     }
     const previous =
       retained?.batch.generation === prepared.batch.generation ? retained : undefined;
-    const visibleBindGroups =
-      previous !== undefined &&
-      sameWindowBindings(cached, visibleBuffer, rigidBindings, skinBindings, prepared.batch) &&
-      sameWindows(previous.batch, prepared.batch)
-        ? previous.visibleBindGroups
-        : undefined;
+    const visibleBindGroups = retainedVisibleWindows(
+      previous,
+      cached,
+      held,
+      visibleBuffer,
+      rigidBindings,
+      skinBindings,
+      prepared.batch,
+    );
     value.push({
       prepared,
       batch: prepared.batch,
@@ -172,4 +175,33 @@ function sameWindows(previous: GpuDrivenBatch, batch: GpuDrivenBatch): boolean {
     batchLevelStride(previous) === batchLevelStride(batch) &&
     batchLodLevelCount(previous) === batchLodLevelCount(batch)
   );
+}
+
+function retainedLiveRow(
+  retained: LiveRasterBatch | undefined,
+  prepared: PreparedBatch,
+  bindings: RasterMeshBindings,
+  physical: boolean,
+): LiveRasterBatch | undefined {
+  return physical &&
+    retained?.prepared === prepared &&
+    retained.meshBinding === bindings.adopt(retained.meshBinding)
+    ? retained
+    : undefined;
+}
+
+function retainedVisibleWindows(
+  previous: LiveRasterBatch | undefined,
+  cached: LiveRasterCache | undefined,
+  held: LiveRasterBatch | undefined,
+  visible: Buffer,
+  rigid: object,
+  skin: object | undefined,
+  batch: GpuDrivenBatch,
+): LiveRasterBatch['visibleBindGroups'] {
+  return previous !== undefined &&
+    (previous === held || sameWindowBindings(cached, visible, rigid, skin, batch)) &&
+    sameWindows(previous.batch, batch)
+    ? previous.visibleBindGroups
+    : undefined;
 }

@@ -2,6 +2,7 @@
 import { runInNewContext } from 'node:vm';
 import { type LoadProgressLabelInput, resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import zhCN from '../../../types/src/locales/load-progress.zh-CN.json';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 
 // Runs the emitted startup owner in a real DOM with the default 150 ms fade.
@@ -70,26 +71,31 @@ describe('startup overlay fade', () => {
   it.each([
     false,
     true,
+    'zh-CN',
   ])('uses one Host text configuration through markup and execution failure (overridden: %s)', async (overridden) => {
-    const input = overridden
-      ? {
-          lang: 'en-GB',
-          reload: 'Restart application',
-          host: {
-            game: 'Application <version>',
-            engine: 'Runtime',
-            completedFramesPerSecond: 'Application completed frames',
-            startupFailed: 'Application startup unavailable',
-            runtimeFailed: 'Application execution unavailable </script>',
-            diagnostics: 'Failure details',
-            copyDiagnostics: 'Copy <details>',
-            diagnosticsCopied: 'Details copied',
-            diagnosticsCopyFailed: 'Copy unavailable',
-            javascriptRequired: 'Enable the scripting runtime',
-          },
-        }
-      : undefined;
+    const input =
+      overridden === 'zh-CN'
+        ? { lang: 'zh-CN' }
+        : overridden
+          ? {
+              lang: 'en-GB',
+              reload: 'Restart application',
+              host: {
+                game: 'Application <version>',
+                engine: 'Runtime',
+                completedFramesPerSecond: 'Application completed frames',
+                startupFailed: 'Application startup unavailable',
+                runtimeFailed: 'Application execution unavailable </script>',
+                diagnostics: 'Failure details',
+                copyDiagnostics: 'Copy <details>',
+                diagnosticsCopied: 'Details copied',
+                diagnosticsCopyFailed: 'Copy unavailable',
+                javascriptRequired: 'Enable the scripting runtime',
+              },
+            }
+          : undefined;
     const labels = resolveLoadProgressLabels(input);
+    if (overridden === 'zh-CN') expect(labels.host.copyDiagnostics).toBe(zhCN.host.copyDiagnostics);
     const page = fixture(input);
     try {
       expect(document.documentElement.lang).toBe(labels.lang);

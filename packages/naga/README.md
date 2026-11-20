@@ -1,6 +1,9 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-naga
 
-> **本包是 `@forgeax/engine-wgpu-wasm` 暴露的 naga raw bindings 之上的 TS-only 薄壳**，对齐三阶段 API（`parse` / `validate` / `emit_reflection`），关注点零业务逻辑。AI 用户（含 agentic AI runtime）可直接 `import { parse, validate, emit_reflection } from '@forgeax/engine-naga'` 复用 WGSL syntax check 能力——内部走 `@forgeax/engine-wgpu-wasm.ensureReady()` singleton 加载物理 wasm（plan-strategy §D-P3 / §D-P4 + research F-4 + charter 命题 1 渐进披露 + 命题 5 一致抽象）。
+> **This package is a TypeScript-only wrapper over naga raw bindings from `@forgeax/engine-wgpu-wasm`.** It follows the three-stage API (`parse` / `validate` / `emit_reflection`) without business logic. AI users, including agentic runtimes, can `import { parse, validate, emit_reflection } from '@forgeax/engine-naga'` for WGSL syntax checking. Internally, the `@forgeax/engine-wgpu-wasm.ensureReady()` singleton loads the physical WASM (plan-strategy D-P3/D-P4, research F-4, charter propositions 1 and 5).
 
 `composeShader` optionally accepts a synchronous output normalizer. Naga reparses
 and validates that returned WGSL and compares its complete buffer ABI before
@@ -8,21 +11,21 @@ returning it. The next exact `parse`/`validate` can consume this checked IR once
 changed bytes take the ordinary path. Opaque handle ownership and explicit
 render-entry/reflection admission are unchanged.
 
-## 形态铁律
+## Invariants
 
-- **关注点单一** —— 只做 raw wasm-bindgen 出口的 TS 包装（snake_case naga upstream 原生命名延续）；reflection 字段派生 / 三件套 emit 都在上游 `@forgeax/engine-shader-compiler`。
-- **TS-only 薄壳** —— 本包无 Rust crate / `Cargo.toml` / `build.sh` / `pkg/` 资产；物理 wasm 段统一由 `@forgeax/engine-wgpu-wasm` 出包，本包 deps `'@forgeax/engine-wgpu-wasm': 'workspace:*'`。
-- **ShaderError 不重定义** —— `ShaderError` 类与 `manifestMalformed` / `shaderNotFound` 工厂唯一 owner 为 `@forgeax/engine-shader`（本包 re-export，build 与 runtime 路径共用同一个 `instanceof` 身份）；`ShaderErrorCode` / `ShaderErrorDetail` closed union 来自 `@forgeax/engine-types`；本包仅做 `try { ... } catch (e) { return err(wrapShaderError(...)) }` 包装层。
-- **物理隔离** —— `@forgeax/engine-shader` runtime 包**禁止**直接或间接依赖本包（AC-06 三重闸门 grep 守护）。
+- **Single responsibility** -- Wrap raw wasm-bindgen exports in TypeScript, retaining upstream naga snake_case names. Reflection-field derivation and the three emitted outputs belong to `@forgeax/engine-shader-compiler`.
+- **TypeScript-only wrapper** -- No Rust crate, `Cargo.toml`, `build.sh` or `pkg/` assets live here. `@forgeax/engine-wgpu-wasm` packages physical WASM; this package declares `'@forgeax/engine-wgpu-wasm': 'workspace:*'`.
+- **One ShaderError owner** -- `@forgeax/engine-shader` owns `ShaderError`, `manifestMalformed` and `shaderNotFound`. Reexports preserve the same `instanceof` identity across build and runtime paths. Closed `ShaderErrorCode` / `ShaderErrorDetail` unions come from `@forgeax/engine-types`; this package only adapts `try { ... } catch (e) { return err(wrapShaderError(...)) }`.
+- **Physical isolation** -- The `@forgeax/engine-shader` runtime must never depend directly or indirectly on this package (AC-06 enforces three independent checks).
 
-## API 索引
+## API Index
 
-| 入口 | 形态 | 说明 |
+| Entry | Signature | Description |
 |:--|:--|:--|
-| `getCompilerFingerprint()` | `() => Promise<Result<string, ShaderError>>` | 已验证且初始化成功的 Native 编译器身份；构建缓存必须包含此事实，缺失身份不能视为有效缓存命中 |
-| `parse(source)` | `(string) => Promise<Result<ParsedModule, ShaderError>>` | naga `parse_str` 透传；syntax error → `Result.err(ShaderError code='shader-compile-failed')`（含 lineNum / linePos） |
-| `validate(parsed)` | `(ParsedModule) => Promise<Result<ValidatedModule, ShaderError>>` | naga `Validator::validate` 透传；ownership 转移（消费 parsed handle） |
-| `emit_reflection(validated, optionsJson)` | `(ValidatedModule, string) => Promise<Result<string, ShaderError>>` | reflection JSON 字符串 emit；ModuleInfo 已嵌入 ValidatedModule 句柄；上层 `@forgeax/engine-shader-compiler.parseReflectionJson` 派生 `BindGroupLayoutDescriptor[]` |
+| `getCompilerFingerprint()` | `() => Promise<Result<string, ShaderError>>` | Verified, successfully initialized native compiler identity. Build caches must include this fact; missing identity cannot qualify as a cache hit. |
+| `parse(source)` | `(string) => Promise<Result<ParsedModule, ShaderError>>` | Forwards naga `parse_str`; syntax errors return `Result.err(ShaderError code='shader-compile-failed')` with lineNum / linePos. |
+| `validate(parsed)` | `(ParsedModule) => Promise<Result<ValidatedModule, ShaderError>>` | Forwards naga `Validator::validate`, transferring ownership by consuming the parsed handle. |
+| `emit_reflection(validated, optionsJson)` | `(ValidatedModule, string) => Promise<Result<string, ShaderError>>` | Emits reflection JSON. ModuleInfo is embedded in the ValidatedModule handle; `@forgeax/engine-shader-compiler.parseReflectionJson` derives `BindGroupLayoutDescriptor[]`. |
 | `composeShader(entry, imports, defines)` | `Promise<string>` | Build-time Naga Oil Composer passthrough; resolves selected imports and throws prefixed composition errors. |
 
 Reflection also carries `entryPoints`: the binding and top-level struct-field
@@ -56,13 +59,13 @@ handle. Reflection and selected-entry validation borrow the validated handle;
 its caller frees it after the last operation, normally in `finally`. Garbage
 collection is not an execution budget for native IR during long source builds.
 
-签名映射 `@forgeax/engine-wgpu-wasm/pkg/wgpu_wasm.d.ts`（wasm-pack auto-emit）；本包仅做 try/catch + ensureReady 适配层。
+Signatures map to the wasm-pack-generated `@forgeax/engine-wgpu-wasm/pkg/wgpu_wasm.d.ts`; this package only adds try/catch and ensureReady adaptation.
 
-## 关联
+## Related Work
 
-- 决策 plan-strategy §D-P3（`ensureReady` SSOT）/ §D-P4（薄壳 surface byte-for-byte 等价历史上 wasm-pack 形态的 naga shim，已在 feat-20260511-naga-rhi-wgpu-merge M5 整体归档删除——保留 surface 形态延续不变）。
-- 上游物理底层 `@forgeax/engine-wgpu-wasm`（合并 wgpu 30 RHI + naga 30 三段函数 raw bindings 的单 wasm 出包）。
-- 下游消费 `@forgeax/engine-shader-compiler`（仅消费者）；`@forgeax/engine-shader` runtime 物理隔离（AC-06 闸门守护）。
+- Decisions: plan-strategy D-P3 (`ensureReady` authority) / D-P4 (the wrapper preserves the historical wasm-pack naga shim surface byte for byte; the original was archived and removed in feat-20260511-naga-rhi-wgpu-merge M5).
+- Physical provider: `@forgeax/engine-wgpu-wasm` packages wgpu 30 RHI and the three naga 30 raw-binding functions in one WASM.
+- Consumer: `@forgeax/engine-shader-compiler` only. The `@forgeax/engine-shader` runtime remains physically isolated, enforced by AC-06.
 
 `validateRenderEntries(module, vertex, fragment, colorFormats?)` optionally
 validates the selected fragment color interface against ordered attachment

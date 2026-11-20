@@ -1,4 +1,4 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { verifyRuntimeTerrain } from './managed-terrain.gpu-fixture';
 
@@ -7,7 +7,7 @@ it.each([
   'ids',
 ] as const)('renders native Terrain edits without rebinding (%s)', async (encoding) => {
   const url = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest({ pointShadows: true }))], {
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest({ pointShadows: true }))], {
       type: 'application/json',
     }),
   );

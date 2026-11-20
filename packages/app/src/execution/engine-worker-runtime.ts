@@ -58,8 +58,8 @@ import {
   type AssetRegistry,
   type BundlerOptions,
   constructRuntimeRendererHost,
-  createPublicationAssets,
   type RendererHostAssembly,
+  stagePublicationAssets,
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import {
   AudioError,
@@ -86,6 +86,7 @@ import {
 } from '../internal/rhi-capture';
 import { workerEngineProfile } from '../internal/worker-engine-profile';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
+import { AppLevelOwner } from '../levels/app-level-owner';
 import { type AppObservation, createAppObservation } from '../observation';
 import { createRenderFeatureHost, type RenderFeatureHost } from '../renderer-plugin';
 import { APP_PHASE_CATALOG, type CanvasDrawingBufferSize } from '../types';
@@ -164,6 +165,8 @@ interface WorkerRealm {
     readonly cancel: () => void;
   };
   renderWorker?: SourceRenderWorker;
+  levels?: AppLevelOwner;
+  stoppingLevels?: true;
   publicationTargets?: RenderPublicationTargetOwner;
   init: RetainedExecutionInit;
   assetAssembly: AssetRuntimeAssembly | undefined;
@@ -552,10 +555,17 @@ function requestRecoveryCanvas(target: WorkerRealm, signal: AbortSignal): Promis
 async function disposeRealm(target: WorkerRealm): Promise<void> {
   target.pendingSurface?.cancel();
   let renderFailure: unknown;
+  target.stoppingLevels = true;
+  try {
+    await target.levels?.closeStopped();
+  } catch (cause) {
+    renderFailure = cause;
+  }
   try {
     await target.renderWorker?.dispose();
   } catch (cause) {
-    renderFailure = cause;
+    renderFailure =
+      renderFailure === undefined ? cause : new AggregateError([renderFailure, cause]);
   }
   target.observation?.release();
   target.observation = undefined;
@@ -762,12 +772,13 @@ function realmCatalogSource(
   });
 }
 
-// A split source realm owns a CPU Registry without a Renderer host.
-function createRealmPublicationAssets(
+function stageRealmAssets(
   init: ExecutionInitMessage,
+  host: RendererHostAssembly | undefined,
   bundler: BundlerOptions | undefined,
-): Promise<AssetRegistry> {
-  return createPublicationAssets(
+) {
+  if (host !== undefined) return { assets: host.assets, ready: undefined };
+  return stagePublicationAssets(
     bundler,
     init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes },
   );
@@ -843,6 +854,7 @@ function realmBootstrapHost(
     ...(stagedRenderWorker === undefined
       ? {}
       : { dynamicGeometry: stagedRenderWorker.dynamicGeometry }),
+    ...(candidate.levels === undefined ? {} : { levelCandidates: candidate.levels }),
     ...(renderTargets === undefined ? {} : { renderTargets }),
     get canvas() {
       return candidate.canvas;
@@ -938,7 +950,7 @@ function stageSourceRenderWorker(
   sourceFeatures: RenderFeature<unknown>[],
 ): SourceRenderWorker | undefined {
   if (!candidate.init.workers.render.enabled) return undefined;
-  return new SourceRenderWorker(
+  const worker = new SourceRenderWorker(
     candidate.world,
     assets,
     candidate.init,
@@ -947,6 +959,15 @@ function stageSourceRenderWorker(
     candidate.publicationTargets,
     realmTaskPool(candidate),
   );
+  candidate.levels = new AppLevelOwner({
+    world: candidate.world,
+    assets,
+    render: () => worker.levelRenderHost(),
+    now: () => performance.now(),
+    physics: () => candidate.pluginContext?.get('physics'),
+    stopped: () => candidate.stoppingLevels === true,
+  });
+  return worker;
 }
 
 // Retain the original root/commit failure order before the start boundary.
@@ -1063,9 +1084,11 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     endRenderer();
     sceneWork = beginLoadWork('scene');
     const catalogSource = realmCatalogSource(init);
-    const assets = host?.assets ?? (await createRealmPublicationAssets(init, bundler));
+    const { assets, ready: assetReadiness } = stageRealmAssets(init, host, bundler);
     candidate.assetAssembly = admitRealmAssetAssembly(init, assets, catalogSource);
     stagedRenderWorker = stageSourceRenderWorker(candidate, assets, sourceFeatures);
+    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
+    if (assetReadiness !== undefined) await assetReadiness;
     const endPlugins = beginLoadTimeline('boot', 'plugin-bootstrap');
     const pluginContext = await createWorldContext(
       nextWorld,
@@ -1091,8 +1114,6 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     endPlugins();
     candidate.pluginContext = pluginContext;
     rendererLifecycleTransferred = true;
-    // A non-split realm never stages a Render Worker, so preload is a no-op there.
-    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
     if (prepared.root) {
       const endRoot = beginLoadTimeline('boot', 'root-activation');
       await activateExecutionRoot(pluginContext, prepared.root, {
@@ -1579,6 +1600,7 @@ async function advanceFrame(
   const profileSession = activeRealm.profiler?.activeSession();
   const profileFrame = beginProfileFrame(profileSession);
   try {
+    activeRealm.levels?.beginFrame(message.render !== false);
     const update = profilePhase(profileSession, 'world-update-primary', () =>
       world.update(message.deltaSeconds),
     );
@@ -1589,6 +1611,7 @@ async function advanceFrame(
       updateFinished - started,
       activeRealm.kernelSlices?.takeLastDispatch() ?? null,
     );
+    activeRealm.levels?.step();
     activeRealm.observation?.prepareFrame();
     if (message.render === false) {
       // The skipped picture still advances the implicit render-sample clock.

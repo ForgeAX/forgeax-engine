@@ -58,7 +58,7 @@ it('shares renderer-owned raster fragments across physical meshes and retries a 
         materialArtifact: artifact,
         scene: {
           scene: availability.scene,
-          plan: topology.query(topology.sourcePlan(), undefined),
+          plan: topology.query(topology.sourcePlan(), undefined).active,
           slots: scene.slotsSnapshot(),
           slotAt: scene.slotAt,
         },

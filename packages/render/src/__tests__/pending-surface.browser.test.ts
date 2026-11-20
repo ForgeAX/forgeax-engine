@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it, vi } from 'vitest';
 import { loadRhiPack } from '../assembly/backend-contract';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
@@ -31,6 +32,7 @@ it.each([
     undefined,
     {
       shaderManifestUrl: '/shaders/manifest.json',
+      prepareShaderProgramCompiler,
     },
     loadRhiPack(webgpu),
   );

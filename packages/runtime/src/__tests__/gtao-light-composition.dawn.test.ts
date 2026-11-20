@@ -13,7 +13,7 @@ import {
 } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -159,7 +159,7 @@ it('GTAO weights environment once with one intensity exponent and leaves direct 
     await constructRuntimeRendererHost(
       surface.canvas as unknown as HTMLCanvasElement,
       { rhi: webgpu.rhi },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     ),
   ).renderer;
   try {

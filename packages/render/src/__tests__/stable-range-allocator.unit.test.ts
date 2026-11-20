@@ -1,6 +1,40 @@
 import { expect, it, vi } from 'vitest';
 import { StableRangeAllocator } from '../stable-range-allocator';
 
+it('reserves real disjoint addresses without accepting their capacity and transfers each once', () => {
+  const owner = new StableRangeAllocator();
+  owner.allocate(2);
+  const first = owner.reserve(4);
+  const second = owner.reserve(3);
+  expect([first.start, second.start]).toEqual([2, 6]);
+  expect(owner.requiredCapacity()).toBe(2);
+  expect(owner.reservedCapacity()).toBe(9);
+  first.release();
+  const ordinary = owner.allocate(2);
+  expect(ordinary).toBe(2);
+  expect(owner.requiredCapacity()).toBe(4);
+  first.release();
+  second.accept();
+  expect(owner.requiredCapacity()).toBe(9);
+  second.release();
+  expect(owner.allocate(2)).toBe(4);
+  expect(owner.allocate(1)).toBe(9);
+});
+
+it('does not let pre-reset private ranges publish or release a new allocation', () => {
+  const owner = new StableRangeAllocator();
+  const old = owner.reserve(3);
+  owner.reset();
+  const current = owner.reserve(3);
+  expect(old.isCurrent()).toBe(false);
+  expect(() => old.accept()).toThrow();
+  old.release();
+  expect(current.isCurrent()).toBe(true);
+  expect(owner.allocate(1)).toBe(3);
+  current.release();
+  expect(owner.allocate(3)).toBe(0);
+});
+
 /** Count distinct preexisting intervals touched through their six real fields. */
 function countRangeVisits(owner: StableRangeAllocator): () => number {
   const visited = new Set<object>();

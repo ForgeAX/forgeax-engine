@@ -1,6 +1,6 @@
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { materialContribution } from '@forgeax/engine-render';
-import type { Asset, CatalogEntry, MaterialAsset } from '@forgeax/engine-types';
+import type { Asset, AssetHandle, CatalogEntry, MaterialAsset } from '@forgeax/engine-types';
 import { AssetError, err, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { defineAssetKind } from '../asset-kind.js';
@@ -390,7 +390,9 @@ it('normalizes a wire parentGuid child once and reports child-contract failures'
 
 it('repeated prepared generations keep GUID handles and roll back every sibling on an invalid Scene', async () => {
   const { World, defineComponent } = await import('@forgeax/engine-ecs');
-  const { sceneAssetContribution, ChildOf, Children } = await import('@forgeax/engine-scene');
+  const { sceneAssetContribution, ChildOf, Children, worldDespawnScene } = await import(
+    '@forgeax/engine-scene'
+  );
   const { registry, pack, prepare, publish } = await fixture();
   const world = new World({ assets: registry });
   const Light = defineComponent('AuthorLight', { intensity: 'f32' });
@@ -450,7 +452,14 @@ it('repeated prepared generations keep GUID handles and roll back every sibling 
       ).unwrap();
       return prepared.pack;
     };
-    registry.adoptPreparedContent(await candidate(0.2, 1)).unwrap();
+    registry
+      .adoptPreparedContent(await candidate(0.2, 1), [], (handles) => {
+        const source = defined(handles.get(sceneGuid)) as AssetHandle<'scene'>;
+        const root = registry.instantiate(source, world).unwrap();
+        expect(world.get(root, Instance).unwrap().source).toBe(source);
+        worldDespawnScene(world, root).unwrap();
+      })
+      .unwrap();
     expect(registry.read(handle).unwrap().values.color).toEqual([0.2, 0, 0, 1]);
     registry
       .adoptPreparedContent(await candidate(0.3, 2), [

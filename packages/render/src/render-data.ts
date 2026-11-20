@@ -28,7 +28,6 @@ import {
   type MeshAsset,
   type SampledTextureAsset,
   type Submesh,
-  type TextureAsset,
   type TextureShape,
   textureFormatBlock,
 } from '@forgeax/engine-types';
@@ -304,7 +303,9 @@ export function deriveRenderDataTexture(
  * fail-fast whitelist is the projection-layer guard that rejects a non-
  * renderable cube source rather than letting it blow up at GPU createTexture.
  */
-export function deriveRenderDataCubemap(source: TextureAsset): Result<CubeRenderData, AssetError> {
+export function deriveRenderDataCubemap(
+  source: Pick<SampledTextureAsset, 'format' | 'colorSpace' | 'shape'>,
+): Result<CubeRenderData, AssetError> {
   const isAcceptedHdr = source.format === 'rgba16float' || source.format === 'rgba32float';
   if (!isAcceptedHdr || source.colorSpace !== 'linear') {
     return err(

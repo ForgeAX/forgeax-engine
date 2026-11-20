@@ -301,19 +301,28 @@ globalThis.cancelAnimationFrame = (id) => {
 let now = 0;
 globalThis.performance.now = () => now;
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const { buildProjectShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const demoDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const manifest = await buildEngineShaderManifest({
+const manifest = await buildProjectShaderTemplateManifest({
   materialPackages: [resolve(demoDir, 'src/ssr-reflection.pack.json')],
 });
 const shaderManifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(shaderManifestUrl));
 // A dirty source checkout can share HEAD and render dist while serving a
 // different trace. Bind timing evidence to the actual compiled GPU input.
-const traceShader = manifest.entries.find((entry) => /fn ssr_trace\s*\(/.test(entry.wgsl));
+const { ShaderRegistry } = await import('@forgeax/engine-shader');
+const { prepareShaderProgramCompiler } = await import('@forgeax/engine/shader-compiler/program');
+const shaderRegistry = new ShaderRegistry({
+  manifestUrl: 'ssr-smoke-shaders',
+  readText: async () => JSON.stringify(manifest),
+  prepareProgramCompiler: prepareShaderProgramCompiler,
+});
+(await shaderRegistry.loadManifest()).unwrap();
+const entries = [...shaderRegistry.entries()];
+const traceShader = entries.find((entry) => entry.identifier === 'forgeax_ssr::trace');
 if (traceShader === undefined) throw new Error('SSR trace is missing from the shader manifest');
 const traceShaderSha256 = createHash('sha256').update(traceShader.wgsl).digest('hex');
-const composeShader = manifest.entries.find((entry) => /fn fs_ssr_compose\s*\(/.test(entry.wgsl));
+const composeShader = entries.find((entry) => entry.identifier === 'forgeax_ssr::compose');
 if (composeShader === undefined) throw new Error('SSR compose is missing from the shader manifest');
 const composeShaderSha256 = createHash('sha256').update(composeShader.wgsl).digest('hex');
 const shaderManifestSha256 = createHash('sha256')

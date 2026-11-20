@@ -6,6 +6,7 @@ import {
 } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
+import type { GpuScene } from '../gpu-scene';
 import { reflectedRenderState } from '../material-render-state';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import { geometryRenderStateForTopology } from '../record/main-pass-material';
@@ -25,7 +26,7 @@ import type {
 } from './batch-topology';
 import { captureGpuMaterialBindings } from './captured-material-bindings';
 import { GpuDrawSelection } from './draw-selection';
-import { fixedTaskPlan } from './fixed-task-plan';
+import { fixedTaskPlan, hasCapturedTaskMembership, hasFixedTaskHeaders } from './fixed-task-plan';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
 import { lodCoverageMayFade, lodCrossfadeCapable } from './production-raster-lod';
 import type { PreparedAssemblyInputs } from './retained-batch-inputs';
@@ -119,10 +120,40 @@ function rasterClassKeys(
 /** One geometry × accepted material × Pass join, never one record per instance. */
 export interface PreparedBatchRows {
   readonly source: GpuDrivenBatch;
+  /** Exact execution contribution before resource addresses and Pass facts were projected. */
+  readonly origin: GpuDrivenBatch;
   readonly lod: GpuDrivenBatchLod | undefined;
   readonly fact: PreparedBatchFacts | undefined;
   readonly mesh: MeshGpuHandles | undefined;
   readonly meshContentEpoch: number | undefined;
+}
+
+const preparedRows = new WeakSet<PreparedBatchRows>();
+export function isPreparedBatchRows(value: PreparedBatchRows): boolean {
+  return preparedRows.has(value);
+}
+
+/** Preserve constructor authority when the row owner proves only its execution window moved. */
+export function rebasePreparedBatchRows(
+  previous: PreparedBatchRows,
+  source: GpuDrivenBatch,
+  origin: GpuDrivenBatch,
+): PreparedBatchRows {
+  if (
+    !preparedRows.has(previous) ||
+    previous.source.batchId !== source.batchId ||
+    previous.source.generation !== source.generation ||
+    previous.source.candidates !== source.candidates ||
+    origin.batchId !== source.batchId ||
+    origin.generation !== source.generation ||
+    origin.candidates !== source.candidates
+  )
+    throw new Error(
+      'Prepared row rebase requires an owned row and the same execution contribution',
+    );
+  const row = Object.freeze({ ...previous, source, origin });
+  preparedRows.add(row);
+  return row;
 }
 
 export interface PreparationInputs {
@@ -181,6 +212,7 @@ export function samePreparedBatchLod(
 export function prepareBatchRows(
   batch: GpuDrivenBatch,
   inputs: PreparationInputs,
+  origin: GpuDrivenBatch = batch,
 ): PreparedBatchRows {
   const mesh = inputs.mesh;
   const execution = inputs.execution;
@@ -216,17 +248,80 @@ export function prepareBatchRows(
       ...rasterClassKeys(batch, mesh, artifact, material, renderState),
     });
   }
-  return Object.freeze({ source: batch, lod, fact, mesh, meshContentEpoch: mesh?.contentEpoch });
+  if (
+    origin.batchId !== batch.batchId ||
+    origin.generation !== batch.generation ||
+    origin.candidates !== batch.candidates
+  )
+    throw new Error('Prepared row must preserve its exact execution contribution');
+  const row: PreparedBatchRows = Object.freeze({
+    source: batch,
+    origin,
+    lod,
+    fact,
+    mesh,
+    meshContentEpoch: mesh?.contentEpoch,
+  });
+  preparedRows.add(row);
+  return row;
+}
+
+export interface PreparedProductionPlan {
+  readonly source: SubmissionPlan;
+  readonly batchRows: readonly PreparedBatchRows[];
+  readonly residentSource: SubmissionPlan;
+  readonly residentRows: readonly PreparedBatchRows[];
+}
+
+// Constructor authority only: raw mutable task observations retain their own fences.
+const preparedPlans = new WeakSet<object>();
+export function isPreparedProductionPlan(value: unknown): value is PreparedProductionPlan {
+  return typeof value === 'object' && value !== null && preparedPlans.has(value);
+}
+function capturePreparedPlan(plan: PreparedProductionPlan): PreparedProductionPlan {
+  Object.freeze(plan);
+  preparedPlans.add(plan);
+  return plan;
 }
 
 export function assemblePreparedPlan(
-  source: SubmissionPlan,
-  batchRows: readonly PreparedBatchRows[],
-) {
-  return { source, batchRows: Object.freeze([...batchRows]) };
+  residentSource: SubmissionPlan,
+  residentRows: readonly PreparedBatchRows[],
+  source: SubmissionPlan = residentSource,
+): PreparedProductionPlan {
+  const rows = Object.freeze([...residentRows]);
+  if (source === residentSource)
+    return capturePreparedPlan({ source, batchRows: rows, residentSource, residentRows: rows });
+  const ids = new Set<number>();
+  const selected = new Set<GpuDrivenBatch>();
+  const active = source.batches[Symbol.iterator]();
+  let next = active.next();
+  let rowCursor = 0;
+  let candidates = 0;
+  for (const batch of residentSource.batches) {
+    if (ids.has(batch.batchId))
+      throw new Error('Prepared selection requires unique resident execution contributions');
+    ids.add(batch.batchId);
+    if (rows[rowCursor]?.origin === batch) rowCursor++;
+    if (!next.done && next.value === batch) {
+      selected.add(batch);
+      candidates += batch.candidates.length;
+      next = active.next();
+    }
+  }
+  if (!next.done)
+    throw new Error(
+      'Prepared selection requires the exact resident execution contributions in unique source order',
+    );
+  if (rowCursor !== rows.length)
+    throw new Error('Prepared row lost its resident execution origin or order');
+  if (source.candidateCount !== candidates)
+    throw new Error(
+      'Prepared selection candidate total must match its exact execution contributions',
+    );
+  const batchRows = Object.freeze(rows.filter((row) => selected.has(row.origin)));
+  return capturePreparedPlan({ source, batchRows, residentSource, residentRows: rows });
 }
-
-export type PreparedProductionPlan = ReturnType<typeof assemblePreparedPlan>;
 
 /** A geometry partition contains only membership and object-specific binding facts. */
 export interface BatchPartition {
@@ -254,6 +349,11 @@ export function partitionBatch(
   const members = source.members;
   if (binding === undefined || members === undefined)
     throw new Error('Object selection requires native geometry membership');
+  const observedCandidates = source.candidates;
+  const nativeSource =
+    MemberCandidates.is(observedCandidates) && members === observedCandidates.membersFrame()
+      ? observedCandidates
+      : undefined;
   const groups = new Map<
     string,
     {
@@ -263,7 +363,7 @@ export function partitionBatch(
       materialBindingClass: string;
     }
   >();
-  const candidates = source.candidates[Symbol.iterator]();
+  const candidates = observedCandidates[Symbol.iterator]();
   for (const member of members) {
     const materialBindingClass = bindings?.get(`${member.entityKey}`) ?? '';
     const key = materialBindingClass;
@@ -278,23 +378,31 @@ export function partitionBatch(
       groups.set(key, group);
     }
     group.members.push(member);
-    for (let index = 0; index < member.instanceCount; index++) {
-      const candidate = candidates.next();
-      if (candidate.done) throw new Error('Geometry member exceeds its candidate range');
-      group.candidates.push(candidate.value);
-    }
+    if (nativeSource === undefined)
+      for (let index = 0; index < member.instanceCount; index++) {
+        const candidate = candidates.next();
+        if (candidate.done) throw new Error('Geometry member exceeds its candidate range');
+        group.candidates.push(candidate.value);
+      }
   }
   return Object.freeze(
-    [...groups.values()].map((group) =>
-      Object.freeze({
+    [...groups.values()].map((group) => {
+      let native: MemberCandidates | undefined;
+      if (nativeSource !== undefined) {
+        native = group.members.length === members.length ? nativeSource : new MemberCandidates();
+        if (native !== nativeSource)
+          for (const member of group.members) native = native.with(member);
+      }
+      return Object.freeze({
         ...group,
         candidates:
-          group.candidates.length === source.candidates.length
-            ? source.candidates
-            : Object.freeze(group.candidates),
-        members: Object.freeze(group.members),
-      }),
-    ),
+          native ??
+          (group.candidates.length === observedCandidates.length
+            ? observedCandidates
+            : Object.freeze(group.candidates)),
+        members: native?.membersFrame() ?? Object.freeze(group.members),
+      });
+    }),
   );
 }
 
@@ -410,19 +518,22 @@ export function assembleFilteredGroups(
 export function suppressedPrimitiveWords(
   slots: PersistentGpuDrivenState['slots'],
   activeEntityKeys: ReadonlySet<number>,
-  sceneCapacity: number,
+  addresses: Pick<GpuScene, 'rowAddressExtent' | 'primitiveIndexForSlot'>,
 ): Uint32Array {
-  const words = new Uint32Array(Math.max(1, Math.ceil(sceneCapacity / 32)));
+  const words = new Uint32Array(Math.max(1, Math.ceil(addresses.rowAddressExtent / 32)));
   for (const slot of slots) {
     if (activeEntityKeys.has(slot.snapshot.entityKey)) continue;
-    const word = slot.slot >>> 5;
-    if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (slot.slot & 31));
+    const index = addresses.primitiveIndexForSlot(slot.slot);
+    if (index === undefined) continue;
+    const word = index >>> 5;
+    if (word < words.length) words[word] = (words[word] ?? 0) | (1 << (index & 31));
   }
   return words;
 }
 
 /** The inputs one suppression bitmap was derived from. */
 export interface SuppressionSource {
+  readonly addressRevision: number;
   readonly slots: PersistentGpuDrivenState['slots'];
   readonly activeEntityKeys: ReadonlySet<number>;
   readonly words: Uint32Array;
@@ -454,25 +565,28 @@ export function patchSuppressedPrimitiveWords(
   previous: SuppressionSource,
   slots: PersistentGpuDrivenState['slots'],
   activeEntityKeys: ReadonlySet<number>,
-  sceneCapacity: number,
+  addresses: Pick<GpuScene, 'rowAddressExtent' | 'allocationRevision' | 'primitiveIndexForSlot'>,
 ): Uint32Array | undefined {
   if (
     !(slots instanceof SceneSlotFrame) ||
     !(previous.slots instanceof SceneSlotFrame) ||
     !(activeEntityKeys instanceof SlotIdentityKeys) ||
     !(previous.activeEntityKeys instanceof SlotIdentityKeys) ||
+    previous.addressRevision !== addresses.allocationRevision ||
     // Capacity bounds which rows the earlier bitmap could address.
-    previous.words.length !== Math.max(1, Math.ceil(sceneCapacity / 32))
+    previous.words.length !== Math.max(1, Math.ceil(addresses.rowAddressExtent / 32))
   )
     return undefined;
   const words = previous.words.slice();
   const changed: number[] = [];
   const evaluate = (slot: number): void => {
-    const word = slot >>> 5;
+    const index = addresses.primitiveIndexForSlot(slot);
+    if (index === undefined) return;
+    const word = index >>> 5;
     if (word >= words.length) return;
     const record = slots.slotAt(slot);
     const suppressed = record !== undefined && !activeEntityKeys.has(record.snapshot.entityKey);
-    const bit = 1 << (slot & 31);
+    const bit = 1 << (index & 31);
     const before = words[word] ?? 0;
     const after = suppressed ? before | bit : before & ~bit;
     if (after === before) return;
@@ -573,6 +687,39 @@ export function sameMaterialArtifact(
 }
 
 export class BatchPreparation {
+  private residentMembership: SubmissionPlan | undefined;
+
+  /** Actual resident retirement, independently of the current active subset. */
+  retireAbsent(plan: SubmissionPlan): void {
+    const fixed = hasCapturedTaskMembership(plan) || hasFixedTaskHeaders(plan);
+    if (fixed && this.residentMembership === plan) return;
+    const live = new Set<number>();
+    for (const batch of plan.batches) live.add(batch.batchId);
+    for (const id of this.batches.keys()) if (!live.has(id)) this.batches.delete(id);
+    this.residentMembership = fixed ? plan : undefined;
+  }
+  private coverage:
+    | {
+        readonly rows: readonly PreparedBatchRows[];
+        readonly values: ReadonlySet<PreparedBatchRows>;
+      }
+    | undefined;
+
+  /** Only rows in this aggregate inherit its successfully adopted resource proof. */
+  coversCachedRow(row: PreparedBatchRows): boolean {
+    const rows = this.cached?.batchRows;
+    if (rows === undefined) return false;
+    if (this.coverage?.rows !== rows) this.coverage = { rows, values: new Set(rows) };
+    return this.coverage.values.has(row);
+  }
+
+  clear(): void {
+    this.cached = undefined;
+    this.batches.clear();
+    this.coverage = undefined;
+    this.residentMembership = undefined;
+  }
+
   readonly batches = new Map<
     number,
     {
@@ -590,7 +737,7 @@ export class BatchPreparation {
       readonly renderState?: string | undefined;
     }
   >();
-  cached:
+  private cachedValue:
     | {
         readonly plan: SubmissionPlan;
         /** Current immutable frame lookup for attribution, independent of prepared geometry. */
@@ -602,4 +749,12 @@ export class BatchPreparation {
         readonly inputs?: PreparedAssemblyInputs;
       }
     | undefined;
+
+  get cached() {
+    return this.cachedValue;
+  }
+  set cached(value: typeof this.cachedValue) {
+    if (value?.batchRows !== this.cachedValue?.batchRows) this.coverage = undefined;
+    this.cachedValue = value;
+  }
 }

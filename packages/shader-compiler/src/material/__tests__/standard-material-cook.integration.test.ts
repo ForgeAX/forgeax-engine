@@ -243,8 +243,10 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       { name: 'anisotropyStrength', type: 'f32' },
       { name: 'anisotropyRotation', type: 'f32' },
     ];
-    // Both publications own one immutable source set inside the original cold clock.
+    // This case compares the anisotropy ABI on the storage path. Other cases
+    // exercise multi-profile publication, including uniform fallback.
     const cooker = createMaterialPackCooker([], {
+      profile: 'webgpu-storage',
       sourceSnapshot: await captureMaterialSourceSnapshot([]),
     });
     const cook = async (parameters: readonly MaterialParameter[]) =>
@@ -252,15 +254,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         guid: `anisotropy-${parameters.some((parameter) => parameter.name === 'anisotropyTexture') ? 'map' : 'scalar'}`,
         source: {
           kind: 'material',
-          staticSwitches: {
-            clearcoat: true,
-            anisotropy: true,
-            sheen: true,
-            iridescence: true,
-            diffuseTransmission: true,
-            transmission: true,
-            subsurfaceDiffusion: true,
-          },
+          staticSwitches: { anisotropy: true },
           parameters,
           passes: [{ name: 'Forward', program: { module: 'forgeax_material::standard' } }],
         },

@@ -22,7 +22,7 @@ it('keeps WebGL2 available with the recorder in the actual Render Worker', async
         diagnostics: { rhiCapture: true }, startupTimeoutMs: 90_000,
       },
     }, { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href });
-    if (!created.ok) throw created.error;
+    if (!created.ok) throw new Error(JSON.stringify(created.error), { cause: created.error });
     const app = created.value;
     try {
       app.start().unwrap();
@@ -79,7 +79,7 @@ it('replaces the Render Worker after actual presentation GL loss and resumes com
       diagnostics: { rhiCapture: true }, startupTimeoutMs: 90_000,
     },
   }, { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href });
-  if (!created.ok) throw created.error;
+  if (!created.ok) throw new Error(JSON.stringify(created.error), { cause: created.error });
   const app = created.value;
   try {
     app.start().unwrap();

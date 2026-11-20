@@ -54,12 +54,12 @@ it('reuses accepted topology and uploads replaced immutable source membership', 
     };
   };
   try {
-    const first = owner.update(prepared, f.bindings);
+    const first = owner.update(prepared, f.bindings).active;
     const baseline = upload(first.plan);
     expect(baseline.inspection.sharedInputUploadBytes).toBeGreaterThan(0);
     expect(baseline.inspection.batchUploadBytes).toBeGreaterThan(0);
     // An unchanged owned publication keeps its topology; frame constants still update.
-    const second = owner.update(prepared, f.bindings);
+    const second = owner.update(prepared, f.bindings).active;
     expect(second).toBe(first);
     expect(second.plan).toBe(first.plan);
     expect(owner.lastWork.projectedBatches).toBe(0);
@@ -75,7 +75,7 @@ it('reuses accepted topology and uploads replaced immutable source membership', 
     expect(moved.inspection.viewConstantsUploadBytes).toBeGreaterThan(0);
 
     const changedBindings = new Map(f.bindings).set('0:1', 'different-object-resources');
-    const changed = owner.update(prepared, changedBindings);
+    const changed = owner.update(prepared, changedBindings).active;
     expect(changed).not.toBe(first);
     expect(owner.lastWork.projectedCandidates).toBe(6);
     upload(changed.plan);
@@ -92,7 +92,7 @@ it('reuses accepted topology and uploads replaced immutable source membership', 
       revision: prepared.source.revision + 1,
       batches: [changedSource, ...prepared.source.batches.slice(1)],
     });
-    const replaced = owner.update(next, changedBindings);
+    const replaced = owner.update(next, changedBindings).active;
     const replacedUpload = upload(replaced.plan);
     expect(replacedUpload.inspection.sharedInputUploadBytes).toBeGreaterThan(0);
     expect(replacedUpload.data.slice(0, 2)).not.toEqual(baseline.data.slice(0, 2));

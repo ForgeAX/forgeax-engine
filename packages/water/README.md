@@ -149,7 +149,7 @@ block contains a count and `(quadsPerEdge + 1)^2` row-major f32 weights. The
 receipt hashes both payloads; uploads validate ranges/counts/finite weights and
 retain detached previous frames. Vertex and fragment consume the same original
 grid triangle weights. No binding or Surface/deformation ABI is added. The
-material producer identity is `material-pack-cooker/6`; durable `material-cook/5`
+material producer identity is `material-pack-cooker/7`; durable `material-cook/5`
 is unchanged and older composed material bytes must be recooked.
 
 The supported reference is the stock Gerstner/height-mapping path with shared

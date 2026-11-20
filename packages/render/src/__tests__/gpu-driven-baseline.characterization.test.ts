@@ -6,6 +6,7 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 const count = (source: string, pattern: RegExp): number => source.match(pattern)?.length ?? 0;
 
 const productionRaster = read('../gpu-driven/production-raster.ts');
+const productionRasterEncode = read('../gpu-driven/production-raster-encode.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
 const frameGpuDriven = read('../record/frame-gpu-driven.ts');
@@ -52,7 +53,10 @@ describe('GPU-driven baseline characterization', () => {
     expect(mainPass).toContain('videoTextureFields?.size');
     expect(mainPass).toContain('prepareMaterialBinding = (slot)');
     expect(mainPass).not.toContain('for (let materialSlot = 0; materialSlot < materialSlotCount;');
-    expect(productionRaster).toMatch(
+    expect(productionRaster).toContain(
+      'bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot)',
+    );
+    expect(productionRasterEncode).toMatch(
       /material bind group for global slot \$\{globalMaterialSlot\}/,
     );
   });

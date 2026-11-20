@@ -1,5 +1,6 @@
 {
   "plugins": {
+    "clearSearch": "清除搜索",
     "loading": "Loading",
     "observed": "Host entries",
     "partial": "Partial inventory",

@@ -480,6 +480,7 @@ export function addTargetCaptureGraphPasses(
                   },
                 }),
             camera: current().faceCamera,
+            planarReflectionAllowed: false,
             targetW: descriptor.width,
             targetH: descriptor.height,
             dispatch,

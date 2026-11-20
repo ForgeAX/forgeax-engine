@@ -197,7 +197,7 @@ async function fixture(
       : {}),
     scene: {
       scene: available.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
       sourceIdentity: 'main-window-world',
@@ -239,7 +239,7 @@ async function fixture(
       topology.apply(delta);
       return {
         ...defined(input.scene),
-        plan: topology.query(topology.sourcePlan(), undefined),
+        plan: topology.query(topology.sourcePlan(), undefined).active,
         slots: projection.slotsSnapshot(),
       };
     },
@@ -628,7 +628,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       f.topology.apply(delta);
       const scene = {
         ...defined(f.input.scene),
-        plan: f.topology.query(f.topology.sourcePlan(), undefined),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
         slots: f.projection.slotsSnapshot(),
       };
       const changed = f.prepare({ scene });
@@ -856,7 +856,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       const oldContents = oldWindows.map((windows) => [...windows]);
       const first = oldWindows.flat();
       const firstBuffer = defined(lookup.mock.calls[0])[0];
-      direct.record();
+      direct.record(f.prepare());
       const instanceBuffer = defined(f.input.scene).scene.instanceBuffer;
       const bindings = new Map([['1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
@@ -866,7 +866,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       r.record(grown);
       expect(oldWindows).toEqual(oldContents);
       lookup.mockClear();
-      const groups = direct.record(grown);
+      const groups = direct.record(f.prepare({ materialBindingClasses: bindings }));
       expect(groups.length).toBeGreaterThan(0);
       expect(groups.every((group) => !first.includes(group))).toBe(true);
       expect(lookup.mock.calls.every(([buffer]) => buffer !== firstBuffer)).toBe(true);

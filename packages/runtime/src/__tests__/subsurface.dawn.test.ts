@@ -9,7 +9,7 @@ import {
   tapeDigest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildProjectShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { FOLIAGE_MATERIAL_PACKAGES } from '../../../../apps/hello/foliage-transmission/src/material-contract';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -18,7 +18,7 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 import { verifySubsurface } from './subsurface.fixture';
 
 const manifest = shaderManifestUrl(
-  await buildEngineShaderManifest({
+  await buildProjectShaderTemplateManifest({
     materialPackages: FOLIAGE_MATERIAL_PACKAGES.map((file) =>
       resolve(process.cwd(), 'apps/hello/foliage-transmission/src', file),
     ),

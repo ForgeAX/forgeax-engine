@@ -458,9 +458,20 @@ function prepassFragmentEntry(
   );
 }
 
+/** All PipelineState members consumed by the pure geometry request producer. */
+export type GeometryPipelineRequestState = Pick<
+  _InternalRenderPipelineContext['pipelineState'],
+  | 'unlitPipeline'
+  | 'unlitPipelineHdr'
+  | 'unlitPipelineMsaa'
+  | 'unlitPipelineHdrMsaa'
+  | 'standardPbrShaderUvSetCount'
+  | 'gpuDrivenInstancesBindGroupLayout'
+>;
+
 export interface GeometryPipelineRequestContext {
   readonly runtime: PipelineRequestRuntime;
-  readonly pipelineState: _InternalRenderPipelineContext['pipelineState'];
+  readonly pipelineState: GeometryPipelineRequestState;
   readonly lightingKind: 'no-local-lights' | 'clustered' | undefined;
   readonly clipping: _InternalRenderPipelineContext['camera']['clipping'];
   readonly visibleSurface: boolean;

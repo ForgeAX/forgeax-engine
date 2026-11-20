@@ -30,6 +30,7 @@ import {
 } from '../internal/runtime-assets';
 import { extractSceneEntityHandleGuids, type SceneHandleFieldEntry } from '../scene-handle-fields';
 import {
+  compareNestedScenePublication,
   compareScenePublicationFences,
   type ScenePublicationFence,
   type ScenePublicationFenceError,
@@ -111,34 +112,13 @@ export function validateKeyedScenePublication(
           recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
         });
       }
-      const evidence = parentPublication.externalEvidence.find(
-        (item) => item.guid.toLowerCase() === childGuid,
+      const compatible = compareNestedScenePublication(
+        parentPublication,
+        childPublication,
+        childGuid,
+        address,
       );
-      const childOutput = childPublication.outputs.find(
-        (output) => output.guid.toLowerCase() === childGuid,
-      );
-      if (
-        evidence !== undefined &&
-        (evidence.generation !== undefined || evidence.digest !== undefined)
-      ) {
-        if (
-          (evidence.generation !== undefined &&
-            evidence.generation !== childPublication.generation) ||
-          (evidence.digest !== undefined &&
-            (childOutput === undefined || evidence.digest !== childOutput.digest))
-        ) {
-          return err({
-            code: 'asset-generation-fence-mismatch',
-            phase: 'instantiate',
-            hint: `nested SceneAsset publication changed at ${address}`,
-            sourcePath: childPublication.sourcePath,
-            sourceRevision: childPublication.sourceRevision,
-            currentGeneration: childPublication.generation,
-            retryable: true,
-            recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
-          });
-        }
-      }
+      if (!compatible.ok) return compatible;
       if (visited.has(childGuid)) continue;
       visited.add(childGuid);
       const reference =

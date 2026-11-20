@@ -871,7 +871,7 @@ async function renderStates(
   const { width, height } = set;
   const target = offscreenTarget(width, height);
   const { requestAdapterFrom, rhi } = await import('@forgeax/engine-rhi-webgpu');
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
   // The Renderer asks the explicit GPU for its adapter; keep the info of that very request.
   let adapterInfo: Partial<GPUAdapterInfo> | undefined;
   const host = await constructRuntimeRendererHost(
@@ -894,7 +894,7 @@ async function renderStates(
     } as never,
     {
       shaderManifestUrl: 'forgeax-model-render:/shaders/manifest.json',
-      readShaderManifest: async () => JSON.stringify(await buildEngineShaderManifest()),
+      readShaderManifest: async () => JSON.stringify(await buildEngineShaderTemplateManifest()),
     },
   );
   if (!host.ok) {

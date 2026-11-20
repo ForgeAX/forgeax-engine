@@ -6,6 +6,28 @@ import { ViewWorkspaceBroker } from '../packages/view-workspace-core/src/broker.
 import { createViewWorkspaceClient } from '../packages/view-workspace-core/src/client.ts';
 import { subscribeWorkspaceCommandErrors } from '../packages/view-workspace-core/src/command-error.ts';
 
+it('restores preparation from the owner snapshot and publishes progress before a document exists', async () => {
+  let publish;
+  const preparation = { generation: 1, stage: 'inventory', startedAt: 1, updatedAt: 1, activeCount: 0, active: [], recent: [] };
+  const initial = { revision: 1, projectStatus: { phase: 'preparing', sessionId: 'a', generation: 1, preparation } };
+  const reader = createWorkspaceStateReader({
+    getState: async () => initial,
+    subscribe(listener) { publish = listener; return () => {}; },
+  });
+  let updates = 0;
+  reader.subscribe(() => { updates++; });
+  await Promise.resolve();
+  assert.equal(reader.getSnapshot().projectStatus.preparation.stage, 'inventory');
+  publish({ ...initial, revision: 2, projectStatus: { ...initial.projectStatus, preparation: {
+    ...preparation, stage: 'produce', updatedAt: 2, activeCount: 1,
+    active: [{ source: 'assets/room.pack.ts', phase: 'cook', startedAt: 2 }],
+  } } });
+  assert.equal(reader.getSnapshot().projectStatus.preparation.active[0].source, 'assets/room.pack.ts');
+  assert.equal(reader.getSnapshot().projectStatus.document, undefined);
+  assert.equal(updates, 2);
+  reader.dispose();
+});
+
 it('releases the last panel subscription and fences old startup responses across remounts', async () => {
   const callbacks = new Set();
   const requests = [];

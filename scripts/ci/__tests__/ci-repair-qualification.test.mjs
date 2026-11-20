@@ -405,6 +405,17 @@ test('coverage checkout or merge execution and missing historical suite members 
   }
 });
 
+test('a stronger validation scope requires its original completed execution step', async () => {
+  const f = fixture();
+  f.input.requiredSourceStep = 'Verify expanded inputs';
+  const qualify = () => ciRepairQualification(f.input, f.api);
+  assert.equal((await qualify()).reason, 'required-execution-step-unqualified');
+  f.job.steps = [{ name: f.input.requiredSourceStep, status: 'completed', conclusion: 'skipped' }];
+  assert.equal((await qualify()).reason, 'required-execution-step-unqualified');
+  f.job.steps[0].conclusion = 'success';
+  assert.equal((await qualify()).reused, true);
+});
+
 test('changed check membership can require fresh execution while retaining other successes', async () => {
   const fresh = fixture();
   fresh.pr.body += '\nCI-Repair-Rerun: vitest-browser-shard-3, vitest-dawn-4-of-4';
@@ -797,6 +808,79 @@ test('compatibility repair reuses only the exact successful carrier at the CI an
   }
 });
 
+test('a blocked SDK seed preserves original consumers only when its matrix never executed', async () => {
+  const workflow = 'sdk-pr-preflight.yml';
+  for (const state of ['missing', 'skipped', 'failed', 'cancelled', 'ready-seed']) {
+    const f = fixture();
+    Object.assign(f.input, {
+      workflow,
+      jobKey: 'consumers',
+      checkName: 'sdk-consumer-source',
+      requiredSourceStep: 'Verify expanded archive',
+    });
+    const peer = {
+      ...f.run,
+      id: 12,
+      path: `.github/workflows/${workflow}`,
+      conclusion: 'cancelled',
+    };
+    const prior = { ...peer, id: 10, head_sha: originalSha, conclusion: 'success' };
+    const job = { ...f.job, run_id: peer.id, name: f.input.checkName };
+    const jobs = [
+      {
+        ...job,
+        name: 'sdk-seed',
+        conclusion: state === 'ready-seed' ? 'success' : 'cancelled',
+      },
+    ];
+    if (state === 'skipped')
+      jobs.push({ ...job, name: 'sdk-consumer-placeholder', conclusion: 'skipped' });
+    if (state === 'failed' || state === 'cancelled')
+      jobs.push({
+        ...job,
+        name: 'sdk-consumer-project',
+        conclusion: state === 'failed' ? 'failure' : 'cancelled',
+      });
+    const prefix = `repos/${repository}/actions`;
+    f.extra.set(
+      `${prefix}/workflows/${workflow}/runs?event=pull_request&head_sha=${oldSha}&status=completed&per_page=100`,
+      {
+        workflow_runs: [peer],
+      },
+    );
+    f.extra.set(
+      `${prefix}/workflows/${workflow}/runs?event=pull_request&branch=fix%2Fci&per_page=100&page=1`,
+      {
+        total_count: 1,
+        workflow_runs: [prior],
+      },
+    );
+    f.extra.set(`${prefix}/runs/12/jobs?filter=latest&per_page=100&page=1`, {
+      total_count: jobs.length,
+      jobs,
+    });
+    const original = {
+      ...job,
+      id: 20,
+      run_id: prior.id,
+      steps: [{ name: f.input.requiredSourceStep, status: 'completed', conclusion: 'success' }],
+    };
+    f.extra.set(`${prefix}/runs/10/jobs?filter=latest&per_page=100&page=1`, {
+      total_count: 1,
+      jobs: [original],
+    });
+    f.extra.set(`repos/${repository}/compare/${originalSha}...${oldSha}`, { status: 'ahead' });
+    f.extra.set(`repos/${repository}/compare/${originalSha}...${newSha}`, { status: 'ahead' });
+    const result = await ciRepairQualification(f.input, f.api);
+    assert.equal(result.reused, state === 'missing' || state === 'skipped', state);
+    if (result.reused) {
+      assert.equal(result.sourceRunId, 10);
+      assert.equal(result.sourceSha, originalSha);
+      assert.deepEqual(result.blockedRunIds, [12]);
+    }
+  }
+});
+
 test('SDK repair reuses each successful consumer even when a peer or aggregate failed', async () => {
   const f = fixture();
   f.input.workflow = 'sdk-pr-preflight.yml';
@@ -845,7 +929,7 @@ test('SDK repair reuses each successful consumer even when a peer or aggregate f
         { ...f.input, jobKey: 'aggregate', checkName: 'sdk-build' },
         f.api,
       ),
-      { reused: false, reason: 'new-work-declared' },
+      { reused: false, reason: 'artifact-provider-or-aggregate' },
     );
     if (directive.includes('sdk-consumer-npm-diagnostics'))
       assert.deepEqual(
@@ -1010,27 +1094,29 @@ test('the combined Bevy projection always observes its current workers instead o
 
 test('a moved Runtime Pack owner requires its complete original View execution', async () => {
   const names = [
-    'Prepare matching DevKit browser shader profile',
+    'Prepare verified paired consumer inputs',
     'Runtime Pack Worker dev/build JS/TS browser gate',
   ];
-  for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {
-    const f = fixture();
-    f.job.name = 'view-integration-0';
-    Object.assign(f.input, { jobKey: 'view-integration-shards', checkName: f.job.name });
-    f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
-    if (state === 'missing') f.job.steps.pop();
-    if (state === 'skipped') f.job.steps[1].conclusion = 'skipped';
-    if (state === 'failed') f.job.steps[1].conclusion = 'failure';
-    if (state === 'duplicate') f.job.steps.push(f.job.steps[1]);
-    const result = await ciRepairQualification(f.input, f.api);
-    assert.equal(result.reused, state === 'complete', state);
-    if (state !== 'complete') assert.equal(result.reason, 'required-execution-step-unqualified');
+  for (const shard of [0, 2, 3]) {
+    for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {
+      const f = fixture();
+      f.job.name = `view-integration-${shard}`;
+      Object.assign(f.input, { jobKey: 'view-integration-shards', checkName: f.job.name });
+      f.job.steps = names.map((name) => ({ name, status: 'completed', conclusion: 'success' }));
+      if (state === 'missing') f.job.steps.pop();
+      if (state === 'skipped') f.job.steps[1].conclusion = 'skipped';
+      if (state === 'failed') f.job.steps[1].conclusion = 'failure';
+      if (state === 'duplicate') f.job.steps.push(f.job.steps[1]);
+      const result = await ciRepairQualification(f.input, f.api);
+      assert.equal(result.reused, state === 'complete', state);
+      if (state !== 'complete') assert.equal(result.reason, 'required-execution-step-unqualified');
+    }
   }
 });
 
 test('a moved Project Play owner requires its complete original View execution', async () => {
   const names = [
-    'Prepare matching DevKit browser shader profile',
+    'Prepare verified paired consumer inputs',
     'DevKit project play browser journeys (uninstrumented)',
   ];
   for (const state of ['complete', 'missing', 'skipped', 'failed', 'duplicate']) {

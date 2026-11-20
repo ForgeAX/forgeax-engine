@@ -19,6 +19,7 @@ describe('vite-plugin-pack public type surface', () => {
       | 'enginePackageRoot'
       | 'takeInitialSourceSnapshot'
       | 'producerReadiness'
+      | 'onProgress'
       | 'importers'
       | 'cookers'
       | 'refresh'

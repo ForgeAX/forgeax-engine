@@ -79,7 +79,7 @@ export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
 
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   /** Borrow only an already completed exact-source module from this live generation. */
-  completedModule(key: string, source: ShaderSource): ShaderModule | undefined;
+  completedModule(key: string, source: string | ShaderSource): ShaderModule | undefined;
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
    * already-compiled ShaderModule under `label`. Used by the eager
@@ -95,7 +95,7 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   hasModule(label: string): boolean;
   /** Only this live generation-owned asynchronous request may be retried. */
   isPending(error: RhiError): boolean;
-  pendingCompletion(): Promise<Result<void, RhiError>> | undefined;
+  pendingCompletion(signal?: RhiError): Promise<Result<void, RhiError>> | undefined;
   invalidateModule(label: string): void;
   /** Retire the explicit generation warmup roster and pending callbacks. */
   dispose(): void;
@@ -278,8 +278,16 @@ export function makeShaderDeviceAdapter(
     completedModule(key, source): ShaderModule | undefined {
       if (disposed) return undefined;
       const previous = sources.get(key);
-      if (previous === undefined || (previous !== source && !previous.sameText(source)))
+      if (
+        previous === undefined ||
+        (typeof source === 'string'
+          ? !previous.matches(source)
+          : previous !== source && !previous.sameText(source))
+      )
         return undefined;
+      const validated =
+        mode === 'immediate' ? completedValidatedModule?.(key, previous) : undefined;
+      if (validated !== undefined) return validated;
       const module = moduleCache.get(key)?.deref();
       if (module !== undefined) requested.add(key);
       return module;
@@ -300,7 +308,13 @@ export function makeShaderDeviceAdapter(
       const signal = pendingSignals.get(error);
       return !disposed && signal !== undefined && pending.get(signal.key) === signal.request;
     },
-    pendingCompletion() {
+    pendingCompletion(error) {
+      if (error !== undefined) {
+        const signal = pendingSignals.get(error);
+        return !disposed && signal !== undefined && pending.get(signal.key) === signal.request
+          ? signal.request.completion
+          : undefined;
+      }
       const completions = [...pending.values()].flatMap((operation) =>
         operation.completion === undefined ? [] : [operation.completion],
       );
@@ -1438,25 +1452,23 @@ export function manifestVariantShaderEntry(
   entry: RegisteredMaterialShaderEntry,
 ): RegisteredMaterialShaderEntry {
   if (variantSet === undefined) return entry;
-  for (const manifestEntry of registry.materialShaderManifestEntries()) {
-    if (manifestEntry.identifier !== pipelineShaderId) continue;
-    const variant = findVariantByKey(manifestEntry, variantSet);
-    if (!variant) return entry;
-    return {
-      get source() {
-        return variant.composedWgsl;
-      },
-      program: registry.materialProgram(
-        materialShaderSource(variant),
-        variant.entryPoints ?? variant.receipt?.entryPoints,
-        variant.forwardFog ?? variant.receipt?.forwardFog,
-      ),
-      paramSchema: entry.paramSchema,
-      paramSchemaProjection: entry.paramSchemaProjection,
-      ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
-    };
-  }
-  return entry;
+  const manifestEntry = registry.materialShaderManifestEntry(pipelineShaderId);
+  const variant =
+    manifestEntry === undefined ? undefined : findVariantByKey(manifestEntry, variantSet);
+  if (variant === undefined) return entry;
+  return {
+    get source() {
+      return variant.composedWgsl;
+    },
+    program: registry.materialProgram(
+      materialShaderSource(variant),
+      variant.entryPoints ?? variant.receipt?.entryPoints,
+      variant.forwardFog ?? variant.receipt?.forwardFog,
+    ),
+    paramSchema: entry.paramSchema,
+    paramSchemaProjection: entry.paramSchemaProjection,
+    ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
+  };
 }
 
 /** Shader axis of a material PSO spec; absent entries and constants stay absent. */

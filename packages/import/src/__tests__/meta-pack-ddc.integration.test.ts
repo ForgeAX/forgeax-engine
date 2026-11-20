@@ -1,3 +1,4 @@
+import { deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -217,7 +218,7 @@ it('does not reimport or recook a real material after its Meta Pack hits existin
   const first = await f.run(),
     second = await f.run();
   expect(f.counts).toEqual({ importer: 1, cooker: 1 });
-  expect(second.product).toEqual(first.product);
+  deepStrictEqual(second.product, first.product);
   f.setCookerRevision('native-v2');
   await f.run();
   await f.run();

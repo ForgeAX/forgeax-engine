@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { canvasAspectPlugin } from '@forgeax/engine-app';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import { type LoadProgressLabelInput, resolveLoadProgressLabels } from '@forgeax/engine-types';
 import type { BlitzUi, BlitzUiOptions } from '@forgeax/engine-ui-blitz';
 import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -72,7 +73,10 @@ type Modal = {
   success?: (result: { confirm: boolean }) => void;
 };
 
-async function generatedHost(startupUi: StartupUiOptions = {}) {
+async function generatedHost(
+  startupUi: StartupUiOptions = {},
+  loadingLabels?: LoadProgressLabelInput,
+) {
   const directory = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-recovery-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   await prepareWechatBuild(
@@ -93,7 +97,7 @@ async function generatedHost(startupUi: StartupUiOptions = {}) {
       sourceSnapshot: createScriptablePackSourceSnapshot(),
       filesystemInputs: undefined,
     },
-    { startupUi },
+    { startupUi, ...(loadingLabels === undefined ? {} : { loadingLabels }) },
   );
   const [hostSource, entrySource] = await Promise.all([
     readFile(resolve(directory, 'wechat-main.ts'), 'utf8'),
@@ -653,8 +657,12 @@ it('retains the first native display canvas even when Platform admission fails',
   expect(host.usedCanvases[0]).toBe(host.createdCanvases[0]);
 });
 
-it('puts the actual native Platform cause above recovery guidance and preserves inspection details', async () => {
-  const host = await generatedHost();
+it.each([
+  'en',
+  'zh-CN',
+])('puts the actual native Platform cause above localized recovery guidance (%s)', async (lang) => {
+  const labels = resolveLoadProgressLabels({ lang });
+  const host = await generatedHost({}, { lang });
   const failure = Object.assign(new Error('Isolated native platform failure'), {
     code: 'startup-recovery-probe',
     detail: { boundary: 'platform', once: true },
@@ -662,10 +670,9 @@ it('puts the actual native Platform cause above recovery guidance and preserves 
   host.fault('platform', failure);
   host.startEntry();
   await vi.waitFor(() => expect(host.modals).toHaveLength(1));
-  expect(host.modals[0]?.content).toBe(
-    'Isolated native platform failure\n\nTap Reload to try again. If it fails again, close and reopen the game.',
-  );
-  expect(host.modals[0]?.confirmText).toBe('Reload');
+  expect(host.modals[0]?.content).toBe(`${failure.message}\n\n${labels.host.nativeReloadHint}`);
+  expect(host.modals[0]?.title).toBe(labels.host.nativeStartupFailureTitle);
+  expect(host.modals[0]?.confirmText).toBe(labels.reload);
   expect(JSON.parse(JSON.stringify(host.diagnostic()))).toMatchObject({
     code: 'platform-operation-failed',
     detail: {
@@ -711,7 +718,10 @@ it('offers native Reload after early bootstrap failures and reuses the generated
   host.fault('wgpu', failure);
   host.startEntry();
   await vi.waitFor(() => expect(host.modals).toHaveLength(1));
-  expect(host.modals[0]).toMatchObject({ confirmText: 'Reload', success: expect.any(Function) });
+  expect(host.modals[0]).toMatchObject({
+    confirmText: resolveLoadProgressLabels().reload,
+    success: expect.any(Function),
+  });
   expect(host.modals[0]?.content).toContain(failure.message);
   expect(host.diagnostic()).toMatchObject({ cause: { code: 'adapter-unavailable' } });
   expect(host.nativeCount()).toBe(0);

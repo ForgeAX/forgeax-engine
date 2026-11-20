@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pine Basin</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { color-scheme: dark; font: 15px system-ui, sans-serif; background: #192925; color: #f6ecd4; }
+    body { margin: 0; min-height: 100dvh; display: grid; place-items: center; }
+    main { width: min(1360px, calc(100% - 32px), calc((100dvh - 106px) * 16 / 9)); }
+    header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    header { padding: 8px 0; }
+    h1 { margin: 0; font: 600 clamp(24px, 4vw, 38px) Georgia, serif; letter-spacing: -.04em; }
+    a { color: #cdd9ce; text-underline-offset: 4px; font-size: .82rem; }
+    .scene { position: relative; overflow: hidden; border: 1px solid #718673; border-radius: 10px; background: #8fb8c9; }
+    #view { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; outline-offset: -4px; }
+    #route, aside { position: absolute; background: #192b26ed; border: 1px solid #698071; border-radius: 8px; }
+    #route { margin: 0; top: 14px; left: 14px; max-width: calc(100% - 205px); padding: 8px 11px; }
+    aside { right: 14px; top: 14px; width: clamp(96px, 15%, 160px); padding: 9px; }
+    #map { display: block; width: 100%; height: auto; }
+    aside div { margin-top: 6px; font-size: .72rem; }
+    footer { padding: 8px 0; font-size: .85rem; flex-wrap: wrap; }
+    button { padding: 6px 12px; border: 1px solid #89a788; border-radius: 5px; background: #375749; color: #fff4d8; }
+    button[aria-pressed="true"] { background: #d6ad68; color: #1b2a23; }
+    kbd { padding: 1px 4px; border: 1px solid #698071; border-radius: 4px; }
+    #error { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #speed { position: absolute; bottom: 12px; left: 14px; margin: 0; padding: 4px 9px; border-radius: 6px; background: #192b26ed; font-variant-numeric: tabular-nums; }
+    @media (max-width: 700px) {
+      main { width: calc(100% - 16px); }
+      #route, aside { top: 6px; font-size: .73rem; }
+      #route { left: 6px; max-width: calc(100% - 132px); }
+      aside { right: 6px; padding: 5px; }
+      #legend { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Pine Basin</h1><a href="/__level/benchmark/">Level streaming benchmark</a></header>
+    <div class="scene">
+      <canvas id="view" width="1280" height="720" tabindex="0" aria-label="Pine Basin driving view"></canvas>
+      <p id="route" role="status">Opening Pine Basin…</p>
+      <aside aria-label="World streaming map">
+        <canvas id="map" width="160" height="160" aria-label="Map of the 64 world cells"></canvas>
+        <div>4.096 × 4.096 km</div>
+        <div id="legend">Green live · gold preparing · blue retired</div>
+        <div>704 m visible · 960 m preload</div>
+        <div id="counts">0 live · 0 retired</div>
+      </aside>
+      <p id="speed" aria-label="Driving speed">0 km/h</p>
+    </div>
+    <footer>
+      <span><kbd>W</kbd> / <kbd>S</kbd> drive · <kbd>A</kbd> / <kbd>D</kbd> steer · <kbd>Shift</kbd> accelerate</span>
+      <button id="cruise" type="button" aria-pressed="false" disabled>Cruise on the highway</button>
+    </footer>
+    <pre id="error" hidden></pre>
+  </main>
+  <script type="module" src="/scripts/bench/level-streaming-world-browser.mjs"></script>
+</body>
+</html>

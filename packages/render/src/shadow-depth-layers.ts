@@ -27,6 +27,11 @@ interface ShadowDepthArray {
   readonly pending: Set<number>;
 }
 
+interface ShadowTextureRetirement {
+  readonly texture: Texture;
+  phase: 'pending' | 'destroying' | 'destroyed' | 'failed';
+}
+
 /**
  * Renderer-owned depth arrays behind retained shadow layers. Compiled graphs
  * import them instead of allocating them, so a recompile keeps every retained
@@ -36,12 +41,83 @@ interface ShadowDepthArray {
  */
 export class ShadowDepthLayers {
   private readonly arrays = new Map<string, ShadowDepthArray>();
-  private retiring: Texture[] = [];
+  private readonly retiring = new Map<Texture, ShadowTextureRetirement>();
+  private retirementFailure: AggregateError | undefined;
+  private disposed = false;
 
   constructor(private readonly device: RhiDevice) {}
 
-  /** Views, including an active array prefix, share their imported allocation's lifetime. */
-  view(label: string, layer?: number, arrayLayerCount?: number): TextureView {
+  /** Borrow only an already issued physical view from this original array owner. */
+  residentView(label: string, layer?: number, arrayLayerCount?: number): TextureView | undefined {
+    const array = this.arrays.get(label);
+    return this.disposed || array === undefined
+      ? undefined
+      : array.views.get(
+          `${layer ?? 'array'}:${arrayLayerCount ?? (layer === undefined ? array.layers : 1)}`,
+        );
+  }
+
+  /** Exact requested shape, without allocation or descriptor renewal. */
+  residentTexture(
+    label: string,
+    size: number,
+    layers: number,
+    format: 'depth32float' | 'rg16float' = 'depth32float',
+  ): Texture | undefined {
+    if (this.disposed) return undefined;
+    const actual = this.arrays.get(label);
+    return actual?.size === size && actual.layers === layers && actual.format === format
+      ? actual.texture
+      : undefined;
+  }
+
+  /** Prepare absent or already matching storage; never resize shadows an old world is using. */
+  *prepareTexture(
+    label: string,
+    size: number,
+    layers: number,
+    current: () => boolean,
+    sampledLayerCount = layers,
+  ): Generator<void, Texture> {
+    this.requireCurrent(current);
+    if (this.arrays.has(label) && this.residentTexture(label, size, layers) === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'unchanged persistent shadow allocation while preparing off-frame',
+        hint: 'prepare a replacement generation before changing the active shadow shape',
+      });
+    const texture = this.texture(label, size, layers, 'depth32float', current);
+    this.requireCurrent(current);
+    yield;
+    this.requireCurrent(current);
+    if (this.residentTexture(label, size, layers) !== texture) throw this.stalePreparation();
+    this.view(label, undefined, sampledLayerCount, current);
+    this.requireCurrent(current);
+    yield;
+    this.requireCurrent(current);
+    if (this.residentTexture(label, size, layers) !== texture) throw this.stalePreparation();
+    return texture;
+  }
+
+  private stalePreparation(): RhiError {
+    return new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the original live shadow depth owner and native preparation demand',
+      hint: 'discard stale preparation and retry from current shadow owners',
+    });
+  }
+  private requireCurrent(current?: () => boolean): void {
+    if (this.disposed || current?.() === false || this.disposed) throw this.stalePreparation();
+  }
+
+  /** Views resolve after their imported array and share its lifetime. */
+  view(
+    label: string,
+    layer?: number,
+    arrayLayerCount?: number,
+    isCurrent?: () => boolean,
+  ): TextureView {
+    this.requireCurrent(isCurrent);
     const array = this.arrays.get(label);
     if (array === undefined) {
       throw new RhiError({
@@ -62,6 +138,8 @@ export class ShadowDepthLayers {
       arrayLayerCount: count,
     });
     if (!created.ok) throw created.error;
+    this.requireCurrent(isCurrent);
+    if (this.arrays.get(label) !== array) throw this.stalePreparation();
     array.views.set(key, created.value);
     return created.value;
   }
@@ -79,7 +157,9 @@ export class ShadowDepthLayers {
     size: number,
     layers: number,
     format: 'depth32float' | 'rg16float' = 'depth32float',
+    isCurrent?: () => boolean,
   ): Texture {
+    this.requireCurrent(isCurrent);
     const current = this.arrays.get(label);
     if (
       current !== undefined &&
@@ -101,24 +181,48 @@ export class ShadowDepthLayers {
       textureBindingViewDimension: undefined,
     });
     if (!created.ok) throw created.error;
-    const retained =
-      current !== undefined && current.size === size && current.format === format
-        ? this.carryRetained(current, created.value, layers)
-        : new Set<number>();
-    // Frames already submitted may still read the old array; it is destroyed
-    // after the next successful submit.
-    if (current !== undefined) this.retiring.push(current.texture);
-    const array: ShadowDepthArray = {
-      texture: created.value,
-      size,
-      layers,
-      format,
-      views: new Map(),
-      retained,
-      pending: new Set(),
-    };
-    this.arrays.set(label, array);
-    return array.texture;
+    return this.adoptTexture(label, size, layers, format, created.value, current, isCurrent);
+  }
+
+  private adoptTexture(
+    label: string,
+    size: number,
+    layers: number,
+    format: 'depth32float' | 'rg16float',
+    texture: Texture,
+    previous: ShadowDepthArray | undefined,
+    current?: () => boolean,
+  ): Texture {
+    try {
+      this.requireCurrent(current);
+      if (this.arrays.get(label) !== previous) throw this.stalePreparation();
+      const retained =
+        previous !== undefined && previous.size === size && previous.format === format
+          ? this.carryRetained(previous, texture, layers)
+          : new Set<number>();
+      this.requireCurrent(current);
+      if (this.arrays.get(label) !== previous) throw this.stalePreparation();
+      // Previously submitted reads keep old storage until its ordinary retirement boundary.
+      if (previous !== undefined) this.retireTexture(previous.texture);
+      this.arrays.set(label, {
+        texture,
+        size,
+        layers,
+        format,
+        views: new Map(),
+        retained,
+        pending: new Set(),
+      });
+      return texture;
+    } catch (cause) {
+      const receipt = this.retireTexture(texture);
+      try {
+        this.destroyRetiring([receipt]);
+      } catch (cleanup) {
+        throw new AggregateError([cause, cleanup], 'Unaccepted shadow allocation cleanup failed');
+      }
+      throw cause;
+    }
   }
 
   /** Copy the retained layers that fit into `texture`; a failed copy carries none. */
@@ -189,14 +293,51 @@ export class ShadowDepthLayers {
   }
 
   dispose(): void {
-    for (const array of this.arrays.values()) this.retiring.push(array.texture);
+    this.disposed = true;
+    for (const array of this.arrays.values()) this.retireTexture(array.texture);
     this.arrays.clear();
     this.destroyRetiring();
   }
 
-  private destroyRetiring(): void {
-    const retiring = this.retiring;
-    this.retiring = [];
-    for (const texture of retiring) this.device.destroyTexture(texture);
+  private retireTexture(texture: Texture): ShadowTextureRetirement {
+    let receipt = this.retiring.get(texture);
+    if (receipt === undefined) {
+      receipt = { texture, phase: 'pending' };
+      this.retiring.set(texture, receipt);
+    }
+    return receipt;
+  }
+
+  private destroyRetiring(
+    receipts: Iterable<ShadowTextureRetirement> = this.retiring.values(),
+  ): void {
+    const failures: unknown[] = [];
+    for (const receipt of receipts) {
+      if (receipt.phase !== 'pending') continue;
+      // Register the attempt before native callbacks. A failed/throwing effect is never retried.
+      receipt.phase = 'destroying';
+      try {
+        const result = this.device.destroyTexture(receipt.texture);
+        if (!result.ok) throw result.error;
+        receipt.phase = 'destroyed';
+        this.retiring.delete(receipt.texture);
+      } catch (cause) {
+        receipt.phase = 'failed';
+        failures.push(cause);
+      }
+    }
+    if (failures.length > 0)
+      this.retirementFailure = new AggregateError(
+        [...(this.retirementFailure?.errors ?? []), ...failures],
+        'Shadow depth retirement failed',
+      );
+    if (this.retirementFailure !== undefined) throw this.retirementFailure;
+    for (const receipt of this.retiring.values())
+      if (receipt.phase === 'destroying')
+        throw new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'the in-flight shadow retirement to finish',
+          hint: 'settle the original native operation before confirming disposal',
+        });
   }
 }

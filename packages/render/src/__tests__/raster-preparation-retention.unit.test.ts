@@ -10,7 +10,9 @@ it('queries shared geometry/material identity without expanding its consumers', 
   const source = preparedSnapshot(1, 3);
   const topology = new BatchTopology();
   topology.rebuild([{ slot: 0, generation: 0, version: 0, entityKey: 1, snapshot: source }]);
-  const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
+  const owned = new GpuDrawSelection(
+    topology.query(topology.sourcePlan(), undefined).active.batches,
+  );
   expect(owned.ownsAll(source)).toBe(true);
   expect(owned.ownsAll({ ...source, entityKey: 99 })).toBe(true);
   expect(owned.ownsAll({ ...source })).toBe(true);
@@ -31,7 +33,9 @@ it('keeps sparse source draw indices and partial GPU ownership', () => {
   const sparse = { ...source, gpuDrivenDraws: [{ ...first, drawItemIndex: 7 }] };
   const topology = new BatchTopology();
   topology.rebuild([{ slot: 0, generation: 0, version: 0, entityKey: 1, snapshot: sparse }]);
-  const owned = new GpuDrawSelection(topology.query(topology.sourcePlan(), undefined).batches);
+  const owned = new GpuDrawSelection(
+    topology.query(topology.sourcePlan(), undefined).active.batches,
+  );
   expect(owned.has(sparse, 7)).toBe(true);
   expect(owned.has(sparse, 0)).toBe(false);
   const other = new MaterialResource(source.material.snapshot);
@@ -57,10 +61,17 @@ it('projects visibility from scene slots with independent state during nested ev
   let nested: Uint32Array | undefined;
   const active = new Set<number>([11]);
   active.has = (entity: number) => {
-    if (entity === 10) nested = suppressedPrimitiveWords(slots, new Set([10]), 64);
+    if (entity === 10)
+      nested = suppressedPrimitiveWords(slots, new Set([10]), identityAddresses(64));
     return entity === 11;
   };
-  expect([...suppressedPrimitiveWords(slots, active, 64)]).toEqual([2, 0]);
+  expect([...suppressedPrimitiveWords(slots, active, identityAddresses(64))]).toEqual([2, 0]);
   expect(nested === undefined ? undefined : [...nested]).toEqual([0, 2]);
-  expect([...suppressedPrimitiveWords(slots, new Set([10, 11]), 64)]).toEqual([0, 0]);
+  expect([...suppressedPrimitiveWords(slots, new Set([10, 11]), identityAddresses(64))]).toEqual([
+    0, 0,
+  ]);
 });
+
+function identityAddresses(rowAddressExtent: number) {
+  return { rowAddressExtent, allocationRevision: 0, primitiveIndexForSlot: (slot: number) => slot };
+}

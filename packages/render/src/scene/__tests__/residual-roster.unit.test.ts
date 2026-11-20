@@ -56,7 +56,7 @@ function fixture(count: number, primary = covered, secondary = residual) {
     GpuDrawSelection.fixed(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.filter((batch) => batch.binding?.material === material),
+        .active.batches.filter((batch) => batch.binding?.material === material),
     );
   const roster = new ResidualRoster();
   const sync = (selection: GpuDrawSelection) =>
@@ -97,8 +97,17 @@ it('moves only the flipped batch when the GPU selection changes coverage', () =>
   const f = fixture(1_000);
   f.sync(f.select(covered));
   const before = { ...f.roster.work };
+  const previous = f.roster.slots;
+  const replacement = f.select(residual);
+  const edit = vi.spyOn(FrameSet.prototype, 'edit');
   // Covering the residual binding instead moves 8 + 1000 members, one batch each way.
-  f.sync(f.select(residual));
+  try {
+    f.sync(replacement);
+    expect(edit).toHaveBeenCalledTimes(1);
+  } finally {
+    edit.mockRestore();
+  }
+  expect(previous.size).toBe(8);
   expect(f.roster.work.batches - before.batches).toBe(2);
   expect(f.roster.work.members - before.members).toBe(1_008);
   expect(f.entities()).toHaveLength(1_000);
@@ -727,7 +736,7 @@ it('keeps a multi-submesh Skin source residual when only its first execution is 
   const row = { ...receiptRow().source, skinBinding: { skeleton: 7, joints: [19] } };
   topology.apply(scene.apply([{ kind: 'update', entityKey: row.entityKey, snapshot: row }]));
   const sourcePlan = topology.sourcePlan();
-  const executions = topology.query(sourcePlan, undefined).batches;
+  const executions = topology.query(sourcePlan, undefined).active.batches;
   expect(executions.length).toBe(2);
   const partial = GpuDrawSelection.fixed(
     executions.filter((batch) => batch.key.drawItemIndex === 2),

@@ -1,13 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { loadPublishedRayKernels } from './published-kernels.fixture';
 import { verifyRayReference } from './query.fixture';
 
 const published = await loadPublishedRayKernels(
-  shaderManifestUrl(await buildEngineShaderManifest()),
+  shaderManifestUrl(await buildEngineShaderTemplateManifest()),
 );
 
 it('captures and independently replays opaque ray queries on Dawn', async () => {

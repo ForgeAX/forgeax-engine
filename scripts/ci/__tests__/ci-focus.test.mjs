@@ -315,6 +315,21 @@ test('fixture-only shader metadata Focus retains exact tests without a cold Engi
   }
 });
 
+test('template Browser, template unit and independent no-View Focus skip compiled inputs', () => {
+  const point = 'packages/runtime/src/__tests__/point-light-shadow.browser.test.ts';
+  const templates =
+    'packages/vite-plugin-shader/src/__tests__/engine-template-manifest.unit.test.ts';
+  assert.deepEqual(focusBuildArgs(focusPlan('browser', point)), ['scripts/build.mjs', '--engine']);
+  assert.deepEqual(focusBuildArgs(focusPlan('view', 'engine-only')), [
+    'scripts/build.mjs',
+    '--engine',
+  ]);
+  assert.deepEqual(focusBuildArgs(focusPlan('unit', templates)), [
+    'scripts/build.mjs',
+    '--packages-only',
+  ]);
+});
+
 test('CPU Node and Modeling focus retain package builds without a GPU product prerequisite', () => {
   const node = 'scripts/ci/__tests__/browser-test-discovery.test.mjs';
   const file = 'packages/modeling/src/__tests__/perf-tiers.unit.test.ts';
@@ -480,6 +495,7 @@ test('source-only CI planner Focus skips package preparation and keeps every ass
     'download-artifact-with-retry',
     'prepare-ci-inputs',
     'run-split-vitest-browser',
+    'source-budget-progress',
     'view-diagnostic-workload',
   ]) {
     const selector = `scripts/ci/__tests__/${owner}.test.mjs`;
@@ -487,6 +503,11 @@ test('source-only CI planner Focus skips package preparation and keeps every ass
     assert.deepEqual(plan.args, ['--test', selector]);
     assert.equal(focusBuildArgs(plan), undefined);
   }
+  const sdkCandidate = 'scripts/forgeax/__tests__/sdk-candidate-native-inputs.test.mjs';
+  assert.deepEqual(focusPlan('node', sdkCandidate), {
+    args: ['--test', sdkCandidate],
+    sourceOnly: true,
+  });
   assert.deepEqual(
     focusBuildArgs(focusPlan('node', 'scripts/ci/__tests__/rapier-release-payload.test.mjs')),
     ['scripts/build.mjs', '--packages-only'],

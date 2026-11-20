@@ -39,7 +39,7 @@ export function MaterialPropertiesPanel({
 }
 
 function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   useEffect(() => () => reader.dispose(), [reader]);
@@ -100,11 +100,11 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
     <div className="fx-asset-viewer fx-ui" data-testid="panel-material-properties" data-view-readonly="true">
       <PanelHeader start={<span className="material-properties-name" title={name}><strong>{name}</strong></span>} />
       <div className="material-properties-body">
-        <InspectorForm assetActions={assetActions} groups={groups.slice(0, splitAt)} />
+        <InspectorForm locale={locale} assetActions={assetActions} groups={groups.slice(0, splitAt)} />
         <MaterialTextureReferences client={client} reader={reader} workspace={workspace}
           references={materialTextureReferences(workspace, inspected)} loading={!binding && !inspected}
           assetActions={assetActions} />
-        <InspectorForm assetActions={assetActions} groups={groups.slice(splitAt)} />
+        <InspectorForm locale={locale} assetActions={assetActions} groups={groups.slice(splitAt)} />
       </div>
     </div>
   );

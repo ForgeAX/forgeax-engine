@@ -68,6 +68,7 @@ import type {
   PluginPack,
   PluginPackInternalOptions,
   PluginPackOptions,
+  PluginPackSourceProgress,
 } from './plugin-contract.js';
 import { projectRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { structuredPluginError } from './structured-plugin-error.js';
@@ -412,9 +413,11 @@ export function createPluginPackInternal(
       .sourceDeclarations,
     signal?: AbortSignal,
     runtimeBinding?: RuntimeAssetBinding,
+    onProgress?: (event: PluginPackSourceProgress) => void,
   ): Promise<PackIndexEntry[]> {
     return publishAuthoredDevPacksOwner(raw, {
       opts: composition,
+      ...(onProgress === undefined ? {} : { onProgress }),
       transportBase,
       metaPackBodies: projection.metaPackBodies,
       devArtifactBodies: projection.devArtifactBodies,

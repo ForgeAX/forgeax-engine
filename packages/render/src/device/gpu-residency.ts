@@ -344,12 +344,62 @@ interface CubemapGpuEntry {
   /** Present exactly when `status === 'failed'`. */
   failure?: AssetError | RhiError;
   ibl?: IblPrecomputeOutput;
+  readonly generatedTexture?: GpuTexture;
 }
 
 interface PackedMeshLodGeometry {
   readonly vertices: Float32Array;
   readonly indices: Uint16Array | Uint32Array | undefined;
   readonly lodRanges: readonly (readonly MeshGpuRange[])[] | undefined;
+}
+
+type CubemapProjectionSource = { readonly view: TextureView } | { readonly tex: TextureAsset };
+
+function prepareEquirectProjection(
+  sourcePod: EquirectAsset | GpuTextureAsset,
+  generated: TextureGpuEntry | undefined,
+): Result<{ source: CubemapProjectionSource; renderData: CubeRenderData }, AssetError> {
+  const sourceTex: SampledTextureAsset =
+    sourcePod.kind === 'gpu-texture'
+      ? sourcePod
+      : {
+          kind: 'texture',
+          shape: {
+            viewDimension: '2d',
+            extent: { width: sourcePod.width, height: sourcePod.height },
+          },
+          format: sourcePod.format,
+          data: new Uint8Array(
+            sourcePod.data.buffer,
+            sourcePod.data.byteOffset,
+            sourcePod.data.byteLength,
+          ),
+          colorSpace: sourcePod.colorSpace,
+          mips: { kind: 'none' },
+        };
+  const projected = deriveRenderDataCubemap(sourceTex);
+  if (projected.ok && sourceTex.shape.viewDimension === '2d') {
+    if (sourceTex.kind === 'texture') {
+      const tex = projected.value.needsHalfConversion
+        ? {
+            ...sourceTex,
+            format: projected.value.outputFormat,
+            data: halfFloat.f32ToF16Bytes(sourceTex.data, { clampFinite: true }),
+          }
+        : sourceTex;
+      return ok({ source: { tex }, renderData: projected.value });
+    }
+    if (sourceTex.format === 'rgba16float' && generated !== undefined) {
+      return ok({ source: { view: generated.view }, renderData: projected.value });
+    }
+  }
+  return err(
+    new AssetError({
+      code: 'invalid-source-format',
+      expected: 'a linear 2D HDR panorama, with rgba16float storage when GPU-generated',
+      hint: ASSET_ERROR_HINTS['invalid-source-format'],
+    }),
+  );
 }
 
 function packMeshLodGeometry(
@@ -1952,6 +2002,8 @@ export class GpuResidencyCache {
     scope: RenderResourceScope | undefined = undefined,
     profilePhase?: RecordProfileRunner,
     capture?: (prepared: PreparedMeshResidency) => void,
+    /** Recheck ordinary/shared consumers when an explicit eviction actually executes. */
+    canEvict?: () => boolean,
   ): Result<PreparedMeshResidency, RhiError | AssetError> {
     const key = handle;
     const namespace = this.sourceNamespace(scope);
@@ -1995,8 +2047,10 @@ export class GpuResidencyCache {
       );
     };
     const retained = this.retainMeshEntry(captured, () => {
-      if (this.meshGpuHandles.get(key, namespace) === captured) this.invalidateMesh(handle, scope);
-      else this.retireMeshEntry(candidateKey, captured, namespace);
+      if (this.meshGpuHandles.get(key, namespace) === captured) {
+        if (canEvict?.() === false || this.meshLifetime(captured).inUse) return;
+        this.retireMeshEntry(key, captured, namespace);
+      } else this.retireMeshEntry(candidateKey, captured, namespace);
     });
     const prepared: PreparedMeshResidency = {
       entry: captured,
@@ -2408,7 +2462,23 @@ export class GpuResidencyCache {
     handle: AssetHandle<'texture' | 'gpu-texture'>,
     pod: SampledTextureAsset,
     source: RenderResourceScope | undefined = undefined,
+    capture?: (prepared: GraphTextureResidencyPreparation) => void,
+    /** A caller-owned fixed copy supplies its guarded revision; ordinary reads retain identity proof. */
+    fixedRevision?: number,
+    /** Evaluated at final lifetime eviction, after queued readers and other leases. */
+    canEvict?: () => boolean,
   ): Result<GraphTextureResidencyPreparation, RhiError | AssetError | ImageError> {
+    if (
+      fixedRevision !== undefined &&
+      (source === undefined || source.assetRevision(handle) !== fixedRevision)
+    )
+      return err(
+        new AssetError({
+          code: 'asset-write-conflict',
+          expected: 'the fixed texture revision in its existing resource scope',
+          hint: 'restart Source preparation after its fixed content becomes stale',
+        }),
+      );
     const device = this.gpuDevice;
     if (device === undefined)
       return err(
@@ -2427,6 +2497,8 @@ export class GpuResidencyCache {
         prepared.value,
         true,
         false,
+        capture,
+        canEvict,
       );
     }
     const key = Number(handle);
@@ -2435,7 +2507,7 @@ export class GpuResidencyCache {
     let entry = existing;
     let needsMipmaps = false;
     if (entry === undefined) {
-      const sourceRevision = this.textureSourceRevision(handle, pod, source);
+      const sourceRevision = fixedRevision ?? this.textureSourceRevision(handle, pod, source);
       const native = this.prepareTextureData(Number(handle), pod, source);
       if (!native.ok) return native;
       pod = native.value;
@@ -2466,7 +2538,15 @@ export class GpuResidencyCache {
       needsMipmaps =
         !projected.value.compressed && pod.mips.kind === 'generate' && uploaded.value.levels > 1;
     }
-    return this.captureGraphTexture(key, namespace, entry, existing !== undefined, needsMipmaps);
+    return this.captureGraphTexture(
+      key,
+      namespace,
+      entry,
+      existing !== undefined,
+      needsMipmaps,
+      capture,
+      canEvict,
+    );
   }
 
   private captureGraphTexture(
@@ -2475,19 +2555,22 @@ export class GpuResidencyCache {
     captured: TextureGpuEntry,
     alreadyPublished: boolean,
     needsMipmaps: boolean,
+    capture?: (prepared: GraphTextureResidencyPreparation) => void,
+    canEvict?: () => boolean,
   ): Result<GraphTextureResidencyPreparation, RhiError | AssetError | ImageError> {
     const epoch = this.deviceEpoch;
     let published = alreadyPublished;
     let released = false;
-    const retained = this.textureLifetime(captured).retain(() =>
-      this.retireTextureEntry(key, captured, namespace),
-    );
+    const retained = this.textureLifetime(captured).retain(() => {
+      if (canEvict?.() !== false && !this.textureLifetime(captured).inUse)
+        this.retireTextureEntry(key, captured, namespace);
+    });
     const current = () =>
       !released &&
       !captured.texture.isDestroyed &&
       this.deviceEpoch === epoch &&
       this.textureGpuHandles.get(key, namespace) === (published ? captured : undefined);
-    return ok({
+    const prepared: GraphTextureResidencyPreparation = {
       entry: captured,
       needsMipmaps,
       current,
@@ -2509,7 +2592,9 @@ export class GpuResidencyCache {
           return retained.release(evict);
         },
       },
-    });
+    };
+    capture?.(prepared);
+    return ok(prepared);
   }
 
   /**
@@ -3186,13 +3271,46 @@ export class GpuResidencyCache {
   _uploadCubemapFromEquirect(
     world: RenderResourceScope,
     sourceHandle: AssetHandle<'equirect'>,
-    sourcePod: EquirectAsset,
+    sourcePod: EquirectAsset | GpuTextureAsset,
   ): Promise<Result<AssetHandle<'equirect'>, AssetError | RhiError>> {
     const namespace = this.sourceNamespace(world);
-    const previous = this.cubemapGpuHandles.get(Number(sourceHandle), namespace)?.projection;
-    if (previous !== undefined) return previous;
-    const projection = this.projectCubemapFromEquirect(world, sourceHandle, sourcePod);
-    const entry = this.cubemapGpuHandles.get(Number(sourceHandle), namespace);
+    const id = Number(sourceHandle);
+    const previous = this.cubemapGpuHandles.get(id, namespace);
+    let generated: TextureGpuEntry | undefined;
+    if (sourcePod.kind === 'gpu-texture') {
+      const ready = this.ensureGeneratedTexture(id as AssetHandle<'gpu-texture'>, sourcePod, world);
+      if (!ready.ok) return Promise.resolve(ok(sourceHandle));
+      const allocation = this.generatedAllocations.get(ready.value.texture);
+      // IBL submits independently of the generation graph and can sample only its completed output.
+      if (
+        allocation === undefined ||
+        !this.textureGenerators.isAccepted(id, namespace, allocation.generation)
+      ) {
+        return Promise.resolve(ok(sourceHandle));
+      }
+      generated = ready.value;
+      if (previous !== undefined && previous.generatedTexture !== generated.texture) {
+        this.cubemapGpuHandles.delete(id, namespace);
+        this.cubemapIdempotentMap.delete(id, namespace);
+        this.retireCubemap(previous);
+      }
+    }
+    const current = this.cubemapGpuHandles.get(id, namespace);
+    if (current?.projection !== undefined) return current.projection;
+    if (current?.status === 'ready') return Promise.resolve(ok(sourceHandle));
+    const lease =
+      generated === undefined
+        ? undefined
+        : this.generatedAllocations.get(generated.texture)?.retain();
+    const projection = this.projectCubemapFromEquirect(
+      world,
+      sourceHandle,
+      sourcePod,
+      generated,
+    ).finally(() => {
+      void lease?.release(false);
+    });
+    const entry = this.cubemapGpuHandles.get(id, namespace);
     if (entry?.status === 'pending') entry.projection = projection;
     return projection;
   }
@@ -3201,7 +3319,7 @@ export class GpuResidencyCache {
     device: RhiDevice,
     scope: DeviceScope,
     sourceId: number,
-    tex: TextureAsset,
+    source: CubemapProjectionSource,
     projected: CubeRenderData,
     outputFormat: TextureFormat,
   ) {
@@ -3244,49 +3362,55 @@ export class GpuResidencyCache {
       faceViews.push(faceViewResult.value);
     }
 
-    const equirectTextureResult = device.createTexture({
-      label: `equirect-${sourceId}`,
-      size: {
-        width: tex.shape.extent.width,
-        height: tex.shape.extent.height,
-        depthOrArrayLayers: 1,
-      },
-      mipLevelCount: 1,
-      sampleCount: 1,
-      dimension: '2d',
-      format: tex.format,
-      usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST,
-      viewFormats: [],
-      textureBindingViewDimension: undefined,
-    });
-    if (!equirectTextureResult.ok) return err(equirectTextureResult.error);
-    const equirectGpuTex = equirectTextureResult.value;
-    scope._adopt('texture', equirectGpuTex, (texture) => {
-      device.destroyTexture(texture);
-    });
+    let equirectView: TextureView;
+    if ('view' in source) {
+      equirectView = source.view;
+    } else {
+      const { tex } = source;
+      const equirectTextureResult = device.createTexture({
+        label: `equirect-${sourceId}`,
+        size: {
+          width: tex.shape.extent.width,
+          height: tex.shape.extent.height,
+          depthOrArrayLayers: 1,
+        },
+        mipLevelCount: 1,
+        sampleCount: 1,
+        dimension: '2d',
+        format: tex.format,
+        usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST,
+        viewFormats: [],
+        textureBindingViewDimension: undefined,
+      });
+      if (!equirectTextureResult.ok) return err(equirectTextureResult.error);
+      const equirectGpuTex = equirectTextureResult.value;
+      scope._adopt('texture', equirectGpuTex, (texture) => {
+        device.destroyTexture(texture);
+      });
 
-    const equirectViewResult = device.createTextureView(equirectGpuTex, {
-      label: `equirect-view-${sourceId}`,
-      dimension: '2d',
-    });
-    if (!equirectViewResult.ok) return err(equirectViewResult.error);
-    const equirectView = equirectViewResult.value;
+      const equirectViewResult = device.createTextureView(equirectGpuTex, {
+        label: `equirect-view-${sourceId}`,
+        dimension: '2d',
+      });
+      if (!equirectViewResult.ok) return err(equirectViewResult.error);
+      equirectView = equirectViewResult.value;
 
-    const bytesPerPixel = textureFormatBlock(tex.format).bytesPerBlock;
-    const equirectWriteResult = device.queue.writeTexture(
-      { texture: equirectGpuTex },
-      tex.data,
-      {
-        bytesPerRow: tex.shape.extent.width * bytesPerPixel,
-        rowsPerImage: tex.shape.extent.height,
-      },
-      {
-        width: tex.shape.extent.width,
-        height: tex.shape.extent.height,
-        depthOrArrayLayers: 1,
-      },
-    );
-    if (!equirectWriteResult.ok) return err(equirectWriteResult.error);
+      const bytesPerPixel = textureFormatBlock(tex.format).bytesPerBlock;
+      const equirectWriteResult = device.queue.writeTexture(
+        { texture: equirectGpuTex },
+        tex.data,
+        {
+          bytesPerRow: tex.shape.extent.width * bytesPerPixel,
+          rowsPerImage: tex.shape.extent.height,
+        },
+        {
+          width: tex.shape.extent.width,
+          height: tex.shape.extent.height,
+          depthOrArrayLayers: 1,
+        },
+      );
+      if (!equirectWriteResult.ok) return err(equirectWriteResult.error);
+    }
 
     const faceBufferResult = createFaceUniformsBuffer(device);
     if (!faceBufferResult.ok) return err(faceBufferResult.error);
@@ -3334,7 +3458,8 @@ export class GpuResidencyCache {
   private async projectCubemapFromEquirect(
     world: RenderResourceScope,
     sourceHandle: AssetHandle<'equirect'>,
-    sourcePod: EquirectAsset,
+    sourcePod: EquirectAsset | GpuTextureAsset,
+    generated: TextureGpuEntry | undefined,
   ): Promise<Result<AssetHandle<'equirect'>, AssetError | RhiError>> {
     const sourceId = Number(sourceHandle);
     const namespace = this.sourceNamespace(world);
@@ -3373,6 +3498,7 @@ export class GpuResidencyCache {
     const entry: CubemapGpuEntry = {
       revision,
       status: 'pending',
+      ...(generated === undefined ? {} : { generatedTexture: generated.texture }),
       texture: null,
       view: undefined,
       faceViews: [],
@@ -3411,73 +3537,11 @@ export class GpuResidencyCache {
       return err(error);
     };
 
-    if (sourcePod.kind !== 'equirect') {
-      return recordFailed(
-        new AssetError({
-          code: 'asset-not-found',
-          expected: `source POD for handle id ${sourceId} is an EquirectAsset`,
-          hint: ASSET_ERROR_HINTS['asset-not-found'],
-        }),
-      );
-    }
-
-    // The cubemap projection + IBL precompute consume a 2D-image view of the
-    // source. EquirectAsset mirrors the TextureAsset 2D surface (width / height
-    // / format / data / colorSpace) but has no CPU mip chain, so the derived
-    // texture view declares `mipmap:false` (the IBL prefilter mip chain is a
-    // GPU-side pass, not a CPU-authored level set).
-    const sourceData =
-      sourcePod.data instanceof Uint8ClampedArray
-        ? new Uint8Array(
-            sourcePod.data.buffer,
-            sourcePod.data.byteOffset,
-            sourcePod.data.byteLength,
-          )
-        : sourcePod.data;
-    const sourceTex: TextureAsset = {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: sourcePod.width, height: sourcePod.height } },
-      format: sourcePod.format,
-      data: sourceData,
-      colorSpace: sourcePod.colorSpace,
-      mips: { kind: 'none' },
-    };
-
-    // Project the equirect source POD into the cubemap descriptor (D-5): the
-    // asset-semantic decisions (format / colorSpace validation, square cube
-    // face size, rgba32f->rgba16f narrowing) live in the pure projection; the
-    // resource build (texture / views / IBL precompute) + the byte conversion
-    // stay here in the store.
-    const projected: CubeRenderData | undefined = (() => {
-      const p = deriveRenderDataCubemap(sourceTex);
-      return p.ok ? p.value : undefined;
-    })();
-    if (projected === undefined) {
-      return recordFailed(
-        new AssetError({
-          code: 'invalid-source-format',
-          expected: "format 'rgba16float' or 'rgba32float' with colorSpace 'linear'",
-          hint: ASSET_ERROR_HINTS['invalid-source-format'],
-        }),
-      );
-    }
-
-    const tex: TextureAsset = projected.needsHalfConversion
-      ? {
-          kind: 'texture',
-          shape: sourceTex.shape,
-          format: projected.outputFormat,
-          data: halfFloat.f32ToF16Bytes(sourceTex.data, { clampFinite: true }),
-          colorSpace: 'linear',
-          mips: { kind: 'none' },
-        }
-      : sourceTex;
-
-    // The source equirect stays float for filtering, but WebGL2 cannot render
-    // rgba16float attachments. Downlevel only the precompute outputs to the
-    // universally renderable rgba8 path; the same format is threaded through
-    // the cubemap and all three IBL side textures by IblPipelineCache.
-    const outputFormat = this.caps?.rgba16floatRenderable === false ? 'rgba8unorm' : tex.format;
+    const projection = prepareEquirectProjection(sourcePod, generated);
+    if (!projection.ok) return recordFailed(projection.error);
+    const { source, renderData } = projection.value;
+    const outputFormat =
+      this.caps?.rgba16floatRenderable === false ? 'rgba8unorm' : renderData.outputFormat;
 
     // Lazy projection runs from the record arm, where the RHI device is always
     // wired (research R-5). The IBL path is deliberately independent from the
@@ -3510,8 +3574,8 @@ export class GpuResidencyCache {
       device,
       scope,
       sourceId,
-      tex,
-      projected,
+      source,
+      renderData,
       outputFormat,
     );
     if (!allocated.ok) return recordFailed(allocated.error);
@@ -3566,6 +3630,7 @@ export class GpuResidencyCache {
         revision,
         scope,
         status: 'ready',
+        ...(generated === undefined ? {} : { generatedTexture: generated.texture }),
         ibl: runResult.value,
         texture: gpuTextureWrapper,
         view: cubeView,

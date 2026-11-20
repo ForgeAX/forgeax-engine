@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-modeling
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 `@forgeax/engine/modeling` is a deterministic, editable n-gon mesh kernel in pure TypeScript.
 A `.pack.ts` build calls it as ordinary functions and returns `{ 'mesh/<key>': MeshAsset }`
 (plus a scene and clip for rigs) to the existing Pack, Catalog and Renderer owners.

@@ -9,6 +9,23 @@ interface AssetHostRefreshServer {
 
 export type AssetHostRefreshPolicy = (server: AssetHostRefreshServer) => void;
 
+export interface PluginPackSourceProgress {
+  readonly phase: 'cache' | 'cook' | 'persist' | 'ready' | 'import';
+  readonly sourcePath: string;
+  readonly completed: number;
+  readonly total: number;
+  readonly cache?: 'hit' | 'miss';
+}
+
+/** Observations only; observer failures never affect production. */
+export type PluginPackProgress = { readonly generation: number } & (
+  | {
+      readonly kind: 'stage';
+      readonly stage: 'inventory' | 'publish' | 'ready' | 'failed' | 'cancelled';
+    }
+  | { readonly kind: 'source'; readonly source: PluginPackSourceProgress }
+);
+
 /**
  * Vite Pack producer plus the host-control seam used by dynamic game hosts.
  * The runtime binding is read-only from the consumer side; `rebind` remains
@@ -46,6 +63,7 @@ export type PluginPack = Plugin & {
 
 /** Public plugin inputs; execution owners remain in engine-pack/import/ddc. */
 export interface PluginPackOptions {
+  readonly onProgress?: ((event: PluginPackProgress) => void) | undefined;
   /** Explicit host-selected public Engine package root for isolated authored source execution. */
   readonly enginePackageRoot?: string | undefined;
   readonly roots?: readonly string[] | undefined;

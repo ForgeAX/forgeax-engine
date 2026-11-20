@@ -1145,18 +1145,20 @@ describe('live readiness waiting', () => {
     await mkdir(join(root, '.forgeax'), { recursive: true });
     fixtures.page.evaluate.mockResolvedValue('2');
     let hold = false;
+    let broadScanStarted = false;
     let release: ((value: string) => void) | undefined;
     let rejectScan: ((error: Error) => void) | undefined;
     let publishReady: (() => void) | undefined;
     let readyStatus: unknown;
+    const pendingBroadScan = new Promise<string>((resolve, reject) => {
+      release = resolve;
+      rejectScan = reject;
+    });
     fixtures.readLiveProjectInputs.mockImplementation(async (_root, paths) => {
       if (paths !== undefined) return 'scoped-inputs';
-      if (hold)
-        return new Promise<string>((resolve, reject) => {
-          release = resolve;
-          rejectScan = reject;
-        });
-      return 'fixture-inputs';
+      if (!hold) return 'fixture-inputs';
+      broadScanStarted = true;
+      return pendingBroadScan;
     });
     fixtures.spawn.mockImplementationOnce((_command, args) => {
       hold = true;
@@ -1185,7 +1187,8 @@ describe('live readiness waiting', () => {
     try {
       await vi.waitFor(() => expect(publishReady).toBeDefined());
       const observation = request(port, '/status', 'GET');
-      await vi.waitFor(() => expect(release).toBeDefined());
+      // While startup owns the reload, the one-second input poll starts the broad scan.
+      await vi.waitFor(() => expect(broadScanStarted).toBe(true), { timeout: 3000 });
       publishReady?.();
       if (rejected) rejectScan?.(new Error('obsolete broad-scope file was removed'));
       else release?.('fixture-inputs');
@@ -1198,6 +1201,7 @@ describe('live readiness waiting', () => {
     } finally {
       release?.('fixture-inputs');
       fixtures.readLiveProjectInputs.mockImplementation(async () => 'fixture-inputs');
+      publishReady?.();
       bridge.close();
       await request(port, '/stop', 'POST');
       await daemon;

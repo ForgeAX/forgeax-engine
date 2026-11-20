@@ -101,6 +101,12 @@ export interface PipelineBuilderShaderModuleFactory {
   }): Result<ShaderModule, RhiError>;
   /** True only when this live factory owns the exact pending module request. */
   isPending?(error: RhiError): boolean;
+  /** Non-allocating original-owner evidence used by off-frame native preparation. */
+  peekShaderModule?(desc: {
+    readonly code: string;
+    readonly label?: string | undefined;
+  }): ShaderModule | undefined;
+  pendingShaderModuleCompletion?(signal: RhiError): Promise<Result<void, RhiError>> | undefined;
 }
 
 /**

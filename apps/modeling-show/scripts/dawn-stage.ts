@@ -13,7 +13,7 @@ import { constructRuntimeRendererHost } from '@forgeax/engine/runtime/internal/r
 import { scenePlugin } from '@forgeax/engine/scene';
 import { createMaterialPackCooker } from '@forgeax/engine/shader-compiler';
 import type { Asset, AssetHandle, MaterialAsset } from '@forgeax/engine/types';
-import { buildEngineShaderManifest, publishShaderManifest } from '@forgeax/engine/vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine/vite-plugin-shader';
 import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 
 /**
@@ -39,12 +39,9 @@ export interface DawnStage {
 }
 
 export async function createDawnStage(width: number, height: number): Promise<DawnStage> {
-  const manifest = await buildEngineShaderManifest();
+  const manifest = await buildEngineShaderTemplateManifest();
   const manifestUrl = URL.createObjectURL(
-    new Blob(
-      [JSON.stringify('toJSON' in manifest ? manifest : publishShaderManifest(manifest.entries, manifest.materialShaders))],
-      { type: 'application/json' },
-    ),
+    new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
   );
   let device: GPUDevice | undefined;
   let target: GPUTexture | undefined;

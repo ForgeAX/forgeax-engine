@@ -11,6 +11,7 @@ import {
   clearGtaoCandidatePreparationFault,
   consumeGtaoCandidatePreparationFault,
 } from '../gtao-candidate-preparation-fault';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
 import { compileViewGraph, inspectRenderGraphGenerationAllocation } from '../typed-frame-graph';
 
@@ -93,6 +94,8 @@ describe('GTAO candidate-preparation fault owner', () => {
       compiledFrameGraphGeneration: 0,
       standardLightingGraphSignature: '',
       retiredCompiledFrameGraphs: new Set(),
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+      meshBindGroupCache: new WeakMap(),
       activePipeline,
       installedPipelineConfig: undefined,
       gtaoCandidatePreparationFailureGeneration: 7,

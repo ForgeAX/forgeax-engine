@@ -8,7 +8,7 @@ import {
 import { createOutputColorSpaceState } from '../output-color-space';
 import type { RendererOptions } from '../render-contract';
 import type { RhiBackendPack } from './backend-contract';
-import type { BundlerOptions } from './bundler-contract';
+import type { RendererHostBundlerOptions } from './bundler-contract';
 import { deviceOptionsForAdapter, rendererDeviceAdmission } from './device-feature-admission';
 import type { RendererAssemblyImplementation } from './host-contract';
 import { attachDeviceLostFanout } from './recovery/device-loss-fanout';
@@ -25,7 +25,7 @@ export async function tryCreateRendererFromBackend(
   canvas: RhiCanvasTarget,
   options: RendererOptions | undefined,
   pack: RhiBackendPack,
-  bundler: BundlerOptions | undefined,
+  bundler: RendererHostBundlerOptions | undefined,
   createRenderer: WebGPURendererFactory,
 ): Promise<WebGPUOutcome> {
   if (options !== undefined)

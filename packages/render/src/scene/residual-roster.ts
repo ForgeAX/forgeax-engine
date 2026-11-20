@@ -41,6 +41,7 @@ export class ResidualRoster {
   readonly #coverage = new Map<ReturnType<typeof gpuDrawCoverageKey>, CoverageMeshes>();
   readonly #affected = new Set<GpuDrivenBatch>();
   readonly #references = new Map<number, number>();
+  readonly #slotEdits = new Map<number, boolean>();
   #slots = new FrameSet();
   readonly work: ResidualRosterWork = { batches: 0, batchVisits: 0, members: 0, cold: 0 };
 
@@ -54,6 +55,28 @@ export class ResidualRoster {
     selection: GpuDrawSelection,
   ): FrameSet {
     const sources = plan.sourceGroups ?? plan.batches;
+    try {
+      this.#syncSources(sources, selection);
+      this.#syncUnbatched(unbatched);
+      this.#sources = sources;
+      this.#selection = selection;
+    } finally {
+      this.#publishSlots();
+    }
+    return this.#slots;
+  }
+
+  #publishSlots(): void {
+    const edits = this.#slotEdits;
+    if (edits.size === 0) return;
+    try {
+      this.#slots = this.#slots.edit(edits);
+    } finally {
+      edits.clear();
+    }
+  }
+
+  #syncSources(sources: SubmissionPlan['batches'], selection: GpuDrawSelection): void {
     const previousSources = this.#sources;
     const previousSelection = this.#selection;
     const linked =
@@ -103,10 +126,6 @@ export class ResidualRoster {
         affected.clear();
       }
     }
-    this.#syncUnbatched(unbatched);
-    this.#sources = sources;
-    this.#selection = selection;
-    return this.#slots;
   }
 
   #route(binding: GpuDrivenBatchBinding): CoverageBatches | undefined {
@@ -200,10 +219,10 @@ export class ResidualRoster {
     this.work.members += 1;
     if (count === 0) {
       this.#references.delete(slot);
-      this.#slots = this.#slots.without(slot);
+      this.#slotEdits.set(slot, false);
     } else {
       this.#references.set(slot, count);
-      if (count === 1) this.#slots = this.#slots.with(slot);
+      if (count === 1) this.#slotEdits.set(slot, true);
     }
   }
 }

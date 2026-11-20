@@ -10,6 +10,7 @@ import {
   buildFullscreenFeaturePipeline,
   prewarmFullscreenFeatureModules,
 } from './fullscreen-feature-preparation';
+import { createLevelSourceAccess } from './level-source-access';
 import { materialFragmentEntry } from './material-fragment-entry';
 import {
   runBuildMaterialShaderPipeline,
@@ -37,12 +38,10 @@ import {
 import { createTextureResidencyPreparer } from './texture-residency';
 import { prepareWaterFrameBindingCohorts as prepareWaterFrameBindingCohortsImpl } from './water-frame-cohorts';
 import {
+  createWaterFrameLayouts,
   runDestroyWaterMaterialFrameEntry,
-  runSameWaterMeshDraw,
-  runWaterMaterialFrameLayout,
-  runWaterMaterialFrameTargetsMatch,
-  runWaterMaterialGroup2Layout,
-  runWaterWavesPipelineLayout,
+  runSameWaterMeshDraw as sameWaterMeshDraw,
+  runWaterMaterialFrameTargetsMatch as waterMaterialFrameTargetsMatch,
 } from './water-frame-layouts';
 import { projectGpuPassTimingCapture } from './webgpu-renderer-pass-timing';
 // @forgeax/engine-render — WebGPU renderer lifecycle/frame interpreter.
@@ -82,6 +81,7 @@ import type {
   ShaderEntryPointReads,
   VertexAttributeMap,
 } from '@forgeax/engine-types';
+import { shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
 import { InstanceProjectionStore } from '../instances';
@@ -135,7 +135,10 @@ import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
 import { drainFramePreparation, type FramePreparation } from './frame-recording';
 import { createMaterialLayoutCache } from './material/layout-cache';
-import { materialPipelineRequestPending } from './material/pipeline-preparation-readiness';
+import {
+  materialPipelineRequestCompletion,
+  materialPipelineRequestPending,
+} from './material/pipeline-preparation-readiness';
 import type {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
@@ -243,7 +246,7 @@ import { viewOwnerOf } from '../world/view-settlement';
 import { registerAnalyticFogPostProcess } from './analytic-fog-registration';
 import type { RhiBackendPack } from './backend-contract';
 import { inspectBarrelDistortion } from './barrel-distortion-inspection';
-import type { BundlerOptions } from './bundler-contract';
+import type { RendererHostBundlerOptions } from './bundler-contract';
 import {
   captureDrawOwnerProfileFrame,
   type DrawRequest,
@@ -367,7 +370,7 @@ export async function tryCreateRendererFromBackend(
   canvas: RhiCanvasTarget,
   options: RendererOptions | undefined,
   pack: RhiBackendPack,
-  bundler: BundlerOptions | undefined,
+  bundler: RendererHostBundlerOptions | undefined,
 ): Promise<WebGPUOutcome> {
   return tryCreateRendererFromBackendBootstrap(canvas, options, pack, bundler, makeWebGPURenderer);
 }
@@ -596,18 +599,41 @@ async function makeWebGPURenderer(
   // RenderSystem retains this factory across recovery. Module requests select
   // the current adapter synchronously; volume preparation resolves all modules
   // before its first await and shares this exact factory with live recording.
+  const peekShaderModule = (
+    descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
+    mode: 'validated' | 'immediate',
+  ) => {
+    if (descriptor.label === undefined) return undefined;
+    const state = candidateShaderState ?? activeShaderState;
+    const adapter =
+      mode === 'validated'
+        ? state.sharedShaderModuleAdapter
+        : state.sharedImmediateShaderModuleAdapter;
+    return adapter?.completedModule(
+      descriptor.label,
+      shaderSourceForDescriptor(descriptor) ?? descriptor.code,
+    );
+  };
   const renderShaderModuleFactory = {
     createShaderModule: (
       descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
     ) => getShaderModuleAdapter().createShaderModule(descriptor),
     isPending: (error: Parameters<ShaderDeviceAdapterInternal['isPending']>[0]) =>
       getShaderModuleAdapter().isPending(error),
+    peekShaderModule: (
+      descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
+    ) => peekShaderModule(descriptor, 'validated'),
+    pendingShaderModuleCompletion: (signal: RhiError) =>
+      (candidateShaderState ?? activeShaderState).sharedShaderModuleAdapter?.pendingCompletion(
+        signal,
+      ),
   };
   const featureShaderScopes = new WeakMap<RenderFeature<unknown>, DeviceScope>();
   const getShader = (): ShaderCatalog => {
     const state = candidateShaderState ?? activeShaderState;
     if (state.shaderInstance === null) {
-      const activeCatalog = activeShaderState.shaderInstance;
+      const activeCatalog =
+        activeShaderState.shaderInstance ?? internals.bundler?.admittedShaderCatalog;
       // Reuse validated manifest CPU rows; candidate preparation selects variants.
       // feat-20260608-create-app-param-surface-trim / M2 / D-2 q5-A:
       // shaderManifestUrl moved to BundlerOptions (third arg). The fallback
@@ -618,7 +644,7 @@ async function makeWebGPURenderer(
       // `bundler: { shaderManifestUrl: undefined }` retains the
       // old "no manifest fetched" mode used by tests / camera-only worlds.
       state.shaderInstance =
-        state === candidateShaderState && activeCatalog !== null
+        activeCatalog !== undefined
           ? activeCatalog.forkForDevice(getShaderModuleAdapter())
           : new ShaderCatalog({
               device: getShaderModuleAdapter(),
@@ -918,6 +944,7 @@ async function makeWebGPURenderer(
     getOrBuildPerShaderMaterialLayout,
     getParamSchema,
     getMaterialBindGroupLayout,
+    lookupMaterialBindGroupLayout,
   } = createMaterialLayoutCache({
     currentPipelineCacheState,
     currentPipelineState,
@@ -1204,17 +1231,6 @@ async function makeWebGPURenderer(
         return err(rendererInitializationError(e));
       },
     );
-  const waterWavesPipelineLayouts = new WeakMap<
-    object,
-    Map<
-      string,
-      {
-        readonly pipelineLayout: import('@forgeax/engine-rhi').PipelineLayout;
-        readonly group2Layout: BindGroupLayout;
-      }
-    >
-  >();
-  const waterWavesBindGroupLayouts = new WeakMap<object, Map<string, BindGroupLayout>>();
   const waterMaterialFrameEntries = new Map<
     object,
     Parameters<typeof prepareWaterFrameBindingCohortsImpl>[12]
@@ -1235,18 +1251,6 @@ async function makeWebGPURenderer(
     bindings.bakedDescriptorBuffer,
     bindings.bakedSamplesBuffer,
   ];
-  const sameWaterMeshDraw = (
-    left: import('../water/wave-material').WaterMeshInstanceDrawUpload,
-    right: import('../water/wave-material').WaterMeshInstanceDrawUpload,
-  ): boolean => {
-    return runSameWaterMeshDraw(left, right);
-  };
-  const waterMaterialFrameTargetsMatch = (
-    bindings: ReadonlyMap<string, import('../water/wave-material').WaterMaterialFrameBindings>,
-    views: ReadonlyMap<string, TextureView>,
-  ): boolean => {
-    return runWaterMaterialFrameTargetsMatch(bindings, views);
-  };
   const destroyWaterMaterialFrameEntry = (
     device: RhiDevice,
     entry: {
@@ -1268,60 +1272,10 @@ async function makeWebGPURenderer(
     entries.clear();
     waterMaterialFrameEntries.delete(device as object);
   };
-  const waterMaterialFrameLayout = (
-    state: PipelineState,
-    waterInfoFormat: 'rgba16float' | 'rgba32float' | 'none',
-  ): BindGroupLayout | undefined => {
-    return runWaterMaterialFrameLayout(
-      waterWavesBindGroupLayouts,
-      currentBuildDevice,
-      internals,
-      state,
-      waterInfoFormat,
-    );
-  };
-  const waterMaterialGroup2Layout = (
-    state: PipelineState,
-    layoutKind: LayoutKind,
-    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-    entryPoints?: readonly ShaderEntryPointReads[],
-  ): BindGroupLayout | undefined => {
-    return runWaterMaterialGroup2Layout(
-      waterWavesBindGroupLayouts,
-      currentBuildDevice,
-      internals,
-      state,
-      layoutKind,
-      waterInfoFormat,
-      entryPoints,
-    );
-  };
-  const waterWavesPipelineLayout = (
-    state: PipelineState | null,
-    layoutKind: LayoutKind,
-    probeBlend: boolean,
-    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-    materialBgl: BindGroupLayout | undefined,
-    shaderIdentity: string,
-    entryPoints?: readonly ShaderEntryPointReads[],
-  ): {
-    readonly pipelineLayout: import('@forgeax/engine-rhi').PipelineLayout;
-    readonly group2Layout: BindGroupLayout;
-  } | null => {
-    return runWaterWavesPipelineLayout(
-      currentBuildDevice,
-      internals,
-      waterWavesPipelineLayouts,
-      waterMaterialGroup2Layout,
-      state,
-      layoutKind,
-      probeBlend,
-      waterInfoFormat,
-      materialBgl,
-      shaderIdentity,
-      entryPoints,
-    );
-  };
+  const { waterMaterialFrameLayout, waterWavesPipelineLayout } = createWaterFrameLayouts(
+    internals,
+    currentBuildDevice,
+  );
   const buildPipelineContext = (
     variantSet?: string,
     materialShaderId?: string,
@@ -1561,9 +1515,19 @@ async function makeWebGPURenderer(
     };
     const built = compileMaterialPipeline(ctx);
     if (!built.ok) {
-      if (materialPipelineRequestPending(built, prepared, activeShaderState, candidateShaderState))
-        candidatePipelinePending?.();
-      else if (candidatePipelineErrorScope) throw built.error;
+      if (
+        materialPipelineRequestPending(built, prepared, activeShaderState, candidateShaderState)
+      ) {
+        candidatePipelinePending?.(
+          materialPipelineRequestCompletion(
+            built.error,
+            cacheKey,
+            prepared,
+            activeShaderState,
+            candidateShaderState,
+          ),
+        );
+      } else if (candidatePipelineErrorScope) throw built.error;
       reportMaterialPipelineFailure(cacheKey, built.error);
       return null;
     }
@@ -1586,8 +1550,13 @@ async function makeWebGPURenderer(
     pipelineState !== null &&
     !currentPipelineCacheState().rejectedMaterialPipelineKeys.has(cacheKey);
   let candidatePipelineErrorScope = false;
-  let candidatePipelinePending: (() => void) | undefined;
-  const withPipelinePreparationErrors = (action: () => void, onPending?: () => void): void => {
+  let candidatePipelinePending:
+    | ((completion: Promise<Result<void, RhiError>> | undefined) => void)
+    | undefined;
+  const withPipelinePreparationErrors = (
+    action: () => void,
+    onPending?: (completion: Promise<Result<void, RhiError>> | undefined) => void,
+  ): void => {
     const previous = candidatePipelineErrorScope;
     const previousPending = candidatePipelinePending;
     candidatePipelineErrorScope = true;
@@ -1906,6 +1875,11 @@ async function makeWebGPURenderer(
       createShaderModule: (descriptor) =>
         getShaderModuleAdapter('immediate').createShaderModule(descriptor),
       isPending: (error) => getShaderModuleAdapter('immediate').isPending(error),
+      peekShaderModule: (descriptor) => peekShaderModule(descriptor, 'immediate'),
+      pendingShaderModuleCompletion: (signal) =>
+        (
+          candidateShaderState ?? activeShaderState
+        ).sharedImmediateShaderModuleAdapter?.pendingCompletion(signal),
     },
     profiler: internals.options?.profiler,
     // Keep device/context getters live so recovery swaps are observed by the
@@ -1926,6 +1900,10 @@ async function makeWebGPURenderer(
     get deviceScope() {
       return activeDeviceScope;
     },
+    prepareSceneAddressCapacity: (scene, extent, current, capture) =>
+      cameraViews.prepareAddressCapacity(scene, extent, current, capture),
+    prepareSceneInputBindings: (scene, input, tables) =>
+      cameraViews.prepareInputBindings(scene, input, tables),
     ...(internals.pack.instrumentation?.resolveSurfaceDevice === undefined
       ? {}
       : { resolveSurfaceDevice: internals.pack.instrumentation.resolveSurfaceDevice }),
@@ -2162,6 +2140,7 @@ async function makeWebGPURenderer(
     getMaterialShaderArtifact,
     getParamSchema,
     getMaterialBindGroupLayout,
+    lookupMaterialBindGroupLayout,
     metrics,
     // createRendererState wraps this in a per-RendererState cache + the public
     // getPostProcessPipeline lookup the dispatcher reads at frame time.
@@ -2554,6 +2533,8 @@ async function makeWebGPURenderer(
             new RenderPublicationError({ reason: 'shape', subject: restored.error.message }),
           );
         publishSurfaceDynamicInput(renderWorld, restored.value);
+        if (publication !== undefined)
+          publicationRequest?.onPublicationAccepted?.(publication.publication.packet);
       }
 
       return undefined;
@@ -3330,6 +3311,13 @@ async function makeWebGPURenderer(
         return err(error);
       }
     },
+    levelSourceAccess: createLevelSourceAccess({
+      publicationReceiver,
+      composition: () => renderInternals.sceneComposition,
+      available: (world, lease) =>
+        !disposed && attachedLeases.get(lease) === world && attachedWorlds.has(world),
+      prepareViews: (group, current) => cameraViews.prepareInitialSourceViews(group, current),
+    }),
     detachScene(world: World): void {
       if (!attachedWorlds.delete(world)) return;
       dynamicGeometryHost.invalidateDynamicGeometryWorld(world);

@@ -5,6 +5,7 @@ import {
   packInterleavedVertexAttributes,
 } from '@forgeax/engine-geometry';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
@@ -24,7 +25,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const manifest = await (
   await import('@forgeax/engine-vite-plugin-shader')
-).buildEngineShaderManifest();
+).buildEngineShaderTemplateManifest();
 const manifestUrl = shaderManifestUrl(manifest);
 const SIZE = 96;
 
@@ -114,7 +115,7 @@ async function harness() {
   const constructed = await constructRendererHost(
     canvas,
     {},
-    { shaderManifestUrl: manifestUrl },
+    { shaderManifestUrl: manifestUrl, prepareShaderProgramCompiler },
     backend.value,
   );
   assert(constructed.ok, constructed.ok ? undefined : JSON.stringify(constructed.error));

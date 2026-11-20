@@ -754,6 +754,10 @@ export async function prepareShaderCompiler(): Promise<
   const native = await prepareNagaCompiler();
   if (!native.ok) return native;
   const compiler = native.value;
+  // Direct and scene-index programs can share their composed WGSL between
+  // Forward and Deferred. Keep just those two recent compositions and admit
+  // each requested render entry against the real module.
+  const recentRenderCompositions = new Map<string, string>();
   return ok({
     program: (source, options = {}) => compilePreparedProgram(source, options, compiler),
     compile: (source, options = {}) => {
@@ -762,6 +766,17 @@ export async function prepareShaderCompiler(): Promise<
       const input = prepared.value;
       const locate = () =>
         locatePreparedSyntaxError(input.source, input.specializedImports, compiler);
+      const compositionKey =
+        options.renderEntries === undefined || options.computeEntry !== undefined
+          ? undefined
+          : JSON.stringify([input.source, input.compositionImports, input.defines]);
+      if (compositionKey !== undefined) {
+        const reused = recentRenderCompositions.get(compositionKey);
+        if (reused !== undefined) {
+          const result = compilePreparedProgram(reused, options, compiler, locate);
+          return result.ok ? ok({ ...result.value, deps: Object.keys(input.imports) }) : result;
+        }
+      }
       let composedProgram: ReturnType<PreparedNagaCompiler['composeProgram']>;
       try {
         composedProgram = compiler.composeProgram(
@@ -801,6 +816,13 @@ export async function prepareShaderCompiler(): Promise<
         // Admit its exact final source through the existing selected-program path.
         composedProgram.module.free();
         result = compilePreparedProgram(composed, options, compiler, locate);
+      }
+      if (result.ok && compositionKey !== undefined) {
+        recentRenderCompositions.set(compositionKey, composed);
+        if (recentRenderCompositions.size > 2) {
+          const oldest = recentRenderCompositions.keys().next().value;
+          if (oldest !== undefined) recentRenderCompositions.delete(oldest);
+        }
       }
       return result.ok ? ok({ ...result.value, deps: Object.keys(input.imports) }) : result;
     },

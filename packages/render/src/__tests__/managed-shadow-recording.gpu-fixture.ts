@@ -535,7 +535,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     const selected = new GpuDrawSelection(
       f.topology
         .query(f.topology.sourcePlan(), undefined)
-        .batches.filter((batch) => batch.binding?.material === left.source.material),
+        .active.batches.filter((batch) => batch.binding?.material === left.source.material),
     );
     expect(sample(await depth(f, c, 0, [selected]))).toEqual([0, 0.75]);
     // Independent capture shadows require both casters. The display view
@@ -560,17 +560,19 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     temporalTopology.rebuild(temporalScene.slotsSnapshot());
     for (const levels of [1, 2]) {
       const temporalSelection = new GpuDrawSelection(
-        temporalTopology.query(temporalTopology.sourcePlan(), undefined).batches.map((batch) => ({
-          ...batch,
-          prepared: {
-            identity: {
-              material: 'forgeax::default-standard-pbr',
-              deformation: 'rigid',
-              geometry: 'triangle',
-            },
-          } as PreparedGpuDrivenDraw,
-          lod: { coverages: levels === 1 ? [1] : [1, 0.5], ranges: [] },
-        })),
+        temporalTopology
+          .query(temporalTopology.sourcePlan(), undefined)
+          .active.batches.map((batch) => ({
+            ...batch,
+            prepared: {
+              identity: {
+                material: 'forgeax::default-standard-pbr',
+                deformation: 'rigid',
+                geometry: 'triangle',
+              },
+            } as PreparedGpuDrivenDraw,
+            lod: { coverages: levels === 1 ? [1] : [1, 0.5], ranges: [] },
+          })),
       );
       const temporalContext = {
         ...c,
@@ -665,7 +667,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
       const leftSelection = new GpuDrawSelection(
         topology
           .query(topology.sourcePlan(), undefined)
-          .batches.filter((batch) => batch.binding?.material === source.material),
+          .active.batches.filter((batch) => batch.binding?.material === source.material),
       );
       const row = {
         ...left,
@@ -765,7 +767,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
       nativeScene.rebuild([source as RenderableSnapshot]);
       const nativeTopology = new BatchTopology();
       nativeTopology.rebuild(nativeScene.slotsSnapshot());
-      const nativePlan = nativeTopology.query(nativeTopology.sourcePlan(), undefined);
+      const nativePlan = nativeTopology.query(nativeTopology.sourcePlan(), undefined).active;
       const nativeMeshes = new Map(
         nativePlan.batches.map((batch) => [defined(batch.binding), row.mesh]),
       );

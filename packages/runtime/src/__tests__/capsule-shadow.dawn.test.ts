@@ -9,7 +9,7 @@ import {
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -25,7 +25,7 @@ import { luminanceRgba16f } from './contact-shadow.fixture';
 import { deltaPng, luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/capsule-shadow';
 /** Packed tile header count lanes (see `CAPSULE_TILE_COUNT_BITS`). */
 const TILE_COUNT_MASK = (1 << 6) - 1;

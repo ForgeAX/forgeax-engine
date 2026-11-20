@@ -126,4 +126,35 @@ describe('Scene publication fence', () => {
       error: { code: 'asset-generation-fence-mismatch', phase: 'catalog' },
     });
   });
+
+  it.each([
+    'sourceRevision',
+    'receiptIdentity',
+  ] as const)('rejects a sibling with a different %s even when generation and content digests agree', (field) => {
+    const original = publication(7);
+    const first = original.outputs[0];
+    if (first === undefined) throw new Error('missing fixture output');
+    const second = { ...first, guid: '01890000-0000-7000-8000-222222222222' };
+    const source = { ...original, outputs: [first, second] };
+    const changed = {
+      ...source,
+      ...(field === 'sourceRevision' ? { sourceRevision: 'other-revision' } : {}),
+      receipt: {
+        ...source.receipt,
+        ...(field === 'sourceRevision'
+          ? { sourceRevision: 'other-revision' }
+          : { inputFingerprint: 'other-receipt' }),
+      },
+    };
+    const entries = [source, changed].map((pub, index) => ({
+      guid: index === 0 ? first.guid : second.guid,
+      kind: 'scene',
+      packageUrl: '/assets/showcase.pack.json',
+      publication: pub,
+    }));
+    expect(scenePublicationFenceFromCatalog(entries, first.guid)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-generation-fence-mismatch', phase: 'catalog' },
+    });
+  });
 });

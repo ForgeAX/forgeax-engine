@@ -1,5 +1,6 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createMaterialArtifactDigest } from '@forgeax/engine-pack/material-cook';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import {
   type FrameReceipt,
@@ -7,6 +8,7 @@ import {
   LightProbe,
   type Renderer,
 } from '@forgeax/engine-render';
+import { buildFrameModel, decodeTape, type EncodedTape } from '@forgeax/engine-rhi-debug';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
@@ -28,6 +30,7 @@ import {
   SURFACE_PIXEL_EPSILON,
   SURFACE_WIDTH,
 } from './surface-standard-pipeline.runtime-fixture';
+import { captureVfxFrame } from './vfx-failure-evidence.fixture';
 
 type SurfaceReadback = {
   pixels: Uint8Array;
@@ -200,14 +203,8 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       const projection = assets.getMaterialProjectionForPayload(material);
       if (surfaceCase.id.startsWith('custom-') || surfaceCase.id.startsWith('water-')) {
         expect(projection?.specializationKey).toBeTruthy();
-        const programKeys =
-          projection?.passes.flatMap((pass) =>
-            pass.programs.map((program) => program.specializationKey),
-          ) ?? [];
-        expect(programKeys.length).toBeGreaterThan(0);
-        for (const specializationKey of new Set(programKeys)) {
-          expect(assets.getMaterialArtifact(specializationKey)).toBeDefined();
-        }
+        expect(projection?.sourceTemplate?.publication.guid).toBe(surfaceCase.guid);
+        expect(projection?.passes.every((pass) => pass.programs.length === 0)).toBe(true);
       }
       materials.push(material);
       publications.push({ surfaceCase, row, publication, material });
@@ -376,12 +373,22 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       });
       world.update(1 / 60).unwrap();
       armLaneObservation(renderer, frame);
-      const receipt = await drawReadyFrame(renderer, {
-        source: attached.value,
-        ...(frame < 10 || (frame >= 20 && frame < 30) ? { geometryLane: 'direct' as const } : {}),
-      });
+      const { value: receipt, tape } = await captureVfxFrame(
+        frame === 29 ? evidenceBackend.recorder : undefined,
+        () =>
+          drawReadyFrame(renderer, {
+            source: attached.value,
+            ...(frame < 10 || (frame >= 20 && frame < 30)
+              ? { geometryLane: 'direct' as const }
+              : {}),
+          }),
+      );
       finalReceipt = receipt;
       completedFrames += 1;
+      if (frame === 29) {
+        if (tape === undefined) throw new Error('Surface material draw capture unavailable');
+        assertRuntimeMaterialArtifacts(assets, materials, tape);
+      }
       if ([9, 19, 29, 39, 49].includes(frame)) {
         const laneObservation = await renderer.observe(receipt, {
           include: ['draws', 'final-display'],
@@ -615,3 +622,41 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     unsubscribeRenderErrors();
   });
 });
+
+function assertRuntimeMaterialArtifacts(
+  assets: AssetRegistry,
+  materials: readonly MaterialAsset[],
+  tape: EncodedTape,
+): void {
+  const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
+  const encoder = new TextEncoder();
+  const fragments = new Set(
+    model.works.flatMap(({ drawCall, pipeline }) =>
+      drawCall === undefined
+        ? []
+        : (pipeline.shaders ?? []).flatMap(({ stage, source }) =>
+            stage === 'fragment' && source !== undefined
+              ? [createMaterialArtifactDigest(encoder.encode(source))]
+              : [],
+          ),
+    ),
+  );
+  const selected = new Set(
+    [...assets.shaderRegistry.materialShaderIdentifiers()].flatMap((key) => {
+      const artifact = assets.getMaterialArtifact(key);
+      const identity = artifact?.metadata?.templateIdentity;
+      return typeof identity === 'string' &&
+        artifact?.digest !== undefined &&
+        fragments.has(artifact.digest)
+        ? [identity]
+        : [];
+    }),
+  );
+  for (const [index, surfaceCase] of SURFACE_CASES.entries()) {
+    if (!surfaceCase.id.startsWith('custom-') && !surfaceCase.id.startsWith('water-')) continue;
+    const material = materials[index];
+    if (material === undefined) throw new Error('Missing Surface material');
+    const projection = assets.getMaterialProjectionForPayload(material);
+    expect(selected.has(projection?.specializationKey ?? ''), surfaceCase.id).toBe(true);
+  }
+}

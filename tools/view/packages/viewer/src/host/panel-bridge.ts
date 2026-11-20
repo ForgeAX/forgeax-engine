@@ -1,19 +1,30 @@
 import type { FrontendPlatform } from '@forgeax/engine-host/platform';
 import type { SlotRegistry, PanelClaim, PanelMount, Dispose, AssetPanelMount, PageTypeRegistry } from '@forgeax/view-workspace-core/frontend-contract';
 import { reportWorkspaceCommandError } from '@forgeax/view-workspace-core/command-error';
-type PanelModule = Record<string, (input: Record<string, unknown> & { mountElement: HTMLElement }) => Dispose | Promise<Dispose>>;
+import { registerViewLocaleSink, type ViewLocale } from '@forgeax/view-workspace-core/locale-bridge';
+type PanelModule = Record<string, (input: Record<string, unknown> & { mountElement: HTMLElement }) => Dispose | Promise<Dispose>> & {
+  setViewLocale?: (locale: ViewLocale) => void;
+};
+const connectedPanelModules = new WeakSet<PanelModule>();
+function connectPanelLocale(panels: PanelModule) {
+  if (!connectedPanelModules.has(panels) && typeof panels.setViewLocale === 'function') {
+    registerViewLocaleSink(panels.setViewLocale);
+    connectedPanelModules.add(panels);
+  }
+  return panels;
+}
 export async function loadViewPanels() {
   const pending = globalThis.__forgeaxViewPanelsPromise;
   if (pending) {
     try {
-      return await pending as PanelModule;
+      return connectPanelLocale(await pending as PanelModule);
     } catch (error) {
       throw new Error('View panels development bundle failed to load', { cause: error });
     }
   }
   const href = globalThis.__forgeaxViewPanelsUrl ?? '/panels.js';
   try {
-    return await import(/* @vite-ignore */ href) as PanelModule;
+    return connectPanelLocale(await import(/* @vite-ignore */ href) as PanelModule);
   } catch (error) {
     throw new Error(`View panels bundle failed to load from ${href}`, { cause: error });
   }

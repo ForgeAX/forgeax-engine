@@ -1,68 +1,56 @@
+import { admitShaderTemplateManifest } from '@forgeax/engine-shader';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
-
-interface Manifest {
-  readonly schemaVersion?: string;
-  readonly entries?: readonly {
-    readonly hash?: string;
-    readonly bindings?: string;
-    readonly sourceDigest?: string;
-  }[];
-  readonly materialShaders?: readonly {
-    readonly identifier?: string;
-    readonly paramSchema?: string;
-  }[];
-}
 
 export default defineFeature({
   title: 'Vite Shader plugin manifest',
   catalog: 'Vite Shader plugin',
   kind: 'probe',
   summary:
-    'forgeaxShader() in vite.config serves /shaders/manifest.json in dev (and emits it in build): content-addressed entries with bindings and source digests plus the material shader list the runtime registry loads.',
+    'forgeaxShader() serves the Engine source templates and material declarations from /shaders/manifest.json.',
   expect:
-    'All checks pass: the dev manifest is served, entries are hashed with bindings, and the built-in Standard / Unlit / shadow-caster material shaders are published.',
+    'The runtime accepts the source templates and finds the published Standard, Unlit and shadow caster materials.',
   setup({ world }) {
     spawnStage(world);
     return {
       async checks() {
         const checks = new CheckList();
-        let manifest: Manifest = {};
+        let publication: unknown;
         await checks.run('GET /shaders/manifest.json', async () => {
           const response = await fetch('/shaders/manifest.json');
           if (!response.ok) return false;
-          manifest = (await response.json()) as Manifest;
+          publication = await response.json();
           return `status ${response.status}`;
         });
+        const admitted = admitShaderTemplateManifest(publication);
         checks.ok(
-          'schemaVersion present',
-          typeof manifest.schemaVersion === 'string',
-          String(manifest.schemaVersion),
+          'shader templates are valid',
+          admitted.ok,
+          admitted.ok ? admitted.value.wire.schemaVersion : admitted.error.message,
         );
-        const entries = manifest.entries ?? [];
+        if (!admitted.ok) return checks.items;
+        const {
+          wire: { entries, materialShaders },
+          programs,
+        } = admitted.value;
         checks.ok('entries published', entries.length > 0, `${entries.length} entries`);
-        checks.ok(
-          'every entry has a hash, bindings and source digest',
-          entries.every(
-            (e) =>
-              typeof e.hash === 'string' &&
-              typeof e.bindings === 'string' &&
-              typeof e.sourceDigest === 'string',
-          ),
-        );
         const hashes = new Set(entries.map((e) => e.hash));
         checks.equal('entry hashes are unique', hashes.size, entries.length);
-        const ids = (manifest.materialShaders ?? []).map((m) => m.identifier);
+        const ids = new Set(materialShaders.map(({ identifier }) => identifier));
         for (const id of [
           'forgeax::default-standard-pbr',
           'forgeax::default-unlit',
           'forgeax::default-shadow-caster',
         ]) {
-          checks.ok(`material shader ${id}`, ids.includes(id));
+          checks.ok(`material shader ${id}`, ids.has(id));
         }
         checks.ok(
           'material shaders carry a paramSchema',
-          (manifest.materialShaders ?? []).every((m) => typeof m.paramSchema === 'string'),
+          materialShaders.every(
+            ({ program, paramSchema }) =>
+              paramSchema !== undefined ||
+              Array.isArray(programs.get(program)?.template.engine?.paramSchema),
+          ),
         );
         return checks.items;
       },

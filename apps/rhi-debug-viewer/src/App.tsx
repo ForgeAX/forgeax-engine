@@ -1,6 +1,6 @@
 import type { V7Tape } from '@forgeax/engine-rhi-debug';
 import { err } from '@forgeax/engine-types';
-import { Button, IconButton } from '@forgeax/view-components';
+import { Button, IconButton, Select } from '@forgeax/view-components';
 import {
   type DockviewApi,
   DockviewReact,
@@ -22,6 +22,12 @@ import { EventBrowser } from './components/EventBrowser';
 import { PipelineState } from './components/PipelineState';
 import { ResourceInspector } from './components/ResourceInspector';
 import { DrawCallViewer } from './components/TextureViewer';
+import {
+  type Translate,
+  useViewerTranslation,
+  type ViewerLocale,
+  ViewerLocaleContext,
+} from './i18n';
 import { PanelNavigationProvider } from './panel-navigation';
 import { SelectionProvider, useSelection } from './selection-context';
 import { loadStatusAnchor } from './selectors';
@@ -181,6 +187,7 @@ const FLOATING_PANEL_HEIGHT = 320;
 const FLOATING_PANEL_MARGIN = 12;
 
 function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
+  const t = useViewerTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -240,7 +247,7 @@ function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
         ref={triggerRef}
         variant="quiet"
         size="compact"
-        label="Layout menu"
+        label={t('layoutMenu')}
         icon={<LayoutPanelTop className="fx-icon" />}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -264,7 +271,7 @@ function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
           id={menuId}
           className="forgeax-layout-menu"
           role="menu"
-          aria-label="Layout actions"
+          aria-label={t('layoutActions')}
           onKeyDown={onMenuKeyDown}
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
@@ -278,8 +285,8 @@ function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
           >
             <PanelTopOpen className="fx-icon" />
             <span>
-              <strong>Float resource</strong>
-              <small>Detach Buffer / Resource</small>
+              <strong>{t('floatResource')}</strong>
+              <small>{t('detachResource')}</small>
             </span>
           </button>
           <button
@@ -290,8 +297,8 @@ function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
           >
             <Columns3 className="fx-icon" />
             <span>
-              <strong>Split resource</strong>
-              <small>Move it beside inspectors</small>
+              <strong>{t('splitResource')}</strong>
+              <small>{t('besideInspectors')}</small>
             </span>
           </button>
           <button
@@ -302,16 +309,16 @@ function LayoutMenu({ actions }: { readonly actions: LayoutActions | null }) {
           >
             <Layers3 className="fx-icon" />
             <span>
-              <strong>Stack pipeline</strong>
-              <small>Return Pipeline to the Resource Inspector group</small>
+              <strong>{t('stackPipeline')}</strong>
+              <small>{t('returnPipeline')}</small>
             </span>
           </button>
           <hr className="forgeax-layout-menu-separator" />
           <button type="button" role="menuitem" onClick={() => run(actions?.reset)}>
             <RotateCcw className="fx-icon" />
             <span>
-              <strong>Reset layout</strong>
-              <small>Restore the three-region default</small>
+              <strong>{t('resetLayout')}</strong>
+              <small>{t('restoreLayout')}</small>
             </span>
           </button>
         </div>
@@ -343,31 +350,40 @@ const FORGEAX_DOCKVIEW_THEME: DockviewTheme = {
   tabGroupIndicator: 'none',
 };
 
-function addDefaultPanels(api: DockviewApi): void {
+function updatePanelTitles(api: DockviewApi, t: Translate): void {
+  for (const [index, key] of (
+    ['eventBrowser', 'pipelineState', 'drawCallViewer', 'resourceInspector'] as const
+  ).entries()) {
+    const id = PANEL_IDS[index];
+    if (id !== undefined) api.getPanel(id)?.api.setTitle(t(key));
+  }
+}
+
+function addDefaultPanels(api: DockviewApi, t: Translate): void {
   api.addPanel({
     id: PANEL_IDS[0],
     component: 'eventBrowser',
-    title: 'Event browser',
+    title: t('eventBrowser'),
     renderer: 'always',
   });
   api.addPanel({
     id: PANEL_IDS[2],
     component: 'drawCallViewer',
-    title: 'Draw Call Viewer',
+    title: t('drawCallViewer'),
     renderer: 'always',
     position: { referencePanel: PANEL_IDS[0], direction: 'right' },
   });
   api.addPanel({
     id: PANEL_IDS[1],
     component: 'pipelineState',
-    title: 'Pipeline state',
+    title: t('pipelineState'),
     renderer: 'always',
     position: { referencePanel: PANEL_IDS[2], direction: 'right' },
   });
   api.addPanel({
     id: PANEL_IDS[3],
     component: 'resourceInspector',
-    title: 'Resource Inspector',
+    title: t('resourceInspector'),
     renderer: 'always',
     position: { referencePanel: PANEL_IDS[1], direction: 'within' },
     inactive: true,
@@ -388,7 +404,11 @@ function DockviewWorkspace({
   onRecovery,
   onLayoutActions,
 }: DockviewWorkspaceProps) {
+  const t = useViewerTranslation();
   const apiRef = useRef<DockviewApi | null>(null);
+  useEffect(() => {
+    if (apiRef.current) updatePanelTitles(apiRef.current, t);
+  }, [t]);
   const dockRef = useRef<HTMLDivElement>(null);
   const storage =
     typeof window === 'undefined'
@@ -433,22 +453,23 @@ function DockviewWorkspace({
             detail: error instanceof Error ? error.message : 'Saved layout could not be restored.',
           });
           api.clear();
-          addDefaultPanels(api);
+          addDefaultPanels(api, t);
         }
       } else {
-        addDefaultPanels(api);
+        addDefaultPanels(api, t);
       }
+      updatePanelTitles(api, t);
       api.onDidLayoutChange(() => persistLayout());
       persistLayout();
     },
-    [onRecovery, persistLayout, storage],
+    [onRecovery, persistLayout, storage, t],
   );
 
   const reset = useCallback(() => {
     const api = apiRef.current;
     if (!api) return;
     api.clear();
-    addDefaultPanels(api);
+    addDefaultPanels(api, t);
     if (storage) {
       try {
         resetWorkspaceLayout(storage);
@@ -462,7 +483,7 @@ function DockviewWorkspace({
     }
     onRecovery(null);
     persistLayout();
-  }, [onRecovery, persistLayout, storage]);
+  }, [onRecovery, persistLayout, storage, t]);
 
   const runLayoutAction = useCallback(
     (action: (api: DockviewApi) => void) => {
@@ -594,7 +615,27 @@ type AppState =
     }
   | { readonly status: 'parse-error'; readonly error: TapeLoadError };
 
-export function App() {
+export function App({ locale }: { readonly locale?: ViewerLocale } = {}) {
+  const [standaloneLocale, setStandaloneLocale] = useState<ViewerLocale>('en');
+  const activeLocale = locale ?? standaloneLocale;
+  return (
+    <ViewerLocaleContext.Provider value={activeLocale}>
+      <ViewerApp
+        locale={activeLocale}
+        onLocaleChange={locale === undefined ? setStandaloneLocale : undefined}
+      />
+    </ViewerLocaleContext.Provider>
+  );
+}
+
+function ViewerApp({
+  locale,
+  onLocaleChange,
+}: {
+  readonly locale: ViewerLocale;
+  readonly onLocaleChange: ((locale: ViewerLocale) => void) | undefined;
+}) {
+  const t = useViewerTranslation();
   const [state, setState] = useState<AppState>({ status: 'empty' });
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -726,24 +767,34 @@ export function App() {
   return (
     <section
       className="rhi-viewer h-screen min-h-0 flex flex-col bg-background text-foreground"
-      aria-label="RHI tape drop area"
+      aria-label={t('dropArea')}
       {...{ [loadStatusAnchor()]: state.status }}
     >
-      <div className="forgeax-appbar" role="toolbar" aria-label="Tape actions">
+      <div className="forgeax-appbar" role="toolbar" aria-label={t('tapeActions')}>
         <div className="flex items-center gap-fx-8">
           <LayoutMenu actions={layoutActions} />
           <Button
             leadingIcon={<FileUp className="fx-icon" />}
             onClick={() => fileInputRef.current?.click()}
           >
-            Import tape
+            {t('importTape')}
           </Button>
+          {onLocaleChange && (
+            <Select
+              aria-label={t('language')}
+              value={locale}
+              onChange={(event) => onLocaleChange(event.target.value === 'zh' ? 'zh' : 'en')}
+            >
+              <option value="en">{t('languageEnglish')}</option>
+              <option value="zh">{t('languageChinese')}</option>
+            </Select>
+          )}
           <input
             ref={fileInputRef}
             type="file"
             accept=".rhitape"
             className="hidden"
-            aria-label="Select one v7 RHI tape"
+            aria-label={t('selectTape')}
             onChange={(event) => {
               void loadFiles(Array.from(event.target.files ?? []), 'picker');
               event.target.value = '';
@@ -761,7 +812,10 @@ export function App() {
       )}
       {state.status === 'loading' && (
         <div className="forgeax-notice" {...{ [loadStatusAnchor()]: 'loading' }}>
-          Loading {state.fileName} from {state.source === 'drop' ? 'drop' : 'file picker'}…
+          {t('loadingTape', {
+            name: state.fileName,
+            source: t(state.source === 'drop' ? 'drop' : 'filePicker'),
+          })}
         </div>
       )}
       {layoutRecovery && (
@@ -769,7 +823,7 @@ export function App() {
           className="forgeax-notice forgeax-notice-warning"
           data-forgeax-layout-recovery={layoutRecovery.code}
         >
-          Layout reset: {layoutRecovery.code} — {layoutRecovery.detail}
+          {t('layoutReset', { code: layoutRecovery.code, detail: layoutRecovery.detail })}
         </div>
       )}
       <main
@@ -791,10 +845,8 @@ export function App() {
         <div className="forgeax-drop-overlay" data-forgeax-drop-overlay="ready">
           <div className="border border-border bg-card px-fx-24 py-fx-16 text-center">
             <FileUp className="mx-auto mb-fx-12 h-[var(--fx-component-control-height-compact)] w-[var(--fx-component-control-height-compact)] text-muted-foreground" />
-            <strong>Drop one .rhitape file</strong>
-            <p className="mt-fx-4 text-caption text-muted-foreground">
-              It will replace the current tape.
-            </p>
+            <strong>{t('dropTape')}</strong>
+            <p className="mt-fx-4 text-caption text-muted-foreground">{t('replaceTape')}</p>
           </div>
         </div>
       )}

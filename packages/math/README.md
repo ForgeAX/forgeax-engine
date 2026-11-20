@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-math
 
 Pure-function SoA-friendly Vec / Mat / Quat / Color / Euler math library for forgeax-engine.
@@ -26,39 +29,39 @@ without an output parameter remain explicit allocation sites. `ray.create` and
 
 ## 30-second self-introduction
 
-- **ABI**: `Float32Array & { readonly __<dim>: void }` 七件套（`Vec2 / Vec3 / Vec4 / Quat / Mat3 / Mat4 / Color`）+ `Euler` plain-object；branded 维度互斥（编译期）+ TypedArray 即时上传 GPU（运行期）。
-- **Surface**: 20 namespace × 217 函数（vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:35 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:3 / rng:1）；单 entry `import { Vec3, vec3, ... } from '@forgeax/engine-math'`。
-- **Style**: gl-matrix / wgpu-matrix 风纯函数 namespace + out-param-first（`func(out, ...args)`）；零分配；aliasing-safe（`add(v, v, v)` 合法）。
-- **Errors**: 全库静默回退（不抛错、不返回 `null`、不返回 `Result`、不 `console.warn`）；退化语义靠 JSDoc `@degrade` + 本 README §退化策略表 + `*.test-d.ts` 三层共担。
+- **ABI**: Seven `Float32Array & { readonly __<dim>: void }` types (`Vec2 / Vec3 / Vec4 / Quat / Mat3 / Mat4 / Color`) plus plain-object `Euler`. Brands prevent dimension mixing at compile time; TypedArrays upload directly to the GPU at runtime.
+- **Surface**: 20 namespaces and 217 functions (vec2:20 / vec3:21 / vec4:18 / mat3:10 / mat4:35 / quat:23 / euler:6 / color:12 / curve3:4 / easing:4 / noise:1 / frustum:4 / ray:9 / ray2:11 / box2:13 / box3:7 / circle2:10 / sphere:5 / f32-to-f16-bytes:3 / rng:1), through one entry: `import { Vec3, vec3, ... } from '@forgeax/engine-math'`.
+- **Style**: Pure-function namespaces in the gl-matrix / wgpu-matrix style, with mandatory first-position output parameters (`func(out, ...args)`), zero allocation and safe aliasing (`add(v, v, v)` is valid).
+- **Errors**: Silent fallback throughout: no throws, `null`, `Result` or `console.warn`. Degenerate behavior is documented by JSDoc `@degrade`, this README's fallback table and `*.test-d.ts`.
 
-### 30s 上手示例（CPU pre-bake transform → 双投影 clip-space）
+### 30-Second Example (CPU Transform Baking to Two Clip-Space Projections)
 
 ```ts
 import type { Mat4, Quat, Vec3 } from '@forgeax/engine-math';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 
-// 1. 建一个三角形顶点 + 双投影矩阵 + 绕 Y 转 45° 的方位四元数
+// 1. Create a triangle vertex, two projection matrices and a 45-degree Y quaternion.
 const v: Vec3 = vec3.create(1, 0, 0);
 const projWebGL: Mat4 = mat4.perspectiveNO(mat4.create(), Math.PI / 4, 16 / 9, 0.1, 100);     // WebGL [-1,1]
 const projReverseZ: Mat4 = mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 16 / 9, 0.1, 100); // far→0
 const q: Quat = quat.fromAxisAngle(quat.create(), vec3.create(0, 1, 0), Math.PI / 4);
 
-// 2. CPU 端 pre-bake：透视除自动处理 (x/w, y/w, z/w)；w'=0 静默退化为 (0,0,0)
+// 2. CPU baking includes perspective division (x/w, y/w, z/w); w'=0 yields (0,0,0).
 const clip: Vec3 = vec3.create();
-mat4.transformPoint(clip, projWebGL, v);          // 同函数体（transformPoint 是 transformVec3 的 alias）
-mat4.transformPoint(clip, projReverseZ, v);       // 双投影 smoke：apps/hello/triangle 兑现 dual signal
+mat4.transformPoint(clip, projWebGL, v);          // transformPoint aliases transformVec3.
+mat4.transformPoint(clip, projReverseZ, v);       // Dual-projection smoke: apps/hello/triangle.
 
-// 3. 静默回退：零向量 normalize → 零向量（不抛错；调用方如需诊断自建守卫）
+// 3. Normalizing a zero vector silently yields zero; callers add diagnostic guards.
 vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 ```
 
-> 上述代码覆盖 v0.1 PBR 渲染管线 90% 的典型 transform / projection / shader-uniform 准备路径——LLM 一次扫读即可拿到 "概念→签名→典型流程" 完整闭包（charter 命题 1）。
+> This example covers 90% of typical v0.1 PBR transform, projection and shader-uniform preparation paths, connecting concepts, signatures and workflows in one read (charter proposition 1).
 
-## quick-ref：20 namespace × 217 函数
+## Quick Reference: 20 Namespaces and 217 Functions
 
-每 namespace 内函数顺序粗略按 "构造 → 比较 → 算术 → 几何 → 高级" 分组。完整签名以 `.d.ts` JSDoc 为 SSOT。
+Within each namespace, functions roughly follow construction, comparison, arithmetic, geometry and advanced operations. Complete signatures are authoritative in `.d.ts` JSDoc.
 
-| Namespace | 函数 (n) |
+| Namespace | Functions (n) |
 |:--|:--|
 | **`vec2`** (20) | `create / clone / copy / set / equals / add / sub / scale / negate / dot / lengthSq / length / distance / normalize / lerp / smoothDamp / catmullRom / min / max / perp` |
 | **`vec3`** (21) | `create / clone / copy / set / equals / add / sub / scale / negate / dot / cross / lengthSq / length / distance / distanceSq / normalize / lerp / smoothDamp / catmullRom / min / max` |
@@ -82,7 +85,7 @@ vec3.normalize(v, vec3.create(0, 0, 0));          // v = (0, 0, 0)
 | **`f32-to-f16-bytes`** (3) | `f32ToF16`, `f32ToF16Bytes`, `f16ToF32` |
 
 > [!NOTE]
-> Surface 由 `packages/math/scripts/count-math-exports.mjs` AST 计数（`node packages/math/scripts/count-math-exports.mjs`）SSOT 派生；表格中函数清单与计数器同步（M5 verify 已锁；surface 增减需同步本表）。
+> The surface derives from AST counts in `packages/math/scripts/count-math-exports.mjs` (`node packages/math/scripts/count-math-exports.mjs`). Keep the function inventory and counter synchronized when changing the surface (M5 verification).
 
 `mat4.view(storage, index = 0)` returns a branded 16-float window of packed `Float32Array` storage. Matrix indices address disjoint windows, including when storage itself has a byte offset; writes share the caller-owned backing buffer. An invalid window follows the math degradation contract and returns a detached zero matrix.
 
@@ -213,55 +216,55 @@ default is `Infinity`). `ray2.aabbCastIntersects` and
 is tested without allocating a temporary volume. All boundary contacts are
 inclusive; a ray that starts inside a volume returns `{ hit: true, t: 0 }`.
 
-### 跨类型 transform 4 函数（M1 落地，K-1/K-2 撕毁 Three.js 风承诺后由 mat4 / quat 反向 surface 提供）
+### Four Cross-Type Transform Functions (M1, mat4 / quat Surface After K-1/K-2)
 
-| 函数 | 签名 | 语义 | 退化 |
+| Function | Signature | Semantics | Degenerate behavior |
 |:--|:--|:--|:--|
-| `mat4.transformVec3` | `(out, m, v)` | (x,y,z,1) 乘 4×4 + 透视除 | `w' = 0` → `out = (0, 0, 0)` |
-| `mat4.transformPoint` | `(out, m, v)` | **alias of `transformVec3`**（OQ-1 裁决，共用函数体） | 同上 |
-| `mat4.transformDirection` | `(out, m, v)` | 取左上 3×3（不含平移列），末尾 `vec3.normalize` | `\|out\| = 0` → `out = (0, 0, 0)` |
-| `quat.transformVec3` | `(out, q, v)` | Rodrigues 优化 `t=2*cross(q.xyz,v); out=v+q.w*t+cross(q.xyz,t)`（18 mul + 12 add，比绕 mat4 快 3-5×） | `q` 必须单位长，否则隐式缩放；`q=(0,0,0,0)` → `out = v`（公式自然） |
+| `mat4.transformVec3` | `(out, m, v)` | Multiply (x,y,z,1) by a 4x4 matrix and apply perspective division | `w' = 0` yields `out = (0, 0, 0)` |
+| `mat4.transformPoint` | `(out, m, v)` | **Alias of `transformVec3`**, sharing its implementation (OQ-1) | Same as above |
+| `mat4.transformDirection` | `(out, m, v)` | Use the upper-left 3x3 without translation, then `vec3.normalize` | `\|out\| = 0` yields `out = (0, 0, 0)` |
+| `quat.transformVec3` | `(out, q, v)` | Optimized Rodrigues formula: `t=2*cross(q.xyz,v); out=v+q.w*t+cross(q.xyz,t)` (18 multiplications and 12 additions, 3-5x faster than via mat4) | `q` must have unit length to avoid implicit scale; `q=(0,0,0,0)` naturally yields `out = v` |
 
-## 命名风格
+## Naming Style
 
-| 维度 | 风格 | 说明 |
+| Dimension | Style | Rationale |
 |:--|:--|:--|
-| namespace | 全小写 (`vec3`, `mat4`, `quat`) | 借自 **gl-matrix / wgpu-matrix**——LLM 训练语料一致，"猜得对"概率最高（charter 命题 2） |
-| 函数名 | 数学英文 camelCase (`fromAxisAngle`, `slerp`) | 1:1 对齐 **wgpu-matrix / Three.js / glam-rs**；与 gl-matrix `setAxisAngle` 偏离取 `from*` 主流形式 |
-| out-param | 首位强制 (`func(out, a, b)`) | 与 **gl-matrix** 一致；与 wgpu-matrix `dst?` 末位可选偏离——换得"一致性 > 简短"对 LLM 模仿成本最低 |
-| brand 字段 | `__<typename>: void` 双下划线 | `Float32Array & { readonly __vec3: void }`——TS handbook brand idiom；视觉提示"编译期 phantom，运行时禁赋值" |
-| NDC 后缀 | 短名 = WebGPU `[0,1]`；`*NO` = WebGL `[-1,1]`；`*ReverseZ` = far→0 / near→1 | 借自 gl-matrix `*NO` 缩写 + wgpu-matrix `*ReverseZ` 风 |
+| Namespace | Lowercase (`vec3`, `mat4`, `quat`) | Matches **gl-matrix / wgpu-matrix** and familiar LLM training examples (charter proposition 2). |
+| Function | Mathematical English camelCase (`fromAxisAngle`, `slerp`) | Matches **wgpu-matrix / Three.js / glam-rs**; prefer the common `from*` form over gl-matrix's `setAxisAngle`. |
+| Output parameter | Mandatory first position (`func(out, a, b)`) | Matches **gl-matrix**. Consistency over brevity reduces imitation costs compared with wgpu-matrix's optional last `dst?`. |
+| Brand field | Double underscore `__<typename>: void` | `Float32Array & { readonly __vec3: void }` follows the TypeScript handbook brand idiom: a compile-time phantom, never assigned at runtime. |
+| NDC suffix | Short name: WebGPU `[0,1]`; `*NO`: WebGL `[-1,1]`; `*ReverseZ`: far to 0 / near to 1 | Follows gl-matrix `*NO` and wgpu-matrix `*ReverseZ`. |
 
-## 退化策略：全库静默回退 + 调用方守卫范式
+## Degenerate Inputs: Silent Fallback and Caller Guards
 
 > [!IMPORTANT]
-> 本库**不抛错、不返回 `Result`、不返回 `null` 哨兵、不 `console.warn`**。"错得明" 通过 JSDoc `@degrade` tag + 本节表 + `*.test-d.ts` 类型测试 + property test 共同实现（charter 命题 3）。
+> The library **never throws, returns `Result` or a `null` sentinel, or logs `console.warn`**. JSDoc `@degrade`, this table, `*.test-d.ts` and property tests jointly make failures understandable (charter proposition 3).
 
-### 退化策略表（AC-07 ≥ 8 条；本表 17 条 buffer）
+### Fallback Table (AC-07 Requires At Least 8 Entries; 17 Listed)
 
-| # | 函数 | 退化输入 | 静默回退值 |
+| # | Function | Degenerate input | Silent fallback |
 |:--:|:--|:--|:--|
-| 1 | `vec*.normalize(out, v)` | `v` 零向量 (`lengthSq < EPS_NORMALIZE`) | `out = (0, ..., 0)` |
-| 2 | `vec*.normalize(out, v)` | `v` 含 NaN | NaN 传播（同形向量） |
+| 1 | `vec*.normalize(out, v)` | Zero vector (`lengthSq < EPS_NORMALIZE`) | `out = (0, ..., 0)` |
+| 2 | `vec*.normalize(out, v)` | `v` contains NaN | Propagate NaN in the same vector shape |
 | 3 | `mat4.invert(out, m)` (D-P1) | `m` singular (`|det| < EPS_DET`) | `out = identity` |
 | 4 | `mat4.lookAt(out, eye, target, up)` (D-P17) | `eye === target` | `out = identity` |
-| 5 | `mat4.lookAt` `up` 与视线共线 | — | 自动选替代 up |
-| 6 | `mat4.decompose` `m` 含 shear | — | 静默尽力分解（与 Three.js 同行为） |
-| 7 | `mat4.perspective*` / `*NO` / `*ReverseZ` | `near >= far` 或 `fovy <= 0` 或 `aspect <= 0` | 数值结果未定义但不抛错 |
-| 8 | `quat.fromAxisAngle(out, axis, rad)` | `axis` 零向量 | `out = identity` |
-| 9 | `quat.fromEuler(out, x, y, z, order)` (D-P2) | `order` 不在 `EulerOrder` | 静默按 `'XYZ'` 计算 |
-| 10 | `quat.slerp(out, a, b, t)` (D-P6) | `dot(a, b) ≈ -1` | 取 `b' = -b` 后正常 slerp |
-| 11 | `quat.slerp` `dot(a, b) ≈ 1` | — | 退化为 `nlerp` |
-| 12 | `quat.fromUnitVectors(out, v, w)` (D-P18) | `v ≈ -w` | 选 axis = (0,1,0) 或 (1,0,0) 做 180° 旋转 |
+| 5 | `mat4.lookAt` with `up` collinear with the view direction | - | Automatically choose an alternative up |
+| 6 | `mat4.decompose` with shear in `m` | - | Best-effort decomposition, matching Three.js |
+| 7 | `mat4.perspective*` / `*NO` / `*ReverseZ` | `near >= far`, `fovy <= 0` or `aspect <= 0` | Undefined numerical result, without throwing |
+| 8 | `quat.fromAxisAngle(out, axis, rad)` | Zero `axis` | `out = identity` |
+| 9 | `quat.fromEuler(out, x, y, z, order)` (D-P2) | `order` outside `EulerOrder` | Use `'XYZ'` silently |
+| 10 | `quat.slerp(out, a, b, t)` (D-P6) | `dot(a, b) ≈ -1` | Set `b' = -b`, then slerp normally |
+| 11 | `quat.slerp` with `dot(a, b) ≈ 1` | - | Fall back to `nlerp` |
+| 12 | `quat.fromUnitVectors(out, v, w)` (D-P18) | `v ≈ -w` | Choose axis (0,1,0) or (1,0,0) for a 180-degree rotation |
 | 13 | `quat.fromUnitVectors` `v ≈ w` | — | `out = identity` |
-| 14 | `color.srgbToLinear(NaN)` / `linearToSrgb(NaN)` | NaN 输入 | NaN 传播 |
-| 15 | `color.fromHex(...)` (D-P7) | 非法 hex / `#RGB` 短形式 | `out = (0, 0, 0, 1)` 黑色 |
-| 16 | `euler.fromQuat(out, q, order)` | gimbal lock 临界 | 极角附近选取等价分支 |
-| 17 | `euler.fromRotationMatrix(out, m, order)` | gimbal lock 临界 | 同 #16 |
+| 14 | `color.srgbToLinear(NaN)` / `linearToSrgb(NaN)` | NaN | Propagate NaN |
+| 15 | `color.fromHex(...)` (D-P7) | Invalid hex / short `#RGB` form | Black: `out = (0, 0, 0, 1)` |
+| 16 | `euler.fromQuat(out, q, order)` | Near gimbal lock | Choose an equivalent branch near the pole |
+| 17 | `euler.fromRotationMatrix(out, m, order)` | Near gimbal lock | Same as #16 |
 
-### 调用方守卫范式
+### Caller Guard Pattern
 
-库内静默；上层调用方需要诊断时**自建** EPSILON 守卫 + `console.warn`（本库不强制，但文档展示一次让 LLM 复用）：
+The library stays silent. Callers needing diagnostics add their own EPSILON guard and `console.warn`. This optional pattern is shown for reuse:
 
 ```ts
 import type { Vec3 } from '@forgeax/engine-math';
@@ -272,73 +275,73 @@ function safeNormalize(out: Vec3, v: Vec3): Vec3 {
   if (vec3.lengthSq(v) < EPS) {
     console.warn('vec3.normalize: zero-length input, returning 0-vec');
   }
-  return vec3.normalize(out, v); // 库内静默回退；上层自建诊断
+  return vec3.normalize(out, v); // Silent fallback; diagnostics belong to the caller.
 }
 ```
 
 > [!NOTE]
-> 这是"承诺与运行期诊断闭环"——库内静默 + 调用方守卫范式文档化 + JSDoc `@degrade` 含 `@example` 三者合起来满足 charter 命题 3 的"错得明"要求，**不依赖** throw / Result / 库内 `console.warn`。
+> Silent library behavior, documented caller guards and JSDoc `@degrade` examples together satisfy charter proposition 3's understandable-failure requirement, without throws, Result or library logging.
 
-## 三档 NDC 投影示例
+## Three NDC Projection Conventions
 
-WebGPU / WebGL2 / reversed-Z 各自的投影矩阵选择对应不同的 NDC 约定。本库在命名层显式暴露三档：
+WebGPU, WebGL2 and reversed-Z use different NDC conventions, exposed explicitly in function names:
 
 ```ts
 import { mat4 } from '@forgeax/engine-math';
 
-// WebGPU 主路径：clip-z ∈ [0, 1]
+// Main WebGPU path: clip-z in [0, 1].
 const projWebGPU = mat4.perspective(mat4.create(), Math.PI / 4, 16 / 9, 0.1, 100);
 
-// WebGL / OpenGL：clip-z ∈ [-1, 1]（gl-matrix 命名惯例 *NO = Negative-One）
+// WebGL / OpenGL: clip-z in [-1, 1]; gl-matrix's *NO means Negative-One.
 const projWebGL = mat4.perspectiveNO(mat4.create(), Math.PI / 4, 16 / 9, 0.1, 100);
 
-// reversed-Z（深度精度优化：far → 0, near → 1；典型 PBR / 大世界场景）
+// Reversed-Z: far to 0, near to 1, for PBR / large-world depth precision.
 const projReverseZ = mat4.perspectiveReverseZ(mat4.create(), Math.PI / 4, 16 / 9, 0.1, 100);
 ```
 
-`orthographic / orthographicNO / orthographicReverseZ` 三档同形，位置参数统一为
-`(out, left, right, top, bottom, near, far)`（`orthographicReverseZ` 为本库自创扩展，详见末尾对照表脚注）。
+`orthographic / orthographicNO / orthographicReverseZ` share the positional signature
+`(out, left, right, top, bottom, near, far)`. `orthographicReverseZ` is a library-specific extension; see the comparison note below.
 
-## 非目标（Non-goals）
+## Non-Goals
 
-| 不做 | 原因 |
+| Excluded | Reason |
 |:--|:--|
-| Three.js 风的 `vec*` 跨类型方法（vec 实例上挂 mat / quat 应用） | K-1/K-2 撕毁 Three.js 风承诺；语义保留——跨类型 transform 由 `mat4.transformVec3 / transformPoint / transformDirection` + `quat.transformVec3` 反向 surface 提供（D-12 撕毁登记，详见 plan-decisions §D-12） |
-| `Result<T, E>` / `Option<T>` 包装 | 与 out-param-first + 全库静默回退冲突；charter 命题 3 文本优先错得明靠 JSDoc + `*.test-d.ts` |
-| 库内 `console.warn` / 错误码 | 调用方诊断自建（`safeNormalize` 守卫范式）；库 hot-path 零观测开销 |
-| `Float64Array` 高精度版 | WebGPU/WebGL2 着色器 uniform 一律 `f32`；高精度计算调用方自行裁剪到 f32 边界 |
-| `Vec*.iter()` / 迭代器协议 | TypedArray 已自带；额外封装违反 SoA-friendly 零分配承诺 |
-| 矩阵 / 向量的 `toString` 漂亮打印 | 文档面无承诺；调试调用方自行 `Array.from(v)` + `console.log` |
+| Three.js-style cross-type `vec*` methods applying matrices/quaternions on vectors | K-1/K-2 dropped that surface; semantics remain through `mat4.transformVec3 / transformPoint / transformDirection` and `quat.transformVec3` (plan-decisions D-12). |
+| `Result<T, E>` / `Option<T>` wrappers | Conflict with mandatory first-position output parameters and silent fallback. JSDoc and `*.test-d.ts` document failures (charter proposition 3). |
+| Library `console.warn` / error codes | Callers own diagnostics (`safeNormalize`); library hot paths incur no observation overhead. |
+| High-precision `Float64Array` variants | WebGPU/WebGL2 shader uniforms use `f32`; callers doing high-precision work convert at the f32 boundary. |
+| `Vec*.iter()` / iterator protocol | TypedArrays already provide it; wrappers violate the SoA-friendly zero-allocation contract. |
+| Pretty matrix/vector `toString` | No such API is promised; callers can use `Array.from(v)` and `console.log`. |
 
-## 路线图
+## Roadmap
 
-| 版本 | 范围 |
+| Version | Scope |
 |:--|:--|
-| **v0.0 (本闭环)** | 19 namespace × 214 函数（含 mat4 / quat 反向 surface 跨类型 transform 4 函数、2D bounds/raycast/cast，以及 easing 标量缓动 + noise 1D Perlin）；branded ABI；3 档 NDC 投影；M1-M6 全 19 AC pass |
-| v0.1 (PBR 闭环) | `mat3.fromMat4Scale` 法线矩阵优化路径；`Color.linearToSRGB` GPU 上传专用变体；高级 PBR 工具 |
-| v0.2 (动画闭环) | `quat.squad` Catmull-Rom 球面插值；`euler.lookAt` 自然映射；动画系统消费方向定 |
-| v1.0 (稳定 ABI) | 不再 breaking ABI；coverage 阈值不退步；`@forgeax/engine-math` 正式 `npm publish` |
+| **v0.0 (initial delivery)** | 19 namespaces, 214 functions, including four mat4/quat cross-type transforms, 2D bounds/raycast/cast, scalar easing and 1D Perlin noise; branded ABI; three NDC conventions; M1-M6 passed all 19 acceptance criteria. |
+| v0.1 (PBR) | `mat3.fromMat4Scale` normal-matrix optimization, GPU-upload-specific `Color.linearToSRGB`, advanced PBR helpers. |
+| v0.2 (animation) | `quat.squad` Catmull-Rom spherical interpolation, natural `euler.lookAt` mapping; direction follows animation consumers. |
+| v1.0 (stable ABI) | No further ABI breaks, no coverage regression, official `@forgeax/engine-math` npm publication. |
 
-## 与 gl-matrix / wgpu-matrix / glam-rs 对照表
+## Comparison With gl-matrix / wgpu-matrix / glam-rs
 
-| 概念 | gl-matrix | wgpu-matrix | glam-rs (Rust) | **@forgeax/engine-math** |
+| Concept | gl-matrix | wgpu-matrix | glam-rs (Rust) | **@forgeax/engine-math** |
 |:--|:--|:--|:--|:--|
-| 存储 | `Float32Array` | `Float32Array` (`Float32ArrayLike`) | `Vec3 / Mat4` 结构体（栈分配）| `Float32Array & { __vec3: void }` (branded) |
-| out-param | `out` 首位 | `dst?` 末位（可省）| 返回值 | `out` 首位（与 gl-matrix 一致） |
-| 类型互斥 | 无（`vec3 = vec4` 不报错）| 无 | 编译期靠 Rust 类型 | 编译期靠 brand（`Vec3 ≢ Vec4`） |
-| `fromAxisAngle` | `setAxisAngle` | `fromAxisAngle` | `Quat::from_axis_angle` | `quat.fromAxisAngle` (借 wgpu-matrix) |
+| Storage | `Float32Array` | `Float32Array` (`Float32ArrayLike`) | Stack-allocated `Vec3 / Mat4` structs | `Float32Array & { __vec3: void }` (branded) |
+| Output parameter | First `out` | Optional last `dst?` | Return value | First `out`, matching gl-matrix |
+| Type separation | None (`vec3 = vec4` allowed) | None | Rust compile-time types | Compile-time brands (`Vec3 ≢ Vec4`) |
+| `fromAxisAngle` | `setAxisAngle` | `fromAxisAngle` | `Quat::from_axis_angle` | `quat.fromAxisAngle`, following wgpu-matrix |
 | `lookAt(eye, target, up)` | `lookAt(out, eye, center, up)` | `lookAt(eye, target, up, dst?)` | `Mat4::look_at_rh(eye, center, up)` | `mat4.lookAt(out, eye, target, up)` |
-| WebGPU `[0,1]` | 短名 `perspective` | 短名 `perspective` | 无（Rust glam 走 wgpu/vulkan 风）| 短名 `perspective` |
+| WebGPU `[0,1]` | Short `perspective` | Short `perspective` | No direct equivalent (Rust glam follows wgpu/Vulkan conventions) | Short `perspective` |
 | WebGL `[-1,1]` | `perspectiveNO` | `perspectiveNO` | — | `perspectiveNO` |
-| reversed-Z | 无 | `perspectiveReverseZ` | `Mat4::perspective_infinite_reverse_lh` (近) | `perspectiveReverseZ` |
-| **正交 reversed-Z** | 无 | 无 | 无 | `orthographicReverseZ` ⭐ **本库自创扩展** |
-| invert(singular) | 返回 `null` | 不定 | `Some(...)` / `None` | 写 `out = identity`，返 `out`（D-P1）|
+| Reversed-Z | None | `perspectiveReverseZ` | `Mat4::perspective_infinite_reverse_lh` (similar) | `perspectiveReverseZ` |
+| **Orthographic reversed-Z** | None | None | None | `orthographicReverseZ`, **library-specific extension** |
+| invert(singular) | Returns `null` | Unspecified | `Some(...)` / `None` | Writes `out = identity`, returns `out` (D-P1) |
 
-> ⭐ **`orthographicReverseZ` 为本库自创扩展**——主流三件套均无此函数；用于 reversed-Z 配套的 2D / 大世界正交投影场景（plan-strategy §D-P3）。LLM 调用时知晓此函数无主流对应物，必要时按本库签名调用即可（charter 命题 2 诚实告知）。
+> **`orthographicReverseZ` is a library-specific extension.** None of the three comparison libraries provides it. It supports reversed-Z 2D / large-world orthographic projection (plan-strategy D-P3). Use this library's signature when needed; there is no mainstream direct equivalent (charter proposition 2).
 
-## 知识库引用
+## Knowledge References
 
-跨 vendor 阅读认知配套——开发者 / 贡献者 LLM 切换 vendor 时的认知映射：
+Cross-vendor conceptual mappings for developers and contributor LLMs:
 
 ### Reverse-Z camera consumers
 

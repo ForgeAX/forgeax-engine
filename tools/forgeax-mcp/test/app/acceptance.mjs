@@ -71,10 +71,11 @@ export function nativeViewProjectReady({ projectId, targetId }) {
   const client = mounted?.frontendHost?.context?.get('viewOperationClient', false);
   const state = client?.projectSession?.getSnapshot();
   if (state?.error) throw new Error('The native View project failed during restoration');
-  const target = state?.snapshot?.projectTarget;
-  if (state?.snapshot?.projectPhase === 'failed' || state?.snapshot?.workspaceTargetLost)
+  const snapshot = state?.snapshot;
+  const target = snapshot?.projectTarget;
+  if (snapshot?.projectPhase === 'failed' || snapshot?.workspaceTargetLost)
     throw new Error('The native View project target failed or was lost');
-  if (target?.targetId !== targetId)
+  if (snapshot?.projectDocument?.targetId !== targetId || (target && target.targetId !== targetId))
     throw new Error('The native View project target changed during startup');
   return mounted?.transport?.connected === true && state?.busy === false &&
     state?.restoring === false && state?.error === null &&
@@ -84,9 +85,9 @@ export function nativeViewProjectReady({ projectId, targetId }) {
     typeof target.url === 'string' && target.url.length > 0;
 }
 
-// A published target can still be starting. Cold Pack/server production belongs
-// before this boundary; the browser then has its own fixed readiness budget.
-export function nativeViewProjectTarget(projectId) {
+// Publishing the project document ends Pack and server preparation. The browser
+// publishes its World target after startup and has a separate fixed budget.
+export function nativeViewProjectDocument(projectId) {
   const ready = globalThis.__forgeaxViewReady;
   if (ready?.error) throw new Error('The native View Host failed during activation');
   const mounted = ready?.mounted;
@@ -96,10 +97,10 @@ export function nativeViewProjectTarget(projectId) {
   const snapshot = state?.snapshot;
   if (snapshot?.projectPhase === 'failed' || snapshot?.workspaceTargetLost)
     throw new Error('The native View project target failed or was lost');
-  const target = snapshot?.projectTarget;
+  const document = snapshot?.projectDocument;
   return mounted?.transport?.connected === true && snapshot?.project?.id === projectId &&
-    typeof target?.targetId === 'string' && target.targetId.length > 0 &&
-    typeof target.url === 'string' && target.url.length > 0 ? target.targetId : false;
+    typeof document?.targetId === 'string' && document.targetId.length > 0 &&
+    typeof document.url === 'string' && document.url.length > 0 ? document.targetId : false;
 }
 
 export async function waitForViewProjectReady(view, projectId, deadline,
@@ -113,7 +114,7 @@ export async function waitForViewProjectReady(view, projectId, deadline,
   try {
     const frame = await owner.contentFrame();
     assert.ok(frame, 'The native View document must remain attached');
-    const published = await frame.waitForFunction(nativeViewProjectTarget, projectId,
+    const published = await frame.waitForFunction(nativeViewProjectDocument, projectId,
       { polling: 25, timeout: Math.max(1, deadline - performance.now()) });
     let targetId;
     try { targetId = await published.jsonValue(); }

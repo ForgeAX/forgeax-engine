@@ -1227,6 +1227,7 @@ function addDeferredSceneObservations(
 
 /** Lazily imported scene view and the one closest-depth pyramid SSR and diffuse GI share. */
 interface DeferredDepthViews {
+  readonly nativeInputs: StandardPipelineBuildContext['nativeInputs'];
   readonly sceneView: () => Result<GraphBuffer, RenderGraphError>;
   readonly closestPyramid: () => Result<DepthPyramidProjection, RenderGraphError>;
 }
@@ -1236,18 +1237,21 @@ function deferredDepthViews(
   depthSample: GraphTextureView,
   copySize: CopySize,
   execution: 'compute' | 'fragment',
+  nativeInputs: StandardPipelineBuildContext['nativeInputs'],
 ): DeferredDepthViews {
   const sceneView = sceneViewImport(graph);
   // One closest-depth pyramid per view, built only when SSR or a diffuse GI
   // gather actually reads it.
   let closestPyramid: Result<DepthPyramidProjection, RenderGraphError> | undefined;
   return {
+    nativeInputs,
     sceneView,
     closestPyramid: () => {
       if (closestPyramid !== undefined) return closestPyramid;
       const view = sceneView();
       if (!view.ok) return view;
       closestPyramid = addDepthPyramidPasses(graph, {
+        nativeInputs,
         depth: depthSample,
         execution,
         width: copySize.width,
@@ -1353,6 +1357,7 @@ function addDeferredGBufferPasses(
   );
   if (!early.ok) return early;
   const late = addGpuLateOcclusion(graph, {
+    nativeInputs: depthViews.nativeInputs,
     gpuDriven,
     depth: targets.depthSample,
     multisampled: targets.depth.sampleCount > 1,
@@ -1528,6 +1533,7 @@ export function buildStandardDeferredLane(
     targets.value.depthSample,
     internalCopySize,
     topology.lane.compute ? 'compute' : 'fragment',
+    context.nativeInputs,
   );
   const cameraPyramid = addDeferredGBufferPasses(
     context,

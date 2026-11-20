@@ -122,12 +122,13 @@ export function prepareStandardOutputResources(
   if (output !== undefined && output.colorLut > 0 && output.colorLutStrength > 0) {
     const lut = prepareStandardLutGpu({
       world,
-      handle: output.colorLut as AssetHandle<'texture'>,
+      handle: output.colorLut as AssetHandle<'texture' | 'gpu-texture'>,
       strength: output.colorLutStrength,
       gpuStore: internals.gpuStore,
       device: internals.device,
     });
     if (!lut.ok) {
+      if (lut.error.code === 'standard-lut-generation-pending') return ok(undefined);
       state.standardLutState = recordStandardLutFailure(state.standardLutState, lut.error);
       state.pendingStandardLutGpuResources = undefined;
       return err(

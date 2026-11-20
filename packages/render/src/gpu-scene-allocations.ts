@@ -20,6 +20,11 @@ export interface PrimitiveAllocation<Mesh, Ranges> {
   readonly materialRanges: Ranges;
 }
 
+/** All prepared slots of one Source share this allocation-lifetime observation. */
+export interface PrimitiveAllocationResidency {
+  invalidated: boolean;
+}
+
 const RECORD = 0;
 const INSTANCE_START = 1;
 const INSTANCE_COUNT = 2;
@@ -41,6 +46,9 @@ export class PrimitiveAllocations<Mesh, Ranges> {
   private present = new Uint8Array(64);
   private meshes: (Mesh | undefined)[] = [];
   private ranges: (Ranges | undefined)[] = [];
+  /** Scene version whose complete numeric rows were consumed from preparation. */
+  private publications = new Float64Array(64);
+  private readonly residencies = new Map<number, PrimitiveAllocationResidency>();
   private stamps = 0;
   private count = 0;
 
@@ -114,10 +122,17 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     };
   }
 
-  set(slot: number, allocation: PrimitiveAllocation<Mesh, Ranges>): void {
+  set(
+    slot: number,
+    allocation: PrimitiveAllocation<Mesh, Ranges>,
+    residency?: PrimitiveAllocationResidency,
+  ): void {
     if (!Number.isSafeInteger(slot) || slot < 0)
       throw new RangeError('GPU Scene allocations are addressed by non-negative slots');
     this.ensure(slot);
+    this.invalidateResidency(slot);
+    if (residency !== undefined) this.residencies.set(slot, residency);
+    this.publications[slot] = 0;
     const base = slot * WIDTH;
     const columns = this.columns;
     columns[base + RECORD] = allocation.recordIndex;
@@ -148,11 +163,28 @@ export class PrimitiveAllocations<Mesh, Ranges> {
       throw new RangeError('GPU Scene instance resize exceeds the reserved capacity');
     this.columns[base + INSTANCE_COUNT] = instanceCount;
     this.columns[base + INSTANCE_TRANSFORM_COUNT] = instanceTransformCount;
+    this.publications[slot] = 0;
+  }
+
+  /** Grow only the existing columns; no live allocation is published. */
+  prepareSlot(slot: number): void {
+    this.ensure(slot);
+  }
+
+  acceptPublication(slot: number, version: number): void {
+    if (this.present[slot] !== 1) throw new RangeError('GPU Scene allocation unavailable');
+    this.publications[slot] = version;
+  }
+
+  publicationVersion(slot: number): number {
+    return this.present[slot] === 1 ? (this.publications[slot] ?? 0) : 0;
   }
 
   delete(slot: number): void {
     if (this.present[slot] !== 1) return;
+    this.invalidateResidency(slot);
     this.present[slot] = 0;
+    this.publications[slot] = 0;
     this.meshes[slot] = undefined;
     this.ranges[slot] = undefined;
     this.count--;
@@ -165,10 +197,20 @@ export class PrimitiveAllocations<Mesh, Ranges> {
   }
 
   clear(): void {
+    for (const residency of this.residencies.values()) residency.invalidated = true;
+    this.residencies.clear();
     this.present.fill(0);
+    this.publications.fill(0);
     this.meshes = [];
     this.ranges = [];
     this.count = 0;
+  }
+
+  private invalidateResidency(slot: number): void {
+    const residency = this.residencies.get(slot);
+    if (residency === undefined) return;
+    residency.invalidated = true;
+    this.residencies.delete(slot);
   }
 
   private ensure(slot: number): void {
@@ -178,6 +220,9 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     const present = new Uint8Array(capacity);
     present.set(this.present);
     this.present = present;
+    const publications = new Float64Array(capacity);
+    publications.set(this.publications);
+    this.publications = publications;
     const columns = new Uint32Array(capacity * WIDTH);
     columns.set(this.columns);
     this.columns = columns;

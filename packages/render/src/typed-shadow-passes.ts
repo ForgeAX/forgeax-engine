@@ -16,8 +16,8 @@ import {
 } from './gpu-driven/shadow-view-identity';
 import {
   type ShadowDirtyRect,
+  type ShadowViewGraphProjection,
   type ShadowViewIdentity,
-  type ShadowViewProjection,
   shadowViewIdentityKey,
   shadowViewRasterAccesses,
 } from './gpu-driven/shadow-views';
@@ -28,7 +28,7 @@ import type { TerrainShadowReceiver } from './terrain/shadow-family';
 type ProjectGpuDrivenShadow = (
   identity: ShadowViewIdentity,
   cameraPyramid?: GraphTextureView,
-) => Result<ShadowViewProjection | undefined, RenderGraphError>;
+) => Result<ShadowViewGraphProjection | undefined, RenderGraphError>;
 
 import { renderAblation } from './diagnostics/render-ablation';
 import {
@@ -318,6 +318,7 @@ function createShadowArrayTarget(
   label: string,
   size: number,
   layers: number,
+  sampledLayerCount: number,
 ): Result<RenderPipelineTarget, RenderGraphError> {
   return createRenderPipelineTarget(
     graph,
@@ -326,7 +327,7 @@ function createShadowArrayTarget(
       format: 'depth32float',
       size: { width: size, height: size, depthOrArrayLayers: layers },
     },
-    { dimension: '2d-array', aspect: 'depth-only', arrayLayerCount: layers },
+    { dimension: '2d-array', aspect: 'depth-only', arrayLayerCount: sampledLayerCount },
   );
 }
 
@@ -362,8 +363,10 @@ function createRetainedShadowArrayTarget(
   label: string,
   size: number,
   layers: number,
+  sampledLayerCount = layers,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  if (staticLayers === undefined) return createShadowArrayTarget(graph, label, size, layers);
+  if (staticLayers === undefined)
+    return createShadowArrayTarget(graph, label, size, layers, sampledLayerCount);
   const texture = graph.importTexture(
     label,
     {
@@ -372,6 +375,11 @@ function createRetainedShadowArrayTarget(
       usage: SHADOW_DEPTH_LAYER_USAGE,
     },
     () => staticLayers.texture(label, size, layers),
+    {
+      prepare: (current) =>
+        staticLayers.prepareTexture(label, size, layers, current, sampledLayerCount),
+      current: () => staticLayers.residentTexture(label, size, layers),
+    },
   );
   if (!texture.ok) return texture;
   const view = graph.importView(
@@ -380,12 +388,21 @@ function createRetainedShadowArrayTarget(
       label: `${label}.view`,
       dimension: '2d-array',
       aspect: 'depth-only',
-      arrayLayerCount: layers,
+      arrayLayerCount: sampledLayerCount,
     },
-    () => staticLayers.view(label),
+    () => staticLayers.view(label, undefined, sampledLayerCount),
   );
   if (!view.ok) return view;
-  return ok({ texture: texture.value, view: view.value, format: 'depth32float', sampleCount: 1 });
+  return ok({
+    texture: texture.value,
+    view: view.value,
+    format: 'depth32float',
+    sampleCount: 1,
+    residentView: () =>
+      staticLayers.residentTexture(label, size, layers) === undefined
+        ? undefined
+        : staticLayers.residentView(label, undefined, sampledLayerCount),
+  });
 }
 
 /**
@@ -424,7 +441,7 @@ function recordShadowPass(
 }
 
 function projectionAccesses(
-  projection: Result<ShadowViewProjection | undefined, RenderGraphError> | undefined,
+  projection: Result<ShadowViewGraphProjection | undefined, RenderGraphError> | undefined,
 ): readonly GraphAccess[] {
   return projection?.ok === true && projection.value?.graphResources !== undefined
     ? shadowViewRasterAccesses(projection.value.graphResources)
@@ -700,7 +717,7 @@ function featureShadowEncoder(
 }
 
 function shadowPassAccesses(
-  shadowProjection: Result<ShadowViewProjection | undefined, RenderGraphError> | undefined,
+  shadowProjection: Result<ShadowViewGraphProjection | undefined, RenderGraphError> | undefined,
   shadowFeatures: RenderFeatureShadowDraws<RenderPipelineFrame> | undefined,
   waterInfoTargets?: WaterInfoGraphTargets,
   fluid?: TypedShadowPassOptions['surfaceFluidSimulation'],
@@ -944,15 +961,10 @@ function addDirectionalShadowPasses(
     'directional-shadow-depth',
     mapSize,
     Math.max(MIN_SHADOW_ARRAY_LAYERS, usedLayerCount),
+    usedLayerCount,
   );
   if (!target.ok) return target;
-  const activeView = graph.view(target.value.texture, {
-    dimension: '2d-array',
-    aspect: 'depth-only',
-    arrayLayerCount: usedLayerCount,
-  });
-  if (!activeView.ok) return activeView;
-  const directionalTarget = { ...target.value, view: activeView.value };
+  const directionalTarget = target.value;
   const staticTarget = createStaticShadowArrayTarget(
     graph,
     options,
@@ -1219,23 +1231,10 @@ function addSpotShadowPasses(
     'spot-shadow-depth',
     shadow.spotCount === 0 ? 1 : shadow.spotMapSize,
     SPOT_SHADOW_LAYERS,
+    Math.max(1, shadow.spotCount),
   );
   if (!spot.ok) return spot;
-  const prefixDescriptor = {
-    label: 'spot-shadow-depth-active-prefix',
-    dimension: '2d-array' as const,
-    aspect: 'depth-only' as const,
-    arrayLayerCount: Math.max(1, shadow.spotCount),
-  };
-  const depthLayers = options.depthLayers;
-  const activePrefix =
-    depthLayers === undefined
-      ? graph.view(spot.value.texture, prefixDescriptor)
-      : graph.importView(spot.value.texture, prefixDescriptor, () =>
-          depthLayers.view('spot-shadow-depth', undefined, prefixDescriptor.arrayLayerCount),
-        );
-  if (!activePrefix.ok) return activePrefix;
-  const activeSpot: RenderPipelineTarget = { ...spot.value, view: activePrefix.value };
+  const activeSpot = spot.value;
   const spotStatic = createStaticShadowArrayTarget(
     graph,
     options,

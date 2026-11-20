@@ -57,8 +57,8 @@ const canvas = {
   removeEventListener() {},
 };
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const manifest = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const manifest = await buildEngineShaderTemplateManifest();
 const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 

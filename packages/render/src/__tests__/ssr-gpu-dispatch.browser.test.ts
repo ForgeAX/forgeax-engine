@@ -1,12 +1,12 @@
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { browserShaderEntries } from './browser-shader-entries.fixture';
 import {
   admittedSsrSpatial,
   runSsrGpuDispatch,
   runSsrViewDistanceProbe,
-  type SsrShaderManifest,
+  SSR_PROBE_SHADER_IDENTIFIERS,
   sourcesFromManifest,
   ssrCoordinateErrors,
 } from './ssr-gpu-dispatch';
@@ -19,11 +19,9 @@ describe('SSR GPU dispatch Browser WebGPU probe', () => {
   let sources: ReturnType<typeof sourcesFromManifest>;
   beforeAll(async () => {
     expect(admittedSsrSpatial().status).toBe('admitted');
-    const response = await fetch('/shaders/manifest.json');
-    expect(response.ok).toBe(true);
-    sources = sourcesFromManifest(
-      (await readShaderManifestPublication(await response.json())) as SsrShaderManifest,
-    );
+    sources = sourcesFromManifest({
+      entries: await browserShaderEntries(SSR_PROBE_SHADER_IDENTIFIERS),
+    });
     const adapter = (await rhi.requestAdapter()).unwrap();
     device = (
       await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })

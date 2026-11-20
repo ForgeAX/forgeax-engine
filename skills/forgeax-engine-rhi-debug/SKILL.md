@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-rhi-debug
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > [!IMPORTANT]
 > Start difficult or unexplained rendering investigations here, before speculative
 > shader/material edits or broad instrumentation. Capture the real failing frame

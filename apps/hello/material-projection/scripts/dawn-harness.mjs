@@ -19,8 +19,8 @@ const TIMING_BLOCK = 8;
 export async function projectionManifest() {
   const cached = process.env.PROJECTION_MANIFEST;
   if (cached !== undefined && existsSync(cached)) return JSON.parse(readFileSync(cached, 'utf8'));
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  const manifest = await buildEngineShaderManifest({});
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const manifest = await buildEngineShaderTemplateManifest({});
   if (cached !== undefined) writeFileSync(cached, JSON.stringify(manifest));
   return manifest;
 }

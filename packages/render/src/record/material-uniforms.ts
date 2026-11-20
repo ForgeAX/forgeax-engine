@@ -25,15 +25,27 @@ interface UniformSlot {
   readonly slot: number;
   readonly resources: object;
   recordingReferences: number;
+  provisional: boolean;
 }
 
 const unresolvedResources = {};
 const missingResources = {};
 let recordingSlots: Set<UniformSlot> | undefined;
+let preparingUniforms = false;
 
 /** One pending submission pins its numeric versions across preparation checkpoints. */
 export class MaterialUniformRecording {
   private readonly used = new Set<UniformSlot>();
+
+  /** Retain the actual completed version for native commands prepared across ordinary frames. */
+  hold(runtime: RenderSystemRuntime, material: MaterialSnapshot): number {
+    const entry = allocation(runtime).entry(material);
+    if (!this.used.has(entry)) {
+      this.used.add(entry);
+      entry.recordingReferences++;
+    }
+    return entry.slot;
+  }
 
   run<T>(record: () => T): T {
     const previous = recordingSlots;
@@ -42,6 +54,16 @@ export class MaterialUniformRecording {
       return record();
     } finally {
       recordingSlots = previous;
+    }
+  }
+
+  runPrepared<T>(record: () => T): T {
+    const previous = preparingUniforms;
+    preparingUniforms = true;
+    try {
+      return this.run(record);
+    } finally {
+      preparingUniforms = previous;
     }
   }
 
@@ -69,6 +91,7 @@ export function recordMaterialUniforms<T>(recordAndSubmit: () => T): T {
 /** Roots share one slot unless one recording actually uses multiple immutable versions. */
 class MaterialUniformSlots {
   private frame = new MaterialFrame(undefined);
+  private adopted = false;
   private readonly roots = new Map<MaterialResource, UniformSlot>();
   private readonly versions = new WeakMap<MaterialSnapshot, Map<object, UniformSlot>>();
   private readonly current = new WeakMap<MaterialSnapshot, UniformSlot>();
@@ -76,6 +99,7 @@ class MaterialUniformSlots {
   count = 0;
 
   adopt(frame: MaterialFrame): void {
+    this.adopted = true;
     if (frame === this.frame) return;
     const changed: MaterialSnapshot[] = [];
     frame.changesSince(this.frame, (previous, next) => {
@@ -86,12 +110,26 @@ class MaterialUniformSlots {
         if (entry !== undefined) this.release(entry);
       }
     });
-    for (const snapshot of changed) this.entry(snapshot);
+    for (const snapshot of changed) {
+      const entry = this.entry(snapshot);
+      const previous = this.roots.get(entry.resource);
+      entry.provisional = false;
+      this.roots.set(entry.resource, entry);
+      if (previous !== undefined && previous !== entry) this.release(previous);
+    }
     this.frame = frame;
   }
 
   release(entry: UniformSlot): void {
-    if (entry.recordingReferences !== 0 || this.roots.get(entry.resource) === entry) return;
+    if (entry.recordingReferences !== 0) return;
+    if (this.roots.get(entry.resource) === entry) {
+      if (
+        (!this.adopted && !entry.provisional) ||
+        this.frame.get(entry.resource)?.snapshot === entry.snapshot
+      )
+        return;
+      this.roots.delete(entry.resource);
+    }
     const versions = this.versions.get(entry.snapshot);
     versions?.delete(entry.resources);
     if (versions?.size === 0) this.versions.delete(entry.snapshot);
@@ -123,6 +161,7 @@ class MaterialUniformSlots {
       slot,
       resources: resources ?? unresolvedResources,
       recordingReferences: 0,
+      provisional: preparingUniforms,
     };
     this.roots.set(resource, entry);
     let versions = this.versions.get(snapshot);

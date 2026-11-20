@@ -841,7 +841,7 @@ it('adopts one Mesh without reading its thousand override groups; only a real qu
   const empty = fixedSlots([]);
   for (const row of rows) owner.remove(row.slot);
   expect(owner.materials().get(second)).toBeUndefined();
-  expect((owner as unknown as { queryRoot: unknown }).queryRoot).toBeUndefined();
+  expect((owner as unknown as { active: { queryRoot: unknown } }).active.queryRoot).toBeUndefined();
   expect([...old]).toEqual(oldEntries);
   expect(owner.query(empty, changed).length).toBe(0);
   expect(owner.materials().get(second)).toBeUndefined();
@@ -939,7 +939,7 @@ it('retains accepted Pass identity across atomic last-binding replacement and re
   });
   expect(() => owner.bind(0, invalid)).toThrow(/invalid replacement source/);
   expect(owner.materials().get(resource)).toBeUndefined();
-  expect((owner as unknown as { queryRoot: unknown }).queryRoot).toBeUndefined();
+  expect((owner as unknown as { active: { queryRoot: unknown } }).active.queryRoot).toBeUndefined();
   expect(first.map((entry) => entry.queue)).toEqual([2000, 2000]);
 });
 

@@ -51,7 +51,7 @@ describe('GPU-driven scaling contract', () => {
   let projection: RenderScene;
   let topology: BatchTopology;
   let materialized: FrameList<RenderableSnapshot>;
-  let stablePlan: ReturnType<BatchTopology['query']>;
+  let stablePlan: ReturnType<BatchTopology['query']>['active'];
   let stableMaterializationReused = false;
   let stablePlanReused = false;
   let delta: ReturnType<RenderScene['apply']>;
@@ -63,9 +63,9 @@ describe('GPU-driven scaling contract', () => {
     materialized = projection.materialize();
     topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    stablePlan = topology.query(topology.sourcePlan(), undefined);
+    stablePlan = topology.query(topology.sourcePlan(), undefined).active;
     stableMaterializationReused = projection.materialize() === materialized;
-    stablePlanReused = topology.query(topology.sourcePlan(), undefined) === stablePlan;
+    stablePlanReused = topology.query(topology.sourcePlan(), undefined).active === stablePlan;
 
     const moved = mat4.identity(mat4.create());
     moved[12] = 3;
@@ -94,7 +94,7 @@ describe('GPU-driven scaling contract', () => {
     );
     const lodTopology = new BatchTopology();
     lodTopology.rebuild(lodProjection.slotsSnapshot());
-    const plan = lodTopology.query(lodTopology.sourcePlan(), undefined);
+    const plan = lodTopology.query(lodTopology.sourcePlan(), undefined).active;
     expect(plan.candidateCount).toBe(ENTITY_COUNT);
     expect(plan.batches).toHaveLength(1);
     const batch = plan.batches.at(0);
@@ -119,7 +119,7 @@ describe('GPU-driven scaling contract', () => {
   it('patches one transform without rebuilding topology', () => {
     expect(delta).toMatchObject({ updated: 1, created: 0, removed: 0 });
     expect(topologyChanged).toBe(false);
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(stablePlan);
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(stablePlan);
     expect(topology.inspect()).toMatchObject({ patches: 0, candidateCount: ENTITY_COUNT });
   });
 

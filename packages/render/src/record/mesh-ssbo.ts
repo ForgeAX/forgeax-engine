@@ -358,6 +358,16 @@ export function getOrCreateFromChainResult<E>(
   return created;
 }
 
+/** Publish an already-created native group at its exact owner key; no native callback runs. */
+export function publishToChain(
+  root: WeakMap<object, unknown>,
+  handles: readonly object[],
+  variant: string,
+  group: BindGroup,
+): void {
+  bindGroupChainLeaf(root, handles).set(variant, group);
+}
+
 /**
  * Read a cached bind group using the same variable-depth chain contract as
  * `getOrCreateFromChain`. Readers must traverse the terminal marker instead

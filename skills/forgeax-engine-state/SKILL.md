@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-state
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > Single-world typed-state machine: `defineState` + `setNextState` + state-scoped entity lifecycle (`despawnOnExit`/`despawnOnEnter`) + `OnEnter`/`OnExit` user schedule labels. It consumes existing component, resource, Query, and despawn primitives. Aggregates `@forgeax/engine-state`.
 
 ## Mental model

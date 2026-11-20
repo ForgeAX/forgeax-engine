@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { isSupportedVariantDefines } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
 import { supportedVariantDefines } from '../supported-variant-defines.js';
+import { isSupportedVariantDefines } from '../variant-permutation-rules.js';
 
 function originalRows(axes: readonly string[]): Record<string, boolean>[] {
   return Array.from({ length: 1 << axes.length }, (_, offset) => {
@@ -25,21 +25,20 @@ it('preserves the complete descending row order and owning refusals for every ax
   ];
   for (let selection = 0; selection < 1 << axes.length; selection++) {
     const selected = axes.filter((_, index) => selection & (1 << index));
-    expect(supportedVariantDefines(selected)).toEqual(originalRows(selected));
+    expect([...supportedVariantDefines(selected)]).toEqual(originalRows(selected));
   }
   const repeated = ['WATER_WAVES_AVAILABLE', 'STORAGE_BUFFER_AVAILABLE', 'WATER_WAVES_AVAILABLE'];
-  expect(supportedVariantDefines(repeated)).toEqual(originalRows(repeated));
+  expect([...supportedVariantDefines(repeated)]).toEqual(originalRows(repeated));
 });
 
 it('retains the exact Standard matrix and all four maintained lean Water lanes', () => {
-  const source = readFileSync(
-    new URL('../../../shader/src/default-standard-pbr.wgsl', import.meta.url),
-    'utf8',
-  );
+  const source = readFileSync(new URL('../default-standard-pbr.wgsl', import.meta.url), 'utf8');
   const axes = [...source.matchAll(/^#pragma variant_axis (\w+)$/gm)].flatMap((match) =>
     match[1] === undefined ? [] : [match[1]],
   );
-  const rows = supportedVariantDefines(axes);
+  const rows = [...supportedVariantDefines(axes)];
+  const constrained = [...supportedVariantDefines(axes, { STORAGE_BUFFER_AVAILABLE: false })];
+  expect(constrained).toEqual(rows.filter((row) => row.STORAGE_BUFFER_AVAILABLE === false));
   expect(rows).toHaveLength(17632);
   expect(rows.every(isSupportedVariantDefines)).toBe(true);
   const added = rows.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);

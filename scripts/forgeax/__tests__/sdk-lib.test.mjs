@@ -7,6 +7,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -421,7 +422,7 @@ describe('ignoresProjectState', () => {
 });
 
 describe('normalizePnpmStore', () => {
-  it('drops pnpm SQLite shared-memory state while preserving the store index and WAL', async () => {
+  it('drops pnpm install projections and shared memory while preserving the content store', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-sqlite-store-'));
     tempRoots.push(root);
     const store = join(root, 'v11');
@@ -429,12 +430,20 @@ describe('normalizePnpmStore', () => {
     await writeFile(join(store, 'index.db'), 'database');
     await writeFile(join(store, 'index.db-shm'), 'shared memory');
     await writeFile(join(store, 'index.db-wal'), 'write ahead log');
+    await mkdir(join(store, 'files', '00'), { recursive: true });
+    await writeFile(join(store, 'files', '00', 'content'), 'package bytes');
+    await mkdir(join(store, 'links', 'dependency'), { recursive: true });
+    await writeFile(join(store, 'links', 'dependency', 'package.json'), '{}');
 
     await normalizePnpmStore(root);
 
     await expect(readFile(join(store, 'index.db'), 'utf8')).resolves.toBe('database');
     await expect(readFile(join(store, 'index.db-wal'), 'utf8')).resolves.toBe('write ahead log');
     await expect(readFile(join(store, 'index.db-shm'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(store, 'files', '00', 'content'), 'utf8')).resolves.toBe(
+      'package bytes',
+    );
+    await expect(readdir(join(store, 'links'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects a legacy JSON store instead of adapting it', async () => {

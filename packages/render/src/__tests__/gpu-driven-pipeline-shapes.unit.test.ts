@@ -169,7 +169,7 @@ async function fixture(
           ...(mixedMedium ? { materialArtifacts, materialPipelineFactory } : {}),
           scene: {
             scene: availability.scene,
-            plan: batches.query(batches.sourcePlan(), undefined),
+            plan: batches.query(batches.sourcePlan(), undefined).active,
             slots: scene.slotsSnapshot(),
             slotAt: scene.slotAt,
             sourceIdentity: 'shape-source',

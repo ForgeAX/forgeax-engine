@@ -7,6 +7,8 @@ description: >-
 
 # Open ForgeaX View
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 View is optional. Open it when requested or when interactive asset/scene review
 is needed, including during authoring. Ordinary Engine commands work without it.
 This file and [View operations](../forgeax-view-cli/SKILL.md) are maintained by

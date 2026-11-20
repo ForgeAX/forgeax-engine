@@ -22,6 +22,10 @@ interface DecoderRegistryOptions {
 }
 
 export class DecoderRegistry {
+  /** Exact lease identity, including retirement followed by reinstalling the same decoder object. */
+  identity(kind: string): symbol | undefined {
+    return this.dispatch.get(kind)?.identity;
+  }
   referencePolicy(kind: string): 'eager' | 'deferred' {
     return this.dispatch.get(kind)?.decoder.references ?? 'eager';
   }

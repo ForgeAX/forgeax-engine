@@ -65,7 +65,7 @@ export function atmosphereTextures(atmosphere: GraphAtmosphere): GraphTextureVie
 
 /** Packed materials read group 2; only the native layout extends View with five textures. */
 export function atmosphereVolumeViews(
-  resources: import('@forgeax/engine-render-graph').GraphResourceResolver,
+  resources: Pick<import('@forgeax/engine-render-graph').GraphResourceResolver, 'textureView'>,
   atmosphere: GraphAtmosphere | undefined,
 ): import('./bindings').AtmosphereViews | undefined {
   if (atmosphere?.execution !== 'compute-volume') return undefined;

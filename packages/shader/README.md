@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-shader
 
 ## Source-template publications
@@ -33,6 +36,11 @@ content digest of final WGSL.
 source format without composing a Cartesian product. Existing precompiled
 publication versions remain readable. Their producer and consumption contract
 is described below; source templates do not change those wire versions.
+
+A project can also publish an `8.0.0` manifest with `templates` and `cooked`
+sections. The Registry verifies both sections before publishing any row and
+rejects overlapping entry hashes or material identifiers. Device recovery
+reuses the verified cooked rows and reconstructs device-local template readers.
 
 ## Native Grade and Final kernels
 
@@ -155,7 +163,9 @@ half before interpolation. See the [Water entry](../water/README.md#advanced-sim
 Residual-only and shared contact foam are bounded surface coverage. Their
 opacity and scattering retain the authored foam texture and do not enter the
 legacy height power, boost or threshold. They compose with the ordinary foam
-response by maximum; contact capture does not mask an independent local-wave field.
+response by maximum, so contact capture preserves an independent local-wave
+field. The world-space response reserves room for local fluid foam only while
+that Body has an active local foam field.
 
 Display and cube rays retain atmospheric scattering up to a planet intersection.
 Ground reflection belongs to `atmosphere_multiple_scattering_texel`; the display
@@ -453,25 +463,26 @@ including explicit identity matrices; no shader variant or binding changes.
 > call `sceneIndexDraw(visible.x)` and take coverage from
 > `bitcast<f32>(visible.w)`.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-贯穿 shader 与 material。WGSL producer 只声明与 schema 对应的字段；纹理槽
-携带 `coordinateSet`、transform 与 `physicalUvScale`，cook 后由
-`layoutIdentity` 绑定 shader artifact。identity 失效时修 source 或 cook 输入，
-再执行 recook/load。
+spans shader and material. The WGSL producer declares only schema-matched fields.
+Texture slots carry `coordinateSet`, transform and `physicalUvScale`; after cooking,
+`layoutIdentity` binds the shader artifact. If identity becomes invalid, repair
+source or cook inputs, then recook/load.
 
 > [!IMPORTANT]
-> Runtime 只查找已发布的 content-addressed artifact；恢复沿 producer、cook
-> 与 catalog 的 owner 边界进行，不在 app 侧复制 shader artifact。
+> Runtime resolves only published content-addressed artifacts. Recovery follows
+> producer, cook and catalog ownership; apps never duplicate shader artifacts.
 
 ## Standard Surface contract
 
-Standard material 的作者只需要通过 `#import` 使用
-[`surface_v1.wgsl`](./src/surface_v1.wgsl)，并实现唯一的
-`evaluate_surface(SurfaceInput) -> SurfaceData`。`SurfaceData` 是 Standard
-BRDF 的输入，不是最终颜色；Engine-owned Standard pass family 负责顶点、光照、
-阴影、Forward/Deferred、G-buffer、雾和输出。内建默认值位于
+Standard material authors only need to `#import`
+[`surface_v1.wgsl`](./src/surface_v1.wgsl) and implement
+`evaluate_surface(SurfaceInput) -> SurfaceData`. `SurfaceData` supplies inputs
+to the Standard BRDF rather than a final color. The Engine-owned Standard pass
+family handles vertices, lighting, shadows, Forward/Deferred, G-buffer, fog and
+output. Built-in defaults live in
 [`default_standard_surface.wgsl`](./src/default_standard_surface.wgsl)。
 
 ### Minimal authoring shape
@@ -541,12 +552,12 @@ For the complete source-to-runtime example, see the
 > bindings, Engine entry points, or vertex-position mutation. Physical layers
 > and pass admission remain Engine-owned.
 
-渐进导航：`Materials.standard()` → `moduleSlots.surface` → build-time
+Progressive navigation: `Materials.standard()` → `moduleSlots.surface` → build-time
 `#import` composition / reflection → Pack cook → runtime GUID readiness。
-Surface source 不声明 stage entry、`@group/@binding` 或 vertex mutation；参数
-资源由同一 `MaterialAsset.parameters` contract 派生。编译或 cook 失败时读取
-`code`、`detail`、`hint`，修复 authored source 或 producer 后重新 cook，不在
-runtime 读取 raw WGSL 或创建 app-local artifact。
+Surface source declares no stage entries, `@group/@binding` or vertex mutations.
+Parameter resources derive from the same `MaterialAsset.parameters` contract.
+On compile or cook failure, read `code`, `detail` and `hint`, repair authored
+source or the producer and recook; never load raw WGSL or create app-local artifacts at runtime.
 
 > [!IMPORTANT]
 > A custom material starts as WGSL source plus one `MaterialAsset` contract. The build manifest publishes the composed module and the material cook publishes the resolved record, artifact bytes, references, and receipt. Runtime resolves those facts from the catalog; application code does not install or duplicate shader artifacts. The recovery route is always source or cook repair.

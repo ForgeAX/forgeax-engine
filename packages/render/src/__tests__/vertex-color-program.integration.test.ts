@@ -1,18 +1,13 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, selectMaterialPassProgram } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
-import {
-  materialProgramContextKey,
-  validateCookedMaterialRecord,
-} from '@forgeax/engine-pack/material-cook';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
-import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
+import { prepareRuntimeMaterialTemplate } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../../../shader-compiler/src/material/variant-context';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program';
 import { MeshFilter, MeshRenderer } from '../components';
 import type { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
@@ -24,22 +19,20 @@ it.each([
   true,
 ])('selects plain and colored programs for a shared material across frames (color first: %s)', async (colorFirst) => {
   const source = Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 });
-  // This extraction fixture selects only the storage WebGPU context below.
-  // Portable backend/geometry coverage remains in the stock material input owner.
-  const output = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
-    guid: 'd81bc8b3-0d67-4f7e-97e5-ebbbf8615ade',
-    source,
-  });
-  const record = validateCookedMaterialRecord(
-    (output.payload as { cooked: unknown }).cooked,
-  ).unwrap();
+  const guid = 'd81bc8b3-0d67-4f7e-97e5-ebbbf8615ade';
+  const installMaterial = await prepareRuntimeMaterialTemplate(guid, source);
   const assets = new AssetRegistry({
-    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    shaderRegistry: new ShaderRegistry({
+      manifestUrl: undefined,
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    }),
   });
-  publishRuntimeAssets(assets, [{ guid: record.guid, asset: output.payload as MaterialAsset }]);
+  installMaterial(assets);
   const world = new World({ assets });
   registerPropagateTransforms(world);
-  const material = (await assets.load(record.guid, 'material')).unwrap();
+  const material = (await assets.load(guid, 'material')).unwrap();
+  const projection = assets.getMaterialProjection(material).unwrap();
+  if (projection === undefined) throw new Error('Expected material template projection');
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
   const positions = mesh.attributes.position;
   if (!(positions instanceof Float32Array)) throw new Error('Expected float box positions');
@@ -102,24 +95,21 @@ it.each([
         else expect(entry.material).toBe(resources.get(entry.entityKey));
         expect(entry.material.snapshot.roughness).toBe(frame === 0 ? 0.5 : 0.25);
         const color = expectedColors.get(entry.entityKey);
-        const program = record.programs.find((program) =>
-          program.selections.some(
-            (selection) =>
-              selection.pass === 'forward' &&
-              materialProgramContextKey(selection.context) ===
-                materialProgramContextKey(DEFAULT_MATERIAL_VARIANT_CONTEXT) &&
-              selection.address === 'direct' &&
-              selection.abi?.vertexInputs.some((input) => input.semantic === 'color') === color,
-          ),
+        const program = selectMaterialPassProgram(
+          projection,
+          'forward',
+          DEFAULT_MATERIAL_VARIANT_CONTEXT,
+          'direct',
+          color,
         );
-        expect(program).toBeDefined();
+        expect(program.abi?.vertexInputs.some((input) => input.semantic === 'color')).toBe(color);
         expect(entry.material.snapshot.materialProgramKeys?.forward).toBe(
-          program?.specializationKey,
+          program.specializationKey,
         );
         expect(entry.materials[0]?.snapshot.materialProgramKeys?.forward).toBe(
-          program?.specializationKey,
+          program.specializationKey,
         );
-        expect(entry.material.snapshot.materialShaderId).toBe(program?.specializationKey);
+        expect(entry.material.snapshot.materialShaderId).toBe(program.specializationKey);
       }
     }
   } finally {

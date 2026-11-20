@@ -15,7 +15,7 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { appPackages } from '../build-task-cache.mjs';
 import { readShaderManifestText } from '../lib/shader-manifest.mjs';
-import { appShardRoster } from './app-build-roster.mjs';
+import { appShardRoster, coreAppBuildsOutsideSmoke } from './app-build-roster.mjs';
 import { projectAppShaderManifest, readSharedShaderManifest } from './app-shader-manifest.mjs';
 import coreDeferredBuilds from './core-app-build-deferred.json' with { type: 'json' };
 import { readRoster, resolveRunnableEntries } from './run-dawn-smoke-roster.mjs';
@@ -391,9 +391,12 @@ const apps = roster.filter(
 // CLI exclusions describe the global roster. Derive their local ownership so
 // additions to the sorted roster cannot strand an exclusion on an old shard.
 const core = process.env.FORGEAX_CI_CORE_VALIDATION === '1';
+const outsideSmoke = core ? coreAppBuildsOutsideSmoke(roster) : [];
 const deferred = core ? coreDeferredBuilds.filter((app) => roster.includes(app)) : [];
-const requestedOmissions = [...new Set([...options.omitTransferApps, ...deferred])];
-const requestedSkips = [...new Set([...options.skipBuildApps, ...deferred])];
+const requestedOmissions = [
+  ...new Set([...options.omitTransferApps, ...outsideSmoke, ...deferred]),
+];
+const requestedSkips = [...new Set([...options.skipBuildApps, ...outsideSmoke, ...deferred])];
 const unknownOmittedTransferApp = requestedOmissions.find((app) => !roster.includes(app));
 if (unknownOmittedTransferApp !== undefined) {
   fail('ci-app-shard-transfer-app-not-in-shard', {

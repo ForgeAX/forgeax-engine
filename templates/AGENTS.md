@@ -1,5 +1,7 @@
 # ForgeAX Game Project Guide
 
+[Simplified Chinese](https://github.com/ForgeAX/forgeax-engine/blob/main/templates/AGENTS.zh-CN.md)
+
 TypeScript game on `@forgeax/engine`. Read a reference only when its task applies.
 
 ## Before writing code: know the engine

@@ -673,6 +673,7 @@ async function cookDirectPackDrafts(
           sourceKey: asset.sourceKey,
           sourcePath: input.sourcePath,
           refs: asset.refs,
+          ...(asset.kind === 'material' ? { publication: 'templates' } : {}),
         }),
       })),
     );

@@ -16,7 +16,7 @@ import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const ENGINE_MANIFEST_URL = shaderManifestUrl(
-  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderManifest(),
+  await (await import('@forgeax/engine-vite-plugin-shader')).buildEngineShaderTemplateManifest(),
 );
 
 function storageLessRhi(states: number[][]): typeof rhi {

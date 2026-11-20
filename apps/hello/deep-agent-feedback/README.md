@@ -1,8 +1,11 @@
-# 深度 Agent 反馈 focused 基线
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
 
-该工程是 M1 的唯一 focused evidence carrier。它提供可发现的 Vite 页面、非纯色 canvas、DOM UI，以及 browser、Dawn、capture 和 Pack transform 入口。
+# Deep Agent Feedback Focused Baseline
 
-## 运行
+This project is M1's sole focused evidence carrier. It provides a discoverable Vite page, a nonuniform canvas, DOM UI, and browser, Dawn, capture and Pack-transform entries.
+
+## Run
 
 ```bash
 pnpm --filter @forgeax/hello-deep-agent-feedback typecheck
@@ -12,33 +15,33 @@ pnpm --filter @forgeax/hello-deep-agent-feedback smoke:instances
 pnpm --filter @forgeax/hello-deep-agent-feedback smoke:capture
 ```
 
-`fixture` 查询参数用于后续里程碑复用同一个页面入口；它不会创建第二套场景或帧循环 owner。历史 repeat/transform 现象在当前基线没有红证据时必须记录为 `unreproduced`。
+The `fixture` query parameter lets later milestones reuse the same page without creating a second scene or frame-loop owner. Historical repeat/transform symptoms without a failing reproduction on the current baseline must be recorded as `unreproduced`.
 
-`smoke:capture` 是对 DevKit 唯一 browser-compositor owner 的薄包装：它在当前项目
-目录执行 `forgeax project capture --backend software --require-ui --deterministic`，并校验相邻
-`*.json` 报告中的非纯色 Canvas、已挂载 DOM UI、帧号和零页面错误。可用
-`--project <dir>`、`--output <png>` 或 `FORGEAX_CLI=<path>` 指向 SDK 生成的 fresh 项目；
-脚本不会自行启动第二个 Vite、浏览器或帧循环。
+`smoke:capture` is a thin wrapper around DevKit's single browser-compositor owner.
+It runs `forgeax project capture --backend software --require-ui --deterministic`
+in the current project and verifies the adjacent `*.json` report: nonuniform Canvas,
+mounted DOM UI, frame number and zero page errors. Use `--project <dir>`, `--output <png>`
+or `FORGEAX_CLI=<path>` for a fresh SDK-generated project. The script starts no second Vite, browser or frame loop.
 
-`smoke:instances` 复用 `hello-gltf-instancing` 的真实 Dawn 测试：将 entity
-origin 放在视锥外、将一个 local instance 放回视锥内，验证 CPU 派生 union
-与 GPU 逐实例 cull 各自负责可见性；它只报告结构性/渲染通过，不声明硬件 FPS。
+`smoke:instances` reuses the real Dawn test from `hello-gltf-instancing`, placing
+the entity origin outside the frustum and one local instance inside to verify
+CPU-derived union visibility and per-instance GPU culling separately. It reports structural/rendering success only, not hardware FPS.
 
 ## Point-shadow recipe
 
-访问 `?fixture=point-shadow-recipe` 会让同一个页面入口安装
-`pointShadowPlugin()`，并在既有 caster/receiver 场景中加入一个
-`PointLight + PointLightShadow`。它不另起帧循环或场景 owner；渲染器在
-每帧抽取/记录后通过 `inspect().pointShadow` 暴露 atlas admission 事实。
+`?fixture=point-shadow-recipe` installs `pointShadowPlugin()` through the same
+page entry and adds `PointLight + PointLightShadow` to the existing caster/receiver
+scene. It creates no second frame loop or scene owner. After each frame's
+extraction/recording, `inspect().pointShadow` exposes atlas-admission facts.
 
 ```bash
 pnpm --filter @forgeax/hello-deep-agent-feedback smoke:point-shadow
 ```
 
-这个 smoke 同时运行已有 Chromium cube-array gate，并用同一生产
-`constructRuntimeRendererHost` 在 Dawn 上完成至少 300 帧、六面
-point-shadow pass、inspection 和非黑 readback 断言。输出中的
-`browser`/`dawn`、`frames`、`passCount` 和 `inspection` 是证据字段；本机
-或 CI 没有可用 WebGPU 时保留 `failed`/`not-run`，不冒充硬件 FPS。超出
-`SHADOW_ATLAS_DEFAULT_LAYERS`、缺少 `storageBuffer`、以及无 shadow 请求
-的结构化 falsification 也会随证据输出。
+This smoke also runs the existing Chromium cube-array gate. The same production
+`constructRuntimeRendererHost` completes at least 300 Dawn frames and verifies
+six-face point-shadow passes, inspection and nonblack readback. Output fields
+`browser`/`dawn`, `frames`, `passCount` and `inspection` carry evidence. Without
+available WebGPU locally or in CI, retain `failed`/`not-run`; do not imply hardware
+FPS. Structured falsification also covers exceeding `SHADOW_ATLAS_DEFAULT_LAYERS`,
+missing `storageBuffer` and absence of shadow requests.

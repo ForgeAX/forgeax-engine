@@ -1,18 +1,20 @@
 # @forgeax/view-components
 
-ForgeaX View 的主题、设计 token 和公共 React 组件。设计来源是
-`forgeax-codex-design-system.html` 内嵌 guide 页的
-`forgeax-tokens.json` v1.1.0，而不是文档站自身的排版 CSS。
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-## 使用
+Themes, design tokens and public React components for ForgeaX View. The design
+source is `forgeax-tokens.json` v1.1.0 in the embedded guide of
+`forgeax-codex-design-system.html`, rather than the documentation site's layout CSS.
 
-应用入口加载一次全局样式：
+## Usage
+
+Load global styles once at the application entry:
 
 ```ts
 import '@forgeax/view-components/styles.css';
 ```
 
-组件直接从包入口导入：
+Import components directly from the package entry:
 
 ```tsx
 import { Button, Field, TextInput, ThemeProvider } from '@forgeax/view-components';
@@ -23,39 +25,52 @@ selected value on OK with channels rounded to the displayed three decimals;
 Cancel leaves the external value unchanged. Pack fields retain their existing
 draft and Save ownership.
 
-`ThemeProvider` 默认跟随系统。偏好值为 `system`、`light` 或 `dark`；
-`systemTheme` 可由宿主提供，否则监听系统颜色变化。持久化保存偏好，
-根节点 `data-theme` 始终是解析后的 `light` 或 `dark`。主题只改变界面表面，
-不应修改模型、材质、纹理或图像内容。
+`InspectorForm`, `InspectorFieldControl` and `AssetReferenceField` accept
+`locale: 'en' | 'zh'` (default `'en'`). The caller supplies its current language;
+forms pass it to nested color and asset controls without resetting local state.
+Explicit asset `labels` override the corresponding localized defaults.
+`ClipboardProvider.dismissLabel` localizes its dismiss action while preserving
+the original clipboard diagnostic.
 
-## Token 分层
+Primitive labels default to English and accept explicit translations:
+`SearchField.clearLabel`, `Dialog.closeLabel`, `ToastProvider.dismissLabel`,
+`Conversation.userLabel` and `Composer.inputLabel` / `submitLabel`.
+The host owns the language; these controls do not keep a second locale store.
 
-- `foundation` → `--fx-ref-*`：只供语义层引用。
-- `semantic.shared` → `--fx-type-*`、`--fx-space-*` 等共享合同。
-- `semantic.light/dark` → `--fx-color-*` 与 `--fx-shadow-*`。
-- `component` → `--fx-component-*`：控件和编辑器业务尺寸。
+`ThemeProvider` follows the system by default. Preferences are `system`, `light`
+or `dark`; the host can supply `systemTheme`, otherwise OS appearance changes
+are observed. Preferences persist; the root `data-theme` always resolves to
+`light` or `dark`. Themes affect UI surfaces only, never models, materials,
+textures or image content.
 
-修改 `src/tokens/forgeax.tokens.json` 后运行：
+## Token Layers
+
+- `foundation` → `--fx-ref-*`: references for the semantic layer only.
+- `semantic.shared` → shared contracts such as `--fx-type-*` and `--fx-space-*`.
+- `semantic.light/dark` → `--fx-color-*` and `--fx-shadow-*`.
+- `component` → `--fx-component-*`: control and editor dimensions.
+
+After changing `src/tokens/forgeax.tokens.json`, run:
 
 ```sh
 pnpm generate:tokens
 ```
 
-生成的 `src/styles/tokens.css` 不应手工编辑。
+Do not edit the generated `src/styles/tokens.css` manually.
 
 ## Storybook
 
-从仓库根目录启动：
+Start from the repository root:
 
 ```sh
 pnpm storybook
 ```
 
-静态构建：
+Build the static site:
 
 ```sh
 pnpm build:storybook
 ```
 
-Stories 覆盖基础规则、浅/深主题、控件、反馈、浮层、编辑器模式，以及生成、
-加入资源、应用场景、失败恢复等业务状态闭环。
+Stories cover foundations, light/dark themes, controls, feedback, overlays,
+editor patterns, generation, adding assets, applying scenes and failure recovery.

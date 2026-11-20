@@ -21,6 +21,8 @@ import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-bl
 import { materialArtifactProgramIdentity } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
+import type { GpuSceneTableBindingTarget } from '../gpu-scene';
+import type { GpuSceneInputs } from '../gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS } from '../gpu-scene-schema';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
@@ -51,10 +53,23 @@ import type {
   ReadonlyDynamicInputPage,
   SurfaceDynamicInputFrame,
 } from '../surface/dynamic-input';
-import type { GpuDrivenBatch } from './batch-topology';
+import { batchLevelStride, batchLodLevelCount } from './batch-layout';
+import type { GpuDrivenBatch, SubmissionPlan } from './batch-topology';
 import type { GpuDrivenPbrProgram } from './pbr-program';
 import { resolveStandardPbrProgram } from './pbr-program';
+import type { GpuDrivenPrepareInput } from './production-raster';
 import type { FilteredProductionPlan } from './production-raster-prepare';
+import {
+  createRasterWindowBinding,
+  type GpuRasterInputPreparation,
+  type PreparingRasterInputBindings,
+  type RasterInputDemand,
+  type RasterSceneTables,
+  type RasterWindowStorage,
+  rasterInputCurrent,
+  rasterInputTarget,
+  remapRasterWindowBase,
+} from './raster-input-bindings';
 import { gpuDrivenReflectionFallbackRenderState } from './reflection-fallback-output';
 import {
   GpuResourceAllocationLedger,
@@ -462,6 +477,14 @@ export function requestMaterialAbiRasterPipeline(
   );
 }
 
+function rasterInputBindingError(): RhiError {
+  return new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'unchanged native raster windows and their original Inputs target',
+    hint: 'release this private window preparation and retry against the current owner',
+  });
+}
+
 export class MaterialAbiRasterAdapter {
   /** Effective fixed entry of this adapter, including its retained factory lane. */
   diagnosticGBufferVertexEntry(artifact: MaterialShaderArtifact): string | undefined {
@@ -488,16 +511,8 @@ export class MaterialAbiRasterAdapter {
     this.visibleWindowCounters.resets += 1;
     this.visibleWindowBindGroups = new WeakMap();
   }
-  private sceneTables:
-    | {
-        readonly instanceBuffer: Buffer;
-        readonly instanceBytes: number;
-        readonly primitiveBuffer: Buffer;
-        readonly primitiveBytes: number;
-        readonly visibleSurfaceRows: Buffer | undefined;
-        readonly sceneInputs: Buffer | undefined;
-      }
-    | undefined;
+  private sceneTables: RasterSceneTables | undefined;
+  private preparingInputBindings: PreparingRasterInputBindings | undefined;
   private readonly surfaceInputBuffers = new Set<Buffer>();
   /**
    * Material-raster-owned buffers only. Visible, probe, palette and mesh
@@ -863,7 +878,15 @@ export class MaterialAbiRasterAdapter {
 
   ensureVisibleBuffer(visibleBuffer: Buffer): Result<void, RhiError> {
     if (this.visibleBuffer === visibleBuffer) return ok(undefined);
-    const created = this.device.createBindGroup({
+    const created = this.createVisibleBufferBinding(visibleBuffer);
+    if (!created.ok) return created;
+    this.instancesBindGroup = created.value;
+    this.visibleBuffer = visibleBuffer;
+    return ok(undefined);
+  }
+
+  private createVisibleBufferBinding(visibleBuffer: Buffer): Result<BindGroup, RhiError> {
+    return this.device.createBindGroup({
       label: 'standard-pbr-gpu-driven-visible-instances-bg',
       layout: this.instancesBindGroupLayout,
       entries: [
@@ -879,15 +902,11 @@ export class MaterialAbiRasterAdapter {
         { binding: 6, resource: bufferBinding(this.instanceBuffer, 0, this.instanceBufferSize) },
         {
           binding: 7,
-          resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? this.visibleBuffer),
+          resource: bufferBinding(this.sceneTables?.visibleSurfaceRows ?? visibleBuffer),
         },
         { binding: 8, resource: bufferBinding(this.sceneTables?.sceneInputs ?? visibleBuffer) },
       ],
     });
-    if (!created.ok) return created;
-    this.instancesBindGroup = created.value;
-    this.visibleBuffer = visibleBuffer;
-    return ok(undefined);
   }
 
   ensureProbeBlendRecordBuffer(buffer: Buffer | undefined): Result<void, RhiError> {
@@ -912,6 +931,7 @@ export class MaterialAbiRasterAdapter {
     primitiveBytes: number,
     visibleSurfaceRows?: Buffer,
     sceneInputs?: Buffer,
+    inputOwner?: GpuSceneInputs,
   ): void {
     const current = this.sceneTables;
     if (
@@ -920,7 +940,8 @@ export class MaterialAbiRasterAdapter {
       current.primitiveBuffer === primitiveBuffer &&
       current.primitiveBytes === primitiveBytes &&
       current.visibleSurfaceRows === visibleSurfaceRows &&
-      current.sceneInputs === sceneInputs
+      current.sceneInputs === sceneInputs &&
+      current.inputOwner === inputOwner
     ) {
       return;
     }
@@ -931,6 +952,7 @@ export class MaterialAbiRasterAdapter {
       primitiveBytes,
       visibleSurfaceRows,
       sceneInputs,
+      ...(inputOwner === undefined ? {} : { inputOwner }),
     };
     this.resetVisibleWindows();
   }
@@ -940,11 +962,75 @@ export class MaterialAbiRasterAdapter {
     return this.visibleWindowBindGroups;
   }
 
+  inputBindingState(
+    inputs: GpuSceneInputs,
+    target?: GpuSceneTableBindingTarget,
+  ): 'unused' | 'foreign' | 'current' | 'stale' {
+    if (this.disposed) return 'stale';
+    const tables = this.sceneTables;
+    if (target !== undefined) {
+      if (
+        tables === undefined ||
+        target.owner.inputs !== inputs ||
+        !target.owner.capacityTargetMatches(target)
+      )
+        return 'stale';
+      if (
+        tables.instanceBuffer !== target.owner.instanceBuffer ||
+        tables.primitiveBuffer !== target.owner.primitiveBuffer
+      )
+        return 'foreign';
+      if (tables.sceneInputs === undefined) return 'current';
+    }
+    if (tables?.sceneInputs === undefined) return 'unused';
+    if (tables.inputOwner === undefined) return 'stale';
+    if (tables.inputOwner !== inputs) return 'foreign';
+    return inputs.isCurrentBuffer(tables.sceneInputs) ? 'current' : 'stale';
+  }
+
+  /** One real window binding per resume, through the same cache encoding consumes. */
+  *prepareVisibleWindows(
+    plan: SubmissionPlan,
+    regions: readonly number[],
+    current: () => boolean,
+  ): Generator<void, Result<void, RhiError>> {
+    const invalid = () =>
+      err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'current native visible-window preparation',
+          hint: 'reprepare from the actual batch/LOD and View owners',
+        }),
+      );
+    for (const batch of plan.batches) {
+      if (batch.visibleCapacity === 0) continue;
+      for (const base of regions)
+        for (let level = 0; level < batchLodLevelCount(batch); level++) {
+          if (!current()) return invalid();
+          const result = this.visibleWindowBindGroup(
+            base + batch.visibleBase + level * batchLevelStride(batch),
+            batch.visibleAllocationCapacity ?? batch.visibleCapacity,
+            current,
+          );
+          if (!result.ok) return result;
+          yield;
+        }
+    }
+    return current() ? ok(undefined) : invalid();
+  }
+
   visibleWindowBindGroup(
     visibleBase: number,
     visibleCapacity: number,
+    current?: () => boolean,
   ): Result<BindGroup, RhiError> {
-    return this.visibleWindowBindGroupForBuffer(this.visibleBuffer, visibleBase, visibleCapacity);
+    return this.visibleWindowBindGroupForBuffer(
+      this.visibleBuffer,
+      visibleBase,
+      visibleCapacity,
+      false,
+      current,
+    );
   }
 
   visibleWindowBindGroupForBuffer(
@@ -952,7 +1038,18 @@ export class MaterialAbiRasterAdapter {
     visibleBase: number,
     visibleCapacity: number,
     shadowVisibleAlias = false,
+    current?: () => boolean,
   ): Result<BindGroup, RhiError> {
+    const invalid = () =>
+      err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'current original raster window storage',
+          hint: 'reprepare from the live native Scene/View owners',
+        }),
+      );
+    if (this.disposed || (current !== undefined && !current()) || this.disposed) return invalid();
+    const cache = this.visibleWindowBindGroups;
     const offset = visibleBase * 16;
     const size = visibleCapacity * 16;
     if (offset % 256 !== 0 || size <= 0) {
@@ -992,46 +1089,306 @@ export class MaterialAbiRasterAdapter {
       this.visibleWindowCounters.hits += 1;
       return ok(cached);
     }
-    const created = this.device.createBindGroup({
-      label: `standard-pbr-gpu-driven-visible-window-${visibleBase}`,
-      layout: this.instancesBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: bufferBinding(sceneTables.instanceBuffer, 0, sceneTables.instanceBytes),
-        },
-        {
-          binding: 1,
-          resource:
-            shadowVisibleAlias || this.probeBlendRecordBuffer === undefined
-              ? wholeVisibleBuffer
-                ? bufferBinding(visibleBuffer)
-                : bufferBinding(visibleBuffer, offset, size)
-              : bufferBinding(this.probeBlendRecordBuffer),
-        },
-        {
-          binding: 2,
-          resource: wholeVisibleBuffer
-            ? bufferBinding(visibleBuffer)
-            : bufferBinding(visibleBuffer, offset, size),
-        },
-        { binding: 3, resource: bufferBinding(this.dynamicInputBuffer) },
-        // Surface frame rows are keyed by view candidate row: bind whole.
-        { binding: 4, resource: bufferBinding(this.dynamicFrameBuffer) },
-        { binding: 5, resource: bufferBinding(this.dynamicSharedFrame.buffer) },
-        {
-          binding: 6,
-          resource: bufferBinding(sceneTables.primitiveBuffer, 0, sceneTables.primitiveBytes),
-        },
-        { binding: 7, resource: bufferBinding(sceneTables.visibleSurfaceRows ?? visibleBuffer) },
-        // Shadow views read the same shared scene inputs as the main view.
-        { binding: 8, resource: bufferBinding(sceneTables.sceneInputs ?? visibleBuffer) },
-      ],
-    });
+    const created = createRasterWindowBinding(
+      this.device,
+      this.instancesBindGroupLayout,
+      this.windowStorage(sceneTables),
+      visibleBuffer,
+      visibleBase,
+      visibleCapacity,
+      shadowVisibleAlias,
+    );
     if (!created.ok) return created;
+    if (!this.windowStorageCurrent(sceneTables, cache, current)) return invalid();
     this.visibleWindowCounters.creates += 1;
     groups.set(key, created.value);
     return ok(created.value);
+  }
+
+  private windowStorageCurrent(
+    tables: RasterSceneTables,
+    cache: WeakMap<Buffer, Map<string, BindGroup>>,
+    current: (() => boolean) | undefined,
+  ): boolean {
+    const owned = () =>
+      !this.disposed && this.sceneTables === tables && this.visibleWindowBindGroups === cache;
+    return owned() && (current === undefined || current()) && owned();
+  }
+
+  private windowStorage(tables: RasterSceneTables): RasterWindowStorage {
+    return {
+      tables,
+      probe: this.probeBlendRecordBuffer,
+      dynamicInput: this.dynamicInputBuffer,
+      dynamicFrame: this.dynamicFrameBuffer,
+      sharedFrame: this.dynamicSharedFrame.buffer,
+    };
+  }
+
+  /** Existing cached windows only; the caller must close its real View/bundle roster. */
+  prepareInputBindings(
+    inputs: GpuSceneInputs,
+    demand: RasterInputDemand,
+    visibleBuffers: readonly Buffer[],
+    ownerCurrent?: () => boolean,
+    tableTarget?: GpuSceneTableBindingTarget,
+    skinTasks: readonly SkinTaskBinding[] = [],
+  ): Result<GpuRasterInputPreparation, RhiError> {
+    const tables = this.sceneTables;
+    const target = rasterInputTarget(inputs, demand);
+    if (
+      tables === undefined ||
+      target === undefined ||
+      !this.inputPreparationAvailable(inputs, demand, tableTarget)
+    )
+      return err(rasterInputBindingError());
+    const role: PreparingRasterInputBindings = {
+      facts: {
+        storage: this.windowStorage(tables),
+        cache: this.visibleWindowBindGroups,
+        visible: this.visibleBuffer,
+        whole: this.device.caps.firstInstanceIndirect,
+        inputs,
+        demand,
+        target,
+      },
+      snapshots: [],
+      replacements: new Map(),
+      next: new WeakMap(),
+      nextVisible: undefined,
+      nextInstances: undefined,
+      nextTables: {
+        ...tables,
+        sceneInputs: tables.sceneInputs === undefined ? undefined : target.buffer,
+        ...(tableTarget === undefined
+          ? {}
+          : {
+              primitiveBuffer: tableTarget.primitiveBuffer,
+              primitiveBytes: tableTarget.rowCapacity * GPU_SCENE_LAYOUTS.primitive.stride,
+              instanceBuffer: tableTarget.instanceBuffer,
+              instanceBytes: tableTarget.rowCapacity * GPU_SCENE_LAYOUTS.instance.stride,
+            }),
+      },
+      ready: false,
+      closeOwner: undefined,
+    };
+    this.preparingInputBindings = role;
+    let accepted = false;
+    try {
+      if (tableTarget !== undefined) this.prepareMeshInputs(role, tableTarget, skinTasks);
+      for (const buffer of new Set([this.visibleBuffer, ...visibleBuffers])) {
+        const groups = this.visibleWindowBindGroups.get(buffer);
+        role.snapshots.push({ buffer, groups, rows: groups === undefined ? [] : [...groups] });
+      }
+      if (demand.kind === 'current' && this.visibleBuffer === demand.storage.before.visible) {
+        role.nextVisible = demand.storage.after.visible;
+        role.nextInstances = this.createVisibleBufferBinding(role.nextVisible).unwrap();
+      }
+      const created = this.createInputWindows(role, ownerCurrent);
+      if (!created.ok) return created;
+      role.ready = true;
+      const api = this.inputBindingPreparationApi(role);
+      accepted = true;
+      return ok(api);
+    } catch (cause) {
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    } finally {
+      if (!accepted) this.releaseInputBindings(role);
+    }
+  }
+
+  private inputPreparationAvailable(
+    inputs: GpuSceneInputs,
+    demand: RasterInputDemand,
+    tableTarget: GpuSceneTableBindingTarget | undefined,
+  ): boolean {
+    const tables = this.sceneTables;
+    return !(
+      this.disposed ||
+      this.preparingInputBindings !== undefined ||
+      tables === undefined ||
+      (tables.sceneInputs === undefined &&
+        tableTarget === undefined &&
+        demand.kind === 'successor') ||
+      !inputs.isLiveOn(this.device) ||
+      (tables.sceneInputs !== undefined && !inputs.isCurrentBuffer(tables.sceneInputs))
+    );
+  }
+
+  private inputBindingPreparationApi(
+    role: PreparingRasterInputBindings,
+  ): GpuRasterInputPreparation {
+    let owner: MaterialAbiRasterAdapter | undefined = this;
+    role.closeOwner = () => {
+      owner = undefined;
+    };
+    const current = () => owner?.preparedInputsCurrent(role) === true;
+    return Object.freeze({
+      isCurrent: current,
+      bindingIdentity: () => (current() ? role.next : undefined),
+      replacement: (window: BindGroup) => (current() ? role.replacements.get(window) : undefined),
+      prepareMesh: (previous: BindGroup) => {
+        if (!current()) return err(rasterInputBindingError());
+        return role.prepareMesh?.(previous) ?? ok(undefined);
+      },
+      publish: () => {
+        const active = owner;
+        if (active === undefined) return err(rasterInputBindingError());
+        const result = active.publishInputBindings(role);
+        if (result.ok) owner = undefined;
+        return result;
+      },
+      release: () => {
+        const active = owner;
+        owner = undefined;
+        active?.releaseInputBindings(role);
+      },
+    });
+  }
+
+  private createInputWindows(
+    role: PreparingRasterInputBindings,
+    ownerCurrent?: () => boolean,
+  ): Result<void, RhiError> {
+    const facts = role.facts;
+    if (facts?.target === undefined || role.nextTables === undefined)
+      return err(rasterInputBindingError());
+    const { inputs, demand, target } = facts;
+    // The Root's pure source guard applies during construction only. Accepted
+    // window eligibility remains this owner's exact issuer/table observation.
+    const current = () =>
+      this.inputBindingsMatch(role) && ownerCurrent?.() !== false && this.inputBindingsMatch(role);
+    for (const snapshot of role.snapshots) {
+      const result = this.createInputWindowSnapshot(role, snapshot, current);
+      if (!result.ok) return result;
+    }
+    if (!current() || rasterInputTarget(inputs, demand)?.buffer !== target.buffer)
+      return err(rasterInputBindingError());
+    return ok(undefined);
+  }
+
+  private createInputWindowSnapshot(
+    role: PreparingRasterInputBindings,
+    snapshot: PreparingRasterInputBindings['snapshots'][number],
+    current: () => boolean,
+  ): Result<void, RhiError> {
+    const facts = role.facts;
+    if (facts?.target === undefined || role.nextTables === undefined)
+      return err(rasterInputBindingError());
+    const { inputs, demand, target } = facts;
+    const storage = { ...facts.storage, tables: role.nextTables };
+    const targetStorage = demand.kind === 'current' ? demand.storage : undefined;
+    const moved = targetStorage !== undefined && snapshot.buffer === targetStorage.before.visible;
+    const nextBuffer = moved ? targetStorage.after.visible : snapshot.buffer;
+    const groups = new Map<string, BindGroup>();
+    for (const [key, previous] of snapshot.rows) {
+      if (!current() || rasterInputTarget(inputs, demand)?.buffer !== target.buffer)
+        return err(rasterInputBindingError());
+      if (targetStorage !== undefined && !moved) {
+        groups.set(key, previous);
+        role.replacements.set(previous, previous);
+        continue;
+      }
+      const parts = key.split(':');
+      const oldBase = Number(parts[0]);
+      const base = moved ? remapRasterWindowBase(oldBase, targetStorage) : oldBase;
+      const whole = this.device.caps.firstInstanceIndirect;
+      const created = createRasterWindowBinding(
+        this.device,
+        this.instancesBindGroupLayout,
+        storage,
+        nextBuffer,
+        whole ? 0 : base,
+        whole ? 1 : Number(parts[1]),
+        whole ? key === 'shadow' : parts[2] === 'shadow',
+      );
+      if (!created.ok) return created;
+      if (!current() || rasterInputTarget(inputs, demand)?.buffer !== target.buffer)
+        return err(rasterInputBindingError());
+      const nextKey = whole ? key : `${base}:${parts[1]}:${parts[2]}`;
+      groups.set(nextKey, created.value);
+      role.replacements.set(previous, created.value);
+    }
+    role.next?.set(nextBuffer, groups);
+
+    return ok(undefined);
+  }
+
+  private inputBindingsMatch(role: PreparingRasterInputBindings): boolean {
+    const facts = role.facts;
+    if (this.disposed || this.preparingInputBindings !== role || facts === undefined) return false;
+    const storage = facts.storage;
+    if (
+      this.sceneTables !== storage.tables ||
+      this.visibleWindowBindGroups !== facts.cache ||
+      this.visibleBuffer !== facts.visible ||
+      this.device.caps.firstInstanceIndirect !== facts.whole ||
+      role.meshCurrent?.() === false ||
+      this.probeBlendRecordBuffer !== storage.probe ||
+      this.dynamicInputBuffer !== storage.dynamicInput ||
+      this.dynamicFrameBuffer !== storage.dynamicFrame ||
+      this.dynamicSharedFrame.buffer !== storage.sharedFrame
+    )
+      return false;
+    // Each private map only appends on a miss; reset/replacement changes the root identity.
+    for (const snapshot of role.snapshots)
+      if (
+        facts.cache.get(snapshot.buffer) !== snapshot.groups ||
+        (snapshot.groups?.size ?? 0) !== snapshot.rows.length
+      )
+        return false;
+    return true;
+  }
+
+  private preparedInputsCurrent(role: PreparingRasterInputBindings): boolean {
+    const facts = role.facts;
+    return (
+      role.ready &&
+      this.inputBindingsMatch(role) &&
+      facts !== undefined &&
+      facts.target !== undefined &&
+      rasterInputCurrent(facts.inputs, facts.demand, facts.target.buffer)
+    );
+  }
+
+  private publishInputBindings(role: PreparingRasterInputBindings): Result<void, RhiError> {
+    const facts = role.facts;
+    if (
+      !this.preparedInputsCurrent(role) ||
+      facts?.target === undefined ||
+      role.next === undefined ||
+      role.nextTables === undefined ||
+      !facts.inputs.isCurrentBuffer(facts.target.buffer)
+    )
+      return err(rasterInputBindingError());
+    role.publishMesh?.();
+    this.sceneTables = role.nextTables;
+    this.visibleWindowBindGroups = role.next;
+    if (role.nextVisible !== undefined && role.nextInstances !== undefined) {
+      this.visibleBuffer = role.nextVisible;
+      this.instancesBindGroup = role.nextInstances;
+    }
+    this.releaseInputBindings(role);
+    return ok(undefined);
+  }
+
+  private releaseInputBindings(role: PreparingRasterInputBindings): void {
+    const closeOwner = role.closeOwner;
+    role.closeOwner = undefined;
+    role.facts = undefined;
+    role.snapshots.length = 0;
+    role.replacements.clear();
+    role.next = undefined;
+    role.nextTables = undefined;
+    role.nextVisible = undefined;
+    role.nextInstances = undefined;
+    role.ready = false;
+    role.meshCurrent = undefined;
+    role.prepareMesh = undefined;
+    role.publishMesh = undefined;
+    if (this.preparingInputBindings === role) this.preparingInputBindings = undefined;
+    closeOwner?.();
   }
 
   shadowVisibleWindowBindGroupForBuffer(
@@ -1054,13 +1411,7 @@ export class MaterialAbiRasterAdapter {
       if (group === undefined) members.set(key, [entry]);
       else group.push(entry);
     }
-    const addresses = new Map<
-      string,
-      { readonly frameBase: number; readonly instanceCount: number; readonly byteOffset: number }
-    >();
-    const memberCount = [...members.values()].reduce((count, group) => count + group.length, 0);
-    const payload = new Uint8Array(Math.max(1, memberCount) * SURFACE_DIRECT_ADDRESS_STRIDE);
-    const view = new DataView(payload.buffer);
+    const addresses: typeof this.directAddresses = new Map();
     let addressIndex = 0;
     for (const [key, group] of members) {
       group.sort(
@@ -1088,8 +1439,6 @@ export class MaterialAbiRasterAdapter {
       }
       for (let ordinal = 0; ordinal < group.length; ordinal += 1) {
         const byteOffset = addressIndex * SURFACE_DIRECT_ADDRESS_STRIDE;
-        view.setUint32(byteOffset, frameBase + ordinal, true);
-        view.setUint32(byteOffset + 4, group.length - ordinal, true);
         addresses.set(`${key}:${ordinal}`, {
           frameBase: frameBase + ordinal,
           instanceCount: group.length - ordinal,
@@ -1097,6 +1446,13 @@ export class MaterialAbiRasterAdapter {
         });
         addressIndex += 1;
       }
+    }
+    if (this.sameDirectSurfaceAddresses(addresses)) return ok(undefined);
+    const payload = new Uint8Array(Math.max(1, addresses.size) * SURFACE_DIRECT_ADDRESS_STRIDE);
+    const view = new DataView(payload.buffer);
+    for (const address of addresses.values()) {
+      view.setUint32(address.byteOffset, address.frameBase, true);
+      view.setUint32(address.byteOffset + 4, address.instanceCount, true);
     }
     const replacementSize = Math.max(this.directAddressBufferSize, payload.byteLength);
     const replacement = this.device.createBuffer({
@@ -1121,6 +1477,22 @@ export class MaterialAbiRasterAdapter {
     this.surfaceInputBuffers.delete(previous);
     this.retireOwnedBuffer(previous);
     return ok(undefined);
+  }
+
+  /** Equal native mapping preserves buffer identity and every binding's byte offset. */
+  private sameDirectSurfaceAddresses(addresses: typeof this.directAddresses): boolean {
+    if (addresses.size !== this.directAddresses.size) return false;
+    for (const [key, address] of addresses) {
+      const before = this.directAddresses.get(key);
+      if (
+        before === undefined ||
+        before.frameBase !== address.frameBase ||
+        before.instanceCount !== address.instanceCount ||
+        before.byteOffset !== address.byteOffset
+      )
+        return false;
+    }
+    return true;
   }
 
   directSurfaceInstances(input: {
@@ -1825,10 +2197,105 @@ export class MaterialAbiRasterAdapter {
     this.pipelines.clear();
   }
 
+  private readonly meshBindingFacts = new WeakMap<
+    BindGroup,
+    {
+      readonly transform: Buffer;
+      readonly bytes: number;
+      readonly task?: Readonly<SkinTaskBinding>;
+    }
+  >();
   private readonly skinMeshBindings = new WeakMap<
     Buffer,
     WeakMap<Buffer, WeakMap<Buffer, ResultOk<BindGroup>>>
   >();
+
+  private createSceneMeshBinding(
+    transform: Buffer,
+    bytes: number,
+    task?: Readonly<SkinTaskBinding>,
+  ): Result<BindGroup, RhiError> {
+    const fixedTask = task === undefined ? undefined : { ...task };
+    const created = this.device.createBindGroup({
+      label:
+        fixedTask === undefined
+          ? 'standard-pbr-gpu-driven-scene-mesh-bg'
+          : 'standard-pbr-gpu-driven-skin-task-bg',
+      layout: this.meshLayout,
+      entries:
+        fixedTask === undefined
+          ? [{ binding: 0, resource: bufferBinding(transform, 0, bytes) }]
+          : createPbrSkinMeshBindGroupEntries(transform, bytes, fixedTask),
+    });
+    if (created.ok)
+      this.meshBindingFacts.set(created.value, {
+        transform,
+        bytes,
+        ...(fixedTask === undefined ? {} : { task: fixedTask }),
+      });
+    return created;
+  }
+
+  private prepareMeshInputs(
+    role: PreparingRasterInputBindings,
+    target: GpuSceneTableBindingTarget,
+    skinTasks: readonly SkinTaskBinding[],
+  ): void {
+    const previous = this.sceneMeshBinding;
+    const originalTransform = target.owner.transformBuffer;
+    let next = previous;
+    const skins = new WeakMap<Buffer, WeakMap<Buffer, ResultOk<BindGroup>>>();
+    role.meshCurrent = () =>
+      this.sceneMeshBinding === previous && target.owner.capacityTargetMatches(target);
+    role.prepareMesh = (binding) => {
+      const cached = role.replacements.get(binding);
+      if (cached !== undefined) return ok(cached);
+      const facts = this.meshBindingFacts.get(binding);
+      if (facts === undefined) return ok(undefined);
+      if (role.meshCurrent?.() !== true) return err(rasterInputBindingError());
+      if (facts.transform === target.transformBuffer && facts.bytes === target.transformBytes) {
+        role.replacements.set(binding, binding);
+        return ok(binding);
+      }
+      const created = this.createSceneMeshBinding(
+        target.transformBuffer,
+        target.transformBytes,
+        facts.task,
+      );
+      if (!created.ok) return created;
+      if (role.meshCurrent?.() !== true) return err(rasterInputBindingError());
+      role.replacements.set(binding, created.value);
+      if (facts.task === undefined)
+        next = {
+          transformBuffer: target.transformBuffer,
+          transformBytes: target.transformBytes,
+          result: Object.freeze(ok(created.value)),
+        };
+      else {
+        let auxiliary = skins.get(facts.task.data);
+        if (auxiliary === undefined) {
+          auxiliary = new WeakMap();
+          skins.set(facts.task.data, auxiliary);
+        }
+        auxiliary.set(facts.task.auxiliary, Object.freeze(ok(created.value)));
+      }
+      return created;
+    };
+    if (previous !== undefined) role.prepareMesh(previous.result.value).unwrap();
+    if (this.deformation === 'skin')
+      for (const task of skinTasks) {
+        const cached = this.skinMeshBindings
+          .get(originalTransform)
+          ?.get(task.data)
+          ?.get(task.auxiliary);
+        if (cached !== undefined) role.prepareMesh(cached.value).unwrap();
+      }
+    role.publishMesh = () => {
+      this.sceneMeshBinding = next;
+      if (this.deformation === 'skin' && target.transformBuffer !== originalTransform)
+        this.skinMeshBindings.set(target.transformBuffer, skins);
+    };
+  }
 
   /** Actual view task output is borrowed; neither a palette cache nor a pose revision. */
   sceneMeshBindGroup(
@@ -1860,11 +2327,7 @@ export class MaterialAbiRasterAdapter {
       }
       const cached = auxiliaryBindings.get(auxiliary);
       if (cached !== undefined) return cached;
-      const created = this.device.createBindGroup({
-        label: 'standard-pbr-gpu-driven-skin-task-bg',
-        layout: this.meshLayout,
-        entries: createPbrSkinMeshBindGroupEntries(transformBuffer, transformBytes, task),
-      });
+      const created = this.createSceneMeshBinding(transformBuffer, transformBytes, task);
       if (created.ok) auxiliaryBindings.set(auxiliary, Object.freeze(ok(created.value)));
       return created;
     }
@@ -1875,11 +2338,7 @@ export class MaterialAbiRasterAdapter {
       cached.transformBytes === transformBytes
     )
       return cached.result;
-    const bindGroup = this.device.createBindGroup({
-      label: 'standard-pbr-gpu-driven-scene-mesh-bg',
-      layout: this.meshLayout,
-      entries: [{ binding: 0, resource: bufferBinding(transformBuffer, 0, transformBytes) }],
-    });
+    const bindGroup = this.createSceneMeshBinding(transformBuffer, transformBytes);
     if (!bindGroup.ok) return bindGroup;
     this.sceneMeshBinding = {
       transformBuffer,
@@ -1892,9 +2351,12 @@ export class MaterialAbiRasterAdapter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.preparingInputBindings !== undefined)
+      this.releaseInputBindings(this.preparingInputBindings);
     for (const buffer of this.pendingRetirements) this.destroyOwnedBuffer(buffer);
     this.pendingRetirements.clear();
     this.sceneMeshBinding = undefined;
+    this.sceneTables = undefined;
     this.dynamicFrameRows.clear();
     this.dynamicFrameRangeSource = undefined;
     this.dynamicInputRangeSource = undefined;
@@ -2343,4 +2805,43 @@ export class SurfaceFrameProjectionOwner {
     this.surfaceFrameRangeCache = undefined;
     this.consumedSurfaceInput = undefined;
   }
+}
+
+const surfaceRowCache = new WeakMap<
+  SubmissionPlan,
+  { readonly bases: object; readonly layout: number; readonly rows: Uint32Array }
+>();
+
+export function surfaceVisibleRows(
+  plan: SubmissionPlan,
+  scene: PersistentGpuDrivenState,
+  visibleSurface: GpuDrivenPrepareInput['visibleSurface'],
+): Uint32Array | undefined {
+  if (visibleSurface === undefined) return undefined;
+  // Rows derive only from the plan and the surface addresses: an unchanged
+  // layout reuses the immutable array, so a steady frame does no candidate walk.
+  const cached = surfaceRowCache.get(plan);
+  if (cached?.bases === visibleSurface.slotBases && cached.layout === visibleSurface.layout)
+    return cached.rows;
+  const rows = new Uint32Array(plan.candidateCount);
+  let row = 0;
+  for (const batch of plan.batches) {
+    for (const candidate of batch.candidates) {
+      const base = visibleSurface.slotBases.get(candidate.primitiveIndex) ?? 0;
+      const instanceCount =
+        scene.slotAt(candidate.primitiveIndex)?.snapshot.instances?.instanceCount ?? 1;
+      rows[row++] =
+        base === 0
+          ? 0
+          : base +
+            (batch.binding?.drawItemIndex ?? candidate.drawItemIndex) * instanceCount +
+            candidate.instanceOrdinal;
+    }
+  }
+  surfaceRowCache.set(plan, {
+    bases: visibleSurface.slotBases,
+    layout: visibleSurface.layout,
+    rows,
+  });
+  return rows;
 }

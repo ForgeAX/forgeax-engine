@@ -1,11 +1,13 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, beforeAll, it } from 'vitest';
 import { verifyRuntimeTilemap } from './managed-tilemap.gpu-fixture';
 
 let url: string;
 beforeAll(async () => {
   url = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], {
+      type: 'application/json',
+    }),
   );
 }, 120_000);
 afterAll(() => URL.revokeObjectURL(url));

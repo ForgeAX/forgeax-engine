@@ -17,7 +17,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
@@ -26,7 +26,7 @@ import { testAssets } from './helpers/runtime-assets';
 import { LOD_SIZE, value } from './lod-transition.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows', {
   timeout: 120_000,

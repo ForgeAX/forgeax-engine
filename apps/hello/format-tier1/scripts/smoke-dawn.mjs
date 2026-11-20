@@ -21,7 +21,7 @@ const { constructRuntimeRendererHost } = await import(
 );
 const { MorphWeights, Transform } = await import('@forgeax/engine-scene');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const { fbxImporter } = await import('@forgeax/engine-fbx');
 const { gltfImporter } = await import('@forgeax/engine-gltf');
 const { ImporterRegistry, runImport } = await import('@forgeax/engine-import');
@@ -217,7 +217,7 @@ const mockCanvas = {
 const phases = { standardFrames: 0, baseWeightFrames: 0, zeroWeightFrames: 0, animatedFrames: 0 };
 let currentFrame = 0;
 
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const constructed = await constructRuntimeRendererHost(
   mockCanvas,
   {},

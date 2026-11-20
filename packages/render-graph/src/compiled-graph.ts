@@ -31,6 +31,7 @@ import type {
   GraphAccelerationStructure,
   GraphAccessUsage,
   GraphBuffer,
+  GraphPreparationStep,
   GraphResourceResolver,
   GraphTexture,
   GraphTextureContentRange,
@@ -431,6 +432,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     }
   >();
   private readonly importedViews = new Map<number, { texture: Texture; view: TextureView }>();
+  private readonly preparedNativeImports = new Map<number, Texture>();
   /** The compiler owns fixed membership; mutable resolution values stay with their records. */
   private readonly resourceOrder: readonly CompiledResource<FrameCtx>[];
   private readonly pendingTextureWrites = new Map<string, StagedTextureWrite[]>();
@@ -516,6 +518,133 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   /** The immutable compiled generation, without materializing allocation inspection. */
   compiledGeneration(): number {
     return this.generation;
+  }
+
+  isRetired(): boolean {
+    return this.retired;
+  }
+
+  preparedResourcesCurrent(): boolean {
+    if (this.retired || !this.nativeImportsCurrent()) return false;
+    for (const pass of this.passes) {
+      if (pass.pass.descriptor.preparedResourcesCurrent?.() === false || this.retired) return false;
+    }
+    return !this.retired;
+  }
+
+  prepareResources(
+    current: () => boolean,
+  ): Generator<GraphPreparationStep, Result<void, RenderGraphError>> {
+    let closed = false;
+    let advancing = false;
+    let finished = false;
+    let closingValue: Result<void, RenderGraphError> = err(this.preparationInvalid());
+    const work = this.prepareResourceSteps(() => !closed && current() && !closed);
+    const next = work.next.bind(work);
+    const finish = work.return.bind(work);
+    const close = (value: Result<void, RenderGraphError>) => {
+      closed = true;
+      closingValue = value;
+      if (!advancing && !finished) {
+        finished = true;
+        finish(value);
+      }
+      return { done: true as const, value };
+    };
+    return Object.freeze(
+      Object.assign(work, {
+        return: close,
+        throw: (cause?: unknown) => {
+          close(err(this.preparationInvalid()));
+          throw cause;
+        },
+        next: (value?: unknown) => {
+          if (closed || this.resolving || executingGraphs.has(this))
+            return close(err(this.preparationInvalid()));
+          // Admission covers one synchronous resume, never an ordinary frame between yields.
+          this.resolving = true;
+          advancing = true;
+          try {
+            const result = next(value);
+            if (result.done) {
+              closed = true;
+              finished = true;
+            }
+            return closed && !result.done ? { done: true as const, value: closingValue } : result;
+          } finally {
+            advancing = false;
+            this.resolving = false;
+            if (closed && !finished) close(closingValue);
+          }
+        },
+      }),
+    );
+  }
+
+  private preparationInvalid(): RenderGraphError {
+    return new RenderGraphError({
+      code: 'graph-preparation-invalid',
+      expected: 'the original idle live graph and current native preparation inputs',
+      hint: 'reprepare from the original owners outside encoding and import resolution',
+      detail: { generation: this.generation },
+    });
+  }
+
+  private *prepareResourceSteps(
+    current: () => boolean,
+  ): Generator<GraphPreparationStep, Result<void, RenderGraphError>> {
+    const live = () => !this.retired && current() && !this.retired;
+    try {
+      yield* this.prepareNativeImports(live);
+    } catch (cause) {
+      return err(resolutionError('native imported texture preparation', cause));
+    }
+    for (const pass of this.passes) {
+      try {
+        if (!live()) return err(this.preparationInvalid());
+        const prepare = pass.pass.descriptor.prepareResources;
+        if (prepare === undefined) continue;
+        const resources = Object.freeze({
+          createdTextureView: (resource: GraphTextureView): TextureView | undefined => {
+            if (this.retired) return undefined;
+            const data = handleData(resource);
+            if (
+              data?.kind !== 'texture-view' ||
+              !pass.viewIds.has(data.id) ||
+              !pass.resourceIds.has(data.textureId)
+            )
+              return undefined;
+            return this.createdTextureView(resource);
+          },
+        });
+        yield* prepare(resources, live);
+        if (!live()) return err(this.preparationInvalid());
+      } catch (cause) {
+        return err(
+          new RenderGraphError({
+            code: 'pass-preparation-failed',
+            expected: `pass '${pass.name}' prepares native resources without encoding`,
+            hint: 'inspect the original native owner failure in detail.cause',
+            detail: { passName: pass.name, passKind: pass.pass.kind, cause },
+          }),
+        );
+      }
+    }
+    return live() ? ok(undefined) : err(this.preparationInvalid());
+  }
+
+  /** Fixed native ownership only: this never resolves a frame, allocates or grants execution. */
+  createdTextureView(resource: GraphTextureView): TextureView | undefined {
+    const data = handleData(resource);
+    if (this.retired || data?.owner !== this.owner || data.kind !== 'texture-view')
+      return undefined;
+    const texture = this.resources.get(data.textureId);
+    const view = this.views.get(data.id);
+    return texture?.record.kind === 'texture' &&
+      texture.record.origin === 'created' &&
+      view?.record.resolve === undefined
+      ? view?.view
+      : undefined;
   }
 
   retainTexture(
@@ -1527,15 +1656,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           if (texture === undefined) return err(resolutionError(compiledView.record.label));
           // A view of an imported texture depends only on that texture and the
           // compiled descriptor: re-create it only when the import changes.
-          const previous = this.importedViews.get(compiledView.record.id);
-          if (previous?.texture === texture) {
-            views.set(compiledView.record.id, previous.view);
-            continue;
-          }
-          const created = this.device.createTextureView(texture, compiledView.record.descriptor);
-          if (!created.ok) return err(resolutionError(compiledView.record.label, created.error));
-          this.importedViews.set(compiledView.record.id, { texture, view: created.value });
-          views.set(compiledView.record.id, created.value);
+          const view = this.importedTextureView(compiledView, texture);
+          if (!view.ok) return view;
+          views.set(compiledView.record.id, view.value);
         }
         return undefined;
       };
@@ -1547,6 +1670,74 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       if (this.importsResolved !== resolved) this.inspection = undefined;
       this.importsResolved = resolved;
     }
+  }
+
+  private importedTextureView(
+    compiled: CompiledView<FrameCtx>,
+    texture: Texture,
+    current?: () => boolean,
+  ): Result<TextureView, RenderGraphError> {
+    if (current?.() === false) return err(this.preparationInvalid());
+    const previous = this.importedViews.get(compiled.record.id);
+    if (previous?.texture === texture) return ok(previous.view);
+    const created = this.device.createTextureView(texture, compiled.record.descriptor);
+    if (!created.ok) return err(resolutionError(compiled.record.label, created.error));
+    if (current?.() === false || this.retired) return err(this.preparationInvalid());
+    this.importedViews.set(compiled.record.id, { texture, view: created.value });
+    return created;
+  }
+
+  private *prepareNativeImports(current: () => boolean): Generator<GraphPreparationStep> {
+    for (const resource of this.resourceOrder) {
+      const record = resource.record;
+      if (
+        resource.usage === 0 ||
+        record.kind !== 'texture' ||
+        record.origin !== 'imported' ||
+        record.native === undefined
+      )
+        continue;
+      if (!current()) throw this.preparationInvalid();
+      const texture = yield* record.native.prepare(current);
+      const live = () =>
+        !this.retired && current() && record.native?.current() === texture && !this.retired;
+      if (!live()) throw this.preparationInvalid();
+      this.preparedNativeImports.set(record.id, texture);
+      for (const view of this.views.values()) {
+        if (view.record.textureId !== record.id || view.record.resolve !== undefined) continue;
+        this.importedTextureView(view, texture, live).unwrap();
+        yield;
+        if (!live()) throw this.preparationInvalid();
+      }
+    }
+  }
+
+  private nativeImportsCurrent(): boolean {
+    if (this.retired) return false;
+    for (const resource of this.resourceOrder) {
+      const record = resource.record;
+      if (
+        resource.usage === 0 ||
+        record.kind !== 'texture' ||
+        record.origin !== 'imported' ||
+        record.native === undefined
+      )
+        continue;
+      const prepared = this.preparedNativeImports.get(record.id);
+      if (prepared === undefined || record.native.current() !== prepared || this.retired)
+        return false;
+    }
+    for (const view of this.views.values()) {
+      const resource = this.resources.get(view.record.textureId);
+      if (resource?.usage === 0 || view.record.resolve !== undefined) continue;
+      const record = resource?.record;
+      if (record?.kind !== 'texture' || record.origin !== 'imported' || record.native === undefined)
+        continue;
+      const actual = record.native.current();
+      if (actual === undefined || this.importedViews.get(view.record.id)?.texture !== actual)
+        return false;
+    }
+    return !this.retired;
   }
 
   private passResolver(

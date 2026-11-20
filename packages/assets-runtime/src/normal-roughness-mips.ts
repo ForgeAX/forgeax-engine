@@ -92,7 +92,8 @@ export function encodeNormalRoughnessMipmaps(
   levels: number,
   cache: { readonly layout: BindGroupLayout; readonly sampler: Sampler },
   pipelines: NormalRoughnessMipmapPipelines,
-): Result<readonly Texture[], RhiError> {
+  images: Texture[],
+): Result<void, RhiError> {
   const layers = descriptor.arrayLayerCount ?? 1;
   if (!Number.isSafeInteger(layers) || layers < 1)
     return err(
@@ -102,11 +103,6 @@ export function encodeNormalRoughnessMipmaps(
         hint: 'use the declared texture layer count',
       }),
     );
-  const images: Texture[] = [];
-  const fail = (error: RhiError): Result<never, RhiError> => {
-    for (const image of images) device.destroyTexture(image);
-    return err(error);
-  };
   const physical = device.caps.backendKind === 'wgpu-webgl2';
   const create = (mip: number, format: GPUTextureFormat) => {
     const image = device.createTexture({
@@ -124,13 +120,13 @@ export function encodeNormalRoughnessMipmaps(
   const means: Texture[] = [];
   for (let mip = 1; mip < levels; mip++) {
     const image = create(mip, 'rgba16float');
-    if (!image.ok) return fail(image.error);
+    if (!image.ok) return image;
     means.push(image.value);
   }
   const base = physical && layers > 1 ? create(0, 'rgba8unorm') : ok(texture);
-  if (!base.ok) return fail(base.error);
+  if (!base.ok) return base;
   const first = physical ? create(1, 'rgba8unorm') : undefined;
-  if (first !== undefined && !first.ok) return fail(first.error);
+  if (first !== undefined && !first.ok) return first;
   const encodeLevel = (
     previous: Texture,
     mip: number,
@@ -194,9 +190,9 @@ export function encodeNormalRoughnessMipmaps(
     let previous = base.value;
     for (let mip = 1; mip < levels; mip++) {
       const encoded = encodeLevel(previous, mip, layer);
-      if (!encoded.ok) return fail(encoded.error);
+      if (!encoded.ok) return encoded;
       previous = encoded.value;
     }
   }
-  return ok(images);
+  return ok(undefined);
 }

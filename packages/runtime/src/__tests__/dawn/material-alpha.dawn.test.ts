@@ -21,8 +21,8 @@ const CLEAR_USAGE = 0x10 | 0x01;
 const MAP_READ = 0x0001;
 const COPY_DST = 0x0008;
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 const LIGHTWEIGHT_DAWN = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1';

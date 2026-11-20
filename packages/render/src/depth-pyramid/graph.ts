@@ -1,5 +1,6 @@
 import type {
   GraphBuffer,
+  GraphPassPreparation,
   GraphResourceResolver,
   GraphTexture,
   GraphTextureView,
@@ -8,7 +9,7 @@ import type {
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError as DepthGraphError } from '@forgeax/engine-render-graph';
-import type { BindGroup } from '@forgeax/engine-rhi';
+import type { BindGroup, Buffer, RhiDevice, TextureView } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   type ComputeState,
@@ -17,7 +18,14 @@ import {
   resolvedGraphView,
 } from '../compute-graph-state';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
-import { bindGroupChainLeaf2, bindGroupChainLeaf3, rememberBindGroup } from '../record/mesh-ssbo';
+import type { BindGroupCounts } from '../record/frame-snapshot';
+import {
+  bindGroupChainLeaf2,
+  bindGroupChainLeaf3,
+  findFromChain,
+  rememberBindGroup,
+} from '../record/mesh-ssbo';
+import type { NativeGraphInputs } from '../record/native-graph-inputs';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -27,7 +35,7 @@ import {
   type DepthPyramidExtent,
   type DepthPyramidPlan,
 } from './plan';
-import { createDepthPyramidProgramResolver } from './programs';
+import { createDepthPyramidProgramResolver, prepareDepthPyramidProgram } from './programs';
 import { addFragmentDepthPyramidPasses } from './raster';
 
 /**
@@ -44,20 +52,20 @@ const REDUCTION_NAMES: Readonly<
   furthest: { graph: 'occlusion-depth-pyramid', entry: '_furthest' },
 };
 
-/** Each reduction consumes exactly two views; assemble descriptors only on a miss. */
-function reductionBindGroup(
-  frame: RenderGraphFrame,
+/** Both preparation and encoding issue bindings through this original program cache. */
+function reductionNativeBinding(
+  device: RhiDevice,
+  counts: BindGroupCounts,
   state: ComputeState,
-  resources: GraphResourceResolver,
-  source: GraphTextureView,
-  target: GraphTextureView,
+  sourceView: TextureView,
+  targetView: TextureView,
+  current?: () => boolean,
 ): BindGroup {
-  const sourceView = resolvedGraphView(resources, source);
-  const targetView = resolvedGraphView(resources, target);
+  if (current?.() === false) throw computePipelineError('current depth pyramid reduction binding');
   const leaf = bindGroupChainLeaf2(state.bindGroups, sourceView, targetView);
   const cached = leaf.get(state.label);
   if (cached !== undefined) return cached;
-  const group = (frame as RenderPipelineFrame).runtime.device
+  const group = device
     .createBindGroup({
       layout: state.layout,
       entries: [
@@ -66,34 +74,38 @@ function reductionBindGroup(
       ],
     })
     .unwrap();
-  return rememberBindGroup(
-    leaf,
-    state.label,
-    group,
-    (frame as _InternalRenderPipelineContext).bindGroupCounts,
-  );
+  if (current?.() === false) throw computePipelineError('current depth pyramid reduction binding');
+  return rememberBindGroup(leaf, state.label, group, counts);
 }
-
-/** Seed keys use the same physical-resource chain as computeBindGroup. */
-function seedBindGroup(
+function reductionBindGroup(
   frame: RenderGraphFrame,
   state: ComputeState,
   resources: GraphResourceResolver,
-  depth: GraphTextureView,
+  source: GraphTextureView,
   target: GraphTextureView,
-  view: GraphBuffer,
-  multisampled: boolean,
 ): BindGroup {
-  const sourceView = resolvedGraphView(resources, depth);
-  const targetView = resolvedGraphView(resources, target);
-  const buffer = resolvedGraphBuffer(resources, view);
-  // Preserve canonical producer observation before entering the cache.
-  const device = (frame as RenderPipelineFrame).runtime.device;
-  const root = state.bindGroups;
-  const label = state.label;
-  const counts = (frame as _InternalRenderPipelineContext).bindGroupCounts;
-  const leaf = bindGroupChainLeaf3(root, sourceView, targetView, buffer);
-  const cached = leaf.get(label);
+  const context = frame as _InternalRenderPipelineContext;
+  return reductionNativeBinding(
+    context.runtime.device,
+    context.bindGroupCounts,
+    state,
+    resolvedGraphView(resources, source),
+    resolvedGraphView(resources, target),
+  );
+}
+function seedNativeBinding(
+  device: RhiDevice,
+  counts: BindGroupCounts,
+  state: ComputeState,
+  sourceView: TextureView,
+  targetView: TextureView,
+  buffer: Buffer,
+  multisampled: boolean,
+  current?: () => boolean,
+): BindGroup {
+  if (current?.() === false) throw computePipelineError('current depth pyramid seed binding');
+  const leaf = bindGroupChainLeaf3(state.bindGroups, sourceView, targetView, buffer);
+  const cached = leaf.get(state.label);
   if (cached !== undefined) return cached;
   const group = device
     .createBindGroup({
@@ -108,7 +120,28 @@ function seedBindGroup(
       ],
     })
     .unwrap();
-  return rememberBindGroup(leaf, label, group, counts);
+  if (current?.() === false) throw computePipelineError('current depth pyramid seed binding');
+  return rememberBindGroup(leaf, state.label, group, counts);
+}
+function seedBindGroup(
+  frame: RenderGraphFrame,
+  state: ComputeState,
+  resources: GraphResourceResolver,
+  depth: GraphTextureView,
+  target: GraphTextureView,
+  view: GraphBuffer,
+  multisampled: boolean,
+): BindGroup {
+  const context = frame as _InternalRenderPipelineContext;
+  return seedNativeBinding(
+    context.runtime.device,
+    context.bindGroupCounts,
+    state,
+    resolvedGraphView(resources, depth),
+    resolvedGraphView(resources, target),
+    resolvedGraphBuffer(resources, view),
+    multisampled,
+  );
 }
 
 /** One view's hierarchy and the bound its producer actually reduced. */
@@ -125,6 +158,7 @@ export interface DepthPyramid {
 interface DepthPyramidGraphInputBase {
   /** Distinct consumers may build the same reduction from different scene stages. */
   readonly label?: string;
+  readonly nativeInputs?: NativeGraphInputs | undefined;
   /** Full-resolution scene depth of the view. */
   readonly depth: GraphTextureView;
   /** Finite physical plan; compute remains the default for existing callers. */
@@ -275,6 +309,127 @@ function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
  * The caller adds it only when an admitted consumer reads it, so a frame with
  * no consumer allocates nothing and records no pass.
  */
+function seedPreparation(
+  input: DepthPyramidGraphInputs,
+  target: GraphTextureView,
+  multisampled: boolean,
+): GraphPassPreparation {
+  const native = input.nativeInputs;
+  if (native === undefined) return {};
+  let prepared: (() => boolean) | undefined;
+  return {
+    preparedResourcesCurrent: () => prepared?.() === true,
+    *prepareResources(resources, current) {
+      prepared = undefined;
+      const source = native.depthPyramidShaders?.seed;
+      if (source === undefined) throw computePipelineError('published depth pyramid seed source');
+      const entries = multisampled ? SEED_MULTISAMPLED_ENTRIES : SEED_ENTRIES;
+      const program = yield* prepareDepthPyramidProgram(
+        native,
+        source,
+        entries,
+        `${input.reduction === 'furthest' ? 'seed_furthest' : 'seed'}${multisampled ? '_multisampled' : ''}` as
+          | 'seed'
+          | 'seed_furthest'
+          | 'seed_furthest_multisampled',
+        current,
+        PROGRAM_LAYOUTS.get(entries),
+      );
+      const depth = resources.createdTextureView(input.depth),
+        output = resources.createdTextureView(target);
+      if (depth === undefined || output === undefined)
+        throw computePipelineError('actual created depth pyramid seed views');
+      const buffer = native.viewUniformBuffer;
+      const inputsCurrent = () =>
+        program.isCurrent() &&
+        native.depthPyramidShaders?.seed === source &&
+        native.viewUniformBuffer === buffer &&
+        resources.createdTextureView(input.depth) === depth &&
+        resources.createdTextureView(target) === output;
+      const group = seedNativeBinding(
+        native.device,
+        native.counts,
+        program.state,
+        depth,
+        output,
+        buffer,
+        multisampled,
+        () => current() && inputsCurrent(),
+      );
+      const handles = [depth, output, buffer];
+      prepared = () =>
+        inputsCurrent() &&
+        findFromChain(program.state.bindGroups, handles, program.state.label) === group;
+      if (!current() || !prepared())
+        throw computePipelineError('current prepared depth pyramid seed');
+      yield;
+    },
+  };
+}
+
+function reductionPreparation(
+  input: DepthPyramidGraphInputs,
+  levels: readonly GraphTextureView[],
+): GraphPassPreparation {
+  const native = input.nativeInputs;
+  if (native === undefined) return {};
+  let prepared: (() => boolean) | undefined;
+  return {
+    preparedResourcesCurrent: () => prepared?.() === true,
+    *prepareResources(resources, current) {
+      prepared = undefined;
+      const source = native.depthPyramidShaders?.reduce;
+      if (source === undefined)
+        throw computePipelineError('published depth pyramid reduction source');
+      const program = yield* prepareDepthPyramidProgram(
+        native,
+        source,
+        REDUCE_ENTRIES,
+        input.reduction === 'furthest' ? 'reduce_furthest' : 'reduce',
+        current,
+        PROGRAM_LAYOUTS.get(REDUCE_ENTRIES),
+      );
+      const bindings: (() => boolean)[] = [];
+      for (let level = 1; level < levels.length; level++) {
+        const from = levels[level - 1],
+          to = levels[level];
+        if (from === undefined || to === undefined)
+          throw computePipelineError('actual depth pyramid reduction levels');
+        const a = resources.createdTextureView(from),
+          b = resources.createdTextureView(to);
+        if (a === undefined || b === undefined)
+          throw computePipelineError('actual created depth pyramid reduction views');
+        const inputsCurrent = () =>
+          program.isCurrent() &&
+          native.depthPyramidShaders?.reduce === source &&
+          resources.createdTextureView(from) === a &&
+          resources.createdTextureView(to) === b;
+        const group = reductionNativeBinding(
+          native.device,
+          native.counts,
+          program.state,
+          a,
+          b,
+          () => current() && inputsCurrent(),
+        );
+        const handles = [a, b];
+        bindings.push(
+          () =>
+            inputsCurrent() &&
+            findFromChain(program.state.bindGroups, handles, program.state.label) === group,
+        );
+        yield;
+      }
+      prepared = () =>
+        program.isCurrent() &&
+        native.depthPyramidShaders?.reduce === source &&
+        bindings.every((binding) => binding());
+      if (!current() || !prepared())
+        throw computePipelineError('current prepared depth pyramid reduction');
+    },
+  };
+}
+
 export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   input: DepthPyramidGraphInputs,
@@ -318,6 +473,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const program = createDepthPyramidProgramResolver(PROGRAM_LAYOUTS);
 
   const seeded = graph.addComputePass(seedPass, {
+    ...seedPreparation(input, mip0, multisampled),
     accesses: [
       { resource: depth, usage: 'sampled-read' },
       { resource: mip0, usage: 'storage-write' },
@@ -357,6 +513,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const levels = pyramid.levels;
   if (levels.length > 1) {
     const reduced = graph.addComputePass(reducePass, {
+      ...reductionPreparation(input, levels),
       accesses: levels.map((resource, level) => ({
         resource,
         usage:

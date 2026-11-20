@@ -6,7 +6,10 @@ import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import { addDepthPyramidPasses } from '../depth-pyramid/graph';
-import { createDepthPyramidProgramResolver } from '../depth-pyramid/programs';
+import {
+  createDepthPyramidProgramResolver,
+  prepareDepthPyramidProgram,
+} from '../depth-pyramid/programs';
 import { DeviceScope } from '../device/device-scope';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 
@@ -250,4 +253,79 @@ it('reuses exact seed and reduction resource bindings across repeated graph exec
   ).toHaveLength(0);
   serialization.mockRestore();
   f.scope.dispose();
+});
+
+it('qualifies a previously synchronous program with actual async completion while the old world keeps its usable state', async () => {
+  const f = await fixture();
+  const factory = {
+    createShaderModule: (descriptor: Parameters<typeof f.factory.createShaderModule>[0]) =>
+      f.factory.createShaderModule(descriptor),
+    peekShaderModule: (descriptor: Parameters<typeof f.factory.createShaderModule>[0]) =>
+      f.factory.completedModule(descriptor.label ?? '', descriptor.code),
+  };
+  const runtime = { device: f.device, deviceScope: f.scope, shaderModuleFactory: factory };
+  const entries = [{ binding: 0, visibility: 4, buffer: { type: 'uniform' } }];
+  const get = createDepthPyramidProgramResolver();
+  const ordinary = get({ runtime } as never, sources.seed, entries, 'seed');
+  let complete: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  const nativeCreate = f.device.createComputePipeline.bind(f.device);
+  const requests = vi.fn((descriptor: Parameters<typeof nativeCreate>[0]) =>
+    gate.then(() => nativeCreate(descriptor)),
+  );
+  f.device.createComputePipelineAsync = requests;
+  const buffer = f.device.createBuffer({ size: VIEW_UNIFORM_BYTES, usage: 64 | 8 }).unwrap();
+  const work = prepareDepthPyramidProgram(
+    {
+      device: f.device,
+      scope: f.scope,
+      shaderModuleFactory: factory,
+      immediateShaderModuleFactory: factory,
+      viewUniformBuffer: buffer,
+      depthPyramidShaders: sources,
+      counts: { createBindGroup: 0, keys: [] },
+      isCurrent: () => f.scope.isAlive(),
+    },
+    sources.seed,
+    entries,
+    'seed',
+    () => true,
+  );
+  try {
+    let pending: Promise<void> | undefined;
+    for (let operation = 0; operation < 8; operation++) {
+      const next = work.next();
+      expect(next.done).toBe(false);
+      if (next.value instanceof Promise) {
+        pending = next.value;
+        break;
+      }
+    }
+    expect(requests).toHaveBeenCalledTimes(1);
+    expect(pending).toBeInstanceOf(Promise);
+    // No second sync PSO, pending signal or replacement disrupts ordinary recording.
+    expect(get({ runtime } as never, sources.seed, entries, 'seed')).toBe(ordinary);
+    let settled = false;
+    void pending?.then(() => {
+      settled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    complete?.();
+    await pending;
+    const done = work.next();
+    expect(done.done).toBe(true);
+    if (!done.done) throw Error('exact native completion must qualify the program');
+    expect(done.value.isCurrent()).toBe(true);
+    expect(done.value.state.layout).toBe(ordinary.layout);
+    expect(done.value.state.bindGroups).toBe(ordinary.bindGroups);
+    expect(get({ runtime } as never, sources.seed, entries, 'seed')).toBe(done.value.state);
+  } finally {
+    complete?.();
+    delete f.device.createComputePipelineAsync;
+    f.device.destroyBuffer(buffer).unwrap();
+    f.scope.dispose();
+  }
 });

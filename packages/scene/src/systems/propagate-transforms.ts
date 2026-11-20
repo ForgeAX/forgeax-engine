@@ -1,4 +1,5 @@
 import {
+  Disabled,
   defineSystem,
   defineSystemSet,
   type EcsError,
@@ -165,6 +166,9 @@ interface Scratch {
   markOrphans: RemovedComponentsCursor;
   removedTransforms: RemovedComponentsCursor;
   removedGlobals: RemovedComponentsCursor;
+  removedDisabled: RemovedComponentsCursor;
+  reenabled: EntityHandle[];
+  reenabledEpoch: number;
   /** Last walk that flagged each slot; a walk meeting its own stamp has cycled. */
   walkStamp: Int32Array;
   walkId: number;
@@ -370,7 +374,7 @@ function scratchFor(world: World): Scratch {
     lastRun: 0,
     treeLookup: createEntityLookup(
       world,
-      [TransformTreeChanged, ChildOf, Children, Transform, GlobalTransform],
+      [TransformTreeChanged, ChildOf, Children, Transform, GlobalTransform, Disabled],
       [[1, 'parent']],
     ),
     childrenWords: new Uint32Array(0),
@@ -390,6 +394,9 @@ function scratchFor(world: World): Scratch {
     markOrphans: { value: 0 },
     removedTransforms: { value: 0 },
     removedGlobals: { value: 0 },
+    removedDisabled: { value: 0 },
+    reenabled: [],
+    reenabledEpoch: 0,
     walkStamp: new Int32Array(1024),
     walkId: 0,
     fallbackRoots: [],
@@ -492,6 +499,11 @@ function hierarchyError(
   return new SceneError({ code, expected, hint, detail: { entity, parent } });
 }
 
+function countHierarchyEvaluation(local: TransformColumnShape): void {
+  if (propagationTrace !== undefined && 'parent' in local)
+    propagationTrace.hierarchyRowsEvaluated++;
+}
+
 function composeBindingRow(
   binding: TransformBinding | HierarchyBinding,
   row: number,
@@ -499,12 +511,12 @@ function composeBindingRow(
   parentRow: number,
   touched: number[],
   bindingIndex: number,
+  compareExisting = false,
 ): void {
   // Hierarchy bindings carry the parent column; flat structural-root repair
   // uses the same numeric kernel but is intentionally counted separately.
   const local = transformColumns(binding);
-  if (propagationTrace !== undefined && 'parent' in (local as object))
-    countPropagation('hierarchyRowsEvaluated');
+  countHierarchyEvaluation(local);
   const positions = local.pos;
   const rotations = local.quat;
   const scales = local.scale;
@@ -592,6 +604,26 @@ function composeBindingRow(
     m14 = fround(a02 * b30 + a12 * b31 + a22 * b32 + a32);
   }
   const o = row * 16;
+  if (
+    compareExisting &&
+    worlds[o] === m0 &&
+    worlds[o + 1] === m1 &&
+    worlds[o + 2] === m2 &&
+    worlds[o + 3] === m3 &&
+    worlds[o + 4] === m4 &&
+    worlds[o + 5] === m5 &&
+    worlds[o + 6] === m6 &&
+    worlds[o + 7] === m7 &&
+    worlds[o + 8] === m8 &&
+    worlds[o + 9] === m9 &&
+    worlds[o + 10] === m10 &&
+    worlds[o + 11] === m11 &&
+    worlds[o + 12] === m12 &&
+    worlds[o + 13] === m13 &&
+    worlds[o + 14] === m14 &&
+    worlds[o + 15] === m15
+  )
+    return;
   touched.push(bindingIndex, row);
   worlds[o] = m0;
   worlds[o + 1] = m1;
@@ -758,7 +790,15 @@ function writeLocalRows(
       const binding = bindings[cursor.bindingIndex];
       if (binding === undefined) continue;
       if (write(entity))
-        composeBindingRow(binding, cursor.row, undefined, 0, touched, cursor.bindingIndex);
+        composeBindingRow(
+          binding,
+          cursor.row,
+          undefined,
+          0,
+          touched,
+          cursor.bindingIndex,
+          reenabledRow(scratch, entity) && reuseReenabledPose(scratch),
+        );
       located?.push(entity, cursor.bindingIndex, cursor.row);
     }
   });
@@ -1029,7 +1069,12 @@ function markDirtyTrees(
       const columns = lookup.columns;
       const row = lookup.row;
       const changedColumn = columns.changed[0];
-      if (!found || changedColumn === undefined || columns.changed[3] === undefined) {
+      if (
+        !found ||
+        changedColumn === undefined ||
+        columns.changed[3] === undefined ||
+        columns.changed[5] !== undefined
+      ) {
         cutBroken(child, next);
         break;
       }
@@ -1083,6 +1128,7 @@ function markDirtyTrees(
   const edited = scratch.editedGlobals;
   edited.length = 0;
   collectEntities(scratch.dirtyGlobals, edited);
+  for (const entity of scratch.reenabled) edited.push(entity);
   const dense = readRunInputs(world, scratch);
   if (dense !== undefined) return dense;
   const orphans = scratch.seeds;
@@ -1234,6 +1280,28 @@ function ownRowChanged(columns: EntityLookup['columns'], row: number, since: num
   );
 }
 
+/** The derived marker reserves one epoch for re-entry without changing a published pose. */
+function reenabledAt(scratch: Scratch): boolean {
+  const { treeLookup, reenabledEpoch } = scratch;
+  return (
+    reenabledEpoch !== 0 && treeLookup.columns.changed[0]?.epochs[treeLookup.row] === reenabledEpoch
+  );
+}
+
+/** Preserve authored change evidence even if the reenabled row computes an equal matrix. */
+function reuseReenabledPose(scratch: Scratch): boolean {
+  const lookup = scratch.treeLookup;
+  return reenabledAt(scratch) && !ownRowChanged(lookup.columns, lookup.row, scratch.lastRun);
+}
+
+function childOwnChange(scratch: Scratch, row: number, since: number): boolean {
+  return ownRowChanged(scratch.treeLookup.columns, row, since) || reenabledAt(scratch);
+}
+
+function reenabledRow(scratch: Scratch, entity: EntityHandle): boolean {
+  return scratch.reenabledEpoch !== 0 && scratch.treeLookup.get(entity) && reenabledAt(scratch);
+}
+
 function sameRoots(order: VisitOrder, rootRows: readonly number[]): boolean {
   const key = order.rootKey;
   if (key.length !== rootRows.length) return false;
@@ -1318,6 +1386,7 @@ function propagateParentTransforms(
   const rootChanged = (entity: EntityHandle): boolean =>
     (scratch.treeLookup.get(entity) &&
       (scratch.detachedFlags[scratch.treeLookup.slot] ?? 0) !== 0) ||
+    reenabledRow(scratch, entity) ||
     read.getChangedEpoch(entity, Transform) > since ||
     read.getChangedEpoch(entity, GlobalTransform) > since ||
     read.getAddedEpoch(entity, GlobalTransform) > since;
@@ -1381,7 +1450,10 @@ function propagateParentTransforms(
           if (child === root) continue;
           countPropagation('hierarchyEdgesVisited');
           const binding = findHierarchyLocation(hierarchyWriter, bindings, child, cursor, scratch);
-          if (binding === undefined) continue;
+          if (binding === undefined) {
+            firstError = missingHierarchyChild(world, child, parent, firstError);
+            continue;
+          }
           const row = cursor.row;
           const bindingIndex = cursor.bindingIndex;
           const columns = scratch.treeLookup.columns;
@@ -1389,7 +1461,7 @@ function propagateParentTransforms(
           // epochs matter only when the parent did not change.
           let ownChange = false;
           if (!parentChanged) {
-            ownChange = ownRowChanged(columns, row, since);
+            ownChange = childOwnChange(scratch, row, since);
             if (!ownChange && !childTreeChanged(scratch, since)) continue;
           }
           if (scratch.treeLookup.columns.fields[0]?.view[row] !== parent) {
@@ -1398,7 +1470,15 @@ function propagateParentTransforms(
           }
           const recompute = parentChanged || ownChange;
           if (recompute)
-            composeBindingRow(binding, row, parentWorld, parentRow, touched, bindingIndex);
+            composeBindingRow(
+              binding,
+              row,
+              parentWorld,
+              parentRow,
+              touched,
+              bindingIndex,
+              reuseReenabledPose(scratch),
+            );
           if (recording)
             stackOrder[depth] = recordVisit(
               visit,
@@ -1483,6 +1563,8 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
   const pairs = validateTransformPairs(world, scratch);
   if (!pairs.ok) return pairs;
   const since = scratch.lastRun;
+  const enabled = markReenabledTransforms(world, scratch);
+  if (!enabled.ok) return enabled;
   const runStart = world[worldRead].getMutationEpoch();
   const marked = markDirtyTrees(world, scratch, since, runStart);
   if (!marked.ok) return marked;
@@ -1500,6 +1582,7 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
       walked === undefined ? hierarchy.error : noteHierarchyError(walked, hierarchy.error),
     );
   if (walked !== undefined) return err(walked);
+  if (simple.ok) scratch.removedDisabled.value = enabled.value;
   return simple;
 }
 
@@ -1573,4 +1656,62 @@ export function registerPropagateTransforms(
     REGISTRATION_LEASES.delete(world);
     releaseScratch(world);
   };
+}
+
+/** Schedule pose rechecks for reenabled rows without publishing GlobalTransform writes. */
+function markReenabledTransforms(world: World, scratch: Scratch): Result<number, SceneError> {
+  const lookup = scratch.treeLookup;
+  scratch.reenabled.length = 0;
+  scratch.reenabledEpoch = 0;
+  let failure: SceneError | undefined;
+  let epoch = 0;
+  const cursor = { value: scratch.removedDisabled.value };
+  world[worldRead].readRemoved(Disabled, cursor, (entity) => {
+    if (
+      !lookup.get(entity) ||
+      lookup.columns.changed[4] === undefined ||
+      lookup.columns.changed[5] !== undefined
+    )
+      return;
+    if (epoch === 0) {
+      const reserved = lookup.nextEpoch();
+      if (!reserved.ok) {
+        failure = derivedWriteError(reserved.error, entity);
+        return;
+      }
+      epoch = reserved.value;
+    }
+    lookup.markChanged(0, epoch);
+    scratch.reenabled.push(entity);
+  });
+  if (failure !== undefined) return err(failure);
+  scratch.reenabledEpoch = epoch;
+  return ok(cursor.value);
+}
+
+/** A wholly disabled valid edge is outside propagation; malformed children remain errors. */
+function missingHierarchyChild(
+  world: World,
+  child: EntityHandle,
+  parent: EntityHandle,
+  previous: SceneError | undefined,
+): SceneError | undefined {
+  if (
+    world.hasComponent(child, Disabled) &&
+    world.hasComponent(child, Transform) &&
+    world.hasComponent(child, GlobalTransform) &&
+    world[worldRead].getFieldValue(child, ChildOf, 'parent') === parent &&
+    world[worldRead].hasRelationshipEdge(ChildOf, child, parent)
+  )
+    return previous;
+  return noteHierarchyError(
+    previous,
+    hierarchyError(
+      'hierarchy-broken',
+      child,
+      parent,
+      'each Children entry to carry Transform, GlobalTransform and ChildOf',
+      'repair the child component pair before retrying propagation',
+    ),
+  );
 }

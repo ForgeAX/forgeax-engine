@@ -133,7 +133,7 @@ globalThis.MutationObserver = class {
   observe() {}
 };
 globalThis.document = {
-  querySelector: () => mockCanvas,
+  querySelector: (selector) => (selector === '#app' ? mockCanvas : null),
   querySelectorAll: () => [],
 };
 bindSmokeCanvasWindow(mockCanvas, globalThis.window, globalThis.document);
@@ -145,11 +145,14 @@ globalThis.fetch = async (input) => {
   throw new Error(`unexpected fetch in Dawn smoke: ${url}`);
 };
 
-await import(`${pathToFileURL(entryPath).href}?dawnSmoke=${Date.now()}`);
+// Split Vite chunks can import this same entry. Keep one module identity.
+await import(pathToFileURL(entryPath).href);
 
 const waitDeadline = Date.now() + 30_000;
 while (globalThis.__forgeaxPerf === undefined && Date.now() < waitDeadline) await delay(10);
-if (globalThis.__forgeaxPerf === undefined) fail('app did not finish bootstrap within 30s');
+if (globalThis.__forgeaxPerf === undefined) {
+  fail(`app did not finish bootstrap within 30s; shader publication: ${JSON.stringify(globalThis.__forgeaxShaderManifest ?? null)}`);
+}
 
 async function readback() {
   if (sharedDevice === undefined || renderTarget === undefined) fail('render target/device unavailable');
@@ -269,6 +272,8 @@ const result = {
 writeFileSync(outputPath, JSON.stringify(result, null, 2));
 writeFileSync(rawPath, finalPixels);
 writeFileSync(screenshotPath, encodePng(width, height, finalPixels));
+// The isolated lighting control does not share this renderer or device.
+sharedDevice?.destroy?.();
 
 if (process.env.PERF_LIGHT_CONTROL !== '1') {
   const controlOutput = `${outputPath}.no-lights.json`;
@@ -296,7 +301,6 @@ const failed = Object.entries(result.assertions).filter(([, value]) => value !==
 if (failed.length > 0) fail(`assertions failed: ${JSON.stringify(Object.fromEntries(failed))}`);
 if (result.zeroPunctualControl !== undefined && !result.zeroPunctualControl.distinguishesLightPayload) fail('default vs zero-punctual readback did not distinguish punctual-light payload');
 console.log(`[perf-10k-cubes-lights/dawn] PASS ${JSON.stringify({ observedFrames, stats, motion, profileComplete, zeroPunctualControl: result.zeroPunctualControl })}`);
-sharedDevice?.destroy?.();
 delete globalThis.navigator.gpu;
 if (process.env.PERF_LIGHT_CONTROL !== '1') emitSmokeReceipt('perf-10k-cubes-lights/smoke', observedFrames);
 process.exit(0);

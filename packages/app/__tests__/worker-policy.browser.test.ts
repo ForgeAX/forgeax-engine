@@ -60,9 +60,7 @@ it('honors slow kernel startup with default workers, seals ordered frames, and p
     const report = app.execution.report();
     expect(report.kernelDispatch.usedShared).toBe(true);
     expect(report.kernelDispatch.completed).toBeGreaterThan(0);
-    expect(
-      (report.render?.submittedFrame ?? 0) - (report.render?.completedFrame ?? 0),
-    ).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
+    expect(report.frame.highWater).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
     phase = 'replacement-epoch';
     f.channel.port1.postMessage('terminate-render');
     await expect

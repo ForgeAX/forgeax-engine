@@ -92,6 +92,7 @@ import {
   type WorkspaceRecoveryClient,
 } from './WorkspaceProjectRecovery';
 import { WorkspaceCommandErrorHost } from './WorkspaceCommandErrorHost';
+import { WorkspacePreparationStatus } from './WorkspacePreparationStatus';
 
 const EMPTY_CLAIMS: readonly SlotClaim[] = [];
 const EMPTY_PAGE_TYPES: readonly PageType[] = [];
@@ -1421,6 +1422,7 @@ export function ViewerShell({
   return (
     <div className="fx-view-app" data-forgeax-view="shell">
       {!projectSession.restoring && <WorkspaceCommandErrorHost />}
+      <WorkspacePreparationStatus client={workspaceClient} connection={hostConnection} />
 
       <PageTabStrip
         leading={(<div className="fx-view-brand">

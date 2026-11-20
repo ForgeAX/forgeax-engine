@@ -62,6 +62,19 @@ class AgentDocsEnglishTest(unittest.TestCase):
         self.write("skills/sample/agents/openai.yaml", "title: \u0410\u0431\u0432\n")
         self.assertEqual(self.gate().returncode, 1)
 
+    def test_allows_explicit_chinese_companions_but_keeps_english_entrypoints_checked(self):
+        for name in ["AGENTS.zh-CN.md", "templates/AGENTS.zh-CN.md",
+                     "skills/sample/SKILL.zh-CN.md", "skills/sdk/SDK-AGENTS.zh-CN.md"]:
+            self.write(name, "# \u4e2d\u6587\n")
+        self.write("skills/sample/SKILL.md", "# English\n")
+        self.assertEqual(self.gate().returncode, 0)
+        for name in ["AGENTS.md", "skills/sample/SKILL.md",
+                     "skills/sample/guide.zh-CN.md", "skills/sdk/SDK-AGENTS.md"]:
+            with self.subTest(name=name):
+                self.write(name, "# \u4e2d\u6587\n")
+                self.assertEqual(self.gate().returncode, 1)
+                self.write(name, "# English\n")
+
     def test_missing_or_unreadable_tracked_doc_fails_closed(self):
         path = self.write("nested/AGENTS.md", "English")
         path.unlink()

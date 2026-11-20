@@ -63,6 +63,15 @@ it.each([
     expected: [0, 191 / 255],
   },
   { additive: true, enabled: true, source: 0, shared: 1, residual: true, expected: [0, 1] },
+  {
+    additive: true,
+    enabled: true,
+    source: 0,
+    shared: 1,
+    residual: true,
+    localFluid: true,
+    expected: [0, 0.046875],
+  },
   { additive: true, enabled: false, source: 0.1, shared: 0, residual: true, expected: [0, 0] },
 ])('composes source-qualified shallow and contact foam ($additive/$enabled/$source/$shared)', async (test) => {
   const textures: GPUTexture[] = [];
@@ -151,6 +160,7 @@ ${surface}
   material.foamNormalZ=1.0;material.foamNormalUvOffset=0.1;material.foamRoughness=0.5;
   material.foamFrontScaleM=1.0;material.waveCaptureSizeM=64.0;
   material.fluidSimulationSizeM=64.0;material.foamFluidEraseScale=1.0;material.foamEraseNearFluidSize=0.5;
+  material.foamMaskNearFluid=1.0;
   material.foamScatteringPerM=vec3<f32>(1.0);material.causticsMaxIntensity=1.0;
   view.temporalProjection=vec4<f32>(0.1,1000.0,0.0,0.0);
   var input:SingleLayerWaterSurfaceInput;
@@ -302,8 +312,16 @@ ${surface}
     const draw = buffer(new Uint8Array(16), true);
     if (test.shared !== null) {
       const descriptor = new Float32Array(36);
-      // The shared contact producer is valid while the independent fluid solver is inactive.
+      // Publish shared contact coverage for both local solver states.
       descriptor[11] = 1;
+      if ('localFluid' in test && test.localFluid) {
+        descriptor.set([0, 0, 64, 64], 0);
+        descriptor[5] = 1;
+        descriptor[10] = 1;
+        descriptor.set([1, 1], 12);
+        descriptor.set([0, 0, 64, 64], 20);
+        descriptor.set([1, 1], 28);
+      }
       const descriptors = buffer(new Uint8Array(descriptor.buffer));
       const fields = device.createTexture({
         size: [1, 1, 4],

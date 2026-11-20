@@ -9,7 +9,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
@@ -19,7 +19,7 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/irradiance-field/dawn';
 mkdirSync(directory, { recursive: true });
 

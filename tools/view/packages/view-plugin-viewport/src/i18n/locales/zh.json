@@ -1,0 +1,22 @@
+{
+  "viewport": {
+    "execution": "场景运行",
+    "navigation": "WASD/QE 移动 · Shift 加速 · 右键观察/飞行 · 滚轮调速 · F 聚焦",
+    "play": "运行",
+    "stop": "停止",
+    "eject": "脱离控制",
+    "possess": "接管控制",
+    "scene": "场景",
+    "game": "游戏",
+    "waitingForPage": "正在等待游戏页面…",
+    "readingCamera": "正在读取游戏相机…",
+    "stopping": "正在停止…",
+    "preparing": "正在准备运行…",
+    "copyError": "复制错误",
+    "copyReason": "复制错误原因",
+    "close": "关闭",
+    "dismissError": "关闭错误横幅",
+    "copied": "已复制",
+    "copyFailed": "复制失败"
+  }
+}

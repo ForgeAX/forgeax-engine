@@ -62,6 +62,6 @@ export function receiptSelection(
     ),
   );
   return new GpuDrawSelection(
-    topology.query(topology.sourcePlan(), undefined).batches.filter(accepts),
+    topology.query(topology.sourcePlan(), undefined).active.batches.filter(accepts),
   );
 }

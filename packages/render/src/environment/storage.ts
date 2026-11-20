@@ -58,6 +58,15 @@ interface Owner {
   readonly iblParams: Buffer;
 }
 const owners = new WeakMap<DeviceScope, Owner>();
+/** Observe existing display storage without selecting, allocating or retaining it. */
+export function currentAtmosphereStorage(runtime: Runtime): AtmosphereStorage | undefined {
+  return owners.get(recordContext(runtime).deviceScope)?.current;
+}
+/** A captured old generation remains usable only while its actual lease keeps it alive. */
+export function atmosphereStoragePinned(storage: AtmosphereStorage): boolean {
+  const generation = storage as Generation;
+  return generation.pins > 0 && generation.scope.isAlive();
+}
 function buffer(
   runtime: Runtime,
   scope: DeviceScope,

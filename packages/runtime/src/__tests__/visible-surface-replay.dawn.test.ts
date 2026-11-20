@@ -1,10 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { verifyVisibleSurfaceReplay } from './visible-surface-replay.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 it('validates ordinary Renderer visible surfaces on Dawn with fresh-device replay', {
   timeout: 180_000,
 }, async () => {

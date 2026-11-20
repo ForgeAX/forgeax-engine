@@ -1,5 +1,5 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { CONTACT_SHADOW_SIZE } from './contact-shadow.fixture';
@@ -15,7 +15,9 @@ it('preserves directional Forward contact shadow receiver and lighting isolation
     target.canvas,
     { rhi: webgpu.rhi },
     {
-      shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true })),
+      shaderManifestUrl: shaderManifestUrl(
+        await buildEngineShaderTemplateManifest({ pointShadows: true }),
+      ),
     },
   );
   if (!created.ok) {

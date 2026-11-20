@@ -2,6 +2,7 @@
 import { AssetGuid } from '@forgeax/engine-pack/source';
 import { terrainGuid } from './identity.ts';
 import { runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
+import { type BrowserFrameCompleted, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { ANTIALIAS_TAA } from '@forgeax/engine-render';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -266,7 +267,13 @@ const bootstrapUrl = new URL(
     const sendDelta = (delta: unknown) =>
       source.port1.postMessage({ kind: 'terrain-catalog-delta', delta });
     import.meta.hot?.on('forgeax:catalog-delta', sendDelta);
+    let completedPictures = 0;
+    const observeCompleted = (event: Event) => {
+      const frame = (event as CustomEvent<BrowserFrameCompleted>).detail;
+      if (frame?.presentation === 'ready') completedPictures++;
+    };
     app.start().unwrap();
+    canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, observeCompleted);
     const inspect = (code: string) => {
       if (app.remoteEval === undefined)
         throw new Error('terrain Worker requires the existing inspection transport');
@@ -323,16 +330,12 @@ const bootstrapUrl = new URL(
     window.__verifyTerrainWorker = async () => {
       await inspect(`world.getResource((await _import(${JSON.stringify(bootstrapUrl.href)})).TerrainWalkerResource).speed=1; return true;`);
       const deadline = performance.now() + 60000;
-      while (
-        (app.execution?.report().render?.completedFrame ?? 0) < 60 &&
-        performance.now() < deadline
-      ) {
+      while (completedPictures < 60 && performance.now() < deadline) {
         if (app.lastError !== undefined) throw app.lastError;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       const report = app.execution?.report();
-      if ((report?.render?.completedFrame ?? 0) < 60)
-        throw new Error('terrain Worker did not complete 60 frames');
+      if (completedPictures < 60) throw new Error('terrain Worker did not complete 60 frames');
       const frame = response<{ id: number; frameId: number; completed: { ok: boolean } }>(
         channel,
         (data): data is { id: number; frameId: number; completed: { ok: boolean } } =>
@@ -405,6 +408,7 @@ const bootstrapUrl = new URL(
     window.__disposeTerrainWorker = async () => {
       import.meta.hot?.off('forgeax:catalog-delta', sendDelta);
       import.meta.hot?.off('forgeax:catalog-delta', observeDelta);
+      canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, observeCompleted);
       channel.removeEventListener('message', receiveFixture);
       delete window.__terrainHmrProbe;
       delete window.__terrainWorkerQuery;

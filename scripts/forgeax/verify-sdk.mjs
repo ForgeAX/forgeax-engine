@@ -24,7 +24,7 @@ import {
   sha256,
   verifySdkViewRuntime,
 } from './sdk-lib.mjs';
-import { SDK_ARCHIVE_VERIFY_GROUPS } from './sdk-pr-preflight.mjs';
+import { SDK_ARCHIVE_VERIFY_GROUPS, SDK_COMPACT_PREVIEW_FRAMES } from './sdk-pr-preflight.mjs';
 import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
@@ -52,7 +52,13 @@ if (group !== 'all' && !SDK_ARCHIVE_VERIFY_GROUPS.includes(group))
   throw new Error(`sdk-verify-unknown-group:${group}`);
 const profileIndex = args.indexOf('--profile');
 const profile = profileIndex < 0 ? 'full' : args[profileIndex + 1];
-if (!['core', 'full'].includes(profile)) throw new Error(`sdk-verify-unknown-profile:${profile}`);
+const prPreflight = profile === 'pr-consumer' || profile === 'pr-expanded';
+if (
+  !['core', 'full', 'pr-consumer', 'pr-expanded'].includes(profile) ||
+  (prPreflight && group === 'all')
+)
+  throw new Error(`sdk-verify-unknown-profile:${profile}`);
+const expandedArchive = profile !== 'pr-consumer';
 const selected = (owner) => group === 'all' || group === owner;
 let projectEvidence = {};
 let sourceTemplateEvidence;
@@ -419,6 +425,7 @@ if (selected('source')) {
     await sdkStage('verify single-module source editing', () =>
       verifySdkSourceEdit({ sdkRoot, output: resolve(unpackRoot, 'source-edit'), env: sourceEnv }),
     );
+    if (profile === 'pr-consumer') return;
     // Keep the independent cold source-build proof after the seeded-package journey.
     await execFileAsync(process.execPath, ['scripts/clean-build-outputs.mjs'], {
       cwd: sourceRoot,
@@ -930,7 +937,11 @@ if (selected('project')) {
       const html = await response.text();
       if (!response.ok || !html.includes('<canvas id="app"'))
         throw new Error('sdk-preview-static-closure');
-      return url;
+      if (expandedArchive) return { previewUrl: url };
+      const previewBrowser = await sdkGpuStage('verifyCompactPreview', () =>
+        verifyCompactPreview(url),
+      );
+      return { previewUrl: url, previewBrowser };
     } finally {
       if (child.exitCode === null) {
         if (detached && child.pid !== undefined) process.kill(-child.pid, 'SIGTERM');
@@ -939,8 +950,6 @@ if (selected('project')) {
       await exited;
     }
   }
-
-  const previewUrl = await sdkStage('verifyPreview', () => verifyPreview());
 
   async function verifySelectedTemplate() {
     const selectedProject = resolve(unpackRoot, 'game-3d');
@@ -1066,28 +1075,9 @@ if (selected('project')) {
         throw new Error(`sdk-selected-dev-url-missing: ${stdout}\n${stderr}`);
       await sdkStage('selectedBrowser.catalog', () => waitForProjectPackCatalog(url, scopeId));
       const chromeChannel = process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome';
-      const chromeArgs = [
-        '--disable-features=MacAppCodeSignClone',
-        '--enable-unsafe-webgpu',
-        '--ignore-gpu-blocklist',
-      ];
-      // Hosted Linux runners have no physical display/GPU. Match the repository's
-      // proven Chrome Beta + lavapipe/Xvfb lane so the SDK template smoke checks
-      // the real WebGPU compositor instead of silently accepting a static canvas.
-      if (process.platform === 'linux' && chromeChannel === 'chrome-beta') {
-        chromeArgs.push(
-          '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-          '--use-vulkan=swiftshader',
-          '--use-angle=swiftshader',
-          '--enable-pointer-lock',
-          '--disable-gpu-driver-bug-workarounds',
-          '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
-          '--autoplay-policy=no-user-gesture-required',
-        );
-      }
       const startup = await startSelectedProjectBrowser(
         chromeChannel,
-        chromeArgs,
+        selectedBrowserArgs(chromeChannel),
         url,
         diagnostics,
         resources,
@@ -1380,6 +1370,74 @@ if (selected('project')) {
     }
   }
 
+  function selectedBrowserArgs(chromeChannel) {
+    const chromeArgs = [
+      '--disable-features=MacAppCodeSignClone',
+      '--enable-unsafe-webgpu',
+      '--ignore-gpu-blocklist',
+    ];
+    // Hosted Linux runners have no physical display/GPU. Match the repository's
+    // proven Chrome Beta + lavapipe/Xvfb lane so the SDK template smoke checks
+    // the real WebGPU compositor instead of silently accepting a static canvas.
+    if (process.platform === 'linux' && chromeChannel === 'chrome-beta') {
+      chromeArgs.push(
+        '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
+        '--use-vulkan=swiftshader',
+        '--use-angle=swiftshader',
+        '--enable-pointer-lock',
+        '--disable-gpu-driver-bug-workarounds',
+        '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
+        '--autoplay-policy=no-user-gesture-required',
+      );
+    }
+    return chromeArgs;
+  }
+
+  async function verifyCompactPreview(url) {
+    const channel = process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome';
+    const browser = await launchSelectedBrowser(channel, selectedBrowserArgs(channel));
+    const errors = [];
+    try {
+      const page = await createProjectPage(browser, 'compactPreview');
+      page.on('pageerror', (error) => appendDiagnostic(errors, error.stack ?? String(error)));
+      await page.addInitScript(observeCompactPreviewFrames);
+      await page.bringToFront();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      const observed = await page.waitForFunction(
+        (minimum) => {
+          const canvas = document.getElementById('app');
+          const readyFrames = globalThis.__forgeaxSdkPreviewFrames.get(canvas)?.size ?? 0;
+          return readyFrames >= minimum ? readyFrames : false;
+        },
+        SDK_COMPACT_PREVIEW_FRAMES,
+        { timeout: 120_000 },
+      );
+      if (errors.length > 0) throw new Error('sdk-compact-preview-page-errors');
+      return { readyFrames: await observed.jsonValue() };
+    } catch (cause) {
+      throw new Error(`sdk-compact-preview-browser: ${JSON.stringify(errors)}`, { cause });
+    } finally {
+      await closeSelectedBrowser(browser);
+    }
+  }
+
+  function observeCompactPreviewFrames() {
+    const framesByCanvas = new WeakMap();
+    globalThis.__forgeaxSdkPreviewFrames = framesByCanvas;
+    window.addEventListener(
+      'forgeax:frame-completed',
+      (event) => {
+        const canvas = event.target;
+        const { frameId, presentation } = event.detail;
+        if (canvas !== document.getElementById('app') || presentation !== 'ready') return;
+        const frames = framesByCanvas.get(canvas) ?? new Set();
+        frames.add(frameId);
+        framesByCanvas.set(canvas, frames);
+      },
+      { capture: true },
+    );
+  }
+
   async function launchSelectedBrowser(channel, args) {
     return chromium.launch({
       headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
@@ -1649,9 +1707,10 @@ if (selected('project')) {
     return { position, fixedTick };
   }
 
-  const selectedTemplateEvidence = await sdkStage('verifySelectedTemplate', () =>
-    verifySelectedTemplate(),
-  );
+  const previewEvidence = await sdkStage('verifyPreview', () => verifyPreview());
+  const selectedTemplateEvidence = expandedArchive
+    ? { selectedTemplate: await sdkStage('verifySelectedTemplate', () => verifySelectedTemplate()) }
+    : {};
 
   projectEvidence = {
     offlineProject: project,
@@ -1683,14 +1742,14 @@ if (selected('project')) {
       build: { packageUrl: defaultSceneEntry.packageUrl },
       dev: devEvidence,
     },
-    selectedTemplate: selectedTemplateEvidence,
+    ...selectedTemplateEvidence,
     staticBuild: {
       output: staticOutput,
       base: staticManifest.base,
       artifacts: staticManifest.artifacts.length,
       documentScriptsWithoutNavigation: staticDocumentScripts,
     },
-    previewUrl,
+    ...previewEvidence,
   };
 }
 
@@ -1706,12 +1765,6 @@ async function verifySourceTemplate() {
       ...sourceEnv,
       FORGEAX_TEMPLATE_SMOKE_DIR: sourceSmokeDir,
       FORGEAX_TEMPLATE_SMOKE_PORT: '5287',
-      // `build:engine` already materializes the trusted shared shader
-      // manifest. Reuse it for the source-snapshot browser journey instead
-      // of recompiling the full engine shader graph during Vite cold start.
-      // The archive intentionally has no `.git`, so the source smoke must be
-      // self-contained and cannot rely on contributor-checkout state.
-      FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(sourceRoot, 'shared-build-inputs/manifest.json'),
       FORGEAX_TEMPLATE_SMOKE_SLUGS: SDK_TEMPLATES.map((entry) => basename(entry.sourceRoot)).join(
         ',',
       ),
@@ -1747,7 +1800,7 @@ async function verifySourceTemplate() {
   return JSON.parse(await readFile(resolve(sourceSmokeDir, 'report.json'), 'utf8'));
 }
 
-if (selected('source')) {
+if (selected('source') && expandedArchive) {
   sourceTemplateEvidence = await sdkStage('verifySourceTemplate', () => verifySourceTemplate());
   for (const entry of SDK_TEMPLATES) {
     const slug = basename(entry.sourceRoot);
@@ -1823,18 +1876,6 @@ if (selected('source')) {
   // PR core already proves source edits through the embedded View Host and
   // independent cold Engine templates; full/release additionally rebuild View.
   if (profile === 'full') {
-    await sdkStage('preparePublicSourceViewProfile', () =>
-      sourceBuildPnpm([
-        'exec',
-        'node',
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        '--profile',
-        'base-ssao',
-        '--shared-input-manifest',
-        'shared-build-inputs/manifest.json',
-      ]),
-    );
     await sdkGpuStage('verifyPublicSourceViewTool', () =>
       execFileAsync(
         process.execPath,
@@ -1850,10 +1891,6 @@ if (selected('source')) {
             FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
             FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
             FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
-            FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
-              sourceRoot,
-              'shared-build-inputs/manifest.json',
-            ),
             DEBUG: [sourceEnv.DEBUG, 'pw:browser', 'pw:api'].filter(Boolean).join(','),
           },
           maxBuffer: 64 * 1024 * 1024,
@@ -1863,7 +1900,7 @@ if (selected('source')) {
   }
 }
 
-if (selected('project')) {
+if (selected('project') && expandedArchive) {
   await sdkGpuStage('verifyIndependentRun', () =>
     execFileAsync(
       process.execPath,
@@ -1918,7 +1955,7 @@ if (selected('project')) {
         },
       ),
     );
-  if (group !== 'all')
+  if (group !== 'all' && !prPreflight)
     await sdkStage('verifyInstalledViewRuntimeJS', () =>
       verifySdkViewRuntime({
         sdkRoot,
@@ -1931,7 +1968,7 @@ if (selected('project')) {
 
 // Keep the live TypeScript publication alongside the JavaScript recovery witness.
 // Default release qualification retains the original complete serial order.
-if (selected('project')) {
+if (selected('project') && expandedArchive) {
   await sdkStage('verifyInstalledViewRuntime', () =>
     verifySdkViewRuntime({
       sdkRoot,
@@ -1942,7 +1979,7 @@ if (selected('project')) {
   );
 }
 
-if (selected('project') && process.platform === 'linux') {
+if (selected('project') && expandedArchive && process.platform === 'linux') {
   projectEvidence.modeling = await sdkGpuStage('verifyInstalledModelingCli', () =>
     verifySdkModeling({
       sdkRoot,
@@ -1971,8 +2008,16 @@ const result = {
   ok: true,
   group,
   profile,
-  deferredValidation:
-    profile === 'core' && selected('source') ? ['cold-source-view-diagnostics'] : [],
+  deferredValidation: [
+    ...(profile !== 'full' && selected('source') ? ['cold-source-view-diagnostics'] : []),
+    ...(prPreflight && selected('project') ? ['zip-javascript-view-owned-by-npm'] : []),
+    ...(!expandedArchive && selected('source')
+      ? ['cold-source-fleet', 'source-template-browser']
+      : []),
+    ...(!expandedArchive && selected('project')
+      ? ['zip-game-3d-owned-by-npm', 'independent-run', 'installed-view', 'installed-modeling']
+      : []),
+  ],
   archive,
   sha256: digest,
   sdkVersion: manifest.sdkVersion,

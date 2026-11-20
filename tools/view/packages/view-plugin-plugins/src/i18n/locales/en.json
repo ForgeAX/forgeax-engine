@@ -1,5 +1,6 @@
 {
   "plugins": {
+    "clearSearch": "Clear search",
     "loading": "Loading",
     "observed": "Host entries",
     "partial": "Partial inventory",

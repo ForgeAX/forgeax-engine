@@ -22,6 +22,7 @@ const output = resolve(process.env.FORGEAX_MODELING_VIEW_OUTPUT ?? join(checkout
 const view = resolve(checkout, 'tools/view');
 const examples = resolve(checkout, 'packages/modeling/examples');
 const source = 'assets/wheel-rim/wheel-rim.pack.ts';
+const labels = JSON.parse(await readFile(join(checkout, 'tools/view-plugins/locales/en.json'), 'utf8'));
 
 await rm(join(root, 'assets'), { recursive: true, force: true });
 await mkdir(join(root, 'node_modules/@forgeax'), { recursive: true });
@@ -147,7 +148,7 @@ try {
  // Step 2: five clicks (Shift adds) on the five spoke fronts.
  for (let k = 0; k < 5; k++) {
   await click(spoke(k), k === 0 ? [] : ['Shift']);
-  await page.waitForFunction(count => document.querySelector('.fx-model-view > .fx-model-note')?.textContent?.includes(`${count} picks.`), k + 1, { timeout: 30000 });
+  await page.waitForFunction(expected => document.querySelector('.fx-model-view > .fx-model-note')?.textContent === expected, labels.pickCount.replace('{{count}}', String(k + 1)), { timeout: 30000 });
  }
  await waitReport(null);
  const fronts = await reportFacts();
@@ -213,6 +214,8 @@ try {
    assert.ok(display.overlays.includes('modeling.selection'), 'Mesh preview receives the Modeling overlay');
    await page.locator('[role="tab"][data-page-id="page-mesh"]').click();
    await page.locator(`[data-forgeax-asset-preview="${target.targetId}"]`).waitFor({ state: 'visible' });
+   // Mesh enables reset after its initial orbit-pivot camera transaction settles.
+   await page.locator('[data-testid="mesh-reset-view"]:enabled').waitFor({ timeout: 15_000 });
    // Look down on the hub so the lug pocket overlay faces the preview camera.
    const before = await client.getCamera(identity);
    const interaction = { ...identity, interactionId: 'modeling-top' };

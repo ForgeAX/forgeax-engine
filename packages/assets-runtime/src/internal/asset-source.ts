@@ -37,7 +37,10 @@ import type { DecoderRegistry } from './decoder-registry.js';
 import { freezeRuntimePayload } from './immutable-payload.js';
 import { PackReader, type VerifiedPack } from './pack-reader.js';
 import { bytesOf, readPackage } from './package-read.js';
-import { validatePublicationReferences } from './publication-references.js';
+import {
+  validatePublicationReferenceRoots,
+  validatePublicationReferences,
+} from './publication-references.js';
 import { realmRetention } from './retention-budget.js';
 import type { RuntimeCatalogRow } from './validate-runtime-row.js';
 import { validateRuntimeRow } from './validate-runtime-row.js';
@@ -75,13 +78,15 @@ interface OpenedPack {
 /** Packs opened by one closure load, keyed by package URL and publication. */
 type PackScope = Map<string, Promise<Result<OpenedPack, AssetLoadError>>>;
 
-interface SourceEntry {
+export interface SourceEntry {
+  readonly identity: symbol;
   readonly value: unknown;
   readonly kind: string;
   readonly refs: readonly string[];
   readonly references: 'eager' | 'deferred';
   readonly publication: AssetPublicationTuple & AssetPublicationEnvelope;
   readonly digest: string;
+  readonly decoderIdentity: symbol | undefined;
 }
 
 export interface AdoptedAssetSource {
@@ -111,6 +116,7 @@ export interface AssetSource {
     pack: RuntimePackEnvelope,
     rows: readonly CatalogEntry[],
     values: ReadonlyMap<string, Asset>,
+    decoderIdentities: ReadonlyMap<string, symbol | undefined>,
   ): void;
   trimReadCache(): void;
   invalidate(guid: string): void;
@@ -136,6 +142,7 @@ export interface AssetSource {
   ): Promise<Result<P, AssetLoadError>>;
   entry(guid: string): SourceEntry | undefined;
   checkCurrent(guid: string): Result<void, AssetLoadError>;
+  checkCurrentMany(guids: Iterable<string>): Result<void, AssetLoadError>;
   snapshot(): AssetSourceSnapshot;
   subscribe(listener: (snapshot: AssetGraphSnapshot) => void): () => void;
   dispose(): void;
@@ -313,10 +320,10 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     const validated = validateRuntimeRow(row);
     if (!validated.ok) return validated;
     const publication = validated.value.publication;
-    const tuple = {
+    const tuple = freezeRuntimePayload({
       ...publication,
       scopeId: session.scopeId,
-    };
+    });
     const packKey = `${row.packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
     let opened = scope.get(packKey);
     if (opened === undefined) {
@@ -368,6 +375,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       read,
     };
     const input: AssetDecoderInput<unknown> = { envelope, artifacts, signal };
+    const decoderIdentity = decoders.identity(envelope.kind);
+    const references = decoders.referencePolicy(envelope.kind);
     const decoded = await decoders.loadByKind(envelope.kind, input);
     if (!decoded.ok) return decoded;
     if (
@@ -403,14 +412,23 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           },
         });
     }
+    if (decoders.identity(envelope.kind) !== decoderIdentity)
+      return err({
+        code: 'asset-superseded',
+        expected: 'the decoder used by this source read',
+        hint: 'load with the current decoder lease',
+        detail: { guid, generation: tuple.generation },
+      });
     return ok({
+      identity: Symbol(guid),
       value: freezeRuntimePayload(decoded.value),
       kind: envelope.kind,
       // The graph decodes this output's references. The publication fence owns package evidence.
       refs: [...new Set(envelope.refs)],
       publication: tuple,
       digest: output.digest,
-      references: decoders.referencePolicy(envelope.kind),
+      references,
+      decoderIdentity,
     });
   };
   const graph = new AssetGraph<SourceEntry, PackScope>({
@@ -475,7 +493,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       graph.invalidate(guid);
     },
     revision: (guid) => graph.revision(guid),
-    preparePublication: (pack, rows, values) => {
+    preparePublication: (pack, rows, values, decoderIdentities) => {
       if (pack.scopeId !== session.scopeId)
         throw new TypeError('prepared publication must belong to the configured Catalog scope');
       const prepared = new Map<string, SourceEntry>();
@@ -486,12 +504,15 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         if (!envelope || !output || !value || !row.publication)
           throw new TypeError(`missing prepared publication output ${row.guid}`);
         prepared.set(row.guid.toLowerCase(), {
+          identity: Symbol(row.guid),
           value,
           kind: row.kind,
           refs: [...new Set(envelope.refs)],
           references: decoders.referencePolicy(row.kind),
-          publication: { ...row.publication, scopeId: session.scopeId },
+          // Prepared rows are the Registry's private captured copies, not caller rows.
+          publication: freezeRuntimePayload({ ...row.publication, scopeId: session.scopeId }),
           digest: output.digest,
+          decoderIdentity: decoderIdentities.get(row.kind),
         });
       }
       graph.prepare(prepared);
@@ -588,8 +609,16 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           graph.invalidate(guid);
           return before;
         }
+        invalidateRetiredDecoders(guid);
         const result = await graph.load(guid, loadOptions.signal, loadOptions.readScope);
         if (!result.ok) return result;
+        if (invalidateRetiredDecoders(guid))
+          return err({
+            code: 'asset-superseded' as const,
+            expected: 'the decoded closure to keep its exact owner leases',
+            hint: 'load the closure with current decoders',
+            detail: { guid, generation: graph.revision(guid) },
+          });
         const current = checkCurrent(guid, result.value.publication);
         if (!current.ok) return current;
         const after = validatePublicationReferences(guid, row, (guid) => session.get(guid));
@@ -607,6 +636,20 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     checkCurrent: (guid) => {
       const entry = graph.entry(guid);
       return entry === undefined ? err(missing(guid)) : checkCurrent(guid, entry.publication);
+    },
+    checkCurrentMany: (guids) => {
+      const rows: [string, CatalogEntry | undefined][] = [];
+      for (const guid of guids) {
+        const entry = graph.entry(guid);
+        if (entry === undefined) return err(missing(guid));
+        const current = checkCurrentIdentity(guid, entry.publication);
+        if (!current.ok) return current;
+        rows.push([guid, current.value]);
+      }
+      const references = validatePublicationReferenceRoots(rows, (guid) => session.get(guid));
+      if (!references.ok && references.error.code === 'asset-dependency-failed')
+        graph.invalidate(references.error.detail.guid);
+      return references;
     },
     snapshot: () => snapshot(),
     subscribe: (listener) => graph.subscribe(listener),
@@ -631,16 +674,48 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       bundleTransfers: bundles.transfers.snapshot(),
     };
   }
+
+  /** A cached payload must not be relabelled as the result of a newly installed decoder. */
+  function invalidateRetiredDecoders(root: string): boolean {
+    const visited = new Set<string>(),
+      retired: string[] = [],
+      pending = [root];
+    while (pending.length > 0) {
+      const key = pending.pop() as string;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const entry = graph.entry(key);
+      if (entry === undefined) continue;
+      if (entry.decoderIdentity !== decoders.identity(entry.kind)) retired.push(key);
+      if (entry.references === 'eager') for (const child of entry.refs) pending.push(child);
+    }
+    for (const key of retired) graph.invalidate(key);
+    return retired.length > 0;
+  }
   function checkCurrent(
     guid: string,
     expected: AssetPublicationTuple,
   ): Result<void, AssetLoadError> {
+    const current = checkCurrentIdentity(guid, expected);
+    if (!current.ok) return current;
+    const references = validatePublicationReferences(guid, current.value, (guid) =>
+      session.get(guid),
+    );
+    if (!references.ok) graph.invalidate(guid);
+    return references;
+  }
+  function checkCurrentIdentity(
+    guid: string,
+    expected: AssetPublicationTuple,
+  ): Result<CatalogEntry, AssetLoadError> {
     const row = session.get(guid);
     const actual = row?.publication;
     if (
       session.isStale ||
       expected.scopeId !== session.scopeId ||
-      actual?.generation !== expected.generation ||
+      row === undefined ||
+      actual === undefined ||
+      actual.generation !== expected.generation ||
       actual.digest !== expected.digest ||
       actual.outputSetDigest !== expected.outputSetDigest
     ) {
@@ -652,9 +727,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         detail: { guid, generation: expected.generation },
       });
     }
-    const references = validatePublicationReferences(guid, row, (guid) => session.get(guid));
-    if (!references.ok) graph.invalidate(guid);
-    return references;
+    return ok(row);
   }
   return registry;
 }

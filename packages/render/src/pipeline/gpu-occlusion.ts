@@ -43,6 +43,7 @@ export function sceneViewImport(
 export function addGpuLateOcclusion(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: {
+    readonly nativeInputs?: import('../record/native-graph-inputs').NativeGraphInputs | undefined;
     readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined;
     /** Depth-only view of the early pass's depth. */
     readonly depth: GraphTextureView;
@@ -58,6 +59,7 @@ export function addGpuLateOcclusion(
   const view = input.view();
   if (!view.ok) return view;
   const pyramid = addDepthPyramidPasses(graph, {
+    nativeInputs: input.nativeInputs,
     depth: input.depth,
     width: input.width,
     height: input.height,

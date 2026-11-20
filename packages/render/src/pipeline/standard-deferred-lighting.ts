@@ -55,8 +55,8 @@ export interface StandardSceneShaderSources {
   readonly deferred?: {
     readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
     readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
-    readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
-    readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+    readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource | undefined;
+    readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource | undefined;
   };
 }
 
@@ -81,6 +81,22 @@ function deferredLightingSource(
   const deferred = sources?.deferred;
   if (clustered) return usesLut ? deferred?.clusteredLut : deferred?.clustered;
   return usesLut ? deferred?.unclusteredLut : deferred?.unclustered;
+}
+
+function createDeferredShaderModule(
+  runtime: _InternalRenderPipelineContext['runtime'],
+  source: DeferredLightingProgram['source'],
+  label: string,
+) {
+  const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
+  const module = factory?.createShaderModule(shaderSourceDescriptor(source, label)).unwrap();
+  if (module === undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'deferred shader module factory',
+      hint: 'initialize the Renderer backend',
+    });
+  return module;
 }
 
 // Graph targets and bind groups have graph lifetime. Immutable layouts/PSOs
@@ -348,20 +364,11 @@ export function addStandardDeferredLighting(
       const key = `${input.cluster !== null}:${usesLut}:${fragmentEntry}:${targetKey}`;
       let program = programs.get(key);
       if (program === undefined) {
-        const module = internal.runtime.shaderModuleFactory
-          ?.createShaderModule(
-            shaderSourceDescriptor(
-              source,
-              `standard_deferred_${input.cluster !== null}_${usesLut}`,
-            ),
-          )
-          .unwrap();
-        if (module === undefined)
-          throw new RhiError({
-            code: 'rhi-not-available',
-            expected: 'deferred shader module factory',
-            hint: 'initialize the Renderer backend',
-          });
+        const module = createDeferredShaderModule(
+          internal.runtime,
+          source,
+          `standard_deferred_${input.cluster !== null}_${usesLut}`,
+        );
         const material = device
           .createBindGroupLayout({
             label: 'deferred-surface-environment',

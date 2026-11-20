@@ -208,8 +208,8 @@ const { Transform } = await import('@forgeax/engine-scene');
 // M5-engine-fix: build a real engine manifest carrying pbr.wgsl + unlit.wgsl
 // (post w22.9 the inline fallback was deleted; the engine demands real
 // entries). Mirrors apps/hello/cube/scripts/smoke-dawn.mjs.
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const EMPTY_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(EMPTY_MANIFEST_URL));
 

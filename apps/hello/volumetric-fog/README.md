@@ -1,10 +1,13 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # Hello volumetric fog
 
 ## AI-first MVD route
 
-这是公开 3D density texture 与 volumetric fog 的最小消费示例。它只组合 Engine 已有的
-`TextureAsset`、`AssetRegistry`、`VolumetricFog` 与 RenderGraph；fog 的采样、光照和恢复
-仍由 Engine owner 执行。
+This minimal public example consumes 3D density textures and volumetric fog using
+existing Engine TextureAsset, AssetRegistry, VolumetricFog and RenderGraph.
+Engine owners retain fog sampling, lighting and recovery.
 
 ```mermaid
 flowchart LR
@@ -136,63 +139,63 @@ scene's twelve steps are not an Engine-wide integration budget.
 | Volume | `128³`, 12 steps, resolution `0.25`, denoise `0.6`, intensity `1` |
 | Output | Neutral tone mapping, exposure `2`, raw paired capture `1920 × 1080` |
 
-### 验证
+### Verification
 
-- Browser：`pnpm --filter @forgeax/hello-volumetric-fog build`，再运行 `smoke:browser`；
-  receipt 必须带 backend、pixel、provenance、verdict 与 confidence。
-- Browser receipt：`FORGEAX_FOG_RECEIPT=/tmp/volumetric-fog-receipt.json FORGEAX_FOG_URL=http://127.0.0.1:5173/ pnpm --filter @forgeax/hello-volumetric-fog smoke:browser`，然后运行
+- Browser: `pnpm --filter @forgeax/hello-volumetric-fog build`, then smoke:browser.
+  Receipts must include backend, pixel, provenance, verdict and confidence.
+- Browser receipt: `FORGEAX_FOG_RECEIPT=/tmp/volumetric-fog-receipt.json FORGEAX_FOG_URL=http://127.0.0.1:5173/ pnpm --filter @forgeax/hello-volumetric-fog smoke:browser`, then run
   `node scripts/smoke-falsify.mjs --receipt /tmp/volumetric-fog-receipt.json --head "$(git rev-parse HEAD)"`。
-  receipt 的 backend、temporal limits、volume identity 与 renderer errors 均来自一次 settle 后的
-  `renderer.inspect()`，falsifier 会检查它们之间的一致性。
-- Dawn：`pnpm --filter @forgeax/hello-volumetric-fog smoke`；输出包含 fresh HEAD、limits、
-  memory、sample 与 recovery facts。
+  Receipt backend, temporal limits, volume identity and renderer errors come from
+  one settled renderer.inspect(); the falsifier checks their consistency.
+- Dawn: `pnpm --filter @forgeax/hello-volumetric-fog smoke`; output includes fresh
+  HEAD, limits, memory, sampling and recovery facts.
 - Falsification：`node scripts/smoke-falsify.mjs --receipt <receipt.json>`；backend、GUID、
-  generation 或 exact head 不一致时必须退出 1。
+  Generation or exact-HEAD mismatches must exit 1.
 
 > [!IMPORTANT]
-> 失败先执行 inspect，再按错误 `hint` 修复 Meta/import/Pack producer。示例不使用 fallback、
-> atlas、stand-in 或 app-local fog shader。
+> Inspect failures first, then follow error hint to repair Meta/import/Pack producers.
+> The example uses no fallback, atlas, stand-in or app-local fog shader.
 
-## Density owner CPU lifecycle 契约
+## Density Owner CPU Lifecycle Contract
 
-`src/__tests__/volumetric-owner-contract.unit.test.ts` 使用真实 ECS `World`、
-公开 `VolumetricFog` 组件、由 World 管理的真实共享 `TextureAsset` handle 和公开
-`extractVolumetricFog` admission 函数。测试覆盖 8 个 owner 的上限、第 9 个 owner
-的结构化拒绝、despawn 时释放共享引用并重新接纳，以及拒绝 2D density 和反向
-bounds 时不改变存活 World 或已接受输入。
+src/__tests__/volumetric-owner-contract.unit.test.ts uses a real ECS World, public
+VolumetricFog, real World-managed shared TextureAsset handles and public
+extractVolumetricFog admission. Tests cover eight admitted owners, structured
+rejection of the ninth, shared-reference release/re-admission on despawn, and
+rejection of 2D density or reversed bounds without changing the live World or accepted inputs.
 
-在本目录运行此 CPU fixture：
+Run the CPU fixture here:
 
 ```powershell
 corepack pnpm@11.7.0 exec vitest run --config vitest.config.ts src/__tests__/volumetric-owner-contract.unit.test.ts
 ```
 
-## Same-renderer Dawn fixture 准备
+## Same-Renderer Dawn Fixture Preparation
 
-`scripts/smoke-dawn.mjs` 现在只创建一个真实 Runtime Renderer、一个 `World` 和一个
-attachment，在同一世界里提交两个普通 `VolumetricFog` owner。场景让同一相机从两个
-volume 内移到外，再回到原位；随后用 `world.set` 把同一 owner 的 density 字段重绑定到
-另一份 3D `TextureAsset`，并在更新前后从同一 Dawn canvas target 读回真实像素。该路径
-替换的是 owner 引用，不声称是 Catalog 原位热更新。
+scripts/smoke-dawn.mjs creates one real Runtime Renderer, one World and one
+attachment with two ordinary VolumetricFog owners. One camera moves from inside
+both volumes to outside and back. world.set then rebinds one owner's density
+to another 3D TextureAsset; actual pixels are read from the same Dawn canvas
+before and after. This replaces owner references, not an in-place Catalog hot update.
 
-smoke 只在 `receipt.completed` 成功后计数，至少要求 60 个真实完成 receipt。像素对照
-要求 `changedPixels > 0.01` 且 `meanRgbDelta > 0.01`。CPU 测试只检查 ECS owner/refcount
-重绑定和 smoke 源码契约；本阶段没有运行 Dawn，也没有产生像素通过证据。
+Smoke counts only successfully completed receipts, requiring at least 60.
+Pixel comparison requires changedPixels>0.01 and meanRgbDelta>0.01. CPU tests
+check only ECS ownership/refcounts, rebinding and smoke source contracts. That preparation stage ran no Dawn and produced no passing pixel evidence.
 
-Browser parity baseline 保持 teapot/floor 不变；`?variant=transparent-subject` 会在同一
-World/Renderer 中添加普通 `MeshFilter`/`MeshRenderer` 和标准 alpha-blend `MaterialAsset`。
-Dawn smoke 也在已有双 volume、相机内外、density 重绑定 fixture 中加入一个普通透明 mesh，
-并要求实际 `renderer.inspect().transparency.sortedDrawCount` 大于零且已提交图包含
-`transparent` pass。该 smoke 尚未运行，因此没有实帧或像素通过证据。
+Browser parity retains the teapot/floor. ?variant=transparent-subject adds ordinary
+MeshFilter/MeshRenderer and a standard alpha-blend MaterialAsset in the same World/Renderer.
+Dawn smoke adds an ordinary transparent mesh to its two-volume, inside/outside
+camera and density-rebinding fixture, requiring inspect().transparency.sortedDrawCount
+>0 and a submitted transparent pass. That smoke had not run at this stage; no completed-frame or passing pixel evidence was produced.
 
-## Fox 与透明 subject 合成准备
+## Fox and Transparent-Subject Composition Preparation
 
-`?variant=transparent-subject` 会在同一个 App `World` 中通过已配置的 Pack 和 `assets.load(guid, 'scene')/instantiate` 加载固定公开 Fox 场景，同时提交普通透明 `MeshRenderer`。Vite Pack 根使用固定 `forgeax-engine-assets/khronos-gltf-samples/Fox`，并由既有 `gltfImporter` 生产；Skin 组件由 `skinningPlugin()` 注册。
+?variant=transparent-subject loads the pinned public Fox scene in the same App World through configured Packs and assets.load(guid,'scene')/instantiate, alongside an ordinary transparent MeshRenderer. Vite Pack roots pin forgeax-engine-assets/khronos-gltf-samples/Fox and use gltfImporter; skinningPlugin() registers Skin.
 
-Dawn smoke fixture 使用同一固定 `Fox.glb` 与 Meta 产生的构建资产，经 `useBuiltAssetSource` 装配 Catalog，再走 `assets.load(sceneGuid, 'scene')` + `assets.instantiate` 和 Skin 路径，并与透明 subject、两个 volume 共用一个 World、一个 Renderer 和一个 attachment。该改动只准备真实 owner 路径；本阶段没有启动 Dawn/GPU/Browser/Host，因此透明与 Fox 的实际像素合成、density 像素差异和 60 个 completed receipt 仍待单独 GPU 窗口执行。
-## Smoke 失败清理与合成证据
-Dawn smoke 在 finally 中释放已取得的 readback buffer、attachment lease、World 插件 Fiber、Renderer、manifest object URL、canvas target 和临时 Dawn 全局对象。公开 Renderer.dispose() 会清理 renderer resources 与 DeviceScope，但不会销毁 backend 创建的 raw device；smoke 始终负责销毁自己从 requestDevice() 截获的 raw device。清理栈先退休 attachment、Renderer 和 canvas target，再销毁该 raw device，因此 Renderer 构造前后失败都覆盖同一设备所有权路径。World 没有公开 dispose()；销毁 Cordis Fiber 会撤销已安装插件，随后本地 World 可由 GC 回收。清理会继续处理后续资源，并将清理错误与原始 smoke 错误一起报告。CPU fault test 只验证源码清理顺序与错误保留，不证明真实 Dawn/GPU 释放。
+The Dawn fixture uses built assets from the same Fox.glb and Meta, assembles Catalog through useBuiltAssetSource, then calls assets.load(sceneGuid,'scene') / assets.instantiate and the Skin path. Fox, the transparent subject and two volumes share one World, Renderer and attachment. This prepares actual ownership only; no Dawn/GPU/Browser/Host ran at that stage. Real composition, density pixel differences and 60 completed receipts still require a separate GPU run.
+## Smoke Failure Cleanup and Composition Evidence
+Dawn smoke finally releases acquired readback buffers, attachment leases, World plugin Fibers, Renderer, manifest object URLs, canvas target and temporary Dawn globals. Renderer.dispose() cleans renderer resources/DeviceScope but does not destroy a backend-created raw device. Smoke destroys the raw device it intercepts from requestDevice(), after retiring attachment, Renderer and canvas target, covering failure before or after Renderer construction. World has no public dispose(); disposing Cordis Fibers revokes installed plugins, after which the local World is garbage-collectable. Cleanup continues after errors and reports them with the original smoke failure. CPU fault tests prove source cleanup order and error retention only, not real Dawn/GPU release.
 
-该 smoke 不创建独立 Engine Input 或注册外部 canvas 事件监听；mock canvas 的监听接口为空实现。
+Smoke creates no independent Engine Input and registers no external canvas event listeners; mock-canvas listener methods are empty.
 
-Smoke 中存在真实 Fox `Skin` 路径和 alpha-blended 透明 mesh，二者与 volumes 共用一个 World/Renderer。`compositionGaps` 仍记录 Fox/透明物体的像素合成顺序尚未直接比较；只有后续真实像素断言通过后才能移除此 gap。
+Real Fox Skin and alpha-blended transparent mesh paths share one World/Renderer with the volumes. compositionGaps still records that Fox/transparent pixel composition order has not been compared directly; remove that gap only after actual pixel assertions pass.

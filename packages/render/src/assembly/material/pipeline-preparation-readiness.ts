@@ -17,3 +17,19 @@ export function materialPipelineRequestPending(
     state.sharedImmediateShaderModuleAdapter?.isPending(result.error) === true
   );
 }
+
+/** Only this issued request's module/PSO completion, never another pending flight. */
+export function materialPipelineRequestCompletion(
+  error: RhiError,
+  key: string,
+  pipeline: PreparedRenderPipelineOwner | undefined,
+  active: RendererShaderState,
+  candidate: RendererShaderState | undefined,
+): Promise<Result<void, RhiError>> | undefined {
+  const state = candidate ?? active;
+  return (
+    pipeline?.pendingCompletion(key) ??
+    state.sharedShaderModuleAdapter?.pendingCompletion(error) ??
+    state.sharedImmediateShaderModuleAdapter?.pendingCompletion(error)
+  );
+}

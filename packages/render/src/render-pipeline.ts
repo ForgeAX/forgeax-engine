@@ -1,3 +1,4 @@
+import { surfaceTextureView } from './record/surface-views';
 // @forgeax/engine-render - typed render-pipeline topology contract.
 //
 // `RenderPipeline` is the typed topology contribution used by the Standard host.
@@ -35,7 +36,6 @@ import type {
   RhiError,
   RhiRenderPassEncoder,
   RenderPipeline as RhiRenderPipeline,
-  Texture,
   TextureFormat,
   TextureView,
 } from '@forgeax/engine-rhi';
@@ -46,7 +46,8 @@ import type { DirectionalShadowFilterLabel } from './components/directional-shad
 import type { RenderError } from './errors/render';
 import type { RenderFeatureTargetKind } from './features/targets';
 import type { RenderFeaturePlacement } from './features/types';
-import type { ShadowViewIdentity, ShadowViewProjection } from './gpu-driven/shadow-views';
+import type { GpuDrivenGraphProjection } from './gpu-driven/production-raster';
+import type { ShadowViewGraphProjection, ShadowViewIdentity } from './gpu-driven/shadow-views';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -259,7 +260,11 @@ export interface RenderPipelineTopology {
     /** Scene color fringe before Bloom and tone mapping. */
     readonly chromaticAberration?: boolean | undefined;
     readonly lensFlare?: boolean | undefined;
-    readonly outline?: boolean | undefined;
+    /** True selects a screen-space silhouette. The HDR outline carries its largest jump. */
+    readonly outline?:
+      | boolean
+      | { readonly kind: 'distance-field'; readonly firstStep: number }
+      | undefined;
     readonly editorAssistance?: boolean | undefined;
     readonly editorOutline?: boolean | undefined;
   };
@@ -399,6 +404,8 @@ export interface RenderPipelineTarget {
   readonly view: GraphTextureView;
   readonly format: TextureFormat;
   readonly sampleCount: 1 | 4;
+  /** Pure authority of an imported persistent owner; never resolves a frame or allocates. */
+  readonly residentView?: () => TextureView | undefined;
   readonly domain?: ColorValueDomain | undefined;
   readonly resolveTarget?: GraphTextureView | undefined;
   /** Exact semantic owner tokens authorized for this physical target. */
@@ -462,22 +469,17 @@ export function importRenderPipelineSurface(
           (frame) => frame.outputTarget().view,
         );
   if (display !== undefined && !display.ok) return display;
-  let storageView: { readonly texture: Texture; readonly view: TextureView } | undefined;
   const storage = graph.importView(
     texture.value,
     { label: 'surface.storage', format: topology.surface.storageFormat },
     (frame) => {
       if (topology.surface.storageFormat === topology.surface.viewFormat)
         return frame.outputTarget().view;
-      // Re-create only when the surface hands back a different texture.
-      const target = frame.outputTarget().texture;
-      if (storageView?.texture === target) return storageView.view;
-      const resolved = frame.runtime.device.createTextureView(target, {
-        format: topology.surface.storageFormat,
-      });
-      if (!resolved.ok) throw resolved.error;
-      storageView = { texture: target, view: resolved.value };
-      return resolved.value;
+      return surfaceTextureView(
+        frame.runtime,
+        frame.outputTarget().texture,
+        topology.surface.storageFormat,
+      ).unwrap();
     },
   );
   if (!storage.ok) return storage;
@@ -514,7 +516,21 @@ export interface RenderPipelineFeatureTarget {
   readonly sampleCount: 1 | 4;
 }
 
+export interface RenderPipelineGpuDrivenSourcePreparation {
+  isCurrent(): boolean;
+  pipelineRequests(): Iterable<() => boolean>;
+  prepareWindows(): Generator<void, Result<void, RhiError>>;
+  prepareBundles(
+    input: import('./gpu-driven/source-raster-bundles').SourceRasterPassBindings,
+  ): Generator<void, Result<void, RhiError>>;
+}
+
 export interface RenderPipelineGpuDrivenProjection {
+  /** @internal Stage prospective classes through this graph's actual Pass jobs. */
+  readonly prepareSource?: (
+    source: GpuDrivenGraphProjection,
+    graphCurrent: () => boolean,
+  ) => Generator<void, Result<RenderPipelineGpuDrivenSourcePreparation, RhiError>>;
   readonly accesses: readonly GraphAccess[];
   /** @internal Register actual graph pass facts without drawing or changing visibility. */
   readonly registerPipelinePreparation?: (
@@ -671,6 +687,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   readonly getSharedGraphTextureBinding?: (
     name: string,
   ) => { readonly view: GraphTextureView; readonly format: TextureFormat } | undefined;
+  readonly nativeInputs?: import('./record/native-graph-inputs').NativeGraphInputs;
   readonly graph: RenderGraphBuilder<FrameCtx>;
   /** Stable identity of the camera/view whose per-view resources are projected into this graph. */
   readonly viewIdentity?: string | undefined;
@@ -782,7 +799,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   projectGpuDrivenShadow?(
     identity: ShadowViewIdentity,
     cameraPyramid?: GraphTextureView,
-  ): Result<ShadowViewProjection | undefined, RenderGraphError>;
+  ): Result<ShadowViewGraphProjection | undefined, RenderGraphError>;
   /** Renderer-owned static shadow layers the graph imports instead of allocating. */
   readonly gpuDrivenShadowDepthLayers?: ShadowDepthLayers;
   readonly shadowDepthLayers?: ShadowDepthLayers;

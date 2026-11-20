@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 import { solidTexture } from './texture-fixture.mjs';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 // smoke-falsify.mjs -- feat-20260629-multi-uv-set-support m5-w4
 //
 // Visual falsification variant for AC-10. Constructs the same 2-UV-set
@@ -22,7 +21,7 @@ import { readShaderManifestPublication } from '@forgeax/engine-shader';
 
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = 60;
 const SMOKE_PIXEL_THRESHOLD = 0.05;
@@ -249,7 +248,7 @@ let manifestParsed;
 try {
   const manifestRaw = readShaderManifestText(MANIFEST_PATH);
   MANIFEST_URL = processShaderManifestUrl(MANIFEST_PATH);
-  manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
+  manifestParsed = await readCookedShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
   console.error('[falsify-smoke] FAIL - manifest.json missing or invalid. Run: pnpm --filter @forgeax/hello-multi-uv build first');
   process.exit(1);

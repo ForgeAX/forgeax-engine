@@ -58,6 +58,7 @@ const client = {
   },
 };
 Object.assign(globalThis, { materialTexturesFixture: {
+  setLocale,
   calls, pending: () => pending, listeners: () => listeners.size,
   select(guid: string) { selected = guid; generation++; changed(); },
   replace() { generation++; for (const asset of textures) asset.publicationId = `v${generation}`; changed(); },

@@ -102,7 +102,7 @@ export type {
   TextureGeneratorAsset,
   TextureGeneratorPrograms,
 } from './texture/generator.js';
-export { validateTextureGenerator } from './texture/generator.js';
+export { textureGeneratorParameterLayout, validateTextureGenerator } from './texture/generator.js';
 export type { GpuTextureAsset, SampledTextureAsset } from './texture/gpu-asset.js';
 export { isGpuTextureAsset } from './texture/gpu-asset.js';
 export type {

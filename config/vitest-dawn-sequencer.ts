@@ -5,6 +5,7 @@ import {
   DAWN_GATE_GROUPS,
   DAWN_GATE_SHARDS,
   DAWN_ORDINARY_FILE_FAMILIES,
+  dawnAuthoringCapturesOutsideCi,
 } from '../scripts/ci/dawn-gate-roster.mjs';
 import coverageTimings from '../scripts/ci/modeling-coverage-file-seconds.json' with {
   type: 'json',
@@ -17,6 +18,7 @@ const tailSeconds = dawnPlanningOwnerCosts();
 const unmeasuredFileSeconds = Math.max(...fileSeconds.values());
 // New complete owners use the existing conservative file forecast until a
 // completed run supplies an owner measurement. This does not change deadlines.
+const localAuthoringOnly = new Set(dawnAuthoringCapturesOutsideCi());
 for (const group of DAWN_GATE_GROUPS) {
   if (group.files.length > 0) {
     tailSeconds.set(
@@ -36,7 +38,10 @@ for (const group of DAWN_GATE_GROUPS) {
       Math.max(tailSeconds.get(group.id) ?? 0, group.placementReserveSeconds),
     );
   }
-  if (group.files.length > 0 && coreValidationFiles(group.files).length === 0) {
+  if (
+    group.files.length > 0 &&
+    coreValidationFiles(group.files).every((file) => localAuthoringOnly.has(file))
+  ) {
     tailSeconds.set(group.id, 0);
   }
 }

@@ -40,6 +40,7 @@ import {
   createHdrpUnifiedBindGroup,
   getOrCreateHdrpBuffers,
   type HdrpBuffers,
+  hdrpBuffersCurrent,
   packClusterUniform,
 } from '../hdrp-buffers';
 import type {
@@ -105,6 +106,7 @@ import { LightTable } from './light-table';
 import {
   bindGroupChainLeaf2,
   bindGroupChainLeaf3,
+  findFromChain,
   getOrCreateFromChain,
   MESH_PER_ENTITY_STRIDE,
   MESH_UBO_FULL_ARRAY_BYTES,
@@ -252,12 +254,23 @@ function extendedViewLightingResources(
 }
 
 /** Resolve only the current View resources used by a fullscreen lighting receiver. */
+function requireViewBindingCurrent(current: (() => boolean) | undefined): void {
+  if (current?.() === false)
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'current View binding inputs before and after native creation',
+      hint: 'discard the stale preparation and retry from its actual owners',
+    });
+}
+
 export function buildViewBindGroup(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
   bindGroupCounts: BindGroupCounts,
   graphTargets?: ViewBindGroupTargets,
+  readOnly = false,
+  current?: () => boolean,
 ): BindGroup | null {
   const shadowSampler = pipelineState.perPassResources.shadowSampler;
   if (shadowSampler === null) {
@@ -331,6 +344,8 @@ export function buildViewBindGroup(
     return { keys, viewLayout };
   };
   const { keys, viewLayout } = captureViewBindingKey();
+  if (readOnly) return findFromChain(frameState.viewBindGroupCache, keys, 'view-main') ?? null;
+  requireViewBindingCurrent(current);
   return getOrCreateFromChain(
     frameState.viewBindGroupCache,
     keys,
@@ -528,6 +543,7 @@ export function buildViewBindGroup(
         entries,
       });
       if (!viewBindGroupResult.ok) throw viewBindGroupResult.error;
+      requireViewBindingCurrent(current);
       return viewBindGroupResult.value;
     },
     bindGroupCounts,
@@ -557,12 +573,14 @@ export function buildPerFrameBindGroups(
   },
   includeView = true,
   standardLighting?: StandardTopologyInputValue,
+  current?: () => boolean,
 ): {
   viewBindGroup: BindGroup | null;
   meshBindGroup: BindGroup | null;
   hdrpClusterBindGroup: BindGroup | null;
   hdrpClusterMembershipBindGroup: BindGroup | null;
 } {
+  requireViewBindingCurrent(current);
   // View main (#1) chain = b0(viewUniformBuffer), b3(graph shadowDepth view or
   // shadowArrayFallbackTextureView), b4(shadowSampler), b5(atlas view), b6
   // (shadowParams); variant 'view-main'. Local lights are never mirrored in
@@ -616,6 +634,8 @@ export function buildPerFrameBindGroups(
         pipelineState,
         bindGroupCounts,
         graphTargets,
+        false,
+        current,
       );
       if (viewBindGroup === null) {
         return {
@@ -637,6 +657,7 @@ export function buildPerFrameBindGroups(
       pipelineState,
       bindGroupCounts,
       0,
+      current,
     );
 
     // feat-20260609-hdrp-cluster-fragment-ggx M4 / w19: when HDRP is active,
@@ -670,6 +691,7 @@ export function buildPerFrameBindGroups(
                 hint: 'inspect prior errorRegistry events for createBindGroup failure detail',
               });
             }
+            requireViewBindingCurrent(current);
             return bg;
           },
           bindGroupCounts,
@@ -677,7 +699,36 @@ export function buildPerFrameBindGroups(
       }
     }
   }
+  requireViewBindingCurrent(current);
   return { viewBindGroup, meshBindGroup, hdrpClusterBindGroup, hdrpClusterMembershipBindGroup };
+}
+
+/** Capture exact original global mesh/Cluster cache leaves; later reads cannot create. */
+export function captureGlobalMeshBindingsCurrent(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  pipeline: PipelineState,
+  groups: ReturnType<typeof buildPerFrameBindGroups>,
+  hdrp: HdrpBuffers | null,
+): () => boolean {
+  const buffer = meshSsboBuffer(pipeline.meshStorageBuffer, 0);
+  const layout = pipeline.meshBindGroupLayout;
+  const cache = frameState.meshBindGroupCache;
+  const meshKeys = [layout, buffer];
+  const clusterKeys = hdrp === null ? undefined : [buffer, hdrp];
+  const member = frameState.hdrpClusterMembership;
+  const membershipLayout = pipeline.hdrpClusterMembershipBindGroupLayout;
+  return () =>
+    frameState.meshBindGroupCache === cache &&
+    meshSsboBuffer(pipeline.meshStorageBuffer, 0) === buffer &&
+    pipeline.meshBindGroupLayout === layout &&
+    findFromChain(cache, meshKeys, 'mesh') === groups.meshBindGroup &&
+    frameState.hdrpClusterMembership === member &&
+    pipeline.hdrpClusterMembershipBindGroupLayout === membershipLayout &&
+    (clusterKeys === undefined ||
+      (hdrp !== null &&
+        hdrpBuffersCurrent(internals, hdrp) &&
+        findFromChain(cache, clusterKeys, 'hdrp-unified') === groups.hdrpClusterBindGroup));
 }
 
 /**
@@ -1895,7 +1946,9 @@ export function meshSlotBindGroup(
   pipelineState: PipelineState,
   bindGroupCounts: BindGroupCounts,
   byteOffset: number,
+  current?: () => boolean,
 ): BindGroup {
+  requireViewBindingCurrent(current);
   const buffer = meshSsboBuffer(pipelineState.meshStorageBuffer, byteOffset);
   const bindings = bindGroupChainLeaf2(
     frameState.meshBindGroupCache,
@@ -1922,6 +1975,7 @@ export function meshSlotBindGroup(
     ],
   });
   if (!result.ok) throw result.error;
+  requireViewBindingCurrent(current);
   return rememberBindGroup(bindings, 'mesh', result.value, bindGroupCounts);
 }
 

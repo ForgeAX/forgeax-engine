@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+import { FixedTime, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -76,6 +76,7 @@ it.each([
         name: 'ordinary-consumers',
         color,
         depth,
+        materialSceneDepth: topology.materialSceneDepth,
         ...(sampleCount === 4 ? { resolve: resolved } : {}),
         selector: { LightMode: ['Forward'] },
         colorLoadOp: 'load',
@@ -165,18 +166,21 @@ it.each([
         },
       )
       .unwrap();
-    for (const row of [
+    const renderables = [
       { at: [0, 0, 0], scale: [3, 3, 1], material: seed },
       { at: [-0.5, 0, 0.2], scale: [0.8, 0.8, 1], material: lit },
       { at: [0.5, 0, 0.2], scale: [0.8, 0.8, 1], material: restore },
-    ] as const)
+    ] as const;
+    const [, litEntity] = renderables.map((row) =>
       world
         .spawn(
           { component: Transform, data: { pos: row.at, scale: row.scale } },
           { component: MeshFilter, data: { assetHandle: quad } },
           { component: MeshRenderer, data: { materials: [row.material] } },
         )
-        .unwrap();
+        .unwrap(),
+    );
+    if (litEntity === undefined) throw new Error('missing lit geometry');
     const lease = renderValue(renderer.attach(world));
     const draw = async () => {
       world.update(1 / 60).unwrap();
@@ -219,6 +223,32 @@ it.each([
     expect(errors).toEqual([]);
     mapped.unmap();
     readback.device.destroyBuffer(readback.buffer).unwrap();
+    if (sampleCount === 1) {
+      // Reuse the already exercised native Direct pipeline for the publication
+      // receipt. Wave 1 owns the paired physics and scene-index publication.
+      const replacement = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+      const prepared = renderValue(
+        renderer.prepareDynamicGeometry({
+          world,
+          entity: litEntity,
+          meshHandle: replacement,
+          revision: 1,
+        }),
+      );
+      const accepted = renderValue(
+        renderer.acceptDynamicGeometry(prepared, {
+          world,
+          fixedStep: world.getResource(FixedTime).tick,
+        }),
+      );
+      const recorded = await completeReadyFrame(draw);
+      expect(world.get(litEntity, MeshFilter).unwrap().assetHandle).toBe(replacement);
+      expect(renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
+        frameId: recorded.frameId,
+        recordStageConsumed: true,
+        recordStageLane: 'cpu',
+      });
+    }
   } finally {
     for (const copy of copies) copy.device.destroyBuffer(copy.buffer).unwrap();
     renderValue(await renderer.dispose());

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import {
   runGpuDrivenMultiBatchVisibleOrderEvidence,
   runGpuDrivenShadowCameraCullEvidence,
   runGpuDrivenSharedMemberGrowthEvidence,
   runGpuDrivenSharedMemberSubmeshEvidence,
+  runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
   runGpuDrivenViewLifecycleEvidence,
+  runGpuDrivenViewOcclusionEvidence,
   runGpuDrivenVisibleOrderEvidence,
   runSharedGeometryCullEvidence,
 } from './gpu-driven-view-gpu-evidence';
@@ -15,6 +18,47 @@ const browserReady = typeof navigator !== 'undefined' && navigator.gpu !== undef
 const lifecycleFrames = 60;
 
 describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('keeps latest HZB history through address-only preparation with %s passes', async (mode) => {
+    const frames = await runGpuDrivenViewOcclusionEvidence({
+      addressGrowth: true,
+      computePassMode: mode,
+      instanceCopies: 65,
+    });
+    expect(frames[2]).toMatchObject({
+      visible: 195,
+      culled: 0,
+      late: 0,
+      addressPreparation: {
+        allocationDelta: 0,
+        bindingsCreated: 0,
+        rasterUnchanged: true,
+        graphUnchanged: true,
+        intermediate: [
+          { visible: 195, culled: 0, late: 65 },
+          { visible: 195, culled: 65, late: 0 },
+          { visible: 195, culled: 0, late: 65 },
+        ],
+      },
+    });
+    expect(frames.map((frame) => frame.bufferRebuilds)).toEqual([1, 1, 1]);
+  });
+
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('uses the existing Skin graph immediately after address handoff with %s passes', async (mode) => {
+    expect(await runGpuDrivenSkinVisibleAddressEvidence(mode, 'none', true)).toEqual({
+      visibleCount: 1,
+      visibleInstance: 0,
+      candidateIndex: 2,
+      sourceSlot: 1,
+      primitiveIndex: 0,
+    });
+  });
+
   it.each([
     'separate',
     'combined',
@@ -62,17 +106,35 @@ describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
       for (const batch of frame.batches) expect(batch.actual).toEqual(batch.expected);
   });
 
+  it.each([
+    ['separate', 'source'],
+    ['combined', 'source'],
+    ['separate', 'other'],
+    ['combined', 'other'],
+  ] as const)('keeps physical suppression independent of Skin source identity with %s/%s', async (mode, suppressed) => {
+    const result = await runGpuDrivenSkinVisibleAddressEvidence(mode, suppressed);
+    expect(result.sourceSlot).toBe(1);
+    expect(result.primitiveIndex).toBe(0);
+    expect(result.visibleCount).toBe(suppressed === 'source' ? 0 : 1);
+  });
+
   it('culls edited geometry and displacement through fixed shared descriptors', async () => {
     const evidence = await runSharedGeometryCullEvidence();
-    expect(evidence.geometryUpload).toBe(4 * 1024 + 32);
+    expect(evidence.geometryUpload).toBe(4 * 1024 + 32 + GPU_TASK_HEADER_BYTES);
     expect(evidence.frames.map((frame) => frame.visible)).toEqual([0, 1024, 0, 1024, 0]);
     expect(evidence.frames[0]?.sharedInputUploadBytes).toBeGreaterThan(0);
     expect(evidence.frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
-      4 * 1024 + 32,
-      0,
-      4 * 1024 + 12,
-      0,
+      4 * 1024 + 32 + GPU_TASK_HEADER_BYTES,
+      GPU_TASK_HEADER_BYTES,
+      4 * 1024 + 12 + GPU_TASK_HEADER_BYTES,
+      GPU_TASK_HEADER_BYTES,
     ]);
+    const members = evidence.frames[0]?.memberNodesWritten;
+    expect(members).toBeGreaterThan(0);
+    expect(evidence.frames.map((frame) => frame.memberNodesWritten)).toEqual(
+      Array(5).fill(members),
+    );
+    expect(evidence.frames.map((frame) => frame.taskHeadersWritten)).toEqual([1, 2, 3, 4, 5]);
   });
   it.each([
     'separate',

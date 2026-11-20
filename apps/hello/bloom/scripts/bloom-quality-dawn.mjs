@@ -18,9 +18,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readBuiltinShaderEntries, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
@@ -50,10 +49,10 @@ const UPSAMPLE_PARAMS_BYTES = 5 * UPSAMPLE_PARAMS_STRIDE;
 const COMPOSITE_PARAMS_BYTES = 16;
 const MOTION_FRAMES = 60;
 
-const manifest = await readShaderManifestPublication(JSON.parse(readShaderManifestText(manifestPath)));
-const downEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomHorizontalParams'));
-const upEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomVerticalParams'));
-const compositeEntry = manifest.entries.find((entry) => entry.wgsl.includes('BloomCompositeParams'));
+const [downEntry, upEntry, compositeEntry] = await readBuiltinShaderEntries(
+  readShaderManifestText(manifestPath),
+  ['bloomHorizontal', 'bloomVertical', 'bloomComposite'],
+);
 if (downEntry === undefined || upEntry === undefined || compositeEntry === undefined) {
   throw new Error('cooked Bloom shader entries are incomplete');
 }

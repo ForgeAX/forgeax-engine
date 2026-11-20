@@ -37,6 +37,8 @@ import {
   type ShaderReflectionMember,
   type TextureGenerationPass,
   type TextureGeneratorAsset,
+  type TextureShape,
+  textureGeneratorParameterLayout,
   validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { GpuTexture } from '../gpu-resource';
@@ -367,6 +369,11 @@ export class TextureGenerators {
     );
   }
 
+  /** Consumers with their own queue submission need the generated image to have completed. */
+  isAccepted(handle: number, namespace: GpuResourceNamespace, generation: number): boolean {
+    return this.handles.get(handle, namespace)?.current?.generation === generation;
+  }
+
   /** The physical-frame owner calls this before scene command buffers, then supplies its submit result. */
   encode(encoder: () => RhiCommandEncoder): { complete(submitted: boolean): void } | undefined {
     const device = this.device;
@@ -606,32 +613,24 @@ function writeMember(
   member: ShaderReflectionMember,
   value: number | readonly number[] | undefined,
 ): void {
-  const type = member.typeDescriptor;
-  if (value === undefined || (type.kind !== 'scalar' && type.kind !== 'vector') || type.width !== 4)
-    throw failure(`a reflected scalar/vector value for parameter ${member.name}`);
+  const layout = textureGeneratorParameterLayout(member.typeDescriptor);
+  if (value === undefined || layout === undefined)
+    throw failure(`a reflected numeric value for parameter ${member.name}`);
   const values = typeof value === 'number' ? [value] : value;
-  if (values.length !== (type.kind === 'vector' ? type.components : 1))
+  if (values.length !== layout.count * layout.components)
     throw failure(`parameter arity for ${member.name}`);
-  values.forEach((number, index) => {
-    const offset = member.offset + index * 4;
-    if (!Number.isFinite(number)) throw failure(`finite parameter ${member.name}`);
-    if (['float', 'Float', 'f32'].includes(type.scalarKind)) view.setFloat32(offset, number, true);
-    else if (
-      ['uint', 'Uint', 'u32'].includes(type.scalarKind) &&
-      Number.isInteger(number) &&
-      number >= 0 &&
-      number <= 0xffffffff
-    )
-      view.setUint32(offset, number, true);
-    else if (
-      ['sint', 'Sint', 'i32'].includes(type.scalarKind) &&
-      Number.isInteger(number) &&
-      number >= -0x80000000 &&
-      number <= 0x7fffffff
-    )
-      view.setInt32(offset, number, true);
-    else throw failure(`supported numeric parameter ${member.name}`);
-  });
+  const scalarKind = layout.scalarKind.toLowerCase();
+  for (let index = 0; index < values.length; index++) {
+    const number = values[index] as number;
+    const offset =
+      member.offset +
+      Math.floor(index / layout.components) * layout.stride +
+      (index % layout.components) * 4;
+    if (scalarKind === 'float' || scalarKind === 'f32') view.setFloat32(offset, number, true);
+    else if (scalarKind === 'uint' || scalarKind === 'u32') view.setUint32(offset, number, true);
+    else if (scalarKind === 'sint' || scalarKind === 'i32') view.setInt32(offset, number, true);
+    else throw failure(`a supported numeric parameter ${member.name}`);
+  }
 }
 
 function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset): void {
@@ -655,11 +654,15 @@ function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset)
     if (source.format === 'rgba16float' && !device.caps.rgba16floatRenderable)
       throw failure('rgba16float render attachment support');
     const shape = source.shape;
-    const layers = shape.viewDimension === '2d-array' ? shape.extent.layers : 1;
+    const volume = shape.viewDimension === '3d';
+    const maxDimension = volume
+      ? device.limits.maxTextureDimension3D
+      : device.limits.maxTextureDimension2D;
+    const maxImages = volume ? maxDimension : device.limits.maxTextureArrayLayers;
     if (
-      shape.extent.width > device.limits.maxTextureDimension2D ||
-      shape.extent.height > device.limits.maxTextureDimension2D ||
-      layers > device.limits.maxTextureArrayLayers
+      shape.extent.width > maxDimension ||
+      shape.extent.height > maxDimension ||
+      imageCount(shape) > maxImages
     )
       throw failure('generation extents fit the device texture limits');
   }
@@ -680,6 +683,19 @@ function validateDeviceTargets(device: RhiDevice, recipe: TextureGeneratorAsset)
     throw failure('generator MRT count fits the device');
 }
 
+function imageCount(shape: TextureShape): number {
+  if (shape.viewDimension === '3d') return shape.extent.depth;
+  return shape.viewDimension === '2d-array' ? shape.extent.layers : 1;
+}
+
+function textureExtent(shape: TextureShape) {
+  const { width, height } = shape.extent;
+  return {
+    dimension: shape.viewDimension === '3d' ? ('3d' as const) : ('2d' as const),
+    size: { width, height, depthOrArrayLayers: imageCount(shape) },
+  };
+}
+
 function importInputs(build: GenerationBuild): Map<string, GraphTexture> {
   const { inputs, builder } = build;
   const external = new Map<string, GraphTexture>();
@@ -694,13 +710,7 @@ function importInputs(build: GenerationBuild): Map<string, GraphTexture> {
             `input/${name}`,
             {
               format: descriptor.format,
-              size: {
-                ...descriptor.shape.extent,
-                depthOrArrayLayers:
-                  descriptor.shape.viewDimension === '2d-array'
-                    ? descriptor.shape.extent.layers
-                    : 1,
-              },
+              ...textureExtent(descriptor.shape),
               usage: 0x04,
               mipLevelCount: layout.levels.length,
             },
@@ -729,17 +739,11 @@ async function allocateTargets(
         : { ...source, colorSpace: 'linear', mips: { kind: 'none' } };
     const layout = deriveTextureLayout(descriptor).unwrap();
     const shape = descriptor.shape;
-    const layers = shape.viewDimension === '2d-array' ? shape.extent.layers : 1;
-    if (
-      shape.extent.width > device.limits.maxTextureDimension2D ||
-      shape.extent.height > device.limits.maxTextureDimension2D ||
-      layers > device.limits.maxTextureArrayLayers
-    )
-      throw failure('generation extents fit the device texture limits');
+
     const raw = device
       .createTexture({
         label: `${label}/${name}`,
-        size: { ...shape.extent, depthOrArrayLayers: layers },
+        ...textureExtent(shape),
         format: descriptor.format,
         usage: USAGE,
         mipLevelCount: layout.levels.length,
@@ -751,7 +755,7 @@ async function allocateTargets(
         name,
         {
           format: descriptor.format,
-          size: { ...shape.extent, depthOrArrayLayers: layers },
+          ...textureExtent(shape),
           usage: USAGE,
           mipLevelCount: layout.levels.length,
         },
@@ -923,8 +927,8 @@ async function addGenerationPass(
     resources.get(required(pass.writes[0], 'a target name')),
     'a declared target',
   ).descriptor.shape;
-  const layers = target.viewDimension === '2d-array' ? target.extent.layers : 1;
-  for (let layer = 0; layer < layers; layer++) {
+  const volume = target.viewDimension === '3d';
+  for (let layer = 0; layer < imageCount(target); layer++) {
     const { bindings, accesses } = createLayerBindings(
       build,
       globals,
@@ -939,13 +943,14 @@ async function addGenerationPass(
     const attachments = pass.writes.map((name) => ({
       view: builder
         .view(required(resources.get(name), 'a declared target').graph, {
-          dimension: '2d',
           baseMipLevel: 0,
           mipLevelCount: 1,
-          baseArrayLayer: layer,
-          arrayLayerCount: 1,
+          ...(volume
+            ? { dimension: '3d' as const }
+            : { dimension: '2d' as const, baseArrayLayer: layer, arrayLayerCount: 1 }),
         })
         .unwrap(),
+      ...(volume ? { depthSlice: layer } : {}),
       loadOp: 'clear' as const,
       storeOp: 'store' as const,
     }));
@@ -992,6 +997,8 @@ function createUniformBinding(
     16,
     Math.ceil((global.span ?? global.typeDescriptor?.byteSize ?? 0) / 16) * 16,
   );
+  if (size > device.limits.maxUniformBufferBindingSize)
+    throw failure('generator parameters fit the device uniform binding limit');
   const data = new ArrayBuffer(size);
   const values = {
     ...recipe.values,

@@ -1,13 +1,49 @@
 import { expect, test } from 'vitest';
 import { componentId, defineComponent } from '../component';
 import { type EntityHandle, entityIndex } from '../entity-handle';
-import { createStateProjection } from '../projection/state-projection';
+import { createStateProjection, observeStateChanges } from '../projection/state-projection';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
 const Position = defineComponent('ProjectionPosition', { x: 'f32' });
 const Extra = defineComponent('ProjectionExtra', {});
 const Selected = defineComponent('ProjectionSelected', {}, { storage: 'sparse' });
+
+test('an owned slot observation skips existing rows and retains deletion through slot reuse', () => {
+  const world = new World();
+  const owned = world.spawn({ component: Position, data: {} }).unwrap();
+  const other = world.spawn({ component: Position, data: {} }).unwrap();
+  for (let i = 0; i < 4096; i++) world.spawn({ component: Position, data: {} }).unwrap();
+
+  const index = entityIndex(owned);
+  const observer = observeStateChanges(world, [Position], new Set([index]));
+  expect(observer.isCurrent()).toBe(true);
+  const baseline = observer.read();
+  expect(baseline.indices).toEqual([]);
+  expect(baseline.checkedIndexEntries).toBe(0);
+  baseline.accept();
+
+  world.set(other, Position, { x: 1 }).unwrap();
+  const unrelated = observer.read();
+  expect(unrelated.indices).toEqual([]);
+  expect(unrelated.scannedRows).toBe(0);
+  unrelated.accept();
+
+  world.set(owned, Position, { x: 2 }).unwrap();
+  const write = observer.read();
+  expect(write.indices).toEqual([index]);
+  expect(write.hasStructuralChange(index)).toBe(false);
+  write.accept();
+
+  world.despawn(owned).unwrap();
+  const replacement = world.spawn({ component: Extra, data: {} }).unwrap();
+  expect(entityIndex(replacement)).toBe(index);
+  const removal = observer.read();
+  expect(removal.indices).toEqual([index]);
+  expect(removal.hasStructuralChange(index)).toBe(true);
+  removal.accept();
+  expect(observer.isCurrent()).toBe(true);
+});
 
 test('value-only acceptance preserves known membership without re-reading archetypes', () => {
   const world = new World();

@@ -1,5 +1,5 @@
 {
-  "contentKey": "ccd9e53a8fe3a9260877e6c38f46f3a711672d0bcce05becba557839d0f6f6a1",
+  "contentKey": "e37f52a88260ef24c1b51339eaafd0fb52ae0aadf4ec0d9f35eff51b0188e9a1",
   "inputHashes": {
     "package.json": "0679c83cfa573475e56f85a3bd07b71b7cbadc3247d5f05894a39e2c997605c6",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
@@ -8,14 +8,14 @@
     "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
     "scripts/build-simd-payload.mjs": "168a520bc489b8b5950f86a24dbbb867e6fc0f805208cfd939f12da2d6657371",
     "scripts/native-tests.Cargo.toml": "8559bc7db872eacad675b4799675a929923815f5d71d13eddd22ed440611df17",
-    "scripts/native-tests.Cargo.lock": "5275c0a3cdc4b22ad2e90dad56930c0c6450d0a7c848e5aea61ea521fe243aff",
+    "scripts/native-tests.Cargo.lock": "b136077e11a25518d987a78fa44f3627e923f0bdcd3dbffcdc08222f714b68cf",
     "src/__tests__/contact-point-velocity.native.rs": "9d7c8d07ff530cb0009d905749cec67de2312ed04360d45ac9e96338c0bfdb72",
     "scripts/bindings.Cargo.toml": "d3b9e1a1b306e0d9b5c5c347d741faa164668c7075df04e4b38bb2ce326c24a3",
-    "scripts/Cargo.lock": "a3a02072320304550bc1945500aca38f5171feb39b353d89fa2b1daaf60dba8e",
+    "scripts/Cargo.lock": "93952dbfba2c7517346cc8ca7b0664997e4b7dc9360087f4882a0972bd6b3f1a",
     "../../scripts/lib/rust-build-paths.mjs": "59fc4ccebbfb37947a44a6617073eebd411f3cd80e2aaf736f57d9552de3eb3a",
     "../../scripts/lib/git-http-environment.mjs": "4d0ab9df35c176c16a8aa669c027026f17414ca27f1ff503994eeb5166cea768",
-    "patches/parry.patch": "ae85f4478702a4b8d6359f9b67f1dce7dcbc023170158b06db5e3b004a56181b",
-    "patches/rapier.patch": "73676cbcd555af97ef962338aa80c866f558d45b3296ee1fcd003ad0e7f8fcf6"
+    "patches/parry.patch": "8331219f98d9545415605937486f85fccc1a4fb86eae3afcfa6888b4fe604ecf",
+    "patches/rapier.patch": "4fa29a822b7579938263a31e178e01767b66f3364882ddca3df9990d835d56a1"
   },
   "source": {
     "rapier": {
@@ -38,11 +38,11 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "6890b8064f30de12b773936b5eb00490bed75a0f5395b9ee602d7e8b9f6334d0",
+    "rapier-native.mjs": "8ba86077f1fee228c89d68d6c4f64c78564b96be54a8a0f8dcaaf1177f025d48",
     "rapier-simd.d.mts": "39c971b29a1204ea466e1d0f27de2ef26f2e12f25ffc4e09db8ab2428d817348",
-    "rapier-simd.mjs": "0fe044bed08605dd8082463ce0b7540ccaa185c96b401916b723c5f7e89df99a",
-    "rapier.d.mts": "891ab1bf30df793b18a8067d6da33686274a3d0dd3b59698085495daaa48e478",
-    "rapier.mjs": "b74b89a378f0afc68112bc7676813564ee0d619a2edc285ac36d629fcb1728c1",
-    "rapier.wasm": "e8bd35a5caca0e59033eb28333841c6ba9f03c4c2cef59f93dfecfc88497421f"
+    "rapier-simd.mjs": "d9b663fd10eeeeb51b2ae99fb6f49f901e5b70ac2edebd0126b9bdbf13545e44",
+    "rapier.d.mts": "083d060a1af3c5ceb61d541f90501b132468b11b60364118f815a6582f396fe9",
+    "rapier.mjs": "e19dd4ccbf1537c9eb845c732c150c46cc34f2028e5c8b5b3ebabb0bf9b6c892",
+    "rapier.wasm": "eced3eae153f176669487d8ddf49deb18d5906fd92545c4228012e66933128f5"
   }
 }

@@ -1,0 +1,23 @@
+{
+  "lang": "zh-CN",
+  "language": "语言",
+  "languageEnglish": "English",
+  "languageChinese": "简体中文",
+  "ready": "● 桥接已就绪",
+  "connecting": "○ 正在连接",
+  "hidePreview": "隐藏预览",
+  "showPreview": "显示预览",
+  "binding": "绑定方式",
+  "frameId": "帧编号",
+  "tick": "逻辑帧",
+  "state": "状态",
+  "pending": "等待中",
+  "external": "外部",
+  "embedded": "内嵌",
+  "previewTitle": "运行中的 ForgeAX Engine",
+  "headless": "内嵌无头引擎 · 无预览画面",
+  "loader": "DSH 原生加载器",
+  "leases": "租约数",
+  "protocol": "协议",
+  "toggleState": "切换引擎状态"
+}

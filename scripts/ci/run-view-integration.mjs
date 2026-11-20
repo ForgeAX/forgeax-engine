@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { pnpmCommand } from '../lib/pnpm-command.mjs';
+import { comparedCiInputs, engineWithoutViewRequired } from './ci-input-changes.mjs';
 import { collectViewBackendDiagnostics } from './view-backend-diagnostics.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -194,6 +195,18 @@ if (process.argv.includes('--dry-run')) {
   process.exit(0);
 }
 for (const [owner, file, args, env = {}] of selected) {
+  if (
+    owner === 'engine-only' &&
+    candidate &&
+    shard !== undefined &&
+    process.env.FORGEAX_CI_CORE_VALIDATION === '1' &&
+    !engineWithoutViewRequired(comparedCiInputs(root))
+  ) {
+    console.log(
+      '[view] the paired View pin or documentation changed independently of Engine source',
+    );
+    continue;
+  }
   const start = performance.now();
   const startedAt = Date.now();
   const viewProbe = args[0]?.startsWith('tools/view/scripts/verify-');

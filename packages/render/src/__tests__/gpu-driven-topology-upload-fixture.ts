@@ -49,7 +49,7 @@ export function uploadFixture(device: RhiDevice, shader: ShaderModule) {
   const slots = scene.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
-  const original = topology.query(topology.sourcePlan(), undefined);
+  const original = topology.query(topology.sourcePlan(), undefined).active;
   const availability = GpuScene.create(device, 8).unwrap();
   if (availability.status !== 'available') throw Error('GPU Scene unavailable');
   availability.scene

@@ -738,6 +738,7 @@ async function cookAuthoredMaterial(
     sourceKey,
     sourcePath: options.sourcePath,
     refs: product.refs.map((reference) => reference.guid),
+    publication: 'templates',
     ...(options.publicationGeneration === undefined
       ? {}
       : { cookGeneration: options.publicationGeneration }),
@@ -797,6 +798,9 @@ async function cookAuthoredMaterial(
       },
     },
     nativeFingerprint: cooked.value.inputFingerprint,
+    ...(cooked.value.sourceDependencies === undefined
+      ? {}
+      : { sourceDependencies: cooked.value.sourceDependencies }),
   });
 }
 

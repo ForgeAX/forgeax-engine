@@ -16,13 +16,16 @@ bootstrap(canvas).catch((error: unknown) => {
 });
 
 async function bootstrap(target: HTMLCanvasElement): Promise<void> {
+  const importTransport = createRuntimeAssetImportTransport(runtimeBinding);
   const bundler = {
     ...forgeaxBundlerAdapter(),
-    ...(runtimeBinding === undefined
-      ? {}
-      : { importTransport: createRuntimeAssetImportTransport(runtimeBinding) }),
+    ...(importTransport === undefined ? {} : { importTransport }),
   };
-  const result = await createApp(target, {}, bundler);
+  const result = await createApp(
+    target,
+    runtimeBinding === undefined ? {} : { assetRuntimeBinding: runtimeBinding },
+    bundler,
+  );
   if (!result.ok) {
     console.error('[bevy-clearcoat] createApp failed:', result.error);
     return;

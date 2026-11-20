@@ -9,17 +9,19 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  type Renderer,
+  renderPublicationTransfers,
 } from '@forgeax/engine-render';
 import { encodeRenderPublication } from '@forgeax/engine-render/internal';
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
-import { ShaderRegistry } from '@forgeax/engine-shader';
-import {
-  buildEngineShaderManifest,
-  publishShaderManifest,
-} from '@forgeax/engine-vite-plugin-shader';
+import { type ShaderProgramCompiler, ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
+import { ok } from '@forgeax/engine-types';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it, vi } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { installDefaultAssetDecoders } from '../asset-contributions';
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
@@ -33,16 +35,27 @@ function required<T>(
   return result.value;
 }
 
+/** Renderer devices stay independent; only immutable compiler output is shared across samples. */
+async function prepareTestCompiler() {
+  const compiler = (await prepareShaderProgramCompiler()).unwrap();
+  const compiled = new Map<string, ReturnType<ShaderProgramCompiler['compile']>>();
+  const service: ShaderProgramCompiler = {
+    profile: compiler.profile,
+    compile(template, defines) {
+      const key = JSON.stringify([template, defines]);
+      const result = compiled.get(key) ?? compiler.compile(template, defines);
+      compiled.set(key, result);
+      return result;
+    },
+  };
+  return ok(service);
+}
+
 // Shader preparation is a file prerequisite, as in the maintained Native gate.
 const manifestPath = process.env.SHADOW_ADMISSION_SHADER_MANIFEST;
 const contents =
   manifestPath === undefined
-    ? await (async () => {
-        const built = await buildEngineShaderManifest();
-        return JSON.stringify(
-          'toJSON' in built ? built : publishShaderManifest(built.entries, built.materialShaders),
-        );
-      })()
+    ? JSON.stringify(await buildEngineShaderTemplateManifest())
     : Uint8Array.from(readFileSync(manifestPath)).buffer;
 
 it('shares physical mesh writes across CPU and GPU shadows while preserving material publication', async () => {
@@ -53,6 +66,7 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
   installDefaultAssetDecoders(assets);
   const world = new World({ assets });
   const identity = { source: 'shadow-legacy-mesh-consumer', epoch: 1 };
+  const compiler = prepareTestCompiler();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 2, 6] } },
@@ -104,10 +118,6 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
       )
       .unwrap();
   world.update(1 / 60).unwrap();
-  const publisher = createRenderPublisher(world, assets, identity);
-  const prepared = publisher.prepare(world.getResource(Time).elapsed).unwrap();
-  const source = structuredClone(prepared.packet);
-  prepared.accept();
   const run = async (lane: 'cpu' | 'mixed' | 'reason' | 'gpu') => {
     const labels = new Map<Buffer, string>();
     const writes: { label: string; bytes: number; payload: number[] }[] = [];
@@ -154,39 +164,48 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
       },
     };
     const canvas = { width: 64, height: 64 } as HTMLCanvasElement;
-    let renderer: ReturnType<Awaited<ReturnType<typeof createRenderer>>['unwrap']> | undefined;
+    let renderer: Renderer | undefined;
+    const publisher = createRenderPublisher(world, assets, identity);
     try {
-      renderer = (
+      const active = (
         await createRenderer(
           canvas,
           { rhi: provider, publicationSource: identity },
-          { shaderManifestUrl: manifestUrl },
+          { shaderManifestUrl: manifestUrl, prepareShaderProgramCompiler: () => compiler },
         )
       ).unwrap();
-      const packet = structuredClone(source);
-      let disabled = 0;
-      if (lane !== 'gpu')
-        for (const material of packet.materials)
-          if (lane === 'cpu' || lane === 'reason' || disabled++ === 0)
-            Object.assign(material.value, {
-              passes: material.value.passes.map((pass) =>
-                (pass.renderState?.tags as { LightMode?: string } | undefined)?.LightMode ===
-                'ShadowCaster'
-                  ? {
-                      ...pass,
-                      renderState: {
-                        ...pass.renderState,
-                        ...(lane === 'reason'
-                          ? { blend: { color: {}, alpha: {} } }
-                          : { stencil: {} }),
-                      },
-                    }
-                  : pass,
-              ),
-            });
-      writes.length = 0;
-      const receipt = required(renderer.draw({ publication: encodeRenderPublication(packet) }));
-      required(await receipt.completed);
+      renderer = active;
+      const receipt = await completeReadyFrame(() => {
+        const prepared = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+        const packet = structuredClone(prepared.packet);
+        let disabled = 0;
+        if (lane !== 'gpu')
+          for (const material of packet.materials)
+            if (lane === 'cpu' || lane === 'reason' || disabled++ === 0)
+              Object.assign(material.value, {
+                passes: material.value.passes.map((pass) =>
+                  (pass.renderState?.tags as { LightMode?: string } | undefined)?.LightMode ===
+                  'ShadowCaster'
+                    ? {
+                        ...pass,
+                        renderState: {
+                          ...pass.renderState,
+                          ...(lane === 'reason'
+                            ? { blend: { color: {}, alpha: {} } }
+                            : { stencil: {} }),
+                        },
+                      }
+                    : pass,
+                ),
+              });
+        writes.length = 0;
+        const submitted = required(active.draw({ publication: encodeRenderPublication(packet) }));
+        prepared.accept();
+        publisher
+          .recycle(prepared.packet.revision, renderPublicationTransfers(prepared.message))
+          .unwrap();
+        return submitted;
+      });
       expect(receipt.presentation).toBe('ready');
       const channels = renderer
         .inspect()
@@ -206,6 +225,7 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
         .map((write) => write.payload);
       return { meshBytes, materialBytes, materialPayloads };
     } finally {
+      publisher.dispose();
       try {
         if (renderer !== undefined) required(await renderer.dispose());
       } finally {
@@ -229,7 +249,6 @@ it('shares physical mesh writes across CPU and GPU shadows while preserving mate
     expect(gpu.materialPayloads).toEqual(cpu.materialPayloads);
     expect(gpu.materialBytes).toBeGreaterThan(0);
   } finally {
-    publisher.dispose();
     URL.revokeObjectURL(manifestUrl);
   }
 }, 30_000);

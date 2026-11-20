@@ -1,5 +1,6 @@
 import type { Renderer, RenderInspection } from '@forgeax/engine-render';
 import { createRendererInspectionError, type RendererInspectionFailureReason } from '../errors';
+import type { RenderWorkerInput, RenderWorkerOutput } from './render-worker-protocol';
 import type {
   ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
@@ -21,6 +22,27 @@ export function rendererInspectionFailure(
     ok: false,
     error: { code: error.code, expected: error.expected, hint: error.hint, detail: error.detail },
   };
+}
+
+export function sendRendererInspection(
+  scope: {
+    postMessage(message: Extract<RenderWorkerOutput, { kind: 'inspect-result' }>): void;
+  },
+  message: Extract<RenderWorkerInput, { kind: 'inspect' }>,
+  result: ExecutionRendererInspectionResult<RenderInspection>,
+): void {
+  const { requestId, identity, worldIdentity } = message;
+  const response = { kind: 'inspect-result' as const, requestId, identity, worldIdentity };
+  try {
+    scope.postMessage({ ...response, result });
+  } catch (cause) {
+    try {
+      scope.postMessage({ ...response, result: rendererInspectionFailure('transport', cause) });
+    } catch {
+      // The caller still fails at its original read deadline.
+      console.error('Renderer inspection failure response was not delivered');
+    }
+  }
 }
 
 /** Select at the owner before cloning; unselected inventories never cross realms. */

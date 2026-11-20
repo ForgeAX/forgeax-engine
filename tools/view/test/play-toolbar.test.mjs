@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { mountPlayToolbar } from '../packages/view-plugin-viewport/src/play-toolbar.ts';
+import { setLocale } from '../packages/view-plugin-viewport/src/i18n/index.ts';
 
 function fixture({ state = { project: { id: 'project' }, play: null }, call } = {}) {
+  setLocale('en');
   const createElement = () => ({
     children: [], style: {}, dataset: {}, listeners: {}, attributes: {},
     append(...children) { this.children.push(...children); },
@@ -14,11 +16,12 @@ function fixture({ state = { project: { id: 'project' }, play: null }, call } = 
   });
   const element = createElement();
   let signal;
+  let publish;
   let released = false;
   const mounted = mountPlayToolbar({
     document: { createElement }, element,
     client: {
-      subscribe(listener) { listener(state); return () => { released = true; }; },
+      subscribe(listener) { publish = listener; listener(state); return () => { released = true; }; },
       getState: async () => state,
       call: call ?? function(operation, _args, options) {
         assert.equal(operation, 'play.start');
@@ -32,6 +35,8 @@ function fixture({ state = { project: { id: 'project' }, play: null }, call } = 
     mounted,
     toolbar,
     element,
+    navigationHint: mounted.surface.children[0],
+    update(next) { state = next; publish(next); },
     button: label => toolbar.children.find(child => child.attributes['aria-label'] === label && child.style.display !== 'none'),
     status: toolbar.children.at(-1),
     get signal() { return signal; },
@@ -46,6 +51,41 @@ it('places the shared viewport toolbar before the independently sized render sur
   assert.equal(view.toolbar.attributes['aria-label'], 'Scene execution');
   assert.deepEqual(view.element.children, [view.toolbar, view.mounted.surface]);
   assert.equal(view.toolbar.style.position, undefined);
+  view.mounted.dispose();
+});
+
+it('shows navigation help only for an admitted scene in the active workspace', () => {
+  const view = fixture();
+  assert.equal(view.navigationHint.hidden, true, 'a project without an open scene has no scene controls');
+  const scene = {
+    project: { id: 'project' }, projectPhase: 'running',
+    selectedTabId: 'forgeax-user-workspace', targetBinding: 'scene',
+    scenePreview: { target: { targetId: 'scene-target', generation: 3 }, asset: { kind: 'scene' } },
+  };
+  view.update(scene);
+  assert.equal(view.navigationHint.hidden, false);
+  setLocale('zh');
+  assert.match(view.navigationHint.textContent, /WASD\/QE 移动/);
+  assert.equal(view.navigationHint.hidden, false, 'locale changes preserve Scene availability');
+  setLocale('en');
+  assert.match(view.navigationHint.textContent, /WASD\/QE move/);
+  for (const unavailable of [
+    { projectPhase: 'preparing' },
+    { projectPhase: 'starting' },
+    { projectPhase: 'failed' },
+    { workspaceTargetLost: true },
+    { selectedTabId: 'forgeax-cli-display' },
+    { scenePreview: null },
+    { targetBinding: 'play', play: { phase: 'running', target: { targetId: 'game' } } },
+    { play: { phase: 'starting', target: { targetId: 'game' } } },
+  ]) {
+    view.update({ ...scene, ...unavailable });
+    assert.equal(view.navigationHint.hidden, true, JSON.stringify(unavailable));
+    view.update(scene);
+    assert.equal(view.navigationHint.hidden, false, 'returning to the scene restores help');
+  }
+  view.update({ ...scene, scenePreview: null, preview: { target: { targetId: 'mesh' }, asset: { kind: 'mesh' } } });
+  assert.equal(view.navigationHint.hidden, true, 'a resource preview does not imply Scene controls');
   view.mounted.dispose();
 });
 
@@ -81,6 +121,23 @@ it('releases an unfinished preparation request with the owning panel', async () 
   assert.equal(view.signal?.aborted, true);
   await starting;
   assert.equal(view.released, true);
+});
+
+it('updates pending Play labels without changing action IDs or losing cancellation', async () => {
+  const view = fixture();
+  const toggle = view.button('Play');
+  const starting = toggle.click();
+  setLocale('zh');
+  assert.equal(view.button('停止'), toggle);
+  assert.equal(toggle.attributes['data-action'], 'scene.stop');
+  assert.equal(view.status.textContent, '正在准备运行…');
+  await toggle.click();
+  await starting;
+  assert.equal(view.signal.aborted, true);
+  assert.equal(view.button('运行'), toggle);
+  view.mounted.dispose();
+  setLocale('en');
+  assert.equal(toggle.title, '运行', 'disposed toolbars release their locale subscription');
 });
 
 

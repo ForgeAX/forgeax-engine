@@ -27,6 +27,7 @@ import {
   type InspectEntry,
   type InspectSnapshot,
   isMaterialTextureParameterType,
+  loadTimelineNow,
   type MaterialAsset,
   type MaterialError,
   type MaterialParameter,
@@ -43,7 +44,12 @@ import {
 } from '@forgeax/engine-types';
 import { defineAssetKind, isBuiltinAssetKind } from './asset-kind';
 import { copyAssetData } from './internal/asset-data';
-import { type AssetLimits, AssetRecords } from './internal/asset-records';
+import {
+  type AssetAdoption,
+  type AssetAdoptionReader,
+  type AssetLimits,
+  AssetRecords,
+} from './internal/asset-records';
 import {
   type AdoptedAssetSource,
   type AssetLoadOptions,
@@ -93,8 +99,11 @@ import type { MaterialReady } from './material/loader.js';
 import {
   assertMaterialCookedParameters,
   assertMaterialStaticSelection,
+  bindMaterialTemplateProjection,
+  type DecodedMaterialTemplate,
   installMaterialReadyShaders,
   type MaterialRenderProjection,
+  projectMaterialTemplate,
 } from './material/runtime-shader.js';
 import {
   createRuntimeAssetEvidenceAdapter,
@@ -109,6 +118,11 @@ import {
   type SceneInstantiateError,
 } from './registry/instantiate.js';
 import type { ScenePublicationFence } from './registry/scene-publication-fence.js';
+import {
+  captureSourceIngestionInputs,
+  type SourceIngestionEntry,
+  type SourceIngestionInputs,
+} from './registry/source-ingestion-inputs';
 import { materialShaderTextureFieldNames as materialShaderTextureFieldNamesImpl } from './registry/validate-material.js';
 import { prepareRuntimeAnimationGraph } from './runtime-animation-graph';
 import {
@@ -224,7 +238,48 @@ interface SourceAdoption {
   readonly conflict: AssetReloadOptions['conflict'];
 }
 
+interface SourceIngestionOperation {
+  readonly root: string;
+  readonly source: AssetSource;
+  readonly inputs: SourceIngestionInputs;
+  readonly records: AssetAdoption;
+  readonly staged: Map<string, AssetHandle>;
+  readonly visiting: Set<string>;
+  readonly contentKeys: ReadonlyMap<string, string | undefined>;
+  readonly signal: AbortSignal | undefined;
+  readonly policy: SourceAdoption | undefined;
+  failure: RuntimeAssetError | undefined;
+  committed: boolean;
+  steps: Generator<void, Result<AssetHandle, RuntimeAssetError>> | undefined;
+}
+
+interface PreparedPublicationCandidate {
+  readonly assets: ReadonlyMap<string, Asset>;
+  readonly pack: RuntimePackEnvelope;
+  readonly rows: readonly CatalogEntry[];
+  readonly source: AssetSource | undefined;
+  readonly generations: ReadonlyMap<string, number>;
+  readonly started: number;
+  readonly decoderIdentities: ReadonlyMap<string, symbol | undefined>;
+}
+
+function includeRuntimeDependencies<T, E>(
+  linked: Result<{ readonly value: T; readonly dependencies: readonly number[] }, E>,
+  dependencies: readonly number[],
+): Result<{ value: T; dependencies: readonly number[] }, E> {
+  return linked.ok
+    ? ok({
+        value: linked.value.value,
+        dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
+      })
+    : linked;
+}
+
 export class AssetRegistry implements AssetReferenceOwner {
+  static readonly #sourceRead = AssetRegistry.prototype.sourceOf;
+  static readonly #catalogRead = AssetRegistry.prototype.catalogEntry;
+  private ingestionQueue: Promise<void> = Promise.resolve();
+  private readonly ingestions = new Set<SourceIngestionOperation>();
   private hasTextureGenerators = false;
   readonly #decoders: DecoderRegistry;
   #source: AssetSource | undefined;
@@ -355,10 +410,14 @@ export class AssetRegistry implements AssetReferenceOwner {
     kind: string,
     input: unknown,
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
+    reader: AssetAdoptionReader = this.#runtime,
+    checkSource: () => Result<void, AssetError> = () => ok(undefined),
   ): Result<{ value: unknown; dependencies: readonly number[] }, AssetError> {
     const dependencies = new Set<number>();
     const prepared = this.#decoders.prepare(kind, input, {
       reference: (value, target) => {
+        const current = checkSource();
+        if (!current.ok) return current;
         const handle =
           typeof value === 'number'
             ? value
@@ -371,13 +430,18 @@ export class AssetRegistry implements AssetReferenceOwner {
               hint: 'load the declared dependency before preparing runtime content',
             }),
           );
-        const valid = this.validate(handle, target);
+        const valid = reader.validate(handle, target);
         if (!valid.ok) return valid;
         dependencies.add(handle);
         return ok(handle as AssetHandle<typeof target>);
       },
-      read: (handle) => this.read(handle),
+      read: (handle) => {
+        const current = checkSource();
+        return current.ok ? reader.read(handle) : current;
+      },
     });
+    const current = checkSource();
+    if (!current.ok) return current;
     return prepared.ok ? ok({ value: prepared.value, dependencies: [...dependencies] }) : prepared;
   }
 
@@ -414,6 +478,10 @@ export class AssetRegistry implements AssetReferenceOwner {
     replacing?: AssetHandle<T['kind']>,
     sourceContent: (guid: string) => Asset | undefined = (guid) => this.runtimeSource(guid),
     storage: 'copy' | 'take' = 'copy',
+    adoption?: AssetAdoption,
+    component?: (name: string) => Component | undefined,
+    checkSource?: () => Result<void, AssetError>,
+    sceneRefs?: readonly string[],
   ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
     const kind =
       input !== null && typeof input === 'object'
@@ -435,125 +503,118 @@ export class AssetRegistry implements AssetReferenceOwner {
     let projection: MaterialRenderProjection | undefined;
     let textures: ReadonlySet<string> | undefined;
     let content = input;
-    if (kind.value === 'material' && Object.hasOwn(input, 'cooked')) {
+    if (
+      kind.value === 'material' &&
+      (Object.hasOwn(input, 'cooked') || Object.hasOwn(input, 'materialTemplate'))
+    ) {
       // Cook records belong to the source/program owners, not mutable asset versions.
       // Preserve descriptors so ordinary data admission still rejects accessors.
       const descriptors = Object.getOwnPropertyDescriptors(input);
       delete descriptors.cooked;
+      delete descriptors.materialTemplate;
       content = Object.create(Object.getPrototypeOf(input), descriptors);
     }
-    const created = this.#runtime.adopt<T['kind'], T, AssetError | MaterialError>(
-      kind.value as T['kind'],
-      content,
-      dependencies,
-      (owned) => {
-        if (requiresOwnerPreparation(owned.kind))
-          return this.prepareWithDecoder(owned.kind, owned, sources);
-        const prepared = prepareRuntimeAsset(owned, sourceContent);
-        if (!prepared.ok) return prepared;
-        if (prepared.value.kind === 'tileset') {
-          const linked = linkRuntimeTileset(
-            prepared.value,
-            this,
-            (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
-          );
-          return linked.ok
-            ? ok({
-                value: linked.value.value,
-                dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
-              })
-            : linked;
-        }
-        if (prepared.value.kind === 'font') {
-          const linked = linkRuntimeFont(
-            prepared.value,
-            this,
-            (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
-          );
-          return linked.ok
-            ? ok({
-                value: linked.value.value,
-                dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
-              })
-            : linked;
-        }
+    const reader = adoption?.reader ?? this.#runtime;
+    const prepare = (owned: T) => {
+      if (requiresOwnerPreparation(owned.kind))
+        return this.prepareWithDecoder(owned.kind, owned, sources, reader, checkSource);
+      const prepared = prepareRuntimeAsset(owned, sourceContent);
+      if (!prepared.ok) return prepared;
+      if (prepared.value.kind === 'tileset') {
+        const linked = linkRuntimeTileset(
+          prepared.value,
+          reader,
+          (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
+        );
+        return includeRuntimeDependencies(linked, dependencies);
+      }
+      if (prepared.value.kind === 'font') {
+        const linked = linkRuntimeFont(
+          prepared.value,
+          reader,
+          (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
+        );
+        return includeRuntimeDependencies(linked, dependencies);
+      }
 
-        if (prepared.value.kind === 'terrain')
-          return prepareRuntimeTerrain(
-            prepared.value,
-            this.#runtime,
-            (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
+      if (prepared.value.kind === 'terrain')
+        return prepareRuntimeTerrain(
+          prepared.value,
+          reader,
+          (guid) => sources.get(guid) ?? this.#runtimeByGuid.get(guid),
+        );
+      if (owned.kind === 'material') {
+        // Static program admission must finish before a reference or change is committed.
+        try {
+          projection = this.prepareMaterialProgramProjection(input as MaterialAsset, sourceContent);
+          assertMaterialCookedParameters((input as MaterialAsset).parameters, projection);
+        } catch (cause) {
+          if (
+            cause !== null &&
+            typeof cause === 'object' &&
+            'code' in cause &&
+            cause.code === 'material-specialization-not-cooked'
+          )
+            return err(cause as MaterialError);
+          throw cause;
+        }
+      }
+      if (prepared.value.kind === 'mesh') {
+        const linked = this.linkMesh(prepared.value, sources, reader);
+        return includeRuntimeDependencies(linked, dependencies);
+      }
+      if (prepared.value.kind === 'animation-graph' || prepared.value.kind === 'scene') {
+        const linked =
+          prepared.value.kind === 'scene'
+            ? this.linkScene(prepared.value, sources, sceneRefs, reader, component)
+            : this.linkAnimationGraph(prepared.value, sources, reader);
+        return includeRuntimeDependencies<Asset, AssetError>(linked, dependencies);
+      }
+      if (prepared.value.kind !== 'material') return ok({ value: prepared.value });
+      const linked = this.linkMaterial(prepared.value, sources, undefined, reader);
+      if (linked.ok) textures = linked.value.textures;
+      return includeRuntimeDependencies(linked, dependencies);
+    };
+    const created =
+      adoption === undefined
+        ? this.#runtime.adopt<T['kind'], T, AssetError | MaterialError>(
+            kind.value as T['kind'],
+            content,
+            dependencies,
+            prepare,
+            replacing,
+            storage,
+          )
+        : adoption.adopt<T['kind'], T, AssetError | MaterialError>(
+            kind.value as T['kind'],
+            content,
+            dependencies,
+            prepare,
+            replacing,
+            storage,
           );
-        if (owned.kind === 'material') {
-          // Static program admission must finish before a reference or change is committed.
-          try {
-            projection = this.prepareMaterialProgramProjection(
-              input as MaterialAsset,
-              sourceContent,
-            );
-            assertMaterialCookedParameters((input as MaterialAsset).parameters, projection);
-          } catch (cause) {
-            if (
-              cause !== null &&
-              typeof cause === 'object' &&
-              'code' in cause &&
-              cause.code === 'material-specialization-not-cooked'
-            )
-              return err(cause as MaterialError);
-            throw cause;
-          }
-        }
-        if (prepared.value.kind === 'mesh') {
-          const linked = this.linkMesh(prepared.value, sources);
-          return linked.ok
-            ? ok({
-                value: linked.value.value,
-                dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
-              })
-            : linked;
-        }
-        if (prepared.value.kind === 'animation-graph' || prepared.value.kind === 'scene') {
-          const linked =
-            prepared.value.kind === 'scene'
-              ? this.linkScene(prepared.value, sources)
-              : this.linkAnimationGraph(prepared.value, sources);
-          return linked.ok
-            ? ok({
-                value: linked.value.value,
-                dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
-              })
-            : linked;
-        }
-        if (prepared.value.kind !== 'material') return ok({ value: prepared.value });
-        const linked = this.linkMaterial(prepared.value, sources);
-        if (linked.ok) textures = linked.value.textures;
-        return linked.ok
-          ? ok({
-              value: linked.value.value,
-              dependencies: [...new Set([...dependencies, ...linked.value.dependencies])],
-            })
-          : linked;
-      },
-      replacing,
-      storage,
-    );
-    if (created.ok && kind.value === 'texture-generator') this.hasTextureGenerators = true;
+    if (created.ok && kind.value === 'texture-generator' && adoption === undefined)
+      this.hasTextureGenerators = true;
     if (created.ok && kind.value === 'material') {
-      const accepted = this.#runtime.borrow<MaterialAsset>(created.value).unwrap();
+      const accepted = reader.borrow<MaterialAsset>(created.value).unwrap();
       this.prepareMaterialValueContract(accepted, textures);
       if (projection !== undefined) this.materialPayloadProjections.set(accepted, projection);
     }
     if (created.ok && kind.value === 'terrain')
       this.ownTerrainDerived(
-        this.#runtime.borrow<import('@forgeax/engine-types').TerrainAsset>(created.value).unwrap(),
+        reader.borrow<import('@forgeax/engine-types').TerrainAsset>(created.value).unwrap(),
+        reader,
       );
     return created;
   }
 
-  private ownTerrainDerived(terrain: import('@forgeax/engine-types').TerrainAsset): void {
+  private ownTerrainDerived(
+    terrain: import('@forgeax/engine-types').TerrainAsset,
+    reader: AssetAdoptionReader = this.#runtime,
+  ): void {
     const own = (handle: string | number) => {
       if (typeof handle !== 'number') throw new Error('Terrain closure was not linked');
-      this.#terrainDerived.add(this.#runtime.borrow<object>(handle).unwrap());
+      this.#terrainDerived.add(reader.borrow<object>(handle).unwrap());
     };
     for (const handle of terrain.grids) own(handle);
     for (const section of terrain.sections) {
@@ -561,7 +622,7 @@ export class AssetRegistry implements AssetReferenceOwner {
       own(section.weightTexture);
       own(section.material);
       // Source retention can include shared assets that Terrain did not derive.
-      const material = this.#runtime.borrow<MaterialAsset>(Number(section.material)).unwrap();
+      const material = reader.borrow<MaterialAsset>(Number(section.material)).unwrap();
       const control = material.values?.terrainWeightTexture;
       if (
         control === null ||
@@ -587,6 +648,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   private linkMesh(
     mesh: TypesMeshAsset,
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
+    reader: AssetAdoptionReader = this.#runtime,
   ): Result<{ value: TypesMeshAsset; dependencies: readonly number[] }, AssetError> {
     const dependencies = new Set<number>();
     const link = <K extends 'mesh' | 'material'>(
@@ -607,7 +669,7 @@ export class AssetRegistry implements AssetReferenceOwner {
             hint: 'load the dependency or supply a runtime asset reference before creating the mesh',
           }),
         );
-      const checked = this.validate(handle, kind);
+      const checked = reader.validate(handle, kind);
       if (!checked.ok) return checked;
       dependencies.add(handle);
       return ok(handle as AssetHandle<K>);
@@ -638,6 +700,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     material: MaterialAsset,
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
     knownTextures?: ReadonlySet<string>,
+    reader: AssetAdoptionReader = this.#runtime,
   ) {
     const fields = new Set(knownTextures);
     for (const parameter of material.parameters ?? [])
@@ -647,7 +710,7 @@ export class AssetRegistry implements AssetReferenceOwner {
         fields.add(field);
     return linkRuntimeMaterial(
       material,
-      this,
+      reader,
       (guid) => sources.get(guid.toLowerCase()) ?? this.#runtimeByGuid.get(guid.toLowerCase()),
       fields,
     );
@@ -1446,8 +1509,6 @@ export class AssetRegistry implements AssetReferenceOwner {
         ? await source.load(key, kind, options)
         : await source.load(key, kind, options);
     if (!loaded.ok) return loaded;
-    const programs = this.prepareSourcePrograms(source, key, options);
-    if (!programs.ok) return programs;
     if (options.signal?.aborted) return err(assetLoadCancelled(key));
     if (this.#source !== source)
       return err(
@@ -1457,12 +1518,11 @@ export class AssetRegistry implements AssetReferenceOwner {
           hint: 'load again from the current source',
         }),
       );
-    const staged = new Map<string, AssetHandle>();
-    const adopted = this.#runtime.adoptClosure(() => this.adoptSource(key, new Set(), staged));
+    const adopted = await this.ingestSource(source, key, options);
     if (!adopted.ok) return adopted;
-    this.rememberSources(staged);
-    this.#runtime.retain(adopted.value, expectedKind).unwrap();
-    return adopted;
+    if (options.signal?.aborted) return err(assetLoadCancelled(key));
+    const held = this.#runtime.retain(adopted.value, expectedKind);
+    return held.ok ? adopted : held;
   }
 
   /** Read independently owned published CPU geometry without render admission.
@@ -1538,8 +1598,6 @@ export class AssetRegistry implements AssetReferenceOwner {
       refresh: true,
     });
     if (!loaded.ok) return loaded;
-    const programs = this.prepareSourcePrograms(source, origin.guid, options);
-    if (!programs.ok) return programs;
     if (options.signal?.aborted) return err(assetLoadCancelled(origin.guid));
     if (this.#disposed || this.#source !== source)
       return err(
@@ -1549,57 +1607,104 @@ export class AssetRegistry implements AssetReferenceOwner {
           hint: 'reload from the current asset owner',
         }),
       );
-    const staged = new Map<string, AssetHandle>();
-    const adopted = this.#runtime.adoptClosure(() =>
-      this.adoptSource(origin.guid, new Set(), staged, policy),
-    );
+    const adopted = await this.ingestSource(source, origin.guid, options, policy);
     if (!adopted.ok) return adopted;
-    this.rememberSources(staged);
     return ok(undefined);
   }
 
-  /** One preparation per decoded source; runtime numeric writes never inspect program bytes. */
-  private prepareSourcePrograms(
+  private async prepareDecodedMaterialTemplate(
+    template: DecodedMaterialTemplate,
+    generation: number,
+  ): Promise<Result<MaterialRenderProjection, AssetError>> {
+    const prepared = await this.shaderRegistry.prepareMaterialTemplate({
+      guid: template.publication.guid,
+      material: template.publication.resolved,
+      sources: template.sources,
+    });
+    if (!prepared.ok)
+      return err(
+        new AssetError({
+          code: 'asset-invalid-value',
+          expected: prepared.error.expected,
+          hint: `${prepared.error.hint} (${prepared.error.message})`,
+        }),
+      );
+    return ok(
+      projectMaterialTemplate(
+        template,
+        generation,
+        prepared.value,
+        this.shaderRegistry,
+        this.materialArtifactRegistry,
+      ),
+    );
+  }
+
+  /** Admit decoded shader inputs before opening the source-ingestion transaction. */
+  private async prepareSourceIngestion(
     source: AssetSource,
     root: string,
     options: AssetLoadOptions,
-  ): Result<void, RuntimeAssetError> {
-    const visited = new Set<string>();
+    policy: SourceAdoption | undefined,
+  ): Promise<Result<SourceIngestionOperation, RuntimeAssetError>> {
+    const visited = new Map<string, symbol>();
+    const programReferences = new Set<string>();
     const prepared: { material: MaterialAsset; ready: MaterialReady }[] = [];
+    const templates: {
+      readonly material: MaterialAsset;
+      readonly template: DecodedMaterialTemplate;
+      readonly generation: number;
+    }[] = [];
     const visit = (guid: string): Result<void, RuntimeAssetError> => {
       const key = guid.toLowerCase();
       if (visited.has(key)) return ok(undefined);
-      visited.add(key);
       const entry = source.entry(key);
       if (entry === undefined) return source.checkCurrent(key);
+      visited.set(key, entry.identity);
       if (entry.references === 'eager')
         for (const ref of entry.refs) {
           const child = visit(ref);
           if (!child.ok) return child;
         }
       if (entry.kind !== 'material') return ok(undefined);
-      const material = entry.value as MaterialAsset & { readonly cooked?: unknown };
-      if (material.cooked === undefined || this.materialPayloadProjections.has(material))
-        return ok(undefined);
+      const material = entry.value as MaterialAsset & {
+        readonly cooked?: MaterialReady['record'];
+        readonly materialTemplate?: DecodedMaterialTemplate;
+      };
+      if (this.materialPayloadProjections.has(material)) return ok(undefined);
       // The Material decoder owns the complete immutable Cook record. Source adoption
       // checks its live closure and installs those facts without rehashing shader bytes.
-      const record = material.cooked as MaterialReady['record'];
+      const record = material.cooked;
+      const template = material.materialTemplate;
+      const refs = record?.refs ?? template?.publication.refs;
+      if (refs === undefined) return ok(undefined);
       for (const reference of [
-        ...record.refs.parent,
-        ...record.refs.textures,
-        ...record.refs.samplers,
-        ...record.refs.modules,
+        ...refs.parent,
+        ...refs.textures,
+        ...refs.samplers,
+        ...refs.modules,
       ]) {
-        if (!AssetGuid.parse(reference).ok) continue;
-        const current = source.checkCurrent(reference.toLowerCase());
-        if (!current.ok) return current;
+        if (AssetGuid.parse(reference).ok) programReferences.add(reference.toLowerCase());
       }
-      const ready: MaterialReady = { status: 'Ready', record };
-      prepared.push({ material, ready });
+      if (record !== undefined) prepared.push({ material, ready: { status: 'Ready', record } });
+      if (template !== undefined)
+        templates.push({ material, template, generation: entry.publication.generation });
       return ok(undefined);
     };
     const loaded = visit(root);
     if (!loaded.ok) return loaded;
+    const templatePreparations =
+      templates.length === 0
+        ? []
+        : await Promise.all(
+            templates.map(async (candidate) => ({
+              ...candidate,
+              prepared: await this.prepareDecodedMaterialTemplate(
+                candidate.template,
+                candidate.generation,
+              ),
+            })),
+          );
     if (options.signal?.aborted) return err(assetLoadCancelled(root));
     if (this.#disposed || this.#source !== source)
       return err(
@@ -1609,9 +1714,12 @@ export class AssetRegistry implements AssetReferenceOwner {
           hint: 'load from the current asset owner',
         }),
       );
-    for (const guid of visited) {
-      const current = source.checkCurrent(guid);
-      if (!current.ok) return current;
+    const current = this.checkPreparedSourcePrograms(source, visited, programReferences);
+    if (!current.ok) return current;
+    for (const { prepared } of templatePreparations) if (!prepared.ok) return prepared;
+    for (const { material, prepared } of templatePreparations) {
+      if (!this.materialPayloadProjections.has(material))
+        this.materialPayloadProjections.set(material, prepared.unwrap());
     }
     for (const { material, ready } of prepared) {
       const projection = installMaterialReadyShaders(
@@ -1621,41 +1729,34 @@ export class AssetRegistry implements AssetReferenceOwner {
       );
       this.materialPayloadProjections.set(material, projection);
     }
-    return ok(undefined);
+    return this.beginSourceIngestion(source, root, options, policy);
   }
 
-  private rememberSources(staged: ReadonlyMap<string, AssetHandle>): void {
-    for (const [guid, handle] of staged) {
-      const decoded = this.#source?.entry(guid);
-      const value = this.preparedSource(guid);
-      this.#runtimeByGuid.set(guid, handle);
-      this.#runtimeGuids.set(handle, {
-        guid,
-        kind: decoded?.kind ?? (value as Asset).kind,
-        source: this.#source,
-        publication: decoded?.publication,
-        contentKey: this.sourceContentKey(guid),
-        revision: this.#runtime.version(handle).unwrap(),
-      });
-    }
+  private checkPreparedSourcePrograms(
+    source: AssetSource,
+    entries: ReadonlyMap<string, symbol>,
+    programReferences: ReadonlySet<string>,
+  ): Result<void, RuntimeAssetError> {
+    for (const [guid, identity] of entries)
+      if (source.entry(guid)?.identity !== identity) return this.ingestionContextFailure();
+    return source.checkCurrentMany(new Set([...entries.keys(), ...programReferences]));
   }
 
-  private sourceContentKey(guid: string): string | undefined {
-    const inputs: string[] = [];
-    const visited = new Set<string>();
+  private sourceContentKey(
+    guid: string,
+    entries: ReadonlyMap<string, SourceIngestionEntry>,
+  ): string | undefined {
+    const inputs: string[] = [],
+      visited = new Set<string>();
     let key = guid;
     for (;;) {
-      const entry = this.#source?.entry(key);
+      const entry = entries.get(key);
       if (entry === undefined || visited.has(key)) return undefined;
       visited.add(key);
       inputs.push(key, entry.digest, ...entry.refs);
-      const asset = entry.value as Asset | null;
-      if (asset?.kind === 'material') {
-        const program = this.materialPayloadProjections.get(asset);
-        if (program !== undefined) inputs.push(program.specializationKey);
-      }
-      if (asset?.kind !== 'material' || asset.parent === undefined) return JSON.stringify(inputs);
-      key = materialGuidText(asset.parent).toLowerCase();
+      if (entry.programKey !== undefined) inputs.push(entry.programKey);
+      if (entry.parent === undefined) return JSON.stringify(inputs);
+      key = entry.parent;
     }
   }
 
@@ -1672,202 +1773,435 @@ export class AssetRegistry implements AssetReferenceOwner {
     return this.#source?.entry(guid.toLowerCase())?.value as Asset | undefined;
   }
 
-  private adoptionSource(guid: string, kind: Asset['kind']): Asset | undefined {
-    // Source material children inherit the authored contract. An already
-    // admitted parent has pruned inactive fields and is not that authority.
-    // Derived device descriptors still resolve their current runtime inputs.
-    return kind === 'material' ? this.preparedSource(guid) : this.runtimeSource(guid);
+  private ingestSource(
+    source: AssetSource,
+    key: string,
+    options: AssetLoadOptions,
+    policy?: SourceAdoption,
+  ): Promise<Result<AssetHandle, RuntimeAssetError>> {
+    const queued = this.ingestionQueue.then(async () => {
+      if (options.signal?.aborted) return err(assetLoadCancelled(key));
+      if (this.#disposed || this.#source !== source) return this.ingestionContextFailure();
+      const existing = this.#runtimeByGuid.get(key);
+      if (existing !== undefined && policy === undefined) return ok(existing);
+      return this.runSourceIngestion(source, key, options, policy);
+    });
+    // A rejected operation never poisons later queued loads. I/O was already concurrent.
+    this.ingestionQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return options.signal === undefined ? queued : waitForAsset(queued, options.signal, key);
   }
 
-  private adoptSource(
+  private ingestionContextFailure(): Result<never, AssetError> {
+    return err(
+      new AssetError({
+        code: this.#disposed ? 'asset-owner-closed' : 'asset-write-conflict',
+        expected: 'the same live source until ingestion',
+        hint: 'load from the current asset owner',
+      }),
+    );
+  }
+
+  private beginSourceIngestion(
+    source: AssetSource,
     key: string,
-    visiting: Set<string>,
-    staged: Map<string, AssetHandle>,
-    policy?: SourceAdoption,
-  ): Result<AssetHandle, RuntimeAssetError> {
+    options: AssetLoadOptions,
+    policy: SourceAdoption | undefined,
+  ): Result<SourceIngestionOperation, RuntimeAssetError> {
+    const captured = captureSourceIngestionInputs(
+      source,
+      this.#decoders,
+      key,
+      (guid) => this.#runtimeByGuid.get(guid),
+      (name) => this.#world?.components.resolve(name) ?? this.componentCatalog.get(name),
+      (asset) => this.materialPayloadProjections.get(asset)?.specializationKey,
+    );
+    if (!captured.ok) return captured;
+    const inputs = captured.value;
+    const candidate = this.#runtime.beginAdoption(
+      undefined,
+      policy?.started ?? this.#runtime.currentRevision,
+    );
+    if (!candidate.ok) {
+      inputs.dispose();
+      return candidate;
+    }
+    const contentKeys = new Map<string, string | undefined>();
+    for (const guid of inputs.entries.keys())
+      contentKeys.set(guid, this.sourceContentKey(guid, inputs.entries));
+    const operation: SourceIngestionOperation = {
+      root: key,
+      source,
+      inputs,
+      records: candidate.value,
+      staged: new Map(),
+      visiting: new Set(),
+      contentKeys,
+      signal: options.signal,
+      policy,
+      failure: undefined,
+      committed: false,
+      steps: undefined,
+    };
+    this.ingestions.add(operation);
+    return ok(operation);
+  }
+
+  private checkSourceIngestion(
+    operation: SourceIngestionOperation,
+  ): Result<void, RuntimeAssetError> {
+    if (operation.failure !== undefined) return err(operation.failure);
+    if (this.#disposed || this.#source !== operation.source) return this.ingestionContextFailure();
+    if (operation.signal?.aborted && !operation.committed)
+      return err(assetLoadCancelled(operation.root));
+    return operation.inputs.validate();
+  }
+
+  private ingestionGuard(operation: SourceIngestionOperation): Result<void, AssetError> {
+    const current = this.checkSourceIngestion(operation);
+    if (current.ok) return current;
+    operation.failure = current.error;
+    return err(
+      current.error instanceof AssetError
+        ? current.error
+        : new AssetError({
+            code: 'asset-write-conflict',
+            expected: current.error.expected,
+            hint: current.error.hint,
+          }),
+    );
+  }
+
+  private advanceSourceIngestion(
+    operation: SourceIngestionOperation,
+    steps: Generator<void, Result<AssetHandle, RuntimeAssetError>>,
+  ): IteratorResult<void, Result<AssetHandle, RuntimeAssetError>> {
+    const before = this.checkSourceIngestion(operation);
+    if (!before.ok) return { done: true, value: before };
+    const next = steps.next();
+    const after = this.checkSourceIngestion(operation);
+    return after.ok ? next : { done: true, value: after };
+  }
+
+  private commitSourceIngestion(
+    operation: SourceIngestionOperation,
+  ): Result<void, RuntimeAssetError> {
+    const current = this.checkSourceIngestion(operation);
+    if (!current.ok) return current;
+    // Provenance descriptors are built from captured facts before the first public write.
+    const origins = new Map<string, Omit<AdoptedAssetSource, 'revision'>>();
+    for (const guid of operation.staged.keys()) {
+      const entry = operation.inputs.entries.get(guid);
+      if (entry === undefined) throw new Error('Ingestion lost its captured source');
+      origins.set(guid, {
+        guid,
+        kind: entry.kind,
+        source: operation.source,
+        publication: entry.publication,
+        contentKey: operation.contentKeys.get(guid),
+      });
+    }
+    const committed = operation.records.commit();
+    if (!committed.ok) return err(operation.failure ?? committed.error);
+    operation.committed = true;
+    try {
+      for (const [guid, handle] of operation.staged) {
+        const origin = origins.get(guid) as Omit<AdoptedAssetSource, 'revision'>;
+        this.#runtimeByGuid.set(guid, handle);
+        this.#runtimeGuids.set(handle, {
+          ...origin,
+          revision: this.#runtime.version(handle).unwrap(),
+        });
+        if (origin.kind === 'texture-generator') this.hasTextureGenerators = true;
+      }
+    } catch (cause) {
+      // Records have been published; a metadata fault requires owner termination.
+      this.dispose();
+      throw cause;
+    }
+    return ok(undefined);
+  }
+
+  private retireSourceIngestion(operation: SourceIngestionOperation): boolean {
+    const next = operation.records.stepRetirement(1);
+    if (!next.ok) {
+      this.dispose();
+      throw next.error;
+    }
+    return next.value.phase === 'retired' || next.value.phase === 'closed';
+  }
+
+  private async runSourceIngestion(
+    source: AssetSource,
+    key: string,
+    options: AssetLoadOptions,
+    policy: SourceAdoption | undefined,
+  ): Promise<Result<AssetHandle, RuntimeAssetError>> {
+    const started = await this.prepareSourceIngestion(source, key, options, policy);
+    if (!started.ok) return started;
+    const operation = started.value;
+    const steps = this.adoptSourceSteps(key, operation);
+    operation.steps = steps;
+    let result: Result<AssetHandle, RuntimeAssetError>;
+    let slice = loadTimelineNow();
+    try {
+      for (;;) {
+        const next = this.advanceSourceIngestion(operation, steps);
+        if (next.done) {
+          result = next.value;
+          break;
+        }
+        if (loadTimelineNow() - slice >= 2) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          slice = loadTimelineNow();
+        }
+      }
+      if (result.ok) {
+        const committed = this.commitSourceIngestion(operation);
+        if (!committed.ok) result = committed;
+      }
+      return result;
+    } catch (cause) {
+      if (operation.records.inspect().phase === 'closed') {
+        this.dispose();
+        throw cause;
+      }
+      if (cause instanceof AssetError && !operation.committed)
+        return err(operation.failure ?? cause);
+      throw cause;
+    } finally {
+      steps.return(err(assetLoadCancelled(key)));
+      operation.steps = undefined;
+      operation.inputs.dispose();
+      operation.visiting.clear();
+      if (!operation.committed) operation.records.retire();
+      let retired = false;
+      slice = loadTimelineNow();
+      while (!retired) {
+        retired = this.retireSourceIngestion(operation);
+        if (!retired && loadTimelineNow() - slice >= 2) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          slice = loadTimelineNow();
+        }
+      }
+      this.ingestions.delete(operation);
+    }
+  }
+
+  private sourceIngestionContent(
+    operation: SourceIngestionOperation,
+    guid: string,
+    kind: Asset['kind'],
+  ): Asset | undefined {
+    const key = guid.toLowerCase();
+    // Published inheritance is a source input, not a mutable runtime parent.
+    if (kind === 'material' && operation.inputs.entries.has(key))
+      return operation.inputs.borrow(key).unwrap().value as Asset;
+    const handle =
+      operation.staged.get(key) ??
+      operation.inputs.selections.get(key) ??
+      this.#runtimeByGuid.get(key);
+    if (handle !== undefined) return operation.records.reader.borrow<Asset>(handle).unwrap();
+    return operation.inputs.entries.has(key)
+      ? (operation.inputs.borrow(key).unwrap().value as Asset)
+      : undefined;
+  }
+
+  private *adoptSourceReferences(
+    guid: string,
+    operation: SourceIngestionOperation,
+    dependencies: Set<number>,
+    parents: Set<string>,
+  ): Generator<void, Result<void, RuntimeAssetError>> {
+    const entry = operation.inputs.entries.get(guid);
+    if (entry === undefined)
+      return err(
+        new AssetError({
+          code: 'asset-not-found',
+          expected: `captured source ${guid}`,
+          hint: 'load the complete declared source closure',
+        }),
+      );
+    if (entry.kind === 'plugin' || entry.references === 'deferred') return ok(undefined);
+    const parent = entry.parent;
+    for (const ref of entry.inputReferences) {
+      if (ref === parent) continue;
+      const child = yield* this.adoptSourceSteps(ref, operation);
+      if (!child.ok) return child;
+      dependencies.add(child.value);
+    }
+    if (parent !== undefined && !parents.has(parent)) {
+      parents.add(parent);
+      return yield* this.adoptSourceReferences(parent, operation, dependencies, parents);
+    }
+    return ok(undefined);
+  }
+
+  private sourceIngestionSelection(
+    key: string,
+    operation: SourceIngestionOperation,
+  ): Result<
+    { existing: AssetHandle | undefined; reuse: boolean; cached: boolean },
+    RuntimeAssetError
+  > {
+    const existing = operation.inputs.selections.get(key);
+    if (existing === undefined) return ok({ existing, reuse: false, cached: false });
+    const revision = operation.records.reader.version(existing);
+    if (!revision.ok) return revision;
+    if (operation.policy === undefined) return ok({ existing, reuse: false, cached: true });
+    const origin = this.#runtimeGuids.get(existing);
+    if (
+      revision.value > operation.policy.started ||
+      (operation.policy.conflict === 'reject' && revision.value !== origin?.revision)
+    )
+      return err(
+        new AssetError({
+          code: 'asset-write-conflict',
+          expected: `unchanged runtime content for source ${key} until adoption`,
+          hint: 'inspect gameplay edits before explicitly reloading with overwrite',
+        }),
+      );
+    const reuse =
+      origin !== undefined &&
+      origin.source === operation.source &&
+      revision.value === origin.revision &&
+      origin.contentKey !== undefined &&
+      origin.contentKey === operation.contentKeys.get(key);
+    return ok({ existing, reuse, cached: false });
+  }
+
+  private *adoptSourceSteps(
+    key: string,
+    operation: SourceIngestionOperation,
+  ): Generator<void, Result<AssetHandle, RuntimeAssetError>> {
+    const { staged, visiting, inputs } = operation;
     const prepared = staged.get(key);
     if (prepared !== undefined) return ok(prepared);
-    const existing = this.#runtimeByGuid.get(key);
-    if (existing !== undefined && policy === undefined) return ok(existing);
+    yield;
+    if (!inputs.entries.has(key))
+      return err(
+        new AssetError({
+          code: 'asset-not-found',
+          expected: `captured source ${key}`,
+          hint: 'load its verified source before ingestion',
+        }),
+      );
+    const selected = this.sourceIngestionSelection(key, operation);
+    if (!selected.ok) return selected;
+    if (selected.value.cached) return ok(selected.value.existing as AssetHandle);
     if (visiting.has(key))
       return err(
         new AssetError({
           code: 'asset-reference-invalid',
           expected: 'an acyclic eager runtime asset closure',
-          hint: 'remove the eager dependency cycle; executable plugin references remain deferred',
-        }),
-      );
-    const decoded = this.#source?.entry(key);
-    const origin = existing === undefined ? undefined : this.#runtimeGuids.get(existing);
-    if (this.#source !== undefined) {
-      const current = this.#source.checkCurrent(key);
-      if (!current.ok) return current;
-    }
-    if (existing !== undefined && policy !== undefined) {
-      const revision = this.#runtime.version(existing);
-      if (!revision.ok) return revision;
-      if (
-        revision.value > policy.started ||
-        (policy.conflict === 'reject' && revision.value !== origin?.revision)
-      )
-        return err(
-          new AssetError({
-            code: 'asset-write-conflict',
-            expected: `unchanged runtime content for source ${key} until adoption`,
-            hint: 'inspect gameplay edits before explicitly reloading with overwrite',
-          }),
-        );
-    }
-    const reuse =
-      existing !== undefined &&
-      origin !== undefined &&
-      decoded !== undefined &&
-      origin.source === this.#source &&
-      this.#runtime.version(existing).unwrap() === origin.revision &&
-      origin.contentKey !== undefined &&
-      origin.contentKey === this.sourceContentKey(key);
-    if (decoded !== undefined && !isBuiltinAssetKind(decoded.kind)) {
-      visiting.add(key);
-      const dependencies: number[] = [];
-      if (decoded.references === 'eager')
-        for (const ref of decoded.refs) {
-          const child = this.adoptSource(ref.toLowerCase(), visiting, staged, policy);
-          if (!child.ok) {
-            visiting.delete(key);
-            return child;
-          }
-          dependencies.push(child.value);
-        }
-      const prepare = this.#decoders.canPrepare(decoded.kind)
-        ? (owned: unknown) => this.prepareWithDecoder(decoded.kind, owned, staged)
-        : undefined;
-      const created =
-        reuse && prepare === undefined
-          ? ok(existing)
-          : this.#runtime.adopt(decoded.kind, decoded.value, dependencies, prepare, existing);
-      visiting.delete(key);
-      if (created.ok) staged.set(key, created.value);
-      return created;
-    }
-    const source = this.preparedSource(key);
-    if (source === undefined)
-      return err(
-        new AssetError({
-          code: 'asset-not-found',
-          expected: `prepared source ${key}`,
-          hint: ASSET_ERROR_HINTS['asset-not-found'],
+          hint: 'remove eager dependency cycles',
         }),
       );
     visiting.add(key);
     const dependencies = new Set<number>();
-    const addReferences = (
-      guid: string,
-      asset: Asset,
-      parents: Set<string>,
-    ): Result<void, RuntimeAssetError> => {
-      if (asset.kind === 'plugin' || this.#source?.entry(guid)?.references === 'deferred')
-        return ok(undefined);
-      if (asset.kind === 'animation-graph') {
-        for (const node of asset.nodes)
-          if (node.type === 'clip' && typeof node.clip === 'string') {
-            const dependency = this.adoptSource(node.clip.toLowerCase(), visiting, staged, policy);
-            if (!dependency.ok) return dependency;
-            dependencies.add(dependency.value);
-          }
-      }
-      const parent =
-        asset.kind === 'material' && asset.parent !== undefined
-          ? materialGuidText(asset.parent).toLowerCase()
-          : undefined;
-      const refs = new Set([
-        ...(this.#source?.entry(guid)?.refs ?? []),
-        ...(asset.kind === 'mesh'
-          ? [
-              ...asset.materialSlots.flatMap((slot) =>
-                slot.defaultMaterial !== undefined && typeof slot.defaultMaterial !== 'number'
-                  ? [AssetGuid.format(slot.defaultMaterial)]
-                  : [],
-              ),
-              ...(asset.lods ?? []).flatMap((lod) =>
-                typeof lod.mesh !== 'number' ? [AssetGuid.format(lod.mesh)] : [],
-              ),
-            ]
-          : []),
-      ]);
-      for (const ref of refs) {
-        const dependencyKey = ref.toLowerCase();
-        if (dependencyKey === parent) continue;
-        const dependency = this.adoptSource(dependencyKey, visiting, staged, policy);
-        if (!dependency.ok) return dependency;
-        dependencies.add(dependency.value);
-      }
-      if (parent !== undefined && !parents.has(parent)) {
-        parents.add(parent);
-        if (this.#source !== undefined) {
-          const current = this.#source.checkCurrent(parent);
-          if (!current.ok) return current;
-        }
-        const parentSource = this.preparedSource(parent);
-        if (parentSource !== undefined) return addReferences(parent, parentSource, parents);
-      }
-      return ok(undefined);
-    };
-    const linked = addReferences(key, source, new Set());
-    if (!linked.ok) {
-      visiting.delete(key);
-      return linked;
-    }
-    let content = source;
-    if (source.kind === 'scene') {
-      const prepared = prepareRuntimeScene(
-        source,
-        (name) => this.#world?.components.resolve(name) ?? this.componentCatalog.get(name),
-        (value, kind) => {
-          const dependency =
-            typeof value === 'number'
-              ? ok(value)
-              : this.adoptSource(value.toLowerCase(), visiting, staged, policy);
-          if (!dependency.ok) return dependency;
-          const valid = this.validate(dependency.value, kind);
-          return valid.ok ? dependency : valid;
-        },
-        decoded?.refs,
-      );
-      if (!prepared.ok) {
-        visiting.delete(key);
-        return prepared;
-      }
-      content = prepared.value.value;
-      for (const dependency of prepared.value.dependencies) dependencies.add(dependency);
-    }
-    // An unchanged root can select newly adopted dependencies. Validate the
-    // selected closure before reusing its content identity, including candidate
-    // replacements hidden inside AssetRecords' atomic adoption.
-    if (reuse && content.kind === 'terrain') {
-      const checked = prepareRuntimeTerrain(
-        content,
-        this.#runtime,
-        (guid) => staged.get(guid) ?? this.#runtimeByGuid.get(guid),
-      );
-      if (!checked.ok) {
-        visiting.delete(key);
-        return checked;
-      }
-      this.ownTerrainDerived(checked.value.value);
-    }
-    const created = reuse
-      ? ok(existing)
-      : this.createRuntimeContent(
-          content,
-          [...dependencies],
-          staged,
-          existing as AssetHandle<BuiltinAssetKind> | undefined,
-          (guid) => this.adoptionSource(guid, content.kind),
-        );
+    const linked = yield* this.adoptSourceReferences(key, operation, dependencies, new Set());
+    if (!linked.ok) return linked;
+    yield;
+    const created = this.prepareSourceIngestionContent(
+      key,
+      operation,
+      selected.value.existing,
+      selected.value.reuse,
+      dependencies,
+    );
     visiting.delete(key);
-    if (!created.ok) return created;
-    staged.set(key, created.value); // One cache hold; each caller/binding retains separately.
+    if (created.ok) staged.set(key, created.value);
     return created;
+  }
+
+  /** Source POD is borrowed only within this synchronous preparation call, never a generator frame. */
+  private prepareSourceIngestionContent(
+    key: string,
+    operation: SourceIngestionOperation,
+    existing: AssetHandle | undefined,
+    reuse: boolean,
+    dependencies: Set<number>,
+  ): Result<AssetHandle, RuntimeAssetError> {
+    const { inputs, records, staged } = operation;
+    const decoded = inputs.borrow(key);
+    if (!decoded.ok) return decoded;
+    const entry = decoded.value;
+    if (!isBuiltinAssetKind(entry.kind)) {
+      const prepare = this.#decoders.canPrepare(entry.kind)
+        ? (owned: unknown) =>
+            this.prepareWithDecoder(entry.kind, owned, staged, records.reader, () =>
+              this.ingestionGuard(operation),
+            )
+        : undefined;
+      return reuse && prepare === undefined
+        ? ok(existing as AssetHandle)
+        : records.adopt(entry.kind, entry.value, [...dependencies], prepare, existing);
+    }
+    let content = entry.value as Asset;
+    if (content.kind === 'scene' && reuse) {
+      const scene = this.prepareSourceIngestionScene(content, operation, entry.refs);
+      if (!scene.ok) return scene;
+      content = scene.value.value;
+      for (const dependency of scene.value.dependencies) dependencies.add(dependency);
+    }
+    if (reuse) {
+      const valid = records.reader.validate(existing as AssetHandle, content.kind);
+      if (!valid.ok) return valid;
+      if (content.kind === 'terrain') {
+        const checked = prepareRuntimeTerrain(
+          content,
+          records.reader,
+          (guid) => staged.get(guid) ?? inputs.selections.get(guid),
+        );
+        if (!checked.ok) return checked;
+        this.ownTerrainDerived(checked.value.value, records.reader);
+      }
+      return ok(existing as AssetHandle);
+    }
+    return this.createRuntimeContent(
+      content,
+      [...dependencies],
+      staged,
+      existing as AssetHandle<BuiltinAssetKind> | undefined,
+      (guid) => this.sourceIngestionContent(operation, guid, content.kind),
+      'copy',
+      records,
+      (name) => inputs.schemas.get(name),
+      () => this.ingestionGuard(operation),
+      entry.refs,
+    );
+  }
+
+  private prepareSourceIngestionScene(
+    scene: SceneAsset,
+    operation: SourceIngestionOperation,
+    refs: readonly string[],
+  ) {
+    return prepareRuntimeScene(
+      scene,
+      (name) => operation.inputs.schemas.get(name),
+      (value, kind) => {
+        const handle =
+          typeof value === 'number'
+            ? value
+            : (operation.staged.get(value.toLowerCase()) ??
+              operation.inputs.selections.get(value.toLowerCase()) ??
+              this.#runtimeByGuid.get(value.toLowerCase()));
+        if (handle === undefined)
+          return err(
+            new AssetError({
+              code: 'asset-reference-invalid',
+              expected: 'a loaded declared Scene dependency',
+              hint: 'declare the complete Scene reference table',
+            }),
+          );
+        const valid = operation.records.reader.validate(handle, kind);
+        return valid.ok ? ok(handle) : valid;
+      },
+      refs,
+    );
   }
 
   dispose(): void {
@@ -1875,6 +2209,11 @@ export class AssetRegistry implements AssetReferenceOwner {
     const conflict = this.#runtime.mutationError();
     if (conflict !== undefined) throw conflict;
     this.#disposed = true;
+    for (const operation of this.ingestions) {
+      operation.steps?.return(this.ingestionContextFailure());
+      operation.steps = undefined;
+      operation.inputs.dispose();
+    }
     this.#source?.dispose();
     this.#decoders.dispose();
     this.#runtime.dispose();
@@ -1885,14 +2224,7 @@ export class AssetRegistry implements AssetReferenceOwner {
 
   readonly #publicationCandidates = new WeakMap<
     RuntimePackEnvelope,
-    {
-      readonly assets: ReadonlyMap<string, Asset>;
-      readonly pack: RuntimePackEnvelope;
-      readonly rows: readonly CatalogEntry[];
-      readonly source: AssetSource | undefined;
-      readonly generations: ReadonlyMap<string, number>;
-      readonly started: number;
-    }
+    PreparedPublicationCandidate
   >();
 
   /** Prepare in a private scope using this consuming owner's loaders and services. */
@@ -1927,6 +2259,9 @@ export class AssetRegistry implements AssetReferenceOwner {
     }
     const source = this.#source;
     const started = this.#runtime.currentRevision;
+    const decoderIdentities = new Map(
+      owned.rows.map((row) => [row.kind, this.#decoders.identity(row.kind)]),
+    );
     if (owned.pack !== undefined && owned.pack.scopeId !== source?.catalog.scopeId)
       return err(
         new AssetError({
@@ -1959,6 +2294,29 @@ export class AssetRegistry implements AssetReferenceOwner {
       this.#decoders,
     );
     if (!result.ok) return result;
+    for (const row of owned.rows) {
+      const asset = result.value.get(row.guid.toLowerCase());
+      if (asset?.kind !== 'material') continue;
+      const template = (asset as MaterialAsset & { materialTemplate?: DecodedMaterialTemplate })
+        .materialTemplate;
+      if (template === undefined) continue;
+      const ready = await this.prepareDecodedMaterialTemplate(
+        template,
+        row.publication?.generation ?? 0,
+      );
+      if (!ready.ok) return ready;
+      this.materialPayloadProjections.set(asset, ready.value);
+    }
+    if (
+      [...decoderIdentities].some(([kind, identity]) => this.#decoders.identity(kind) !== identity)
+    )
+      return err(
+        new AssetError({
+          code: 'asset-write-conflict',
+          expected: 'the decoder leases captured for publication preparation',
+          hint: 'prepare with the current owner decoders',
+        }),
+      );
     if (key && owned.pack)
       this.#publicationCandidates.set(key, {
         assets: result.value,
@@ -1967,6 +2325,7 @@ export class AssetRegistry implements AssetReferenceOwner {
         source,
         generations,
         started,
+        decoderIdentities,
       });
     // Public retention reads copy on demand. Neither a Map edit nor a byte write can forge readiness.
     return ok(
@@ -1976,29 +2335,56 @@ export class AssetRegistry implements AssetReferenceOwner {
     );
   }
 
+  private preparedDecodersCurrent(identities: ReadonlyMap<string, symbol | undefined>): boolean {
+    for (const [kind, identity] of identities)
+      if (this.#decoders.identity(kind) !== identity) return false;
+    return true;
+  }
+
+  private publicationCandidateCurrent(
+    candidate: PreparedPublicationCandidate | undefined,
+  ): candidate is PreparedPublicationCandidate {
+    return (
+      candidate !== undefined &&
+      !this.#disposed &&
+      candidate.source === this.#source &&
+      this.preparedDecodersCurrent(candidate.decoderIdentities) &&
+      [...candidate.generations].every(
+        ([guid, revision]) => this.#source?.revision(guid) === revision,
+      )
+    );
+  }
+
   /** Consume private preparation once, before the producer publishes its Catalog delta. */
   commitPreparedPublication(pack: RuntimePackEnvelope, beforeCommit?: () => void): void {
     const candidate = this.#publicationCandidates.get(pack);
-    const current = () =>
-      candidate !== undefined &&
-      candidate.source === this.#source &&
-      [...candidate.generations].every(
-        ([guid, revision]) => this.#source?.revision(guid) === revision,
-      );
+    const current = () => this.publicationCandidateCurrent(candidate);
     if (!candidate || !current())
       throw new TypeError('candidate was not prepared in the current asset context');
     this.#publicationCandidates.delete(pack);
     beforeCommit?.();
     if (!current()) throw new TypeError('asset context changed during publication commit');
-    this.#source?.preparePublication(candidate.pack, candidate.rows, candidate.assets);
+    this.#source?.preparePublication(
+      candidate.pack,
+      candidate.rows,
+      candidate.assets,
+      candidate.decoderIdentities,
+    );
   }
 
   private invalidPreparedAuthorPath(path: readonly string[]): boolean {
     return (
       path.length === 0 ||
       path[0] === 'kind' ||
+      path[0] === 'materialTemplate' ||
       path.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))
     );
+  }
+
+  private inheritPreparedMaterialTemplate(source: Asset, replacement: Asset): void {
+    const projection = this.materialPayloadProjections.get(source);
+    if (projection?.sourceTemplate !== undefined)
+      this.materialPayloadProjections.set(replacement, projection);
   }
 
   private installAdoptedMaterialProjection(asset: Asset): void {
@@ -2030,14 +2416,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   ): Result<void, RuntimeAssetError> {
     const candidate = this.#publicationCandidates.get(pack);
     this.#publicationCandidates.delete(pack);
-    if (
-      !candidate ||
-      candidate.source !== this.#source ||
-      this.#disposed ||
-      [...candidate.generations].some(
-        ([guid, revision]) => this.#source?.revision(guid) !== revision,
-      )
-    ) {
+    if (!this.publicationCandidateCurrent(candidate)) {
       return err(
         new AssetError({
           code: 'asset-write-conflict',
@@ -2083,7 +2462,9 @@ export class AssetRegistry implements AssetReferenceOwner {
         (copy as Record<string, unknown>)[part] = changed;
         changed = copy;
       }
-      replacements.set(guid, changed as Asset);
+      const replacement = changed as Asset;
+      this.inheritPreparedMaterialTemplate(source, replacement);
+      replacements.set(guid, replacement);
     }
     const rows = new Map(candidate.rows.map((row) => [row.guid.toLowerCase(), row]));
     const envelopes = new Map(
@@ -2217,7 +2598,15 @@ export class AssetRegistry implements AssetReferenceOwner {
           }
         return ok(undefined);
       },
-      () => beforeCommit?.(staged),
+      () => {
+        beforeCommit?.(staged);
+        if (!this.publicationCandidateCurrent(candidate))
+          throw new AssetError({
+            code: 'asset-write-conflict',
+            expected: 'the prepared source and decoder context after acceptance',
+            hint: 'dispose candidate consumers and prepare again',
+          });
+      },
     );
     if (!result.ok) return result;
     for (const [guid, handle] of staged) {
@@ -2327,14 +2716,16 @@ export class AssetRegistry implements AssetReferenceOwner {
       this.copySnapshotContent(content),
     );
     this.#decoders = new DecoderRegistry(options);
-    installRuntimeAssets(
-      this,
-      this.#runtime,
-      this.#runtimeByGuid,
-      this.#runtimeGuids,
-      this.#decoders,
-      () => this.#source,
-    );
+    installRuntimeAssets(this, {
+      records: this.#runtime,
+      sources: this.#runtimeByGuid,
+      origins: this.#runtimeGuids,
+      decoders: this.#decoders,
+      source: () => this.#source,
+      ownsPublicationReads: () =>
+        this.sourceOf === AssetRegistry.#sourceRead &&
+        this.catalogEntry === AssetRegistry.#catalogRead,
+    });
     this.shaderRegistry = options.shaderRegistry ?? new ShaderRegistry({ manifestUrl: undefined });
     this.importTransport = options.importTransport;
     this.postSpawnHook = options.postSpawnHook;
@@ -2410,6 +2801,16 @@ export class AssetRegistry implements AssetReferenceOwner {
     const projection = this.materialPayloadProjections.get(material);
     assertMaterialStaticSelection(material.staticSwitches, projection);
     return projection;
+  }
+
+  /** Bind the receiver's source template to this realm's existing shader owners. */
+  bindReceivedMaterialTemplate(projection: MaterialRenderProjection): void {
+    bindMaterialTemplateProjection(
+      projection,
+      undefined,
+      this.shaderRegistry,
+      this.materialArtifactRegistry,
+    );
   }
 
   /**
@@ -2666,6 +3067,7 @@ export class AssetRegistry implements AssetReferenceOwner {
   private linkAnimationGraph(
     graph: import('@forgeax/engine-types').AnimationGraph,
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
+    reader: AssetAdoptionReader = this.#runtime,
   ) {
     return prepareRuntimeAnimationGraph(graph, (value) => {
       const handle =
@@ -2680,7 +3082,7 @@ export class AssetRegistry implements AssetReferenceOwner {
             hint: 'load the clip or pass a reference created by this asset owner',
           }),
         );
-      const valid = this.validate(handle, 'animation-clip');
+      const valid = reader.validate(handle, 'animation-clip');
       return valid.ok ? ok(handle) : valid;
     });
   }
@@ -2689,10 +3091,13 @@ export class AssetRegistry implements AssetReferenceOwner {
     scene: SceneAsset,
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
     refs?: readonly string[],
+    reader: AssetAdoptionReader = this.#runtime,
+    component: (name: string) => Component | undefined = (name) =>
+      this.#world?.components.resolve(name) ?? this.componentCatalog.get(name),
   ) {
     return prepareRuntimeScene(
       scene,
-      (name) => this.#world?.components.resolve(name) ?? this.componentCatalog.get(name),
+      component,
       (value, kind) => {
         const handle =
           typeof value === 'number'
@@ -2706,7 +3111,7 @@ export class AssetRegistry implements AssetReferenceOwner {
               hint: 'load Scene dependencies before creating runtime content',
             }),
           );
-        const valid = this.validate(handle, kind);
+        const valid = reader.validate(handle, kind);
         return valid.ok ? ok(handle) : valid;
       },
       refs,

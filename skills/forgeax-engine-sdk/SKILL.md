@@ -8,6 +8,8 @@ description: >-
 
 # ForgeAX Engine SDK
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Start here for game work
 
 The game-root `AGENTS.md` already gives the hard rules, default commands and routing.
@@ -217,36 +219,31 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 ## SDK production and publication
 
-For a PR source cancellation, inspect shader admission and both cold profile
-durations separately from the browser journey and uploads. Dedicated manifest
-producers admit their Worker budget after reserving V8 heap and native memory.
-The profile packager preserves the requested parallelism for those children.
-Retain the 40-minute source job, 30-minute seed and peer consumers, both cold
-profile publications and every browser assertion. Qualify the complete next run.
+For PR preflight, inspect the selected archive profile and the exact consumer
+receipts before diagnosing missing work. Compact ZIP proof requires 60
+completed ready frames from Empty. The installed npm consumer exercises Game
+3D. Expanded qualification requires an independent source result and both
+template seeds. Follow the
+[Core validation policy](../../scripts/ci/README.md#core-validation-policy)
+for compact admission, full fallback and release boundaries.
 
-For a PR seed canceled during `build:engine`, inspect its live stage output and
-the separate same-head core base/shared point admission prerequisite. Producer
-waiting precedes the unchanged 30-minute seed budget. Downloads survive the clean
-in runner temporary storage; after rebuilding the compiler, both original
-path-bound publications must pass current source/profile and digest checks.
-Adopt the source-qualified Core native WASM/glue pair from the same existing
-archive before the clean JS rebuild; independent native builds can differ in bytes.
-Keep the derived browser glue paired. Never relabel point as base, copy JS compiler
-outputs, rewrite receipts or lengthen the seed budget. Follow [SDK consumers](../../scripts/ci/README.md#sdk-consumers).
-When seed preparation changes, run its complete source-export contract command.
-The public-policy owner checks source acceptance before Core native adoption and
-provenance before SDK production, using those actual commands rather than a
-retired independent native-build step name.
+For a PR seed canceled during `build:engine`, inspect its live stage output.
+The same-head Core compiler admission runs before the unchanged 30-minute seed
+window. Verify the original WASM/glue pair and its source provenance before
+the clean JS rebuild. Candidate and installed SDK consumers carry Engine
+templates and the portable compiler. Keep the 40-minute independent source job
+and its browser assertions in expanded preflight.
 
-For a cold SDK heap failure after shader compilation completes, inspect the
-profile-container and declaration children separately. Their own heaps must
-inherit the runner budget; a compiler child's explicit heap does not propagate
-to its parent. Follow the [CI memory policy](../../scripts/ci/README.md), retain
-one compiler worker for SDK seed packaging and the bounded publication verification subprocess.
-Publication verification inherits the same runner-derived child heap for JSON
-admission. Its separate 128 MiB retained-heap assertion after GC and complete
-source/count/digest checks remain mandatory; an explicit 512 MiB Node argument
-must not override that environment and fail before those checks execute.
+When seed preparation changes, run its complete source-export contract. The
+public policy verifies source acceptance, Core compiler adoption, provenance
+and SDK production in order. For a cold heap failure, identify the failing
+package, declaration or archive child and confirm its runner-derived budget.
+
+PR packaging uses `--reuse-core-build` to read the verified Core archive's
+Three program strings and warm declaration resolution. Verify fresh package
+JavaScript, semantic declarations and maps, and installed consumer runs.
+Candidate and public-source builds prepare their own Three programs and
+declarations.
 
 For SDK carrier path failures, compare canonical download and resolver-selected
 Engine roots at the existing containment owner. Qualify aliased parents and
@@ -264,6 +261,10 @@ Archive and post-consumer integrity stages reread byte counts and SHA-256 throug
 the existing bounded file-I/O owner. A canceled integrity tail is unverified;
 retain every artifact and the SQLite-only mutable-store exclusion. See
 [SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
+
+When changing shared transport imports, keep the Candidate consumer and seal
+on their single trusted sparse checkout list. Validate its actual module closure
+with `pnpm ci:focus --kind node --select scripts/forgeax/__tests__/sdk-candidate-native-inputs.test.mjs`.
 
 For a source-consumer job cancellation, compare complete stage timings first.
 PR archive consumers explicitly use `--profile core`: keep the single-module

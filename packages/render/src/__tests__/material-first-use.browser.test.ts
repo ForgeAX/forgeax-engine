@@ -2,6 +2,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { loadRhiPack } from '../assembly/backend-contract';
@@ -20,6 +21,7 @@ it('reports a malformed first-use Standard variant through the renderer error ch
     undefined,
     {
       shaderManifestUrl: '/shaders/manifest.json',
+      prepareShaderProgramCompiler,
     },
     {
       ...loadRhiPack(webgpu),

@@ -20,8 +20,9 @@ import {
   isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
+  manifestShaderSource,
   materialShaderPreparedSourceRows,
-  materialShaderSourceEquals,
+  materialShaderSource,
   type PipelineGroup2Contract,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
@@ -517,7 +518,9 @@ export async function buildReadyWebGPU(
         const key = resolveMaterialShaderVariantSet(
           'CLUSTER_FORWARD_AVAILABLE=true',
           entry,
-          rhiDevice.caps.backendKind,
+          // Both storage and texture transports pack the same reflected ABI.
+          // This is a CPU compilation, independent of the active device lane.
+          caps.webgl2Downlevel ? 'webgpu' : rhiDevice.caps.backendKind,
           true,
           rhiDevice.limits.maxSampledTexturesPerShaderStage,
         );
@@ -596,6 +599,7 @@ export async function buildReadyWebGPU(
       compileUtilityShader,
       seedShaderModule,
       caps,
+      immediateCreateShaderModule !== undefined,
     );
     if (scenePrograms !== undefined) setStandardSceneShaderSources(scenePrograms);
     const atmosphere = await prewarmAtmospherePrograms(
@@ -673,13 +677,14 @@ export async function buildReadyWebGPU(
     pbr: ShaderModule;
     gpuDrivenPbrPrograms: EngineShaderModules['gpuDrivenPbrPrograms'];
   }> => {
+    const source = manifestShaderSource(entries.pbr);
     const pbrModule = await compileModule(
-      entries.pbr.wgsl,
+      source,
       'pbr',
       'PBR shader module compiled',
       'inspect manifest pbr entry composed wgsl; check device.features',
     );
-    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule, entries.pbr.wgsl);
+    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule, source);
     const pbrManifestEntry = findMaterialShaderEntry(registry, 'forgeax::default-standard-pbr');
     const gpuDrivenModules = await buildGpuDrivenPbrReadyModules({
       registry,
@@ -703,15 +708,19 @@ export async function buildReadyWebGPU(
         ? undefined
         : materialShaderPreparedSourceRows(pbrManifestEntry).find(
             (variant): variant is MaterialShaderManifestVariant =>
-              'definesKey' in variant && materialShaderSourceEquals(variant, entries.pbr.wgsl),
+              'definesKey' in variant && materialShaderSource(variant).sameText(source),
           );
     if (pbrVariant !== undefined)
       seedShaderModule(
         `module-forgeax::default-standard-pbr#${pbrVariant.definesKey}`,
         pbrModule,
-        entries.pbr.wgsl,
+        source,
       );
-    if (immediateCreateShaderModule === undefined)
+    if (
+      immediateCreateShaderModule === undefined &&
+      pbrManifestEntry !== undefined &&
+      !isShaderTemplateManifestRow(pbrManifestEntry)
+    )
       await prewarmStandardPbrVariants(pbrManifestEntry, entries.pbr, pbrModule);
     return { pbr: pbrModule, gpuDrivenPbrPrograms: gpuDrivenModules.gpuDrivenPbrPrograms };
   };
@@ -760,9 +769,12 @@ export async function buildReadyWebGPU(
     });
     const analyticFog = findEngineManifestEntry(registry, manifestEntries, 'forgeax::analytic-fog');
     if (analyticFog !== undefined) registerBuiltinAnalyticFog(() => analyticFog.wgsl);
-    if (entries.motionBlur !== undefined && !isShaderTemplateManifestRow(entries.motionBlur))
+    // These single utility programs can enter a live temporal graph directly.
+    // Seed the validated modules so recorders without a synchronous compiler
+    // can encode the first temporal frame on the same path as other devices.
+    if (entries.motionBlur !== undefined)
       await prewarmTemporal(entries.motionBlur, 'forgeax.motion-blur');
-    if (entries.taaResolve !== undefined && !isShaderTemplateManifestRow(entries.taaResolve))
+    if (entries.taaResolve !== undefined)
       await prewarmTemporal(entries.taaResolve, 'forgeax.taa-resolve');
     await prewarmDepthOfField(manifestEntries, prewarmTemporal, registerBuiltinDepthOfField);
     const { motionBlur, taaResolve } = entries;

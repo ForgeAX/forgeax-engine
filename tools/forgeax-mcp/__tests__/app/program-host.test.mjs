@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
+import { createNetworkBroker } from '../../src/app/broker.mjs';
+import { createRemoteBundler } from '../../src/app/bundler.mjs';
 import { bundlePackProgram } from '../../src/app/program-bundler.mjs';
 import { PROGRAM_IMPORTS_SLOT } from '../../src/contract.ts';
 import { createMcpProgramHosts } from '../../src/app/program-host.ts';
+import { readResourceBytes } from '../../src/app/resource-bytes.ts';
 
 const imports = { 'engine-fixture': { identity: 'executing-engine', url: 'https://native.invalid/engine.mjs' } };
 function program() {
@@ -142,4 +148,52 @@ test('native program host borrows only its own Engine imports and retires namesp
     await assert.rejects(fetch(url));
     await assert.rejects(host.publish(program(), imports), /retired/);
   } finally { hosts.dispose(); }
+});
+
+test('the native program host delivers an admitted named generator to a Worker', async () => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    if (request.url !== '/engine.mjs') {
+      response.writeHead(404).end();
+      return;
+    }
+    response.setHeader('content-type', 'text/javascript');
+    response.end('export default {}; export class Constructor {} export let counter = 17;');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const url = new URL(`http://127.0.0.1:${server.address().port}/`);
+  const broker = createNetworkBroker({ viewUrl: url.href });
+  broker.bundle = createRemoteBundler(broker.allow);
+  const host = createMcpProgramHosts(
+    { __fxMcpLocation: url },
+    (input, options) => broker.invoke(input, options),
+    (ref) => readResourceBytes(ref, broker.invoke),
+  );
+  const bindings = { 'engine-fixture': { ...imports['engine-fixture'], url: new URL('engine.mjs', url).href } };
+  let worker;
+  try {
+    const programs = host.create(bindings, async () => assert.fail('Task programs loaded dependencies on the submitting realm'));
+    await assert.rejects(
+      broker.invoke({ action: 'program', kind: 'worker', url: url.href, program: program(), imports }),
+      /outside selected View\/project services/,
+    );
+    const locator = await programs.publishForTask(program(), bindings);
+    assert.equal(await programs.publishForTask(program(), bindings), locator);
+    // Node Workers accept data URLs as modules. Preserve the exact published ESM bytes.
+    const source = await (await fetch(locator)).arrayBuffer();
+    const entry = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+    const boot = `import { parentPort, workerData } from 'node:worker_threads';
+      const { read } = await import(workerData);
+      parentPort.postMessage(read());`;
+    worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(boot)}`), { workerData: entry });
+    assert.deepEqual(await once(worker, 'message'), [[17, 7]]);
+    assert.deepEqual(requests, ['/engine.mjs']);
+  } finally {
+    await worker?.terminate();
+    host.dispose();
+    broker.close();
+    await new Promise(resolve => server.close(resolve));
+  }
 });

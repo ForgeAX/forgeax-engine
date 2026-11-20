@@ -709,7 +709,11 @@ export function createRenderPublisher(
       const metadata = retainStatistics(extractedMetadata, acceptedMetadata);
       const removedConsumers = new Set([...this.removed, ...this.nextDependencies.keys()]);
       this.updateAssetClosure(removedConsumers, nextFrameDependencies);
-      const assetRows = this.closure?.rows() ?? EMPTY_ASSET_ROWS;
+      const preparedRows: PreparedAssetRow[] = [];
+      const assetRows =
+        this.closure?.rows((handle, revision) =>
+          this.referencePreparedMesh(handle, revision, preparedRows),
+        ) ?? EMPTY_ASSET_ROWS;
       const retired = this.closure?.retired() ?? EMPTY_IDENTITIES;
       const materialProjections = this.collectMaterialProjections(assetRows);
       this.holdMaterials();
@@ -717,8 +721,6 @@ export function createRenderPublisher(
       this.referenceMaterialSources(referencedMaterials);
       const retiredMaterials = retiredMaterialIds();
       const publishedMaterials = publishedMaterialRows();
-      const preparedRows: PreparedAssetRow[] = [];
-      const sentAssetRows = this.unpreparedAssetRows(assetRows, preparedRows);
       observation?.fact('preparedAssets', preparedRows.length);
       const columns = this.recordColumns();
       observation?.phase('packet');
@@ -757,7 +759,7 @@ export function createRenderPublisher(
         programs: [...this.programs.values()],
         ...columns,
         ...(preparedRows.length === 0 ? {} : { preparedAssets: preparedRows }),
-        assets: sentAssetRows.map(([handle, value, revision]) =>
+        assets: assetRows.map(([handle, value, revision]) =>
           this.packetAsset(handle, value, revision, materialProjections, retired),
         ),
         retiredAssets: retired as number[],
@@ -1558,9 +1560,21 @@ export function createRenderPublisher(
     }
 
     private addedAssetVersions(): NonNullable<RenderPublication['assetVersions']> {
-      return [...this.nextAssetVersions].flatMap(([key, version]) =>
-        assetVersions.has(key) ? [] : [{ ...version, value: structuredClone(version.value) }],
-      );
+      const rows: Array<NonNullable<RenderPublication['assetVersions']>[number]> = [];
+      const records = runtimeAssets(assets);
+      for (const [key, { handle, revision, value }] of this.nextAssetVersions) {
+        if (assetVersions.has(key)) continue;
+        const preparedRevision =
+          value.kind === 'mesh' && preparedMesh !== undefined
+            ? records.fixedContentRevision(handle, revision, value)
+            : undefined;
+        rows.push(
+          preparedRevision !== undefined && preparedMesh?.(handle, preparedRevision)
+            ? { handle, revision, preparedRevision }
+            : { handle, revision, value: structuredClone(value) },
+        );
+      }
+      return rows;
     }
 
     private retiredAssetVersions(): NonNullable<RenderPublication['retiredAssetVersions']> {
@@ -1573,23 +1587,23 @@ export function createRenderPublisher(
      * A mesh revision the receiver already holds from a ready preparation
      * crosses once: send its identity, not a second cloned payload.
      */
-    private unpreparedAssetRows(
-      assetRows: Iterable<readonly [number, Asset, number]>,
+    private referencePreparedMesh(
+      handle: number,
+      revision: number,
       preparedRows: PreparedAssetRow[],
-    ): (readonly [number, Asset, number])[] {
-      if (preparedMesh === undefined) return [...assetRows];
-      return [...assetRows].filter(([handle, value, revision]) => {
-        if (value.kind !== 'mesh' || !preparedMesh(handle as number, revision)) return true;
-        const guid = runtimeAssetSource(assets, handle);
-        const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
-        preparedRows.push({
-          handle: handle as number,
-          revision,
-          ...(guid === undefined ? {} : { guid }),
-          ...(sourceKey === undefined ? {} : { sourceKey }),
-        });
-        return false;
+    ): boolean {
+      if (!preparedMesh?.(handle, revision)) return false;
+      const kind = runtimeAssets(assets).kind(handle);
+      if (!kind.ok || kind.value !== 'mesh') return false;
+      const guid = runtimeAssetSource(assets, handle);
+      const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
+      preparedRows.push({
+        handle,
+        revision,
+        ...(guid === undefined ? {} : { guid }),
+        ...(sourceKey === undefined ? {} : { sourceKey }),
       });
+      return true;
     }
 
     private assetPatches(): NonNullable<RenderPublication['assetPatches']> {

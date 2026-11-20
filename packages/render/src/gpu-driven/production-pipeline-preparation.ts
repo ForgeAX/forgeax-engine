@@ -104,6 +104,7 @@ export function registerRasterPipelinePreparation(
         artifacts,
         materials,
         resolve: frame.input.materialArtifactResolver,
+        shaders: frame.input.materialShaderRegistry,
         factory,
         formats: ownedFormats,
         sampleCount,

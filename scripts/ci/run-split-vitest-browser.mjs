@@ -128,8 +128,13 @@ const pixelParityCaptureBrowserFile =
   'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
 const dynamicGeometryBrowserFile =
   'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
-const threeSurfaceExpressionBrowserFile =
-  'packages/three/src/__tests__/surface-expression.browser.test.ts';
+// Reserve each complete case and its browser startup after the mixed child
+// exhausted the process deadline on the shared CPU pool.
+const threeSurfaceExpressionBrowserSeconds = new Map([
+  ['packages/three/src/__tests__/surface-expression.browser.test.ts', 160],
+  ['packages/three/src/__tests__/surface-expression-unlit.browser.test.ts', 150],
+  ['packages/three/src/__tests__/surface-expression-roughness.browser.test.ts', 150],
+]);
 const threeNodeInputsBrowserFile = 'packages/three/src/__tests__/node-inputs.browser.test.ts';
 // Run 44619143909 completed the 210.285 s node-inputs file, then interrupted
 // the independent instance journey at their shared 300 s process deadline.
@@ -138,9 +143,8 @@ const threeNodeBrowserFileSeconds = new Map([
   ['packages/three/src/__tests__/node-material-instance.browser.test.ts', 120],
 ]);
 const exclusiveRunnerBrowserFiles = new Set([
-  // Run 44402862972 exceeded the original Standard Surface case budget
-  // beside another live browser. Keep its existing group and drain neighbors.
-  threeSurfaceExpressionBrowserFile,
+  // Cold Surface expression compilation and replay need the runner to themselves.
+  ...threeSurfaceExpressionBrowserSeconds.keys(),
   // Run 43810781689 crossed cold SSR preparation beside another heavy
   // Renderer owner. The same four cases pass in their existing process alone.
   'packages/runtime/src/__tests__/morph-surface.browser.test.ts',
@@ -234,6 +238,7 @@ const browserProcessIsolatedFiles = new Set([
   'packages/runtime/src/__tests__/point-sprites.browser.test.ts',
   'packages/three/src/__tests__/render.browser.test.ts',
   'packages/three/src/__tests__/interop.browser.test.ts',
+  ...threeSurfaceExpressionBrowserSeconds.keys(),
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
   ...threeNodeBrowserFileSeconds.keys(),
@@ -497,11 +502,11 @@ export function browserGroupWeight(
       ? measuredCoreBrowserGroups.get(group.join('\n'))
       : undefined;
   const seconds = measured ?? group.reduce((sum, file) => sum + fileWeight(file), 0);
-  // Run 44387085437 completed the paired group's full work in 222.118 s.
-  // Reserve the rounded cost for dispatch without changing group construction.
-  if (fileWeight === browserFileWeight && group.includes(threeSurfaceExpressionBrowserFile))
-    return Math.max(seconds, 225);
-  return seconds;
+  const reservation =
+    fileWeight === browserFileWeight && group.length === 1
+      ? (threeSurfaceExpressionBrowserSeconds.get(group[0]) ?? 0)
+      : 0;
+  return Math.max(seconds, reservation);
 }
 
 export function browserGroupRunOrder(

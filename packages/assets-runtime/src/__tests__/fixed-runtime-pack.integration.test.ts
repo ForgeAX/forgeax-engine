@@ -33,11 +33,11 @@ async function material(
   parent?: string | readonly string[],
   generation?: number,
   externalEvidence: readonly AssetPublicationExternalEvidence[] = [],
+  packageUrl = `https://fixed.invalid/${guid}/pack.json`,
 ) {
   const original = materialRecordFixture({ guid });
   const refs = typeof parent === 'string' ? [parent] : (parent ?? []);
   const record = { ...original, refs: { ...original.refs, parent: refs } };
-  const packageUrl = `https://fixed.invalid/${guid}/pack.json`;
   const publication = createRuntimePackPublication({
     scopeId: 'restored',
     sourcePath: guid,
@@ -83,7 +83,7 @@ async function material(
   };
   const blobs = new Map(
     record.programs.map(({ artifact }) => [
-      new URL(artifact.path, packageUrl).href,
+      `${packageUrl.slice(0, packageUrl.lastIndexOf('/') + 1)}${artifact.path}`,
       artifact.bytes,
     ]),
   );
@@ -97,6 +97,32 @@ async function material(
   ).unwrap();
   return { row, fixed, fetcher };
 }
+
+it('decodes retained artifacts from a relative Pack locator in an opaque document', async () => {
+  vi.stubGlobal('location', { href: 'about:srcdoc' });
+  const registry = new AssetRegistry({ scopeId: 'restored' });
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
+  try {
+    const original = await material(root, undefined, undefined, [], '/retained/pack.json');
+    const entries = [original.row];
+    const source = createCatalogSource({ entries });
+    registry.setCatalogSource(source, original.fetcher);
+    const output = defined(original.row.publication?.outputs[0]);
+    const pins = await retainAssetPublications(
+      registry,
+      new Map([[root, output.digest]]),
+      entries,
+      source,
+      original.fetcher,
+    );
+    const { asset } = defined(pins.get(root));
+    expect(typeof asset).toBe('function');
+    expect((typeof asset === 'function' ? await asset() : asset).kind).toBe('material');
+  } finally {
+    registry.dispose();
+    vi.unstubAllGlobals();
+  }
+});
 
 function producer(current: readonly CatalogEntry[] = []) {
   return new RuntimePackProducer({

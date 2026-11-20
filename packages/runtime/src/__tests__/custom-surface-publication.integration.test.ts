@@ -435,9 +435,11 @@ describe('custom Surface publication path', () => {
       // These Standard passes share geometry and material layout. Only the
       // qualified color writer carries the GBuffer output in its receipt.
       expect(scene.abi?.gbuffer).toBe('standard-gbuffer/2');
+      expect(scene.abi?.compactGbuffer).toBe('standard-gbuffer/4');
       expect(shadowScene.abi?.gbuffer).toBeUndefined();
+      expect(shadowScene.abi?.compactGbuffer).toBeUndefined();
       expect(scene.abi?.receiptIdentity).toBe(
-        `${shadowScene.abi?.receiptIdentity}/standard-gbuffer/2`,
+        `${shadowScene.abi?.receiptIdentity}/standard-gbuffer/2/standard-gbuffer/4`,
       );
       expect(shadowScene.abi?.vertexInputs).toEqual(scene.abi?.vertexInputs);
       expect(shadowScene.abi?.materialRow).toEqual(scene.abi?.materialRow);

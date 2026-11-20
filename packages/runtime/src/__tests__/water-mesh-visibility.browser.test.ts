@@ -1,8 +1,19 @@
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createRuntimeAssetImportTransport, runtimeBinding } from 'virtual:forgeax/pack-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
-import { Camera, DirectionalLight, type FrameReceipt, Skylight } from '@forgeax/engine-render';
+import {
+  ANTIALIAS_MSAA,
+  Camera,
+  DirectionalLight,
+  type FrameReceipt,
+  Materials,
+  MeshFilter,
+  MeshRenderer,
+  ScreenSpaceReflection,
+  Skylight,
+} from '@forgeax/engine-render';
 import {
   propagateTransforms,
   scenePlugin,
@@ -12,6 +23,7 @@ import {
 } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost, type RendererHostAssembly } from '../renderer-host';
 import { waterScenePlugin, waterSceneSnapshot } from '../water-scene-plugin';
 import { completedReadyFrame } from './helpers/completed-ready-frame';
@@ -23,12 +35,16 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 }
 
 it.each([
-  'cpu',
-  'gpu',
-] as const)('renders visible %s WaterMesh from published canonical mesh assets for 60 completed frames', {
+  { mode: 'cpu', lane: 'forward', label: 'cpu' },
+  { mode: 'gpu', lane: 'forward', label: 'gpu' },
+  { mode: 'cpu', lane: 'forward', label: 'forward-msaa' },
+  { mode: 'cpu', lane: 'deferred', label: 'compact-deferred-ssr' },
+] as const)('renders visible WaterMesh for 60 completed frames ($label)', {
   timeout: 60_000,
-}, async (mode) => {
+}, async ({ mode, lane, label }) => {
   const deadline = Date.now() + 60_000;
+  const compact = lane === 'deferred';
+  const msaa = label === 'forward-msaa';
   if (runtimeBinding === undefined) throw new Error('Water visibility Pack binding missing');
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
@@ -40,7 +56,19 @@ it.each([
     host = value(
       await constructRuntimeRendererHost(
         canvas,
-        { renderBackend: 'webgpu' },
+        {
+          renderBackend: 'webgpu',
+          ...(compact
+            ? {
+                ssrIdentity: {
+                  sourceHead: 'fixture:water-mesh',
+                  sourceTree: 'fixture:water-mesh',
+                  lockSha256: 'fixture:water-mesh',
+                  buildSha256: 'fixture:water-mesh',
+                },
+              }
+            : {}),
+        },
         {
           ...forgeaxBundlerAdapter(),
           importTransport: createRuntimeAssetImportTransport(runtimeBinding),
@@ -67,7 +95,17 @@ it.each([
     const catalog = await fetch(runtimeBinding.catalogUrl);
     if (!catalog.ok) throw new Error(`Water fixture Catalog failed: ${await catalog.text()}`);
     value(
-      renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward', ssao: false }),
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        renderPath: lane,
+        ambientOcclusion: { enabled: false },
+        ...(compact
+          ? {
+              gbufferFormat: 'default',
+              deferredDirectionalShadowReceiver: 'projected',
+            }
+          : {}),
+      }),
     );
     const zone = (await assets.load(waterVisibilityGuid(`zone/${mode}`), 'water-zone')).unwrap();
     const body = (await assets.load(waterVisibilityGuid(`body/${mode}`), 'water-body')).unwrap();
@@ -76,6 +114,12 @@ it.each([
     const mesh = assets
       .read((await assets.load(cooked.waterInfoMeshGuid, 'mesh')).unwrap())
       .unwrap();
+    if (compact || msaa)
+      await Promise.all(
+        [cooked.visibleMeshGuid, cooked.dilatedWaterInfoMeshGuid].map(async (guid) => {
+          if (guid !== undefined) (await assets.load(guid, 'mesh')).unwrap();
+        }),
+      );
     // Layout declarations must stay empty: the real decoder owns interleaved vertex bytes.
     expect(mesh.attributeStorage).toBe('interleaved');
     expect(mesh.attributes.position?.byteLength).toBe(0);
@@ -97,7 +141,21 @@ it.each([
       })
       .unwrap();
     world.spawn({ component: Skylight, data: { intensity: 0.5, color: [1, 1, 1] } }).unwrap();
-    world
+    if (compact || msaa) {
+      const floor = assets.create(createBoxGeometry(14, 0.5, 14).unwrap()).unwrap();
+      const baseColor = [0.08, 0.15, 0.05, 1] as const;
+      const matte = assets
+        .create(msaa ? Materials.unlit(baseColor) : Materials.standard({ baseColor }))
+        .unwrap();
+      world
+        .spawn(
+          { component: Transform, data: { pos: [0, -1.5, 0] } },
+          { component: MeshFilter, data: { assetHandle: floor } },
+          { component: MeshRenderer, data: { materials: [matte] } },
+        )
+        .unwrap();
+    }
+    const camera = world
       .spawn(
         {
           component: Transform,
@@ -113,21 +171,30 @@ it.each([
             aspect: 1,
             near: 0.1,
             far: 40,
-            antialias: 0,
+            antialias: msaa ? ANTIALIAS_MSAA : 0,
             bloom: 0,
             clearColor: [0.25, 0, 0.25, 1],
           },
         },
       )
       .unwrap();
+    if (compact)
+      world
+        .addComponent(camera, {
+          component: ScreenSpaceReflection,
+          data: { maxDistance: 12, thickness: 0.2, maxRoughness: 0.65 },
+        })
+        .unwrap();
     const lease = value(renderer.attach(world));
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = await completedReadyFrame(
-        () => value(renderer.draw({ source: lease })),
-        deadline,
-      );
+      const receipt =
+        compact || msaa
+          ? await drawReadyFrame(renderer, { source: lease }, undefined, {
+              timeoutMs: Math.max(1, deadline - Date.now()),
+            })
+          : await completedReadyFrame(() => value(renderer.draw({ source: lease })), deadline);
       completedFrames++;
       return receipt;
     };
@@ -148,7 +215,7 @@ it.each([
         .elementLocator(canvas)
         .screenshot({ base64: true, save: false });
       await commands.writeFile(
-        `artifacts/water-mesh-visibility/${mode}-${phase}.png`,
+        `artifacts/water-mesh-visibility/${label}-${phase}.png`,
         typeof screenshot === 'string' ? screenshot : screenshot.base64,
         'base64',
       );
@@ -157,8 +224,25 @@ it.each([
     for (let frame = 0; frame < 60; frame++) await draw();
     const visible = await readPixels('water');
     const inspection = renderer.inspect({
-      fields: ['frame', 'waterGraph', 'meshMaterialBindings'],
+      fields: ['frame', 'waterGraph', 'meshMaterialBindings', 'featureGraph', 'ssr'],
     });
+    if (compact) {
+      const key = inspection.featureGraph?.last.topologyKey;
+      expect(key === undefined ? undefined : JSON.parse(key).topology?.compactGbuffer).toBe(
+        'standard-gbuffer/4',
+      );
+      expect(inspection.ssr?.status, JSON.stringify(inspection.ssr?.failure)).toBe('admitted');
+      expect(inspection.waterGraph?.passes.map(({ name }) => name)).toContain('water-ssr-trace');
+    }
+    if (msaa) {
+      const passes = inspection.waterGraph?.passes.map(({ name }) => name);
+      expect(passes).toContain('water-opaque-msaa-surface-resolve');
+      expect(passes).not.toContain('water-opaque-normal-msaa');
+      const resources = inspection.waterGraph?.resources.map(({ label }) => label);
+      expect(resources).not.toContain('water-opaque-normal');
+      expect(resources).not.toContain('water-opaque-temporal-msaa');
+      expect(passes).not.toContain('water-scene-temporal');
+    }
     const state = waterSceneSnapshot(world, water);
     world.despawn(water).unwrap();
     await draw();
@@ -174,7 +258,7 @@ it.each([
         changedPixels++;
     }
     await commands.writeFile(
-      `artifacts/water-mesh-visibility/${mode}.json`,
+      `artifacts/water-mesh-visibility/${label}.json`,
       JSON.stringify(
         {
           completedFrames,

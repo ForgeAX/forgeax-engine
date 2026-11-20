@@ -51,6 +51,10 @@ it('loads the ordinary packaged vase program without an HTTP or ServiceWorker ho
           if (name === '@forgeax/engine/pack/runtime-browser') return browserPack;
           if (name === 'virtual:forgeax/pack-program-imports')
             return { __esModule: true, default: imports };
+          if (name.startsWith('virtual:forgeax/static-pack-task-url:'))
+            return { __esModule: true, default: 'tauri://localhost/assets/vase-program.mjs' };
+          if (name === 'tauri://localhost/assets/vase-program.mjs')
+            return nativeRequire(resolve(root, 'assets/runtime-vase/vase.program.mjs'));
           return nativeRequire(name);
         },
       },
@@ -106,6 +110,9 @@ it('loads the ordinary packaged vase program without an HTTP or ServiceWorker ho
           modules: { 'vase.program.mjs': source },
         })
         .unwrap();
+    expect(await composed.programHost.publishForTask?.(prepare(programSource), imports)).toBe(
+      'tauri://localhost/assets/vase-program.mjs',
+    );
     const loaded = await pack.loadPackProgram(
       prepare(programSource),
       options.imports,

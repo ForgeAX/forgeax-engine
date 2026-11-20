@@ -10,7 +10,7 @@ describe('execution startup ordering diagnostic', () => {
     const profile = {
       pipelineId: 'forgeax::standard',
       renderPath: 'deferred',
-      ssao: true,
+      ambientOcclusion: { enabled: true },
       lightCount: 256,
     };
     const inspect = vi.fn(() => ({ profile })),
@@ -37,7 +37,7 @@ describe('execution startup ordering diagnostic', () => {
     const profile = {
       pipelineId: 'forgeax::standard',
       renderPath: 'deferred',
-      ssao: { enabled: true },
+      ambientOcclusion: { enabled: true },
       lightCount: 256,
     };
     const config = { order: 'near' as const, programDigests: [`sha256:${'a'.repeat(64)}`] };

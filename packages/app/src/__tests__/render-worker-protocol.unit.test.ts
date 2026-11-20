@@ -3088,7 +3088,7 @@ it('applies the explicit startup order after project configuration before ready,
     pipelineId: 'forgeax::standard',
     renderPath: 'deferred',
     lightCount: 256,
-    ssao: true,
+    ambientOcclusion: { enabled: true },
   };
   const gbufferBatchOrderDiagnostic = {
     order: 'far' as const,
@@ -3111,7 +3111,7 @@ it.each([
     pipelineId: 'forgeax::standard',
     renderPath: 'deferred',
     lightCount: 256,
-    ssao: true,
+    ambientOcclusion: { enabled: true },
   };
   mocks.inspect.mockReturnValue({ ...mocks.inspect(), profile });
   mocks.setProfile.mockReturnValue({ ok: true, value: undefined });

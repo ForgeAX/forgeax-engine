@@ -86,14 +86,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1312-byte payload, 1536-byte dynamic slot (256-byte alignment).
+// View UBO: 1376-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets.
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -161,10 +161,12 @@ struct View {
   // an Atmosphere (1 = physical distant fog, 0 = sky unfogged).
   // y = admitted Forward vertex-height route; zero retains screen/capture
   // consumers. The View owner selects it, never the material author.
-  // z = perspective camera height density; w reserved.
+  // z = perspective camera height density; w = packed Deferred channel projection.
   fogSky : vec4<f32>,
   // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
   ssrQuality : vec4<f32>,
+  // Index + 1 is the compact GBuffer subsurface profile ID; zero entries are unused.
+  subsurfaceProfiles : array<vec4<u32>, 4>,
 };
 
 // Mesh contains only independent transform and temporal facts. Direct draws
@@ -221,10 +223,15 @@ const GPU_SCENE_PRIMITIVE_REACTIVE : u32 = 8u;
 const GPU_SCENE_PRIMITIVE_MOTION_INVALID : u32 = 16u;
 // Persistent ShadowParticipation.receive opt-out.
 const GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE : u32 = 32u;
+const GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW : u32 = 128u;
+const GPU_SCENE_PRIMITIVE_NO_SHADOW_CAST : u32 = 256u;
 
 // Mesh.temporal.y flag bits written by the host `meshSurfaceFlags`.
 fn meshMotionValid(flags : f32) -> bool { return (u32(flags) & 1u) != 0u; }
 fn meshReceivesShadows(flags : f32) -> bool { return (u32(flags) & 2u) == 0u; }
+fn meshGBufferObjectFlags(flags : u32) -> u32 {
+  return select(1u, 0u, (flags & 4u) != 0u) | select(0u, 2u, (flags & 8u) != 0u);
+}
 
 // Inverse-transpose direction without a redundant uploaded normal matrix.
 // Match engine-math's singular fallback; preserve determinant sign for mirrors.
@@ -302,7 +309,7 @@ struct DirectLightSlot {
   direction           : vec4<f32>, // row2: primary axis + second angular fact
   auxiliary           : vec4<f32>, // row3: auxiliary Rect axis
   metadata : vec4<u32>,
-  channels : vec4<u32>, // row5: lighting channels + Spot decay as f32 bits
+  channels : vec4<u32>, // row5: raw channels, Spot decay bits, projected Deferred channels, reserved
 };
 
 @group(0) @binding(0) var<uniform> view : View;
@@ -615,6 +622,7 @@ struct SceneIndexDraw {
   // Retained ProbeBlendRecord identity: (primitive + 1, generation).
   probe : vec2<u32>,
   receivesShadows : bool,
+  gbufferObjectFlags : u32,
   lightingChannels : u32,
 };
 
@@ -652,6 +660,8 @@ fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
   draw.probe = vec2<u32>(primitive.sourceIndex + 1u, primitive.generation);
   draw.lightingChannels = primitive.lightingChannels;
   draw.receivesShadows = (primitive.flags & GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE) == 0u;
+  draw.gbufferObjectFlags = select(1u, 0u, (primitive.flags & GPU_SCENE_PRIMITIVE_NO_SHADOW_CAST) != 0u) |
+    select(0u, 2u, (primitive.flags & GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW) != 0u);
   return draw;
 }
 #else

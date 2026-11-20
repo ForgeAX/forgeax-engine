@@ -64,10 +64,10 @@ class CreditWorker {
     else if (message.kind === 'dispose') queueMicrotask(() => this.emit({ kind: 'disposed' }));
     else {
       this.controls.push(structuredClone(message));
-      if (message.kind === 'mesh-release')
+      if (message.kind === 'mesh-reserve' || message.kind === 'mesh-release')
         queueMicrotask(() =>
           this.emit({
-            kind: 'mesh-released',
+            kind: message.kind === 'mesh-reserve' ? 'mesh-reserved' : 'mesh-released',
             requestId: message.requestId,
             identity: message.identity,
             result: { ok: true, deviceGeneration: 7 },
@@ -546,6 +546,10 @@ it.each([
     expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
     expect(terminate).not.toHaveBeenCalled();
     expect(messages).toEqual([]);
+    const admitted = vi.fn();
+    const waiting = f.source.waitForPublicationCapacity().then(admitted);
+    await vi.advanceTimersByTimeAsync(0);
+    const settledBeforeRetirement = admitted.mock.calls.length;
     const disposing = retirement === 'dispose' ? f.source.dispose() : undefined;
     expect(retirements).toHaveLength(1);
 
@@ -579,6 +583,9 @@ it.each([
       );
       expect(messages.some((message) => message.kind === 'render-lost')).toBe(false);
     }
+    await waiting;
+    expect(settledBeforeRetirement).toBe(0);
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(retirement === 'confirmed');
   } finally {
     vi.useRealTimers();
     await f.source.dispose();

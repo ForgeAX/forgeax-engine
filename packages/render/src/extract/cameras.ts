@@ -731,7 +731,7 @@ function fillCameraLightingInputs(
   }
   if (world.hasComponent(entity, AmbientOcclusion)) {
     columns.AmbientOcclusion ??= {
-      algorithm: batch.read(AmbientOcclusion, 'algorithm'),
+      enabled: batch.read(AmbientOcclusion, 'enabled'),
       application: batch.read(AmbientOcclusion, 'application'),
       sceneColorStrength: batch.read(AmbientOcclusion, 'sceneColorStrength'),
       sampleCount: batch.read(AmbientOcclusion, 'sampleCount'),
@@ -747,7 +747,7 @@ function fillCameraLightingInputs(
     };
     const numeric = columns.AmbientOcclusion;
     inputs.AmbientOcclusion = {
-      algorithm: numeric.algorithm?.[physicalRow] as number,
+      enabled: numeric.enabled?.[physicalRow] !== 0,
       application: numeric.application?.[physicalRow] as number,
       sceneColorStrength: numeric.sceneColorStrength?.[physicalRow] as number,
       sampleCount: numeric.sampleCount?.[physicalRow] as number,

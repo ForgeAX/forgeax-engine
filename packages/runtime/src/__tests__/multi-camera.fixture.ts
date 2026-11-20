@@ -458,7 +458,13 @@ export async function verifyMultiCamera(
       world
         .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 12 } })
         .unwrap();
-    renderValue(renderer.setProfile({ ...originalProfile, renderPath: 'deferred', ssao: true }));
+    renderValue(
+      renderer.setProfile({
+        ...originalProfile,
+        renderPath: 'deferred',
+        ambientOcclusion: { enabled: true },
+      }),
+    );
     journey = 'deferred-ssao-ssr';
     for (let frame = 0; frame < 3; frame += 1) await draw();
     expect(

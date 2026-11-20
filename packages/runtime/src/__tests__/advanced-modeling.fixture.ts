@@ -100,7 +100,13 @@ export async function verifyAdvancedModeling(
     .unwrap();
   const lease = renderValue(renderer.attach(world));
   const profile = renderer.inspect().profile;
-  renderValue(renderer.setProfile({ ...profile, renderPath: 'deferred', ssao: false }));
+  renderValue(
+    renderer.setProfile({
+      ...profile,
+      renderPath: 'deferred',
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   const path = Array.from(
     { length: 65 },
     (_, i): Vec3Point => [

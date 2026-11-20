@@ -48,7 +48,7 @@ export function copyPublishedMesh(mesh: MeshAsset): MeshAsset {
 }
 
 /** Native message bytes are already receiver-owned; shared or non-POD data still needs a copy. */
-export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
+export function canOwnReceivedPublishedMesh(mesh: MeshAsset): boolean {
   const visiting = new WeakSet<object>();
   const owned = (value: unknown): boolean => {
     if (value === null || typeof value !== 'object') return true;
@@ -68,7 +68,13 @@ export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
     visiting.delete(value);
     return true;
   };
-  return owned(mesh) ? ownPublishedMeshBuffers(mesh) : copyPublishedMesh(mesh);
+  return owned(mesh);
+}
+
+export function ownReceivedPublishedMesh(mesh: MeshAsset): MeshAsset {
+  return canOwnReceivedPublishedMesh(mesh)
+    ? ownPublishedMeshBuffers(mesh)
+    : copyPublishedMesh(mesh);
 }
 
 /**

@@ -7,10 +7,12 @@ import {
   createRuntimePackPublication,
   finalizePackageTransportSource,
   metaPathForGuid,
+  type PackageFinalizePolicy,
 } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import {
+  declaredRuntimePackGuids,
   type LegacyPackInventoryDocument,
   resolvePackSourceSubjects,
   type ScriptablePackSourceDeclaration,
@@ -79,7 +81,8 @@ export interface BuildProductionSink {
   fileUrl(fileName: string): string;
 }
 
-export interface BuildProductionOptions {
+export interface BuildProductionOptions
+  extends Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
   readonly inventory: CatalogBuildResult;
   readonly cwd: string;
   readonly basePrefix: string;
@@ -96,8 +99,16 @@ export interface BuildProductionOptions {
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
   readonly producerIdentity?: string;
+  readonly cookedRuntimePacks?: ReadonlySet<string>;
   readonly sink: BuildProductionSink;
   readonly fail: (failure: BuildProductionFailure) => Error;
+}
+
+function materialProgramTransport(
+  context: Pick<BuildProductionOptions, 'materialProgramTransport'>,
+): Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
+  const { materialProgramTransport } = context;
+  return materialProgramTransport === undefined ? {} : { materialProgramTransport };
 }
 
 function runtimePublicationFor(
@@ -184,13 +195,13 @@ function packCatalogSourcePath(context: BuildProductionOptions, sourcePath: stri
 async function buildPackSources(context: BuildProductionOptions): Promise<PackBuildBundle[]> {
   const subjects = await resolvePackSourceSubjects(context.inventory.sourceDeclarations);
   if (!subjects.ok) dynamicFailure(context, subjects.error);
+  // NativeCookerRegistry serializes calls to each serial cooker across Packs.
+  // Independent Pack preparation can still use the host's available lanes.
   const maxConcurrency = packBuildConcurrency(
     {
       parallelism: availableParallelism(),
       freeBytes: process.availableMemory?.() ?? freemem(),
       heapHeadroomBytes: getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed,
-      concurrentCookers:
-        context.cookers?.every((cooker) => cooker.concurrency === 'parallel') ?? true,
     },
     process.env.FORGEAX_BUILD_CONCURRENCY,
   );
@@ -201,17 +212,19 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
     maxTasksPerWorker: 1,
   });
   const sourceSnapshot = context.sourceSnapshot ?? createScriptablePackSourceSnapshot();
-  const definitionFor = (source: ScriptablePackSourceDeclaration) =>
+  const definitionFor = (source: ScriptablePackSourceDeclaration, cookRuntimeOutputs = false) =>
     createLazyScriptablePackDefinition({
       sourcePath: source.sourcePath,
       definition: source.definition,
       sourceClosure: source.sourceClosure,
       sourceSnapshot,
+      ...(cookRuntimeOutputs ? { cookRuntimeOutputs: true } : {}),
       ...(context.enginePackageRoot === undefined
         ? {}
         : { packageBinding: { name: '@forgeax/engine', root: context.enginePackageRoot } }),
       executors,
     });
+  const programTransport = materialProgramTransport(context);
   try {
     const artifactPaths = new WeakMap<Uint8Array, string>();
     const artifactPath = (bytes: Uint8Array): string => {
@@ -232,6 +245,7 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         ),
       );
       return {
+        ...programTransport,
         base: context.basePrefix === '' ? '/' : context.basePrefix,
         packagePath: `assets/${PackageId.format(packageId)}.pack.json`,
         artifactPath: (guid: string, key: string) => {
@@ -243,15 +257,19 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
     };
     const inputs: ScriptablePackInput[] = [];
     for (const source of subjects.value.sources) {
+      const cookRuntimeOutputs =
+        context.cookedRuntimePacks?.has(PackageId.format(source.definition.packageId)) === true;
       inputs.push({
         sourcePath: source.sourcePath,
         displaySourcePath: packCatalogSourcePath(context, source.sourcePath),
-        definition: definitionFor(source),
+        definition: definitionFor(source, cookRuntimeOutputs),
+        ...(cookRuntimeOutputs ? { cookRuntimeOutputs: true } : {}),
         sourceClosure: source.sourceClosure,
         publicationGeneration: context.generation,
         policy: policy(source.definition.packageId),
         transportIdentity: JSON.stringify([
           'shared-binary/1',
+          context.materialProgramTransport ?? 'bytes',
           context.basePrefix || '/',
           PackageId.format(source.definition.packageId),
         ]),
@@ -269,6 +287,7 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         policy: policy(instance.packageId),
         transportIdentity: JSON.stringify([
           'shared-binary/1',
+          context.materialProgramTransport ?? 'bytes',
           context.basePrefix || '/',
           PackageId.format(instance.packageId),
         ]),
@@ -534,6 +553,7 @@ async function emitAuthoredPack(
       availableGuids,
       cookers: work.context.cookers,
       policy: {
+        ...materialProgramTransport(work.context),
         base: work.context.basePrefix === '' ? '/' : work.context.basePrefix,
         packagePath: `assets/${projected.packageId}.pack.json`,
         artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
@@ -576,6 +596,7 @@ async function emitAuthoredPack(
     legacy,
     work.context.cookers,
     (guid) => ({
+      ...materialProgramTransport(work.context),
       base: work.context.basePrefix === '' ? '/' : work.context.basePrefix,
       packagePath: `assets/${guid}.pack.json`,
       artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
@@ -792,6 +813,7 @@ async function emitBuildEntry(
   const finalized = await finalizePackageTransportSource(
     projectImportProductForBuild(sourcePackage.value.product),
     {
+      ...materialProgramTransport(work.context),
       base: work.context.basePrefix,
       packagePath: `assets/${subAssets[0]?.guid ?? 'pack'}.pack.json`,
       artifactPath: importedArtifactPath,
@@ -832,7 +854,10 @@ export async function produceBuildAssets(
     ...context.inventory.entries,
     ...dynamicBundles.flatMap((bundle) => bundle.entries),
   ];
-  const availableGuids = new Set(entries.map((entry) => entry.guid.toLowerCase()));
+  const availableGuids = new Set([
+    ...entries.map((entry) => entry.guid.toLowerCase()),
+    ...declaredRuntimePackGuids(context.inventory.sourceDeclarations.values()),
+  ]);
   const importedEntries = [...entries];
   const guidSeen = new Set<string>();
   const sourcePackageDdc = await createSourcePackageBuildDdc({

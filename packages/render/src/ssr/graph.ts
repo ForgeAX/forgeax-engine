@@ -20,7 +20,6 @@ import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import { registerScenePipelinePreparation } from '../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 import type { SsrSpatialAdmission } from './admission';
 import { addSsrFragmentStages } from './raster';
 import {
@@ -28,6 +27,11 @@ import {
   estimateSsrSpatialMemory,
   type SsrSpatialResources,
 } from './resources';
+import {
+  type SsrGBufferInput,
+  ssrGBufferConstants,
+  ssrShaderGBufferMismatch,
+} from './shader-layout';
 import { WATER_SSR_DEFAULT_PROFILE } from './water-profile';
 
 interface SsrTracePlan {
@@ -56,7 +60,7 @@ export function buildSsrTracePlan(
   });
 }
 
-export interface SsrSpatialGraphInputs {
+export interface SsrSpatialGraphInputs extends SsrGBufferInput {
   readonly quality?: import('../quality').RenderQualityBudgets['ssr'] | undefined;
   readonly execution?: 'compute' | 'fragment';
   readonly label?: string;
@@ -76,7 +80,6 @@ export interface SsrSpatialGraphInputs {
   /** Opaque tracing reads closest depth; the independent Water profile reads furthest depth. */
   readonly depthPyramid?: DepthPyramid;
   readonly normal?: GraphTextureView;
-  readonly gbufferV2?: boolean;
   /** Current-view radiance paired with depth; prior radiance belongs to the temporal resolve. */
   readonly scene?: GraphTextureView;
   /** Standard temporal-v1 source metadata, needed by trace even without history. */
@@ -135,20 +138,20 @@ function missingInput(field: string, actual = 'missing'): Result<never, RenderGr
 
 function shaderSource(
   frame: RenderGraphFrame,
-  stage: Exclude<keyof NonNullable<RenderPipelineFrame['ssrShaders']>, 'gbuffer'>,
-  gbufferV2 = false,
+  stage: 'trace' | 'temporal',
+  input: SsrGBufferInput = {},
 ): string | import('@forgeax/engine-types').ShaderSource | undefined {
   const sources = (frame as RenderPipelineFrame).ssrShaders;
-  if (gbufferV2 && sources?.gbuffer !== 'standard-gbuffer/2')
+  const mismatch = ssrShaderGBufferMismatch(sources, input);
+  if (mismatch !== undefined)
     throw new RenderGraphError({
       code: 'resource-descriptor-invalid',
-      expected: 'standard-gbuffer/2 SSR readers',
+      expected: `${mismatch.expected} SSR readers`,
       hint: 'Rebuild the Engine shader manifest.',
       detail: {
         resourceLabel: 'ssr',
         field: 'gbuffer',
-        expected: 'standard-gbuffer/2',
-        actual: sources?.gbuffer ?? 'missing',
+        ...mismatch,
       },
     });
   return sources?.[stage];
@@ -171,20 +174,32 @@ function addPass<FrameCtx extends RenderGraphFrame>(
  * queue submission, public handle, or second renderer.
  */
 function requiredSsrInputs(input: SsrSpatialGraphInputs) {
-  const depth = input.depth;
-  const normal = input.normal;
-  const scene = input.scene;
-  const fallback = input.fallback;
+  const { depth, normal, scene, fallback, currentTemporal, depthPyramid, origin } = input;
+  if (scene === undefined) return missingInput('scene');
+  if (depthPyramid === undefined) return missingInput('depthPyramid');
+  if (origin !== undefined) {
+    const color = origin.sceneColorHistory;
+    if (color === undefined)
+      return ok({ scene, depthPyramid, opaque: undefined, waterHistory: undefined });
+    if (depth === undefined) return missingInput('depth');
+    if (currentTemporal === undefined) return missingInput('currentTemporal');
+    return ok({
+      scene,
+      depthPyramid,
+      opaque: undefined,
+      waterHistory: { color, depth, currentTemporal },
+    });
+  }
   if (depth === undefined) return missingInput('depth');
   if (normal === undefined) return missingInput('normal');
-  if (scene === undefined) return missingInput('scene');
   if (fallback === undefined) return missingInput('fallback');
-  const currentTemporal = input.currentTemporal;
   if (currentTemporal === undefined) return missingInput('currentTemporal');
-  const depthPyramid = input.depthPyramid;
-  if (depthPyramid === undefined) return missingInput('depthPyramid');
-
-  return ok({ depth, normal, scene, fallback, currentTemporal, depthPyramid });
+  return ok({
+    scene,
+    depthPyramid,
+    opaque: { depth, normal, fallback, currentTemporal },
+    waterHistory: undefined,
+  });
 }
 
 function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
@@ -268,14 +283,16 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   }
   const required = requiredSsrInputs(input);
   if (!required.ok) return required;
-  const { depth, normal, scene, fallback, currentTemporal, depthPyramid } = required.value;
+  const { scene, depthPyramid, opaque, waterHistory } = required.value;
   const temporal = input.temporal;
   const capacity = admitSsrDescriptorCapacity(input);
   if (!capacity.ok) return capacity;
   const label = input.label ?? 'ssr';
   const origin = input.origin;
-  const receiverDepth = origin?.depth ?? depth;
-  const receiverNormal = origin?.normal ?? normal;
+  const compactMaterial = input.compactMaterial;
+  if (compactMaterial !== undefined && (origin !== undefined || input.gbufferV2 !== true))
+    return missingInput('Default GBuffer B with an opaque receiver');
+  const gbuffer = origin === undefined ? input : undefined;
   if (depthPyramid.reduction !== (origin === undefined ? 'closest' : 'furthest'))
     return missingInput(
       origin === undefined ? 'closest depthPyramid' : 'furthest depthPyramid',
@@ -347,9 +364,10 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   if (resolvedSurfaceFailure !== undefined) return resolvedSurfaceFailure;
   const passNames: string[] = [];
   if (input.execution === 'fragment') {
+    if (opaque === undefined) return missingInput('compute execution for Water SSR');
     const added = addSsrFragmentStages(
       graph,
-      { ...input, depth, normal, scene, fallback, currentTemporal, depthPyramid },
+      { ...input, ...opaque, scene, depthPyramid },
       resources.value,
       resolved,
       reflectionLevels,
@@ -369,45 +387,49 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       reactivitySurface: reactivitySurfaceFor(input, trace),
     });
   }
+  const traceTextures: {
+    binding: number;
+    view: GraphTextureView;
+    sampleType: 'depth' | 'uint' | 'unfilterable-float';
+  }[] = [
+    { binding: 2, view: scene, sampleType: 'unfilterable-float' },
+    { binding: 3, view: depthPyramid.pyramid, sampleType: 'unfilterable-float' },
+  ];
+  if (opaque !== undefined)
+    traceTextures.push(
+      { binding: 0, view: opaque.depth, sampleType: 'depth' },
+      { binding: 1, view: opaque.normal, sampleType: 'uint' },
+      { binding: 6, view: opaque.fallback, sampleType: 'unfilterable-float' },
+      { binding: 7, view: opaque.currentTemporal, sampleType: 'unfilterable-float' },
+    );
+  if (compactMaterial !== undefined)
+    traceTextures.push({ binding: 14, view: compactMaterial, sampleType: 'uint' });
+  if (origin !== undefined)
+    traceTextures.push(
+      { binding: 9, view: origin.depth, sampleType: 'depth' },
+      { binding: 10, view: origin.normal, sampleType: 'uint' },
+      { binding: 11, view: origin.coverage, sampleType: 'unfilterable-float' },
+    );
+  if (waterHistory !== undefined)
+    traceTextures.push(
+      { binding: 0, view: waterHistory.depth, sampleType: 'depth' },
+      { binding: 7, view: waterHistory.currentTemporal, sampleType: 'unfilterable-float' },
+      { binding: 13, view: waterHistory.color, sampleType: 'unfilterable-float' },
+    );
   const createSsrComputeEntries = () => {
     const computeEntries = {
       trace: [
-        {
-          binding: 0,
+        ...traceTextures.map(({ binding, sampleType }) => ({
+          binding,
           visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'depth', viewDimension: '2d' },
-        },
-        {
-          binding: 1,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'uint', viewDimension: '2d' },
-        },
-        {
-          binding: 2,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 3,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
+          texture: { sampleType, viewDimension: '2d' as const },
+        })),
         {
           binding: 4,
           visibility: GPU_SHADER_STAGE_COMPUTE,
           storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
         },
         { binding: 5, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 6,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 7,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
         {
           binding: 8,
           visibility: GPU_SHADER_STAGE_COMPUTE,
@@ -417,40 +439,10 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
           ? []
           : [
               {
-                binding: 9,
-                visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: { sampleType: 'depth' as const, viewDimension: '2d' as const },
-              },
-              {
-                binding: 10,
-                visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: { sampleType: 'uint' as const, viewDimension: '2d' as const },
-              },
-              {
-                binding: 11,
-                visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: {
-                  sampleType: 'unfilterable-float' as const,
-                  viewDimension: '2d' as const,
-                },
-              },
-              {
                 binding: 12,
                 visibility: GPU_SHADER_STAGE_COMPUTE,
                 buffer: { type: 'uniform' as const },
               },
-              ...(origin.sceneColorHistory === undefined
-                ? []
-                : [
-                    {
-                      binding: 13,
-                      visibility: GPU_SHADER_STAGE_COMPUTE,
-                      texture: {
-                        sampleType: 'unfilterable-float' as const,
-                        viewDimension: '2d' as const,
-                      },
-                    },
-                  ]),
             ]),
       ],
       temporal: [
@@ -557,25 +549,27 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       (frame) =>
         input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
           ? undefined
-          : shaderSource(frame, 'trace', input.gbufferV2),
+          : shaderSource(frame, 'trace', gbuffer),
       'ssr_trace',
       computeEntries.trace,
       origin === undefined
-        ? 'ssr_trace'
+        ? compactMaterial === undefined
+          ? 'ssr_trace'
+          : 'ssr_trace_compact'
         : origin.sceneColorHistory === undefined
           ? 'ssr_water_trace'
           : 'ssr_water_trace_history',
-      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
+      gbuffer === undefined ? undefined : ssrGBufferConstants(gbuffer),
     );
     const prepareTemporal = createComputeStatePreparation(
       (frame) =>
         input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
           ? undefined
-          : shaderSource(frame, 'temporal', input.gbufferV2),
+          : shaderSource(frame, 'temporal', gbuffer),
       'ssr_temporal',
       temporal?.profile === 'opaque' ? computeEntries.temporal : computeEntries.waterTemporal,
       origin === undefined ? 'ssr_temporal' : 'ssr_water_temporal',
-      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
+      gbuffer === undefined ? undefined : ssrGBufferConstants(gbuffer),
     );
     const prepareReflectionMip = createComputeStatePreparation(
       (frame) => shaderSource(frame, 'temporal'),
@@ -616,32 +610,18 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       graph,
       `${label}-trace`,
       [
-        { resource: depth, usage: 'sampled-read' },
-        { resource: normal, usage: 'sampled-read' },
-        { resource: scene, usage: 'sampled-read' },
-        { resource: fallback, usage: 'sampled-read' },
-        { resource: depthPyramid.pyramid, usage: 'sampled-read' },
+        ...traceTextures.map(({ view }) => ({ resource: view, usage: 'sampled-read' as const })),
         { resource: trace.view, usage: 'storage-write' },
-        { resource: currentTemporal, usage: 'sampled-read' },
         { resource: hitReactivity, usage: 'storage-write' },
-        ...(origin === undefined
-          ? []
-          : [origin.depth, origin.normal, origin.coverage].map((resource) => ({
-              resource,
-              usage: 'sampled-read' as const,
-            }))),
         ...(origin?.inputParams === undefined
           ? []
           : [{ resource: origin.inputParams, usage: 'uniform-read' as const }]),
-        ...(origin?.sceneColorHistory === undefined
-          ? []
-          : [{ resource: origin.sceneColorHistory, usage: 'sampled-read' as const }]),
         ...(input.view === undefined
           ? []
           : [{ resource: input.view, usage: 'uniform-read' as const }]),
       ],
       ({ pass, frame, resources: resolver }) => {
-        const source = shaderSource(frame, 'trace', input.gbufferV2);
+        const source = shaderSource(frame, 'trace', gbuffer);
         // Structural callers may omit the shared View buffer when they only
         // inspect topology. A real shader execution must bind it because the
         // trace reconstructs world position and reads the validated SSR tail.
@@ -653,86 +633,24 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
         pass.setBindGroup(
           0,
           computeBindGroup(frame, traceState, [
-            ...(origin === undefined
+            ...traceTextures.map(({ binding, view }) => ({
+              binding,
+              resource: { kind: 'textureView' as const, value: resolvedGraphView(resolver, view) },
+            })),
+            ...(origin?.inputParams === undefined
               ? []
               : [
                   {
-                    binding: 9,
+                    binding: 12,
                     resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.depth),
+                      kind: 'buffer' as const,
+                      value: { buffer: resolvedGraphBuffer(resolver, origin.inputParams) },
                     },
                   },
-                  {
-                    binding: 10,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.normal),
-                    },
-                  },
-                  {
-                    binding: 11,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.coverage),
-                    },
-                  },
-                  ...(origin.inputParams === undefined
-                    ? []
-                    : [
-                        {
-                          binding: 12,
-                          resource: {
-                            kind: 'buffer' as const,
-                            value: { buffer: resolvedGraphBuffer(resolver, origin.inputParams) },
-                          },
-                        },
-                      ]),
-                  ...(origin.sceneColorHistory === undefined
-                    ? []
-                    : [
-                        {
-                          binding: 13,
-                          resource: {
-                            kind: 'textureView' as const,
-                            value: resolvedGraphView(resolver, origin.sceneColorHistory),
-                          },
-                        },
-                      ]),
                 ]),
-            {
-              binding: 7,
-              resource: {
-                kind: 'textureView',
-                value: resolvedGraphView(resolver, currentTemporal),
-              },
-            },
             {
               binding: 8,
               resource: { kind: 'textureView', value: resolvedGraphView(resolver, hitReactivity) },
-            },
-            {
-              binding: 6,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, fallback) },
-            },
-            {
-              binding: 0,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, depth) },
-            },
-            {
-              binding: 1,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, normal) },
-            },
-            {
-              binding: 2,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, scene) },
-            },
-            {
-              binding: 3,
-              resource: {
-                kind: 'textureView',
-                value: resolvedGraphView(resolver, depthPyramid.pyramid),
-              },
             },
             {
               binding: 4,
@@ -760,17 +678,21 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   passNames.push(`${label}-trace`);
   const addSsrTemporalProjection = () => {
     if (temporal !== undefined) {
+      const receiverDepth = origin?.depth ?? opaque?.depth;
+      const receiverMotion = origin?.temporal ?? opaque?.currentTemporal;
+      if (receiverDepth === undefined || receiverMotion === undefined)
+        return missingInput('temporal receiver depth and motion');
       added = addPass(
         graph,
         `${label}-temporal`,
         [
           { resource: trace.view, usage: 'sampled-read' },
           { resource: receiverDepth, usage: 'sampled-read' },
-          ...(temporal.profile === 'opaque'
-            ? [{ resource: receiverNormal, usage: 'sampled-read' as const }]
-            : []),
+          ...(opaque === undefined
+            ? []
+            : [{ resource: opaque.normal, usage: 'sampled-read' as const }]),
           { resource: temporal.previousHistory, usage: 'sampled-read' },
-          { resource: origin?.temporal ?? currentTemporal, usage: 'sampled-read' },
+          { resource: receiverMotion, usage: 'sampled-read' },
           ...(temporal.profile === 'opaque'
             ? [{ resource: hitReactivity, usage: 'sampled-read' as const }]
             : []),
@@ -873,17 +795,17 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
                   value: resolvedGraphView(resolver, receiverDepth),
                 },
               },
-              ...(temporal.profile === 'opaque'
-                ? [
+              ...(opaque === undefined
+                ? []
+                : [
                     {
                       binding: 2,
                       resource: {
                         kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, receiverNormal),
+                        value: resolvedGraphView(resolver, opaque.normal),
                       },
                     },
-                  ]
-                : []),
+                  ]),
               {
                 binding: 3,
                 resource: {
@@ -895,7 +817,7 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
                 binding: 4,
                 resource: {
                   kind: 'textureView',
-                  value: resolvedGraphView(resolver, origin?.temporal ?? currentTemporal),
+                  value: resolvedGraphView(resolver, receiverMotion),
                 },
               },
               {

@@ -199,7 +199,7 @@ function admitCameraConfiguration(
   const signature = JSON.stringify([
     configuration.value.profile?.renderPath,
     ssaoStructuralIdentity(
-      configuration.value.config?.ssao,
+      configuration.value.config?.ambientOcclusion,
       configuration.value.profile?.pipelineId === STANDARD_PIPELINE_ID,
     ),
   ]);
@@ -252,6 +252,7 @@ function prepareViewStandardLighting(
           camera,
           pipelineState ?? undefined,
           frame.renderables,
+          projection?.renderables,
         ),
     );
     prepareViewSky(internals, resourceWorld, frameState, frame);

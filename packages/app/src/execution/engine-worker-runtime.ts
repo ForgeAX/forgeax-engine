@@ -50,7 +50,6 @@ import {
   WATER_INFO_FEATURE_IDENTITY,
   WATER_UNDERWATER_FEATURE_IDENTITY,
 } from '@forgeax/engine-render/internal';
-import { builtinTaskKinds } from '@forgeax/engine-render/tasks';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
@@ -120,6 +119,7 @@ import {
   type SharedKernelSliceExecutor,
 } from './shared-kernel-slices';
 import { SourceRenderWorker } from './source-render-worker';
+import { executionTaskKinds } from './task-kinds';
 import type {
   ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
@@ -457,7 +457,7 @@ function realmTaskPool(target: WorkerRealm): TaskPool {
   // A host that never adopts pool Workers leaves the pool running inline.
   const startup = target.init.startupTimeoutMs;
   target.taskPool ??= createTaskPool({
-    kinds: builtinTaskKinds,
+    kinds: executionTaskKinds,
     ...(target.init.startup?.settings.execution?.taskWorkers === undefined
       ? {}
       : { workers: target.init.startup.settings.execution.taskWorkers }),
@@ -929,16 +929,19 @@ function realmExtensionPlugins(
 }
 
 function bootstrapProgramOptions(
-  init: ExecutionInitMessage,
+  candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
 ): Pick<
   Parameters<typeof workerEngineProfile>[0],
   'pluginPrograms' | 'runtimePacks' | 'animation'
 > {
+  const { animation } = candidate.init;
   return {
     ...(prepared.pluginPrograms === undefined ? {} : { pluginPrograms: prepared.pluginPrograms }),
-    ...(prepared.runtimePacks === undefined ? {} : { runtimePacks: prepared.runtimePacks }),
-    ...(init.animation === undefined ? {} : { animation: init.animation }),
+    ...(prepared.runtimePacks === undefined
+      ? {}
+      : { runtimePacks: { ...prepared.runtimePacks, tasks: realmTaskPool(candidate) } }),
+    ...(animation === undefined ? {} : { animation }),
   };
 }
 
@@ -1102,7 +1105,7 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
         input: realmInput,
         audio: audioBackend,
         assetAssembly: candidate.assetAssembly,
-        ...bootstrapProgramOptions(init, prepared),
+        ...bootstrapProgramOptions(candidate, prepared),
         extensions: realmExtensionPlugins(
           candidate,
           prepared,

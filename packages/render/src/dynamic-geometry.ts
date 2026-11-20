@@ -131,6 +131,7 @@ export type MeshResidencyPhaseObserver = (phase: string, startMs: number, endMs:
 export type MeshResidencyErrorCode =
   | 'mesh-residency-world-not-attached'
   | 'mesh-residency-invalid-handle'
+  | 'mesh-residency-budget-exceeded'
   | 'mesh-residency-gpu-failed'
   | 'mesh-residency-gpu-not-ready';
 
@@ -403,6 +404,8 @@ export interface DynamicGeometryLifecycle {
   dispose(): void;
 }
 
+export const DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES = 64 * 1024 * 1024;
+
 /** Shared admission check for lifecycle and renderer construction, before backend allocation. */
 export function validateDynamicGeometryMeshBudget(maxMeshBytes: number): void {
   const maxMeshByteLimit = 512 * 1024 * 1024;
@@ -415,7 +418,7 @@ export function validateDynamicGeometryMeshBudget(maxMeshBytes: number): void {
 
 export function createDynamicGeometryLifecycle(
   maxCandidates = 32,
-  maxMeshBytes = 64 * 1024 * 1024,
+  maxMeshBytes = DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
   options: DynamicGeometryLifecycleOptions = {},
 ): DynamicGeometryLifecycle {
   const maxRetainedCandidates = options.maxRetainedCandidates ?? maxCandidates;

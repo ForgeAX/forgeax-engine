@@ -1,10 +1,5 @@
 /**
- * Normalize the small set of SceneAsset fields emitted by the 0.1.27
- * ScriptablePack template before the current keyed runtime validates them.
- *
- * This is deliberately a boundary migration. Current authoring and runtime
- * types stay keyed and use `shadowFilter`; only old payloads carry numeric
- * ChildOf addresses or `pcfKernelSize`.
+ * Normalize historical SceneAsset fields before the keyed runtime validates them.
  */
 export function migrateLegacySceneComponentFields(
   componentName: string,
@@ -21,6 +16,13 @@ export function migrateLegacySceneComponentFields(
       delete fields.pcfKernelSize;
       fields.shadowFilter = shadowFilter;
     }
+  }
+  if (
+    componentName === 'AmbientOcclusion' &&
+    (fields.algorithm === 0 || fields.algorithm === 1 || fields.algorithm === 2)
+  ) {
+    // Cameras inherit the method from the renderer settings.
+    delete fields.algorithm;
   }
   if (componentName === 'ChildOf' && Number.isSafeInteger(fields.parent)) {
     fields.parent = address(fields.parent);

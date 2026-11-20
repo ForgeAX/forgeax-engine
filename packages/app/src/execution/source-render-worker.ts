@@ -1,4 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, type World } from '@forgeax/engine-ecs';
 import { serveTaskClient } from '@forgeax/engine-platform';
 import {
@@ -232,6 +233,7 @@ export class SourceRenderWorker {
   private readonly publicationCapacity: 2 | 3 | 4;
   private disposed = false;
   private inspectionReady = false;
+  private preparingMeshBaseline = false;
   private readonly inspectionRequests = new Map<
     number,
     { finish(result: ExecutionRendererInspectionResult<Partial<RenderInspection>>): void }
@@ -291,6 +293,7 @@ export class SourceRenderWorker {
   >();
   private capacityWaiters: (() => void)[] = [];
   private readonly meshResidency: SourceMeshResidency;
+  private readonly disposeMeshPresenter: () => void;
   private readonly closedLevelEntities = new Set<number>();
   private nextLevelInstance = 0;
   private levelContext: (() => ReturnType<typeof prepareExtractContext>) | undefined;
@@ -362,7 +365,7 @@ export class SourceRenderWorker {
         publisher = this.publisher;
       if (
         this.disposed ||
-        !this.inspectionReady ||
+        !(this.inspectionReady || this.preparingMeshBaseline) ||
         worker === undefined ||
         generation === undefined
       )
@@ -380,6 +383,30 @@ export class SourceRenderWorker {
         },
       };
     });
+    this.disposeMeshPresenter = runtimeAssets(assets).bindMeshPresenter(
+      async (meshHandle, assetRevision, deferredMesh, signal) => {
+        const result = await this.meshResidency.prepare(
+          { world, meshHandle, assetRevision, deferredMesh },
+          {
+            ...(signal === undefined ? {} : { signal }),
+            recoverable: true,
+          },
+        );
+        if (!result.ok)
+          return err(
+            result.error.code === 'dynamic-geometry-budget-exceeded'
+              ? 'render-budget-exceeded'
+              : 'render-preparation-failed',
+          );
+        const residency = result.value;
+        return ok({
+          isCurrent: residency.isCurrent,
+          release: () => {
+            if (residency.isCurrent()) void residency.release(true)?.catch(() => {});
+          },
+        });
+      },
+    );
     this.dynamicGeometry = createDynamicGeometrySourceHost({
       lifecycle: createDynamicGeometryLifecycle(
         MESH_RESIDENCY_REQUEST_LIMIT,
@@ -454,6 +481,7 @@ export class SourceRenderWorker {
     await new Promise<void>((resolve, reject) => {
       let ready = false;
       let failurePending = false;
+      let acceptingReady = false;
       const failure = (
         cause: unknown,
         failure?: Extract<RenderWorkerOutput, { kind: 'failed' }>,
@@ -467,15 +495,22 @@ export class SourceRenderWorker {
         };
         if (this.worker !== worker || failurePending) return;
         failurePending = true;
-        const meshReleaseUnconfirmed = this.meshResidency.hasUnreleasedMeshes;
+        // A Host frame may already own simulation credit while the lost
+        // receiver is still retiring. Keep its admission open until recovery settles.
+        if (ready && recoverable && !this.disposed) {
+          this.readyWait = new Promise((resolve) => {
+            this.resolveReady = resolve;
+          });
+        }
+        const meshReleaseUnconfirmed = this.meshResidency.requiresRetirementAcknowledgement;
         const finish = (
           unconfirmed: boolean,
           retirementError?: ReturnType<typeof workerError>,
         ): void => {
           if (this.worker !== worker) return;
-          if (meshReleaseUnconfirmed && !unconfirmed) this.meshResidency.confirmRetirement();
           this.clear();
           if (!ready) {
+            this.settleReadyWait();
             reject(Object.assign(new Error(typeof cause === 'string' ? cause : error.code), error));
             return;
           }
@@ -483,6 +518,7 @@ export class SourceRenderWorker {
           // Only the receiver's successful disposal attests GPU release. A
           // lost transport, cleanup error or timeout retains the fatal path.
           if (!recoverable || unconfirmed || ++this.replacementsWithoutFrame > 1) {
+            this.settleReadyWait();
             this.post({
               kind: 'fault',
               source: 'runtime',
@@ -501,22 +537,23 @@ export class SourceRenderWorker {
             });
             return;
           }
-          this.readyWait = new Promise((resolve) => {
-            this.resolveReady = resolve;
-          });
           this.epoch++;
           this.post({ kind: 'render-lost', epoch: this.epoch, detail: JSON.stringify(detail) });
         };
         if (
           ready &&
           recoverable &&
-          meshReleaseUnconfirmed &&
+          this.meshResidency.hasUnreleasedMeshes &&
           failure?.renderer?.state === 'device-lost'
         ) {
           this.inspectionReady = false;
           this.releaseCapacityWaiters();
           this.retirement = shutdownWorker(worker).then((result) => {
-            finish(!result.ok, result.ok ? undefined : workerError(result.error));
+            if (result.ok) this.meshResidency.confirmRetirement();
+            finish(
+              !result.ok && meshReleaseUnconfirmed,
+              result.ok ? undefined : workerError(result.error),
+            );
             return result;
           });
           return;
@@ -671,10 +708,13 @@ export class SourceRenderWorker {
         };
         if (receiveSceneResult()) return;
         if (message.kind === 'ready') {
+          if (ready || acceptingReady) return;
+          acceptingReady = true;
+          this.deviceGeneration = message.deviceGeneration;
+          this.preparingMeshBaseline = true;
           const acceptReady = () => {
-            if (ready) return;
+            if (this.worker !== worker || this.epoch !== epoch || !acceptsSceneMessages()) return;
             clearTimeout(this.deadline);
-            this.deviceGeneration = message.deviceGeneration;
             const material = renderMaterialContext(message.capabilities, message.limits);
             this.levelContext = () =>
               prepareExtractContext(this.world, {
@@ -716,8 +756,8 @@ export class SourceRenderWorker {
             );
             ready = true;
             this.inspectionReady = true;
-            this.resolveReady?.();
-            this.resolveReady = undefined;
+            this.preparingMeshBaseline = false;
+            this.settleReadyWait();
             this.post({
               kind: 'render-ready',
               epoch,
@@ -730,7 +770,8 @@ export class SourceRenderWorker {
             });
             resolve();
           };
-          acceptReady();
+          // Reprepare fixed meshes before a replacement receiver can request its baseline.
+          void this.assets.recoverMeshPresentations().then(acceptReady, (cause) => failure(cause));
         } else if (message.kind === 'submitted') {
           const acceptSubmitted = () => {
             if (message.identity.source !== this.source || message.identity.epoch !== epoch) return;
@@ -1017,6 +1058,10 @@ export class SourceRenderWorker {
   get hasPublicationCapacity(): boolean {
     return this.inspectionReady && this.publishedFrames.size < this.publicationCapacity;
   }
+  private settleReadyWait(): void {
+    this.resolveReady?.();
+    this.resolveReady = undefined;
+  }
   /**
    * Host credit returns directly from the Render Worker, so a Host frame can
    * arrive before this Engine has processed the matching completion. Resolve
@@ -1200,7 +1245,12 @@ export class SourceRenderWorker {
       this.closedLevelRows.receive(message);
       return true;
     }
-    if (message.kind === 'mesh-ready' || message.kind === 'mesh-released') {
+    if (
+      message.kind === 'mesh-reserved' ||
+      message.kind === 'mesh-ready' ||
+      message.kind === 'mesh-retired' ||
+      message.kind === 'mesh-released'
+    ) {
       this.meshResidency.receive(message);
       return true;
     }
@@ -1503,6 +1553,7 @@ export class SourceRenderWorker {
     this.startupBackgroundPipelineLibrary = undefined;
     this.finishOneShotRequests();
     this.inspectionReady = false;
+    this.preparingMeshBaseline = false;
     this.closedLevelRows.invalidate();
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;
@@ -1550,6 +1601,7 @@ export class SourceRenderWorker {
     this.configurationRequests.dispose();
     if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
+    this.disposeMeshPresenter();
     const retirement = this.retirement;
     this.finishOneShotRequests();
     this.inspectionReady = false;
@@ -1559,7 +1611,7 @@ export class SourceRenderWorker {
     if (retirement === undefined) this.dynamicGeometry.invalidateDynamicGeometryWorld(this.world);
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('disposed'));
-    this.resolveReady?.();
+    this.settleReadyWait();
     clearTimeout(this.deadline);
     const worker = this.worker;
     this.disposal = (async () => {

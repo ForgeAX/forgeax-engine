@@ -18,6 +18,7 @@ import {
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
 import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alpha-mask';
+import { requireStandardGBufferReceipt } from '../material-program-inputs';
 import { seededDepthRenderState } from '../material-render-state';
 import { rasterColorFormat } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
@@ -38,7 +39,11 @@ import type { LiveRasterBatch } from './live-raster';
 import { withFrameLighting } from './pbr-program';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import type { PreparedBatch } from './production-raster-prepare';
-import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
+import {
+  gpuRasterFilterMatches,
+  gpuTemporalEligible,
+  isVelocityRasterEntry,
+} from './raster-selection';
 
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
@@ -56,8 +61,10 @@ export interface ProjectedRasterPipelines {
   readonly predepthPipelineFor: RasterPipelineFor;
   readonly aoInputMsaaPipelineFor: RasterPipelineFor;
   readonly temporalPipelineFor: RasterPipelineFor;
+  readonly sceneVelocityPipelineFor: RasterPipelineFor;
   readonly coveragePipelineFor: RasterPipelineFor;
   readonly gbufferPipelineFor: RasterPipelineFor;
+  readonly compactGbufferPipelineFor: RasterPipelineFor;
   /** Forward entry for the unfogged base View slot; equals `pipelineFor` for authored entries. */
   readonly opaquePipelineFor: RasterPipelineFor;
   /** Forward colour entries over a prepass-seeded depth (see seededDepthRenderState). */
@@ -161,7 +168,7 @@ function fragmentArtifact(
   return {
     ...artifact,
     fragmentEntry,
-    ...(fragmentEntry === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+    ...(isVelocityRasterEntry(fragmentEntry) ? { vertexEntry: 'vs_temporal' } : {}),
     ...(coverageOnly
       ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
       : {}),
@@ -180,7 +187,7 @@ function shapeRenderState(
     return seededDepthRenderState(renderState, artifactAlphaMask(shape.artifact.variantSet));
   return geometryRenderStateForPass(
     renderState,
-    selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+    isVelocityRasterEntry(selected.fragmentEntry) ? 'temporal' : 'forward',
     coverageOnly,
     undefined,
     selected.fragmentEntry,
@@ -339,6 +346,11 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
       ? SKIN_UNCOVERED_GBUFFER_ENTRY
       : 'fs_gbuffer',
   );
+  const compact = pipelineForFragment(shape, 'fs_gbuffer_compact');
+  const compactGbufferPipelineFor: RasterPipelineFor = (...args) => {
+    requireStandardGBufferReceipt(artifact.receipt, true);
+    return compact(...args);
+  };
   const temporalPipelineFor = pipelineForFragment(shape, 'fs_temporal');
   // Output-domain TAAU coverage reuses the culled/LOD-selected indirect rows;
   // only the binary variant and depth writes differ.
@@ -354,7 +366,9 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
       ? pipelineForFragment(shape, STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY, false, true)
       : pipelineFor,
     gbufferPipelineFor,
+    compactGbufferPipelineFor,
     temporalPipelineFor,
+    sceneVelocityPipelineFor: pipelineForFragment(shape, 'fs_scene_velocity'),
     coveragePipelineFor,
   };
   if (!isSingleLayerMediumArtifact(artifact)) return pipelines;
@@ -374,10 +388,14 @@ export function selectRasterPipeline(
   const { pipelines } = batch;
   if (seededDepth) return pipelines.seededPipelineFor(fragmentEntryPoint);
   switch (fragmentEntryPoint) {
+    case 'fs_scene_velocity':
+      return pipelines.sceneVelocityPipelineFor;
     case 'fs_temporal':
       return coverageOnly ? pipelines.coveragePipelineFor : pipelines.temporalPipelineFor;
     case 'fs_gbuffer':
       return pipelines.gbufferPipelineFor;
+    case 'fs_gbuffer_compact':
+      return pipelines.compactGbufferPipelineFor;
     case PREDEPTH_FRAGMENT_ENTRY:
       return pipelines.predepthPipelineFor;
     case 'fs_ao_input':
@@ -465,7 +483,7 @@ export function rasterClassFor(
   )
     return undefined;
   if (
-    fragmentEntryPoint === 'fs_temporal' &&
+    isVelocityRasterEntry(fragmentEntryPoint) &&
     !gpuTemporalEligible(
       batch.artifact.material,
       batch.deformation,

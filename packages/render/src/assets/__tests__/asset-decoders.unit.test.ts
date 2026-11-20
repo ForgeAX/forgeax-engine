@@ -208,7 +208,7 @@ describe('Render owner decoders', () => {
         gpuOcclusion: true,
         passCount: 2,
         clusterGrid: { x: 16, y: 8, z: 24 },
-        ssao: { enabled: true },
+        ambientOcclusion: { enabled: true },
         postEffects: ['bloom'],
       },
     };
@@ -224,7 +224,7 @@ describe('Render owner decoders', () => {
     { passCount: 0 },
     { outputDither: 1 },
     { clusterGrid: { x: 65, y: 2, z: 2 } },
-    { ssao: { enabled: 'yes' } },
+    { ambientOcclusion: { enabled: 'yes' } },
     { gpuOcclusion: 1 },
     { postEffects: [''] },
   ])('rejects malformed pipeline config in inline and artifact sources %j', async (config) => {
@@ -246,9 +246,9 @@ it('preserves scene-color AO through both native pipeline JSON routes', async ()
     kind: 'render-pipeline',
     pipelineId: 'forgeax::standard',
     config: {
-      ssao: {
+      ambientOcclusion: {
         enabled: true,
-        algorithm: 'spiral-ssao',
+        method: 'spiral-ssao',
         application: 'scene-color',
         sceneColorStrength: 0.95,
         sampleCount: 12,
@@ -267,7 +267,7 @@ it('preserves scene-color AO through both native pipeline JSON routes', async ()
     expect(
       await decode(renderPipelineContribution, {
         ...value,
-        config: { ssao: { ...value.config.ssao, application } },
+        config: { ambientOcclusion: { ...value.config.ambientOcclusion, application } },
       }),
     ).toMatchObject({ ok: false });
 });
@@ -289,4 +289,19 @@ it('normalizes saved output omission to V1 while preserving an explicit V2 JSON 
     }),
   ).toMatchObject({ ok: true, value: { config: { outputContract: 'standard-output-v2' } } });
   expect(saved).not.toHaveProperty('config');
+});
+
+it('preserves the method of saved AO and publishes the current pipeline configuration', async () => {
+  const artifact = {
+    kind: 'render-pipeline',
+    pipelineId: 'forgeax::standard',
+    config: { ssao: { enabled: true, radius: 0.5 } },
+  };
+  const decoded = await decode(renderPipelineContribution, artifact);
+  expect(decoded).toMatchObject({
+    ok: true,
+    value: { config: { ambientOcclusion: { enabled: true, method: 'gtao', radius: 0.5 } } },
+  });
+  if (!decoded.ok) throw decoded.error;
+  expect(decoded.value.config).not.toHaveProperty('ssao');
 });

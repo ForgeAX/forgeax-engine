@@ -177,7 +177,7 @@ type SceneDataRows = NonNullable<ReturnType<typeof sceneSurfaceRowsOf>>;
 
 /** Whether the stock view or any feature may consume Standard surface schemas. */
 export function needsSceneSurfaceAdmission(
-  profile: Pick<StandardProfile, 'renderPath' | 'ssao'> | undefined,
+  profile: Pick<StandardProfile, 'renderPath' | 'ambientOcclusion'> | undefined,
   standardPipeline: boolean,
   installedSsao: boolean | undefined,
   host: Pick<RenderFeatureHost, 'features'> | undefined,
@@ -186,7 +186,7 @@ export function needsSceneSurfaceAdmission(
   return (
     !standardPipeline ||
     profile?.renderPath !== 'forward' ||
-    profile.ssao !== false ||
+    profile.ambientOcclusion.enabled ||
     installedSsao === true ||
     conformanceTrace ||
     host === undefined ||
@@ -260,7 +260,7 @@ function prepareFeatureFrameInput(
     needsSceneSurfaceAdmission(
       profile,
       frameState.activePipeline === context.standardPipeline,
-      frameState.installedPipelineConfig?.ssao?.enabled,
+      frameState.installedPipelineConfig?.ambientOcclusion?.enabled,
       context.featureHost,
       context.featureGraphConformanceTrace !== undefined,
     )

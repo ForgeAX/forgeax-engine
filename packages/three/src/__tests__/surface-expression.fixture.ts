@@ -13,6 +13,10 @@ export async function verifySurfaceExpression(
   },
   kind: 'standard' | 'unlit' | 'roughness',
   evidence: (name: string, capture: THREE.ThreeFrameCapture) => Promise<void>,
+  replay: (
+    capture: THREE.ThreeFrameCapture,
+    label: string,
+  ) => void | Promise<unknown> = verifyReplay,
 ) {
   const example = surfaceExpressionExample(kind);
   THREE.bindThreeSurface(example.material, publication.recipe).unwrap();
@@ -108,6 +112,8 @@ export async function verifySurfaceExpression(
       expect(equalBytes(displayPixels(updated), displayPixels(textured))).toBe(false);
       expect(drawIdentity(textured)).toEqual(programs);
     }
+    // Replay owns a detached capture and can run while Browser verifies the next revision.
+    await replay(textured, `three-surface-${kind}`);
     const receipt = renderer.inspect().receipt;
     const originalRoot = example.material.colorNode;
     example.material.colorNode = THREE.TSL.vec3(1, 0, 0);
@@ -126,7 +132,6 @@ export async function verifySurfaceExpression(
     const restored = await renderer.captureFrame(scene, camera);
     expect(equalBytes(displayPixels(restored), displayPixels(textured))).toBe(true);
     expect(drawIdentity(restored)).toEqual(programs);
-    await verifyReplay(textured, `three-surface-${kind}`);
     if (kind === 'unlit') {
       // An authored zero threshold still clips alpha zero in r187. A later
       // transparent draw exposes an incorrectly retained front depth write.
@@ -160,7 +165,7 @@ export async function verifySurfaceExpression(
     await evidence(`${kind}-rebound`, recompiled);
     expect(equalBytes(displayPixels(recompiled), displayPixels(textured))).toBe(false);
     expect(drawIdentity(recompiled, publication.reboundRecipe)).not.toEqual(programs);
-    await verifyReplay(recompiled, `three-surface-${kind}-rebound`);
+    await replay(recompiled, `three-surface-${kind}-rebound`);
   } finally {
     replacement?.dispose();
     groundGeometry.dispose();

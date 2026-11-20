@@ -154,7 +154,7 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(VIEW_ABI.moduleId).toBe('forgeax_view::common');
     expect(VIEW_ABI.group).toBe(0);
     expect(VIEW_ABI.binding).toBe(0);
-    expect(VIEW_ABI.byteLength).toBe(1312);
+    expect(VIEW_ABI.byteLength).toBe(1376);
     expect(VIEW_ABI.fields.map((field) => field.name)).toEqual([
       'worldViewProj',
       'inverseViewProj',
@@ -173,16 +173,22 @@ describe('vite-plugin-shader public engine input surface', () => {
       'atmosphereControl',
       'fogSky',
       'ssrQuality',
+      'subsurfaceProfiles',
     ]);
-    expect(VIEW_ABI.fields.at(-2)).toEqual({
+    expect(VIEW_ABI.fields.at(-3)).toEqual({
       name: 'fogSky',
       offsetBytes: 1280,
       sizeBytes: 16,
     });
-    expect(VIEW_ABI.fields.at(-1)).toEqual({
+    expect(VIEW_ABI.fields.at(-2)).toEqual({
       name: 'ssrQuality',
       offsetBytes: 1296,
       sizeBytes: 16,
+    });
+    expect(VIEW_ABI.fields.at(-1)).toEqual({
+      name: 'subsurfaceProfiles',
+      offsetBytes: 1312,
+      sizeBytes: 64,
     });
     expect(JSON.stringify(VIEW_ABI)).not.toMatch(/device|buffer|texture/i);
   });

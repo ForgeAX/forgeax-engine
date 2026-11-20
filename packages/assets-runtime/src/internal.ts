@@ -16,6 +16,7 @@ export type {
   AssetSnapshot,
   AssetVersion,
   AssetVersionDelta,
+  MeshPresentationInput,
 } from './internal/asset-records.js';
 export {
   type AssetReader,
@@ -34,7 +35,8 @@ export {
   runtimeAssetSource,
   runtimeAssets,
 } from './internal/runtime-assets.js';
-export { createMaterialLoader } from './material/loader.js';
+export { completeSourceMaterialPayload, createMaterialLoader } from './material/loader.js';
+export type { PrepareMaterialSourceProgram } from './material/runtime-shader.js';
 export {
   createSceneContentPublicationTask,
   type SceneContentPublicationGuard,

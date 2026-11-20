@@ -54,6 +54,7 @@ export interface FrameGpuDrivenInput {
   readonly visibleSurface: VisibleSurfaceProjection | undefined;
   readonly deferredProbeBuffer: Buffer | undefined;
   readonly artifacts: CollectedMaterialArtifacts | undefined;
+  readonly sourcePreparationPending?: true;
   readonly shadowMaterials: ShadowMaterialContent;
   readonly shadowViews: boolean;
   readonly request: GpuDrivenPrepareInput | undefined;
@@ -143,6 +144,18 @@ export function buildFrameGpuDrivenInput(
     standard,
     hasShadows,
   );
+  if (artifacts.sourcePreparationPending === true)
+    return {
+      meshes,
+      visibleSurface,
+      deferredProbeBuffer,
+      artifacts,
+      sourcePreparationPending: true,
+      shadowMaterials,
+      shadowViews,
+      request: undefined,
+      materialBindingClasses: sources.materialBindingClasses,
+    };
   if (hasShadows)
     collectGpuShadowMaterials(
       internals,

@@ -1,23 +1,28 @@
 import type {
   CookedMaterialRecord,
   MaterialCookProgramContext,
+  MaterialRasterSourcePublication,
   MaterialTemplatePublication,
   MaterialTemplateSources,
+  SourceCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
 import {
   createMaterialArtifactDigest,
   materialProgramContextKey,
+  materialRasterSourceSelection,
 } from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialArtifactConflictError,
   type MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
   type MaterialShaderSelectionResult,
+  type MaterialShaderSourceEntry,
   type MaterialShaderTemplateProgram,
   type MaterialShaderVariantReference,
   materialArtifactConflict,
   type PreparedMaterialShaderTemplate,
   retainMaterialRuntimeArtifact,
+  type ShaderError,
   type ShaderRegistry,
   STANDARD_SURFACE_DISCARD_CLIPPING_AXIS,
   STANDARD_SURFACE_DISCARD_LOD_AXIS,
@@ -27,17 +32,31 @@ import type {
   MaterialPass,
   MaterialProgramAbi,
   MaterialProgramAddress,
+  MaterialRasterSourceInputs,
+  MaterialRasterSourceRecipe,
   MaterialStaticSwitches,
   MaterialSurfaceDeclaration,
   MaterialValue,
   ParamSchemaEntry,
+  Result,
 } from '@forgeax/engine-types';
 import {
   canonicalJson,
   createMaterialError,
   projectMaterialParameterSchema,
 } from '@forgeax/engine-types';
-import type { MaterialLoadError, MaterialReady } from './loader';
+import type { MaterialLoadError, MaterialReady, SourceMaterialPayload } from './loader';
+
+export type PrepareMaterialSourceProgram = (
+  recipe: MaterialRasterSourceRecipe,
+) => Promise<Result<Uint8Array, ShaderError>>;
+
+interface SourceMaterialReady {
+  readonly record: SourceMaterialPayload['cooked'];
+  readonly publication: MaterialRasterSourcePublication;
+  readonly inputs: MaterialRasterSourceInputs;
+  readonly prepareSource: PrepareMaterialSourceProgram;
+}
 
 export interface MaterialRenderPassProjection {
   readonly name: string;
@@ -354,7 +373,9 @@ function projectMaterialPass(pass: MaterialPass): Omit<MaterialRenderPassProject
   };
 }
 
-export function projectMaterialRecord(record: CookedMaterialRecord): MaterialRenderProjection {
+export function projectMaterialRecord(
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
+): MaterialRenderProjection {
   return {
     materialGuid: record.materialGuid ?? record.guid,
     publicationGeneration: record.publicationGeneration ?? record.receipt.identity.cookGeneration,
@@ -596,7 +617,7 @@ function conflictError(error: MaterialArtifactConflictError): Error {
 
 /** Group coverage contexts with identical pass, output, address and vertex-color ABI. */
 function materialSurfaceCoverageFamilies(
-  record: CookedMaterialRecord,
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
 ): ReadonlyMap<string, readonly MaterialShaderVariantReference[]> {
   const groups = new Map<string, Map<number, string>>();
   for (const program of record.programs)
@@ -647,7 +668,7 @@ function materialSurfaceCoverageFamilies(
 /** Preflight the complete set before mutating either runtime registry. */
 export function installMaterialReadyShaders(
   shaderRegistry: ShaderRegistry,
-  readiness: MaterialReady,
+  readiness: MaterialReady | SourceMaterialReady,
   artifactRegistry: MaterialArtifactRegistry,
 ): MaterialRenderProjection {
   // Defaults belong to the root value contract, not an immutable shared program.
@@ -669,8 +690,6 @@ export function installMaterialReadyShaders(
   );
   const families = materialSurfaceCoverageFamilies(readiness.record);
   const admissions = programs.map((program) => {
-    if (program.artifact.bytes.byteLength === 0)
-      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
       program.selections.some((selection) => selection.pass === pass.name),
     );
@@ -682,6 +701,38 @@ export function installMaterialReadyShaders(
     });
     const key = program.specializationKey;
     const digest = program.artifact.digest;
+    const variantReferences = families.get(key);
+    const publication = {
+      ...(variantReferences === undefined ? {} : { variantReferences }),
+      digest,
+      paramSchema,
+      ...(abi === undefined ? {} : { receipt: abi }),
+    };
+    if ('backing' in program.artifact) {
+      if (!('prepareSource' in readiness))
+        throw new Error('Source-backed material requires its preparation owner');
+      const selection = materialRasterSourceSelection(
+        readiness.record.guid,
+        readiness.publication,
+        program,
+      );
+      if (selection === undefined) throw new Error(`Missing raster source selection for '${key}'`);
+      const recipe: MaterialRasterSourceRecipe = Object.freeze({
+        inputs: readiness.inputs,
+        selection: Object.freeze(selection),
+      });
+      const { prepareSource } = readiness;
+      const input: MaterialShaderSourceEntry = {
+        ...publication,
+        recipe,
+        prepare: () => prepareSource(recipe),
+      };
+      const accepted = shaderRegistry.validateMaterialArtifactSource(key, input);
+      if (!accepted.ok) throw conflictError(accepted.error);
+      return { kind: 'source' as const, key, input, newProgram: !accepted.value };
+    }
+    if (program.artifact.bytes.byteLength === 0)
+      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const previous = pending.get(key) ?? artifactRegistry.get(key);
     const candidate = { key, bytes: program.artifact.bytes, digest, metadata };
     if (previous !== undefined) {
@@ -692,21 +743,26 @@ export function installMaterialReadyShaders(
     const artifact: MaterialRuntimeArtifact =
       previous === undefined ? retainMaterialRuntimeArtifact(candidate) : previous;
     if (previous === undefined) pending.set(key, artifact);
-    const variantReferences = families.get(key);
-    const input = {
-      ...(variantReferences === undefined ? {} : { variantReferences }),
-      bytes: artifact.bytes,
-      digest,
-      paramSchema,
-      ...(abi === undefined ? {} : { receipt: abi }),
-    };
+    const input = { ...publication, bytes: artifact.bytes };
     const accepted = shaderRegistry.validateMaterialArtifactBytes(key, input);
     if (!accepted.ok) throw conflictError(accepted.error);
-    return { artifact, input, newArtifact: previous === undefined, newProgram: !accepted.value };
+    return {
+      kind: 'bytes' as const,
+      artifact,
+      input,
+      newArtifact: previous === undefined,
+      newProgram: !accepted.value,
+    };
   });
-  for (const { artifact, input, newArtifact, newProgram } of admissions) {
-    if (newArtifact) artifactRegistry.register(artifact).unwrap();
-    if (newProgram) shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
+  for (const admission of admissions) {
+    if (admission.kind === 'source') {
+      if (admission.newProgram)
+        shaderRegistry.installMaterialArtifactSource(admission.key, admission.input);
+    } else {
+      if (admission.newArtifact) artifactRegistry.register(admission.artifact).unwrap();
+      if (admission.newProgram)
+        shaderRegistry.installMaterialArtifactBytes(admission.artifact.key, admission.input);
+    }
   }
   return projectMaterialRecord(readiness.record);
 }

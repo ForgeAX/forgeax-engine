@@ -4,6 +4,7 @@ export { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 export {
   createDynamicGeometrySourceHost,
   type DynamicGeometryResidencyPort,
+  meshTransfers,
 } from './assembly/dynamic-geometry-host';
 export {
   type LevelSourceHost,
@@ -60,7 +61,10 @@ export {
   type PackedRowsMesh,
   packedRowsEligible,
 } from './publication/packed-rows-mesh';
-export { ownReceivedPublicationMaterials } from './publication/received-materials';
+export {
+  adoptWorkerPublicationMaterials,
+  ownReceivedPublicationMaterials,
+} from './publication/received-materials';
 export {
   type ClosedLevelAssetHold,
   type ClosedLevelAssetPublication,

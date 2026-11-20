@@ -73,6 +73,7 @@ export interface ScriptablePackModuleExecutor {
 interface SerializedScriptablePackBuildContext {
   readonly packageId: readonly number[];
   readonly values?: Readonly<Record<string, unknown>>;
+  readonly cookRuntimeOutputs?: true;
 }
 
 interface WorkerBackedScriptablePackExecutor {
@@ -554,6 +555,7 @@ export interface LoadScriptablePackOptions {
   /** Path-only scans must release the isolated loader before returning. */
   readonly metadataOnly?: boolean;
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
+  readonly cookRuntimeOutputs?: true;
 }
 
 /**
@@ -603,10 +605,13 @@ export function createLazyScriptablePackDefinition(input: {
   /** Initial publication uses production bounds; live replacements retain loader bounds. */
   readonly executionBudget?: 'production' | 'interactive';
   readonly packageBinding?: ScriptablePackPackageBinding;
+  readonly cookRuntimeOutputs?: true;
 }): AnyScriptablePackDefinition {
   const expected = new Map(input.sourceClosure.map((entry) => [entry.path, entry.digest]));
+  const { runtime, ...definition } = input.definition;
   return {
-    ...input.definition,
+    ...definition,
+    ...(input.cookRuntimeOutputs === true || runtime === undefined ? {} : { runtime }),
     async build(context: PackBuildContextWithoutParameters) {
       let closure: readonly ScriptablePackSourceClosureEntry[];
       try {
@@ -642,6 +647,7 @@ export function createLazyScriptablePackDefinition(input: {
       const executor = await input.executors.acquire();
       const loaded = await loadScriptablePack(input.sourcePath, {
         executor,
+        ...(input.cookRuntimeOutputs === true ? { cookRuntimeOutputs: true } : {}),
         ...(input.packageBinding === undefined ? {} : { packageBinding: input.packageBinding }),
         sourceSnapshot: input.sourceSnapshot,
         ...(input.executionBudget === 'interactive'
@@ -894,6 +900,7 @@ async function loadScriptablePackFresh(
               true
               ? build(context.readByGuid, {
                   packageId: [...context.packageId],
+                  ...(options.cookRuntimeOutputs === true ? { cookRuntimeOutputs: true } : {}),
                   ...('values' in context && context.values !== undefined
                     ? { values: context.values as Readonly<Record<string, unknown>> }
                     : {}),

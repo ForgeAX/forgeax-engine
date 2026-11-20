@@ -3,6 +3,7 @@ import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runt
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { describeMeshDraw } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createShaderModule, RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
@@ -223,7 +224,7 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
     materials: [MaterialResource.from(material)],
     materialBindingSources: ['renderer-override'],
     gpuDrivenDraws: buildGpuDrivenDraws({
-      mesh,
+      mesh: describeMeshDraw(mesh),
       deformation: 'rigid',
       materials: [material],
       fallbackMaterial: material,

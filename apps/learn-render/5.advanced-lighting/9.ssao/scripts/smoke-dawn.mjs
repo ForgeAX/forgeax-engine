@@ -238,7 +238,7 @@ if (DISCRIMINATION) {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'deferred',
-          ssao: ssaoConfig.enabled ? { algorithm } : false,
+          ambientOcclusion: ssaoConfig.enabled ? { enabled: true, method: algorithm } : { enabled: false },
         },
       },
       { shaderManifestUrl: MANIFEST_URL },
@@ -448,7 +448,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const ssaoEnabled = FALSIFY !== 'ssao-off';
 const appResult = await createApp(
   mockCanvas,
-  { platform: createSmokePlatform(mockCanvas),  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: ssaoEnabled ? { algorithm } : false } },
+  { platform: createSmokePlatform(mockCanvas),  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ambientOcclusion: ssaoEnabled ? { enabled: true, method: algorithm } : { enabled: false } } },
   { shaderManifestUrl: MANIFEST_URL },
 );
 globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;

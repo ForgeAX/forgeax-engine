@@ -1,4 +1,5 @@
 import { createVideoFrameHost } from '@forgeax/engine-graphics-extras';
+import { createTaskPool, type TaskWorkerToPoolMessage } from '@forgeax/engine-platform';
 import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
@@ -15,6 +16,7 @@ import {
   type HostToEngineMessage,
 } from './protocol';
 import { forwardRenderBackend } from './render-backend';
+import { executionTaskKinds } from './task-kinds';
 import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
 
@@ -103,6 +105,45 @@ function openVideoBridge(): VideoBridge {
     transfer: [channel.port2],
     dispose: () => host.dispose(),
   };
+}
+
+function browserTaskWorker(): Worker {
+  return new Worker(new URL('./task-worker-runtime.mjs', import.meta.url), {
+    type: 'module',
+    name: 'forgeax-task',
+  });
+}
+
+/** Main-thread Apps can submit the same worker-only task kinds as an Engine Worker. */
+export function createBrowserTaskPool() {
+  return createTaskPool({
+    kinds: executionTaskKinds,
+    workerFactory(listener) {
+      const worker = browserTaskWorker();
+      const { port1, port2 } = new MessageChannel();
+      const terminate = () => {
+        port1.close();
+        worker.terminate();
+      };
+      port1.onmessage = (event: MessageEvent<TaskWorkerToPoolMessage>) =>
+        listener.message(event.data);
+      worker.onerror = (event) => {
+        event.preventDefault();
+        listener.error(new Error(event.message));
+      };
+      try {
+        worker.postMessage({ kind: 'task-connect', port: port2 }, [port2]);
+      } catch (cause) {
+        port2.close();
+        terminate();
+        throw cause;
+      }
+      return {
+        postMessage: (message, transfer) => port1.postMessage(message, transfer ?? []),
+        terminate,
+      };
+    },
+  });
 }
 
 export async function startEngineWorker(
@@ -204,10 +245,7 @@ export async function startEngineWorker(
     };
     taskCleanups.set(message.workerId, cleanup);
     try {
-      task = new Worker(new URL('./task-worker-runtime.mjs', import.meta.url), {
-        type: 'module',
-        name: 'forgeax-task',
-      });
+      task = browserTaskWorker();
       task.onerror = (event): void => {
         event.preventDefault?.();
         report(event.message ?? 'task worker error');

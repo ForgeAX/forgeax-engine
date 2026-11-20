@@ -40,7 +40,7 @@ async function plannedScene(options: {
   const profiled = renderer.setProfile({
     ...renderer.inspect().profile,
     renderPath: options.renderPath,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   });
   if (!profiled.ok) throw profiled.error;
   const assets = renderer.assetRegistry;

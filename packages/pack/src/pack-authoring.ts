@@ -1,4 +1,4 @@
-import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
+import type { Asset, AssetGuid, Result, TaskContext } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import {
   AssetGuid as AssetGuidCodec,
@@ -17,6 +17,7 @@ import {
   validatePluginAssetSource,
 } from './plugin-asset.js';
 import type { ScriptablePackSceneComponentInput } from './scriptable-pack.js';
+import { isScriptablePackAssetKind } from './scriptable-pack-kinds.js';
 import { isScriptablePackField } from './scriptable-pack-wire.js';
 
 /** Values deliberately stay finite and serialisable at the authoring boundary. */
@@ -633,6 +634,8 @@ export function validateParameterDefinitions(
 }
 
 export interface PackBuildReadContext {
+  /** Cooperative checkpoint supplied during Task Worker generation. */
+  readonly task?: Pick<TaskContext, 'aborted' | 'yield'>;
   readByGuid<TAsset extends PackOutput = Asset>(guid: AssetGuid): Promise<Result<TAsset, unknown>>;
 }
 
@@ -666,10 +669,34 @@ export type PackBuildResult<TError = unknown> =
   | Result<PackOutputMap, TError>
   | Promise<Result<PackOutputMap, TError>>;
 
-export interface ScriptablePackRuntime {
+interface ScriptablePackRuntimeBase {
   /** Complete asset read closure, including dependencies of non-default parameter branches. */
   readonly dependencies: readonly string[];
 }
+
+export type ScriptablePackRuntimeOutputs = Readonly<
+  Record<string, Exclude<Asset['kind'], 'plugin'>>
+>;
+
+export type ScriptablePackRuntime = ScriptablePackRuntimeBase &
+  (
+    | {
+        /** Execution capability for an explicitly generated Pack instance. */
+        readonly execution?: 'task-worker';
+        readonly outputs?: never;
+        readonly export?: never;
+        readonly fallback?: never;
+      }
+    | {
+        /** Ordinary Pack outputs always execute in a Task Worker. */
+        readonly execution?: 'task-worker';
+        readonly outputs: ScriptablePackRuntimeOutputs;
+        /** Named generator export in this .pack.ts module. */
+        readonly export: string;
+        /** Allow targets without a Task Worker carrier to cook this generator offline. */
+        readonly fallback?: 'build';
+      }
+  );
 
 interface PackDefinitionBase {
   readonly schemaVersion: '2.0.0';
@@ -759,7 +786,11 @@ function cloneDefinition(
       ? {}
       : {
           runtime: Object.freeze({
+            ...definition.runtime,
             dependencies: Object.freeze([...definition.runtime.dependencies]),
+            ...(definition.runtime.outputs === undefined
+              ? {}
+              : { outputs: Object.freeze({ ...definition.runtime.outputs }) }),
           }),
         }),
   }) as ScriptablePackDefinition<NonEmptyParameters> | ScriptablePackDefinition<undefined>;
@@ -790,6 +821,16 @@ export type AnyScriptablePackDefinition =
   | ScriptablePackDefinition<PackParameterList>
   | ScriptablePackDefinition<undefined>;
 
+export function projectScriptablePackRuntimeOutputs(
+  definition: Pick<AnyScriptablePackDefinition, 'packageId' | 'runtime'>,
+): readonly { readonly guid: string; readonly sourceKey: string; readonly kind: string }[] {
+  return Object.entries(definition.runtime?.outputs ?? {}).map(([sourceKey, kind]) => ({
+    guid: AssetGuidCodec.format(AssetGuidCodec.derive(definition.packageId, sourceKey)),
+    sourceKey,
+    kind,
+  }));
+}
+
 export interface ScriptablePackSourceMeta {
   readonly schemaVersion: '2.0.0';
   readonly kind: 'scriptable-pack-source';
@@ -814,7 +855,7 @@ export function projectScriptablePackMeta(
     ...(definition.runtime === undefined
       ? {}
       : {
-          runtime: { dependencies: [...definition.runtime.dependencies] },
+          runtime: { ...definition.runtime, dependencies: [...definition.runtime.dependencies] },
         }),
     ...('parameters' in definition
       ? {
@@ -835,6 +876,108 @@ export function projectScriptablePackMeta(
 
 function jsonParameterValue(value: PackParameterValue): unknown {
   return value instanceof Uint8Array ? AssetGuidCodec.format(value) : value;
+}
+
+function validateRuntimePackOutputs(
+  candidate: unknown,
+): Result<ScriptablePackRuntimeOutputs, PackAuthoringError> {
+  if (
+    !isRecord(candidate) ||
+    Object.keys(candidate).length === 0 ||
+    Object.entries(candidate).some(
+      ([key, kind]) =>
+        !isValidPackSourceKey(key) ||
+        typeof kind !== 'string' ||
+        kind === 'plugin' ||
+        !isScriptablePackAssetKind(kind),
+    )
+  ) {
+    return failure(
+      parameterFailure(
+        '$.runtime.outputs',
+        'a non-empty sourceKey-to-ordinary-asset-kind table',
+        candidate,
+        'declare every asset produced by the runtime entry',
+      ),
+    );
+  }
+  return ok(Object.freeze({ ...candidate }) as ScriptablePackRuntimeOutputs);
+}
+
+function validatePackRuntime(
+  candidate: unknown,
+): Result<ScriptablePackRuntime | undefined, PackAuthoringError> {
+  if (candidate === undefined) return ok(undefined);
+  if (
+    !isRecord(candidate) ||
+    Object.keys(candidate).some(
+      (key) => !['dependencies', 'execution', 'outputs', 'export', 'fallback'].includes(key),
+    ) ||
+    (candidate.execution !== undefined && candidate.execution !== 'task-worker') ||
+    !Array.isArray(candidate.dependencies) ||
+    candidate.dependencies.some(
+      (guid) =>
+        typeof guid !== 'string' || !isValidAssetGuidString(guid) || guid !== guid.toLowerCase(),
+    ) ||
+    new Set(candidate.dependencies).size !== candidate.dependencies.length
+  ) {
+    return failure(
+      parameterFailure(
+        '$.runtime',
+        'runtime generation metadata with unique canonical asset UUID dependencies',
+        candidate,
+        'declare a complete read closure',
+      ),
+    );
+  }
+  const dependencies = Object.freeze([...candidate.dependencies]);
+  if (
+    candidate.outputs === undefined &&
+    candidate.export === undefined &&
+    candidate.fallback === undefined
+  ) {
+    return ok(
+      Object.freeze({
+        dependencies,
+        ...(candidate.execution === undefined ? {} : { execution: candidate.execution }),
+      }),
+    );
+  }
+  const outputs = validateRuntimePackOutputs(candidate.outputs);
+  if (!outputs.ok) return outputs;
+  if (candidate.fallback !== undefined && candidate.fallback !== 'build') {
+    return failure(
+      parameterFailure(
+        '$.runtime.fallback',
+        "the literal 'build' or no fallback",
+        candidate.fallback,
+        'opt in to offline cooking for carriers without a Task Worker',
+      ),
+    );
+  }
+  if (
+    typeof candidate.export !== 'string' ||
+    !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(candidate.export) ||
+    candidate.export === 'default'
+  ) {
+    return failure(
+      parameterFailure(
+        '$.runtime.export',
+        'a named generator export in the Pack source module',
+        candidate.export,
+        'declare the exported runtime generator, alongside the default Pack definition',
+      ),
+    );
+  }
+  return ok(
+    Object.freeze({
+      dependencies,
+      execution: 'task-worker',
+      outputs: outputs.value,
+      export: candidate.export,
+      ...(candidate.fallback === undefined ? {} : { fallback: candidate.fallback }),
+    }),
+  );
 }
 
 /** Runtime validation used by the isolated module loader and source scanner. */
@@ -902,30 +1045,9 @@ export function validatePackDefinition(
   }
   const sceneComponents = validateSceneComponents(value.sceneComponents);
   if (!sceneComponents.ok) return sceneComponents;
-  let runtime: ScriptablePackRuntime | undefined;
-  if (value.runtime !== undefined) {
-    const candidate = value.runtime;
-    if (
-      !isRecord(candidate) ||
-      Object.keys(candidate).some((key) => key !== 'dependencies') ||
-      !Array.isArray(candidate.dependencies) ||
-      candidate.dependencies.some(
-        (guid) =>
-          typeof guid !== 'string' || !isValidAssetGuidString(guid) || guid !== guid.toLowerCase(),
-      ) ||
-      new Set(candidate.dependencies).size !== candidate.dependencies.length
-    ) {
-      return failure(
-        parameterFailure(
-          '$.runtime',
-          'a dependencies array of unique canonical asset UUIDs',
-          candidate,
-          'runtime generation requires an explicit complete read closure',
-        ),
-      );
-    }
-    runtime = Object.freeze({ dependencies: Object.freeze([...candidate.dependencies]) });
-  }
+  const runtimeCapability = validatePackRuntime(value.runtime);
+  if (!runtimeCapability.ok) return runtimeCapability;
+  const runtime = runtimeCapability.value;
   const hasParameters = Object.hasOwn(value, 'parameters');
   if (!hasParameters) {
     return ok(

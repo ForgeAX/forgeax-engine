@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -94,6 +94,8 @@ test('formal parent-relative publication keeps exact bytes inside its disposable
     await writeFile(manifestPath, JSON.stringify({...wrapper,schemaVersion:2,producer:'repo-build-inputs',inventory:[payload],payload:{engineShaderManifest:payload}}));
     const {root,temporaryRoot} = await createLiveSyncProjectDirectory('forgeax-external-inputs-',sourceRoot,manifestPath);
     try {
+      assert.equal(temporaryRoot, await realpath(temporaryRoot));
+      assert.equal(root, await realpath(root));
       const selected=await prepareLiveSyncSharedInputs({sourceRoot,projectRoot:root,temporaryRoot,manifestPath});
       assert.deepEqual(await readFile(selected),await readFile(manifestPath));
       assert.deepEqual(await readFile(join(root,payload)),await readFile(join(sourceRoot,payload)));

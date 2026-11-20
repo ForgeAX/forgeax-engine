@@ -111,7 +111,9 @@ export async function verifyPortablePcss(
   const world = new World(),
     { light, caster } = buildPcssScene(world);
   const original = renderer.inspect().profile;
-  renderer.setProfile({ ...original, renderPath: 'forward', ssao: false }).unwrap();
+  renderer
+    .setProfile({ ...original, renderPath: 'forward', ambientOcclusion: { enabled: false } })
+    .unwrap();
   const lease = renderer.attach(world).unwrap();
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {

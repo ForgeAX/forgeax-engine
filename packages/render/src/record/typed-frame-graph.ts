@@ -2,59 +2,42 @@ import {
   type SharedFeatureGraphPublication,
   sharedFeatureGraphPublication,
 } from '../assembly/feature-frame-graph';
-
 import type { RecordedView } from '../assembly/frame-recording';
-
 import type { RendererFrameStageResult } from '../assembly/renderer-frame-transaction';
-
 import { isCaptureViewPipeline } from '../capture/capture-view';
-
 import { isMultisampleAntialias, isTemporalAntialias } from '../components/camera';
-
 import { projectedDecalTopology } from '../decals/graph';
-
 import { captureEditorAssistanceView } from '../features/editor-assistance/feature';
 import { scopedGraphTextureTarget } from '../features/graph-texture-targets';
 import { chromaticAberrationActive, outputLensEffectsActive } from '../features/lens-effects';
 import { distanceOutlineFirstStep } from '../features/outline/distance-graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
-
 import { importSharedGraphTextures } from '../features/shared-graph-textures';
-
 import { renderFeatureViewIdentity } from '../features/view';
-
+import { referencedDeferredProbes } from '../pipeline/deferred-reflection-coverage';
 import {
   addStandardClusterMembershipPass,
   importStandardClusterBuffers,
   standardClusterReadAccesses,
 } from '../pipeline/standard-lighting/graph';
-
 import { addBakedFieldPasses, bakedFieldGraphShape } from '../raytracing/baked-field-graph';
-
 import { addRayDiffusePasses } from '../raytracing/diffuse-graph';
-
 import {
   addIrradianceFieldPasses,
   irradianceFieldGraphShape,
 } from '../raytracing/irradiance-field-graph';
-
 import { addProbeGlobalPasses, probeGlobalGraphShape } from '../raytracing/probe-global-graph';
-
 import { addProbePlacementPass } from '../raytracing/probe-placement-graph';
-
 import { addScreenProbePasses, screenProbeGraphShape } from '../raytracing/screen-probe-graph';
-
 import { ShadowDepthLayers } from '../shadow-depth-layers';
-
 import { waterSsrTemporalEnabled } from '../ssr/water-profile';
-
+import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import {
   sceneDataTopologyFields,
   standardAoSceneDataUnavailable,
+  standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
-
 import { type TerrainShadowReceiver, terrainShadowTopology } from '../terrain/shadow-family';
-
 import {
   addPlanarReflectionPass,
   addTypedShadowPasses,
@@ -62,23 +45,17 @@ import {
   type SharedShadowSource,
   shadowPipelinePreparationDemand,
 } from '../typed-shadow-passes';
-
 import {
   type WaterFluidMaterialPublication,
   waterFluidBodyDescriptorReader,
   waterFluidMaterialTopology,
 } from '../water/fluid-graph';
-
 import { EMPTY_VIEW_FEATURE_PLAN, type ViewFeaturePlan } from '../world/feature-plan-systems';
-
 import { recordViewFeatureGraph } from '../world/feature-systems';
-
 import { EMPTY_VIEW_PASS_PLAN, planOpaque, type ViewPassPlan } from '../world/pass-plan-systems';
-
+import { viewReflectionProbesOf } from '../world/reflection-systems';
 import type { ViewLights } from '../world/render-lights';
-
 import { renderSubmission, renderWorldFor } from '../world/render-world';
-
 import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
 
 import { recordContext } from '../world/view-record-context';
@@ -1379,6 +1356,89 @@ function editorAssistanceTopology(
       );
 }
 
+function compactGbufferRejection(
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot,
+  clearOnly: boolean,
+  writers: ReturnType<typeof standardSceneSurfaceContributorBaseline>,
+  featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
+  ssr: SsrSpatialAdmission | undefined,
+): string | undefined {
+  const incompatibleWriter = writers?.find((row) => !row.forwardOnly && !row.compactGbufferWriter);
+  const incompatibleSceneData = featureGraphCandidate?.sceneDataBindings?.find(
+    ({ schema, owners }) =>
+      schema !== SCENE_DATA_TEMPORAL_V1_SCHEMA ||
+      owners.some((owner) => owner.featureIdentity !== MOTION_BLUR_FEATURE_IDENTITY),
+  );
+  let rejection: string | undefined;
+  if (internals.standardSceneShaders?.compactGbuffer !== 'standard-gbuffer/4')
+    rejection = 'Install a Default GBuffer lighting shader built for this device.';
+  else if (!clearOnly && writers === undefined)
+    rejection = 'Prepare the current view surface producer catalog before rendering.';
+  else if (!clearOnly && incompatibleWriter !== undefined)
+    rejection = `Use a Default GBuffer material for ${incompatibleWriter.materialShaderId || incompatibleWriter.id}.`;
+  else if (incompatibleSceneData !== undefined)
+    rejection = `Use a feature that supports the Default GBuffer for ${incompatibleSceneData.schema}.`;
+  else if (
+    (camera.projectedDecals?.length ?? 0) !== 0 &&
+    internals.standardSceneShaders?.compactDecals !== true
+  )
+    rejection = 'Install the Default GBuffer decal programs.';
+  else if (
+    ssr?.status === 'admitted' &&
+    internals.ssrShaders?.compactGbuffer !== 'standard-gbuffer/4'
+  )
+    rejection = 'Install the Default GBuffer SSR programs.';
+  return rejection;
+}
+
+function compactGbufferTopology(
+  internals: RenderSystemInternals,
+  format: 'default' | undefined,
+  clearOnly: boolean,
+  camera: CameraSnapshot,
+  lights: ViewLights,
+  hasTerrainReceivers: boolean,
+  hasLocalProbes: boolean,
+  surfaceAdmission: Parameters<typeof standardSceneSurfaceContributorBaseline>[0],
+  featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
+  ssr: SsrSpatialAdmission | undefined,
+): Result<Pick<RenderPipelineTopology, 'compactGbuffer' | 'compactReceiver'>, RhiError> {
+  if (format !== 'default') return ok({});
+  const writers = standardSceneSurfaceContributorBaseline(surfaceAdmission);
+  const rejection = compactGbufferRejection(
+    internals,
+    camera,
+    clearOnly,
+    writers,
+    featureGraphCandidate,
+    ssr,
+  );
+  if (rejection !== undefined)
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a view supported by the Default GBuffer format',
+        hint: rejection,
+      }),
+    );
+  const shadowConfig = lights.directionalCsmConfig;
+  const projectedShadows =
+    shadowConfig === undefined ||
+    (shadowConfig.shadowViewProjection === undefined &&
+      (shadowConfig.shadowBiasMode ?? 0) === 0 &&
+      (lights.normalBias ?? 0) === 0 &&
+      lights.cascades?.directionalShadowQuality?.kind === 'pcf-vogel');
+  const compactGbuffer = 'standard-gbuffer/4';
+  if (!projectedShadows || hasTerrainReceivers)
+    return ok({ compactGbuffer, compactReceiver: 'geometry' });
+  if (hasLocalProbes || writers?.some((row) => row.compactReceiverContext))
+    return ok({ compactGbuffer, compactReceiver: 'context' });
+  if (writers?.some((row) => row.compactGbufferWriter === 'lighting-channels'))
+    return ok({ compactGbuffer, compactReceiver: 'channels' });
+  return ok({ compactGbuffer });
+}
+
 function topologyOf(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -1421,6 +1481,27 @@ function topologyOf(
       plan.scope.view === renderFeatureViewIdentity(camera) &&
       plan.plan.waterView !== undefined,
   )?.plan.waterView;
+  const surfaceAdmission =
+    frameState.standardSceneSurfaceAdmission ?? featureGraphCandidate?.sceneDataAdmission;
+  const reflectionFallback = reflectionFallbackDemandOf(internals);
+  const probes = viewReflectionProbesOf(renderWorldFor(internals), internals.viewEntity);
+  const hasLocalProbes =
+    standardProfile?.renderPath === 'deferred' &&
+    probes?.ok === true &&
+    referencedDeferredProbes(probes.value.probes).length > 0;
+  const compact = compactGbufferTopology(
+    internals,
+    standardProfile?.gbufferFormat,
+    clearOnly,
+    camera,
+    lights,
+    terrainReceivers.length !== 0,
+    hasLocalProbes,
+    surfaceAdmission,
+    featureGraphCandidate,
+    ssr,
+  );
+  if (!compact.ok) return compact;
   const publishViewTopology = (
     checkedDirectional: Extract<typeof directional, { ok: true }>,
     checkedSurfaceProfile: Extract<typeof surfaceProfile, { ok: true }>,
@@ -1431,11 +1512,9 @@ function topologyOf(
     const multisample = checkedMultisample;
     return ok({
       pipelineId: STANDARD_PIPELINE_ID,
-      ...sceneDataTopologyFields(
-        frameState.standardSceneSurfaceAdmission ?? featureGraphCandidate?.sceneDataAdmission,
-        featureGraphCandidate?.sceneDataBindings,
-      ),
-      ...(subsurface === undefined ? {} : { subsurface }),
+      ...sceneDataTopologyFields(surfaceAdmission, featureGraphCandidate?.sceneDataBindings),
+      ...(subsurface === undefined ? {} : { subsurface: { quality: subsurface.quality } }),
+      ...compact.value,
       forwardContactShadows: forwardContactDemand(clearOnly, standardLighting),
       forwardCapsuleShadows: !clearOnly && forwardCapsuleShadows,
       projectedDecals: projectedDecalTopology(clearOnly ? [] : (camera.projectedDecals ?? [])),
@@ -1443,7 +1522,10 @@ function topologyOf(
       config,
       preTemporalEffects: preTemporalEffectsOf(config, fullscreenEffects),
       clearOnly,
-      reflectionFallback: { enabled: reflectionFallbackDemandOf(internals) },
+      reflectionFallback: {
+        enabled: reflectionFallback,
+        ...(hasLocalProbes ? { localProbes: true } : {}),
+      },
       ssr,
       ...(renderExtent === undefined ? {} : { extent: renderExtent }),
       analyticFog: !clearOnly && analyticFog,
@@ -2520,6 +2602,8 @@ function compileViewGraphStagesOwned(
   const metrics = emptyFeatureGraphMetricsDelta();
   const requestedStandardLightingSignature = standardLightingTopologySignature(standardLighting);
   const graphCamera = graphCameraOf(camera, frameState);
+  const compactProfile =
+    (frameState.cameraStandardProfile ?? internals.standardProfile)?.gbufferFormat === 'default';
   const lastKnownGood = (): CompiledRenderGraph<RenderPipelineFrame> | null => {
     const installed = frameState.compiledFrameGraph;
     const directional = directionalTopologyOf(internals, lights, shadowMapSize, terrainReceivers);
@@ -2529,6 +2613,7 @@ function compileViewGraphStagesOwned(
         installed.topologyKey,
         directional.value,
         forwardCapsuleShadows,
+        compactProfile ? 'standard-gbuffer/4' : undefined,
       ) &&
       !hasSubmissionSensitiveFeatures(getRenderFeatureGraphState(internals).plans) &&
       cubeCaptureState?.planar?.current() === undefined &&
@@ -2558,7 +2643,8 @@ function compileViewGraphStagesOwned(
     fallback: 'last-known-good' | 'topology' | 'none',
   ): Extract<ViewGraphCompileOutcome, { kind: 'retained' | 'rejected' }> => {
     const graph =
-      fallback === 'none' || (fallback === 'topology' && volumeTopologyCandidate)
+      fallback === 'none' ||
+      (fallback === 'topology' && (volumeTopologyCandidate || compactProfile))
         ? null
         : lastKnownGood();
     const rejected = effects({ error });
@@ -3852,7 +3938,7 @@ function standardAoUnavailableForGraph(input: {
   if (
     !input.stockRecording ||
     input.topology.clearOnly ||
-    input.topology.config?.ssao?.enabled !== true
+    input.topology.config?.ambientOcclusion?.enabled !== true
   ) {
     return undefined;
   }

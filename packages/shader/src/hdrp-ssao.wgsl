@@ -3,7 +3,7 @@
 // reconstruct normals from depth for the depth-only and spiral paths.
 
 #define_import_path forgeax_hdrp::ssao
-#import forgeax_pbr::gbuffer::{loadStandardNormalRoughness, loadStandardSceneSurfaceValid}
+#import forgeax_pbr::gbuffer::{loadStandardSceneNormal, loadStandardSceneSurfaceValid}
 
 #import forgeax_view::common::{fullscreen_triangle, FullscreenOutput}
 
@@ -45,7 +45,7 @@ fn ssaoNormal(uv : vec2<f32>) -> vec3<f32> {
   let size = vec2<i32>(textureDimensions(gbuffer_normal));
   let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
   if (!loadStandardSceneSurfaceValid(gbuffer_normal, pixel)) { return vec3<f32>(0.0); }
-  return loadStandardNormalRoughness(gbuffer_normal, pixel).xyz;
+  return loadStandardSceneNormal(gbuffer_normal, pixel);
 }
 
 fn ssaoDepth(uv: vec2<f32>) -> f32 {

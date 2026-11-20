@@ -31,6 +31,8 @@ export interface PublicationPreparationServices {
   readonly registry?: AssetRegistry;
   readonly shaderRegistry?: ShaderRegistry;
   readonly pack?: RuntimePackEnvelope | undefined;
+  /** The producer's bound fetcher owns the verified artifacts after Catalog retirement. */
+  readonly retainProducerArtifacts?: boolean;
   readonly decoders?: readonly AssetDecoderContributionRef[];
   readonly dependencies?: ReadonlyMap<
     string,

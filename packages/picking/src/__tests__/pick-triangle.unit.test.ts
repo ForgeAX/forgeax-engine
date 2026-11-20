@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { meshAttributeChannels, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
@@ -175,6 +176,37 @@ describe('pickTriangle', () => {
     expect(result.hit.distance).toBeCloseTo(4.9, 2);
     expect(result.hit.barycentric.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(result.hit.precision).toBe('triangle');
+  });
+
+  it('reports unavailable CPU geometry only if its bounds can hide the exact hit', () => {
+    const scene = makeScene();
+    try {
+      const vertices = [-1, -1, 0, 1, -1, 0, 0, 1, 0];
+      const exact = spawnMesh(scene, registerMesh(scene.assets, vertices, [0, 1, 2]));
+      const visualMesh = registerMesh(scene.assets, vertices, [0, 1, 2]);
+      const retained = scene.assets.read(visualMesh).unwrap();
+      const records = runtimeAssets(scene.assets);
+      expect(
+        records.retainMeshPresentation(visualMesh, records.version(visualMesh).unwrap(), {
+          bytes: retained.vertices.byteLength,
+          storage: 'retained-bytes',
+          read: async () => retained,
+          lease: { isCurrent: () => true, release() {} },
+          release() {},
+        }),
+      ).toBe(true);
+      const visual = spawnMesh(scene, visualMesh, { pos: [0, 0, -2] });
+      expect(query(scene)).toMatchObject({ status: 'hit', hit: { entity: exact } });
+
+      scene.world.set(visual, Transform, { pos: [0, 0, 2] }).unwrap();
+      expect(query(scene)).toMatchObject({
+        status: 'unavailable',
+        reason: 'cpu-geometry-unavailable',
+        entities: [visual],
+      });
+    } finally {
+      scene.assets.dispose();
+    }
   });
 
   it('uses transformed world vertices, so a wall opening reaches the rear sign', () => {

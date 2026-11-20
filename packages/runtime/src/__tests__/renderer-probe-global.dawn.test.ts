@@ -561,7 +561,7 @@ it.each([
     renderPath: 'deferred' as const,
     visibleSurface: true,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   };
   let seeds = [
     { id: 7, generation: 1, position: [0, 0, -2] as const, cellSize: 2, traced: true },

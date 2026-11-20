@@ -316,7 +316,9 @@ export class CatalogReplica {
           Promise.resolve()
             .then(() => produce(guid))
             .then((result) =>
-              result.ok ? ok(result.value) : err(this.sourceError(guid, result.error.code)),
+              result.ok
+                ? ok(result.value)
+                : err(this.sourceError(guid, `${result.error.code}: ${result.error.hint}`)),
             )
             .catch((cause: unknown) =>
               err(this.sourceError(guid, cause instanceof Error ? cause.message : String(cause))),

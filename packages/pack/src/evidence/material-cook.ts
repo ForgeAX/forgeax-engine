@@ -7,6 +7,9 @@ import type {
   MaterialPass,
   MaterialProgramAbi,
   MaterialProgramAddress,
+  MaterialRasterSourceInputs,
+  MaterialRasterSourceSelection,
+  MaterialSourcePublication,
   MaterialStaticSwitches,
   MaterialSurfaceDeclaration,
   MaterialTextureValue,
@@ -33,6 +36,7 @@ export type {
   MaterialCookProgramContext,
   MaterialCookRasterContext,
   MaterialCookRayContext,
+  MaterialSourcePublication,
 } from '@forgeax/engine-types';
 
 export interface MaterialCookRefs {
@@ -42,17 +46,36 @@ export interface MaterialCookRefs {
   readonly modules: readonly string[];
 }
 
-export interface MaterialCookArtifact {
+export interface MaterialCookArtifactIdentity {
   readonly mediaType: string;
   readonly path: string;
   readonly digest: string;
+}
+
+export interface MaterialCookArtifact extends MaterialCookArtifactIdentity {
   readonly bytes: Uint8Array;
 }
 
+export interface MaterialCookRasterSourceArtifact extends MaterialCookArtifactIdentity {
+  readonly backing: 'raster-source';
+}
+
+export const MATERIAL_RASTER_SOURCES_PATH = 'materials/raster-sources.json';
+export const MATERIAL_RASTER_SOURCES_SCHEMA = 'material-raster-sources/1';
+
+export interface MaterialRasterSourcePublication {
+  readonly schemaVersion: typeof MATERIAL_RASTER_SOURCES_SCHEMA;
+  readonly programSetDigest: string;
+  readonly modules: MaterialSourcePublication;
+  readonly vertexColorOverrides: Readonly<Record<string, boolean>>;
+}
+
 /** Programs are derived artifacts, never independently authored assets. */
-export interface MaterialCookProgram {
+export interface MaterialCookProgram<
+  Artifact extends MaterialCookArtifactIdentity = MaterialCookArtifact,
+> {
   readonly specializationKey: string;
-  readonly artifact: MaterialCookArtifact;
+  readonly artifact: Artifact;
   readonly selections: readonly {
     readonly pass: string;
     readonly context: MaterialCookProgramContext;
@@ -129,6 +152,15 @@ export interface CookedMaterialRecord {
   };
   readonly refs: MaterialCookRefs;
   readonly receipt: MaterialCookReceipt;
+}
+
+/** Source-backed transport retains the same producer receipt and program identities. */
+export interface SourceCookedMaterialRecord
+  extends Omit<CookedMaterialRecord, 'schemaVersion' | 'programs'> {
+  readonly schemaVersion: 'material-cook/6';
+  readonly programs: readonly MaterialCookProgram<
+    MaterialCookArtifact | MaterialCookRasterSourceArtifact
+  >[];
 }
 
 export interface MaterialCookRecordError {
@@ -292,7 +324,7 @@ export function serializeMaterialCookReceipt(receipt: MaterialCookReceipt): stri
 function invalid(field: string, actual?: unknown): Result<never, MaterialCookRecordError> {
   return err({
     code: 'material-cook-record-invalid',
-    expected: 'a complete material-cook/5 record with layered identity and provenance',
+    expected: 'a complete material Cook record with layered identity and provenance',
     hint: 're-cook the material and publish its record, artifact, references, and receipt together',
     detail: {
       field,
@@ -433,8 +465,11 @@ export function validateMaterialCookReceipt(
 
 function validateRecordHeader(
   candidate: Record<string, unknown>,
+  schemaVersion:
+    | CookedMaterialRecord['schemaVersion']
+    | SourceCookedMaterialRecord['schemaVersion'],
 ): Result<void, MaterialCookRecordError> {
-  if (candidate.schemaVersion !== 'material-cook/5')
+  if (candidate.schemaVersion !== schemaVersion)
     return invalid('schemaVersion', candidate.schemaVersion);
   if (typeof candidate.guid !== 'string' || !candidate.guid) return invalid('guid');
   if (candidate.materialGuid !== undefined && typeof candidate.materialGuid !== 'string')
@@ -541,10 +576,16 @@ interface ProgramSetScan {
   legacySelectionField: string | undefined;
 }
 
-function validateProgramSet(
+type ProgramArtifactReader<Artifact extends MaterialCookArtifactIdentity> = (
+  value: unknown,
+  field: string,
+) => Result<Artifact, MaterialCookRecordError>;
+
+function validateProgramSet<Artifact extends MaterialCookArtifactIdentity>(
   value: unknown,
   passNames: ReadonlySet<string>,
-): Result<MaterialCookProgram[], MaterialCookRecordError> {
+  readArtifact: ProgramArtifactReader<Artifact>,
+): Result<MaterialCookProgram<Artifact>[], MaterialCookRecordError> {
   if (!Array.isArray(value) || value.length === 0) return invalid('programs');
   const scan: ProgramSetScan = {
     passNames,
@@ -555,9 +596,9 @@ function validateProgramSet(
     modernPublication: false,
     legacySelectionField: undefined,
   };
-  const programs: MaterialCookProgram[] = [];
+  const programs: MaterialCookProgram<Artifact>[] = [];
   for (const [index, entry] of value.entries()) {
-    const program = validateProgram(entry, `programs[${index}]`, scan);
+    const program = validateProgram(entry, `programs[${index}]`, scan, readArtifact);
     if (!program.ok) return program;
     programs.push(program.value);
   }
@@ -585,11 +626,12 @@ function validateProgramSetCompleteness(
   return ok(undefined);
 }
 
-function validateProgram(
+function validateProgram<Artifact extends MaterialCookArtifactIdentity>(
   entry: unknown,
   field: string,
   scan: ProgramSetScan,
-): Result<MaterialCookProgram, MaterialCookRecordError> {
+  readArtifact: ProgramArtifactReader<Artifact>,
+): Result<MaterialCookProgram<Artifact>, MaterialCookRecordError> {
   if (entry === null || typeof entry !== 'object') return invalid(field);
   const program = entry as Record<string, unknown>;
   if (
@@ -599,7 +641,7 @@ function validateProgram(
   )
     return invalid(`${field}.specializationKey`);
   scan.programKeys.add(program.specializationKey);
-  const artifact = validateProgramArtifact(program.artifact, field);
+  const artifact = readArtifact(program.artifact, field);
   if (!artifact.ok) return artifact;
   if (!Array.isArray(program.selections) || program.selections.length === 0)
     return invalid(`${field}.selections`);
@@ -623,21 +665,48 @@ function validateProgram(
 function validateProgramArtifact(
   value: unknown,
   field: string,
+  externalBytes?: (path: string, digest: string) => Uint8Array | undefined,
 ): Result<MaterialCookArtifact, MaterialCookRecordError> {
   if (value === null || typeof value !== 'object') return invalid(`${field}.artifact`);
   const artifact = value as Record<string, unknown>;
-  const bytes = normalizeArtifactBytes(artifact.bytes);
   if (
     artifact.mediaType !== 'text/wgsl' ||
     typeof artifact.path !== 'string' ||
     !artifact.path ||
     typeof artifact.digest !== 'string' ||
-    !artifact.digest ||
-    bytes === undefined
+    !artifact.digest
   )
     return invalid(`${field}.artifact`);
+  const bytes =
+    artifact.bytes === undefined
+      ? externalBytes?.(artifact.path, artifact.digest)
+      : normalizeArtifactBytes(artifact.bytes);
+  if (bytes === undefined) return invalid(`${field}.artifact`);
   return ok({ mediaType: 'text/wgsl', path: artifact.path, digest: artifact.digest, bytes });
 }
+
+const readSourceProgramArtifact: ProgramArtifactReader<
+  MaterialCookArtifact | MaterialCookRasterSourceArtifact
+> = (value, field) => {
+  if (value === null || typeof value !== 'object') return invalid(`${field}.artifact`);
+  const artifact = value as Record<string, unknown>;
+  if (artifact.backing === undefined) return validateProgramArtifact(value, field);
+  if (
+    artifact.backing !== 'raster-source' ||
+    artifact.mediaType !== 'text/wgsl' ||
+    typeof artifact.digest !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/.test(artifact.digest) ||
+    artifact.path !== `materials/programs/${artifact.digest.slice(7)}.wgsl` ||
+    Object.hasOwn(artifact, 'bytes')
+  )
+    return invalid(`${field}.artifact`);
+  return ok({
+    backing: 'raster-source',
+    mediaType: 'text/wgsl',
+    digest: artifact.digest,
+    path: artifact.path,
+  });
+};
 
 function validateProgramSelection(
   rawSelection: unknown,
@@ -794,12 +863,16 @@ function validateRecordReceipt(
   return receiptResult;
 }
 
-export function validateCookedMaterialRecord(
+function readMaterialCookRecord<
+  RecordType extends CookedMaterialRecord | SourceCookedMaterialRecord,
+>(
   value: unknown,
-): Result<CookedMaterialRecord, MaterialCookRecordError> {
+  version: RecordType['schemaVersion'],
+  readArtifact: ProgramArtifactReader<RecordType['programs'][number]['artifact']>,
+): Result<RecordType, MaterialCookRecordError> {
   if (value === null || typeof value !== 'object') return invalid('record');
   const candidate = value as Record<string, unknown>;
-  const header = validateRecordHeader(candidate);
+  const header = validateRecordHeader(candidate, version);
   if (!header.ok) return header;
   if (candidate.resolved === null || typeof candidate.resolved !== 'object')
     return invalid('resolved');
@@ -809,7 +882,7 @@ export function validateCookedMaterialRecord(
   const resolved = candidate.resolved as Record<string, unknown>;
   const passNames = validateResolvedMaterial(resolved);
   if (!passNames.ok) return passNames;
-  const programs = validateProgramSet(candidate.programs, passNames.value);
+  const programs = validateProgramSet(candidate.programs, passNames.value, readArtifact);
   if (!programs.ok) return programs;
   // The program-set digest is computed once by the producer and carried by the receipt.
   const receipt = validateRecordReceipt(candidate, resolved);
@@ -818,16 +891,188 @@ export function validateCookedMaterialRecord(
     ...candidate,
     programs: programs.value,
     receipt: receipt.value,
-  } as unknown as CookedMaterialRecord);
+  } as unknown as RecordType);
+}
+
+export function validateCookedMaterialRecord(
+  value: unknown,
+  externalBytes?: (path: string, digest: string) => Uint8Array | undefined,
+): Result<CookedMaterialRecord, MaterialCookRecordError> {
+  return readMaterialCookRecord(value, 'material-cook/5', (artifact, field) =>
+    validateProgramArtifact(artifact, field, externalBytes),
+  );
+}
+
+export function validateSourceCookedMaterialRecord(
+  value: unknown,
+): Result<SourceCookedMaterialRecord, MaterialCookRecordError> {
+  const record = readMaterialCookRecord<SourceCookedMaterialRecord>(
+    value,
+    'material-cook/6',
+    readSourceProgramArtifact,
+  );
+  if (!record.ok) return record;
+  const sourcePrograms = record.value.programs.filter(({ artifact }) => 'backing' in artifact);
+  if (sourcePrograms.length === 0)
+    return invalid('programs', 'source publication has no source-backed program');
+  for (const { selections } of sourcePrograms) {
+    if (
+      selections.some(
+        ({ context, address, abi }) =>
+          context.pipeline === 'ray' || address === undefined || abi === undefined,
+      )
+    )
+      return invalid(
+        'programs.selections',
+        'source-backed program requires complete raster selections',
+      );
+  }
+  return checkMaterialProgramSetDigest(record.value);
+}
+
+function validMaterialSourceModules(value: unknown): value is MaterialSourcePublication {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { schemaVersion, modules } = value as Record<string, unknown>;
+  if (
+    schemaVersion !== 'material-source-modules/1' ||
+    !Array.isArray(modules) ||
+    modules.length === 0
+  )
+    return false;
+  const identifiers = new Set<string>();
+  for (const item of modules) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
+    const module = item as Record<string, unknown>;
+    const { kind, module: id, digest, source } = module;
+    if (
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      identifiers.has(id) ||
+      typeof digest !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(digest)
+    )
+      return false;
+    if (
+      kind === 'engine'
+        ? Object.hasOwn(module, 'source')
+        : kind !== 'project' || typeof source !== 'string'
+    )
+      return false;
+    identifiers.add(id);
+  }
+  return true;
+}
+
+/** A verified Cook row names the reproducible raster program without carrying its byte result. */
+export function materialRasterSourceSelection(
+  material: string,
+  publication: MaterialRasterSourcePublication,
+  program: MaterialCookProgram<MaterialCookArtifactIdentity>,
+): MaterialRasterSourceSelection | undefined {
+  const selected = program.selections[0];
+  if (
+    selected?.context.pipeline === 'ray' ||
+    selected?.address === undefined ||
+    selected.abi === undefined
+  )
+    return undefined;
+  const overrides = publication.vertexColorOverrides;
+  const key = program.specializationKey;
+  const vertexColorAvailable = Object.hasOwn(overrides, key) ? overrides[key] : undefined;
+  return {
+    material,
+    pass: selected.pass,
+    context: selected.context,
+    address: selected.address,
+    artifactDigest: program.artifact.digest,
+    ...(vertexColorAvailable === undefined ? {} : { vertexColorAvailable }),
+  };
+}
+
+export function validMaterialRasterSourceInputs(
+  value: unknown,
+): value is MaterialRasterSourceInputs {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const table = candidate.materials;
+  return (
+    validMaterialSourceModules(candidate.modules) &&
+    table !== null &&
+    typeof table === 'object' &&
+    !Array.isArray(table) &&
+    Object.entries(table).every(
+      ([guid, material]) =>
+        AssetGuid.parse(guid).ok &&
+        material !== null &&
+        typeof material === 'object' &&
+        !Array.isArray(material) &&
+        material.kind === 'material',
+    )
+  );
+}
+
+export function validMaterialRasterSourceSelection(
+  value: unknown,
+  inputs: MaterialRasterSourceInputs,
+): value is MaterialRasterSourceSelection {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const selection = value as Record<string, unknown>;
+  const context = validateMaterialCookProgramContext(selection.context);
+  return (
+    context.ok &&
+    context.value.pipeline !== 'ray' &&
+    typeof selection.material === 'string' &&
+    Object.hasOwn(inputs.materials, selection.material) &&
+    typeof selection.pass === 'string' &&
+    selection.pass.length > 0 &&
+    (selection.address === 'direct' || selection.address === 'scene-index') &&
+    typeof selection.artifactDigest === 'string' &&
+    /^sha256:[a-f0-9]{64}$/.test(selection.artifactDigest) &&
+    (selection.vertexColorAvailable === undefined ||
+      typeof selection.vertexColorAvailable === 'boolean')
+  );
+}
+
+/** Read the declared source closure paired with an already admitted Cook record. */
+export function validateMaterialRasterSourcePublication(
+  value: unknown,
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
+): Result<MaterialRasterSourcePublication, MaterialCookRecordError> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return invalid('rasterSources');
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.schemaVersion !== MATERIAL_RASTER_SOURCES_SCHEMA ||
+    candidate.programSetDigest !== record.receipt.identity.artifactDigest
+  )
+    return invalid('rasterSources.programSetDigest', candidate.programSetDigest);
+  if (!validMaterialSourceModules(candidate.modules)) return invalid('rasterSources.modules');
+  const overrides = candidate.vertexColorOverrides;
+  if (overrides === null || typeof overrides !== 'object' || Array.isArray(overrides))
+    return invalid('rasterSources.vertexColorOverrides');
+  const colorOverrideRows = Object.entries(overrides);
+  if (colorOverrideRows.length !== 0) {
+    const rasterKeys = new Set(
+      record.programs.flatMap((program) =>
+        program.selections.every(({ context }) => context.pipeline !== 'ray')
+          ? [program.specializationKey]
+          : [],
+      ),
+    );
+    for (const [key, enabled] of colorOverrideRows)
+      if (typeof enabled !== 'boolean' || !rasterKeys.has(key))
+        return invalid('rasterSources.vertexColorOverrides', key);
+  }
+  return ok(value as MaterialRasterSourcePublication);
 }
 
 /**
  * Recompute a record's program-set digest against its resolved passes. Build-time
  * readers of an existing cook use it; runtime admission trusts the verified Pack.
  */
-export function checkMaterialProgramSetDigest(
-  record: CookedMaterialRecord,
-): Result<CookedMaterialRecord, MaterialCookRecordError> {
+export function checkMaterialProgramSetDigest<
+  RecordType extends CookedMaterialRecord | SourceCookedMaterialRecord,
+>(record: RecordType): Result<RecordType, MaterialCookRecordError> {
   const digest = createMaterialProgramSetDigest(record.programs, record.resolved.passes);
   return digest === record.receipt.identity.artifactDigest
     ? ok(record)
@@ -954,7 +1199,7 @@ export function validateMaterialCookProgramContext(
 }
 
 function materialProgramSetManifest(
-  programs: readonly MaterialCookProgram[],
+  programs: readonly MaterialCookProgram<MaterialCookArtifactIdentity>[],
   passes: readonly MaterialPass[],
 ): string {
   const manifest = {
@@ -980,7 +1225,7 @@ function materialProgramSetManifest(
 
 /** Covers every selection and artifact while excluding transport copies of the bytes. */
 export function createMaterialProgramSetDigest(
-  programs: readonly MaterialCookProgram[],
+  programs: readonly MaterialCookProgram<MaterialCookArtifactIdentity>[],
   passes: readonly MaterialPass[],
 ): string {
   return createMaterialArtifactDigest(

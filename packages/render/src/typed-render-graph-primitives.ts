@@ -15,7 +15,7 @@ import {
   type RhiRenderPassEncoder,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
+import { TAA_SCENE_VELOCITY_WGSL, TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import {
   err,
   type MaterialColorOutput,
@@ -69,7 +69,7 @@ import {
 } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
 import { prepareTypedScenePipelineDemand } from './record/typed-scene-pipeline-demand';
-import { POST_PROCESS_VIEW_UNIFORM_OFFSET } from './record/view-ubo';
+import { POST_PROCESS_VIEW_UNIFORM_OFFSET, VIEW_UNIFORM_BYTES } from './record/view-ubo';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import {
   encodeFullscreenPass,
@@ -87,6 +87,9 @@ import type {
   RenderPipelineSurfaceMediumPair,
 } from './render-pipeline';
 import { createRenderPipelineTarget, type RenderPipelineTarget } from './render-pipeline';
+import { markPipelinePreparationPending } from './render-system-presentation';
+import type { DeferredAoNormalLayout } from './ssao-config';
+import type { SceneVelocityInputs } from './temporal/default-gbuffer-velocity';
 import {
   getTemporalBindGroupResources,
   getTemporalGpuState,
@@ -610,6 +613,7 @@ export function addTypedScenePass(
     gpuFilter: options.gpuDrivenFilter,
     late: options.gpuDrivenPhase === 'late',
     capture: false,
+    selectsEntities: options.selectEntities !== undefined,
   });
   const sampledMaterialDepth =
     options.materialSceneDepth !== true
@@ -663,7 +667,7 @@ export function addTypedScenePass(
             : { viewBindGroupDynamicOffset: context.viewBindGroupDynamicOffset }),
           gpuDrivenGeometryLane: context.gpuDrivenGeometryLane,
           hasLocalLights: (context.standardLighting?.prepared.local.length ?? 0) > 0,
-          ssao: context.frameState.installedPipelineConfig?.ssao?.enabled === true,
+          ssao: context.frameState.installedPipelineConfig?.ambientOcclusion?.enabled === true,
           reflectionFallbackDemand: context.reflectionFallbackDemand === true,
           probeBlend:
             (context.frameState.probeBlendRecordProjection?.projection.records.length ?? 0) > 0,
@@ -1140,6 +1144,8 @@ export interface TypedSsaoTargets {
   readonly parameters?: GraphBuffer | undefined;
   /** Owner-only acceptance selection; game-facing camera configuration stays algorithm-only. */
   readonly execution?: 'fragment' | 'compute' | undefined;
+  /** Selects the exact normal and coverage decoder for a Deferred attachment. */
+  readonly gbufferNormalLayout?: DeferredAoNormalLayout | undefined;
 }
 
 export function addTypedSsaoPasses(
@@ -1225,6 +1231,9 @@ function addTypedSsaoNormalPasses(
   depthView: GraphTextureView,
 ): Result<void, RenderGraphError> {
   const depth = { value: depthView };
+  const gbufferLayout =
+    targets.gbufferNormalLayout ??
+    (targets.normal.format === 'rg32uint' ? 'standard-gbuffer/2' : undefined);
   const calc =
     targets.execution === 'compute'
       ? graph.addComputePass('gtao-calc-compute', {
@@ -1237,7 +1246,7 @@ function addTypedSsaoNormalPasses(
             const extent = resources.textureViewExtent(targets.raw.view);
             if (!extent.ok) throw extent.error;
             recordGtaoComputePass(frame as _InternalRenderPipelineContext, pass, {
-              gbufferV2: targets.normal.format === 'rg32uint',
+              gbufferV2: gbufferLayout === 'standard-gbuffer/2',
               output: resolvedView(resources, targets.raw.view),
               normal: resolvedView(resources, targets.normal.view),
               depth: resolvedView(resources, depth.value),
@@ -1270,7 +1279,7 @@ function addTypedSsaoNormalPasses(
               undefined,
               pass,
               {
-                gbufferV2: targets.normal.format === 'rg32uint',
+                gbufferLayout,
                 output: resolvedView(resources, targets.raw.view),
                 normal,
                 depth: depthView,
@@ -1308,7 +1317,7 @@ function addTypedSsaoNormalPasses(
         undefined,
         pass,
         {
-          gbufferV2: targets.normal.format === 'rg32uint',
+          gbufferLayout,
           output: resolvedView(resources, targets.blurred.view),
           raw: resolvedView(resources, targets.raw.view),
           normal,
@@ -1579,6 +1588,7 @@ export interface TypedTemporalResolveTargets {
   /** Optional producer-owned R-channel reactivity in current screen space. */
   readonly secondaryReactivity?: TemporalSecondaryReactivity | undefined;
   readonly currentTemporal: RenderPipelineTarget;
+  readonly sceneVelocity?: SceneVelocityInputs;
   readonly depth: RenderPipelineTarget;
   readonly historyColor: RenderPipelineTarget;
   readonly historyTemporal: RenderPipelineTarget;
@@ -1607,10 +1617,60 @@ export function addTypedTemporalResolvePass(
     if (!rows.ok) return rows;
     secondaryReactivity = rows.value;
   }
+  const { sceneVelocity } = targets;
+  const entry = sceneVelocity === undefined ? undefined : { source: TAA_SCENE_VELOCITY_WGSL };
+  const formats = [
+    targets.writeColor.format,
+    targets.writeTemporal.format,
+    targets.writeStability.format,
+    targets.writeFlicker.format,
+  ] as GPUTextureFormat[];
+  const temporalState = (frame: RenderPipelineFrame) =>
+    getTemporalGpuState(
+      (frame as _InternalRenderPipelineContext).frameState,
+      frame.runtime.device,
+      recordContext(frame.runtime as import('./record/render-context').RenderSystemRuntime)
+        .deviceScope,
+      frame.targetW,
+      frame.targetH,
+      false,
+      frame.camera,
+    );
+  registerScenePipelinePreparation(
+    graph,
+    (frame) => {
+      const lookup = frame.runtime.getPostProcessPipeline;
+      if (
+        lookup !== undefined &&
+        lookup(
+          'forgeax.taa-resolve',
+          getTemporalBindGroupResources(
+            temporalState(frame as RenderPipelineFrame),
+            sceneVelocity !== undefined,
+          ).layout,
+          formats,
+          entry,
+        ) === null
+      ) {
+        markPipelinePreparationPending(frame.frameState, {
+          code: 'scene-pipeline-preparation',
+          pass: 'taa-resolve',
+        });
+      }
+      return false;
+    },
+    'utility',
+  );
   const added = graph.addRasterPass('taa-resolve', {
     accesses: [
       { resource: targets.scene.view, usage: 'sampled-read' },
       { resource: targets.currentTemporal.view, usage: 'sampled-read' },
+      ...(sceneVelocity === undefined
+        ? []
+        : [
+            { resource: sceneVelocity.depth, usage: 'sampled-read' as const },
+            { resource: sceneVelocity.view, usage: 'uniform-read' as const },
+          ]),
       ...(targets.coverage === undefined
         ? []
         : [{ resource: targets.coverage.view, usage: 'sampled-read' as const }]),
@@ -1660,26 +1720,22 @@ export function addTypedTemporalResolvePass(
     ],
     encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
-      const state = getTemporalGpuState(
-        internal.frameState,
-        frame.runtime.device,
-        recordContext(frame.runtime as import('./record/render-context').RenderSystemRuntime)
-          .deviceScope,
-        frame.targetW,
-        frame.targetH,
-        false,
-        frame.camera,
-      );
-      const built = getTemporalBindGroupResources(state);
+      const state = temporalState(frame);
+      const built = getTemporalBindGroupResources(state, sceneVelocity !== undefined);
       const current = resolvedView(resources, targets.scene.view);
       const currentTemporal = resolvedView(resources, targets.currentTemporal.view);
       const historyColor = resolvedView(resources, targets.historyColor.view);
       const historyTemporal = resolvedView(resources, targets.historyTemporal.view);
       const historyStability = resolvedView(resources, targets.historyStability.view);
       const historyFlicker = resolvedView(resources, targets.historyFlicker.view);
+      const temporalPlaceholder = sceneVelocity === undefined ? currentTemporal : historyTemporal;
+      const depth =
+        sceneVelocity === undefined ? undefined : resolvedView(resources, sceneVelocity.depth);
+      const view =
+        sceneVelocity === undefined ? undefined : resources.buffer(sceneVelocity.view).unwrap();
       const secondarySource =
         targets.secondaryReactivity === undefined
-          ? currentTemporal
+          ? temporalPlaceholder
           : resolvedView(resources, targets.secondaryReactivity.view);
       const params = getTemporalParamsBuffer(state);
       if (params === undefined || built.sampler === null || built.temporalSampler === null) {
@@ -1694,11 +1750,11 @@ export function addTypedTemporalResolvePass(
       );
       const secondary =
         secondaryReactivity === undefined
-          ? currentTemporal
+          ? temporalPlaceholder
           : resolvedView(resources, secondaryReactivity);
       const coverage =
         targets.coverage === undefined
-          ? currentTemporal
+          ? temporalPlaceholder
           : resolvedView(resources, targets.coverage.view);
       const sources = [
         state,
@@ -1716,6 +1772,8 @@ export function addTypedTemporalResolvePass(
         secondary,
         secondarySource,
         coverage,
+        depth,
+        view,
       ];
       let binding = bindings.find((candidate) =>
         candidate.sources.every((source, index) => source === sources[index]),
@@ -1757,6 +1815,15 @@ export function addTypedTemporalResolvePass(
                 value: secondarySource,
               },
             },
+            ...(view === undefined || depth === undefined
+              ? []
+              : [
+                  { binding: 14, resource: { kind: 'textureView', value: depth } },
+                  {
+                    binding: 15,
+                    resource: { kind: 'buffer', value: { buffer: view, size: VIEW_UNIFORM_BYTES } },
+                  },
+                ]),
           ] as never,
         });
         if (!bindGroup.ok) {
@@ -1766,12 +1833,12 @@ export function addTypedTemporalResolvePass(
         if (bindings.length === 2) bindings.shift();
         bindings.push(binding);
       }
-      const pipeline = frame.runtime.getPostProcessPipeline?.('forgeax.taa-resolve', built.layout, [
-        targets.writeColor.format,
-        targets.writeTemporal.format,
-        targets.writeStability.format,
-        targets.writeFlicker.format,
-      ] as GPUTextureFormat[]);
+      const pipeline = frame.runtime.getPostProcessPipeline?.(
+        'forgeax.taa-resolve',
+        built.layout,
+        formats,
+        entry,
+      );
       if (pipeline === null || pipeline === undefined) {
         throwTemporalEncodeFailure('TAA resolve pipeline is ready before frame encoding');
       }

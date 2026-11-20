@@ -42,6 +42,7 @@ function makeRegistry(postSpawnHook?: PostSpawnHook): AssetRegistry {
       getMaterialShaderManifest: vi.fn().mockReturnValue(undefined),
       findMaterialArtifact: vi.fn().mockReturnValue({ ok: false, error: new Error('mock') }),
       materialArtifact: vi.fn().mockReturnValue(undefined),
+      materialParamSchemaProjection: vi.fn().mockReturnValue(undefined),
       getPipeline: vi.fn().mockReturnValue(undefined),
       installMaterialArtifact: vi.fn(),
       inspect: vi.fn().mockReturnValue({ materialShaders: [] }),

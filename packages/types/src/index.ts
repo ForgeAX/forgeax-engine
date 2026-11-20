@@ -58,6 +58,7 @@ export {
 } from './load-timeline.js';
 export * from './material-lighting-inputs.js';
 export * from './material-program-abi.js';
+export * from './material-source-program.js';
 export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';
 export type { PackageFetcher, PackageRequest, PackageResponse } from './package-fetch.js';

@@ -387,6 +387,7 @@ export type GpuDrivenGraphProjection = Pick<
 
 export interface GpuDrivenPrepareInput {
   readonly materialArtifactResolver?: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly materialShaderRegistry?: RenderSystemInternals['shaderRegistry'];
   readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
   readonly shadowMaterials?: ShadowMaterialContent;
   readonly shadowViews?: boolean;

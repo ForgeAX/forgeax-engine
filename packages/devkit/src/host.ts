@@ -66,6 +66,10 @@ import {
 import { type WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
 import { assetLibrarySourceIdentity, findEngineWorkspaceRoot } from './asset-libraries.js';
+import {
+  authoredRuntimePackImports,
+  prepareAuthoredRuntimePacks,
+} from './build/authored-runtime-packs.js';
 import { loadProjectCookers } from './build/cookers.js';
 import { executionBootstrapEntry } from './build/execution-bootstrap.js';
 import { executionWorkerEntries, runtimeDependencyEntries } from './build/execution-workers.js';
@@ -81,8 +85,7 @@ import {
   pluginRootDescriptor,
   pluginRuntimeProjection,
 } from './build/plugin-programs.js';
-import { runtimePacksSource } from './build/runtime-packs-source.js';
-import { staticPackProgramsSource } from './build/static-pack-programs.js';
+import { runtimePacksModuleSource } from './build/runtime-packs-source.js';
 import { writeTauriProject } from './build/tauri.js';
 import {
   prepareWechatBuild,
@@ -1804,6 +1807,7 @@ const appBootstrapPlugin = {
           },
       {
         ...bundler,
+        ...(Reflect.has(globalThis, '__forgeaxSingleHtml') ? { workerScriptDelivery: 'embedded' } : {}),
         configurationHost: bundler.configurationHost ?? createBrowserConfigurationHost(${JSON.stringify(facts.id)}),
         ...(workerExecution || bootstrapRoot !== 'resource-bootstrap' ? {
           createHostAudio: (options?: Parameters<typeof createHostAudioConsumer>[1]) => {
@@ -3011,20 +3015,6 @@ async function writePipelineLibrary(
   ]);
 }
 
-async function runtimePacksModuleSource(
-  facts: ProjectFacts,
-  sourceInventory: PluginSourceInventory,
-  staticPrograms: boolean,
-): Promise<string> {
-  if (!staticPrograms) return runtimePacksSource;
-  return `${await staticPackProgramsSource(facts, sourceInventory)}
-import type { RuntimePackOptions } from '@forgeax/engine/app';
-export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
-  return { scopeId, imports, programHost };
-}
-`;
-}
-
 function assertNoBuiltinImporterOverride(importers: readonly Importer[]): void {
   const builtinImporterKeys = new Set(DEFAULT_IMPORTERS.map((importer) => importer.key));
   for (const importer of importers)
@@ -3449,6 +3439,13 @@ export async function createViteConfig(
       animation,
       appOptions: cookerSession.appOptions,
     });
+    const { packs: authoredPacks, cooked: cookedRuntimePacks } = await prepareAuthoredRuntimePacks(
+      realProjectRoot,
+      inventory.declarations,
+      sourceSnapshot,
+      options.target,
+    );
+    const runtimeImports = authoredRuntimePackImports(authoredPacks);
     const writeHostEntries = async () => {
       await Promise.all([
         ...(serving ? writePreviewBatchEntry(generated) : []),
@@ -3498,7 +3495,13 @@ export async function createViteConfig(
         ),
         writeFile(
           resolve(generated, 'runtime-packs.ts'),
-          await runtimePacksModuleSource(facts, sourceInventory, staticPrograms),
+          await runtimePacksModuleSource(
+            facts,
+            sourceInventory,
+            staticPrograms,
+            authoredPacks,
+            realGeneratedRoot,
+          ),
         ),
         ...(gameBinding
           ? [
@@ -3612,6 +3615,7 @@ export async function createViteConfig(
               );
             },
       roots,
+      cookedRuntimePacks,
       enginePackageRoot: await localEnginePackageRoot(facts.root),
       takeInitialSourceSnapshot: () => {
         const taken = initialSourceSnapshot;
@@ -3711,7 +3715,7 @@ export async function createViteConfig(
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
       executionWorkerEntries(
-        undefined,
+        runtimeImports,
         delivery,
         realGeneratedRoot,
         environmentExecutionWorkers(cookerSession.appOptions.execution?.workers),

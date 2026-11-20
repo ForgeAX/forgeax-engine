@@ -88,6 +88,7 @@ interface TemporalGpuStateBase {
   readonly cloudTransmittance: [TemporalSurface, TemporalSurface] | undefined;
   readonly cloudDepth: [TemporalSurface, TemporalSurface] | undefined;
   bindGroupLayout: BindGroupLayout | undefined;
+  sceneVelocityLayout?: BindGroupLayout | undefined;
   sampler: Sampler | undefined;
   temporalSampler: Sampler | undefined;
   paramsBuffer: Buffer | undefined;
@@ -386,14 +387,18 @@ export function getTemporalGpuState(
   return next;
 }
 
-export function getTemporalBindGroupResources(state: TemporalGpuState): {
+export function getTemporalBindGroupResources(
+  state: TemporalGpuState,
+  sceneVelocity = false,
+): {
   readonly layout: BindGroupLayout;
   readonly sampler: Sampler | null;
   readonly temporalSampler: Sampler | null;
 } {
-  if (state.bindGroupLayout !== undefined) {
+  const existingLayout = sceneVelocity ? state.sceneVelocityLayout : state.bindGroupLayout;
+  if (existingLayout !== undefined) {
     return {
-      layout: state.bindGroupLayout,
+      layout: existingLayout,
       sampler: state.sampler ?? null,
       temporalSampler: state.temporalSampler ?? null,
     };
@@ -423,7 +428,10 @@ export function getTemporalBindGroupResources(state: TemporalGpuState): {
         {
           binding: 6,
           visibility: 2,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+          texture: {
+            sampleType: sceneVelocity ? 'uint' : 'unfilterable-float',
+            viewDimension: '2d',
+          },
         },
         { binding: 7, visibility: 2, sampler: { type: 'non-filtering' } },
         { binding: 8, visibility: 2, buffer: { type: 'uniform' } },
@@ -444,6 +452,16 @@ export function getTemporalBindGroupResources(state: TemporalGpuState): {
           texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
         },
         { binding: 13, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+        ...(sceneVelocity
+          ? [
+              {
+                binding: 14,
+                visibility: 2,
+                texture: { sampleType: 'depth' as const, viewDimension: '2d' as const },
+              },
+              { binding: 15, visibility: 2, buffer: { type: 'uniform' as const } },
+            ]
+          : []),
       ],
     });
     if (!layout.ok) throw layout.error;
@@ -464,7 +482,8 @@ export function getTemporalBindGroupResources(state: TemporalGpuState): {
     });
     if (!temporalSampler.ok) throw temporalSampler.error;
     state.childScope._adopt('binding', temporalSampler.value, () => undefined);
-    state.bindGroupLayout = layout.value;
+    if (sceneVelocity) state.sceneVelocityLayout = layout.value;
+    else state.bindGroupLayout = layout.value;
     state.sampler = sampler.value;
     state.temporalSampler = temporalSampler.value;
     return { layout: layout.value, sampler: sampler.value, temporalSampler: temporalSampler.value };
@@ -472,6 +491,7 @@ export function getTemporalBindGroupResources(state: TemporalGpuState): {
     if (!state.committed) {
       state.childScope.abandon();
       state.bindGroupLayout = undefined;
+      state.sceneVelocityLayout = undefined;
       state.sampler = undefined;
       state.temporalSampler = undefined;
     }

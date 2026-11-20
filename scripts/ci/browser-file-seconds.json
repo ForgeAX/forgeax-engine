@@ -1,7 +1,7 @@
 {
   "sourceRuns": [
     38320931831, 38325569733, 39444004385, 39450499871, 39565639578, 39566289907, 39553651697,
-    41725978104, 42298226755, 42300870201, 43810781689, 43830647933
+    41725978104, 42298226755, 42300870201, 43810781689, 43830647933, 44634135861, 44652430186
   ],
   "files": {
     "apps/game-capability-lab/__tests__/hud-ui.browser.test.ts": 6.599,
@@ -96,6 +96,7 @@
     "packages/app/__tests__/render-worker-geometry.browser.test.ts": 124.36,
     "packages/app/__tests__/render-worker-media.browser.test.ts": 116.709,
     "packages/app/__tests__/render-worker-multi-camera.browser.test.ts": 116.215,
+    "packages/app/__tests__/render-worker-pressure.browser.test.ts": 39.687,
     "packages/app/__tests__/render-worker-tiles.browser.test.ts": 146.108,
     "packages/app/__tests__/render-worker.browser.test.ts": 157.649,
     "packages/app/__tests__/subsurface.browser.test.ts": 190.766,
@@ -241,6 +242,7 @@
     "packages/runtime/__tests__/swap-chain-format.browser.test.ts": 15.063,
     "packages/runtime/src/__tests__/asset-registry.browser.test.ts": 5.594,
     "packages/runtime/src/__tests__/atmosphere-background.browser.test.ts": 30.96,
+    "packages/runtime/src/__tests__/atmosphere-full-webgl2.browser.test.ts": 63.33,
     "packages/runtime/src/__tests__/backend-selection.browser.test.ts": 24.393,
     "packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts": 49.018,
     "packages/runtime/src/__tests__/barrel-distortion-resource-lifecycle-probe.browser.test.ts": 26.832,
@@ -249,6 +251,7 @@
     "packages/runtime/src/__tests__/canvas-texture.browser.test.ts": 65.397,
     "packages/runtime/src/__tests__/capsule-shadow-webgl2.browser.test.ts": 19.469,
     "packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts": 22.782,
+    "packages/runtime/src/__tests__/compatibility-scene.browser.test.ts": 70.486,
     "packages/runtime/src/__tests__/single-source-skybox.browser.test.ts": 51.398,
     "packages/runtime/src/__tests__/cpu-ui.browser.test.ts": 20.228,
     "packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts": 156.351,

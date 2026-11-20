@@ -3,11 +3,10 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { createProfiler } from '@forgeax/engine-profiler';
 import type { FrameReceipt, FrameReceiptObservation } from '@forgeax/engine-render';
 import {
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
+  DEFAULT_STANDARD_PROFILE,
   MeshFilter,
   MeshRenderer,
   PointLight,
@@ -1958,6 +1957,10 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
   const surfaceDataConsumer = createForwardGtaoSceneDataConsumer(width, height);
   const hostAssembly = value(
     await constructRuntimeRendererHost(canvas, {
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        ambientOcclusion: { enabled: false, method: 'gtao' },
+      },
       rhi: recorder.backend.rhi,
       captureGpuTimings: true,
       profiler,
@@ -2064,11 +2067,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       algorithm:
         cameraAo === undefined
           ? null
-          : cameraAo.algorithm === AMBIENT_OCCLUSION_GTAO
-            ? 'gtao'
-            : cameraAo.algorithm === AMBIENT_OCCLUSION_SSAO
-              ? 'ssao'
-              : 'unknown',
+          : (renderer.inspect().profile.ambientOcclusion.method ?? 'ssao'),
     };
     const previousReceipt = failureReceipt;
     const previousReadback = failureReadback;
@@ -2518,7 +2517,6 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       .addComponent(camera, {
         component: AmbientOcclusion,
         data: {
-          algorithm: AMBIENT_OCCLUSION_GTAO,
           directLightingStrength: 0,
           radius: FORWARD_GTAO_FIXTURE.radius,
           bias: FORWARD_GTAO_FIXTURE.bias,
@@ -3136,9 +3134,14 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     expect(fullResolutionRaw.textureIdentity).not.toBe(computeRaw.textureIdentity);
 
     debugHost.setGtaoExecutionOverrideForConformance(undefined);
+    value(
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        ambientOcclusion: { enabled: false, method: 'ssao' },
+      }),
+    );
     world
       .set(camera, AmbientOcclusion, {
-        algorithm: AMBIENT_OCCLUSION_SSAO,
         quality: AMBIENT_OCCLUSION_QUALITY_MEDIUM,
         resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
       })
@@ -3152,9 +3155,14 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     );
     const ssaoTransitionRaw = await captureTarget('ssao-raw');
     debugHost.setGtaoExecutionOverrideForConformance('compute');
+    value(
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        ambientOcclusion: { enabled: false, method: 'gtao' },
+      }),
+    );
     world
       .set(camera, AmbientOcclusion, {
-        algorithm: AMBIENT_OCCLUSION_GTAO,
         quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
         resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
       })
@@ -3188,7 +3196,6 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       .addComponent(orthographicCamera, {
         component: AmbientOcclusion,
         data: {
-          algorithm: AMBIENT_OCCLUSION_GTAO,
           directLightingStrength: 0,
           radius: FORWARD_GTAO_FIXTURE.radius,
           bias: FORWARD_GTAO_FIXTURE.bias,
@@ -3285,7 +3292,6 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       .addComponent(orthographicCamera, {
         component: AmbientOcclusion,
         data: {
-          algorithm: AMBIENT_OCCLUSION_GTAO,
           directLightingStrength: 0,
           radius: FORWARD_GTAO_FIXTURE.radius,
           bias: FORWARD_GTAO_FIXTURE.bias,

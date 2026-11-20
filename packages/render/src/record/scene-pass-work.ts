@@ -60,6 +60,8 @@ export interface ScenePassRequest {
   readonly gpuFilter: RenderPipelineGpuDrivenFilter | undefined;
   readonly late: boolean;
   readonly capture: boolean;
+  /** A live entity selection may split material-compatible fold buckets. */
+  readonly selectsEntities?: boolean;
   readonly camera?: () => CameraSnapshot | undefined;
   readonly captureCull?: CaptureCull;
 }
@@ -466,6 +468,7 @@ function projectScenePassWork(
   const folding =
     !combinedTranslucency &&
     !request.capture &&
+    request.selectsEntities !== true &&
     request.passKind === 'forward' &&
     (materials.hasBorrowedValues || materials.hasFoldableSprites);
   const valuesChanged =

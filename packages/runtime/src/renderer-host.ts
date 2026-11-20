@@ -10,11 +10,13 @@ import {
   EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import { RhiError, type RhiErrorCode } from '@forgeax/engine-rhi';
-import { err } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { installDefaultAssetDecoders } from './asset-contributions';
 import { type BackendPackSelection, loadBackendPack } from './backend-selection';
+import { createMaterialSourceCompiler } from './material-source-compiler';
 import { postSpawnResolveJoints } from './scene-instances/index';
 import { prepareProgramCompiler, stagePublicationShaders } from './shader-publication';
+import { taskShaderProgramCompiler } from './tasks';
 
 export type {
   BundlerOptions,
@@ -84,7 +86,14 @@ export async function constructRuntimeRendererHost(
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   const publication = {
     ...bundler,
-    prepareShaderProgramCompiler: bundler?.prepareShaderProgramCompiler ?? prepareProgramCompiler,
+    prepareShaderProgramCompiler:
+      bundler?.prepareShaderProgramCompiler ??
+      (async () => {
+        const prepared = await prepareProgramCompiler();
+        return prepared.ok && options?.tasks !== undefined
+          ? ok(taskShaderProgramCompiler(prepared.value, options.tasks))
+          : prepared;
+      }),
   };
   const first = await loadBackendPack(options);
   let result = await attemptRendererHost(first, canvas, options, publication);
@@ -106,7 +115,13 @@ export async function constructRuntimeRendererHost(
       );
     }
   }
-  if (result.ok) installDefaultAssetDecoders(result.value.assets);
+  if (result.ok) {
+    const assets = result.value.assets;
+    assets.setMaterialSourceCompiler(
+      createMaterialSourceCompiler(assets.shaderRegistry, options?.tasks),
+    );
+    installDefaultAssetDecoders(assets);
+  }
   return result;
 }
 

@@ -15,9 +15,9 @@ import {
 import { createRasterState, type RasterState } from '../raster-graph-state';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 import type { SsrSpatialGraphInputs } from './graph';
 import { SSR_TEMPORAL_PARAMS_BYTES, type SsrSpatialResources } from './resources';
+import { ssrGBufferConstants, ssrShaderGBufferMismatch } from './shader-layout';
 
 type TextureInput = {
   readonly binding: number;
@@ -60,14 +60,13 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
       ],
       colorAttachments: outputs.map(({ view }) => ({ view, loadOp: 'clear', storeOp: 'store' })),
       encodeDirect: (pass, frame: RenderGraphFrame, resolver) => {
-        if (
-          input.gbufferV2 === true &&
-          (frame as RenderPipelineFrame).ssrShaders?.gbuffer !== 'standard-gbuffer/2'
-        )
+        const sources = (frame as RenderPipelineFrame).ssrShaders;
+        const mismatch = ssrShaderGBufferMismatch(sources, input);
+        if (mismatch !== undefined)
           throw computePipelineError(
-            'SSR standard-gbuffer/2 source contract; rebuild the Engine shader manifest',
+            `SSR ${mismatch.expected} source contract; rebuild the Engine shader manifest`,
           );
-        const code = (frame as RenderPipelineFrame).ssrShaders?.[source];
+        const code = sources?.[source];
         if (
           code === undefined ||
           (entry !== 'ssr_reflection_mip_fragment' && input.view === undefined)
@@ -92,7 +91,7 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
           'ssr_fullscreen',
           entry,
           outputs.map(({ format }) => format),
-          input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
+          ssrGBufferConstants(input),
         );
         pass.setPipeline(state.pipeline);
         pass.setBindGroup(
@@ -123,8 +122,17 @@ export function addSsrFragmentStages<Frame extends RenderGraphFrame>(
   const trace = add(
     'ssr-trace',
     'traceFragment',
-    'ssr_trace_fragment',
+    input.compactMaterial === undefined ? 'ssr_trace_fragment' : 'ssr_trace_fragment_compact',
     [
+      ...(input.compactMaterial === undefined
+        ? []
+        : [
+            {
+              binding: 14,
+              view: input.compactMaterial,
+              sampleType: 'uint' as const,
+            },
+          ]),
       { binding: 0, view: input.depth, sampleType: 'depth' },
       { binding: 1, view: input.normal, sampleType: 'uint' },
       { binding: 2, view: input.scene, sampleType: 'unfilterable-float' },

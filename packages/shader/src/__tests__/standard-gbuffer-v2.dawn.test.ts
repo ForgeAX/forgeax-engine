@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { mat4 } from '@forgeax/engine/math';
 import { expect, it } from 'vitest';
 import { composeShader } from '../../../naga/src/index';
 
@@ -364,6 +365,135 @@ struct Output { normalRoughness: vec4f, facts: vec4f }
     readback.destroy();
     v1.destroy();
     v2.destroy();
+    device.destroy();
+  }
+});
+
+it('recovers signed scene depth from the actual Deferred reconstruction on Dawn', async () => {
+  const source = readFileSync(
+    new URL('../standard-deferred-lighting.wgsl', import.meta.url),
+    'utf8',
+  );
+  const reconstruction = source.match(
+    / {2}let homogeneous = [^;]+;\n {2}let position = [^;]+;/,
+  )?.[0];
+  const viewDepth = source.match(/ {2}let viewZ = [^;]+;/)?.[0];
+  if (reconstruction === undefined || viewDepth === undefined)
+    throw new Error('Deferred scene depth reconstruction is missing');
+
+  const near = 0.25;
+  const far = 512;
+  const perspective = mat4.perspectiveReverseZ(mat4.create(), 1.1, 1.6, near, far);
+  const shifted = mat4.clone(perspective);
+  shifted[8] = 0.2;
+  shifted[9] = -0.13;
+  const oblique = mat4.clone(shifted);
+  oblique[2] = 0.015;
+  oblique[6] = -0.01;
+  const infinite = mat4.perspectiveReverseZ(mat4.create(), 1.1, 1.6, near, Infinity);
+  const orthographic = mat4.orthographicReverseZ(mat4.create(), -8, 6, -5, 7, near, far);
+  const cameraPosition = [20, -6, 12] as const;
+  const viewMatrix = mat4.lookAt(mat4.create(), cameraPosition, [20, -6, 11], [0, 1, 0]);
+  const depths = [0.5, 3.5, 31.5, 247.5];
+  const inputs: number[] = [];
+  const expected: number[] = [];
+  for (const projection of [perspective, shifted, oblique, infinite, orthographic]) {
+    const worldViewProj = mat4.multiply(mat4.create(), projection, viewMatrix);
+    const inverseViewProj = mat4.invert(mat4.create(), worldViewProj);
+    for (const [index, depth] of depths.entries()) {
+      inputs.push(
+        ...worldViewProj,
+        ...inverseViewProj,
+        near,
+        far,
+        projection === orthographic ? 1 : 0,
+        0,
+        cameraPosition[0] + 0.025 * depth,
+        cameraPosition[1] + 0.015 * depth * (index % 2 === 0 ? 1 : -1),
+        cameraPosition[2] - depth,
+        1,
+      );
+      expected.push(-depth);
+    }
+  }
+
+  const code = await composeShader(
+    `
+#import forgeax_scene_temporal::{sceneViewZ, sceneFragmentViewZ}
+struct Projection {
+  worldViewProj: mat4x4f, inverseViewProj: mat4x4f, temporalProjection: vec4f, world: vec4f,
+}
+struct Pixel { position: vec4f }
+@group(0) @binding(0) var<storage, read> projections: array<Projection>;
+@group(0) @binding(1) var<storage, read_write> results: array<vec2f>;
+@compute @workgroup_size(1) fn testDepth(@builtin(global_invocation_id) id: vec3u) {
+  let view = projections[id.x];
+  let clip = view.worldViewProj * view.world;
+  let ndc = clip.xyz / clip.w;
+  let depth = ndc.z;
+  let in = Pixel(vec4f(11.5, 7.5, 0.0, 1.0));
+  ${reconstruction}
+  ${viewDepth}
+  let roundTrip = sceneViewZ(view.worldViewProj * vec4f(position, 1.0), view.temporalProjection);
+  results[id.x] = vec2f(viewZ, roundTrip);
+}`,
+    {
+      forgeax_scene_temporal: readFileSync(
+        new URL('../scene-temporal.wgsl', import.meta.url),
+        'utf8',
+      ),
+    },
+    {},
+  );
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('Deferred scene depth requires a GPU adapter');
+  const device = await adapter.requestDevice();
+  const data = new Float32Array(inputs);
+  const input = device.createBuffer({
+    size: data.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const output = device.createBuffer({
+    size: expected.length * 8,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    size: output.size,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    device.queue.writeBuffer(input, 0, data);
+    const module = device.createShaderModule({ code });
+    const pipeline = await device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module, entryPoint: 'testDepth' },
+    });
+    const group = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: input } },
+        { binding: 1, resource: { buffer: output } },
+      ],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(expected.length);
+    pass.end();
+    encoder.copyBufferToBuffer(output, 0, readback, 0, readback.size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const observed = new Float32Array(readback.getMappedRange());
+    for (const [index, depth] of expected.entries()) {
+      expect(observed[index * 2]).toBeCloseTo(depth, 3);
+      expect(observed[index * 2 + 1]).toBeCloseTo(depth, 3);
+    }
+    readback.unmap();
+  } finally {
+    input.destroy();
+    output.destroy();
+    readback.destroy();
     device.destroy();
   }
 });

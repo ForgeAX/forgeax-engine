@@ -272,6 +272,11 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
     return state;
   };
 
+  const taskFailure = (kind: string, state: KindState): unknown =>
+    state.degraded && options.kinds[kind]?.workerOnly
+      ? new Error(`task kind '${kind}' requires a Worker`)
+      : state.failure;
+
   const settle = (task: Task): boolean => {
     if (task.settled) return false;
     task.settled = true;
@@ -549,9 +554,10 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
           continue;
         }
         const state = kindState(task.kind);
-        if (state.failure !== undefined) {
+        const failure = taskFailure(task.kind, state);
+        if (failure !== undefined) {
           queue.splice(index--, 1);
-          fail(task, state.failure);
+          fail(task, failure);
           continue;
         }
         if (state.module === undefined || state.degraded !== inlineOnly) continue;
@@ -697,8 +703,14 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
           () => signal.removeEventListener('abort', onAbort),
         );
       }
+      const state = kindState(kind);
+      const failure = taskFailure(kind, state);
+      if (failure !== undefined) {
+        fail(task, failure);
+        return handle;
+      }
       queues[task.priority].push(task);
-      load(kind, kindState(kind));
+      load(kind, state);
       pump();
       return handle;
     },

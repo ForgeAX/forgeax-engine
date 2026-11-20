@@ -6,6 +6,7 @@ import {
   type PackageFinalizePolicy,
   type PackageProductAsset,
   packageTransportRevision,
+  type RuntimePackPublication,
   resolveAssetSource,
 } from '@forgeax/engine-pack/build';
 import { AssetGuid, PackageId, type PackageId as PackageIdType } from '@forgeax/engine-pack/guid';
@@ -43,6 +44,7 @@ import type {
 import { AssetError, createAssetPublication, err, ok } from '@forgeax/engine-types';
 import type { DdcPack, ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
+import { projectMaterialPackTransport } from './material-pack-transport.js';
 import { projectImportProductForBuild } from './pack-projection.js';
 import type {
   ScriptablePackAssetSnapshotSource,
@@ -78,6 +80,7 @@ export interface ScriptablePackInput {
     | ((product: ScriptablePackBuildProduct) => PackageFinalizePolicy);
   /** Opt in only for a pure, sink-free policy. Change this identity whenever its URL mapping changes. */
   readonly transportIdentity?: string;
+  readonly cookRuntimeOutputs?: true;
   readonly subjectPackageId?: PackageIdType;
   readonly values?: Readonly<Record<string, unknown>>;
   readonly inheritedValues?: Readonly<
@@ -927,9 +930,11 @@ export async function materializePreparedScriptablePack(
   prepared: PreparedScriptablePack,
   paths: ScriptablePackTransportPaths,
   sink: ScriptablePackTransportSink,
+  pack: FinalizedPackageTransport['pack'] | RuntimePackPublication['pack'] = prepared.finalized
+    .pack,
 ): Promise<ReadonlyMap<string, string>> {
   const { product, finalized } = prepared;
-  await sink.writePackage(paths.packagePath, JSON.stringify(finalized.pack));
+  await sink.writePackage(paths.packagePath, JSON.stringify(projectMaterialPackTransport(pack)));
   for (const artifact of finalized.artifacts) {
     await sink.writeArtifact(
       paths.artifactPath(artifact.path),
@@ -1080,6 +1085,7 @@ export async function produceScriptablePackProducts(
     availableKinds.set(AssetGuid.format(output.guid).toLowerCase(), String(output.asset.kind));
   const workItems: ScriptablePackBuildWorkItem[] = options.sources.map((source) => ({
     definition: source.definition,
+    ...(source.cookRuntimeOutputs === true ? { cookRuntimeOutputs: true } : {}),
     sourcePath: source.sourcePath,
     ...(source.subjectPackageId === undefined ? {} : { subjectPackageId: source.subjectPackageId }),
     ...(source.values === undefined ? {} : { values: source.values }),

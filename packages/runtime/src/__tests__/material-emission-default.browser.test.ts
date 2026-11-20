@@ -54,7 +54,11 @@ it.each([
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
   try {
-    const profile = renderer.setProfile({ ...renderer.inspect().profile, renderPath, ssao: false });
+    const profile = renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath,
+      ambientOcclusion: { enabled: false },
+    });
     if (!profile.ok) throw profile.error;
     for (const intensity of [undefined, 0]) {
       const material = assets

@@ -382,10 +382,13 @@ function decodeAttributes(
   header: MeshBinHeader,
   sourceKey: string,
   storage: 'channels' | 'interleaved',
+  validateInterleaved: boolean,
 ): Result<VertexAttributeMap, MeshBinAssetError> {
   if (storage === 'interleaved') {
     const declaration: VertexAttributeMap = {};
-    const nonfinite = interleavedMeshFiniteFailure(vertices, projection);
+    const nonfinite = validateInterleaved
+      ? interleavedMeshFiniteFailure(vertices, projection)
+      : undefined;
     if (nonfinite !== undefined)
       return fail(
         sourceKey,
@@ -529,6 +532,24 @@ export function unpackMeshBin(
   sourceKey = '<unknown mesh source>',
   storage: 'channels' | 'interleaved' = 'channels',
 ): Result<UnpackedMeshBin, MeshBinAssetError> {
+  return unpackMeshBinBody(bytes, sourceKey, storage, true);
+}
+
+/** Mesh assembly runs prepareMeshData before exposing any unpacked vertex lanes. */
+export function unpackMeshBinForAsset(
+  bytes: Uint8Array,
+  sourceKey: string,
+  storage: 'channels' | 'interleaved',
+): Result<UnpackedMeshBin, MeshBinAssetError> {
+  return unpackMeshBinBody(bytes, sourceKey, storage, false);
+}
+
+function unpackMeshBinBody(
+  bytes: Uint8Array,
+  sourceKey: string,
+  storage: 'channels' | 'interleaved',
+  validateInterleaved: boolean,
+): Result<UnpackedMeshBin, MeshBinAssetError> {
   const headerResult = decodeMeshBinHeader(bytes, sourceKey);
   if (!headerResult.ok) return headerFailure(bytes, sourceKey, headerResult.error);
   const header = headerResult.value;
@@ -542,7 +563,14 @@ export function unpackMeshBin(
   const meta = metaResult.value;
   const lodPolicy = decodeLodPolicy(meta, header, sourceKey);
   if (!lodPolicy.ok) return lodPolicy;
-  const attributes = decodeAttributes(vertices, projection.value, header, sourceKey, storage);
+  const attributes = decodeAttributes(
+    vertices,
+    projection.value,
+    header,
+    sourceKey,
+    storage,
+    validateInterleaved,
+  );
   if (!attributes.ok) return attributes;
   const morphTargets = decodeMorphTargets(meta, morphBytes, header, sourceKey);
   if (!morphTargets.ok) return morphTargets;

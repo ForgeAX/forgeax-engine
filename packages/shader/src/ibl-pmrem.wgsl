@@ -40,16 +40,20 @@ fn pmremLevelOrigin(baseSize: f32, mip: f32) -> vec2<f32> {
   return vec2<f32>(max(4.0 - mip, 0.0) * 48.0, 4.0 * (baseSize - size));
 }
 
+fn pmremLevelUv(dimensions: vec2<f32>, face: u32, faceUv: vec2<f32>, mip: f32) -> vec2<f32> {
+  let size = exp2(max(mip, 4.0));
+  let tile = vec2<f32>(f32(face % 3u), f32(face / 3u)) * size;
+  let pixel = pmremLevelOrigin(dimensions.y * 0.25, mip) + tile
+    + faceUv * (size - 2.0) + vec2<f32>(1.0);
+  return pixel / dimensions;
+}
+
 fn samplePmremLevel(map: texture_2d<f32>, mapSampler: sampler, direction: vec3<f32>, mip: f32) -> vec3<f32> {
   let dimensions = vec2<f32>(textureDimensions(map, 0));
   // Solid Skylights use a single white texel with the same binding contract.
   if (dimensions.y == 1.0) { return textureLoad(map, vec2<i32>(0), 0).rgb; }
-  let size = exp2(max(mip, 4.0));
   let face = pmremFace(direction);
-  let tile = vec2<f32>(f32(face % 3u), f32(face / 3u)) * size;
-  let pixel = pmremLevelOrigin(dimensions.y * 0.25, mip) + tile
-    + pmremFaceUv(direction, face) * (size - 2.0) + vec2<f32>(1.0);
-  return textureSampleLevel(map, mapSampler, pixel / dimensions, 0.0).rgb;
+  return textureSampleLevel(map, mapSampler, pmremLevelUv(dimensions, face, pmremFaceUv(direction, face), mip), 0.0).rgb;
 }
 
 fn pmremRoughnessToMip(roughness: f32) -> f32 {
@@ -67,4 +71,19 @@ fn samplePmrem(map: texture_2d<f32>, mapSampler: sampler, direction: vec3<f32>, 
   let first = samplePmremLevel(map, mapSampler, direction, level);
   if (fract(mip) == 0.0) { return first; }
   return mix(first, samplePmremLevel(map, mapSampler, direction, level + 1.0), fract(mip));
+}
+
+fn samplePmremArrayLayer(
+  map: texture_2d_array<f32>, mapSampler: sampler, layer: u32, direction: vec3<f32>, roughness: f32,
+) -> vec3<f32> {
+  let dimensions = vec2<f32>(textureDimensions(map, 0));
+  let maxMip = log2(dimensions.y * 0.25);
+  let mip = clamp(pmremRoughnessToMip(roughness), -2.0, maxMip);
+  let level = floor(mip);
+  let face = pmremFace(direction);
+  let uv = pmremFaceUv(direction, face);
+  let first = textureSampleLevel(map, mapSampler, pmremLevelUv(dimensions, face, uv, level), layer, 0.0).rgb;
+  if (fract(mip) == 0.0) { return first; }
+  let second = textureSampleLevel(map, mapSampler, pmremLevelUv(dimensions, face, uv, level + 1.0), layer, 0.0).rgb;
+  return mix(first, second, fract(mip));
 }

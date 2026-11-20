@@ -68,7 +68,7 @@ export {
   SceneCollectAssetGuidUnresolvedError,
   SceneCollectEntityRefOutOfClosureError,
 } from './errors/asset.js';
-export type { AssetLimits } from './internal/asset-records.js';
+export type { AssetLimits, MeshCpuRetentionReason } from './internal/asset-records.js';
 export {
   DEFAULT_ASSET_BUDGET_BYTES,
   validateAssetBudgetBytes,

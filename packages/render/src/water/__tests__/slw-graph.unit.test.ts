@@ -19,7 +19,6 @@ it('clears all optical outputs to zero coverage so non-Water pixels preserve the
     format: 'depth32float-stencil8',
     size,
   }).unwrap();
-  const normal = createRenderPipelineTarget(graph, 'normal', { format: 'r32uint', size }).unwrap();
   const temporal = createRenderPipelineTarget(graph, 'scene-temporal', {
     format: 'rgba16float',
     size,
@@ -32,7 +31,6 @@ it('clears all optical outputs to zero coverage so non-Water pixels preserve the
     context: { graph } as RenderPipelineBuildContext<RenderPipelineFrame>,
     color,
     depth,
-    opaqueNormal: normal,
     opaqueTemporal: temporal,
     receiver: { sampled: [], spotShadow: depth, extraAccesses: [] },
     view,

@@ -5,7 +5,8 @@ import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feat
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const AO = {
-  algorithm: 'ssao',
+  enabled: true,
+  method: 'ssao',
   quality: 'medium',
   radius: 0.5,
   bias: 0.025,
@@ -25,7 +26,7 @@ export default defineFeature<FeatureDefinition>({
   expect:
     'All checks pass: deferred and forward AO schedule the raw and blur passes, disabling AO removes them, and restoring the deferred profile restores its AO work.',
   appOptions: {
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: AO },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ambientOcclusion: AO },
   },
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
@@ -52,12 +53,16 @@ export default defineFeature<FeatureDefinition>({
           enabled.length >= 2,
           enabled.join(','),
         );
-        const off = renderer.setProfile({ ...base, ssao: false });
+        const off = renderer.setProfile({ ...base, ambientOcclusion: { enabled: false } });
         checks.ok('disable AO accepted', off.ok, off.ok ? undefined : off.error.code);
         await frames(3);
         const disabled = aoPasses(renderer.inspect().perFramePassNames);
         checks.equal('AO disabled removes every AO pass', disabled, []);
-        const forward = renderer.setProfile({ ...base, renderPath: 'forward', ssao: AO });
+        const forward = renderer.setProfile({
+          ...base,
+          renderPath: 'forward',
+          ambientOcclusion: AO,
+        });
         checks.ok(
           'forward + AO accepted',
           forward.ok,

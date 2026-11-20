@@ -60,7 +60,13 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
   const { renderer, assets } = host;
   const world = new World({ assets });
   const lease = value(renderer.attach(world));
-  value(renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward', ssao: false }));
+  value(
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'forward',
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   try {
     const plane = createPlaneGeometry(2, 2, 1, 1).unwrap();
     const lowerGuid = assets.create(plane).unwrap();

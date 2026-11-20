@@ -380,7 +380,7 @@ export function directProfile(original) {
     ...profile,
     renderPath: 'deferred',
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     pbr: true,
     visibleSurface: true,
   };

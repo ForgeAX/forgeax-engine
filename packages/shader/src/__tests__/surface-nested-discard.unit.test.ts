@@ -77,7 +77,11 @@ const ALLOWED_NESTED_DISCARD: Readonly<Record<string, string>> = {
   'common.wgsl:applyLodCoverage': NOT_YET_PROBED,
   'oit.wgsl:oitAccumulate': NOT_YET_PROBED,
   'points-lines.wgsl:shadePointsLines': NOT_YET_PROBED,
-  'standard-deferred-lighting.wgsl:resolveStandardDeferred':
+  'standard-deferred-lighting.wgsl:loadDeferredCoverage':
+    'Deferred raster ownership filters invalid or unrelated pixels',
+  'standard-deferred-lighting.wgsl:resolveReflectionOverflow':
+    'Deferred overflow writes only matching pixels with a positive box weight',
+  'standard-deferred-lighting.wgsl:loadDeferredSurface':
     'deferred resolve helper; discard leaves the lighting target untouched by design',
 };
 

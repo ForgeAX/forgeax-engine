@@ -319,6 +319,25 @@ describe('keyed SceneAsset compiler', () => {
     });
   });
 
+  it('preserves saved camera AO parameters while inheriting the project method', () => {
+    const world = new World();
+    register(world);
+    const ambientOcclusion = defineComponent('AmbientOcclusion', { intensity: 'f32' });
+    world.components.register(ambientOcclusion).unwrap();
+    const asset: SceneAsset = {
+      kind: 'scene',
+      entities: {
+        camera: { components: { AmbientOcclusion: { algorithm: 1, intensity: 1.5 } } },
+      },
+    };
+    const handle = sceneHandle();
+    const result = compile(world, handle, asset, new Map([[Number(handle), asset]]), new Map());
+    expect(result).toMatchObject({
+      ok: true,
+      value: { asset: { entities: [{ components: { AmbientOcclusion: { intensity: 1.5 } } }] } },
+    });
+  });
+
   it('migrates numeric 0.1.27 entity addresses and pcfKernelSize at compile time', () => {
     const world = new World();
     register(world);

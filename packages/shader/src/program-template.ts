@@ -96,6 +96,11 @@ export interface ShaderProgramCompiler {
     template: ShaderProgramTemplate,
     defines: Readonly<Record<string, boolean>>,
   ): Result<ShaderProgramCompilation, ShaderError>;
+  /** Optional off-realm preparation for already selected programs. */
+  compileAsync?(
+    template: ShaderProgramTemplate,
+    defines: Readonly<Record<string, boolean>>,
+  ): Promise<Result<ShaderProgramCompilation, ShaderError>>;
   prepareMaterial?(
     template: MaterialShaderTemplate,
   ): Result<PreparedMaterialShaderTemplate, ShaderError>;

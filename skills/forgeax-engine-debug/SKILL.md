@@ -252,10 +252,10 @@ ordinary work, use its existing two-slot Dawn owner. Keep the complete cook,
 60-frame, texture, rebind and replay evidence at the original 120-second limits.
 Requalify all four Dawn lanes after moving the owner.
 
-The Chromium Three Surface expression group drains neighboring Browser work
-without another process. Keep its paired file, captures, original deadlines
-and sixty completed frames. Requalify all four Browser lanes after changing
-exclusive admission because it affects weighted placement.
+Each Chromium Three Surface expression case owns an exclusive process. Keep
+all three cases and special lights in the Browser roster with the captures,
+original deadlines and sixty completed frames. Requalify all four Browser
+lanes after changing placement or exclusive admission.
 
 If the complete Three Node inputs file passes but a paired material instance
 file reaches the 300-second Browser process deadline, preserve both complete
@@ -263,6 +263,11 @@ files in separate processes with their original deadlines. When the Node
 inputs material hook reaches its 30-second limit beside another Browser
 group, drain its neighbors within the existing process. Requalify all four
 Browser lanes after changing placement.
+
+If the isolated Node inputs process still reaches the original 30-second
+material hook deadline, use its single-material Worker to give the admitted
+compiler slots to program variants. Keep the real Cook, exact map and alpha-map
+publication, all 18 cases, and the original Browser deadlines.
 
 For Standard transmission Coverage failures, select the failing Water selection
 file and retain its complete output checks and 60-second batch deadlines. See
@@ -277,6 +282,12 @@ For the Standard Pack schema reuse timeout, select
 Its existing exclusive owner uses package-only preparation and the source
 compiler budget. Keep the two original 30-second cases, each cold schema
 transition, the compiler call counts and the complete artifact hash comparison.
+
+For Standard source alias and eight-target publication timeouts, run the
+exclusive Shader Compiler Coverage Focus owner. Keep the alias's two portable
+backends and every distinct visible-surface artifact and entry validation.
+Use the admitted compiler workers and drain them within the existing case
+deadline. See the [coverage admission guide](../../scripts/ci/README.md).
 
 For Standard/Skin cold-cook coverage timeouts, preserve the complete four-root
 file, every variant/artifact assertion and each original 15-second case deadline.
@@ -575,8 +586,9 @@ complete builds for missing informational measurements. Keep package size gates,
 every declared threshold and independent app/runtime acceptance.
 
 A standalone cold-source Focus must use the shared capacity-derived compiler
-admission, matching the CI capacity preflight. Retain producer heap headroom,
-the four-worker cap, smaller explicit requests and original case deadlines.
+admission, matching the CI capacity preflight. Apply the group's documented
+heap and compiler allowance, smaller explicit requests and original case
+deadlines. [Coverage admission](../../scripts/ci/README.md#vitest-type-test-and-coverage-ownership)
 Keep the two-worker 889.57-second sample; qualify the complete cold owner after
 changing its default instead of extending its 900-second deadline.
 
@@ -1269,8 +1281,10 @@ operating instructions.
 For coverage-only cold source scans or real compiler/discovery timeouts,
 reproduce the complete project selection before changing admission. Use the
 existing exclusive-file owner, exclude it from ordinary siblings, and preserve
-V8 instrumentation, case deadlines and every retained placement window; see
-[CI operations](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse).
+V8 instrumentation, case deadlines and every retained placement window. Inspect
+the runner's sampled memory and CPU topology before changing compile capacity.
+The serial material owners use the ordinary heap and spare compiler capacity
+under [CI operations](../../scripts/ci/README.md#vitest-type-test-and-coverage-ownership).
 Keep the complete frozen Toon publication file in the exclusive Shader Compiler
 child with its existing five-second cases and real Forward and ShadowCaster cooks.
 For Linux graphics preparation blocked by Ubuntu mirror size mismatches or
@@ -1695,10 +1709,10 @@ Interrupted later work supplies no cost sample; keep every case and deadline.
 For a cold Preview template Catalog stall, separate source cooking from browser
 readiness using its named preparation timings. Long watcher-snapshot diagnostics
 belong to Vite Pack's revision observer. Its bounded path inspections retain every
-root, the construction baseline and drain/close freshness fences. The maintained Catalog-startup
-option is independently bounded at 180 seconds; if a CI caller uses it instead
-of the 90-second default, record that preparation allowance explicitly. Do not
-change or relabel the browser/GPU/case/job bounds or claim a runtime speedup.
+root, the construction baseline and drain/close freshness fences. Record the
+Catalog preparation allowance and keep the browser, GPU, case and job bounds
+separate. Report runtime speed separately.
+[Preview startup budgets](../../scripts/ci/README.md#test-work-and-cost-regression-checks)
 
 For sky/IBL preparation deadlines inside a long native test parent, inspect the
 named resource and qualify the complete consumer in a fresh native lifetime.
@@ -3097,6 +3111,9 @@ For a first Host timeout with a restoring-project header, inspect the recorded
 `nativeViewConnected` value. Test native transport connection within 60 seconds;
 project restoration shares the first Editor's 180-second frame deadline. Measure
 the two owners separately, each with its own header label.
+For a ready-project DOM fixture that expires while attaching the browser
+observer, initialize the iframe and polling first. Keep the fixture's original
+project-state deadlines and the complete cold MCP App journey.
 For `MCP document failed` with a transport request timeout after native View
 connection, inspect document compilation separately from project restoration.
 The presentation owns pending compilation; short document queries poll its

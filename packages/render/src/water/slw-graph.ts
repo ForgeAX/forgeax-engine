@@ -31,8 +31,6 @@ export interface WaterSlwGraphInputs {
   readonly refractionColor?: RenderPipelineTarget;
   readonly opaqueRawDepth?: RenderPipelineTarget;
   readonly depth: RenderPipelineTarget;
-  readonly opaqueNormal: RenderPipelineTarget;
-  readonly opaqueFallback?: RenderPipelineTarget;
   readonly opaqueTemporal?: RenderPipelineTarget;
   readonly receiver: StandardForwardReceiverInputs;
   readonly view: GraphBuffer;
@@ -402,10 +400,7 @@ export function addWaterSlwPasses(
           width,
           height,
           depth: noWaterDepthView.value,
-          normal: input.opaqueNormal.view,
-          gbufferV2: input.opaqueNormal.format === 'rg32uint',
           scene: color.view,
-          ...(input.opaqueFallback === undefined ? {} : { fallback: input.opaqueFallback.view }),
           ...(input.opaqueTemporal === undefined
             ? {}
             : { currentTemporal: input.opaqueTemporal.view }),

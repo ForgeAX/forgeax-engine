@@ -93,7 +93,7 @@ async function run() {
     const errors: unknown[] = [];
     host.renderer.subscribe((event) => { if (event.kind === 'error') errors.push(event.error); });
     configureRuntimeAssetCatalog(host.assets, runtimeBinding);
-    value(host.renderer.setProfile({ ...host.renderer.inspect().profile, renderPath: 'forward', ssao: false }));
+    value(host.renderer.setProfile({ ...host.renderer.inspect().profile, renderPath: 'forward', ambientOcclusion: { enabled: false } }));
     const world = new World({ assets: host.assets });
 const sceneAssets = world.assets;
 if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');

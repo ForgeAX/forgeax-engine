@@ -36,8 +36,12 @@ it('keeps material and environment AO independent from the opt-in direct AO lane
   expect(code).toContain('let ao = response.a * screenAo;');
   expect(code).toContain('mix(1.0, screenAo, clamp(params.occlusion.x, 0.0, 1.0))');
   expect(code).toContain('let specularAo = standardSpecularOcclusion(nDotV, ao, roughness);');
+  expect(code).toContain('let diffuse = environment.diffuse * ao;');
   expect(code).toContain(
-    'environment.diffuse * ao + environment.specular * specularAo + direct.radiance * directAo',
+    'let sceneDiffuse = select(diffuse, vec3<f32>(0.0), diffuseToSubsurface);',
   );
-  expect(code).toContain('environment.diffuse * ao + direct.diffuse * directAo');
+  expect(code).toContain(
+    'sceneDiffuse + environment.specular * specularAo + direct.radiance * directAo',
+  );
+  expect(code).toContain('diffuse + direct.diffuse * directAo, diffuseToSubsurface');
 });

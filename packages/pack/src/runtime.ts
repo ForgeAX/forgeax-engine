@@ -10,6 +10,7 @@ export { projectPackageCatalog } from './catalog-projection.js';
 export { decodeCatalogWire, encodeCatalogWire } from './catalog-wire.js';
 export {
   copyPackData,
+  copyPackOutputData,
   decodePackData,
   encodePackData,
   type PackBinary,

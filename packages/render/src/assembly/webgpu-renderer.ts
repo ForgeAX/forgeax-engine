@@ -104,6 +104,7 @@ import { activeRenderProfileSession } from '../record/profile-session';
 import {
   configureSurface,
   type MaterialShaderPipelineEntry,
+  type PipelinePreparationCompletion,
   type RenderSystemInternals,
   runProfiledRenderPhase,
   selectSwapChainFormat,
@@ -149,7 +150,11 @@ import {
   preparedRenderPipelineOwner,
 } from './material/prepared-pipeline-owner';
 import { resolveFeatureShaderSource } from './material-shader-policy';
-import { createPublishedMeshResidencyHost } from './published-mesh-residency';
+import {
+  createPublishedMeshResidencyHost,
+  inspectPublishedMeshResidency,
+  reservePublishedMeshTransfer,
+} from './published-mesh-residency';
 import { captureShadowWorkload } from './shadow-workload';
 import { createUiCompositor } from './ui-compositor';
 
@@ -725,6 +730,7 @@ async function makeWebGPURenderer(
                 : undefined,
             ),
           renderWorld,
+          internals.options.dynamicGeometryMeshBudgetBytes,
         );
   // feat-20260527-sprite-nineslice M4 / w16 (D-5): detached host-owned
   // EngineMetrics counter reaches the record stage via `RenderSystemRuntime.metrics`.
@@ -1551,11 +1557,11 @@ async function makeWebGPURenderer(
     !currentPipelineCacheState().rejectedMaterialPipelineKeys.has(cacheKey);
   let candidatePipelineErrorScope = false;
   let candidatePipelinePending:
-    | ((completion: Promise<Result<void, RhiError>> | undefined) => void)
+    | ((completion: PipelinePreparationCompletion | undefined) => void)
     | undefined;
   const withPipelinePreparationErrors = (
     action: () => void,
-    onPending?: (completion: Promise<Result<void, RhiError>> | undefined) => void,
+    onPending?: (completion: PipelinePreparationCompletion | undefined) => void,
   ): void => {
     const previous = candidatePipelineErrorScope;
     const previousPending = candidatePipelinePending;
@@ -1567,6 +1573,11 @@ async function makeWebGPURenderer(
       candidatePipelineErrorScope = previous;
       candidatePipelinePending = previousPending;
     }
+  };
+  const prepareMaterialProgram = (id: string): boolean => {
+    const ready = getShader().prepareMaterialArtifact(id, candidatePipelinePending);
+    if (!ready.ok) throw ready.error;
+    return ready.value;
   };
   const buildMaterialShaderPipeline = (
     materialShaderId: string,
@@ -1628,6 +1639,7 @@ async function makeWebGPURenderer(
       currentBuildDevice,
       preparedPipelineOwners,
       materialPipelineBuildable,
+      prepareMaterialProgram,
       selectMaterialPipelineSource,
       buildAndCachePipeline,
       getOrBuildPreparedStoragePipelineLayout,
@@ -1766,6 +1778,7 @@ async function makeWebGPURenderer(
       preparedPipelineOwners,
       args,
       lookupOnly,
+      requestedMaterialVariantSet,
     );
   };
   const getMaterialShaderPipeline = (
@@ -1788,6 +1801,7 @@ async function makeWebGPURenderer(
       typeof options === 'boolean' || activeProfile.visibleSurface !== true
         ? options
         : { ...options, visibleSurface: options.pass !== 'shadow' && options.pass !== 'depth' },
+      prepareMaterialProgram,
     );
   const pipelineEntries = new WeakMap<object, MaterialShaderPipelineEntry[]>();
   const getMaterialShaderPipelineEntryFor = (
@@ -2527,6 +2541,7 @@ async function makeWebGPURenderer(
             ? capturedSurfaceInput?.value
             : publication.publication.packet.surfaceDynamicInputs?.[0],
           activeDeviceScope.generation,
+          publication?.publication.resources.identity,
         );
         if (!restored.ok)
           return err(
@@ -2758,6 +2773,8 @@ async function makeWebGPURenderer(
           internals.device.pipelineLibrary?.pendingRuntimeCompilation?.(),
           gpuStore.pendingCubemapCompletion(),
           preparedPipelineOwners.get(currentPipelineCacheState())?.pendingCompletion(),
+          shaderState.shaderInstance?.pendingTemplatePreparations(),
+          shaderState.shaderInstance?.pendingMaterialPreparations(),
           shaderState.sharedShaderModuleAdapter?.pendingCompletion(),
           shaderState.sharedImmediateShaderModuleAdapter?.pendingCompletion(),
         ].filter((value) => value !== undefined);
@@ -3021,6 +3038,8 @@ async function makeWebGPURenderer(
       () => gpuStore,
       () => internals.device,
     ),
+    reservePublishedMeshTransfer: (bytes) =>
+      reservePublishedMeshTransfer(publicationReceiver, bytes),
     preparePublishedMeshResidency: createPublishedMeshResidencyHost({
       assets,
       prepareCandidatePipelines: (input, signal) =>
@@ -3192,6 +3211,9 @@ async function makeWebGPURenderer(
           : {}),
         ...projectRenderViewInspection(inspected, deviceLost, fields),
         ...(want('dynamicGeometry') ? { dynamicGeometry: dynamicGeometry.inspect() } : {}),
+        ...(want('meshResidency')
+          ? { meshResidency: inspectPublishedMeshResidency(publicationReceiver, gpuStore) }
+          : {}),
         ...(want('textureGeneration')
           ? { textureGeneration: gpuStore.inspectTextureGenerators() }
           : {}),

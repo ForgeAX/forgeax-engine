@@ -116,7 +116,7 @@ export interface GpuDrivenDrawRange {
 export interface PrepareGpuDrivenDrawInput {
   readonly material: MaterialSnapshot;
   readonly deformation: 'rigid' | 'skin';
-  readonly artifact: MaterialShaderArtifact;
+  readonly artifact: Pick<MaterialShaderArtifact, 'receipt' | 'layoutIdentity' | 'material'>;
   readonly geometry: GpuDrivenGeometryReceipt;
   readonly generation: number;
   /** The submesh draw currently being prepared; never infer draw zero. */

@@ -333,6 +333,16 @@ it('retains a cold Level Mesh once and adopts the exact payload into the ordinar
     const invalid = f.receiver.retainClosedLevelAsset(f.identity, conflicting);
     expect(invalid).toMatchObject({ ok: false, error: { detail: { reason: 'shape' } } });
     expect(shared.value).toBe(level.value);
+    const prepared = f.receiver
+      .prepareMesh({
+        ...f.identity,
+        meshHandle: mesh,
+        revision,
+        mesh: structuredClone(transferred),
+      })
+      .unwrap();
+    expect(prepared.mesh).toBe(level.value);
+    prepared.release();
     expect(f.accepted.resources.resolveAsset(mesh, revision).unwrap()).toBe(level.value);
     expect(f.accepted.resources.resolveAsset(mesh).unwrap()).toBe(level.value);
     expect(f.receiver.acceptedRevision).toBe(f.accepted.packet.revision);

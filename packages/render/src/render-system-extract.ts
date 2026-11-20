@@ -24,7 +24,7 @@ import {
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
 import type { AssetHandle, MeshAsset, SampledTextureAsset } from '@forgeax/engine-types';
-import { freezeJson } from '@forgeax/engine-types';
+import { freezeJson, isDeepFrozenJson } from '@forgeax/engine-types';
 import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import {
@@ -2434,8 +2434,8 @@ export function materialParamSchemaForMaterial(
     (schemaShaderId === undefined &&
       selectedShaderId === runtimeMaterialShaderIdForMaterial(passes, undefined))
       ? undefined
-      : assets?.shaderRegistry.materialArtifact(selectedShaderId);
-  return materialParametersToParamSchema(parameters, schemaShaderId, registered?.paramSchema);
+      : assets?.shaderRegistry.materialParamSchemaProjection(selectedShaderId)?.schema;
+  return materialParametersToParamSchema(parameters, schemaShaderId, registered);
 }
 
 /**
@@ -2450,10 +2450,10 @@ export function materialColorParameterSchema(
   assets: AssetRegistry,
 ): readonly MaterialColorParameterSchema[] {
   if (shaderId === undefined) return parameters;
-  const shader = assets.shaderRegistry.materialArtifact(shaderId);
+  const schemaDeclaration = assets.shaderRegistry.materialParamSchemaProjection(shaderId)?.schema;
   // Source Workers prepare values before a GPU owner installs built-in programs.
   // Color semantics use the same canonical fallback as their parameter ABI.
-  const schema = materialParametersToParamSchema([], shaderId, shader?.paramSchema);
+  const schema = materialParametersToParamSchema([], shaderId, schemaDeclaration);
   if (schema.length === 0) return parameters;
 
   const byName = new Map<string, MaterialColorParameterSchema>(
@@ -2545,6 +2545,10 @@ export function storeMaterialSnapshot(
 // Program facts are memoized per snapshot only when these fields are deep-frozen JSON.
 function fixedJson<T>(value: T): T {
   return value !== null && typeof value === 'object' ? freezeJson(value) : value;
+}
+
+function ownMaterialSnapshotPasses(passes: MaterialSnapshot['passes']): MaterialSnapshot['passes'] {
+  return isDeepFrozenJson(passes) ? passes : fixedJson(structuredClone(passes));
 }
 
 /** Shared preparation for first use, submesh bindings and asset-only adoption. */
@@ -2698,16 +2702,22 @@ export function prepareMaterialSnapshot({
     for (const pass of allPasses) {
       const key =
         materialProgramKeys?.[pass.name] ?? runtimeMaterialShaderId(pass.program.module, pass.name);
-      const shader = key === undefined ? undefined : shaderRegistry.findMaterialArtifact(key);
+      const declaration =
+        key === undefined ? undefined : shaderRegistry.materialArtifactDeclaration(key);
+      const shader =
+        declaration?.kind === 'source'
+          ? { program: declaration, receipt: declaration.receipt }
+          : key === undefined
+            ? undefined
+            : shaderRegistry.materialArtifact(key);
       if (
-        shader?.ok !== true ||
         key === undefined ||
         (geometry === 'skinned'
-          ? !skinnedPositionProof(shader.value.receipt, key, assetsRef.shaderRegistry)
-          : shader.value.receipt?.positionBounds !== 'standard-input')
+          ? !skinnedPositionProof(shader?.receipt, key, shaderRegistry)
+          : shader?.receipt?.positionBounds !== 'standard-input')
       )
         positionBounds = undefined;
-      const inputs = shader?.ok ? materialProgramInputs(shader.value) : undefined;
+      const inputs = shader === undefined ? undefined : materialProgramInputs(shader);
       if (inputs !== undefined) programInputs[pass.name] = inputs;
     }
   };
@@ -2718,7 +2728,7 @@ export function prepareMaterialSnapshot({
       : { staticSwitches: Object.freeze({ ...programOwner.staticSwitches }) }),
     ...(positionBounds === undefined ? {} : { positionBounds }),
     materialContext: fixedJson({ geometry, vertexColor: vertexColorAvailable }),
-    passes: fixedJson(structuredClone(allPasses)),
+    passes: ownMaterialSnapshotPasses(allPasses),
     ...valueSnapshot,
     ...(surfaceModel === undefined ? {} : { surfaceModel }),
     ...(resolved.surface?.deformation === undefined

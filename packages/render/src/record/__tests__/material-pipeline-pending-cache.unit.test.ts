@@ -1,5 +1,10 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
-import { createMaterialShaderProgram } from '@forgeax/engine-shader';
+import {
+  createMaterialShaderProgram,
+  createStandardPbrArtifactReceipt,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
+import { ok, sha256 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { resolveMaterialPipelineBindGroups } from '../../assembly/material/pipeline-helpers';
 import { buildBindGroupLayoutDescriptor } from '../../pbr-pipeline';
@@ -48,7 +53,8 @@ describe('direct medium geometry pipeline layout', () => {
     ['temporal', false, 'standard', false],
     ['deferred', false, 'single-layer-medium', false],
     ['shadow-caster', false, 'single-layer-medium', false],
-  ] as const)('resolves %s, clustered=%s, surface=%s to its address contract', (passKind, clustered, surfaceModel, directAddress) => {
+    ['forward', false, 'standard', false, true],
+  ] as const)('resolves %s, clustered=%s, surface=%s to its address contract', (passKind, clustered, surfaceModel, directAddress, coldFog) => {
     const program = createMaterialShaderProgram(`
       @group(3) @binding(1) var<storage, read> probes: array<vec4<f32>>;
       @group(3) @binding(6) var<uniform> surfaceDirectAddress: vec4<u32>;
@@ -57,6 +63,16 @@ describe('direct medium geometry pipeline layout', () => {
       }
       @fragment fn fs_temporal() -> @location(0) vec4<f32> { return probes[0]; }
     `);
+    const shaders = new ShaderRegistry({ manifestUrl: undefined });
+    const prepare = vi.fn(async () => ok(new TextEncoder().encode(program.source)));
+    if (coldFog === true) {
+      shaders.installMaterialArtifactSource('test::medium', {
+        digest: `sha256:${sha256(program.source)}`,
+        paramSchema: [],
+        receipt: { ...createStandardPbrArtifactReceipt(), forwardFog: 'height-vertex/1' },
+        prepare,
+      });
+    }
     const ready = { pipeline: {} } as MaterialShaderPipelineEntry;
     const lookup = vi.fn().mockReturnValue(ready);
     const requests = createGeometryPipelineRequests(
@@ -64,11 +80,13 @@ describe('direct medium geometry pipeline layout', () => {
         runtime: {
           device: { caps, limits: { maxSampledTexturesPerShaderStage: 32 } },
           getMaterialArtifact: () => ({ program }),
-          getMaterialShaderArtifact: () => ({ program }),
+          getMaterialShaderArtifact: () => (coldFog === true ? undefined : { program }),
+          shaderRegistry: shaders,
           getMaterialShaderPipelineEntry: lookup,
           prepareMaterialShaderPipelineEntry: lookup,
         },
         pipelineState: {},
+        vertexHeightFog: coldFog === true,
         lightingKind: clustered ? 'clustered' : 'no-local-lights',
         warnedNineSliceScaleEntities: new Set<number>(),
       } as unknown as GeometryPipelineRequestContext,
@@ -131,6 +149,7 @@ describe('direct medium geometry pipeline layout', () => {
     expect(layouts?.meshLayout).toBe(clustered ? cluster : mesh);
     expect(direct.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe('uniform');
     expect(requests.pipelineSelection.sceneDirect).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it('keeps the ordinary probe and scene-index address contracts separate', () => {

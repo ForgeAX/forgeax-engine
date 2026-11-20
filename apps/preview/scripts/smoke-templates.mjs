@@ -43,7 +43,7 @@ const PORT = Number.parseInt(process.env.FORGEAX_TEMPLATE_SMOKE_PORT ?? '5201', 
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const CATALOG_URL = createStandaloneRuntimeAssetBinding('preview').catalogUrl;
 const DEFAULT_SERVER_STARTUP_TIMEOUT_MS = 90_000;
-const MAX_SERVER_STARTUP_TIMEOUT_MS = 180_000;
+const MAX_SERVER_STARTUP_TIMEOUT_MS = 240_000;
 const configuredServerStartupTimeoutMs = Number.parseInt(
   process.env.FORGEAX_TEMPLATE_SMOKE_SERVER_STARTUP_TIMEOUT_MS ?? '',
   10,

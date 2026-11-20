@@ -306,6 +306,8 @@ export interface BrowserRemoteBridgeAdapter {
 
 /** Host facts and optional tooling capabilities accepted by browser createApp. */
 export interface AppHostAdapter extends BundlerOptions {
+  /** Worker entry scripts are served by the Host's embedded resource loader. */
+  readonly workerScriptDelivery?: 'embedded';
   /** Explicit Host facts and user persistence for engine startup configuration. */
   readonly configurationHost?: import('./configuration-host').EngineConfigurationHost;
   /** Host-only audio owner, constructed after configuration in every execution placement. */

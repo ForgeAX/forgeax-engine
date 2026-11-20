@@ -34,6 +34,7 @@ import {
   getOrCreateSsaoFallbackTexture,
   type SsaoBuffers,
 } from './ssao-buffers';
+import type { DeferredAoNormalLayout } from './ssao-config';
 import { getSsaoParameters } from './ssao-config';
 import { buildSsaoUniformPayload } from './ssao-uniform';
 import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from './ssr/scene-color-input';
@@ -246,7 +247,7 @@ function ssaoBindGroupEntries(
  * required views.
  */
 export interface SsaoCalcPassViews {
-  readonly gbufferV2?: boolean;
+  readonly gbufferLayout?: DeferredAoNormalLayout | undefined;
   readonly output: TextureView;
   readonly normal: TextureView;
   readonly depth: TextureView;
@@ -280,8 +281,8 @@ export function recordGtaoComputePass(
       hint: 'prepare a compute-capable shader generation or select the admitted GTAO fragment entry',
     });
   }
-  const config = context.frameState.installedPipelineConfig?.ssao;
-  if (getSsaoParameters(config?.enabled === true ? config : undefined).algorithm !== 'gtao') {
+  const config = context.frameState.installedPipelineConfig?.ambientOcclusion;
+  if (getSsaoParameters(config?.enabled === true ? config : undefined).method !== 'gtao') {
     throw new RhiError({
       code: 'feature-not-enabled',
       expected: 'the GTAO compute entry is selected only for the GTAO algorithm',
@@ -318,9 +319,9 @@ export function recordGtaoComputePass(
 function ssaoSurfacePipeline(
   resources: _InternalRenderPipelineContext['pipelineState']['perPassResources'],
   stage: 'calc' | 'blur',
-  gbufferV2: boolean | undefined,
+  gbufferLayout: DeferredAoNormalLayout | undefined,
 ) {
-  if (gbufferV2 === true) return resources.ssaoGBufferPipelines?.()[stage];
+  if (gbufferLayout !== undefined) return resources.ssaoGBufferPipelines?.(gbufferLayout)?.[stage];
   return stage === 'calc' ? resources.ssaoCalcPipeline : resources.ssaoBlurPipeline;
 }
 
@@ -336,7 +337,7 @@ export function recordSsaoCalcPass(
   const { runtime, pipelineState, encoder } = _c;
   const pp = pipelineState.perPassResources;
 
-  const pipeline = ssaoSurfacePipeline(pp, 'calc', graphViews?.gbufferV2);
+  const pipeline = ssaoSurfacePipeline(pp, 'calc', graphViews?.gbufferLayout);
   if (pipeline == null || pp.ssaoBgl === null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
@@ -378,7 +379,10 @@ export function recordSsaoCalcPass(
 
   // Per-frame uniform write (D-C: view+proj+invProj+intensity at one queue
   // call). 256 B Float32Array (64 f32) lands in ssao_uniform UBO offset 0.
-  const payload = buildSsaoUniformPayload(_c.camera, _c.frameState.installedPipelineConfig?.ssao);
+  const payload = buildSsaoUniformPayload(
+    _c.camera,
+    _c.frameState.installedPipelineConfig?.ambientOcclusion,
+  );
   const writeRes = runtime.device.queue.writeBuffer(ssaoBufs.uniformBuffer, 0, payload);
   if (!writeRes.ok) {
     runtime.errorRegistry.fire(writeRes.error);
@@ -529,7 +533,10 @@ export function recordSsaoDepthPass(
   const companions = ensureSsaoRecordCompanions(_c);
   if (buffers === null || companions === null) return;
   if (stage === 'calc') {
-    const payload = buildSsaoUniformPayload(_c.camera, _c.frameState.installedPipelineConfig?.ssao);
+    const payload = buildSsaoUniformPayload(
+      _c.camera,
+      _c.frameState.installedPipelineConfig?.ambientOcclusion,
+    );
     const written = _c.runtime.device.queue.writeBuffer(buffers.uniformBuffer, 0, payload);
     if (!written.ok) {
       _c.runtime.errorRegistry.fire(written.error);
@@ -570,7 +577,7 @@ export function recordSsaoBlurPass(
   const { runtime, pipelineState, encoder } = _c;
   const pp = pipelineState.perPassResources;
 
-  const pipeline = ssaoSurfacePipeline(pp, 'blur', graphViews?.gbufferV2);
+  const pipeline = ssaoSurfacePipeline(pp, 'blur', graphViews?.gbufferLayout);
   if (pipeline == null || pp.ssaoBgl === null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
@@ -685,7 +692,7 @@ export function recordSsaoClusterPackPass(
       hint: 'prepare a device-compatible rgba32uint attachment path or report the AO transport failure',
     });
   }
-  const config = context.frameState.installedPipelineConfig?.ssao;
+  const config = context.frameState.installedPipelineConfig?.ambientOcclusion;
   const buffers = getOrCreateSsaoBuffers(runtime);
   if (buffers === null) {
     throw new RhiError({

@@ -77,8 +77,10 @@ idle first; one Worker is kept from background tasks while the pool has more
 than one; `maxInFlight` caps a kind. `cancel()` withdraws a queued task, or
 discards a running task's value; `dispose()` rejects everything unfinished. A
 crashed Worker rejects its running task and is replaced on demand; a kind that
-crashes Workers `crashLimit` times in a row runs inline from then on. A kind's
-`shared()` value is produced once by the pool and handed to each Worker's
+crashes Workers `crashLimit` times in a row runs inline from then on.
+Register a kind with `workerOnly: true` when running it in the submitting realm
+would violate its contract. The pool rejects queued and future work for that
+kind when no Worker can run it. A kind's `shared()` value is produced once by the pool and handed to each Worker's
 `init`. `serveTaskWorker` is the Worker side; `createTaskClient` and
 `serveTaskClient` let another realm submit through the pool with values
 returned on a per-task port directly from the executing Worker.

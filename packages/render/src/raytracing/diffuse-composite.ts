@@ -7,6 +7,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
+import { STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS } from '../standard-attachments';
 import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
 import { rayReferenceFailure } from './scene';
 
@@ -18,6 +19,8 @@ interface RayDiffuseCompositeInputs {
   readonly albedoMetallic: TextureView;
   readonly dielectricSpecular: TextureView;
   readonly reflectionResponse?: TextureView;
+  readonly compactGbuffer?: true;
+  readonly subsurface?: true;
   readonly view: Extract<RhiBindingResource, { kind: 'buffer' }>['value'];
 }
 
@@ -28,7 +31,7 @@ export function createRayDiffuseComposite(
   module: ShaderModule,
   signal: 'raw' | 'reconstructed',
 ) {
-  const createPipeline = (reflections: boolean) => {
+  const createPipeline = (reflections: boolean, compact: boolean, subsurface: boolean) => {
     const layout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: 2, buffer: { type: 'read-only-storage' } },
@@ -54,24 +57,31 @@ export function createRayDiffuseComposite(
       fragment: {
         module,
         entryPoint: `${signal === 'raw' ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'}${reflections ? '_reflections' : ''}`,
-        targets: [
-          {
-            format: 'rgba16float',
-            blend: {
-              color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-              alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+        ...(compact ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS } : {}),
+        targets: Array.from({ length: subsurface ? 2 : 1 }, () => ({
+          format: 'rgba16float' as const,
+          blend: {
+            color: {
+              srcFactor: 'one' as const,
+              dstFactor: 'one' as const,
+              operation: 'add' as const,
+            },
+            alpha: {
+              srcFactor: 'zero' as const,
+              dstFactor: 'one' as const,
+              operation: 'add' as const,
             },
           },
-        ],
+        })),
       },
       primitive: { topology: 'triangle-list' },
     });
     if (!pipeline.ok) return pipeline;
     return ok({ layout: layout.value, pipeline: pipeline.value });
   };
-  const base = createPipeline(false);
+  const base = createPipeline(false, false, false);
   if (!base.ok) return base;
-  let reflected: ReturnType<typeof createPipeline> | undefined;
+  const variants = new Map<number, ReturnType<typeof createPipeline>>();
   return ok({
     record(pass: RhiRenderPassEncoder, input: RayDiffuseCompositeInputs, pixelCount: number) {
       const stride = signal === 'raw' ? RAY_ACCUMULATION_STRIDE : 16;
@@ -85,10 +95,18 @@ export function createRayDiffuseComposite(
           true,
         );
       let selected = base.value;
-      if (input.reflectionResponse !== undefined) {
-        reflected ??= createPipeline(true);
-        if (!reflected.ok) return reflected;
-        selected = reflected.value;
+      const reflections = input.reflectionResponse !== undefined;
+      const compact = input.compactGbuffer === true;
+      if (reflections || compact) {
+        const subsurface = input.subsurface === true;
+        const key = Number(reflections) + 2 * Number(compact) + 4 * Number(subsurface);
+        let variant = variants.get(key);
+        if (variant === undefined) {
+          variant = createPipeline(reflections, compact, subsurface);
+          if (variant.ok) variants.set(key, variant);
+        }
+        if (!variant.ok) return variant;
+        selected = variant.value;
       }
       const bindings = device.createBindGroup({
         layout: selected.layout,

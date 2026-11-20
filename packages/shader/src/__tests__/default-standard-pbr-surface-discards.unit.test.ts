@@ -57,10 +57,11 @@ describe('Standard surface discard override', () => {
     expect(body).toMatch(/#ifdef MATERIAL_CLIPPING_AVAILABLE\s*applyLocalClipping\(/);
   });
 
-  it('leaves the temporal entry and the skin template unchanged', () => {
-    const temporal = shader.slice(shader.indexOf('fn fs_temporal('));
+  it('shares temporal raster coverage and preserves the skin template', () => {
+    const temporal = shader.slice(shader.indexOf('fn materialTemporal('));
     expect(temporal).toMatch(/\n {2}applyViewClipping\(in\.clippingPositionWS, false\);/);
     expect(temporal).toMatch(/\n {2}applyLodCoverage\(in\.clip\.xy, in\.temporal\.z\);/);
+    expect(temporal).toContain('return encodeSceneVelocity(materialTemporal(in));');
     expect(read('default-standard-pbr-skin.wgsl')).not.toContain('standardSurfaceDiscards');
   });
 

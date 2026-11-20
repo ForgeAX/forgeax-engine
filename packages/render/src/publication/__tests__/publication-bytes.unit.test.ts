@@ -35,6 +35,27 @@ describe('renderPublicationBytes', () => {
     expect(renderPublicationRecordBytes(counts)).toBe(128 + 4 * (4 + 1 + 2) + 64 * 2);
   });
 
+  it('counts a publication carrying only a fixed mesh version', () => {
+    const backing = new ArrayBuffer(256);
+    const side = {
+      assetVersions: [
+        {
+          handle: 1,
+          revision: 2,
+          value: {
+            kind: 'mesh',
+            vertices: new Float32Array(backing, 0, 8),
+            indices: new Uint16Array(backing, 32, 4),
+          },
+        },
+      ],
+    } as unknown as RenderPublicationMessage['side'];
+    expect(renderPublicationBytes(message(side))).toEqual({
+      columns: renderPublicationRecordBytes(counts),
+      assets: 256,
+    });
+  });
+
   it('adds each transferred asset buffer once', () => {
     const shared = new ArrayBuffer(256);
     const side = {

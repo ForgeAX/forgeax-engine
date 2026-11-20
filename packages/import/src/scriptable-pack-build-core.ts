@@ -17,6 +17,7 @@ import {
   type ParticleEffectAssetSource,
   type PluginAssetSource,
   packSourceKeyFailure,
+  projectScriptablePackRuntimeOutputs,
   resolvePackParameterValues,
 } from '@forgeax/engine-pack/source';
 import type {
@@ -1195,6 +1196,7 @@ function packRelativeIdentity(
 
 export interface ScriptablePackBuildWorkItem {
   readonly definition: AnyScriptablePackDefinition;
+  readonly cookRuntimeOutputs?: true;
   readonly sourcePath: string;
   readonly subjectPackageId?: PackageId;
   readonly values?: Readonly<Record<string, unknown>>;
@@ -1392,6 +1394,49 @@ function missingContentGuid(error: unknown): string | undefined {
   return detail !== undefined && typeof detail.guid === 'string' ? detail.guid : undefined;
 }
 
+function collectDeclaredRuntimeKinds(
+  subjects: readonly ScriptablePackBuildWorkItem[],
+  builtGuids: ReadonlySet<string>,
+): Result<ReadonlyMap<string, string>, PackAuthoringError> {
+  const kinds = new Map<string, string>();
+  for (const subject of subjects) {
+    // The source declaration reserves its own GUIDs. Build-time instances
+    // have separate identities and do not acquire implicit runtime outputs.
+    if (subject.subjectPackageId !== undefined) continue;
+    for (const { guid, sourceKey, kind } of projectScriptablePackRuntimeOutputs(
+      subject.definition,
+    )) {
+      if (builtGuids.has(guid) || kinds.has(guid)) {
+        return err({
+          code: 'pack-guid-collision',
+          expected: 'globally distinct built and runtime declared GUIDs',
+          hint: 'give the colliding asset source its own packageId or source key',
+          detail: { sourcePath: subject.sourcePath, sourceKey, guid },
+        });
+      }
+      kinds.set(guid, kind);
+    }
+  }
+  return ok(kinds);
+}
+
+function removedWorklistReferenceFailure(
+  incoming: ScriptablePackBuildWorklistOptions['incomingRefs'],
+  staged: ReadonlyMap<string, ScriptablePackStagedOutput>,
+  runtime: ReadonlyMap<string, string>,
+): Result<never, PackAuthoringError> | undefined {
+  if (incoming === undefined) return undefined;
+  const referencedRemoved = [...incoming].flatMap(([guid, references]) => {
+    const normalized = guid.toLowerCase();
+    return references.length > 0 && !staged.has(normalized) && !runtime.has(normalized)
+      ? [guid]
+      : [];
+  });
+  return referencedRemoved.length === 0
+    ? undefined
+    : err(referenceError('pack-output-reference-conflict', 'worklist', referencedRemoved));
+}
+
 /** Build subjects in stable passes; content reads may wait for a later subject. */
 export async function buildScriptablePackWorklist(
   options: ScriptablePackBuildWorklistOptions,
@@ -1425,7 +1470,16 @@ export async function buildScriptablePackWorklist(
   const staged = new Map<string, ScriptablePackStagedOutput>();
   const results = new Map<string, ScriptablePackBuildProduct>();
   const resultSourcePaths = new Map<string, string>();
-  const availableGuids = new Set(normalizedGuidSet(options.availableGuids) ?? []);
+  const builtGuids = new Set(normalizedGuidSet(options.availableGuids) ?? []);
+  const runtimeKinds = collectDeclaredRuntimeKinds(options.subjects, builtGuids);
+  if (!runtimeKinds.ok) return runtimeKinds;
+  const availableGuids = new Set([...builtGuids, ...runtimeKinds.value.keys()]);
+  const availableKinds = new Map([
+    ...[...(options.availableKinds ?? [])].map(
+      ([guid, kind]) => [guid.toLowerCase(), kind] as const,
+    ),
+    ...runtimeKinds.value,
+  ]);
   const maxPasses = options.maxPasses ?? Math.max(1, options.subjects.length + 1);
   let iterations = 0;
   for (; iterations < maxPasses && pending.size > 0; iterations += 1) {
@@ -1474,6 +1528,9 @@ export async function buildScriptablePackWorklist(
               ...(subject.sourceClosure === undefined
                 ? {}
                 : { sourceClosure: subject.sourceClosure }),
+              ...(subject.cookRuntimeOutputs === true
+                ? { authoringContractVersion: 'scriptable-pack/1+runtime-outputs' }
+                : {}),
               ...(subject.publicationGeneration === undefined
                 ? {}
                 : { publicationGeneration: subject.publicationGeneration }),
@@ -1482,7 +1539,7 @@ export async function buildScriptablePackWorklist(
               assetSource: stagedSource(visible, options.assetSource),
               availableGuids: new Set([...availableGuids, ...visible.keys()]),
               availableKinds: new Map([
-                ...(options.availableKinds ?? []),
+                ...availableKinds,
                 ...[...visible].map(([guid, output]) => [guid, String(output.asset.kind)] as const),
               ]),
               deferReferenceValidation: true,
@@ -1568,9 +1625,7 @@ export async function buildScriptablePackWorklist(
     });
   }
   const validateCompletedReferences = () => {
-    const knownKinds = new Map(
-      [...(options.availableKinds ?? [])].map(([guid, kind]) => [guid.toLowerCase(), kind]),
-    );
+    const knownKinds = new Map(availableKinds);
     for (const output of staged.values())
       knownKinds.set(
         AssetGuid.format(output.guid).toLowerCase(),
@@ -1580,6 +1635,15 @@ export async function buildScriptablePackWorklist(
       const sourcePath = resultSourcePaths.get(key);
       if (sourcePath === undefined) throw new Error('Completed Pack product has no source path');
       for (const output of product.stagedOutputs) {
+        const guid = AssetGuid.format(output.guid).toLowerCase();
+        if (runtimeKinds.value.has(guid)) {
+          return err({
+            code: 'pack-guid-collision',
+            expected: 'built output GUIDs distinct from declared runtime outputs',
+            hint: 'give the colliding asset source its own packageId or source key',
+            detail: { sourcePath, guid, sourceKey: output.sourceKey },
+          });
+        }
         const kindFailure = waterPackReferenceKindFailure(
           sourcePath,
           output.sourceKey,
@@ -1613,18 +1677,10 @@ export async function buildScriptablePackWorklist(
         referenceError('pack-output-reference-missing', 'worklist', [...missingReferences].sort()),
       );
     }
-    return undefined;
+    return removedWorklistReferenceFailure(options.incomingRefs, staged, runtimeKinds.value);
   };
   const referenceFailure = validateCompletedReferences();
   if (referenceFailure !== undefined) return referenceFailure;
-  const removed = [...(options.incomingRefs?.keys() ?? [])].filter(
-    (guid) => !staged.has(guid.toLowerCase()),
-  );
-  const referencedRemoved = removed.filter(
-    (guid) => (options.incomingRefs?.get(guid) ?? []).length > 0,
-  );
-  if (referencedRemoved.length > 0)
-    return err(referenceError('pack-output-reference-conflict', 'worklist', referencedRemoved));
   return ok({
     products: [...results.values()].map((result) => result.product),
     buildProducts: [...results.values()],

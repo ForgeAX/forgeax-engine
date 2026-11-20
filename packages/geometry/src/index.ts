@@ -90,6 +90,11 @@ export {
 } from './mesh-data.js';
 export * from './mesh-distance-field-product';
 export {
+  describeMeshDraw,
+  isStandaloneStaticMesh,
+  type MeshDrawDescription,
+} from './mesh-draw-description';
+export {
   applyMeshMaterialSlotTopology,
   meshMaterialSlotsFromTopology,
   meshMaterialSlotsToTopology,

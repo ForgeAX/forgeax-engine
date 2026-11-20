@@ -1,6 +1,6 @@
 import type { GlobalSdfGrid } from '../raytracing/global-sdf';
 import type { GlobalSdfQueryOptions } from '../raytracing/global-sdf-query';
-import type { SsaoParameterConfig } from '../ssao-config';
+import { type AmbientOcclusionSettings, DEFAULT_AMBIENT_OCCLUSION_METHOD } from '../ssao-config';
 import type { StandardOutputContract } from './standard-output/types';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
 /**
@@ -221,6 +221,10 @@ export interface StandardProfile {
   readonly lightCount: StandardLightCount;
   /** Graph topology selector; all local lights use the shared Cluster path. */
   readonly renderPath: 'forward' | 'deferred';
+  /** Fixed GBuffer contract for every view using this Deferred profile. */
+  readonly gbufferFormat?: 'default';
+  /** Opt-in projected receiver for automatically biased Deferred directional Vogel PCF. */
+  readonly deferredDirectionalShadowReceiver?: 'projected';
   /** Subsurface kernel samples: low=13, high=25 per axis; defaults to high. */
   readonly subsurfaceQuality?: 'low' | 'high';
   /** Rigid deferred surface identity/geometry attachment for transport and inspection. */
@@ -229,7 +233,7 @@ export interface StandardProfile {
   readonly probePlacement?: StandardProbePlacement;
   readonly pbr: boolean;
   readonly ibl: boolean;
-  readonly ssao: boolean | SsaoParameterConfig;
+  readonly ambientOcclusion: AmbientOcclusionSettings;
   /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted is off for Forward, on for Deferred. */
   readonly gpuOcclusion?: boolean | undefined;
   /** Opt-in ordering experiment only; omitted preserves production GBuffer order. */
@@ -251,7 +255,7 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   outputContract: 'standard-output-v2',
   pbr: true,
   ibl: true,
-  ssao: false,
+  ambientOcclusion: Object.freeze({ enabled: false, method: DEFAULT_AMBIENT_OCCLUSION_METHOD }),
   postStages: STANDARD_POST_STAGE_NAMES,
 });
 

@@ -43,6 +43,7 @@ export function selectionAbi(
 export function materialPrograms(
   passes: readonly MaterialCookedPass[],
   input: MaterialPublicationInput,
+  sourceVertexColorOverrides?: Map<string, boolean>,
 ): readonly MaterialCookProgram[] {
   const programs = new Map<string, MaterialCookProgram>();
   const artifactDigests = new Map<string, string>();
@@ -102,6 +103,8 @@ export function materialPrograms(
         ),
       );
       const existing = programs.get(specializationKey);
+      if (existing === undefined && pass.vertexColorAvailable !== undefined)
+        sourceVertexColorOverrides?.set(specializationKey, pass.vertexColorAvailable);
       const selections = [
         {
           pass: pass.pass,

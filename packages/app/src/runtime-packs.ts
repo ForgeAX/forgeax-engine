@@ -23,11 +23,16 @@ import {
   type PluginBuildTarget,
 } from '@forgeax/engine-types';
 import type { AssetRuntimeAssembly } from './assets-runtime-assembly.js';
+import { type AuthoredRuntimePack, authoredRuntimePacks } from './authored-runtime-packs.js';
+
+export type { AuthoredRuntimePack } from './authored-runtime-packs.js';
 
 export type RuntimePackOptions = Omit<
   RuntimePackProducerOptions,
   'validate' | 'onCommit' | 'target'
->;
+> & {
+  readonly authored?: readonly AuthoredRuntimePack[];
+};
 
 /** A producer and its read-only merged Catalog share the existing realm lifetime. */
 export interface RuntimePackAssembly {
@@ -195,6 +200,7 @@ export function assembleRuntimePacks(
           registry: assembly.registry,
           shaderRegistry: assembly.registry.shaderRegistry,
           pack: state.publication?.pack,
+          retainProducerArtifacts: true,
           dependencies,
         },
       );
@@ -339,14 +345,14 @@ export function assembleRuntimePacks(
     async enumerate() {
       const snapshot = await base.enumerate();
       if (!snapshot.ok) return snapshot;
-      const runtime = new Set(producer.rows().map((row) => row.guid.toLowerCase()));
+      const runtime = runtimeGuids();
       return snapshot.value.some((row) => runtime.has(row.guid.toLowerCase()))
         ? err(collisionError())
         : snapshot;
     },
     subscribe(listener) {
       return base.subscribe((delta) => {
-        const runtime = new Set(producer.rows().map((row) => row.guid.toLowerCase()));
+        const runtime = runtimeGuids();
         const safe = {
           ...delta,
           removed: delta.removed.filter((guid) => !runtime.has(guid.toLowerCase())),
@@ -372,6 +378,13 @@ export function assembleRuntimePacks(
       });
     },
   });
+  const authored = authoredRuntimePacks(options.authored ?? [], baseReplica, producer);
+  function runtimeGuids(): ReadonlySet<string> {
+    return new Set([
+      ...authored.rows.keys(),
+      ...producer.rows().map((row) => row.guid.toLowerCase()),
+    ]);
+  }
   function validateBase(guids: readonly string[]): AssetError | undefined {
     const snapshot = baseReplica.snapshot();
     const baseGuids = new Set(snapshot.entries.map((row) => row.guid.toLowerCase()));
@@ -383,6 +396,25 @@ export function assembleRuntimePacks(
     expectedScope,
     openPackage: (url) =>
       producer.catalog.openPackage(url) ?? base.openPackage?.(url) ?? baseFetcher,
+    retainArtifact: (url, path) =>
+      producer.catalog.retainArtifact(url, path) ?? base.retainArtifact?.(url, path),
+    async get(guid) {
+      const pending = authored.get(guid);
+      if (pending) return pending;
+      const key = guid.toLowerCase();
+      const published = producer.rows().find((entry) => entry.guid.toLowerCase() === key);
+      if (published !== undefined) return ok([published]);
+      const current = await baseReplica.require(guid);
+      return current.ok
+        ? ok([current.value])
+        : err(
+            new AssetError({
+              code: 'asset-not-imported',
+              expected: current.error.expected,
+              hint: `${current.error.code}: ${current.error.hint}`,
+            }),
+          );
+    },
     async enumerate() {
       const original = await (baseReplica.snapshot().stale
         ? baseReplica.reconcile()
@@ -392,7 +424,9 @@ export function assembleRuntimePacks(
       if (current.stale) return err(collisionError());
       const runtime = await producer.catalog.enumerate();
       if (!runtime.ok) return runtime;
-      return Object.assign(ok([...current.entries, ...runtime.value]), {
+      const materialized = new Set(runtime.value.map((row) => row.guid.toLowerCase()));
+      const missing = [...authored.rows.values()].filter((row) => !materialized.has(row.guid));
+      return Object.assign(ok([...current.entries, ...runtime.value, ...missing]), {
         revisions: [...current.revisions, ...runtime.revisions],
       });
     },
@@ -424,6 +458,7 @@ export function assembleRuntimePacks(
       if (stopped) return;
       stopped = true;
       try {
+        authored.dispose();
         producer.dispose();
       } finally {
         stopProducer();

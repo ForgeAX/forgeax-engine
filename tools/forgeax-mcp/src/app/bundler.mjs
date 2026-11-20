@@ -72,9 +72,10 @@ export function createRemoteBundler(allow, { signal: lifetime } = {}) {
             if (u.pathname.endsWith('/vite/dist/client/env.mjs')) return '';
             if (u.pathname === '/@react-refresh')
               return 'export default {injectIntoGlobalHook(){},register(){},createSignatureFunctionForTransform(){return x=>x;}}';
-            let code;
-            if (inlineSource !== undefined && href === url) code = inlineSource;
-            else code = await readSource(u, scope);
+            const inline = typeof inlineSource === 'string'
+              ? (href === url ? inlineSource : undefined)
+              : inlineSource?.get(href);
+            let code = inline ?? await readSource(u, scope);
             code = code
               .replace(/import\.meta\.hot\s*=\s*[^;]+;/g, '')
               .replaceAll('import.meta.hot', 'undefined');

@@ -21,11 +21,23 @@ export {
   type MaterialCookedAsset,
   type MaterialCookRequest,
   materialVertexInputs,
+  rebuildMaterialRasterProgram,
 } from './material/cook.js';
 export {
   type CookedRayMaterial,
   compileRayMaterialSelection,
   type RayMaterialCookRequest,
 } from './material/ray-material.js';
+export {
+  MATERIAL_RASTER_SOURCES_PATH,
+  type MaterialRasterSourcePublication,
+  type MaterialRasterSourceSelection,
+  type MaterialSourceProgramRequest,
+  type MaterialSourcePublication,
+  publishMaterialSourceModules,
+  readMaterialSourceModules,
+  rebuildMaterialSourcePrograms,
+  selectMaterialRasterSources,
+} from './material/source-publication.js';
 
 export { prepareShaderProgramCompiler } from './program-template.js';

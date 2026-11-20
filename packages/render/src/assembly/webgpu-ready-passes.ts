@@ -1,4 +1,7 @@
-import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
+import {
+  STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS,
+  STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS,
+} from '../standard-attachments';
 // Boot pipeline construction for one ready device generation: the shared PSO
 // device provider, SPEC_CONST material prewarm, and the FXAA / skybox / SSAO
 // fullscreen pipelines that stay outside the SPEC_CONST table.
@@ -28,6 +31,7 @@ import {
   PipelineSpecError,
 } from '../pipeline-spec';
 import type { PerPassResources } from '../record/render-context';
+import type { DeferredAoNormalLayout } from '../ssao-config';
 import { runShimSyncStep } from './renderer-helpers';
 import { HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import type { EngineShaderModules } from './webgpu-ready-shaders';
@@ -591,6 +595,7 @@ function createSsaoPassResources(
   cache: PipelineCache,
   ssaoModule: NonNullable<EngineShaderModules['ssao']>,
   gbufferV2: boolean,
+  compactGBuffer: boolean,
 ): Pick<
   FullscreenPassResources,
   | 'ssaoCalcPipeline'
@@ -638,27 +643,43 @@ function createSsaoPassResources(
     { ...baseModules, fragmentEntryPoint: 'fs_ssao_blur' },
     'createRenderPipeline (ssao-blur fullscreen) failed; inspect gpuMessage',
   );
-  let gbuffer: ReturnType<NonNullable<PerPassResources['ssaoGBufferPipelines']>> | undefined;
-  const ssaoGBufferPipelines = () => {
+  const gbufferPipelines = new Map<
+    DeferredAoNormalLayout,
+    { readonly calc: RenderPipeline; readonly blur: RenderPipeline }
+  >();
+  const ssaoGBufferPipelines = (layout: DeferredAoNormalLayout) => {
+    const compact = layout === 'standard-gbuffer/4';
+    if (compact ? !compactGBuffer : !gbufferV2) return undefined;
+    const existing = gbufferPipelines.get(layout);
+    if (existing !== undefined) return existing;
     const build = (entry: string, format: 'rgba8unorm' | 'r8unorm') => {
       const spec = fullscreenPipelineSpec(
-        `forgeax::post::${entry}-gbuffer-v2`,
+        `forgeax::post::${entry}-${compact ? 'gbuffer-default' : 'gbuffer-v2'}`,
         'post-process',
         format,
         1,
       );
       return buildPipelineOrThrow(
-        { ...spec, shader: { ...spec.shader, constants: STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } },
+        {
+          ...spec,
+          shader: {
+            ...spec.shader,
+            constants: compact
+              ? STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS
+              : STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS,
+          },
+        },
         provider,
         cache,
         { ...baseModules, fragmentEntryPoint: entry },
-        `createRenderPipeline (${entry} GBuffer v2) failed`,
+        `createRenderPipeline (${entry} ${layout}) failed`,
       );
     };
-    gbuffer ??= {
+    const gbuffer = {
       calc: build('fs_ssao_calc', 'rgba8unorm'),
       blur: build('fs_ssao_blur', 'r8unorm'),
     };
+    gbufferPipelines.set(layout, gbuffer);
     return gbuffer;
   };
   const depth = createSsaoDepthPipelines(device, provider, cache, ssaoModule);
@@ -781,7 +802,7 @@ function createSsaoPassResources(
     'createRenderPipeline (ssao-cluster-pack fullscreen) failed; inspect gpuMessage',
   );
   return {
-    ssaoGBufferPipelines: gbufferV2 ? ssaoGBufferPipelines : undefined,
+    ssaoGBufferPipelines: gbufferV2 || compactGBuffer ? ssaoGBufferPipelines : undefined,
     ssaoCalcPipeline: calc,
     ssaoBlurPipeline: blur,
     ssaoBgl: bindGroupLayout.value,
@@ -976,6 +997,7 @@ export function createFullscreenPassResources(
           cache,
           modules.ssao,
           modules.ssaoGBufferV2 === true,
+          modules.ssaoCompactGBuffer === true,
         );
   const gtaoCompute =
     modules.gtaoCompute === null

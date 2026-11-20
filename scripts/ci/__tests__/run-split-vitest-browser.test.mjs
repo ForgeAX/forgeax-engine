@@ -554,13 +554,23 @@ test('short renderer deadlines own an exclusive runner without serializing ordin
   assert.equal(browserGroupRequiresExclusiveRunner([]), false);
 });
 
-test('the Three Surface expression group drains other browser work', () => {
-  const file = 'packages/three/src/__tests__/surface-expression.browser.test.ts';
-  const owners = dryRunGroups().filter((group) => group.includes(file));
-  assert.equal(owners.length, 1);
-  assert.ok(owners[0].includes('packages/three/src/__tests__/special-lights.browser.test.ts'));
-  assert.equal(browserGroupRequiresExclusiveRunner(owners[0]), true);
-  assert.ok(browserGroupWeight(owners[0]) >= 225);
+test('each Three Surface expression case owns an exclusive process', () => {
+  const files = [
+    'packages/three/src/__tests__/surface-expression.browser.test.ts',
+    'packages/three/src/__tests__/surface-expression-unlit.browser.test.ts',
+    'packages/three/src/__tests__/surface-expression-roughness.browser.test.ts',
+  ];
+  const specialLights = 'packages/three/src/__tests__/special-lights.browser.test.ts';
+  const groups = dryRunGroups();
+  for (const file of files) {
+    assert.deepEqual(
+      groups.filter((group) => group.includes(file)),
+      [[file]],
+    );
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+    assert.ok(browserGroupWeight([file]) >= 150);
+  }
+  assert.equal(groups.flat().filter((member) => member === specialLights).length, 1);
 });
 
 test('the measured video benchmark keeps neighboring render groups outside its memory window', () => {

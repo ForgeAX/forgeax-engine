@@ -301,12 +301,31 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
     expect(mapFrames).toBeGreaterThan(0);
     expect(mapFrames).toBeLessThan(mainFrames);
     await save('minimap.rgba', packed(moved));
+    // Keep the camera cut independent of a global reset from a simulation-only tick.
+    app.pause().unwrap();
+    const stepPicture = async () => {
+      await expect
+        .poll(() => {
+          const report = execution.report();
+          return report.frame.inFlight === 0 &&
+            report.render?.completedFrame === report.render?.submittedFrame;
+        }, { timeout: 30_000 })
+        .toBe(true);
+      const completed = advance(1);
+      app.stepFrame(1 / 60).unwrap();
+      await completed;
+    };
+    await stepPicture();
     await command('cut');
-    await advance(3);
+    for (let picture = 0; picture < 3; picture++) await stepPicture();
+    app.resume().unwrap();
     const cut = (await observe()).cut;
-    expect(cut?.[0]?.temporal.status).toBe('reset');
-    expect(cut?.[1]?.temporal.status).toBe('stable');
     await save('history-cut.json', new TextEncoder().encode(JSON.stringify(cut, null, 2)));
+    expect(cut?.[0]?.temporal).toMatchObject({
+      status: 'reset',
+      resetReason: 'history-version',
+    });
+    expect(cut?.[1]?.temporal.status).toBe('stable');
     await command('disable');
     await advance(2);
     expect((await observe()).views).toHaveLength(2);

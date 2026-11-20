@@ -5,11 +5,13 @@ import { expect, it } from 'vitest';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { addSubsurfaceDiffusion } from '../subsurface/graph';
 
-it('compiles every row across a reused band and a final partial band without a read-write HDR target', async () => {
+it.each([
+  17, 129, 2161,
+])('owns the same four diffusion stages and indirect arguments at height %i', async (height) => {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const size = { width: 128, height: 129 };
+  const size = { width: 128, height };
   const textures: Texture[] = [];
   const target = (label: string, format: GPUTextureFormat) => {
     const texture = device.createTexture({ size, format, usage: 0x1f }).unwrap();
@@ -24,7 +26,7 @@ it('compiles every row across a reused band and a final partial band without a r
       sampleCount: 1 as const,
     };
   };
-  const scene = target('scene', 'rgba32float');
+  const scene = target('scene', 'rgba16float');
   const diffuse = target('diffuse', 'rgba16float');
   const profiles = target('profiles', 'rg32uint');
   const normal = target('normal', 'rg32uint');
@@ -42,17 +44,26 @@ it('compiles every row across a reused band and a final partial band without a r
   const compiled = graph.compile({ device, surfaceSize: size }).unwrap();
   try {
     const inspection = compiled.inspect();
+    expect(inspection.passes.map(({ name }) => name)).toEqual([
+      'subsurface-prepare',
+      'subsurface-setup',
+      'subsurface-horizontal',
+      'subsurface-vertical',
+      'subsurface-compose',
+    ]);
+    const ordered = inspection.passes.slice(2);
+    for (const pass of ordered)
+      expect(pass.accesses).toContainEqual({
+        resource: 'subsurface-indirect',
+        usage: 'indirect-read',
+      });
+    expect(ordered[2]?.accesses).toContainEqual({
+      resource: 'scene',
+      usage: 'color-attachment',
+    });
     expect(
-      inspection.passes.filter((pass) => pass.name.startsWith('subsurface-diffusion')),
-    ).toHaveLength(3);
-    expect(
-      inspection.passes.filter((pass) => pass.name.startsWith('subsurface-compose')),
-    ).toHaveLength(3);
-    expect(
-      inspection.passes
-        .flatMap((pass) => pass.accesses)
-        .some((access) => access.usage === 'storage-read-write'),
-    ).toBe(false);
+      ordered.flatMap((pass) => pass.accesses).filter(({ resource }) => resource === 'scene'),
+    ).toEqual([{ resource: 'scene', usage: 'color-attachment' }]);
   } finally {
     (await compiled.retire()).unwrap();
     for (const texture of textures) device.destroyTexture(texture).unwrap();

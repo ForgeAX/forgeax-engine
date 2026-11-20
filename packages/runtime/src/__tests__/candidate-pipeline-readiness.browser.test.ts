@@ -68,7 +68,7 @@ it.each([
   const profile = renderer.setProfile({
     ...renderer.inspect().profile,
     renderPath: 'deferred',
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   });
   if (!profile.ok) throw profile.error;
   const assets = new AssetRegistry();

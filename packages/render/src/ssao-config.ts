@@ -1,16 +1,26 @@
 // @forgeax/engine-render - SSAO parameter authority.
 
-import { err, ok, type RenderPipelineAsset, type Result } from '@forgeax/engine-types';
+import {
+  type CompactGBufferLayout,
+  err,
+  type MaterialGBufferLayout,
+  ok,
+  type RenderPipelineAsset,
+  type Result,
+} from '@forgeax/engine-types';
 import { PostProcessError } from './post-process-errors';
 
 export const SSAO_DEFAULT_RADIUS = 0.25;
 export const SSAO_DEFAULT_BIAS = 0;
 export const SSAO_DEFAULT_INTENSITY = 1.0;
+export const DEFAULT_AMBIENT_OCCLUSION_METHOD = 'ssao';
 
-export type SsaoParameterConfig = Omit<
-  NonNullable<NonNullable<RenderPipelineAsset['config']>['ssao']>,
-  'enabled'
+export type DeferredAoNormalLayout = MaterialGBufferLayout | CompactGBufferLayout;
+
+export type AmbientOcclusionSettings = NonNullable<
+  NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
 >;
+export type SsaoParameterConfig = Omit<AmbientOcclusionSettings, 'enabled'>;
 
 /** Stock Standard graphs upload direct AO strength as a frame value. */
 export function ssaoStructuralIdentity<
@@ -35,7 +45,7 @@ export const SPIRAL_SSAO_SAMPLE_COUNTS = { low: 8, medium: 12, high: 12 } as con
 export const SSAO_SAMPLE_COUNTS = { low: 16, medium: 32, high: 64 } as const;
 
 interface ResolvedSsaoParameters {
-  readonly algorithm: 'ssao' | 'gtao' | 'spiral-ssao';
+  readonly method: NonNullable<AmbientOcclusionSettings['method']>;
   readonly application: 'lighting' | 'scene-color';
   readonly sceneColorStrength: number;
   readonly sampleCount: number;
@@ -53,19 +63,19 @@ interface ResolvedSsaoParameters {
 /**
  * Apply the public defaults without deciding whether the values are valid.
  * The record stage uses this only after the graph build has validated the
- * active HDRP configuration, or for the disabled/default fallback payload.
+ * active Standard configuration, or for the disabled/default fallback payload.
  */
 export function getSsaoParameters(config: SsaoParameterConfig | undefined): ResolvedSsaoParameters {
-  const algorithm = config?.algorithm ?? 'gtao';
+  const method = config?.method ?? DEFAULT_AMBIENT_OCCLUSION_METHOD;
   const quality = config?.quality ?? 'high';
   const counts =
-    algorithm === 'gtao'
+    method === 'gtao'
       ? GTAO_SAMPLE_COUNTS
-      : algorithm === 'spiral-ssao'
+      : method === 'spiral-ssao'
         ? SPIRAL_SSAO_SAMPLE_COUNTS
         : SSAO_SAMPLE_COUNTS;
   return {
-    algorithm,
+    method,
     application: config?.application ?? 'lighting',
     sceneColorStrength: config?.sceneColorStrength ?? 0.95,
     sampleCount: config?.sampleCount ?? counts[quality],
@@ -83,13 +93,13 @@ export function getSsaoParameters(config: SsaoParameterConfig | undefined): Reso
 
 function invalidSsaoMode(resolved: ResolvedSsaoParameters): PostProcessError | undefined {
   if (
-    resolved.algorithm !== 'ssao' &&
-    resolved.algorithm !== 'gtao' &&
-    resolved.algorithm !== 'spiral-ssao'
+    resolved.method !== 'ssao' &&
+    resolved.method !== 'gtao' &&
+    resolved.method !== 'spiral-ssao'
   ) {
     return new PostProcessError({
       code: 'ssao-parameter-invalid',
-      detail: { paramName: 'algorithm', value: resolved.algorithm },
+      detail: { paramName: 'method', value: resolved.method },
     });
   }
   if (resolved.application !== 'lighting' && resolved.application !== 'scene-color') {
@@ -197,7 +207,7 @@ export function resolveSsaoParameters(
 
 /** Scene-color AO must never darken lighting a second time. */
 export function ssaoUsesLighting(
-  config: NonNullable<RenderPipelineAsset['config']>['ssao'],
+  config: NonNullable<RenderPipelineAsset['config']>['ambientOcclusion'],
 ): boolean {
   return config?.enabled === true && config.application !== 'scene-color';
 }

@@ -17,6 +17,10 @@ import {
   type RenderPipelineFrame,
   type RenderPipelineTarget,
 } from '../render-pipeline';
+import {
+  STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS,
+  STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS,
+} from '../standard-attachments';
 import { ProjectedDecalInvalidError } from './component';
 import { DECAL_TEXTURE_FIELDS, MAX_PROJECTED_DECALS, type ProjectedDecalSnapshot } from './extract';
 
@@ -215,6 +219,7 @@ export function addProjectedDecalChannels(
   input: {
     depth: GraphTextureView;
     normal: RenderPipelineTarget;
+    compactGbuffer?: true;
     size: GraphTextureDescriptor['size'];
   },
 ) {
@@ -354,7 +359,11 @@ export function addProjectedDecalChannels(
             fragment: {
               module,
               entryPoint: 'fs_main',
-              ...(input.normal.format === 'rg32uint' ? { constants: { '64003': 1 } } : {}),
+              ...(input.compactGbuffer === true
+                ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS }
+                : input.normal.format === 'rg32uint'
+                  ? { constants: STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS }
+                  : {}),
               targets: channels.map(({ format }) => ({
                 format,
                 blend: {
@@ -450,6 +459,7 @@ export function addProjectedDecalPasses(
     normal: RenderPipelineTarget;
     albedo: RenderPipelineTarget;
     f0: RenderPipelineTarget;
+    compactGbuffer?: true;
     size: GraphTextureDescriptor['size'];
   },
 ) {
@@ -518,7 +528,7 @@ export function addProjectedDecalPasses(
             vertex: { module, entryPoint: 'vs_main', buffers: [] },
             fragment: {
               module,
-              entryPoint: 'fs_main',
+              entryPoint: input.compactGbuffer === true ? 'fs_default_gbuffer' : 'fs_main',
               targets: outputs.map(({ format }) => ({ format })),
             },
             primitive: { topology: 'triangle-list' },

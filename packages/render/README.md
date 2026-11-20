@@ -407,6 +407,12 @@ vertex height fog by default, including pipelines created with
 Standard identity retains the same View fog admission. Full Atmosphere, Deferred
 and captures retain their separate transport. Whole-game performance acceptance remains independent.
 
+A chained fullscreen program declares its uniform layout and fallback with
+`params`. Send current view-specific uniform bytes in `frameParams` with the
+exact declared byte size. These bytes update the accepted view each frame
+without replacing the render graph or pipeline. Explicit `PostProcessParams`
+components keep precedence over the producer default.
+
 Forward scene writers use graph-owned automatic color stores. Only dead resolved
 MSAA samples can be discarded after their final writer; intervening consumers,
 diagnostics and retained targets keep storage. Depth remains stored for its own
@@ -423,8 +429,9 @@ discard the staged table publication.
 
 ### Native screen-space AO
 
-`AmbientOcclusion` and Standard `ssao` configuration share one authority. The
-optional `algorithm: 'spiral-ssao'` selects a depth-only estimator with Low 8,
+The Standard profile selects the AO method and the camera's `AmbientOcclusion`
+component overrides view parameters. The optional `method: 'spiral-ssao'`
+selects a depth-only estimator with Low 8,
 Medium/High 12 candidates (or explicit `sampleCount`). Its scalar R8 estimator
 and two seven-tap filters share one R16F linear half-depth target and view-owned
 parameters. No full-depth reconstruction runs again in either filter.
@@ -443,8 +450,8 @@ exact single-sample center coverage retain their separate semantic producer.
 Scene-color application disables lighting AO to avoid double darkening. It
 attenuates bright regions using the accepted previous GPU exposure (manual or
 initial fallback otherwise), preserves coverage alpha and excludes sky. The
-Camera component uses `AMBIENT_OCCLUSION_SPIRAL_SSAO` and
-`AMBIENT_OCCLUSION_SCENE_COLOR`. Saved pipeline JSON uses the string fields above.
+Camera component uses `AMBIENT_OCCLUSION_SCENE_COLOR` for the application.
+The project profile selects the spiral method. Pipeline JSON uses the string fields above.
 Scene-color AO follows ordinary scene depth participation. Whole-game visual and
 performance acceptance remain independent.
 
@@ -5457,7 +5464,9 @@ only hides geometry behind every surface it covers. It is a graph transient
 sized to the view's internal depth extent. GPU occlusion consumes that bound;
 the independent Single Layer Water SSR path builds its own furthest hierarchy
 from the opaque depth resolve before the Water prepass. Water receiver depth
-comes from the separate Water prepass texture. Its active cast samples four
+and normal come from the Water prepass. The trace reads opaque depth and
+motion directly only when reprojecting hit color into the preceding scene.
+Its active cast samples four
 linear positions per batch with roughness-dependent explicit mips and
 adjacent-depth-difference interpolation; it does not enter the opaque
 closest-depth rescue or binary-refinement path.
@@ -5477,9 +5486,10 @@ viewport across resize and retires replaced allocations after their last
 consuming submission; no previous depth/normal history is bound for Water.
 
 Water with MSAA uses the existing Forward 4x opaque producer. One nearest
-Reverse-Z sample ID selects its normal, velocity, raw depth and legal 1x
-hardware depth. Underwater translucency may update 4x color before a later
-color gather reads that frozen ID; depth is never reselected. The display
+Reverse-Z sample ID selects raw depth and legal 1x hardware depth. Standard
+temporal demand adds opaque motion to that same resolve and controls its
+geometry pass and both motion allocations. Underwater translucency may update
+4x color before a later gather reads the frozen sample ID. The display
 average and selected refraction backdrop stay separate. Full SLW and Water SSR
 raster remain 1x; this is not whole-pipeline 4x Water or Deferred.
 
@@ -5494,9 +5504,12 @@ velocity passes. Every consumer declares its sampled read of that one producer.
 
 ## Screen-space ambient occlusion
 
-Enable AO through the same public Standard profile used at creation or by
-`renderer.setProfile()`. AO can run through Forward or Deferred on an eligible
-device. Forward input uses the selected Standard material's evaluated normal,
+Set `settings.rendering.ambientOcclusion` in the engine configuration, or set
+`ambientOcclusion` in the Standard profile used at creation or by
+`renderer.setProfile()`. AO is opt-in. Set `{ enabled: true }` to use the default
+SSAO method, or add `method: 'gtao'` to select GTAO. AO can run through Forward
+or Deferred on an eligible device. Forward input uses the selected Standard
+material's evaluated normal,
 or rigid built-in Unlit's transformed mesh normal, with the same coverage as
 color. Standard Skin uses its posed surface normal. Unlit surfaces occlude
 their surroundings while their own color remains unlit. No normal texture is
@@ -5505,25 +5518,25 @@ AO demand alone does not switch the profile to Deferred. An incompatible
 material input, format, or complete
 resource budget returns a structured error.
 
-For a camera-specific request, add the public component to that camera. The
-algorithm and quality fields use the exported closed numeric tables:
+Add the `AmbientOcclusion` component to override the project enable state and
+parameters for one camera. The method stays project scoped. The quality field
+uses the exported constants.
 
 ```ts
 import {
   AmbientOcclusion,
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
 } from '@forgeax/engine/render';
 
 world.addComponent(camera, {
   component: AmbientOcclusion,
   data: {
-    algorithm: AMBIENT_OCCLUSION_GTAO,
+    enabled: true,
     quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
     directLightingStrength: 0.25,
   },
 }).unwrap();
-// Remove the camera request and its dedicated AO graph work:
+// Restore project defaults for this camera.
 world.removeComponent(camera, AmbientOcclusion).unwrap();
 ```
 
@@ -5545,8 +5558,8 @@ from capture-only views. Invalid AO returns a structured `ssao-*` error without
 blocking an independently authored SSR request. SSR retains its independent
 Deferred admission policy.
 
-AO uses numeric closed tables: `algorithm` indexes `['ssao', 'gtao', 'spiral-ssao']` and
-`quality` indexes `['low', 'medium', 'high']`. Radius, bias and intensity share
+The profile sets `method` to `'ssao'`, `'gtao'`, or `'spiral-ssao'`. Camera
+quality indexes `['low', 'medium', 'high']`. Radius, bias and intensity share
 the existing SSAO validator. `directLightingStrength` is a finite value in
 `[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to direct
 light in both Forward and Deferred, independently of material and environment
@@ -5560,23 +5573,29 @@ its inverse and AO parameters. Camera jitter uses the same clip-space transform
 as temporal projection and the View UBO, including stereo and capture lenses.
 An early upload failure retains the required-upload frame abort.
 
-The default Vite shader producer includes SSAO, so `StandardProfile.ssao` needs no build-time opt-in. A deliberately stripped manifest reports `post-process-not-found` when AO is requested; it must not silently render white AO.
+The default Vite shader producer includes AO programs. An AO request against a
+stripped manifest reports `post-process-not-found`.
 
 ```ts
 const configured = renderer.setProfile({
   ...renderer.inspect().profile,
   renderPath: 'deferred',
-  ssao: { algorithm: 'gtao', quality: 'high', radius: 0.25, thickness: 1, intensity: 1 },
+  ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high', radius: 0.25 },
 });
 if (!configured.ok) throw configured.error;
 // Remove the requested AO passes and their per-frame upload work:
-const disabled = renderer.setProfile({ ...renderer.inspect().profile, ssao: false });
+const profile = renderer.inspect().profile;
+const disabled = renderer.setProfile({
+  ...profile,
+  ambientOcclusion: { ...profile.ambientOcclusion, enabled: false },
+});
 if (!disabled.ok) throw disabled.error;
 ```
 
 | Parameter | Contract |
 |:--|:--|
-| `algorithm` | `gtao` (default), hemisphere `ssao`, or depth-only `spiral-ssao`; the spiral estimator uses calc plus horizontal/vertical seven-tap filters |
+| `enabled` | Project switch defaults to false. The camera component can enable or disable AO for its view. |
+| `method` | Hemisphere `ssao` (default), `gtao`, or depth-only `spiral-ssao`. The spiral estimator uses horizontal and vertical seven-tap filters. |
 | `quality` | Default `high`. Hemisphere SSAO: 16 / 32 / 64 samples. GTAO: 3 slices with 2 / 4 / 6 steps per side = 12 / 24 / 36 depth candidates; high maps Three samples=16 to actual search work. Spiral SSAO uses 8 / 12 / 12 candidates; explicit 16 opts into a larger budget. |
 | `sampleCount` | Optional explicit integer estimator budget in `[1,64]`; otherwise derived from algorithm/quality. GTAO expands its radial budget into slices and both sides; inspect actual depth-candidate work. Component value `0` selects the derived budget. |
 | `radius` | Positive finite view-space distance; default `0.25` |
@@ -5586,20 +5605,21 @@ if (!disabled.ok) throw disabled.error;
 | `distanceExponent` | GTAO radial sample distribution; non-negative finite, default `1` (linear) |
 | `distanceFallOff` | GTAO horizon update attenuation in `[0,1]`, default `1`; candidate j uses mix(1, 2/(j+2), falloff) |
 | `resolutionScale` | AO dimensions relative to internal scene size, `[0.25,1]`, default `1`; `0.5` opts into half resolution |
-| `ssao: true` | Enables the same default parameter set |
 
 The camera component and profile use the same validation owner. Invalid enum or
 numeric values return the structured `ssao-parameter-invalid`,
 `ssao-radius-non-positive`, or `ssao-bias-negative` errors. Their hints identify
 the offending field and show both recovery routes: correct
-`AmbientOcclusion.<field>` or `config.ssao.<field>`, remove the camera component,
-or set the Standard profile's `ssao` field to `false`.
+`AmbientOcclusion.<field>` or `ambientOcclusion.<field>`. Set `enabled: false`
+at the project or camera scope to disable AO there.
 
 For the original-style spiral estimator, configure the native profile directly:
 
 ```ts
-ssao: { algorithm: 'spiral-ssao', quality: 'high', resolutionScale: 0.5,
-        radius: 0.9, intensity: 1.6 }
+ambientOcclusion: {
+  enabled: true, method: 'spiral-ssao', quality: 'high',
+  resolutionScale: 0.5, radius: 0.9, intensity: 1.6,
+}
 ```
 
 Its three single-sample `r8unorm` targets retain raw visibility, horizontal and
@@ -6219,16 +6239,21 @@ if (!selected.ok) throw selected.error;
 The Renderer derives demand from published material values. Zero effective radius or weight adds
 no diffusion pass or target. Standard geometry stores the RGB profile and weight in a second uint
 lane of the lighting-context attachment; its first lane retains the existing lighting identity.
-Deferred lighting separates direct and environment diffuse from specular. One view-private compute
-pass diffuses that carrier along both axes using workgroup scratch and adds its weighted difference
-to RGBA32 linear HDR SceneColor before existing temporal/post work. Specular and emissive keep their
-shading response. Active diffusion requires compute/storage textures, float32 HDR sampling and
-blending, a write-only RGBA32F storage target, and 32 KiB workgroup storage; unsupported devices
-report a structured capability error.
-Its GBuffer retains receiver light channels and requires 48 bytes per sample, or 64 with visible-surface identity. Combined temporal
-MRT requires 56/72 respectively; lower supported attachment capacity keeps the existing separate
-temporal producer. The precision change uses the same SceneColor attachment and its actual format
-for both CPU and GPU-driven geometry pipelines.
+Deferred lighting writes specular and emissive to RGBA16F SceneColor. It writes the diffuse of
+active subsurface pixels to a separate full-resolution target. Setup prepares a half-resolution
+diffuse image and an 8-byte guide per half pixel, and builds the horizontal and vertical GPU tile
+lists with the required vertical halo. Two indirect filters produce the half-resolution result.
+Recombination adds a weighted mix of original and filtered diffuse to SceneColor before
+temporal and post processing. It uses the original diffuse at mixed or incompatible cells.
+Empty GPU work lists skip filtering and recombination. The graph has four main stages at any
+resolution and a preparation pass that clears the indirect commands and tile counters.
+Active diffusion requires RGBA16F storage targets and indirect execution. The setup stage uses
+three writable storage textures and three storage buffers. Unsupported devices report a
+structured capability error.
+
+The GBuffer retains receiver light channels and uses 40 bytes per sample, or 56 with visible
+surface identity. Combining temporal outputs in the same pass takes 48 or 64 bytes respectively.
+Lower supported attachment capacity keeps the separate temporal producer.
 
 Support is single-sample opaque native Standard Deferred, including rigid/skinned and CPU/instanced
 lanes. Forward, MSAA, blended materials, depth-write-disabled surfaces, GI and cube/planar capture
@@ -6238,13 +6263,12 @@ Standard root contract and Standard surface semantics.
 Ordinary display and camera target views keep private depth, normal, profile and diffuse carriers.
 The graph scales presentation radii by each internal/output dimension and owns fence retirement.
 
-Neighbour taps must share the quantized RGB profile, have active coverage, agree within 0.8 normal
-dot and max(0.001 m, 1% view distance) depth tolerance. Rejected taps use the centre radiance,
-keeping a uniform field constant. High quality uses a normalized discrete Gaussian with sigma
-radius/3 and bounded support. Low uses contiguous integer taps truncated at two sigma. The initial
-alternate-offset candidate failed the impulse oracle; its raw failure remains in the
-validation evidence. The revised quality/cost
-curve still requires real backend acceptance.
+Neighbour taps and reconstruction samples share the quantized RGB profile. Their normals
+agree within a 0.8 dot product, with a depth tolerance of 0.001 m or 1% of view distance,
+whichever is greater. Rejected filter taps use the center radiance. High uses at most
+19 half-resolution Gaussian taps per axis. Low truncates the kernel to two sigma and
+uses at most 13 taps per axis. A channel without effective filter support retains its
+original full-resolution diffuse.
 
 The [ordinary resource example](../../scripts/dev-verify/roi-25-subsurface/project/assets/surfaces.pack.ts)
 authors skin, wax and jade through public subpaths and procedural mesh/SceneAsset sources.
@@ -6333,6 +6357,21 @@ Frame-owned vertex and index uploads are graph imports and still replace the
 graph before the old allocation can retire.
 
 ## Deferred lighting evidence
+
+`gbufferFormat: 'default'` explicitly selects the Default GBuffer Format for
+Standard Deferred, with a fixed 24-byte color attachment layout. It uses the UE 5.8.1 legacy Default Lit channels
+for dynamic lighting. Four packed integer targets retain the A–D channel
+widths, and SceneColor retains RGBA16F. Non-default receiver masks enable a
+separate R32Uint lighting-channel target. The shader derives neutral dielectric
+F0 from the eight-bit Specular field. The configured layout stays fixed when
+the channel target is added or removed.
+
+This profile currently admits Default Lit writers and automatically biased
+directional Vogel PCF with `deferredDirectionalShadowReceiver: 'projected'`.
+Requests that require other GBuffer payloads or readers report a view error.
+Deferred SSR uses A for the shading normal and B for roughness. Its trace,
+temporal, and composition sources must publish the Default GBuffer contract.
+The existing Standard Deferred profile retains its versioned full layout.
 
 Deferred lighting validation is consumer evidence, not a Render production
 subsystem. The learn-render smoke exercises the Standard clustered path and
@@ -10389,6 +10428,12 @@ submissions retain the previously committed visibility and transforms.
 The source retains identity and dependency indexes. The receiver owns the only
 persistent RenderScene for this path and resolves assets through `AssetReader`.
 Same-realm Renderer consumers keep their synchronous World path.
+
+A fixed Mesh version can reference the receiver's prepared content when the
+source Asset Registry proves the fixed value captured that exact revision.
+The receiver keeps the same backing charged to the preparation budget until
+the fixed version retires and outstanding preparation leases and grace end.
+Without a ready preparation, the fixed row carries its own payload.
 
 A publisher admits at most two outstanding revisions: one consuming frame and
 one sealed successor. Feedback and returned storage are revision-scoped; recycling

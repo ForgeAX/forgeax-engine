@@ -167,7 +167,16 @@ export function rayHitsMeshBounds(
   bounds: MeshAsset['aabb'],
   matrix: mat4.Mat4Like,
 ): boolean {
-  if (bounds === undefined || (bounds[0] as number) > (bounds[3] as number)) return true;
+  return meshBoundsEntry(screenRay, bounds, matrix) !== undefined;
+}
+
+/** Earliest possible hit of the world-space bounds. Unknown bounds can contain the ray origin. */
+export function meshBoundsEntry(
+  screenRay: ray.Ray,
+  bounds: MeshAsset['aabb'],
+  matrix: mat4.Mat4Like,
+): number | undefined {
+  if (bounds === undefined || (bounds[0] as number) > (bounds[3] as number)) return 0;
   const worldBounds = box3.create();
   worldBounds[0] = worldBounds[1] = worldBounds[2] = Infinity;
   worldBounds[3] = worldBounds[4] = worldBounds[5] = -Infinity;
@@ -177,5 +186,6 @@ export function rayHitsMeshBounds(
       worldBounds[axis + 3] = Math.max(worldBounds[axis + 3] as number, point[axis] as number);
     }
   });
-  return ray.rayAabbIntersects(screenRay, worldBounds).hit;
+  const hit = ray.rayAabbIntersects(screenRay, worldBounds);
+  return hit.hit ? Math.max(hit.tmin, 0) : undefined;
 }

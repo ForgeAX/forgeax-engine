@@ -1,5 +1,9 @@
 /** Plugin compilation and runtime program preparation for custom project hosts. */
 
+export {
+  authoredRuntimePackImports,
+  prepareAuthoredRuntimePacks,
+} from './build/authored-runtime-packs.js';
 export { loadProjectCookers, type ProjectCookers } from './build/cookers.js';
 export { executionWorkerEntries } from './build/execution-workers.js';
 export { preparePackProgramSource, prepareRuntimePackProgram } from './build/pack-program.js';

@@ -7,7 +7,7 @@ struct TsrAnalysisResult {
 fn tsrAnalyze(pixel: vec2<i32>, tileOrigin: vec2<i32>) -> TsrAnalysisResult {
   let uv = (vec2<f32>(pixel) + 0.5) / params.inputSize;
   let currentUv = uv + params.jitter;
-  let inputGeometry = tsrClosestTemporal(sceneTemporal, currentUv, 1);
+  let inputGeometry = tsrClosestSceneTemporal(currentUv, 1);
   var geometry = inputGeometry;
   if (params.hasCoverage != 0u) {
     let ratio=vec2<f32>(textureDimensions(coverage))/params.inputSize;

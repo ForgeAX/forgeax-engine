@@ -168,9 +168,9 @@ describe('vertex color does not change the material contract', () => {
     let requestedShader: string | undefined;
     const assets = {
       shaderRegistry: {
-        materialArtifact(shaderId: string) {
+        materialParamSchemaProjection(shaderId: string) {
           requestedShader = shaderId;
-          return { paramSchema: registered };
+          return { schema: registered };
         },
       },
     } as unknown as NonNullable<Parameters<typeof materialParamSchemaForMaterial>[3]>;

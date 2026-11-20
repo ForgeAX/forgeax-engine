@@ -1,5 +1,7 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import { isStandardRootModule } from '@forgeax/engine-types';
+import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
+import { materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import { SceneDataUnavailableError } from '../errors/render';
 import {
   deriveRenderFeaturePassAccess,
@@ -142,6 +144,10 @@ export function sceneDataSurfaceBindings(
 }
 
 export interface StandardSceneDataContributor {
+  /** The receiver must retain object-specific probe or shadow selection. */
+  readonly compactReceiverContext?: true;
+  /** The captured writer and receiver fit a model in the Default GBuffer. */
+  readonly compactGbufferWriter?: 'default-channels' | 'lighting-channels';
   /** Proven by the same pass selectors as the later opaque Forward pass. */
   readonly forwardOnly?: boolean;
   readonly id: string;
@@ -328,6 +334,8 @@ function sameContributorProof(
         row.deformation === prior.deformation &&
         row.entryPoint === prior.entryPoint &&
         row.selectedProgram === prior.selectedProgram &&
+        row.compactGbufferWriter === prior.compactGbufferWriter &&
+        row.compactReceiverContext === prior.compactReceiverContext &&
         (row.forwardOnly === true) === (prior.forwardOnly === true) &&
         row.facts?.authoredShaderId === prior.facts?.authoredShaderId &&
         row.facts?.materialSnapshotMissing === prior.facts?.materialSnapshotMissing &&
@@ -416,6 +424,48 @@ export function standardAoSceneDataUnavailable(input: {
   });
 }
 
+function sceneDataAdmissionIdentity(
+  input: StandardSceneDataAdmissionInput,
+  producer: string | undefined,
+  decisions: readonly {
+    readonly contributor: StandardSceneDataContributor;
+    readonly rejection: SurfaceContributorRejection | undefined;
+  }[],
+  rejected: readonly Pick<StandardSceneDataMissingContributor, 'id' | 'reason'>[],
+): string {
+  // An empty or singleton roster has no sort key. Serialize the complete identity once.
+  const singletonRows =
+    decisions.length < 2
+      ? decisions.map(({ contributor, rejection }) =>
+          contributorIdentityFields(contributor, rejection?.reason),
+        )
+      : undefined;
+  const orderedIdentityRows =
+    singletonRows === undefined
+      ? decisions
+          .map(({ contributor, rejection }) =>
+            contributorIdentityKey(contributor, rejection?.reason),
+          )
+          .sort((left, right) => left.localeCompare(right))
+      : undefined;
+  const header = [
+    input.viewIdentity,
+    input.generation,
+    input.deviceGeneration,
+    input.standardPipeline,
+    input.cameraAvailable,
+    input.lane,
+    input.renderPath,
+    producer,
+  ];
+  const rejectedRows = rejected.map(({ id, reason }) => [id, reason]);
+  // The sorted row keys already are JSON arrays. Emit them directly without
+  // rebuilding and encoding the same contributor fields after the sort.
+  return orderedIdentityRows === undefined
+    ? JSON.stringify([...header, singletonRows, rejectedRows])
+    : `${JSON.stringify(header).slice(0, -1)},[${orderedIdentityRows.join(',')}],${JSON.stringify(rejectedRows)}]`;
+}
+
 export function createStandardSceneSurfaceAdmission(
   input: StandardSceneDataAdmissionInput,
   previous?: StandardSceneSurfaceAdmission,
@@ -456,29 +506,7 @@ export function createStandardSceneSurfaceAdmission(
         : renderPath === 'deferred'
           ? 'standard-deferred-gbuffer'
           : 'standard-forward-surface-pass';
-  const identityRows = decisions.map(({ contributor, rejection }) =>
-    contributorIdentityFields(contributor, rejection?.reason),
-  );
-  // A singleton needs no ordering key. Keep its original direct serialization.
-  const orderedIdentityRows =
-    identityRows.length < 2
-      ? identityRows
-      : identityRows
-          .map((fields) => ({ fields, key: JSON.stringify(fields) }))
-          .sort((left, right) => left.key.localeCompare(right.key))
-          .map(({ fields }) => fields);
-  const identity = JSON.stringify([
-    input.viewIdentity,
-    input.generation,
-    input.deviceGeneration,
-    input.standardPipeline,
-    input.cameraAvailable,
-    input.lane,
-    input.renderPath,
-    producer,
-    orderedIdentityRows,
-    rejected.map(({ id, reason }) => [id, reason]),
-  ]);
+  const identity = sceneDataAdmissionIdentity(input, producer, decisions, rejected);
   const base = {
     identity,
     deferredGBufferEmpty:
@@ -520,7 +548,14 @@ type SurfaceContributorRejection = {
   readonly rejectedField: StandardSceneDataContributorRejectedField;
 };
 
-/** Capture the complete tuple once before canonical ordering. */
+const contributorIdentityKeys = new GenerationalWeakMap<
+  StandardSceneDataContributor,
+  {
+    readonly rejection: StandardSceneDataContributorRejectionReason | undefined;
+    readonly key: string;
+  }
+>();
+
 function contributorIdentityFields(
   row: StandardSceneDataContributor,
   rejection: StandardSceneDataContributorRejectionReason | undefined,
@@ -536,6 +571,19 @@ function contributorIdentityFields(
     row.forwardOnly === true,
     rejection,
   ];
+}
+
+/** Retain the canonical tuple only for this owner's frozen observations. */
+function contributorIdentityKey(
+  row: StandardSceneDataContributor,
+  rejection: StandardSceneDataContributorRejectionReason | undefined,
+): string {
+  const owned = ownedContributors.has(row);
+  const previous = owned ? contributorIdentityKeys.get(row) : undefined;
+  if (previous !== undefined && previous.rejection === rejection) return previous.key;
+  const key = JSON.stringify(contributorIdentityFields(row, rejection));
+  if (owned) contributorIdentityKeys.set(row, { rejection, key });
+  return key;
 }
 
 function surfaceContributorRejection(
@@ -624,7 +672,39 @@ function surfaceContributorDiagnostic(
   });
 }
 
-type ContributorRow = Pick<RenderableSnapshot, 'morph' | 'skinBinding'>;
+type ContributorRow = Pick<
+  RenderableSnapshot,
+  | 'morph'
+  | 'skinBinding'
+  | 'lightingChannels'
+  | 'shadowReceiver'
+  | 'capsuleShadowRequested'
+  | 'probeBlendRecord'
+>;
+
+function fitsCompactGBuffer(
+  material: MaterialResource['snapshot'],
+  row: ContributorRow | undefined,
+  shaderId: string | undefined,
+): boolean {
+  const ior = material.paramSnapshot?.ior ?? 1.5;
+  const specular = material.paramSnapshot?.specular ?? 1;
+  return (
+    (isCanonicalStandardPbrMaterialShader(shaderId) ||
+      (shaderId !== undefined && isStandardRootModule(shaderId))) &&
+    row !== undefined &&
+    typeof ior === 'number' &&
+    Number.isFinite(ior) &&
+    typeof specular === 'number' &&
+    Number.isFinite(specular) &&
+    ((Math.max(ior, 1) - 1) / (Math.max(ior, 1) + 1)) ** 2 * Math.min(1, Math.max(0, specular)) <=
+      0.08 &&
+    (material.specularColor?.every((channel) => channel === 1) ?? true) &&
+    material.authoredTextureFields?.has('specularTexture') !== true &&
+    material.authoredTextureFields?.has('specularColorTexture') !== true &&
+    !materialUsesDirectDfgLut(material.materialParamSchema)
+  );
+}
 type ContributorMaterials = Pick<RenderableSnapshot, 'material' | 'materials'>;
 type ContributorSource = ContributorRow &
   ContributorMaterials &
@@ -886,6 +966,17 @@ function selectedPassContributor(
     retained === undefined
       ? runtimeMaterialShaderId(pass.program.module, pass.name)
       : selectedProgramFact.authoredShaderId;
+  const compactGbufferWriter =
+    lane === 'deferred' && !forwardOnly && fitsCompactGBuffer(snapshot, row, authoredShaderId)
+      ? (row?.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT) === LIGHTING_CHANNELS_DEFAULT
+        ? 'default-channels'
+        : 'lighting-channels'
+      : undefined;
+  const compactReceiverContext =
+    compactGbufferWriter !== undefined &&
+    (row?.probeBlendRecord !== undefined || row?.shadowReceiver === false)
+      ? true
+      : undefined;
   const id =
     previous?.facts?.sourceTuple === sourceTuple ? previous.id : JSON.stringify(sourceTuple);
   const publication =
@@ -914,6 +1005,8 @@ function selectedPassContributor(
   if (
     previous !== undefined &&
     retained !== undefined &&
+    previous.compactGbufferWriter === compactGbufferWriter &&
+    previous.compactReceiverContext === compactReceiverContext &&
     matchesSelectedContributor(
       previous,
       selectedProgramFact,
@@ -932,6 +1025,8 @@ function selectedPassContributor(
     return previous;
   const contributor: ProducedContributor = {
     forwardOnly,
+    ...(compactGbufferWriter === undefined ? {} : { compactGbufferWriter }),
+    ...(compactReceiverContext === undefined ? {} : { compactReceiverContext }),
     id,
     publication,
     materialShaderId: authoredShaderId ?? '',

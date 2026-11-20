@@ -1,9 +1,31 @@
-import { freezeJson } from '@forgeax/engine-types';
-import { captureMaterialSnapshot } from '../material-resource';
+import { ownDetachedMaterialSnapshot } from '../material-resource';
 import type { RenderPublicationMessage } from './record';
 
-function fixedJson<T>(value: T): T {
-  return value !== null && typeof value === 'object' ? freezeJson(value) : value;
+/** A Worker message already owns its cloned values. Only shared memory can still alias the sender. */
+export function adoptWorkerPublicationMaterials(
+  message: RenderPublicationMessage,
+): RenderPublicationMessage {
+  const side = message.side;
+  const materials = side?.materials;
+  if (side === undefined || materials === undefined || materials.length === 0) return message;
+  return {
+    ...message,
+    side: {
+      ...side,
+      materials: materials.map((material) => {
+        const value = material.value;
+        const baseColor = value.baseColor;
+        return {
+          ...material,
+          value: ownDetachedMaterialSnapshot(
+            baseColor.buffer instanceof ArrayBuffer
+              ? value
+              : { ...value, baseColor: baseColor.slice() as typeof baseColor },
+          ),
+        };
+      }),
+    },
+  };
 }
 
 /** Detach admitted material values and program facts at native receive; templates carry IDs. */
@@ -34,25 +56,14 @@ export function ownReceivedPublicationMaterials(
     ...message,
     side: {
       ...side,
-      materials: materials.map((material, index) => {
-        const copied = values[index];
-        return {
-          ...material,
-          value: captureMaterialSnapshot({
-            ...material.value,
-            ...copied,
-            passes: fixedJson(copied?.passes ?? []),
-            materialProgramKeys: fixedJson(copied?.materialProgramKeys),
-            ...(copied?.materialProgramInputs === undefined
-              ? {}
-              : { materialProgramInputs: fixedJson(copied.materialProgramInputs) }),
-            materialPublication: fixedJson(copied?.materialPublication),
-            ...(copied?.materialContext === undefined
-              ? {}
-              : { materialContext: fixedJson(copied.materialContext) }),
-          }),
-        };
-      }),
+      materials: materials.map((material, index) => ({
+        ...material,
+        value: ownDetachedMaterialSnapshot({
+          ...material.value,
+          ...values[index],
+          passes: values[index]?.passes ?? [],
+        }),
+      })),
     },
   };
 }

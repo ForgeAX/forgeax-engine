@@ -112,7 +112,7 @@ fn tsr_reconstruct(@builtin(global_invocation_id) id: vec3<u32>,
     if(i32(n%13u)>=inputFootprint.x) { continue; }
     let p=clamp(inputOrigin+vec2<i32>(i32(n%13u),i32(n/13u)),vec2<i32>(0),vec2<i32>(sceneSize)-1);
     reconstructSceneTile[n]=textureLoad(scene,p,0);
-    reconstructTemporalTile[n]=textureLoad(sceneTemporal,p,0);
+    reconstructTemporalTile[n]=loadSceneTemporal(p);
   }
   var needsRows=false;
   if(params.hasCoverage!=0u) {

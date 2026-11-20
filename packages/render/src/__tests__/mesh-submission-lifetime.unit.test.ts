@@ -237,11 +237,19 @@ it('fences ordinary mesh submissions independently of candidates, including reve
   expect(originalIndices.isDestroyed).toBe(false);
   // Two independent index buffers share one immutable vertex allocation.
   expect(scope.resourceDelta()).toBe(3);
+  expect(store.inspectMeshBufferBytes()).toEqual({
+    activeBytes: replacement.vboBytes + replacement.iboBytes,
+    retiringBytes: original.iboBytes,
+  });
   finishFirst();
   await first;
   expect(originalIndices.isDestroyed).toBe(true);
   expect(original.vertexBuffer.isDestroyed).toBe(false);
   expect(scope.resourceDelta()).toBe(2);
+  expect(store.inspectMeshBufferBytes()).toEqual({
+    activeBytes: replacement.vboBytes + replacement.iboBytes,
+    retiringBytes: 0,
+  });
   expect(store.getMeshGpuHandles(handle, worldRenderResources(world))).toBe(replacement);
   expect(replacement.vertexBuffer.isDestroyed).toBe(false);
   expect(replacementIndices.isDestroyed).toBe(false);

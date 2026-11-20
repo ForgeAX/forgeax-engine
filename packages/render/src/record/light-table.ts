@@ -28,6 +28,7 @@ export class LightTable {
   /** Per slot: the record and projector selection the GPU slot was written from. */
   private readonly sources: (DirectLightSnapshot | undefined)[] = [];
   private readonly projector: (boolean | undefined)[] = [];
+  private readonly channelMappings: Uint32Array;
   /** 1 where the GPU slot holds `words`; a fresh or failed slot is always written. */
   private readonly written: Uint8Array;
   /** CPU image of the written slots, compared bit-exactly before a write. */
@@ -43,6 +44,7 @@ export class LightTable {
     private readonly layout: ReflectedDirectLightSlotLayout,
   ) {
     this.written = new Uint8Array(layout.capacity);
+    this.channelMappings = new Uint32Array(layout.capacity);
     this.words = new Uint32Array(layout.capacity * layout.floatCount);
     this.floats = new Float32Array(this.words.buffer);
   }
@@ -50,6 +52,7 @@ export class LightTable {
   write(
     local: readonly { readonly source?: DirectLightSnapshot | undefined }[],
     projectorSlot: number | undefined,
+    channelMapping = 0,
   ): Result<void, LightTableWriteFailure> {
     this.uploadedBytes = 0;
     this.packedSlots = 0;
@@ -59,8 +62,10 @@ export class LightTable {
       const selected = projectorSlot === undefined ? undefined : projectorSlot === slot;
       const dirty =
         source !== undefined &&
-        (this.sources[slot] !== source || this.projector[slot] !== selected) &&
-        this.pack(slot, source, selected);
+        (this.sources[slot] !== source ||
+          this.projector[slot] !== selected ||
+          this.channelMappings[slot] !== channelMapping) &&
+        this.pack(slot, source, selected, channelMapping);
       if (dirty) {
         if (first < 0) first = slot;
         continue;
@@ -79,11 +84,19 @@ export class LightTable {
   }
 
   /** Pack one slot into the CPU image; false when its bytes are already on the GPU. */
-  private pack(slot: number, source: DirectLightSnapshot, selected: boolean | undefined): boolean {
+  private pack(
+    slot: number,
+    source: DirectLightSnapshot,
+    selected: boolean | undefined,
+    channelMapping: number,
+  ): boolean {
     this.packedSlots += 1;
     this.sources[slot] = source;
     this.projector[slot] = selected;
-    const packed = new Uint32Array(packDirectLightSlot(source, this.layout, selected).buffer);
+    this.channelMappings[slot] = channelMapping;
+    const packed = new Uint32Array(
+      packDirectLightSlot(source, this.layout, selected, channelMapping).buffer,
+    );
     const floatCount = this.layout.floatCount;
     const offset = slot * floatCount;
     let changed = this.written[slot] !== 1;

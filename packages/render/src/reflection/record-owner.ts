@@ -689,6 +689,7 @@ export class ReflectionProbeRecordOwner {
                   generation: array.generation,
                   size: array.size,
                   format: this.outputFormat,
+                  diffusePayload: resource.diffusePayload,
                 },
               }
             : {}),

@@ -27,6 +27,7 @@ import {
   addMotionBlurPass,
   MOTION_BLUR_FEATURE_IDENTITY,
 } from '../features/motion-blur/motion-blur-feature';
+import { addSceneVelocityMotionBlur } from '../features/motion-blur/scene-velocity-motion-blur';
 import { addDistanceOutlinePasses } from '../features/outline/distance-graph';
 import { addOutlinePasses } from '../features/outline/graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
@@ -46,6 +47,7 @@ import {
   resolveOutputDither,
 } from '../render-pipeline';
 import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import type { SceneVelocityInputs } from '../temporal/default-gbuffer-velocity';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
 import { usesTsrCompute } from '../tsr/capabilities';
@@ -795,6 +797,7 @@ function addStandardTemporalResolve(
   coverage: RenderPipelineTarget | undefined,
   coverageDepth: RenderPipelineTarget | undefined,
   opaqueGuide: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<
   NonNullable<RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']>,
   RenderPipelineBuildError
@@ -810,6 +813,7 @@ function addStandardTemporalResolve(
     scene,
     depth,
     currentTemporal: sceneTemporal,
+    ...(sceneVelocity === undefined ? {} : { sceneVelocity }),
     ...(coverage === undefined ? {} : { coverage }),
     ...(coverageDepth === undefined ? {} : { coverageDepth }),
     ...(secondaryReactivity === undefined ? {} : { secondaryReactivity }),
@@ -908,13 +912,23 @@ function addSceneFeatureStages(
   postInput: RenderPipelineTarget,
   postTemporal: RenderPipelineTarget | undefined,
   sceneTemporal: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (route.clearOnly) return ok(postInput);
   if (route.motionBlur) {
-    return addMotionBlurStage(context, topology, route, featureTargets, postInput, postTemporal);
+    return addMotionBlurStage(
+      context,
+      topology,
+      route,
+      featureTargets,
+      postInput,
+      postTemporal,
+      sceneTemporal,
+      sceneVelocity,
+    );
   }
   const boundTemporal =
-    sceneTemporal === undefined
+    sceneTemporal === undefined || sceneVelocity !== undefined
       ? undefined
       : bindStandardSceneDataTarget(sceneTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA);
   const features = context.contributeFeatures({
@@ -935,6 +949,8 @@ function addMotionBlurStage(
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
   postTemporal: RenderPipelineTarget | undefined,
+  sceneTemporal: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (postTemporal === undefined) {
     return err(
@@ -949,17 +965,36 @@ function addMotionBlurStage(
   if (!blurred.ok) return blurred;
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: [
-      bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA),
-    ],
+    semanticTargets:
+      sceneVelocity === undefined
+        ? [bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA)]
+        : [],
     namedTargets: {
       'motion-input': postInput,
       'motion-output': blurred.value,
     },
     standardSurfaceAccesses: [],
-    exclude: [BARREL_DISTORTION_FEATURE_IDENTITY, EDITOR_ASSISTANCE_FEATURE_IDENTITY],
+    exclude: [
+      BARREL_DISTORTION_FEATURE_IDENTITY,
+      EDITOR_ASSISTANCE_FEATURE_IDENTITY,
+      ...(sceneVelocity === undefined ? [] : [MOTION_BLUR_FEATURE_IDENTITY]),
+    ],
   });
   if (!features.ok) return features;
+
+  if (sceneVelocity !== undefined && sceneTemporal !== undefined) {
+    const native = addSceneVelocityMotionBlur(
+      context.graph,
+      postInput,
+      sceneTemporal,
+      sceneVelocity,
+      blurred.value,
+      topology.surface.width,
+      topology.surface.height,
+      topology.lane.compute && topology.lane.storageBuffer && topology.lane.storageTexture === true,
+    );
+    return native.ok ? ok(blurred.value) : native;
+  }
   if (context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
     const fallback = addMotionBlurPass(context.graph, postInput, postTemporal, blurred.value);
     if (!fallback.ok) return fallback;
@@ -1731,6 +1766,7 @@ export function addStandardPost(
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   waterFoamSimulation?: GraphTextureView,
   sceneAo?: SceneColorAo,
+  sceneVelocity?: SceneVelocityInputs,
 ): Result<void, RenderPipelineBuildError> {
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
@@ -1767,8 +1803,8 @@ export function addStandardPost(
   const applySceneColorAo = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
     if (
       !route.clearOnly &&
-      topology.config?.ssao?.enabled === true &&
-      topology.config.ssao.application === 'scene-color'
+      topology.config?.ambientOcclusion?.enabled === true &&
+      topology.config.ambientOcclusion.application === 'scene-color'
     ) {
       if (sceneAo === undefined)
         return err(
@@ -1817,6 +1853,7 @@ export function addStandardPost(
         coverage,
         coverageDepth,
         opaqueGuide,
+        sceneVelocity,
       );
       if (!history.ok) return history;
       postInput = history.value.currentColor;
@@ -1868,6 +1905,7 @@ export function addStandardPost(
     postInput,
     postTemporal,
     sceneTemporal,
+    sceneVelocity,
   );
   if (!featured.ok) return featured;
   const observed = addSceneObservation(context, route, scene);

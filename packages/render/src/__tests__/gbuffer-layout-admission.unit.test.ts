@@ -23,6 +23,15 @@ describe('versioned Standard GBuffer admission', () => {
     ).not.toThrow();
   });
 
+  it('requires the compact writer certificate independently of the full-layout writer', () => {
+    const full = createStandardPbrArtifactReceipt();
+    expect(() => requireStandardGBufferReceipt(full)).not.toThrow();
+    expect(() => requireStandardGBufferReceipt(full, true)).toThrow(/standard-gbuffer\/4/);
+    expect(() =>
+      requireStandardGBufferReceipt({ ...full, compactGbuffer: 'standard-gbuffer/4' }, true),
+    ).not.toThrow();
+  });
+
   it.each([
     'forward',
     'deferred',

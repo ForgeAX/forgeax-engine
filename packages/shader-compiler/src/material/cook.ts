@@ -1,5 +1,4 @@
-﻿import { isStandardRootModule } from '@forgeax/engine-pack';
-import { materialProgramContextForPass } from '@forgeax/engine-pack/material-cook';
+﻿import { materialProgramContextForPass } from '@forgeax/engine-pack/material-cook';
 import {
   createMaterialProgramArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
@@ -9,6 +8,7 @@ import type {
   MaterialParameter,
   MaterialPass,
   MaterialProgramAbi,
+  MaterialProgramAddress,
   MaterialSurfaceProgramAbi,
   ParamSchemaEntry,
   ResolvedMaterial,
@@ -22,6 +22,7 @@ import {
   deriveMaterialDynamicInputLayout,
   err,
   inferMaterialParameterKind,
+  isStandardRootModule,
   MATERIAL_NUMERIC_LAYOUT,
   MATERIAL_SURFACE_MODEL_PASSES,
   MATERIAL_TEXTURE_LAYOUT,
@@ -33,6 +34,7 @@ import {
   resolveMaterialAsset,
   SINGLE_LAYER_WATER_PASS_OUTPUTS,
   selectMaterialStaticContract,
+  sha256,
   standardPhysicalTextureFields,
   validateMaterialOutputs,
   waterDeformationInputLayout,
@@ -105,6 +107,8 @@ export interface MaterialCookedPass {
   readonly pass: string;
   readonly module: string;
   readonly context: MaterialVariantContext;
+  /** Exact compiler override, independent of what vertex inputs survive reflection. */
+  readonly vertexColorAvailable?: boolean;
   readonly parameters: readonly MaterialParameter[];
   readonly paramSchema: readonly ParamSchemaEntry[];
   readonly generatedModule: string;
@@ -921,35 +925,17 @@ function materialDeclaresSceneIndex(
   });
 }
 
-export async function cookMaterialAsset(
+function prepareMaterialCookUnit(
   request: MaterialCookRequest,
-  compile: typeof compileShader = compileShader,
-  selectedPasses?: readonly string[],
   preparedSurfaces?: MaterialSurfacePreparation,
-): Promise<Result<MaterialCookedAsset, MaterialCookError>> {
-  const work = materialCompilation(request, selectedPasses, preparedSurfaces);
-  let next = work.next();
-  while (!next.done) next = work.next(await compile(...next.value));
-  return next.value;
-}
-
-/** Compile only the requested passes under an initialized, portable compiler. */
-export function compileMaterialSelection(
-  request: MaterialCookRequest,
-  compiler: PreparedShaderCompiler,
-  selectedPasses: readonly string[],
-): Result<MaterialCookedAsset, MaterialCookError> {
-  const work = materialCompilation(request, selectedPasses, undefined);
-  let next = work.next();
-  while (!next.done) next = work.next(compiler.compile(...next.value));
-  return next.value;
-}
-
-function* materialCompilation(
-  request: MaterialCookRequest,
-  selectedPasses: readonly string[] | undefined,
-  preparedSurfaces: MaterialSurfacePreparation | undefined,
-): MaterialCompilation<MaterialCookedAsset> {
+): Result<
+  {
+    readonly unit: MaterialCookUnit;
+    readonly resolved: ResolvedMaterial;
+    readonly layerPlan: StandardLayerPlan;
+  },
+  MaterialCookError
+> {
   const resolved = resolveMaterialAsset(request.material, request.table);
   if (!resolved.ok) return err(resolved.error);
   const resolvedAsset = deriveSurfaceShadowPasses(
@@ -990,6 +976,45 @@ function* materialCompilation(
       resolved.value.asset.surface?.model === 'single-layer-medium' ||
       resolved.value.asset.surface?.model === 'single-layer-water',
   };
+  return ok({
+    unit,
+    resolved: { ...resolved.value, asset: resolvedAsset },
+    layerPlan: loweredContract.value.layerPlan,
+  });
+}
+
+export async function cookMaterialAsset(
+  request: MaterialCookRequest,
+  compile: typeof compileShader = compileShader,
+  selectedPasses?: readonly string[],
+  preparedSurfaces?: MaterialSurfacePreparation,
+): Promise<Result<MaterialCookedAsset, MaterialCookError>> {
+  const work = materialCompilation(request, selectedPasses, preparedSurfaces);
+  let next = work.next();
+  while (!next.done) next = work.next(await compile(...next.value));
+  return next.value;
+}
+
+/** Compile only the requested passes under an initialized, portable compiler. */
+export function compileMaterialSelection(
+  request: MaterialCookRequest,
+  compiler: PreparedShaderCompiler,
+  selectedPasses: readonly string[],
+): Result<MaterialCookedAsset, MaterialCookError> {
+  const work = materialCompilation(request, selectedPasses, undefined);
+  let next = work.next();
+  while (!next.done) next = work.next(compiler.compile(...next.value));
+  return next.value;
+}
+
+function* materialCompilation(
+  request: MaterialCookRequest,
+  selectedPasses: readonly string[] | undefined,
+  preparedSurfaces: MaterialSurfacePreparation | undefined,
+): MaterialCompilation<MaterialCookedAsset> {
+  const prepared = prepareMaterialCookUnit(request, preparedSurfaces);
+  if (!prepared.ok) return prepared;
+  const { unit, resolved, layerPlan } = prepared.value;
   const cooked: MaterialCookedPass[] = [];
   // Derive schema, physical layers and scene addressing from the complete
   // material above. A derivative producer may compile only its published
@@ -1013,11 +1038,7 @@ function* materialCompilation(
     if (!cookedPass.ok) return cookedPass;
     cooked.push(cookedPass.value);
   }
-  return ok({
-    resolved: { ...resolved.value, asset: resolvedAsset },
-    passes: cooked,
-    layerPlan: loweredContract.value.layerPlan,
-  });
+  return ok({ resolved, passes: cooked, layerPlan });
 }
 
 function passVariantContext(
@@ -1088,10 +1109,93 @@ function surfaceDynamicInputLayout(
   );
 }
 
-function* cookMaterialPass(
+interface MaterialRasterProgramInput {
+  readonly source: string;
+  readonly options: CompileOptions;
+}
+
+/**
+ * Rebuild the exact raster program selected from an admitted material
+ * publication. The producer digest fences byte identity before PSO admission.
+ */
+export function rebuildMaterialRasterProgram(
+  compiler: Pick<PreparedShaderCompiler, 'compile'>,
+  request: MaterialCookRequest,
+  selection: {
+    readonly pass: string;
+    readonly address: MaterialProgramAddress;
+    readonly artifactDigest: string;
+  },
+  preparedSurfaces?: MaterialSurfacePreparation,
+): Result<CompileResult, MaterialCookError> {
+  const lowered = prepareMaterialRasterProgram(request, selection, preparedSurfaces);
+  if (!lowered.ok) return lowered;
+  const compiled = compiler.compile(lowered.value.source, lowered.value.options);
+  if (!compiled.ok) return compiled;
+  if (`sha256:${sha256(compiled.value.wgsl)}` !== selection.artifactDigest)
+    return err(
+      new ShaderError({
+        code: 'shader-compile-failed',
+        expected: 'WGSL matching the selected material program artifact digest',
+        hint: 're-cook the Material Pack and Engine shader library together',
+        message: `material ${request.material} pass ${selection.pass} source does not match its cooked artifact`,
+      }),
+    );
+  return compiled;
+}
+
+/** Lower only the requested pass and address using the Pack producer's material rules. */
+function prepareMaterialRasterProgram(
+  request: MaterialCookRequest,
+  selection: { readonly pass: string; readonly address: MaterialProgramAddress },
+  preparedSurfaces: MaterialSurfacePreparation | undefined,
+): Result<MaterialRasterProgramInput, MaterialCookError> {
+  const prepared = prepareMaterialCookUnit(request, preparedSurfaces);
+  if (!prepared.ok) return prepared;
+  const { unit } = prepared.value;
+  const pass = unit.passes.find((candidate) => candidate.name === selection.pass);
+  if (pass === undefined)
+    return err(
+      new ShaderError({
+        code: 'shader-compile-failed',
+        expected: 'a declared pass of the resolved material',
+        hint: 'select an existing pass from the material publication',
+        message: `material ${request.material} does not declare pass ${selection.pass}`,
+      }),
+    );
+  const lowered = prepareMaterialPass(unit, pass, selection.address === 'scene-index');
+  if (!lowered.ok) return lowered;
+  if (selection.address === 'direct') return ok(lowered.value.direct);
+  const scene = lowered.value.scene;
+  return scene === undefined
+    ? err(
+        new ShaderError({
+          code: 'shader-compile-failed',
+          expected: 'scene-index admission for the selected raster pass',
+          hint: 'select a published address for this material pass and device context',
+          message: `material ${request.material} pass ${pass.name} does not publish scene-index`,
+        }),
+      )
+    : ok(scene.program);
+}
+
+interface PreparedMaterialPass {
+  readonly cook: MaterialPassCook;
+  readonly composed: ComposedPassSource;
+  readonly entry: PassEntrySource;
+  readonly fragmentEntry: string | undefined;
+  readonly direct: MaterialRasterProgramInput;
+  readonly scene?: {
+    readonly program: MaterialRasterProgramInput;
+    readonly diagnosticSource: string;
+  };
+}
+
+function prepareMaterialPass(
   unit: MaterialCookUnit,
   pass: MaterialPass,
-): MaterialCompilation<MaterialCookedPass> {
+  includeSceneIndex: boolean,
+): Result<PreparedMaterialPass, MaterialCookError> {
   const context = passVariantContext(unit.request, pass);
   const validatePassSelection = () => {
     if (
@@ -1196,6 +1300,17 @@ function* cookMaterialPass(
   if (validateWaterTransitionSelectionFailure !== undefined)
     return validateWaterTransitionSelectionFailure;
 
+  const direct: MaterialRasterProgramInput = {
+    source: entry.value.loweredSource,
+    options: {
+      id: `${pass.program.module}::${pass.name}`,
+      renderEntries: passRenderEntries(cook, pass.program.vertexEntry ?? 'vs_main', fragmentEntry),
+      imports: entry.value.compileImports,
+      defines: compileDefines,
+    },
+  };
+  const prepared = { cook, composed: composed.value, entry: entry.value, fragmentEntry, direct };
+  if (!includeSceneIndex) return ok(prepared);
   const sceneEntry = prepareSceneIndexEntry(
     cook,
     entry.value,
@@ -1204,52 +1319,46 @@ function* cookMaterialPass(
     dynamicInput.value,
   );
   if (!sceneEntry.ok) return sceneEntry;
-  const compiled = yield [
-    entry.value.loweredSource,
-    {
-      id: `${pass.program.module}::${pass.name}`,
-      renderEntries: passRenderEntries(cook, pass.program.vertexEntry ?? 'vs_main', fragmentEntry),
-      imports: entry.value.compileImports,
-      defines: compileDefines,
-    },
-  ];
-  if (!compiled.ok) {
-    return err(
-      mapCookErrorToAuthoredSource(
-        compiled.error,
-        sourceRecord.value.source,
-        entry.value.loweredSource,
-      ),
-    );
-  }
-  // A scene-index receipt promises an actual second entry, not merely a
-  // string found in the source. Compile the authored declaration with the
-  // scene selector; the direct selector may remove the entire scene entry.
-  // Both native table families share bindings and cannot coexist in a module.
+  return ok({
+    ...prepared,
+    ...(sceneEntry.value === undefined
+      ? {}
+      : {
+          scene: {
+            program: sceneIndexProgramInput(cook, sceneEntry.value, fragmentEntry, compileDefines),
+            diagnosticSource: sceneEntry.value.source,
+          },
+        }),
+  });
+}
+
+function* cookMaterialPass(
+  unit: MaterialCookUnit,
+  pass: MaterialPass,
+): MaterialCompilation<MaterialCookedPass> {
+  const prepared = prepareMaterialPass(unit, pass, true);
+  if (!prepared.ok) return prepared;
+  const { cook, composed, entry, fragmentEntry, direct, scene } = prepared.value;
+  const source = cook.sourceRecord.source;
+  const compiled = yield [direct.source, direct.options];
+  if (!compiled.ok) return err(mapCookErrorToAuthoredSource(compiled.error, source, direct.source));
+  // Direct and scene-index have separate declarations and cannot coexist in
+  // one module. Each published address must pass native interface validation.
   let sceneCompiled: CompileResult | undefined;
-  if (sceneEntry.value !== undefined) {
-    const sceneResult = yield* compileSceneIndexEntry(
-      cook,
-      sceneEntry.value,
-      fragmentEntry,
-      compileDefines,
-    );
-    if (!sceneResult.ok) return sceneResult;
-    sceneCompiled = sceneResult.value;
+  if (scene !== undefined) {
+    const result = yield [scene.program.source, scene.program.options];
+    if (!result.ok)
+      return err(mapCookErrorToAuthoredSource(result.error, source, scene.diagnosticSource));
+    sceneCompiled = result.value;
   }
   const publishCompiledPass = () => {
-    const checked = checkPassInterface(
-      cook,
-      entry.value,
-      compiled.value,
-      sceneCompiled !== undefined,
-    );
+    const checked = checkPassInterface(cook, entry, compiled.value, sceneCompiled !== undefined);
     if (!checked.ok) return checked;
-    const abi = publishPassAbi(cook, composed.value, entry.value, compiled.value, sceneCompiled);
+    const abi = publishPassAbi(cook, composed, entry, compiled.value, sceneCompiled);
     if (!abi.ok) return abi;
     const systemInputs = materialSystemInputs(
       unit.request.sources,
-      composed.value.sourceClosure,
+      composed.sourceClosure,
       compiled.value.bindings,
     );
     if (!systemInputs.ok) return systemInputs;
@@ -1293,7 +1402,7 @@ function* cookMaterialPass(
     if (validatePostProcessEntryFailure !== undefined) return validatePostProcessEntryFailure;
 
     return ok(
-      cookedPassRecord(cook, composed.value, entry.value, compiled.value, sceneCompiled, {
+      cookedPassRecord(cook, composed, entry, compiled.value, sceneCompiled, {
         ...abi.value,
         ...(systemInputs.value === undefined ? {} : { systemInputs: systemInputs.value }),
       }),
@@ -1317,6 +1426,11 @@ function cookedPassRecord(
       : {}),
     program: pass.program,
   });
+  const compactGbuffer =
+    gbuffer !== undefined &&
+    compiled.reflection.entryPoints?.some(({ name }) => name === 'fs_gbuffer_compact')
+      ? ('standard-gbuffer/4' as const)
+      : undefined;
   const forwardFog =
     pass.program.forwardFog ??
     (cook.sourceRecord.provenance === 'engine'
@@ -1327,6 +1441,9 @@ function cookedPassRecord(
   return {
     pass: pass.name,
     context: cook.context,
+    ...(unit.request.vertexColorAvailable === undefined
+      ? {}
+      : { vertexColorAvailable: unit.request.vertexColorAvailable }),
     module: pass.program.module,
     parameters: unit.parameters,
     paramSchema: unit.schema,
@@ -1342,7 +1459,8 @@ function cookedPassRecord(
         ? {}
         : {
             gbuffer,
-            receiptIdentity: `${abi.receiptIdentity}/${gbuffer}`,
+            ...(compactGbuffer === undefined ? {} : { compactGbuffer }),
+            receiptIdentity: `${abi.receiptIdentity}/${gbuffer}${compactGbuffer === undefined ? '' : `/${compactGbuffer}`}`,
             generation: abi.generation + 1,
           }),
       ...(forwardFog === undefined ? {} : { forwardFog }),
@@ -1893,16 +2011,16 @@ function lowerSceneSurfaceSource(unit: MaterialCookUnit, composed: SurfaceCompos
   return source;
 }
 
-function* compileSceneIndexEntry(
+function sceneIndexProgramInput(
   cook: MaterialPassCook,
   sceneEntry: SceneEntrySource,
   fragmentEntry: string | undefined,
   compileDefines: Readonly<Record<string, boolean>>,
-): MaterialCompilation<CompileResult> {
+): MaterialRasterProgramInput {
   const { sceneRowStride } = cook.unit;
-  const sceneResult = yield [
-    lowerSceneMaterialAddresses(sceneEntry.source, sceneRowStride),
-    {
+  return {
+    source: lowerSceneMaterialAddresses(sceneEntry.source, sceneRowStride),
+    options: {
       id: `${cook.pass.program.module}::${cook.pass.name}::scene-index`,
       renderEntries: passRenderEntries(cook, 'vs_scene_index', fragmentEntry),
       imports: Object.fromEntries(
@@ -1913,11 +2031,7 @@ function* compileSceneIndexEntry(
       ),
       defines: { ...compileDefines, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
     },
-  ];
-  if (sceneResult.ok) return sceneResult;
-  return err(
-    mapCookErrorToAuthoredSource(sceneResult.error, cook.sourceRecord.source, sceneEntry.source),
-  );
+  };
 }
 
 /** Check the reflected program interface against the material's derived parameter contract. */

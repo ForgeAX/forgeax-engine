@@ -3284,9 +3284,12 @@ Only explicit capture/thumbnail operations may request bounded readback.
 
 ## Compact offline delivery
 
-Production builds keep automatic/enabled execution Worker entries. An explicit
-`workers.<kind>: false` removes only that App-owned Worker URL and its publication;
-a later override fails explicitly. Consumer-owned Worker URLs are unchanged.
+Production builds keep automatic and enabled App-owned Worker entries.
+`workers.engine: false` removes the Engine Worker and its Task Worker entry.
+`workers.render: false` removes the Render Worker entry. `workers.kernels: false`
+disables shared kernels while leaving Task Workers available for other jobs.
+An override that tries to start a removed Worker fails explicitly. Consumer-owned
+Worker URLs remain available.
 Native local Engine bootstrap uses its already imported module without publishing
 an unused remote bootstrap copy. Ordinary automatic placement is unchanged.
 

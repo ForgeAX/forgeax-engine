@@ -100,7 +100,7 @@ it('counts an override subsurface profile and follows its later accepted version
   const selection = new SubsurfaceSelection();
   selection.add(row.snapshot, frame, meshes);
   selection.adopt(frame);
-  expect(selection.demand).toBe(1);
+  expect(selection.demand).toHaveLength(1);
   skin.adopt({
     ...skin.snapshot,
     paramSnapshot: { subsurfaceRadius: [0, 0, 0], subsurfaceWeight: 0 },

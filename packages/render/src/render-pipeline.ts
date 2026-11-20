@@ -208,6 +208,10 @@ export interface RenderPipelineTopology {
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
   readonly preTemporalEffects?: readonly string[];
   readonly subsurface?: { readonly quality: 'low' | 'high' };
+  /** One producer/reader layout for the entire Deferred view. */
+  readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
+  /** Optional receiver attachment for the inputs outside the fixed A-D record. */
+  readonly compactReceiver?: 'channels' | 'context' | 'geometry';
   readonly forwardContactShadows?: boolean;
   readonly forwardCapsuleShadows?: boolean;
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
@@ -231,7 +235,12 @@ export interface RenderPipelineTopology {
   /** Finite-depth distance / exponential-height fog; no volume history. */
   readonly analyticFog?: boolean | undefined;
   /** Whether Standard main draws carry the producer-owned fallback MRT. */
-  readonly reflectionFallback?: { readonly enabled: boolean } | undefined;
+  readonly reflectionFallback?:
+    | {
+        readonly enabled: boolean;
+        readonly localProbes?: true;
+      }
+    | undefined;
   readonly surface: {
     readonly width: number;
     readonly height: number;

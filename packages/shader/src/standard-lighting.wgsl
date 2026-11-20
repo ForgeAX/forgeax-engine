@@ -1,5 +1,6 @@
 #define_import_path forgeax_pbr::standard_lighting
 #import forgeax_view::common::{view, lightingChannelsMatch}
+#import forgeax_pbr::gbuffer::{projectDeferredReceiverChannels}
 #import forgeax_pbr::brdf::{DirectLobes, directLobesRadiance, scaleDirectLobes}
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, standardDiffuseWeight}
 #import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblRadiance, sampleReflectionProbeRadiance, environmentScatteringFromDfg, environmentDfg, environmentReflectionDirection}
@@ -76,10 +77,21 @@ fn evaluateStandardEnvironment(
   brdfLut : texture_2d<f32>, skylightPrefilterMap : texture_2d<f32>,
   sh : array<vec4<f32>, 9>, localBlend : f32,
 ) -> StandardEnvironment {
-  let irradiance = sampleSkylightDiffuse(sky, normal, irradianceMap, irradianceSampler);
   let reflectionDirection = environmentReflectionDirection(normal, direction, roughness);
   let specular = sampleSkylightRadiance(sky, worldPosition, reflectionDirection, roughness,
     prefilterMap, prefilterSampler, skylightPrefilterMap);
+  return evaluateStandardEnvironmentFromRadiance(normal, direction, albedo, transmission, metallic, roughness,
+    f0, dielectricSpecular, metallicF0, sky, irradianceMap, irradianceSampler, brdfLut, sh, localBlend, specular);
+}
+
+fn evaluateStandardEnvironmentFromRadiance(
+  normal : vec3<f32>, direction : vec3<f32>,
+  albedo : vec3<f32>, transmission : vec3<f32>, metallic : f32, roughness : f32, f0 : vec3<f32>,
+  dielectricSpecular : vec4<f32>, metallicF0 : vec3<f32>,
+  sky : SkylightUniforms, irradianceMap : texture_cube<f32>, irradianceSampler : sampler, brdfLut : texture_2d<f32>,
+  sh : array<vec4<f32>, 9>, localBlend : f32, specular : vec3<f32>,
+) -> StandardEnvironment {
+  let irradiance = sampleSkylightDiffuse(sky, normal, irradianceMap, irradianceSampler);
   let fresnel = fresnelSchlickRoughness(max(dot(normal, direction), 0.0), f0, roughness);
   let ab = environmentDfg(max(dot(normal, direction), 0.001), roughness, brdfLut, irradianceSampler);
   // Fdez-Aguera is nonlinear in F0. Evaluate each material constituent before
@@ -132,13 +144,14 @@ fn evaluateStandardDirectLobes(
   normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
   transmission : vec3<f32>, metallic : f32, alpha : f32, f0 : vec3<f32>, shadow : f32,
   receiveShadows : bool, receiverChannels : u32,
+  sunChannels : u32, projectedChannels : bool,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> DirectLobes {
   var direct = DirectLobes(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
-  if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
+  if (lightingChannelsMatch(sunChannels, receiverChannels)) {
     let solar = evalDirectionalNoShadowLobes(normal, direction, albedo, metallic, alpha, f0, transmission,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
@@ -150,7 +163,7 @@ fn evaluateStandardDirectLobes(
   }
 #ifdef CLUSTER_FORWARD_AVAILABLE
   let local = evaluateStandardClusterLobes(ndc, pixel, viewZ, worldPosition, normal, direction,
-    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
+    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels, projectedChannels,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -173,7 +186,7 @@ fn evaluateStandardDirect(
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> StandardDirect {
-  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, receiverChannels, useDirectDfgLut,
+  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, receiverChannels, view.lightingChannels, false, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -187,15 +200,20 @@ fn evaluateStandardDirectSplit(
   normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
   transmission : vec3<f32>, metallic : f32, alpha : f32, f0 : vec3<f32>, shadow : f32,
   receiveShadows : bool, receiverChannels : u32, splitDiffuse : bool,
+  channelProjection : u32, channelsAlreadyPacked : bool,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> StandardDirect {
-  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, receiverChannels, useDirectDfgLut,
+  let projectedChannels = channelProjection != 0u;
+  let packedChannels = select(receiverChannels, projectDeferredReceiverChannels(receiverChannels, channelProjection), projectedChannels && !channelsAlreadyPacked);
+  let sunChannels = select(view.lightingChannels, (channelProjection >> 17u) & 7u, projectedChannels);
+  let lobes = evaluateStandardDirectLobes(worldPosition, ndc, viewZ, pixel, normal, direction, albedo, transmission, metallic, alpha, f0, shadow, receiveShadows, packedChannels, sunChannels, projectedChannels, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
 );
-  return StandardDirect(directLobesRadiance(lobes), select(vec3<f32>(0.0), lobes.diffuse, splitDiffuse));
+  return StandardDirect(select(directLobesRadiance(lobes), lobes.specular, splitDiffuse),
+    select(vec3<f32>(0.0), lobes.diffuse, splitDiffuse));
 }

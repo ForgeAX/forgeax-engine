@@ -37,7 +37,11 @@ it('retains the graph and static shadow targets across camera material visibilit
   const host = value(await constructRuntimeRendererHost(canvas));
   const { renderer } = host;
   value(
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }),
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'deferred',
+      ambientOcclusion: { enabled: false },
+    }),
   );
   const world = new World();
   const context = await createWorldContext(world, [scenePlugin()]);

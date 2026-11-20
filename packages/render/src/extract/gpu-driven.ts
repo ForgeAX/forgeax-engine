@@ -1,11 +1,8 @@
-import {
-  deriveVertexLayoutProjection,
-  type VertexLayoutProjection,
-} from '@forgeax/engine-geometry';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { MeshDrawDescription, VertexLayoutProjection } from '@forgeax/engine-geometry';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import {
+  type BatchArtifactFacts,
+  type BatchArtifactResolver,
   type BatchGeometry,
   captureBatchGeometry,
   prepareBatchExecution,
@@ -95,21 +92,13 @@ export function gpuDrivenMaterialResourceClass(material: MaterialSnapshot): stri
  * snapshot. No World or AssetRegistry access is permitted at this boundary.
  */
 interface BuildGpuDrivenDrawsInput {
-  readonly mesh: MeshAsset | undefined;
+  readonly mesh: MeshDrawDescription | undefined;
   readonly materials: readonly MaterialSnapshot[];
   readonly fallbackMaterial: MaterialSnapshot;
   readonly deformation: 'rigid' | 'skin';
-  readonly getMaterialShaderArtifact?: (
-    materialShaderId: string,
-    request?: {
-      readonly vertexColorAvailable?: boolean;
-      readonly deformation?: 'rigid' | 'skin';
-      readonly pass?: 'forward' | 'shadow' | 'depth';
-      readonly address?: 'direct' | 'scene-index';
-    },
-  ) => MaterialShaderArtifact | undefined;
+  readonly getMaterialShaderArtifact?: BatchArtifactResolver<BatchArtifactFacts>;
   /** Resolved lower-detail meshes, in the same order as the authored LOD chain. */
-  readonly lodMeshes?: readonly (MeshAsset | undefined)[];
+  readonly lodMeshes?: readonly (MeshDrawDescription | undefined)[];
 }
 
 // Geometry owns immutable layouts by canonical attribute mask. Share the derived
@@ -122,9 +111,8 @@ const vertexInputsByLayout = new WeakMap<
 export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenDrawSnapshot[] {
   const parsedMesh = input.mesh;
   if (parsedMesh === undefined) return [];
-  const indexed = parsedMesh.indices !== undefined;
-  const submeshes = parsedMesh.submeshes;
-  const layoutProjection = deriveVertexLayoutProjection(parsedMesh.attributes);
+  const indexed = parsedMesh.indexFormat !== 'none';
+  const { submeshes, layout: layoutProjection } = parsedMesh;
   let vertexInputs = vertexInputsByLayout.get(layoutProjection);
   if (vertexInputs === undefined) {
     vertexInputs = ownGpuDrivenVertexInputs(
@@ -137,7 +125,7 @@ export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenD
     vertexInputsByLayout.set(layoutProjection, vertexInputs);
   }
   const geometry: GpuDrivenGeometryReceipt = {
-    identity: `${(parsedMesh as { guid?: string }).guid ?? '<no-guid>'}:${layoutProjection.digest}`,
+    identity: `${parsedMesh.guid ?? '<no-guid>'}:${layoutProjection.digest}`,
     vertexInputs,
     topology: submeshes[0]?.topology ?? 'triangle-list',
     indexed,
@@ -162,7 +150,7 @@ export function buildGpuDrivenDraws(input: BuildGpuDrivenDrawsInput): GpuDrivenD
       if (lodMesh === undefined) return undefined;
       const lower = lodMesh.submeshes[drawItemIndex];
       if (lower === undefined) return undefined;
-      const lowerIndexed = lodMesh.indices !== undefined;
+      const lowerIndexed = lodMesh.indexFormat !== 'none';
       const lowerFirst = lowerIndexed
         ? lower.indexOffset
         : lodMesh.submeshes

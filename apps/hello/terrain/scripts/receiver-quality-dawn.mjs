@@ -36,7 +36,7 @@ try {
   for (const renderPath of ['forward', 'deferred']) {
     const recorder = attachRecorder(webgpu).unwrap();
     const h = await terrainHarness({ width: 640, height: 480, backendArgs: ['backend=metal'], appOptions: { rhi: recorder.backend.rhi,
-      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: false } } });
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ambientOcclusion: { enabled: false } } } });
     const capture = async (name, refreshTerrainProducer = true) => {
       // Refresh the real caster from a different resident topology. This makes
       // the selected tape contain its producer, not only a cached depth seed.

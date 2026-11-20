@@ -1,5 +1,6 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import type { MaterialPass } from '@forgeax/engine-types';
+import { freezeJson, isDeepFrozenJson } from '@forgeax/engine-types';
 import type { MaterialSnapshot } from './render-system-extract';
 import type { StandardSceneDataContributorProgramFact } from './temporal/scene-data';
 
@@ -24,7 +25,7 @@ type SnapshotEntry =
 const resources = new WeakMap<MaterialSnapshot, SnapshotEntry>();
 
 export function captureMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSnapshot {
-  const programs = structuredClone({
+  const programs = {
     passes: snapshot.passes,
     ...(snapshot.materialContext === undefined
       ? {}
@@ -38,17 +39,32 @@ export function captureMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSna
     ...(snapshot.materialPublication === undefined
       ? {}
       : { materialPublication: snapshot.materialPublication }),
+  };
+  // Prepared program facts are often shared by several material snapshots.
+  // Only accept a shared graph when its entire contents are immutable.
+  const fixed = Object.values(programs).every(
+    (value) => value === undefined || isDeepFrozenJson(value),
+  );
+  return ownDetachedMaterialSnapshot({
+    ...snapshot,
+    ...(fixed ? programs : structuredClone(programs)),
   });
-  freezeProgramData(programs);
-  const captured = Object.freeze({ ...snapshot, ...programs, immutableValues: true as const });
+}
+
+/** Takes a fresh snapshot record whose value and program data are already detached. */
+export function ownDetachedMaterialSnapshot(snapshot: MaterialSnapshot): MaterialSnapshot {
+  freezeProgramData(snapshot.passes);
+  freezeProgramData(snapshot.materialContext);
+  freezeProgramData(snapshot.materialProgramKeys);
+  freezeProgramData(snapshot.materialProgramInputs);
+  freezeProgramData(snapshot.materialPublication);
+  const captured = Object.freeze(Object.assign(snapshot, { immutableValues: true as const }));
   resources.set(captured, { resource: undefined, valuesOwned: true, programs: new Map() });
   return captured;
 }
 
 function freezeProgramData(value: unknown): void {
-  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
-  for (const child of Object.values(value)) freezeProgramData(child);
-  Object.freeze(value);
+  if (value !== null && typeof value === 'object') freezeJson(value);
 }
 
 function sameProgramSource(a: MaterialSnapshot, b: MaterialSnapshot): boolean {

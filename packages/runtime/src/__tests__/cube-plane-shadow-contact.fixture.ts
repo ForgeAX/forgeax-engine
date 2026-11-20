@@ -169,7 +169,13 @@ export async function createCubePlaneShadowContactFixture(
   });
   return {
     async verify(renderPath: 'forward' | 'deferred', scene: SceneCase) {
-      value(renderer.setProfile({ ...renderer.inspect().profile, renderPath, ssao: false }));
+      value(
+        renderer.setProfile({
+          ...renderer.inspect().profile,
+          renderPath,
+          ambientOcclusion: { enabled: false },
+        }),
+      );
       const material = materials[scene.doubleSided ? 1 : 0];
       // Scale geometry and camera coverage together to preserve shadow-texel density.
       const scale = scene.scale ?? 1;

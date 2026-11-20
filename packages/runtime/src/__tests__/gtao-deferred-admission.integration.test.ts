@@ -128,7 +128,7 @@ it('admits the published Standard Deferred surface when GTAO turns on', async ()
     value(
       renderer.setProfile({
         ...renderer.inspect().profile,
-        ssao: { algorithm: 'gtao', quality: 'high' },
+        ambientOcclusion: { enabled: true, method: 'gtao', quality: 'high' },
       }),
     );
     await drawWorld(planeWorld());

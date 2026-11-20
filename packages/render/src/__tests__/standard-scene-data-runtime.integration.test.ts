@@ -15,14 +15,13 @@ import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-sc
 import { createStandardPbrArtifactReceipt, MaterialArtifactRegistry } from '@forgeax/engine-shader';
 import { type MaterialAsset, ok, type ShaderEntryPointReads } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { installMaterialReadyShaders } from '../../../assets-runtime/src/material/runtime-shader';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../../../shader-compiler/src/material/variant-context';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
 import {
-  AMBIENT_OCCLUSION_GTAO,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   Camera,
   DirectionalLight,
@@ -408,7 +407,7 @@ async function createSceneDataRuntime(
     renderer.setProfile({
       ...profile,
       renderPath: options.renderPath ?? 'forward',
-      ssao: options.ao === false ? false : { algorithm: options.algorithm ?? 'ssao' },
+      ambientOcclusion: { enabled: options.ao !== false, method: options.algorithm ?? 'ssao' },
     }).ok,
   ).toBe(true);
   const errors: unknown[] = [];
@@ -926,7 +925,7 @@ it('initializes the no-storage Cluster target on the first ready AO layout frame
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { algorithm: AMBIENT_OCCLUSION_GTAO, radius: 0.25 },
+        data: { radius: 0.25 },
       })
       .unwrap();
     fixture.update();
@@ -994,7 +993,7 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { algorithm: AMBIENT_OCCLUSION_GTAO, radius: 0.25 },
+        data: { radius: 0.25 },
       })
       .unwrap();
     fixture.update();
@@ -1204,7 +1203,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { algorithm: AMBIENT_OCCLUSION_GTAO, radius: 0.25 },
+        data: { radius: 0.25 },
       })
       .unwrap();
     fixture.update();
@@ -1219,7 +1218,13 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     });
 
     fixture.host.setGtaoExecutionOverrideForConformance(undefined);
-    fixture.world.set(camera, AmbientOcclusion, { algorithm: AMBIENT_OCCLUSION_SSAO }).unwrap();
+    const profile = fixture.renderer.inspect().profile;
+    expect(
+      fixture.renderer.setProfile({
+        ...profile,
+        ambientOcclusion: { ...profile.ambientOcclusion, method: 'ssao' },
+      }).ok,
+    ).toBe(true);
     fixture.update();
     const ssaoReceipt = await drawTransitionFrame('SSAO fragment');
     const ssao = sceneDataAoGraphSnapshot(fixture, 'forward');
@@ -1233,7 +1238,7 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
     });
 
     fixture.host.setGtaoExecutionOverrideForConformance('compute');
-    fixture.world.set(camera, AmbientOcclusion, { algorithm: AMBIENT_OCCLUSION_GTAO }).unwrap();
+    expect(fixture.renderer.setProfile(profile).ok).toBe(true);
     fixture.update();
     const restoredReceipt = await drawTransitionFrame('restored GTAO compute');
     const restored = sceneDataAoGraphSnapshot(fixture, 'forward');
@@ -1310,9 +1315,11 @@ it.each([
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { algorithm: AMBIENT_OCCLUSION_SSAO, directLightingStrength: 0 },
+        data: { directLightingStrength: 0 },
       })
       .unwrap();
+    // Initial Deferred shader preparation can precede the first observable frame.
+    await completeReadyFrame(() => fixture.drawFrame().unwrap(), { timeoutMs: 15_000 });
     const ao0Receipt = await completeObservedSceneDataFrame(fixture, 'final-display');
     const ao0 = sceneDataAoGraphSnapshot(fixture, renderPath);
     expect(ao0Receipt.presentation).toBe('ready');
@@ -1566,7 +1573,11 @@ it('samples admitted Standard Forward surface data in the same real Renderer gra
   const renderer = exposeRenderer(host);
   const profile = renderer.inspect().profile;
   expect(
-    renderer.setProfile({ ...profile, renderPath: 'forward', ssao: { algorithm: 'ssao' } }).ok,
+    renderer.setProfile({
+      ...profile,
+      renderPath: 'forward',
+      ambientOcclusion: { enabled: true, method: 'ssao' },
+    }).ok,
   ).toBe(true);
   const errors: unknown[] = [];
   host.onError((error) => errors.push(error));
@@ -1943,7 +1954,7 @@ it('reports a wrapped invalid AO radius and recovers the active GTAO graph', asy
     fixture.world
       .addComponent(camera, {
         component: AmbientOcclusion,
-        data: { algorithm: AMBIENT_OCCLUSION_GTAO, radius: 0.25 },
+        data: { radius: 0.25 },
       })
       .unwrap();
     fixture.update();

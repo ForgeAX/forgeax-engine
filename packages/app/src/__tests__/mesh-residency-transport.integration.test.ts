@@ -1,3 +1,4 @@
+import { assetDataBytes, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineSystem, FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
@@ -13,9 +14,10 @@ import {
 import { createDynamicGeometrySourceHost } from '@forgeax/engine-render/internal';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import { Transform } from '@forgeax/engine-scene';
-import { expect, it } from 'vitest';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { expect, it, vi } from 'vitest';
 import { RenderMeshResidency } from '../execution/render-mesh-residency';
+import type { MeshResidencyResponse } from '../execution/render-worker-protocol';
 import { SourceMeshResidency } from '../execution/source-mesh-residency';
 
 // Admit the shared test fixture before measuring transport work; keep it out of App declarations.
@@ -23,6 +25,123 @@ const { renderLifecycleManifestUrl } = await import(
   new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
 );
 const shaderManifestUrl = renderLifecycleManifestUrl();
+
+it('keeps source Mesh readiness for the adopted revision until the receiver retires it', async () => {
+  const identity = { source: 'app-overlapping-mesh-revisions', epoch: 1 };
+  const host = await constructRuntimeRendererHost(
+    { width: 64, height: 64, getContext: () => null },
+    { rhi, publicationSource: identity },
+    { shaderManifestUrl },
+  );
+  if (!host.ok) throw host.error;
+  const { renderer, assets } = host.value;
+  const world = new World({ assets });
+  const firstMesh = createBoxGeometry(1, 1, 1).unwrap();
+  const pendingMesh = createBoxGeometry(2, 1, 1).unwrap();
+  const successorMesh = createBoxGeometry(3, 1, 1).unwrap();
+  const meshHandle = assets.create(firstMesh).unwrap();
+  const material = assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      {
+        component: Camera,
+        data: perspective({ fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 }),
+      },
+    )
+    .unwrap();
+  world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: { materials: [material] } },
+    )
+    .unwrap();
+  const channel = new MessageChannel();
+  const source = new SourceMeshResidency(world, () => ({
+    ...identity,
+    generation: renderer.inspect().frame.deviceGeneration,
+    post: (message) => channel.port1.postMessage(message),
+  }));
+  const receiver = new RenderMeshResidency(renderer, identity, (message) =>
+    channel.port2.postMessage(message),
+  );
+  let transportFailure: unknown;
+  let handoffStarted = false;
+  channel.port1.onmessage = (event) => source.receive(event.data);
+  channel.port2.onmessage = (event) => {
+    if (event.data.kind === 'mesh-release' && !event.data.evict) handoffStarted = true;
+    void receiver.receive(event.data).catch((cause) => {
+      transportFailure = cause;
+    });
+  };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    renderer.inspect().capabilities,
+    [],
+    undefined,
+    undefined,
+    2,
+    (handle, revision) => source.holdsPrepared(handle, revision),
+  );
+  const publish = async (revision: number) => {
+    const candidate = publisher.prepare(0).unwrap();
+    expect(candidate.packet.preparedAssets).toContainEqual({ handle: meshHandle, revision });
+    const message = structuredClone(candidate.message);
+    candidate.accept();
+    const draw = renderer.draw({ publication: message });
+    if (!draw.ok) throw draw.error;
+    if (draw.value !== undefined) (await draw.value.completed).unwrap();
+    publisher.recycle(message.revision, renderPublicationTransfers(message)).unwrap();
+  };
+  try {
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    const firstRevision = assets.revision(meshHandle).unwrap();
+    const first = (
+      await source.prepare({ world, meshHandle, assetRevision: firstRevision, mesh: firstMesh })
+    ).unwrap();
+    await publish(firstRevision);
+
+    const pendingRevision = runtimeAssets(assets).currentRevision + 1;
+    const pending = (
+      await source.prepare({ world, meshHandle, assetRevision: pendingRevision, mesh: pendingMesh })
+    ).unwrap();
+    expect(source.holdsPrepared(meshHandle, firstRevision)).toBe(true);
+    expect(source.holdsPrepared(meshHandle, pendingRevision)).toBe(true);
+    assets.create(firstMesh).unwrap();
+    const nextRevision = runtimeAssets(assets).currentRevision + 1;
+    const next = (
+      await source.prepare({ world, meshHandle, assetRevision: nextRevision, mesh: successorMesh })
+    ).unwrap();
+    expect(pending.isCurrent()).toBe(false);
+    expect(source.holdsPrepared(meshHandle, pendingRevision)).toBe(false);
+    expect(source.holdsPrepared(meshHandle, firstRevision)).toBe(true);
+    expect(first.isCurrent()).toBe(true);
+
+    assets.replace(meshHandle, successorMesh).unwrap();
+    expect(assets.revision(meshHandle).unwrap()).toBe(nextRevision);
+    expect(next.isCurrent()).toBe(true);
+    const admitted = next.release(false);
+    expect(source.holdsPrepared(meshHandle, nextRevision)).toBe(true);
+    await vi.waitFor(() => expect(handoffStarted).toBe(true));
+    await publish(nextRevision);
+    await admitted;
+    await vi.waitFor(() => expect(first.isCurrent()).toBe(false));
+    expect(source.holdsPrepared(meshHandle, firstRevision)).toBe(false);
+    await Promise.all([first.release(true), pending.release(true)]);
+    expect(transportFailure).toBeUndefined();
+  } finally {
+    publisher.dispose();
+    await source.dispose();
+    await receiver.dispose();
+    channel.port1.close();
+    channel.port2.close();
+    await renderer.dispose();
+  }
+});
 
 it('carries real Renderer mesh readiness and exact receipts beyond the transient request limit', async () => {
   const identity = { source: 'app-mesh-transport', epoch: 1 };
@@ -334,5 +453,101 @@ it.each([
     await renderer.dispose();
     channel.port1.close();
     channel.port2.close();
+  }
+});
+
+it('defers private Mesh capture until reserving bytes and returns cancelled credit', async () => {
+  const identity = { source: 'app-mesh-transfer-budget', epoch: 1 };
+  const mesh = createBoxGeometry(1, 1, 1).unwrap();
+  const bytes = assetDataBytes(mesh, undefined, 'receive');
+  const constructed = await constructRuntimeRendererHost(
+    { width: 64, height: 64, getContext: () => null },
+    { rhi, publicationSource: identity, dynamicGeometryMeshBudgetBytes: bytes },
+    { shaderManifestUrl },
+  );
+  if (!constructed.ok) throw constructed.error;
+  const { renderer, assets } = constructed.value;
+  const world = new World({ assets });
+  const firstHandle = assets.create(mesh).unwrap();
+  const secondHandle = assets.create(mesh).unwrap();
+  const abort = new AbortController();
+  const channel = new MessageChannel();
+  const messages: string[] = [];
+  const source = new SourceMeshResidency(world, () => ({
+    ...identity,
+    generation: renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration,
+    post: (message, transfers) => {
+      messages.push(message.kind);
+      channel.port1.postMessage(message, transfers === undefined ? [] : [...transfers]);
+    },
+  }));
+  const receiver = new RenderMeshResidency(renderer, identity, (message) =>
+    channel.port2.postMessage(message),
+  );
+  const transferFailures: unknown[] = [];
+  channel.port1.onmessage = (event: MessageEvent<MeshResidencyResponse>) => {
+    const message = event.data;
+    // Delay the first positive ACK until cancellation. Its held quota must
+    // prevent a concurrent move, even before any input reaches the Receiver.
+    if (message.requestId !== 1 || message.kind !== 'mesh-reserved') source.receive(message);
+  };
+  channel.port2.onmessage = (event) => {
+    void receiver.receive(event.data).catch((cause) => transferFailures.push(cause));
+  };
+  const capture = vi.fn(() => structuredClone(mesh));
+  const deferredMesh = { bytes, capture };
+  const secondInput = { world, meshHandle: secondHandle, assetRevision: 1, deferredMesh };
+  try {
+    const first = source.prepare(
+      { world, meshHandle: firstHandle, assetRevision: 1, deferredMesh },
+      { signal: abort.signal },
+    );
+    const inspect = () => renderer.inspect({ fields: ['meshResidency'] }).meshResidency;
+    const refused = await source.prepare(secondInput);
+    expect(refused).toMatchObject({
+      ok: false,
+      error: { code: 'dynamic-geometry-budget-exceeded' },
+    });
+    expect(inspect()).toEqual({
+      publication: {
+        preparedBytes: 0,
+        reservedTransferBytes: bytes,
+        peakBudgetBytes: bytes,
+        limitBytes: bytes,
+      },
+      gpuBuffers: { activeBytes: 0, retiringBytes: 0 },
+    });
+    expect(messages).toEqual(['mesh-reserve', 'mesh-reserve', 'mesh-release']);
+    expect(capture).not.toHaveBeenCalled();
+    abort.abort();
+    expect((await first).ok).toBe(false);
+    expect(capture).not.toHaveBeenCalled();
+    expect(inspect()?.publication?.reservedTransferBytes).toBe(0);
+    const accepted = (await source.prepare(secondInput)).unwrap();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(accepted.isCurrent()).toBe(true);
+    expect(inspect()).toMatchObject({
+      publication: {
+        preparedBytes: bytes,
+        reservedTransferBytes: 0,
+        peakBudgetBytes: bytes,
+        limitBytes: bytes,
+      },
+      gpuBuffers: {
+        activeBytes: mesh.vertices.byteLength + Math.ceil((mesh.indices?.byteLength ?? 0) / 4) * 4,
+        retiringBytes: 0,
+      },
+    });
+    expect(capture.mock.results[0]?.value.vertices.byteLength).toBe(0);
+    expect(mesh.vertices.byteLength).toBeGreaterThan(0);
+    await accepted.release(true);
+    expect(transferFailures).toEqual([]);
+  } finally {
+    abort.abort();
+    await source.dispose();
+    await receiver.dispose();
+    channel.port1.close();
+    channel.port2.close();
+    await renderer.dispose();
   }
 });

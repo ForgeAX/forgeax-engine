@@ -128,12 +128,11 @@ export function meshDrawSnapshot(
   source: RenderableSnapshot,
   meshes: MeshFrame,
 ): RenderableSnapshot {
+  if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
   const mesh = meshes.get(source.assetHandle);
-  if (mesh === undefined || source.terrain !== undefined || source.materialOverrides === undefined)
-    return source;
+  if (mesh === undefined) return source;
   const table = drawTable(mesh);
   const ordinaryMaterials = table.materials(source, meshMaterialGeometry(source));
-  const materials = meshDrawMaterialsWithWaterSource(source, ordinaryMaterials);
   let cached = table.instances.get(source);
   if (cached === undefined) {
     cached = table.previous?.instances.get(source);
@@ -149,6 +148,7 @@ export function meshDrawSnapshot(
   // A Pass query can replace resolved material identities without replacing the
   // Mesh or the instance. Only reuse a draw from the same admitted binding.
   if (cached?.ordinaryMaterials === ordinaryMaterials.materials) return cached.value;
+  const materials = meshDrawMaterialsWithWaterSource(source, ordinaryMaterials);
   const result = projectMeshDrawSnapshot(source, mesh, materials, ordinaryMaterials.materials);
   if (cached === undefined) {
     table.instances.set(source, {

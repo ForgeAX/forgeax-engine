@@ -685,6 +685,38 @@ describe('ScriptablePack import bridge with optional parameters', () => {
     }
   });
 
+  it('resolves runtime output declarations as references without staging their contents', async () => {
+    const packageId = id('01900000-0000-7000-8000-000000000134');
+    const dependency = AssetGuid.format(AssetGuid.derive(packageId, 'mesh/deferred'));
+    const outputs = new AssetOutputProducerRegistry();
+    outputs.register({
+      kind: 'scene',
+      version: 'test',
+      produce: ({ asset }) =>
+        ok({ payload: asset as never, refs: [{ guid: dependency }], artifacts: {} }),
+    });
+
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      runtime: { export: 'generate', outputs: { 'mesh/deferred': 'mesh' }, dependencies: [] },
+      build: () => ok({ 'scene/main': scene() }),
+    });
+    const result = await buildScriptablePackWorklist({
+      subjects: [{ sourcePath: 'assets/split.pack.ts', definition }],
+      outputs,
+      incomingRefs: new Map([[dependency, ['scene/main']]]),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        stagedOutputs: [{ sourceKey: 'scene/main' }],
+        buildProducts: [{ externalEvidence: [{ guid: dependency, usage: 'reference' }] }],
+      },
+    });
+  });
+
   it('publishes serial dependencies before admitting the next subject', async () => {
     const producerId = id('01900000-0000-7000-8000-000000000132');
     const dependency = AssetGuid.derive(producerId, 'scene/main');

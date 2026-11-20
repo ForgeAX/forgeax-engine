@@ -223,7 +223,7 @@ function readLightingDemand(
     );
   if (!configuration.ok) return undefined;
   const renderPath = (configuration.value.profile ?? DEFAULT_STANDARD_PROFILE).renderPath;
-  const ssao = configuration.value.config?.ssao?.enabled === true;
+  const ssao = configuration.value.config?.ambientOcclusion?.enabled === true;
   const lighting = standardLightingPipelineDemand(
     true,
     lights,

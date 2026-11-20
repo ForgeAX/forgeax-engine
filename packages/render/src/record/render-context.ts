@@ -24,7 +24,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
-import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
+import type { PipelineGroup2Contract, ShaderError } from '@forgeax/engine-shader';
 import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   type MaterialRuntimeArtifact,
@@ -84,6 +84,7 @@ import type {
 } from '../render-contract';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
+import type { DeferredAoNormalLayout } from '../ssao-config';
 import type { SsrAdmissionIdentity } from '../ssr/identity';
 import type { RenderTarget } from '../targets/contracts';
 import type { RenderTargetPhysical } from '../targets/physical';
@@ -167,6 +168,8 @@ import type {
   ValidatedRenderable,
 } from './frame-snapshot';
 import type { FoldDispatchPlan } from './mesh-ssbo';
+
+export type PipelinePreparationCompletion = Promise<Result<void, RhiError | ShaderError>>;
 
 export interface RenderSystemRuntime {
   /** Ownership of the resources used to prepare and record the current view. */
@@ -288,7 +291,7 @@ export interface RenderSystemRuntime {
   readonly lookupMaterialShaderPipelineEntry?: RenderSystemInternals['getMaterialShaderPipelineEntry'];
   readonly withPipelinePreparationErrors?: (
     action: () => void,
-    onPending?: (completion: Promise<Result<void, RhiError>> | undefined) => void,
+    onPending?: (completion: PipelinePreparationCompletion | undefined) => void,
   ) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
@@ -436,9 +439,11 @@ export interface PerPassResources {
   /** Drain candidate, active, and fence-retiring Bloom generations. */
   drainBloomResources?: () => void;
   inspectBloomResources?: (graph?: CompiledRenderGraphInfo) => BloomInspection;
-  /** Compiled only when a v2 Deferred normal consumer is selected. */
+  /** Compiled only for an admitted Deferred normal layout. */
   ssaoGBufferPipelines?:
-    | (() => { readonly calc: RhiRenderPipeline; readonly blur: RhiRenderPipeline })
+    | ((
+        layout: DeferredAoNormalLayout,
+      ) => { readonly calc: RhiRenderPipeline; readonly blur: RhiRenderPipeline } | undefined)
     | undefined;
   gtaoGBufferComputePipeline?: (() => ComputePipeline) | undefined;
   ssaoCalcPipeline: RhiRenderPipeline | null;

@@ -209,6 +209,7 @@ export function validateTemporalPipelineContract(
     PipelineBuilderContext,
     'colorFormat' | 'depthFormat' | 'capabilities' | 'coverageOnly'
   >,
+  fragmentEntry?: string,
 ): Result<void, RhiError> {
   if (
     !(typeof source === 'string'
@@ -224,7 +225,9 @@ export function validateTemporalPipelineContract(
     );
   }
   const validCoverageTarget = ctx.coverageOnly === true && ctx.colorFormat === 'r8unorm';
-  if (ctx.colorFormat !== 'rgba16float' && !validCoverageTarget) {
+  const validVelocityTarget =
+    fragmentEntry === 'fs_scene_velocity' && ctx.colorFormat === 'r32uint';
+  if (ctx.colorFormat !== 'rgba16float' && !validCoverageTarget && !validVelocityTarget) {
     return err(
       new RhiError({
         code: 'shader-compile-failed',
@@ -391,7 +394,7 @@ export function buildPipelineForMaterialShader(
   const shaderModule = moduleResult.value;
 
   if (passKind === 'temporal') {
-    const temporalContract = validateTemporalPipelineContract(source, ctx);
+    const temporalContract = validateTemporalPipelineContract(source, ctx, fsEntry);
     if (!temporalContract.ok) return temporalContract;
   }
 

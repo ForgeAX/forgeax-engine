@@ -4,9 +4,11 @@ import { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame } from '../scene/mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from '../scene/mesh-materials';
 
-export type SubsurfaceDemand = number | 'invalid-values' | 'invalid-surface' | 'missing-material';
+type SubsurfaceSelectionError = 'invalid-values' | 'invalid-surface' | 'missing-material';
+type SubsurfaceProfile = number | SubsurfaceSelectionError;
+export type SubsurfaceDemand = readonly number[] | 0 | SubsurfaceSelectionError;
 
-function profile(material: MaterialSnapshot | undefined): SubsurfaceDemand {
+function profile(material: MaterialSnapshot | undefined): SubsurfaceProfile {
   if (material === undefined) return 'missing-material';
   const radius = material.paramSnapshot?.subsurfaceRadius ?? [0, 0, 0];
   const weight = material.paramSnapshot?.subsurfaceWeight ?? 0;
@@ -20,9 +22,12 @@ function profile(material: MaterialSnapshot | undefined): SubsurfaceDemand {
     weight > 1
   )
     return 'invalid-values';
-  const rgb = radius.map((r) => Math.round((r * 255) / 12));
+  const rgb = radius.map((r) =>
+    Math.floor(Math.fround(0.5 + Math.fround(255 * Math.fround(Math.fround(r) / 12)))),
+  );
   const key = (rgb[0] ?? 0) | ((rgb[1] ?? 0) << 8) | ((rgb[2] ?? 0) << 16);
-  if (Math.round(weight * 255) === 0 || key === 0) return 0;
+  if (Math.floor(Math.fround(0.5 + Math.fround(Math.fround(weight) * 255))) === 0 || key === 0)
+    return 0;
   if (
     material.deferredPass !== true ||
     material.surfaceModel !== 'standard' ||
@@ -37,12 +42,12 @@ const EMPTY_MATERIALS = new MaterialFrame(undefined);
 
 /** Membership comes from actual culling; later adoption visits changed shared assets only. */
 export class SubsurfaceSelection {
-  private readonly members = new Map<MaterialResource, SubsurfaceDemand>();
-  private readonly profiles = new Map<SubsurfaceDemand, number>();
+  private readonly members = new Map<MaterialResource, SubsurfaceProfile>();
+  private readonly profiles = new Map<SubsurfaceProfile, number>();
   /** Members only hidden, unprepared rows selected; the dispatch has not admitted them. */
   private readonly unadmitted = new Set<MaterialResource>();
   private frame: MaterialFrame | undefined;
-  private distinct = 0;
+  private profileKeys: SubsurfaceDemand | undefined;
 
   /**
    * A row with authored overrides draws the effective Mesh bindings the
@@ -113,7 +118,7 @@ export class SubsurfaceSelection {
     this.frame = materials;
   }
 
-  private replace(resource: MaterialResource, old: SubsurfaceDemand, value: SubsurfaceDemand) {
+  private replace(resource: MaterialResource, old: SubsurfaceProfile, value: SubsurfaceProfile) {
     if (old === value) return;
     this.adjust(old, -1);
     this.adjust(value, 1);
@@ -142,20 +147,26 @@ export class SubsurfaceSelection {
     this.frame = materials;
   }
 
-  /** A scalar result cannot change when this selection adopts a later frame. */
+  /** An admitted profile table is immutable for the lifetime of its frame. */
   get demand(): SubsurfaceDemand {
     if (this.profiles.has('missing-material')) return 'missing-material';
     if (this.profiles.has('invalid-values')) return 'invalid-values';
     if (this.profiles.has('invalid-surface')) return 'invalid-surface';
-    return this.distinct;
+    if (this.profileKeys === undefined) {
+      const keys = [...this.profiles.keys()]
+        .filter((key): key is number => typeof key === 'number')
+        .sort((a, b) => a - b);
+      this.profileKeys = keys.length === 0 ? 0 : Object.freeze(keys);
+    }
+    return this.profileKeys;
   }
 
-  private adjust(value: SubsurfaceDemand, delta: number): void {
+  private adjust(value: SubsurfaceProfile, delta: number): void {
     if (value === 0) return;
     const old = this.profiles.get(value) ?? 0;
     const next = old + delta;
     if (next === 0) this.profiles.delete(value);
     else this.profiles.set(value, next);
-    if (typeof value === 'number') this.distinct += Number(old === 0) - Number(next === 0);
+    if (typeof value === 'number' && (old === 0 || next === 0)) this.profileKeys = undefined;
   }
 }

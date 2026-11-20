@@ -49,7 +49,7 @@ fn capsuleShadow(position : vec3<f32>, pixel : vec2<i32>) -> f32 {
   let normal = loadStandardNormalRoughness(sceneNormal, pixel).xyz;
   var visibility = capsuleShadow(position, pixel);
   if (frame.y > 0.0) {
-    visibility *= directionalContactShadow(view, sceneDepth, position, normal, pixel, frame.x);
+    visibility *= directionalContactShadow(view, sceneDepth, position, normal, pixel, frame.x, sceneNormal, false);
   }
   return vec4<f32>(visibility);
 }

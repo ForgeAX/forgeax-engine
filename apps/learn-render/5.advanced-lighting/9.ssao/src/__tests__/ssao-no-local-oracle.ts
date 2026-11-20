@@ -15,7 +15,7 @@ export async function verifySsaoWithoutLocalLights(
   const routes = [];
   try {
     for (const enabled of [false, true, false]) {
-      const changed = app.renderer.setProfile({ ...profile, renderPath: 'deferred', ssao: enabled ? { algorithm } : false });
+      const changed = app.renderer.setProfile({ ...profile, renderPath: 'deferred', ambientOcclusion: enabled ? { enabled: true, method: algorithm } : { enabled: false } });
       if (!changed.ok) throw changed.error;
       // Drive real frames through the existing capture hook; no timer substitutes for a frame.
       for (let frame = 0; frame < 3; frame++) await capture();

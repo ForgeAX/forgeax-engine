@@ -9,7 +9,7 @@ export function installGpuDrivenEvidence(world: World, renderer: Renderer): void
     const configured = renderer.setProfile({
       ...renderer.inspect().profile,
       renderPath: 'deferred',
-      ssao: true,
+      ambientOcclusion: { enabled: true },
     });
     if (!configured.ok) throw configured.error;
   }

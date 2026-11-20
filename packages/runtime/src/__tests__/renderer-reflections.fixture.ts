@@ -226,7 +226,7 @@ export async function verifyRendererReflections(
     ...renderer.inspect().profile,
     renderPath: 'deferred' as const,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     visibleSurface: true,
   };
   const gi = {

@@ -2,7 +2,9 @@ import { copyRetainedZstdBytes } from '@forgeax/engine-codec';
 import {
   type CookedMaterialRecord,
   type MaterialCookProgramContext,
+  type MaterialRasterSourcePublication,
   materialLayerPlanIdentity,
+  type SourceCookedMaterialRecord,
   validateCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
 import type { MaterialProgramAddress } from '@forgeax/engine-types';
@@ -12,12 +14,11 @@ export interface MaterialLoadRequest {
   readonly specializationKey: string;
 }
 
-export interface MaterialReady {
-  readonly status: 'Ready';
-  readonly record: CookedMaterialRecord &
+type CompleteMaterialRecord<RecordType extends CookedMaterialRecord | SourceCookedMaterialRecord> =
+  RecordType &
     Required<
       Pick<
-        CookedMaterialRecord,
+        RecordType,
         | 'materialGuid'
         | 'publicationGeneration'
         | 'specializationKey'
@@ -26,6 +27,15 @@ export interface MaterialReady {
         | 'parameterContract'
       >
     >;
+
+export interface MaterialReady {
+  readonly status: 'Ready';
+  readonly record: CompleteMaterialRecord<CookedMaterialRecord>;
+}
+
+export interface SourceMaterialPayload {
+  readonly cooked: CompleteMaterialRecord<SourceCookedMaterialRecord>;
+  readonly rasterSources: MaterialRasterSourcePublication;
 }
 
 export interface MaterialPublication {
@@ -129,7 +139,9 @@ function recordError(
   );
 }
 
-function completeTupleField(record: CookedMaterialRecord): string | undefined {
+function completeTupleField(
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
+): string | undefined {
   if (
     typeof record.materialGuid !== 'string' ||
     !Number.isSafeInteger(record.publicationGeneration) ||
@@ -191,6 +203,28 @@ function completeTupleField(record: CookedMaterialRecord): string | undefined {
   )
     return 'receipt.derivedInterface.layerPlanIdentity';
   return undefined;
+}
+
+/** The compact record and original source declaration have passed their Pack validators. */
+export function completeSourceMaterialPayload(
+  guid: string,
+  record: SourceCookedMaterialRecord,
+  rasterSources: MaterialRasterSourcePublication,
+): SourceMaterialPayload | MaterialLoadError {
+  const request = { guid, specializationKey: record.specializationKey ?? '' };
+  const field = completeTupleField(record);
+  if (field !== undefined) return recordError(request, field);
+  if (
+    record.guid.toLowerCase() !== guid.toLowerCase() ||
+    record.materialGuid?.toLowerCase() !== guid.toLowerCase() ||
+    record.authored?.kind !== 'material'
+  )
+    return recordError(
+      request,
+      'authored',
+      'source-backed material with its original authored asset',
+    );
+  return { cooked: record as SourceMaterialPayload['cooked'], rasterSources };
 }
 
 export function createMaterialLoader(options: MaterialLoaderOptions) {

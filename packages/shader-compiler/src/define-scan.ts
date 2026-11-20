@@ -10,7 +10,7 @@
 // D-07 + §5 Fail Fast).
 //
 // Form:
-// - Input: `{ [moduleId]: wgslSource }` map spanning the entry module plus
+// - Input: already-scanned directive lines spanning the entry module plus
 //   every companion module in `options.imports`.
 // - Output: array of `{ defineName, sites }` conflict records. Empty array =
 //   no conflicts (happy path).
@@ -26,16 +26,17 @@
 // (naga_oil HashMap silent override); architecture principles #5 Fail Fast.
 
 import type { ShaderDefineConflictDetail } from '@forgeax/engine-types';
-import { shaderDirectiveLines } from './conditionals.js';
 
 const DEFINE_RE = /^\s*#\s*define\s+(\w+)/;
 
-export function scanDefineConflicts(modules: Record<string, string>): ShaderDefineConflictDetail[] {
+export function scanDefineConflicts(
+  modules: Readonly<Record<string, readonly string[]>>,
+): ShaderDefineConflictDetail[] {
   // Per-define aggregate: set of moduleIds that declared it.
   const perDefine = new Map<string, Set<string>>();
 
-  for (const [moduleId, source] of Object.entries(modules)) {
-    for (const line of shaderDirectiveLines(source)) {
+  for (const [moduleId, directives] of Object.entries(modules)) {
+    for (const line of directives) {
       const match = DEFINE_RE.exec(line);
       if (!match) continue;
       const name = match[1];

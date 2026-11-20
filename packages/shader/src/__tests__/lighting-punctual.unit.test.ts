@@ -148,7 +148,7 @@ describe('direct punctual lighting shader contract', () => {
     );
     const shared = await readFile(new URL('../standard-lighting.wgsl', import.meta.url), 'utf8');
     expect(shared).toMatch(
-      /evaluateStandardClusterLobes\(ndc, pixel, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,\s*useDirectDfgLut,/u,
+      /evaluateStandardClusterLobes\(ndc, pixel, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels, projectedChannels,\s*useDirectDfgLut,/u,
     );
     expect(source).toContain('clearcoatAlpha,');
     expect(source).toContain('vec3<f32>(0.04),');

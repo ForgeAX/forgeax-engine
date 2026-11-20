@@ -19,6 +19,7 @@ import {
   type PreparedViewGraph,
   retireRejectedSourceGraph,
 } from '../record/graph-adoption';
+import type { PipelinePreparationCompletion } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
 import { shadowViewPlanesByView } from '../record/shadow-culling';
 import { compileSourceViewGraph, ensureShadowDepthLayers } from '../record/typed-frame-graph';
@@ -617,7 +618,7 @@ function* prepareSourceMainPipelines(
   let requests = native.pipelineRequests().unwrap();
   for (;;) {
     const retry: (() => boolean)[] = [];
-    const pending = new Set<Promise<Result<void, RhiError>>>();
+    const pending = new Set<PipelinePreparationCompletion>();
     for (const request of requests) {
       if (!live()) throw stale();
       let ready = false;

@@ -96,3 +96,20 @@ fn packSceneTemporalV1WithValidity(
     clamp(reactive, 0.0, 1.0) + select(0.0, 2.0, !motionValid),
   );
 }
+
+// Desktop SceneVelocity uses two 16-bit UNORM values. WebGPU packs them into
+// one renderable R32Uint word; zero denotes an unwritten pixel.
+fn encodeSceneVelocity(temporal : vec4<f32>) -> u32 {
+  if (temporal.w >= 2.0) { return 0u; }
+  let ndc = temporal.xy * vec2<f32>(2.0, -2.0);
+  let curved = sign(ndc) * sqrt(abs(ndc) * 2.0);
+  let encoded = clamp(curved * 0.2495 + 32767.0 / 65535.0, vec2<f32>(0.0), vec2<f32>(1.0));
+  let xy = vec2<u32>(floor(encoded * 65535.0 + 0.5));
+  return xy.x | (xy.y << 16u);
+}
+
+fn decodeSceneVelocity(word : u32) -> vec2<f32> {
+  let xy = vec2<f32>(f32(word & 65535u), f32(word >> 16u));
+  let curved = ((xy - 32767.0) / 65535.0) / 0.2495;
+  return curved * abs(curved) * vec2<f32>(0.25, -0.25);
+}

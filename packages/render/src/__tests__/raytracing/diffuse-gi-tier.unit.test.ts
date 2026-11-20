@@ -45,7 +45,12 @@ describe('diffuse GI quality tiers', () => {
       'screen-probe',
     ]);
     expect(lanes.every((r) => r.fallback === undefined)).toBe(true);
-    expect(lanes[0]?.profile).toEqual({ renderPath: 'deferred', pbr: true, ibl: true, ssao: true });
+    expect(lanes[0]?.profile).toEqual({
+      renderPath: 'deferred',
+      pbr: true,
+      ibl: true,
+      ambientOcclusion: { enabled: true },
+    });
     const fields = (['medium', 'high', 'epic'] as const).map(
       (tier) => DIFFUSE_GI_TIER_BUDGETS[tier].field,
     );
@@ -114,7 +119,7 @@ describe('diffuse GI quality tiers', () => {
           renderPath: 'deferred',
           pbr: true,
           ibl: true,
-          ssao: false,
+          ambientOcclusion: { enabled: false },
         });
         expect(validateRenderProfile({ ...DEFAULT_STANDARD_PROFILE, ...resolved.profile })).toBe(
           undefined,

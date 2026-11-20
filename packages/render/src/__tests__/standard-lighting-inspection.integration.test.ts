@@ -179,7 +179,7 @@ describe('Standard lighting inspection provenance', () => {
       ambientOcclusion: {
         requested: false,
         status: 'off',
-        algorithm: 'gtao',
+        algorithm: 'ssao',
         execution: 'none',
         reason: 'disabled',
       },
@@ -200,7 +200,7 @@ describe('Standard lighting inspection provenance', () => {
       {
         config: {
           enabled: true,
-          algorithm: 'gtao',
+          method: 'gtao',
           quality: 'high',
           directLightingStrength: 0.4,
           resolutionScale: 0.5,
@@ -278,7 +278,7 @@ describe('Standard lighting inspection provenance', () => {
     const inspected = inspectStandardLighting(
       { kind: 'no-local-lights', prepared: prepared(0) },
       {
-        config: { enabled: true, algorithm: 'ssao' },
+        config: { enabled: true, method: 'ssao' },
         graph: { generation: 5, passes: [], resources: [] } as unknown as CompiledRenderGraphInfo,
         deviceGeneration: 3,
         clusterAoExtent: { width: 16, height: 16 },

@@ -3,11 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  runnerResources,
-  shaderCompileWorkers,
-  shaderSourceCompileWorkers,
-} from '../lib/runner-resources.mjs';
+import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { selectDawnGroups } from './run-dawn-gate.mjs';
 import {
@@ -193,7 +189,7 @@ function compatibilityFocusPlan(selector) {
 
 function coverageFocusEnvironment(group, resources, maxWorkers) {
   const workers = group.sourceCompilation
-    ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+    ? process.env.FORGEAX_SHADER_COMPILE_WORKERS
     : shaderCompileWorkers(
         resources,
         process.env.FORGEAX_SHADER_COMPILE_WORKERS,

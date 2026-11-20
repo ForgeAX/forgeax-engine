@@ -13,7 +13,7 @@ import { validateMeshCollisionAttachment } from '../mesh-collision';
 import { prepareMeshData } from '../mesh-data';
 import { deriveVertexLayoutProjection } from '../vertex-attribute-layout';
 
-import { type UnpackedMeshBin, unpackMeshBin } from './unpack-mesh-bin';
+import { type UnpackedMeshBin, unpackMeshBinForAsset } from './unpack-mesh-bin';
 
 type PackedMaterialSlots = readonly (UnpackedMeshBin['materialSlots'][number] & {
   /** Direct Pack JSON keeps the authoring GUID until the producer boundary. */
@@ -418,7 +418,7 @@ export function decodeMeshBinary(
   refs: readonly string[],
   storage: 'channels' | 'interleaved' = 'channels',
 ): MeshAsset | undefined {
-  const decoded = unpackMeshBin(bytes, '<mesh binary>', storage);
+  const decoded = unpackMeshBinForAsset(bytes, '<mesh binary>', storage);
   if (!decoded.ok) return undefined;
   return meshFromParts(
     {

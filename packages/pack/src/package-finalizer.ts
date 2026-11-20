@@ -7,6 +7,7 @@ import {
   isDeepFrozenJson,
 } from '@forgeax/engine-types';
 import { encodeMaterialProgramWire } from './material-program-wire.js';
+import { compactRasterSourcePackageAssets } from './material-source-transport.js';
 
 export type PackageArtifactBody = ImportedArtifactBody;
 
@@ -44,6 +45,8 @@ export interface PackageFinalizePolicy {
   readonly packagePath: string;
   readonly artifactPath: (guid: string, localKey: string) => string;
   readonly sink?: (path: string, bytes: Uint8Array) => void | Promise<void>;
+  /** Emit source-backed raster programs from a paired material cook. */
+  readonly materialProgramTransport?: 'raster-source';
 }
 
 export interface FinalizedPackageProduct extends Omit<PackageProduct, 'assets'> {
@@ -60,7 +63,8 @@ export interface PackageFinalizerError {
     | 'duplicate-guid'
     | 'missing-source-revision'
     | 'missing-receipt'
-    | 'invalid-artifact';
+    | 'invalid-artifact'
+    | 'invalid-material-source';
   readonly expected: string;
   readonly hint: string;
   readonly detail: { readonly guid?: string; readonly key?: string };
@@ -412,7 +416,11 @@ export async function finalizePackageProduct(
   product: PackageProduct,
   policy: PackageFinalizePolicy,
 ): Promise<PackageFinalizeResult> {
-  return finalizeProduct(product, policy, sha256);
+  if (policy.materialProgramTransport === undefined)
+    return finalizeProduct(product, policy, sha256);
+  const assets = compactRasterSourcePackageAssets(product.assets);
+  if (!assets.ok) return assets;
+  return finalizeProduct({ ...product, assets: assets.value }, policy, sha256);
 }
 
 async function finalizeProduct(
@@ -519,12 +527,18 @@ export async function finalizePackageTransportSource(
     }
     return value;
   };
-  const sourceRevision = transportRevision(input, digestBytes);
+  let assets = input.assets;
+  if (policy.materialProgramTransport !== undefined) {
+    const compacted = compactRasterSourcePackageAssets(assets);
+    if (!compacted.ok) throw compacted.error;
+    assets = compacted.value;
+  }
+  const sourceRevision = transportRevision({ ...input, assets }, digestBytes);
   const product: PackageProduct = {
-    assets: input.assets,
+    assets,
     receipts:
       input.receipts ??
-      input.assets.map((asset) => ({
+      assets.map((asset) => ({
         guid: asset.guid,
         origin: 'sourceMeta' as const,
         status: 'succeeded' as const,

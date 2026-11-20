@@ -32,9 +32,9 @@ function topology(device: RhiDevice): RenderPipelineTopology {
       ...DEFAULT_STANDARD_PROFILE,
       renderPath: 'deferred',
       lightCount: 256,
-      ssao: { algorithm: 'gtao' },
+      ambientOcclusion: { enabled: true, method: 'gtao' },
     },
-    config: { ssao: { enabled: true, algorithm: 'gtao' } },
+    config: { ambientOcclusion: { enabled: true, method: 'gtao' } },
     surface: {
       width: 1,
       height: 1,

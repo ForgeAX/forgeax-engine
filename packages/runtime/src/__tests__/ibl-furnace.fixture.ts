@@ -45,11 +45,12 @@ const CENTERS = FURNACE_ROUGHNESS.map((_, i) => [
   -DEPTH,
 ]);
 
-/** Authored and naga-normalized forms of the separated environment response. */
-const COMPENSATED = /return (EnvironmentScattering\w*)\((single\w*), ([A-Za-z_]\w*), (ems\w*)\);/g;
-/** Preserve directional single scattering; remove only the irradiance term. */
+/** Both authored and Naga-emitted shaders call the same multiple-scattering helper. */
+const COMPENSATED =
+  /(\bfn environmentMultiScattering\w*\([^{}]*\)\s*->\s*vec3<f32>\s*\{)(?!\s*return vec3<f32>\(0\.0\);)[^{}]*(\})/g;
+/** Keep the directional term and remove only the multiple-scattering contribution. */
 const singleScatter = (wgsl: string) =>
-  wgsl.replace(COMPENSATED, 'return $1($2, vec3<f32>(0.0), $4);');
+  wgsl.replace(COMPENSATED, '$1\n  return vec3<f32>(0.0);\n$2');
 
 /** Publish the same programs with only their shared IBL source changed. */
 export function singleScatterPublication(manifest: ShaderTemplateManifest) {
@@ -293,7 +294,7 @@ export async function replayFurnace(
     const target = shading.at(-1);
     const color = target?.attachments?.colorViewHandleIds[0];
     if (target === undefined || color === undefined)
-      throw new Error('no captured draw evaluates environmentScattering');
+      throw new Error('no captured draw evaluates environmentMultiScattering');
     const read = async (source: V7Tape) => {
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (

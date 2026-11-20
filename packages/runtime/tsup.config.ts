@@ -9,6 +9,7 @@ export default defineConfig({
     'src/geometry/index.ts',
     'src/renderer-host.ts',
     'src/shader-publication.ts',
+    'src/tasks.ts',
     'src/water-buoyancy-solver.ts',
   ],
   external: [

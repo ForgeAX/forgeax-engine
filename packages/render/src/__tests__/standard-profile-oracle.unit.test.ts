@@ -142,43 +142,54 @@ describe('Volumetric fog public profile', () => {
 
 describe('SSAO public profile', () => {
   it('preserves immutable AO parameters through the public profile', () => {
-    const ssao = {
-      algorithm: 'gtao' as const,
+    const ambientOcclusion = {
+      enabled: true,
+      method: 'gtao' as const,
       radius: 0.8,
       bias: 0.01,
       intensity: 1.5,
       quality: 'low' as const,
     };
-    const profile = { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' as const, ssao };
+    const profile = {
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: 'deferred' as const,
+      ambientOcclusion,
+    };
     expect(validateRenderProfile(profile)).toBeUndefined();
     const frozen = freezeRenderProfile(profile);
-    ssao.radius = 2;
-    expect(frozen.ssao).toEqual({
-      algorithm: 'gtao',
+    ambientOcclusion.radius = 2;
+    expect(frozen.ambientOcclusion).toEqual({
+      enabled: true,
+      method: 'gtao',
       radius: 0.8,
       bias: 0.01,
       intensity: 1.5,
       quality: 'low',
     });
-    expect(Object.isFrozen(frozen.ssao)).toBe(true);
+    expect(Object.isFrozen(frozen.ambientOcclusion)).toBe(true);
   });
   it('admits material-normal Forward AO and rejects malformed parameter objects', () => {
     expect(
-      validateRenderProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true }),
+      validateRenderProfile({
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: true },
+      }),
     ).toBeUndefined();
-    for (const ssao of [
+    for (const ambientOcclusion of [
       [],
       null,
-      { quality: 'ultra' },
-      { algorithm: 'unknown' },
-      { radius: Number.NaN },
-      { other: 1 },
+      { enabled: true, quality: 'ultra' },
+      { enabled: true, method: 'unknown' },
+      { enabled: true, algorithm: 'gtao' },
+      { enabled: true, radius: Number.NaN },
+      { enabled: true, other: 1 },
     ]) {
       expect(
         validateRenderProfile({
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'deferred',
-          ssao,
+          ambientOcclusion,
         } as unknown as StandardProfile),
       ).toBeTypeOf('string');
     }

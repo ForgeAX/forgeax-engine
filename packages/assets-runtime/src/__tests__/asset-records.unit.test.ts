@@ -1,10 +1,72 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { err, type MaterialAsset, ok } from '@forgeax/engine-types';
-import { describe, expect, test } from 'vitest';
-import { AssetRecords } from '../internal/asset-records';
+import { describe, expect, test, vi } from 'vitest';
+import { assetDataBytes } from '../internal/asset-data';
+import { AssetRecords, type MeshPresentation } from '../internal/asset-records';
 
 const material = (roughness = 1): MaterialAsset => ({ kind: 'material', values: { roughness } });
 
 describe('owned runtime asset content', () => {
+  test('shares the draw description until the same Mesh identity adopts another revision', () => {
+    const records = new AssetRecords();
+    const first = createBoxGeometry(2, 1, 1).unwrap();
+    const handle = records.create('mesh', first).unwrap();
+    const description = records.meshDraw(handle).unwrap();
+    expect(records.meshDraw(handle).unwrap()).toBe(description);
+    const replacement = createBoxGeometry(4, 1, 1).unwrap();
+    expect(records.adopt('mesh', replacement, [], undefined, handle).unwrap()).toBe(handle);
+    const current = records.meshDraw(handle).unwrap();
+    expect(current).not.toBe(description);
+    expect(current.aabb).toEqual(replacement.aabb);
+    expect(description.aabb).toEqual(first.aabb);
+    expect(records.read(handle).unwrap()).toEqual(replacement);
+    records.dispose();
+  });
+
+  test('preserves Render recovery after a failed CPU admission and rejects a later stale restore', () => {
+    const first = createBoxGeometry(2, 1, 1).unwrap();
+    const maxBytes = 2 * assetDataBytes(first);
+    const records = new AssetRecords({ maxBytes });
+    records.bindMeshPresenter(async () => err('render-preparation-failed'));
+    const handle = records.create('mesh', first).unwrap();
+    const revision = records.version(handle).unwrap();
+    const retired = vi.fn();
+    const presented: MeshPresentation = {
+      bytes: 1,
+      storage: 'publication',
+      async read() {
+        return first;
+      },
+      lease: { isCurrent: () => true, release: retired },
+      release() {
+        this.lease.release();
+      },
+    };
+    expect(records.retainMeshPresentation(handle, revision, presented)).toBe(true);
+    const occupied = records
+      .create('texture', new Uint8Array(maxBytes - records.inspect().bytes))
+      .unwrap();
+    expect(records.requireMeshCpu(handle)).toBe(presented);
+    expect(records.restoreMeshCpu(handle, presented, first)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-budget-exceeded' },
+    });
+    const nextLease = { isCurrent: () => true, release: vi.fn() };
+    expect(records.rebindMeshPresentation(handle, presented, nextLease)).toBe(true);
+    expect(retired).toHaveBeenCalledTimes(1);
+    expect(records.version(handle).unwrap()).toBe(revision);
+    records.release(occupied).unwrap();
+    const replacement = createBoxGeometry(4, 1, 1).unwrap();
+    records.adopt('mesh', replacement, [], undefined, handle).unwrap();
+    expect(records.restoreMeshCpu(handle, presented, first)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-write-conflict' },
+    });
+    expect(records.read(handle).unwrap()).toEqual(replacement);
+    expect(nextLease.release).toHaveBeenCalledTimes(1);
+    records.dispose();
+  });
+
   test('checks fixed pin currentness against its full dependency closure', () => {
     const records = new AssetRecords({ maxSnapshots: 1 });
     const dependency = records.create('material', material(0.2)).unwrap();

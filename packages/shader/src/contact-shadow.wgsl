@@ -11,7 +11,7 @@ fn contactShadowLinearDepth(value : f32, near : f32, far : f32, orthographic : b
 // directional light resolving occlusion finer than the shadow-map texel.
 // The march interpolates clip coordinates, so each sample's w is the exact
 // view distance of the ray point; only the scene sample needs linearizing.
-fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position : vec3<f32>, normal : vec3<f32>, originPixel : vec2<i32>, frame : f32) -> f32 {
+fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position : vec3<f32>, normal : vec3<f32>, originPixel : vec2<i32>, frame : f32, casterData : texture_2d<u32>, compact : bool) -> f32 {
   let rayLength = view.directionalShadowFilter.w;
   let toLight = normalize(-view.lightDir);
   if (dot(normal, toLight) <= 0.0) { return 1.0; }
@@ -56,6 +56,9 @@ fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position
     let rayDistance = select(clip.w, contactShadowLinearDepth(ndc.z, near, far, true), orthographic);
     let delta = rayDistance - sceneDistance;
     if (delta > 0.0 && delta < thickness) {
+      // Default GBuffer A.a bit 0 is the contact-caster flag. With default
+      // light settings a non-caster contributes zero contact occlusion.
+      if (compact && (textureLoad(casterData, pixel, 0).r & 0x40000000u) == 0u) { return 1.0; }
       // Near hits darken fully; hits toward the ray end fade so the shadow
       // edge follows the configured length instead of cutting off.
       return t * t;

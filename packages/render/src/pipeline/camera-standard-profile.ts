@@ -105,16 +105,19 @@ export function deriveCameraStandardConfiguration(
     return ok({ profile: selectedProfile, config });
   let selectedConfig = config;
   if (aoRequested) {
-    const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
-    if (!parameters.ok) return err(parameters.error);
-    // AO is a view-local lighting input and does not require the Deferred
-    // GBuffer. Its own SceneData producer admits Forward on no-storage lanes.
-    const effective = applyAmbientOcclusionQuality(
-      parameters.value,
-      profile.quality?.ambientOcclusion,
-    );
-    selectedProfile = { ...selectedProfile, ssao: effective };
-    selectedConfig = { ...selectedConfig, ssao: { enabled: true, ...effective } };
+    const defaults = config?.ambientOcclusion ?? profile.ambientOcclusion;
+    let ambientOcclusion = { ...defaults, enabled: false };
+    if (camera.ambientOcclusion.enabled) {
+      const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
+      if (!parameters.ok) return err(parameters.error);
+      const effective = applyAmbientOcclusionQuality(
+        { ...defaults, ...parameters.value },
+        profile.quality?.ambientOcclusion,
+      );
+      ambientOcclusion = { ...effective, enabled: true };
+    }
+    selectedProfile = { ...selectedProfile, ambientOcclusion };
+    selectedConfig = { ...selectedConfig, ambientOcclusion };
   }
   // SSR retains its independent storage/MRT admission policy. When AO is also
   // requested on an ineligible device, keep Forward and still honor AO.

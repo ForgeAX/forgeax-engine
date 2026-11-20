@@ -1,5 +1,31 @@
+import type { AuthoredRuntimePack } from '@forgeax/engine-app';
+import type { ProjectFacts } from '../types.js';
+import { authoredRuntimePackDeclarations } from './authored-runtime-packs.js';
+import type { PluginSourceInventory } from './plugin-assets.js';
+import { staticPackProgramsSource } from './static-pack-programs.js';
+
 /** Shared generated module: metadata is eager, native module delivery is explicit and lazy. */
-export const runtimePacksSource = `import type { RuntimePackOptions } from '@forgeax/engine/app';
+export const runtimePacksSource = runtimePacksModule('const authored = [];');
+
+export async function runtimePacksModuleSource(
+  facts: ProjectFacts,
+  sourceInventory: PluginSourceInventory,
+  staticPrograms: boolean,
+  packs: readonly AuthoredRuntimePack[],
+  generatedRoot: string,
+): Promise<string> {
+  if (!staticPrograms) return runtimePacksModule(authoredRuntimePackDeclarations(packs));
+  return `${await staticPackProgramsSource(facts, sourceInventory, { packs, generatedRoot })}
+import type { RuntimePackOptions } from '@forgeax/engine/app';
+export async function createRuntimePackOptions(scopeId: string): Promise<RuntimePackOptions> {
+  return { scopeId, imports, authored, programHost };
+}
+`;
+}
+
+export function runtimePacksModule(declarations: string): string {
+  return `${declarations}
+import type { RuntimePackOptions } from '@forgeax/engine/app';
 import { createBrowserPackProgramHost, prepareBrowserPackProgramScope } from '@forgeax/engine/pack/runtime-browser';
 import type { PackProgramHostFactory } from '@forgeax/engine/pack/runtime';
 import imports, { loadImport } from 'virtual:forgeax/pack-program-imports';
@@ -80,11 +106,11 @@ export function createRuntimePackDeliveryClient(name: string | undefined, signal
 }
 
 export async function createRuntimePackOptions(scopeId: string, prepared?: Delivery | (() => Promise<Delivery>), nativeHost?: PackProgramHostFactory): Promise<RuntimePackOptions> {
-  if (nativeHost) return { scopeId, imports, programHost: nativeHost(imports, loadImport) };
+  if (nativeHost) return { scopeId, imports, authored, programHost: nativeHost(imports, loadImport) };
   const delivery = prepared;
   let host: ReturnType<typeof createBrowserPackProgramHost> | undefined;
   return {
-    scopeId, imports,
+    scopeId, imports, authored,
     programHost: { async publish(program, bindings) {
       const ready = typeof delivery === 'function' ? await delivery() : delivery ?? await prepareRuntimePackDelivery();
       if ('error' in ready) throw new Error(ready.error);
@@ -94,3 +120,4 @@ export async function createRuntimePackOptions(scopeId: string, prepared?: Deliv
   };
 }
 `;
+}

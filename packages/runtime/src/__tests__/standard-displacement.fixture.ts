@@ -371,7 +371,9 @@ export async function verifyStandardDisplacement(
   ];
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...profile, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const entry of cases) {
         let geometry = entry.oracle
           ? oracleMesh(dense, entry.scale, entry.bias, entry.oracle)

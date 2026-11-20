@@ -337,7 +337,13 @@ export async function verifyStandardGBufferReplay(
           })
           .unwrap();
       }
-      renderValue(renderer.setProfile({ ...original, renderPath: 'deferred', ssao: effects }));
+      renderValue(
+        renderer.setProfile({
+          ...original,
+          renderPath: 'deferred',
+          ambientOcclusion: { enabled: effects },
+        }),
+      );
       const draw = async (observe = false) => {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();

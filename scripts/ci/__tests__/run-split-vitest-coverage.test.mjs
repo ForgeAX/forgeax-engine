@@ -912,7 +912,7 @@ test('cold mounted asset libraries share the existing exclusive DevKit publicati
   );
 });
 
-test('cold source coverage admits parallel compilation within its inherited heap budget', () => {
+test('cold source coverage validates each owner heap and compiler budget', () => {
   const groups = coverageGroups(allProjectNames(), 8);
   const sources = groups.filter((group) => group.sourceCompilation);
   assert.equal(sources.length, 10 + standardTransmissionFiles.length);
@@ -936,11 +936,22 @@ test('cold source coverage admits parallel compilation within its inherited heap
       ),
       1,
     );
-    for (const [capacityGiB, heapMiB] of [
-      [8, 4096],
-      [16, 8192],
-      [48, 24576],
-    ]) {
+    const serialMaterialOwner = [
+      'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
+      'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+    ].some((file) => group.files.includes(file));
+    const budgets = serialMaterialOwner
+      ? [
+          [8, 4096, '2'],
+          [16, 4096, '7'],
+          [48, 4096, '7'],
+        ]
+      : [
+          [8, 4096, '2'],
+          [16, 8192, '4'],
+          [48, 24576, '4'],
+        ];
+    for (const [capacityGiB, heapMiB, workers] of budgets) {
       const env = coverageGroupEnvironment(
         group,
         { cpus: 8, memoryBytes: capacityGiB * 1024 ** 3 },
@@ -949,7 +960,7 @@ test('cold source coverage admits parallel compilation within its inherited heap
       );
       assert.ok(env.NODE_OPTIONS.endsWith(`--max-old-space-size=${heapMiB}`));
       assert.ok(env.NODE_OPTIONS.startsWith('--import=probe.mjs'));
-      assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, capacityGiB === 8 ? '2' : '4');
+      assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, workers);
       assert.equal(env.KEEP, 'yes');
     }
     const constrained = coverageGroupEnvironment(

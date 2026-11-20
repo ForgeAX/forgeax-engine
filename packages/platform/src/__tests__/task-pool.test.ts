@@ -357,6 +357,53 @@ describe('worker task pool', () => {
   });
 });
 
+describe('Worker-only tasks', () => {
+  const workerOnly = { load: () => echo, workerOnly: true };
+
+  it('rejects a Worker-only kind in an inline pool', async () => {
+    const load = vi.fn(() => echo);
+    const pool = createTaskPool({ kinds: { k: { ...workerOnly, load } } });
+    await expect(pool.submit('k', 2).result).rejects.toThrow('requires a Worker');
+    expect(load).not.toHaveBeenCalled();
+    pool.dispose();
+  });
+
+  it('rejects queued Worker-only jobs on startup failure and runs flexible jobs inline', async () => {
+    const { factory, workers } = manualWorkers({ adopt: false });
+    const pool = createTaskPool({
+      kinds: { required: workerOnly, flexible: { load: () => echo } },
+      workerFactory: factory,
+    });
+    const required = expect(
+      pool.submit('required', 2, { priority: 'background' }).result,
+    ).rejects.toThrow('requires a Worker');
+    const flexible = pool.submit('flexible', 3).result;
+    await flush();
+    workers[0]?.listener.error(new Error('script failed to load'));
+    await required;
+    expect(await flexible).toBe(6);
+    pool.dispose();
+  });
+
+  it('rejects queued and future Worker-only jobs after repeated crashes', async () => {
+    const { factory, workers } = manualWorkers();
+    const pool = createTaskPool({
+      kinds: { k: workerOnly },
+      workerFactory: factory,
+      workers: 1,
+      crashLimit: 1,
+    });
+    const running = expect(pool.submit('k', 1).result).rejects.toThrow('crashed');
+    const queued = expect(pool.submit('k', 2).result).rejects.toThrow('requires a Worker');
+    await flush();
+    workers[0]?.listener.error(new Error('crashed'));
+    await Promise.all([running, queued]);
+    await expect(pool.submit('k', 3).result).rejects.toThrow('requires a Worker');
+    expect(workers).toHaveLength(1);
+    pool.dispose();
+  });
+});
+
 describe('worker startup failure', () => {
   it('runs inline when the host never adopts the first Worker', async () => {
     const { factory, workers } = manualWorkers({ adopt: false });

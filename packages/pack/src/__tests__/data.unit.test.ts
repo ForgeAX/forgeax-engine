@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { copyPackData, decodePackData, encodePackData } from '../data.js';
+import { copyPackData, copyPackOutputData, decodePackData, encodePackData } from '../data.js';
 
 it.each([
   [],
@@ -35,6 +35,39 @@ it('isolates one binary graph while preserving aliases and excluding unrelated b
   expect(Object.is(restored.floats[1], -0)).toBe(true);
   expect([...new Uint8Array(restored.floats.buffer, 0, 8)]).toEqual(new Array(8).fill(0));
   expect(restored.tag).toEqual(source.tag);
+});
+
+it('rebases shared ranges only when all uses belong to outputs with their own encoding', () => {
+  const storage = new ArrayBuffer(1024);
+  new Uint8Array(storage).fill(99);
+  const values = new Float32Array(storage, 512, 3);
+  values.set([1.25, -0, -2]);
+  const alias = new Uint16Array(storage, 516, 4);
+  const separate = new Uint16Array(storage, 528, 2);
+  separate.set([1, 2]);
+  const mesh = { kind: 'mesh', values, alias, separate, repeated: [values] };
+  const shouldCompact = (output: unknown) =>
+    typeof output === 'object' && output !== null && 'kind' in output && output.kind === 'mesh';
+  const compact = copyPackOutputData({ mesh }, shouldCompact).mesh;
+  expect(compact.values.buffer.byteLength).toBe(20);
+  expect(compact.values.byteOffset).toBe(0);
+  expect(compact.alias.byteOffset).toBe(4);
+  expect(compact.separate.byteOffset).toBe(16);
+  expect(compact.alias.buffer).toBe(compact.values.buffer);
+  expect(compact.separate.buffer).toBe(compact.values.buffer);
+  expect(compact.repeated[0]).toBe(compact.values);
+  expect(new Uint8Array(compact.values.buffer).slice(12, 16)).toEqual(new Uint8Array(4));
+  expect(compact.values).toEqual(values);
+  expect(compact.alias).toEqual(alias);
+  expect(compact.separate).toEqual(separate);
+  values[0] = 700;
+  expect(compact.values[0]).toBe(1.25);
+
+  const mixed = copyPackOutputData({ mesh, data: { views: [values] } }, shouldCompact);
+  expect(mixed.mesh.values.buffer.byteLength).toBe(storage.byteLength);
+  expect(mixed.mesh.values.byteOffset).toBe(values.byteOffset);
+  expect(mixed.data.views[0]).toBe(mixed.mesh.values);
+  expect(mixed.mesh.alias.buffer).toBe(mixed.mesh.values.buffer);
 });
 
 it('does not invoke TypedArray constructor or metadata getters and rejects shared/subclass input', () => {

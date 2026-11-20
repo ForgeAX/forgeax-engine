@@ -37,8 +37,9 @@ describe('domain-owned quality projection', () => {
   it('retains source appearance and restores A to B to A without deriving from B', () => {
     const source = {
       ...DEFAULT_STANDARD_PROFILE,
-      ssao: {
-        algorithm: 'gtao' as const,
+      ambientOcclusion: {
+        enabled: true,
+        method: 'gtao' as const,
         radius: 3,
         intensity: 2,
         bias: 0.03,
@@ -49,8 +50,8 @@ describe('domain-owned quality projection', () => {
     const original = structuredClone(source);
     const first = renderProfileForQuality(source, high);
     const reduced = renderProfileForQuality(source, low);
-    expect(reduced.ssao).toMatchObject({
-      algorithm: 'gtao',
+    expect(reduced.ambientOcclusion).toMatchObject({
+      method: 'gtao',
       radius: 3,
       intensity: 2,
       quality: 'low',
@@ -64,10 +65,10 @@ describe('domain-owned quality projection', () => {
     const budget = resolveRenderQualityBudgets(low).ambientOcclusion;
     expect(
       applyAmbientOcclusionQuality(
-        { algorithm: 'gtao', radius: 5, quality: 'high', resolutionScale: 1 },
+        { method: 'gtao', radius: 5, quality: 'high', resolutionScale: 1 },
         budget,
       ),
-    ).toMatchObject({ radius: 5, algorithm: 'gtao', quality: 'low', resolutionScale: 0.5 });
+    ).toMatchObject({ radius: 5, method: 'gtao', quality: 'low', resolutionScale: 0.5 });
     expect(
       applyAmbientOcclusionQuality({ quality: 'low', resolutionScale: 0.25 }, budget)
         .resolutionScale,

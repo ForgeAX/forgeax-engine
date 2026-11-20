@@ -180,7 +180,13 @@ export async function verifyClippingPlanes(
   const reports: unknown[] = [];
   let baselineShadowPixels = 0;
   const profile = renderer.inspect().profile;
-  renderValue(renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false }));
+  renderValue(
+    renderer.setProfile({
+      ...profile,
+      renderPath: 'forward',
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   const draw = async (direct: boolean, observe = false) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();

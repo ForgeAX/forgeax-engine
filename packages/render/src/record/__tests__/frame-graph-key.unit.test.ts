@@ -96,6 +96,9 @@ it('uses conservative absent policy for malformed retained graph keys', () => {
   const directional = { mapSize: 1024, cascadeCount: 4 as const };
   for (const key of ['invalid', 'null', '{}']) {
     expect(retainedFrameGraphPolicyMatches(key, directional, false)).toBe(true);
+    expect(retainedFrameGraphPolicyMatches(key, directional, false, 'standard-gbuffer/4')).toBe(
+      false,
+    );
     expect(retainedFrameGraphPolicyMatches(key, directional, true)).toBe(false);
     expect(
       retainedFrameGraphPolicyMatches(
@@ -108,4 +111,13 @@ it('uses conservative absent policy for malformed retained graph keys', () => {
       ),
     ).toBe(false);
   }
+});
+
+it('retains only a graph with the configured legacy layout', () => {
+  const directional = { mapSize: 1024, cascadeCount: 4 as const };
+  const key = serializeFrameGraphKey({
+    topology: { shadow: { directional }, compactGbuffer: 'standard-gbuffer/4' },
+  });
+  expect(retainedFrameGraphPolicyMatches(key, directional, false)).toBe(false);
+  expect(retainedFrameGraphPolicyMatches(key, directional, false, 'standard-gbuffer/4')).toBe(true);
 });

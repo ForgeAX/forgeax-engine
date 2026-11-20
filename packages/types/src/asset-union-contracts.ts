@@ -55,11 +55,10 @@ import type {
  * `buildGraph` time; `passCount` is the first real key (a custom pipeline declares that
  * many passes). The URP ignores `config` (its topology is fixed).
  *
- * `config.clusterGrid` is the HDRP cluster grid dimensions (x/y/z each an integer in
- * [1, 64]; default {16, 9, 24}). It is ignored by URP.
+ * `config.clusterGrid` sets the Standard cluster grid dimensions. Each axis
+ * is an integer in [1, 64] and the default is {16, 9, 24}.
  *
- * `config.ssao` enables SSAO (Screen-Space Ambient Occlusion) for the HDRP
- * deferred path. Ignored by URP.
+ * `config.ambientOcclusion` configures screen-space ambient occlusion.
  */
 export interface RenderPipelineAsset {
   readonly kind: 'render-pipeline';
@@ -68,15 +67,15 @@ export interface RenderPipelineAsset {
   readonly config?: {
     readonly passCount?: number;
     readonly clusterGrid?: { readonly x: number; readonly y: number; readonly z: number };
-    readonly ssao?: {
+    readonly ambientOcclusion?: {
       readonly enabled: boolean;
-      /** Screen-space AO estimator; defaults to GTAO. */
-      readonly algorithm?: 'ssao' | 'gtao' | 'spiral-ssao' | undefined;
+      /** Screen-space AO method; defaults to SSAO. */
+      readonly method?: 'ssao' | 'gtao' | 'spiral-ssao' | undefined;
       /** Apply AO to lighting (default) or the completed linear HDR scene before temporal/post. */
       readonly application?: 'lighting' | 'scene-color' | undefined;
       /** Scene-color visibility strength in [0, 1]; default 0.95. */
       readonly sceneColorStrength?: number | undefined;
-      /** Explicit estimator budget, integer 1..64; otherwise derived from algorithm/quality. */
+      /** Explicit estimator budget, integer 1..64; otherwise derived from method and quality. */
       readonly sampleCount?: number | undefined;
       /** Fraction of screen-space AO applied to direct light, in [0, 1]; default 0. */
       readonly directLightingStrength?: number | undefined;

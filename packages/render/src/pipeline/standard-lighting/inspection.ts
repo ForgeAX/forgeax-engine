@@ -5,7 +5,9 @@ import { getSsaoParameters } from '../../ssao-config';
 import type { StandardTopologyInputValue } from './topology';
 import type { StandardClusterTransport } from './transport';
 
-type AmbientOcclusionConfig = NonNullable<NonNullable<RenderPipelineAsset['config']>['ssao']>;
+type AmbientOcclusionConfig = NonNullable<
+  NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
+>;
 
 export interface StandardAmbientOcclusionInspection {
   readonly requested: boolean;
@@ -19,11 +21,13 @@ export interface StandardAmbientOcclusionInspection {
     readonly normalSchema:
       | 'forgeax::scene-data::standard-gbuffer-normal-v2'
       | 'forgeax::scene-data::standard-surface-normal-v1'
+      | 'standard-gbuffer/4'
       | 'depth-reconstruction';
     readonly normalSpace: 'world' | 'view';
     readonly normalEncoding:
       | 'xyz10-valid30-dfg31-roughness8-occlusion8'
       | 'octahedral-normal-x12-y12-roughness-u8'
+      | 'xyz10'
       | 'depth-reconstructed';
     readonly normalFormat: 'rg32uint' | 'r32uint' | 'none';
     readonly depthSchema: 'forgeax::scene-data::standard-surface-depth-v1';
@@ -283,7 +287,7 @@ function collectAmbientOcclusionFacts(input: {
   // at 30+, with two depth candidates per radial step.
   const slices = sampleBudget >= 30 ? 5 : 3;
   const depthCandidatesPerPixel =
-    parameters.algorithm === 'gtao' ? slices * Math.ceil(sampleBudget / slices) * 2 : sampleBudget;
+    parameters.method === 'gtao' ? slices * Math.ceil(sampleBudget / slices) * 2 : sampleBudget;
   // Forward keeps the surface-data prepass to seed `main` with AO off; it is
   // AO work only when AO is requested.
   const passNames = (input.graph?.passes ?? [])
@@ -339,13 +343,16 @@ function collectAmbientOcclusionFacts(input: {
 }
 
 function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
+  const compact = facts.normal?.label === 'gbuffer-a';
   return Object.freeze({
     normalSchema:
       facts.calc !== undefined && facts.normal === undefined
         ? ('depth-reconstruction' as const)
         : facts.normal?.format === 'rg32uint'
           ? ('forgeax::scene-data::standard-gbuffer-normal-v2' as const)
-          : ('forgeax::scene-data::standard-surface-normal-v1' as const),
+          : compact
+            ? ('standard-gbuffer/4' as const)
+            : ('forgeax::scene-data::standard-surface-normal-v1' as const),
     normalSpace:
       facts.calc !== undefined && facts.normal === undefined
         ? ('view' as const)
@@ -355,7 +362,9 @@ function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbient
         ? ('depth-reconstructed' as const)
         : facts.normal?.format === 'rg32uint'
           ? ('xyz10-valid30-dfg31-roughness8-occlusion8' as const)
-          : ('octahedral-normal-x12-y12-roughness-u8' as const),
+          : compact
+            ? ('xyz10' as const)
+            : ('octahedral-normal-x12-y12-roughness-u8' as const),
     normalFormat:
       facts.calc !== undefined && facts.normal === undefined
         ? ('none' as const)
@@ -385,7 +394,7 @@ function ambientOcclusionInputInspection(facts: ReturnType<typeof collectAmbient
 function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbientOcclusionFacts>) {
   return Object.freeze({
     rawFormat:
-      facts.parameters.algorithm === 'spiral-ssao' ? ('r8unorm' as const) : ('rgba8unorm' as const),
+      facts.parameters.method === 'spiral-ssao' ? ('r8unorm' as const) : ('rgba8unorm' as const),
     filteredFormat: 'r8unorm' as const,
     ...(facts.outputExtent === undefined
       ? {}
@@ -417,7 +426,7 @@ function inspectStandardAmbientOcclusion(input: {
   return Object.freeze({
     requested,
     status,
-    algorithm: parameters.algorithm,
+    algorithm: parameters.method,
     application: parameters.application,
     execution: !active ? 'none' : calc?.name === 'gtao-calc-compute' ? 'compute' : 'fragment',
     ...(!requested
@@ -441,7 +450,7 @@ function inspectStandardAmbientOcclusion(input: {
       directLightingStrength: parameters.directLightingStrength,
       rawIntensityApplication: 'once-before-filter' as const,
       filter:
-        parameters.algorithm === 'spiral-ssao'
+        parameters.method === 'spiral-ssao'
           ? ('7+7-depth-bilateral' as const)
           : ('5x5-depth-normal-bilateral' as const),
     }),
@@ -449,7 +458,7 @@ function inspectStandardAmbientOcclusion(input: {
     work: Object.freeze({
       rawPixels: active ? facts.rawPixels : 0,
       filterTapBudget: active
-        ? facts.rawPixels * (parameters.algorithm === 'spiral-ssao' ? 14 : 25)
+        ? facts.rawPixels * (parameters.method === 'spiral-ssao' ? 14 : 25)
         : 0,
       depthCandidateBudget: active ? facts.rawPixels * facts.depthCandidatesPerPixel : 0,
     }),

@@ -15,6 +15,38 @@ function record(slot: number, generation = 0): RenderSceneSlot {
   };
 }
 
+test('tracks active WaterMesh owners across replacement, removal, and clear', () => {
+  const slots = new SceneSlots();
+  const ordinary = record(0);
+  const owner: RenderSceneSlot = {
+    ...ordinary,
+    snapshot: {
+      ...ordinary.snapshot,
+      waterMeshSource: {
+        guid: 'water',
+        generation: 1,
+        worldIdentity: 'scene',
+        zoneGuid: 'zone',
+        zoneGeneration: 1,
+        targetFormat: 'rgba16float',
+        materialStartIndex: 0,
+        views: [],
+      },
+    },
+  };
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  expect(slots.hasSource('waterMeshSource')).toBe(true);
+  setSceneRow(slots, 0, ordinary);
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  slots.remove(0);
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  slots.clear();
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+});
+
 test('keeps returned rows and matrix windows fixed across repeated pending writes and address reuse', () => {
   const slots = new SceneSlots();
   const first = setSceneRow(slots, 0, record(0));

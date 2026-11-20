@@ -61,7 +61,7 @@ function topology(
   const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: profile,
-    config: profile.ssao ? { ssao: { enabled: true } } : undefined,
+    config: { ambientOcclusion: profile.ambientOcclusion },
     surface: {
       width: 1,
       height: 1,
@@ -377,8 +377,9 @@ it.each([
   const profile: StandardProfile = {
     ...DEFAULT_STANDARD_PROFILE,
     renderPath,
-    ssao: {
-      algorithm: 'spiral-ssao',
+    ambientOcclusion: {
+      enabled: true,
+      method: 'spiral-ssao',
       quality: 'high',
       resolutionScale: 0.5,
       radius: 0.9,
@@ -555,8 +556,11 @@ describe('visible-surface graph admission', () => {
     }
   });
 
-  it('runs field diffuse GI without visible surfaces on a device lacking primitive-index', async () => {
-    const received: { identity: boolean; motion: string }[] = [];
+  it.each([
+    false,
+    true,
+  ])('runs field diffuse GI without primitive-index (Default GBuffer %s)', async (compact) => {
+    const received: { identity: boolean; motion: GPUTextureFormat; compact: boolean }[] = [];
     const result = await build(
       {
         ...profile,
@@ -589,6 +593,7 @@ describe('visible-surface graph admission', () => {
         },
       },
       {
+        ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
         lane: { ...lane, primitiveIndex: false, maxColorAttachments: 6 },
         camera: { antialias: 'none', bloom: 'off' },
       },
@@ -600,7 +605,8 @@ describe('visible-surface graph admission', () => {
       (targets) => {
         received.push({
           identity: targets.identity !== undefined,
-          motion: targets.motion.texture === undefined ? '' : 'standard-scene-temporal',
+          motion: targets.motion.format,
+          compact: targets.compactGbuffer === true,
         });
         return ok(undefined);
       },
@@ -611,9 +617,12 @@ describe('visible-surface graph admission', () => {
       const info = result.value.inspect();
       expect(info.resources.some((resource) => resource.label === 'visible-surface')).toBe(false);
       expect(info.resources).toContainEqual(
-        expect.objectContaining({ label: 'standard-scene-temporal' }),
+        expect.objectContaining({
+          label: compact ? 'ssr-scene-temporal' : 'standard-scene-temporal',
+        }),
       );
-      expect(received).toEqual([{ identity: false, motion: 'standard-scene-temporal' }]);
+      expect(info.resources.some(({ label }) => label === 'ray-receiver-normal')).toBe(compact);
+      expect(received).toEqual([{ identity: false, motion: 'rgba16float', compact }]);
     } finally {
       (await result.value.retire()).unwrap();
     }
@@ -747,7 +756,7 @@ describe('scene fullscreen temporal placement', () => {
 describe('subsurface receiver-channel attachment admission', () => {
   it('derives the complete post-ROI17 attachment tuple from every producer format', () => {
     expect(SUBSURFACE_DEFERRED_COLOR_FORMATS).toEqual([
-      'rgba32float',
+      'rgba16float',
       'rg32uint',
       'r32uint',
       'r32uint',
@@ -755,22 +764,22 @@ describe('subsurface receiver-channel attachment admission', () => {
       'rg32uint',
     ]);
     expect(SUBSURFACE_ATTACHMENT_BYTES).toEqual({
-      surface: 48,
-      temporal: 56,
-      visibleSurface: 64,
-      visibleSurfaceTemporal: 72,
+      surface: 40,
+      temporal: 48,
+      visibleSurface: 56,
+      visibleSurfaceTemporal: 64,
     });
   });
 
   it.each([
-    [false, 47, false, false],
-    [false, 48, true, false],
-    [false, 52, true, false],
-    [false, 56, true, true],
-    [true, 63, false, false],
-    [true, 64, true, false],
-    [true, 68, true, false],
-    [true, 72, true, true],
+    [false, 39, false, false],
+    [false, 40, true, false],
+    [false, 44, true, false],
+    [false, 48, true, true],
+    [true, 55, false, false],
+    [true, 56, true, false],
+    [true, 60, true, false],
+    [true, 64, true, true],
   ] as const)('keeps receiver channels and temporal fallback for visible=%s / %i bytes', async (visibleSurface, bytes, admitted, merged) => {
     const result = await buildTaa(
       { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', visibleSurface },
@@ -802,7 +811,7 @@ describe('subsurface receiver-channel attachment admission', () => {
       expect(
         gbuffer?.accesses.some((access) => access.resource === 'standard-scene-temporal'),
       ).toBe(merged);
-      expect(info.passes.find((pass) => pass.name === 'subsurface-diffusion')).toBeDefined();
+      expect(info.passes.find((pass) => pass.name === 'subsurface-vertical')).toBeDefined();
       expect(info.passes.find((pass) => pass.name === 'standard-scene-data')).toBeDefined();
     } finally {
       (await result.value.retire()).unwrap();
@@ -811,6 +820,144 @@ describe('subsurface receiver-channel attachment admission', () => {
 });
 
 describe('forgeax::standard graph', () => {
+  it.each([
+    false,
+    true,
+  ])('declares the fixed 24-byte A-D record with extra channels=%s', async (channels) => {
+    const result = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        compactGbuffer: 'standard-gbuffer/4',
+        ...(channels ? { compactReceiver: 'channels' } : {}),
+        camera: { antialias: 'fxaa' },
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: channels ? 6 : 5,
+          maxColorAttachmentBytesPerSample: channels ? 28 : 24,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const info = graph.inspect();
+      const writes = info.passes
+        .find((pass) => pass.name === 'g-buffer')
+        ?.accesses.filter((access) => access.usage === 'color-attachment');
+      expect(writes?.map(({ resource }) => resource)).toEqual([
+        'hdrp-scene-color',
+        'gbuffer-a',
+        'gbuffer-b',
+        'gbuffer-c',
+        'gbuffer-d',
+        ...(channels ? ['deferred-lighting-channels'] : []),
+      ]);
+      expect(info.resources.some(({ label }) => label === 'gbuffer-receiver-geometry')).toBe(false);
+      const colors = info.resources.filter(({ label }) =>
+        writes?.some(({ resource }) => resource === label),
+      );
+      expect(
+        colors.filter((entry) => 'format' in entry && entry.format === 'r32uint'),
+      ).toHaveLength(channels ? 5 : 4);
+      expect(
+        colors.filter((entry) => 'format' in entry && entry.format === 'rgba16float'),
+      ).toHaveLength(1);
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
+  it('adds a shared receiver target for local probes and lighting channels outside A-D', async () => {
+    const result = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        compactGbuffer: 'standard-gbuffer/4',
+        compactReceiver: 'context',
+        reflectionFallback: { enabled: true, localProbes: true },
+        camera: { antialias: 'fxaa' },
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: 6,
+          maxColorAttachmentBytesPerSample: 32,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const info = graph.inspect();
+      expect(info.passes.find(({ name }) => name === 'g-buffer')?.accesses).toContainEqual({
+        resource: 'deferred-surface-context',
+        usage: 'color-attachment',
+      });
+      expect(info.passes.find(({ name }) => name === 'lighting')?.accesses).toContainEqual({
+        resource: 'deferred-surface-context',
+        usage: 'sampled-read',
+      });
+      expect(info.resources).toContainEqual(
+        expect.objectContaining({ label: 'deferred-surface-context', format: 'rg32uint' }),
+      );
+      expect(info.resources.some(({ label }) => label === 'deferred-lighting-channels')).toBe(
+        false,
+      );
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
+  it('writes Default GBuffer velocity during the depth prepass even when MRT capacity is available', async () => {
+    const result = await buildTaa(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        camera: { antialias: 'taa', bloom: 'off' },
+        compactGbuffer: 'standard-gbuffer/4',
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: 8,
+          maxColorAttachmentBytesPerSample: 56,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const { passes } = graph.inspect();
+      const depth = passes.find((pass) => pass.name === 'standard-depth-prepass');
+      const velocity = passes.find((pass) => pass.name === 'standard-depth-velocity');
+      const base = passes.find((pass) => pass.name === 'g-buffer');
+      expect(depth?.accesses.filter(({ usage }) => usage === 'color-attachment')).toEqual([]);
+      expect(velocity?.accesses).toContainEqual({
+        resource: 'scene-velocity',
+        usage: 'color-attachment',
+      });
+      expect(velocity?.accesses).toContainEqual({
+        resource: 'hdrp-depth',
+        usage: 'depth-stencil-write',
+      });
+      expect(velocity?.executionIndex).toBeGreaterThan(depth?.executionIndex ?? Infinity);
+      expect(base?.executionIndex).toBeGreaterThan(velocity?.executionIndex ?? Infinity);
+      expect(base?.accesses.filter(({ usage }) => usage === 'color-attachment')).toHaveLength(5);
+      expect(passes.some((pass) => pass.name === 'standard-scene-data')).toBe(false);
+      const resolve = passes.find((pass) => pass.name === 'taa-resolve');
+      expect(resolve?.accesses).toContainEqual({
+        resource: 'scene-velocity',
+        usage: 'sampled-read',
+      });
+      expect(passes.some((pass) => pass.name === 'standard-velocity-reconstruction')).toBe(false);
+      expect(graph.inspect().resources).toContainEqual(
+        expect.objectContaining({
+          label: 'scene-velocity',
+          format: 'r32uint',
+        }),
+      );
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
   it.each([
     [6, 36, false],
     [7, 36, false],
@@ -1781,7 +1928,7 @@ describe('forgeax::standard graph', () => {
         {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'forward',
-          ssao: ao,
+          ambientOcclusion: { enabled: ao },
           outputContract: 'standard-output-v2',
         },
         {
@@ -1789,7 +1936,7 @@ describe('forgeax::standard graph', () => {
           unfoggedOpaque: true,
           config: {
             outputContract: 'standard-output-v2',
-            ssao: { enabled: ao, algorithm: 'spiral-ssao', application: 'scene-color' },
+            ambientOcclusion: { enabled: ao, method: 'spiral-ssao', application: 'scene-color' },
           },
           camera: { antialias: 'msaa-fxaa', bloom: 'off' },
           lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -1948,7 +2095,11 @@ describe('forgeax::standard graph', () => {
   });
 
   it('publishes the independent raw-depth producer before both Surface passes', async () => {
-    for (const renderPath of ['forward', 'deferred'] as const) {
+    for (const [renderPath, compact] of [
+      ['forward', false],
+      ['deferred', false],
+      ['deferred', true],
+    ] as const) {
       const result = await build(
         { ...DEFAULT_STANDARD_PROFILE, renderPath },
         {
@@ -1959,6 +2110,7 @@ describe('forgeax::standard graph', () => {
             viewFormat: 'bgra8unorm-srgb',
           },
           singleLayerMedium: true,
+          ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
         },
       );
       expect(result.ok).toBe(true);
@@ -2172,7 +2324,7 @@ it.each([
   true,
 ])('places ordinary MSAA sky/opaque/transparent in one physical scene pass with AO=%s', async (ao) => {
   const result = await build(
-    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: ao },
+    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ambientOcclusion: { enabled: ao } },
     {
       camera: { antialias: 'msaa-fxaa', bloom: 'off' },
       lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -2194,7 +2346,7 @@ it.each([
 
 it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%s', async (ao) => {
   const result = await build(
-    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: ao },
+    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ambientOcclusion: { enabled: ao } },
     {
       camera: { antialias: 'msaa-fxaa', bloom: 'off' },
       lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -2236,7 +2388,12 @@ it.each([
   const profile: StandardProfile = {
     ...DEFAULT_STANDARD_PROFILE,
     renderPath,
-    ssao: { algorithm: 'spiral-ssao', application: 'scene-color', resolutionScale: 0.5 },
+    ambientOcclusion: {
+      enabled: true,
+      method: 'spiral-ssao',
+      application: 'scene-color',
+      resolutionScale: 0.5,
+    },
   };
   const result = await build(profile);
   expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);

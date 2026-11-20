@@ -22,8 +22,8 @@ import {
 } from '@forgeax/engine-render';
 import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring';
 import {
+  adoptWorkerPublicationMaterials,
   fullscreenRenderFeatureDeclaration,
-  ownReceivedPublicationMaterials,
   renderGraphCompileCount,
   retainPublishedLevelAsset,
 } from '@forgeax/engine-render/internal';
@@ -780,7 +780,7 @@ async function receiveDispose(): Promise<void> {
 }
 
 async function receiveMeshControl(
-  message: Extract<RenderWorkerInput, { kind: 'mesh-prepare' | 'mesh-release' }>,
+  message: Extract<RenderWorkerInput, { kind: 'mesh-reserve' | 'mesh-prepare' | 'mesh-release' }>,
 ): Promise<void> {
   // Capture at receipt, before initialization or any later draw can advance the cut.
   const through = drawControls.cut;
@@ -829,7 +829,11 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     return;
   }
   if (message.kind === 'dispose') return receiveDispose();
-  if (message.kind === 'mesh-prepare' || message.kind === 'mesh-release') {
+  if (
+    message.kind === 'mesh-reserve' ||
+    message.kind === 'mesh-prepare' ||
+    message.kind === 'mesh-release'
+  ) {
     return receiveMeshControl(message);
   }
   if (message.kind === 'inspect') {
@@ -844,6 +848,10 @@ async function receive(message: RenderWorkerInput): Promise<void> {
     return;
   }
   if (message.kind === 'draw') return receiveDraw(message);
+  return receiveActiveOperation(message);
+}
+
+async function receiveActiveOperation(message: RenderWorkerInput): Promise<void> {
   try {
     switch (message.kind) {
       case 'terrain-height':
@@ -1373,7 +1381,7 @@ function publishedFrameInput(
   onPublicationAccepted: PublishedRenderFrameInput['onPublicationAccepted'],
 ): PublishedRenderFrameInput {
   return {
-    publication: ownReceivedPublicationMaterials(message.publication),
+    publication: adoptWorkerPublicationMaterials(message.publication),
     ...(observeGeometry
       ? {
           geometryObservation: true as const,

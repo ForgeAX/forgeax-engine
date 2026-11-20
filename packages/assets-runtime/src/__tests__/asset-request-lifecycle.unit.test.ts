@@ -214,6 +214,82 @@ it('rejects a pending stale dependency without invalidating its parents', async 
 });
 
 describe('asset dependency closure promotion', () => {
+  it('keeps a shared decoded dependency until both root adoptions settle', async () => {
+    const graph = new AssetGraph({
+      read: async (guid) => value(1, guid === 'mesh' ? [] : ['mesh']),
+    });
+    const decoded = (await graph.load('mesh')).unwrap();
+    const roots = ['first', 'second'].map((root) => {
+      const adopting = deferred<void>();
+      const finish = deferred<void>();
+      const load = graph.withDecodedClosure(root, async () => {
+        const result = await graph.load(root);
+        adopting.resolve();
+        await finish.promise;
+        return result;
+      });
+      return { adopting, finish, load };
+    });
+    try {
+      await Promise.all(roots.map(({ adopting }) => adopting.promise));
+      graph.discardReady('mesh', decoded);
+      for (const root of roots) {
+        expect(graph.entry('mesh')).toBe(decoded);
+        root.finish.resolve();
+        expect((await root.load).ok).toBe(true);
+      }
+      expect(graph.entry('mesh')).toBeUndefined();
+    } finally {
+      for (const root of roots) root.finish.resolve();
+      await Promise.all(roots.map(({ load }) => load));
+      graph.dispose();
+    }
+  });
+
+  it.each([
+    'same version',
+    'replacement',
+  ] as const)('settles a pending decoded eviction after adoption of the %s', async (scenario) => {
+    const readingTail = deferred<void>();
+    const tail = deferred<Result<Value, AssetLoadError>>();
+    const adopting = deferred<void>();
+    const finishAdoption = deferred<void>();
+    const graph = new AssetGraph({
+      read: async (guid) => {
+        if (guid === 'root') return value(1, ['mesh', 'tail']);
+        if (guid === 'tail') {
+          readingTail.resolve();
+          return tail.promise;
+        }
+        return value();
+      },
+    });
+    const decoded = (await graph.load('mesh')).unwrap();
+    const load = graph.withDecodedClosure('root', async () => {
+      const result = await graph.load('root');
+      adopting.resolve();
+      await finishAdoption.promise;
+      return result;
+    });
+    try {
+      await readingTail.promise;
+      graph.discardReady('mesh', decoded);
+      expect(graph.entry('mesh')).toBe(decoded);
+      tail.resolve(value());
+      await adopting.promise;
+      expect(graph.entry('mesh')).toBe(decoded);
+      if (scenario === 'replacement') graph.prepare(new Map([['mesh', value(2).unwrap()]]));
+      finishAdoption.resolve();
+      expect((await load).ok).toBe(true);
+      expect(graph.entry('mesh')?.value.revision).toBe(scenario === 'replacement' ? 2 : undefined);
+    } finally {
+      tail.resolve(value());
+      finishAdoption.resolve();
+      await load;
+      graph.dispose();
+    }
+  });
+
   it('reads shared and cyclic edges once and reloads only the changed dependency', async () => {
     const refs: Record<string, string[]> = {
       root: ['a', 'a', 'self', 'shared'],

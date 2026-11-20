@@ -98,6 +98,7 @@ async function fixture(options: { readonly clustered?: boolean } = {}) {
     : null;
   addStandardDeferredLighting(graph, {
     color: surface,
+    localProbes: true,
     gbuffer: [surface, surface, surface, surface],
     receiverGeometry: receiver,
     depth: surface.view,
@@ -229,18 +230,20 @@ it('retains the attachment pass but creates no lighting pipeline for a proven em
 
 it('switches fit → mixed LUT → fit without changing the fitted layout or reallocating the shared table', async () => {
   const { device, frame, context, encode, createGroup, dispose } = await fixture();
-  const mutable = frame as unknown as {
-    runtime: { deviceScope: DeviceScope };
-    validatedOrdered: {
-      source: { materials: MaterialResource[] };
-    }[];
+  // Recording constructs a fresh immutable context for each frame.
+  const draw = (validatedOrdered: { source: { materials: MaterialResource[] } }[]) => {
+    encode?.(
+      context.pass,
+      { ...context.frame, validatedOrdered } as unknown as RenderPipelineFrame,
+      context.resources,
+    );
   };
   const upload = vi.spyOn(device.queue, 'writeTexture');
   const makePipeline = vi.spyOn(device, 'createRenderPipeline');
-  encode?.(context.pass, context.frame, context.resources);
+  draw([]);
   expect(upload).not.toHaveBeenCalled();
   const fitPipeline = vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
-  mutable.validatedOrdered = [
+  draw([
     {
       source: {
         materials: [
@@ -261,8 +264,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
         ],
       },
     },
-  ];
-  encode?.(context.pass, context.frame, context.resources);
+  ]);
   const lutPipeline = vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
   expect(lutPipeline).not.toBe(fitPipeline);
   expect(upload).toHaveBeenCalledTimes(1);
@@ -275,11 +277,10 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
     (entry) => entry.binding === 16,
   )?.resource;
   expect(lutView).toMatchObject({ kind: 'textureView' });
-  mutable.validatedOrdered = [];
-  encode?.(context.pass, context.frame, context.resources);
+  draw([]);
   expect(vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0]).toBe(fitPipeline);
   expect(makePipeline).toHaveBeenCalledTimes(2);
-  mutable.validatedOrdered = [
+  const lutDraws = [
     {
       source: {
         materials: [
@@ -303,13 +304,13 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
       intensityBuffer: alternateIntensity,
     },
   } as never);
-  encode?.(context.pass, context.frame, context.resources);
+  draw(lutDraws);
   expect(upload).toHaveBeenCalledTimes(1);
   expect(lutGroups()).toHaveLength(2);
   expect(
     Array.from(lutGroups()[1]?.[0].entries ?? []).find((entry) => entry.binding === 16)?.resource,
   ).toEqual(lutView);
-  mutable.runtime.deviceScope.dispose();
+  (frame as unknown as { runtime: { deviceScope: DeviceScope } }).runtime.deviceScope.dispose();
   device.destroyBuffer(alternateIntensity).unwrap();
   dispose();
 });

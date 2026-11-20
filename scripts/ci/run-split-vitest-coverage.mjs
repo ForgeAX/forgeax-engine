@@ -40,6 +40,13 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '../..');
 const defaultGroupSize = 4;
 const defaultMaxWorkers = 1;
+const scriptablePublicationLabel =
+  '@forgeax/engine-pack:packages/pack/src/__tests__/material-surface-publication.unit.test.ts';
+const materialCompilerFiles = [
+  'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+  'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+];
+const materialCompilerLabel = `@forgeax/engine-shader-compiler:${materialCompilerFiles.join(',')}`;
 const maxGroupConcurrency = 3;
 const maxChildOutputBytes = 64 * 1024 * 1024;
 const completedCoverageAssignmentCache = new Map();
@@ -340,8 +347,7 @@ const isolatedCoverageFileSets = [
     // Render coverage. Keep both complete files and their original deadlines.
     project: '@forgeax/engine-shader-compiler',
     files: [
-      'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
-      'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+      ...materialCompilerFiles,
       'packages/shader-compiler/src/material/__tests__/standard-material-cook.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/vertex-color-publication.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/visible-surface-cook.integration.test.ts',
@@ -363,8 +369,7 @@ const isolatedCoverageFileSets = [
       // Run 44509497362 crossed the frozen Toon cook's 5 s limit in the shared lane.
       'packages/shader-compiler/src/material/__tests__/weapon-spirit-material.integration.test.ts',
     ],
-    receiptLabel:
-      'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts,packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
+    receiptLabel: materialCompilerFiles.join(','),
     weight: 40,
     // Run 44024988647 crossed the added files' unchanged 30-second cold
     // cooking bounds. Keep the original receipt and reserve the full owner.
@@ -521,8 +526,7 @@ const isolatedCoverageFileSets = [
     batch: 'scriptable-publications',
     // Preserve this complete child's historical identity. The added cases
     // remain charged to their original broad receipts and add a reservation.
-    batchReceiptLabel:
-      '@forgeax/engine-pack:packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
+    batchReceiptLabel: scriptablePublicationLabel,
     weight: 20,
   },
   {
@@ -2248,6 +2252,21 @@ export function coverageGroupMaxWorkers(group, options, resources, groupConcurre
   return Math.max(1, Math.min(requested, cpuBudget, memoryBudget));
 }
 
+function coverageSourceCompilerBudget(group, resources, requested) {
+  if (group.label === scriptablePublicationLabel || group.label === materialCompilerLabel) {
+    // Serial material owners can spend the ordinary test heap's spare capacity
+    // on program workers. Four slots inside the first material need seven total.
+    const heapMiB = 4096;
+    const remaining = {
+      ...resources,
+      memoryBytes: Math.max(0, resources.memoryBytes - heapMiB * 1024 ** 2),
+    };
+    return { heapMiB, workers: Math.min(7, shaderCompileWorkers(remaining, requested)) };
+  }
+  const heapMiB = shaderProducerHeapSize(resources);
+  return { heapMiB, workers: shaderSourceCompileWorkers(resources, requested, heapMiB) };
+}
+
 /** Cold source owners keep one file worker and admit their compiler pool within capacity. */
 export function coverageGroupEnvironment(
   group,
@@ -2261,16 +2280,14 @@ export function coverageGroupEnvironment(
     return { ...childEnvironment, FORGEAX_SHADER_COMPILE_WORKERS: String(shaderWorkers) };
   if (!isExclusiveCoverageGroup(group))
     throw new Error('Source compilation requires an exclusive coverage owner');
+  const { heapMiB, workers } = coverageSourceCompilerBudget(group, resources, shaderWorkers);
   return {
     ...childEnvironment,
     FORGEAX_SHADER_COMPILE_DIAGNOSTICS: '1',
-    NODE_OPTIONS: [
-      environment.NODE_OPTIONS,
-      `--max-old-space-size=${shaderProducerHeapSize(resources)}`,
-    ]
+    NODE_OPTIONS: [environment.NODE_OPTIONS, `--max-old-space-size=${heapMiB}`]
       .filter(Boolean)
       .join(' '),
-    FORGEAX_SHADER_COMPILE_WORKERS: String(shaderSourceCompileWorkers(resources, shaderWorkers)),
+    FORGEAX_SHADER_COMPILE_WORKERS: String(workers),
   };
 }
 
@@ -2731,7 +2748,11 @@ async function main(options) {
         }
         const maxWorkers = coverageGroupMaxWorkers(group, options, resources, groupConcurrency);
         const shaderWorkers = group.sourceCompilation
-          ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+          ? coverageSourceCompilerBudget(
+              group,
+              resources,
+              process.env.FORGEAX_SHADER_COMPILE_WORKERS,
+            ).workers
           : shaderCompileWorkers(
               resources,
               process.env.FORGEAX_SHADER_COMPILE_WORKERS,

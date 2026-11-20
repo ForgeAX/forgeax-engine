@@ -13,6 +13,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { runProfiledRenderPhase, runRecordProfilePhase } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
 import { gpuDrivenPipelineLane } from '../record/view-pipeline-demand';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { RenderGpuDrivenPrepareOrder, RenderSsrAdmissionOrder } from '../system-order';
 import type { GpuDrivenRasterLane } from './gpu-driven-raster-systems';
@@ -321,7 +322,7 @@ export function consumeRecordingGpuDriven(
   const consumed = consumeViewGpuDriven(internals, gpuDriven, (reason) =>
     frameState.surfaceSubmissionObservation?.setActualLaneReason(reason),
   );
-  if (consumed.rejected) return undefined;
+  if (consumed.rejected) return { kind: 'rejected' as const };
   const preparation = consumed.preparation;
   if (
     internals.viewEntity !== undefined &&
@@ -332,7 +333,11 @@ export function consumeRecordingGpuDriven(
   const input =
     preparation?.input ??
     buildFrameGpuDrivenInput(sources, consumed.input, consumed.frame, standard, pipeline);
-  return { ...consumed, gpuInput: input, prepared: preparation?.prepared };
+  if (input.sourcePreparationPending === true) {
+    markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
+    return { kind: 'pending' as const };
+  }
+  return { kind: 'ready' as const, ...consumed, gpuInput: input, prepared: preparation?.prepared };
 }
 
 /**

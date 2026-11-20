@@ -126,7 +126,7 @@ export async function verifyUnlitAo(
       const configured = renderer.setProfile({
         ...renderer.inspect().profile,
         renderPath: 'forward',
-        ssao: { algorithm },
+        ambientOcclusion: { enabled: true, method: algorithm },
       });
       if (!configured.ok) throw configured.error;
       for (const geometryLane of ['automatic', 'direct'] as const) {

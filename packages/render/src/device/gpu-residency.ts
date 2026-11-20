@@ -1173,6 +1173,24 @@ export class GpuResidencyCache {
     return lifetime;
   }
 
+  /** Logical vertex/index capacity. Shared physical buffers count once. */
+  inspectMeshBufferBytes() {
+    const counted = new Set<GpuBuffer>();
+    const count = (buffer: GpuBuffer | null, bytes: number) => {
+      if (buffer === null || buffer.isDestroyed || counted.has(buffer)) return 0;
+      counted.add(buffer);
+      return bytes;
+    };
+    const meshBytes = (entry: MeshGpuHandles) =>
+      count(entry.vertexBuffer, entry.vboBytes) + count(entry.indexBuffer, entry.iboBytes);
+    let activeBytes = 0;
+    let retiringBytes = 0;
+    for (const entry of this.meshGpuHandles.values()) activeBytes += meshBytes(entry);
+    for (const entry of this.pendingGeneratedRetirement.values()) retiringBytes += meshBytes(entry);
+    for (const entry of this.retiredMeshes) retiringBytes += meshBytes(entry);
+    return { activeBytes, retiringBytes };
+  }
+
   /** Unchanged frames record queue work once; mesh retirement captures its pending fences. */
   trackMeshSubmission(completed: Promise<unknown>): void {
     const submissions = this.meshSubmissions;

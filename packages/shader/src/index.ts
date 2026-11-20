@@ -121,6 +121,7 @@ export {
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderByteEntry,
   type MaterialShaderEntry,
+  type MaterialShaderSourceEntry,
   type MaterialShaderVariantReference,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,
@@ -335,16 +336,23 @@ export {
   type ShaderProgramTemplate,
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
+  shaderCompilerProfilesEqual,
 } from './program-template.js';
 export {
   admitShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materialShaderPreparedSourceRows,
+  prepareMaterialShaderTemplateVariant,
   SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
   type ShaderTemplateManifest,
   shaderTemplateVariantEntry,
 } from './program-template-manifest.js';
+export {
+  MOTION_BLUR_SCENE_VELOCITY_WGSL,
+  SCENE_VELOCITY_RECONSTRUCTION_WGSL,
+  TAA_SCENE_VELOCITY_WGSL,
+} from './scene-velocity-source';
 export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
 export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
@@ -353,11 +361,15 @@ export {
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
 /** Renderer-owned TSR analysis and reconstruction programs. */
 export {
+  TSR_ANALYZE_FRAGMENT_VELOCITY_WGSL,
   TSR_ANALYZE_FRAGMENT_WGSL,
+  TSR_ANALYZE_VELOCITY_WGSL,
   TSR_ANALYZE_WGSL,
   TSR_OPAQUE_FRAGMENT_WGSL,
   TSR_OPAQUE_WGSL,
+  TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';
 export { materialShaderAxes } from './types.js';

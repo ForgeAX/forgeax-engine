@@ -144,8 +144,7 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
   if (adapter.features.has('timestamp-query')) {
     requiredFeatures.push('timestamp-query');
   }
-  // SSS can be enabled after construction. Admit precise HDR sampling/blending
-  // and bounded workgroup scratch without allocating any effect resources.
+  // Transmission and cloud reconstruction can consume float32 HDR after construction.
   for (const feature of ['float32-filterable', 'float32-blendable'] as const) {
     if (adapter.features.has(feature)) requiredFeatures.push(feature);
   }
@@ -164,8 +163,6 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
   // and temporal/visible-surface metadata, only when the adapter
   // supports it; graph admission keeps the independent raster otherwise.
   const colorAttachmentBytes = adapter.limits?.maxColorAttachmentBytesPerSample ?? 0;
-  const workgroupStorage =
-    (adapter.limits?.maxComputeWorkgroupStorageSize ?? 0) >= 32768 ? 32768 : undefined;
   // GPU Scene tables and GPU-driven view streams scale with resident objects
   // and are each bound whole; admit the adapter's real buffer ceilings so the
   // capacity owners derive their bounds from it rather than the spec default.
@@ -215,7 +212,6 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
     requiredFeatures: GPUFeatureName[],
     requiredSampledTextureLimit: number | undefined,
     requiredColorAttachmentBytes: number | undefined,
-    workgroupStorage: number | undefined,
     maxBufferSize: number | undefined,
     maxStorageBufferBindingSize: number | undefined,
     maxStorageBuffersPerShaderStage: number | undefined,
@@ -224,7 +220,6 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
       requiredFeatures,
       ...(requiredSampledTextureLimit === undefined &&
       requiredColorAttachmentBytes === undefined &&
-      workgroupStorage === undefined &&
       maxBufferSize === undefined &&
       maxStorageBufferBindingSize === undefined &&
       maxStorageBuffersPerShaderStage === undefined
@@ -237,9 +232,6 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
               ...(requiredColorAttachmentBytes === undefined
                 ? {}
                 : { maxColorAttachmentBytesPerSample: requiredColorAttachmentBytes }),
-              ...(workgroupStorage === undefined
-                ? {}
-                : { maxComputeWorkgroupStorageSize: workgroupStorage }),
               ...(maxBufferSize === undefined ? {} : { maxBufferSize }),
               ...(maxStorageBufferBindingSize === undefined ? {} : { maxStorageBufferBindingSize }),
               ...(maxStorageBuffersPerShaderStage === undefined
@@ -253,7 +245,6 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
     requiredFeatures,
     requiredSampledTextureLimit,
     requiredColorAttachmentBytes,
-    workgroupStorage,
     maxBufferSize,
     maxStorageBufferBindingSize,
     maxStorageBuffersPerShaderStage,

@@ -301,7 +301,11 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
     propagateTransforms(world).unwrap();
     if (scene.temporal === true) {
       const profile = renderer.inspect().profile;
-      const set = renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false });
+      const set = renderer.setProfile({
+        ...profile,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: false },
+      });
       if (!set.ok) throw set.error;
     }
     let capture: ReturnType<RecorderAttachment['captureFrame']> | undefined;

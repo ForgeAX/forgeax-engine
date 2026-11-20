@@ -186,6 +186,65 @@ it('runs the full SSR graph for 60 completed frames with compute and raster trac
   expect(Math.max(...errors)).toBeLessThan(0.02);
 });
 
+it.each([
+  'compute',
+  'fragment',
+] as const)('preserves compact Deferred SSR trace, surface history and composition in %s', async (execution) => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const device = (
+    await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
+  ).unwrap();
+  const shaders = {
+    ...ssrSources,
+    gbuffer: 'standard-gbuffer/2',
+    compactGbuffer: 'standard-gbuffer/4',
+  } as const;
+  const full = await runSsrGpuDispatch(device, shaders, 3, {
+    execution,
+    gbuffer: 'full',
+    coordinateSource: true,
+  });
+  const compact = await runSsrGpuDispatch(device, shaders, 3, {
+    execution,
+    gbuffer: 'compact',
+    coordinateSource: true,
+  });
+  expect(compact.resourceNames).toContain('gbuffer-b');
+  expect(compact.tracePixels).toEqual(full.tracePixels);
+  expect(compact.surfacePixels).toEqual(full.surfacePixels);
+  expect(compact.composedPixels).toEqual(full.composedPixels);
+  const trace = compact.tracePixels.at(-1) ?? [];
+  expect(trace.filter((value, index) => index % 4 === 3 && value >= 0x3400).length).toBeGreaterThan(
+    20,
+  );
+});
+
+it('traces Water SSR with independent receiver inputs and switches to previous hit color', async () => {
+  const adapter = (await rhi.requestAdapter()).unwrap();
+  const device = (
+    await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
+  ).unwrap();
+  const current = await runSsrGpuDispatch(device, ssrSources, 1, {
+    waterTrace: 'current',
+    coordinateSource: true,
+  });
+  const history = await runSsrGpuDispatch(device, ssrSources, 1, {
+    waterTrace: 'history',
+    coordinateSource: true,
+  });
+  const currentTrace = current.tracePixels[0] ?? [];
+  const historyTrace = history.tracePixels[0] ?? [];
+  let coloredHits = 0;
+  for (let index = 0; index < currentTrace.length; index += 4) {
+    if ((currentTrace[index + 3] ?? 0) === 0) continue;
+    expect(historyTrace[index + 3]).toBe(currentTrace[index + 3]);
+    expect(historyTrace[index]).toBe(historyTrace[index + 1]);
+    expect(historyTrace[index]).toBe(historyTrace[index + 2]);
+    if (currentTrace[index] !== currentTrace[index + 1]) coloredHits++;
+  }
+  expect(coloredHits).toBeGreaterThan(20);
+});
+
 // Freeze the f32 log2 boundary policy before executing the cases: all weight
 // stays in the mathematical bin or its immediately lower neighbour. Non-edge
 // fixtures above retain exact 256-bin equality across execution plans.

@@ -234,11 +234,27 @@ const ARRAY_TYPES = [
 
 /** Logical owned bytes, including scalar storage and keys; VM overhead is measured separately.
  * Validate descriptors before capture, without invoking getters or copying any binary data.
- * Repeated references are independent value occurrences, just as in copyAssetData.
- * A record owner may also collect a plain object's root field sizes in the same traversal.
+ * Copied views charge each slice. An owned transfer charges each whole backing once.
+ * Repeated plain references are independent value occurrences, just as in copyAssetData.
+ * A record owner may collect a plain object's root field sizes in the same traversal.
  */
-export function assetDataBytes(value: unknown, rootFields?: Map<string, number>): number {
+export function assetDataBytes(
+  value: unknown,
+  rootFields?: Map<string, number>,
+  binaryStorage?: 'copy' | 'receive',
+): number {
   const active = new Set<object>();
+  const received = binaryStorage === 'receive' ? new Set<ArrayBuffer>() : undefined;
+  const binaryBytes = (buffer: ArrayBufferLike, viewBytes = buffer.byteLength): number => {
+    if (!(buffer instanceof ArrayBuffer)) {
+      if (binaryStorage === 'copy') return viewBytes;
+      throw new TypeError('asset content requires private binary storage');
+    }
+    if (received === undefined) return viewBytes;
+    if (received.has(buffer)) return 0;
+    received.add(buffer);
+    return buffer.byteLength;
+  };
   const measure = (entry: unknown, fields?: Map<string, number>): number => {
     if (typeof entry === 'string') return entry.length * 2;
     if (typeof entry === 'number' || typeof entry === 'bigint') return 8;
@@ -251,11 +267,9 @@ export function assetDataBytes(value: unknown, rootFields?: Map<string, number>)
     if (ArrayBuffer.isView(entry)) {
       if (!ARRAY_TYPES.some((candidate) => Object.getPrototypeOf(entry) === candidate.prototype))
         throw new TypeError('unsupported asset binary view');
-      if (!(entry.buffer instanceof ArrayBuffer))
-        throw new TypeError('asset content requires private binary storage');
-      return entry.byteLength;
+      return binaryBytes(entry.buffer, entry.byteLength);
     }
-    if (entry instanceof ArrayBuffer) return entry.byteLength;
+    if (entry instanceof ArrayBuffer) return binaryBytes(entry);
     const array = Array.isArray(entry);
     const prototype = Object.getPrototypeOf(entry);
     if (!array && prototype !== Object.prototype && prototype !== null)

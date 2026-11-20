@@ -1433,7 +1433,7 @@ class SurfaceProfileMatrix {
       renderer.setProfile({
         ...originalProfile,
         renderPath: combination.renderPath,
-        ssao: combination.ssao,
+        ambientOcclusion: { enabled: combination.ssao },
       }),
     );
     world

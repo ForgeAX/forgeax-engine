@@ -33,7 +33,7 @@ export function addSsaoSceneColorPass(
   input: SceneColorAo,
   previousExposure?: GraphBuffer,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  const spiral = topology.config?.ssao?.algorithm === 'spiral-ssao';
+  const spiral = topology.config?.ambientOcclusion?.method === 'spiral-ssao';
   const multisampledDepth = input.depth.sampleCount > 1;
   if (
     (spiral && (input.linearDepth === undefined || input.parameters === undefined)) ||
@@ -180,7 +180,7 @@ export function addSsaoParameters(
         .writeBuffer(
           resources.buffer(parameters.value).unwrap(),
           0,
-          buildSsaoUniformPayload(c.camera, c.frameState.installedPipelineConfig?.ssao),
+          buildSsaoUniformPayload(c.camera, c.frameState.installedPipelineConfig?.ambientOcclusion),
         )
         .unwrap();
     },

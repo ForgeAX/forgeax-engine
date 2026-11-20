@@ -15,6 +15,7 @@ export const GPU_SCENE_PRIMITIVE_FLAGS = Object.freeze({
   noShadowReceive: 32,
   sharedGeometry: 64,
   capsuleShadow: 128,
+  noShadowCast: 256,
 });
 
 const TRANSFORM = GPU_SCENE_LAYOUTS.transform;
@@ -54,6 +55,7 @@ export function encodeScenePrimitive(
       (source.gpuDrivenDraws === undefined ? 0 : flags.gpuDriven) |
       (source.capsuleShadowRequested === true ? flags.capsuleShadow : 0) |
       (source.shadowReceiver === false ? flags.noShadowReceive : 0) |
+      (source.shadowCaster === false ? flags.noShadowCast : 0) |
       temporalFlags,
     true,
   );

@@ -16,16 +16,31 @@ const device = (storageBuffer = true, attachments = 8, bytes = 64) =>
   }) as Pick<RhiDevice, 'caps' | 'limits'>;
 
 describe('device-owned automatic Standard path', () => {
-  it('admits the native AO parameter vocabulary through the public profile boundary', () => {
-    const ssao = getSsaoParameters({ algorithm: 'spiral-ssao', application: 'scene-color' });
-    expect(validateRenderProfile({ ...profile, ssao })).toBeUndefined();
+  it('admits the Default GBuffer format through the explicit Deferred profile', () => {
+    const deferred = { ...profile, renderPath: 'deferred' } as const;
+    expect(validateRenderProfile({ ...deferred, gbufferFormat: 'default' })).toBeUndefined();
     expect(
-      validateRenderProfile({ ...profile, ssao: { ...ssao, resolutionScale: 0.1 } }),
+      validateRenderProfile({ ...profile, renderPath: 'forward', gbufferFormat: 'default' }),
+    ).toContain('gbufferFormat');
+    expect(
+      validateRenderProfile({ ...deferred, gbufferFormat: 'unknown' } as unknown as RenderProfile),
+    ).toContain('gbufferFormat');
+  });
+  it('admits the native AO parameter vocabulary through the public profile boundary', () => {
+    const ssao = getSsaoParameters({ method: 'spiral-ssao', application: 'scene-color' });
+    expect(
+      validateRenderProfile({ ...profile, ambientOcclusion: { enabled: true, ...ssao } }),
+    ).toBeUndefined();
+    expect(
+      validateRenderProfile({
+        ...profile,
+        ambientOcclusion: { enabled: true, ...ssao, resolutionScale: 0.1 },
+      }),
     ).toBeDefined();
     expect(
       validateRenderProfile({
         ...profile,
-        ssao: { ...ssao, misspelledRadius: 1 },
+        ambientOcclusion: { enabled: true, ...ssao, misspelledRadius: 1 },
       } as unknown as RenderProfile),
     ).toContain('unsupported parameter');
   });

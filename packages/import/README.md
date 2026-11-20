@@ -269,6 +269,15 @@ identities needed to prepare new code; it does not expose transport URLs.
 | `generate` / `withdraw` | Produce a complete parameter-instance output set, or withdraw its publication. GUIDs derive from instance packageId and sourceKey; consumer handles remain independently owned. |
 | `snapshot` / `exportSource` / `restore` | Preserve original definitions, accepted instance inputs and reachable fixed dependency recipes. Restore re-admits into the current scope; it does not install plugins. |
 
+Set `runtime: { dependencies, execution: 'task-worker' }` on a generator whose
+build can run in a separate realm. App's Engine Worker supplies its existing
+Task Worker pool. The task receives the generator's verified module and fixed
+dependency data. A build can check `context.task?.aborted` and await
+`context.task?.yield()` in its long loops. A host without a working Task Worker
+reports execution failure and leaves the prior publication available. Generators
+without an execution declaration run in the producer's realm. A Worker declaration
+describes execution placement. Exact replay still depends on the program and inputs.
+
 Durable metadata is plain lossless JSON; binary leaves use owned Uint8/16/32 or
 Float32 views. Pack's `copyPackData` rejects accessors, functions, sparse arrays,
 subclasses and shared mutable storage without executing caller hooks. It preserves
@@ -280,6 +289,8 @@ JSON paths identify typed views, and Base64 encodes each shared backing once.
 Recovery checks kinds, alignment, ranges and complete table usage before replaying
 the fixed dependency graph. Version 1 snapshots are rejected explicitly. Original
 source and fixed recipes remain durable; cache entries remain disposable.
+Snapshots of generated instances retain the accepted output identities in the
+recipe roots. Restore compares the complete replayed output set before admission.
 
 `admit` and `generate` return `RuntimePackPublicationReceipt`: identity, status,
 publication evidence and Catalog rows. They do not copy the full source or mesh

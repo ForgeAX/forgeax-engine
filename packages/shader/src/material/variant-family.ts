@@ -4,7 +4,11 @@ import type {
   ShaderEntryPointReads,
   ShaderSource,
 } from '@forgeax/engine-types';
-import { bindManifestShaderSource } from '../manifest-publication.js';
+import {
+  bindManifestShaderSource,
+  manifestShaderSourcePrepared,
+  materialShaderSource,
+} from '../manifest-publication.js';
 import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from '../types.js';
 
 /** References to already cooked programs, never another source or compiler recipe. */
@@ -63,6 +67,7 @@ export function ownMaterialVariantReferences(
 export interface MaterialVariantSource {
   readonly forwardFog?: 'height-vertex/1';
   readonly read: () => ShaderSource;
+  readonly prepared?: () => boolean;
   readonly paramSchema: readonly ParamSchemaEntry[];
   readonly receipt?: MaterialProgramAbi;
   readonly entryPoints?: readonly ShaderEntryPointReads[];
@@ -153,7 +158,7 @@ export function materialVariantFamily(
       ...(program.receipt === undefined ? {} : { receipt: program.receipt }),
       ...(program.entryPoints === undefined ? {} : { entryPoints: program.entryPoints }),
     };
-    bindManifestShaderSource(row, program.read);
+    bindManifestShaderSource(row, program.read, program.prepared);
     return Object.freeze(row);
   });
   const primary = variants.find((row) => row.definesKey === '') ?? variants[0];
@@ -167,5 +172,10 @@ export function materialVariantFamily(
     },
     variants: Object.freeze(variants),
   };
+  bindManifestShaderSource(
+    entry,
+    () => materialShaderSource(primary),
+    () => manifestShaderSourcePrepared(primary),
+  );
   return Object.freeze(entry);
 }

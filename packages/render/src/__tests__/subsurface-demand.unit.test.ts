@@ -124,10 +124,31 @@ describe('subsurface view topology admission', () => {
     expect(() =>
       subsurfaceTopology(subsurfaceSelection([material()]).demand, deferred, device, true),
     ).toThrow('single-sample Deferred');
-    // Null is a real structural backend; absent numeric limits/features must
-    // reject active diffusion rather than qualify physical GPU support.
+    const eligible = {
+      ...device,
+      caps: {
+        ...device.caps,
+        compute: true,
+        storageTexture: true,
+        storageBuffer: true,
+        indirectDrawing: true,
+        rgba16floatStorage: true,
+      },
+      limits: {
+        ...device.limits,
+        maxStorageTexturesPerShaderStage: 3,
+        maxStorageBuffersPerShaderStage: 3,
+      },
+    };
+    expect(
+      subsurfaceTopology(subsurfaceSelection([material()]).demand, deferred, eligible, false),
+    ).toEqual({ quality: 'high' });
+    const constrained = {
+      ...eligible,
+      limits: { ...eligible.limits, maxStorageTexturesPerShaderStage: 2 },
+    };
     expect(() =>
-      subsurfaceTopology(subsurfaceSelection([material()]).demand, deferred, device, false),
-    ).toThrow('32768-byte workgroup storage');
+      subsurfaceTopology(subsurfaceSelection([material()]).demand, deferred, constrained, false),
+    ).toThrow('RGBA16F storage targets');
   });
 });

@@ -81,6 +81,8 @@ export interface RenderFeatureFullscreenProgramDeclaration {
   readonly usesView?: boolean;
   /** Read-only storage buffers appended after the regular color/depth reads. */
   readonly storageBindings?: readonly number[];
+  /** Current uniform bytes for an automatic chain pass. Must match params.byteSize. */
+  readonly frameParams?: Uint8Array;
   readonly params?: {
     readonly byteSize: number;
     readonly defaultValue: Uint8Array;
@@ -953,7 +955,14 @@ function cloneSignaturePrimitive(
     : { kind: 'primitive', token, numberValue: result.numberValue };
 }
 
+function fullscreenProgramTopology(resource: RenderFeatureFullscreenProgramDeclaration) {
+  if (!Object.hasOwn(resource, 'frameParams')) return resource;
+  const { frameParams: _frameParams, ...topology } = resource;
+  return topology;
+}
+
 function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unknown {
+  if (resource.kind === 'fullscreen-program') return fullscreenProgramTopology(resource);
   if (resource.kind === 'scene-depth') return { ...resource, camera: undefined };
   if (resource.kind !== 'buffer') return resource;
   // Match resourceTopology exactly: buffer payloads are upload evidence, not
@@ -1216,6 +1225,24 @@ function equalSortedUsage(usage: unknown, snapshot: RenderFeaturePlanSignatureNo
   return true;
 }
 
+function resourceFramePayloadKey(kind: unknown): string | undefined {
+  switch (kind) {
+    case 'buffer':
+      return 'data';
+    case 'fullscreen-program':
+      return 'frameParams';
+    case 'scene-depth':
+      return 'camera';
+    case 'compute':
+    case 'copy':
+    case 'raster':
+    case 'shadow-caster':
+      return 'enabled';
+    default:
+      return undefined;
+  }
+}
+
 function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatureNode): boolean {
   if (
     isOwnedRenderFeatureProgramData(resource) &&
@@ -1232,17 +1259,7 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
     return false;
   }
   const source = resource as Readonly<Record<string, unknown>>;
-  const payloadKey =
-    source.kind === 'buffer'
-      ? 'data'
-      : source.kind === 'scene-depth'
-        ? 'camera'
-        : source.kind === 'compute' ||
-            source.kind === 'copy' ||
-            source.kind === 'raster' ||
-            source.kind === 'shadow-caster'
-          ? 'enabled'
-          : undefined;
+  const payloadKey = resourceFramePayloadKey(source.kind);
   if (payloadKey === undefined) return equalSignatureNode(source, snapshot);
 
   // Camera motion and buffer uploads change frame data, not graph topology.
@@ -1424,6 +1441,7 @@ function resourceTopology(
   resource: RenderFeatureResourceDeclaration,
   metrics?: RenderFeaturePlanSignatureMetrics,
 ): unknown {
+  if (resource.kind === 'fullscreen-program') return fullscreenProgramTopology(resource);
   if (resource.kind === 'scene-depth') return { ...resource, camera: undefined };
   if (resource.kind === 'buffer') {
     if (metrics !== undefined && resource.data !== undefined) {
@@ -1661,11 +1679,7 @@ function validPlanResource(
   targets: ReadonlySet<string>,
 ): boolean {
   if (!validName(resource.name) || resources.has(resource.name)) return false;
-  if (
-    resource.kind === 'fullscreen-program' &&
-    resource.chain !== undefined &&
-    resource.chain !== true
-  )
+  if (resource.kind === 'fullscreen-program' && !validFullscreenProgramResource(resource))
     return false;
   if (
     resource.kind === 'feature-texture-reference' &&
@@ -1684,6 +1698,18 @@ function validPlanResource(
       ? targets.has(resource.logicalTarget)
       : isSceneDataTarget(resource.logicalTarget) ||
         isRenderFeatureTextureReference(resource.logicalTarget))
+  );
+}
+
+function validFullscreenProgramResource(
+  resource: RenderFeatureFullscreenProgramDeclaration,
+): boolean {
+  if (resource.chain !== undefined && resource.chain !== true) return false;
+  return (
+    resource.frameParams === undefined ||
+    (resource.chain === true &&
+      resource.frameParams instanceof Uint8Array &&
+      resource.frameParams.byteLength === resource.params?.byteSize)
   );
 }
 

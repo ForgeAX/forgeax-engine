@@ -125,7 +125,10 @@ export const DIFFUSE_GI_TIER_BUDGETS: Readonly<Record<DiffuseGiTier, DiffuseGiTi
   } satisfies Record<DiffuseGiTier, DiffuseGiTierBudget>);
 
 /** Render-profile fields one tier owns; spread over a Standard profile. */
-export type DiffuseGiTierProfile = Pick<StandardProfile, 'renderPath' | 'pbr' | 'ibl' | 'ssao'> & {
+export type DiffuseGiTierProfile = Pick<
+  StandardProfile,
+  'renderPath' | 'pbr' | 'ibl' | 'ambientOcclusion'
+> & {
   readonly diffuseGi?: StandardDiffuseGi;
 };
 
@@ -162,7 +165,7 @@ export function resolveDiffuseGiTier(
       Object.freeze({
         tier,
         lane: 'direct-ibl-ssao',
-        profile: Object.freeze({ ...raster, ibl: true, ssao: true }),
+        profile: Object.freeze({ ...raster, ibl: true, ambientOcclusion: { enabled: true } }),
       }),
     );
   const gap = capabilityGap(caps);
@@ -171,7 +174,7 @@ export function resolveDiffuseGiTier(
       Object.freeze({
         tier,
         lane: 'direct-ibl',
-        profile: Object.freeze({ ...raster, ibl: true, ssao: false }),
+        profile: Object.freeze({ ...raster, ibl: true, ambientOcclusion: { enabled: false } }),
         fallback: Object.freeze({
           reason: gap,
           hint: 'Diffuse GI needs compute with storage buffers on a WebGPU-class backend; rendering direct + IBL.',
@@ -209,7 +212,7 @@ export function resolveDiffuseGiTier(
       profile: Object.freeze({
         ...raster,
         ibl: false,
-        ssao: false,
+        ambientOcclusion: { enabled: false },
         diffuseGi: freezeDiffuseGi(diffuseGi),
       }),
     }),

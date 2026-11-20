@@ -235,6 +235,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       const fault = first === undefined ? undefined : dynamicGeometryFault(first.world as World);
       return fault === undefined ? renderer.prepareDynamicGeometryCandidates(inputs) : err(fault);
     },
+    reservePublishedMeshTransfer: (bytes) => renderer.reservePublishedMeshTransfer(bytes),
     preparePublishedMeshResidency: async (input, inputOwnership, options) => {
       const prepared = await afterScheduledPreparation(() =>
         renderer.preparePublishedMeshResidency(input, inputOwnership, options),
@@ -678,13 +679,15 @@ const RENDER_PROFILE_KEYS = new Set([
   'pipelineId',
   'lightCount',
   'renderPath',
+  'gbufferFormat',
+  'deferredDirectionalShadowReceiver',
   'subsurfaceQuality',
   'visibleSurface',
   'diffuseGi',
   'probePlacement',
   'pbr',
   'ibl',
-  'ssao',
+  'ambientOcclusion',
   'volumetricFog',
   'gpuOcclusion',
   'gbufferBatchOrderDiagnostic',
@@ -759,6 +762,16 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
   if (profile.renderPath !== 'forward' && profile.renderPath !== 'deferred') {
     return "RenderProfile.renderPath must be 'forward' or 'deferred'";
   }
+  if (
+    profile.gbufferFormat !== undefined &&
+    (profile.renderPath !== 'deferred' || profile.gbufferFormat !== 'default')
+  )
+    return "RenderProfile.gbufferFormat must be 'default' with renderPath 'deferred'";
+  if (
+    profile.deferredDirectionalShadowReceiver !== undefined &&
+    profile.deferredDirectionalShadowReceiver !== 'projected'
+  )
+    return 'RenderProfile.deferredDirectionalShadowReceiver must be projected when specified';
   if (
     profile.subsurfaceQuality !== undefined &&
     profile.subsurfaceQuality !== 'low' &&
@@ -901,17 +914,18 @@ function validateDiffuseGiProfile(profile: RenderProfile): string | undefined {
 }
 
 function validateSsaoProfile(profile: RenderProfile): string | undefined {
+  const settings = profile.ambientOcclusion;
   if (
-    typeof profile.ssao !== 'boolean' &&
-    (typeof profile.ssao !== 'object' || profile.ssao === null || Array.isArray(profile.ssao))
+    typeof settings !== 'object' ||
+    settings === null ||
+    Array.isArray(settings) ||
+    typeof settings.enabled !== 'boolean'
   )
-    return 'RenderProfile.ssao must be boolean or AO parameters';
-  if (typeof profile.ssao === 'object') {
-    const resolved = resolveSsaoParameters(profile.ssao);
-    if (!resolved.ok) return resolved.error.hint;
-    if (Object.keys(profile.ssao).some((key) => !Object.hasOwn(resolved.value, key)))
-      return 'RenderProfile.ssao contains an unsupported parameter';
-  }
+    return 'RenderProfile.ambientOcclusion requires a boolean enabled field';
+  const resolved = resolveSsaoParameters(settings);
+  if (!resolved.ok) return resolved.error.hint;
+  if (Object.keys(settings).some((key) => key !== 'enabled' && !Object.hasOwn(resolved.value, key)))
+    return 'RenderProfile.ambientOcclusion contains an unsupported parameter';
   return undefined;
 }
 
@@ -969,7 +983,7 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
           ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
           diffuseGi: freezeDiffuseGi(profile.diffuseGi),
         }),
-    ssao: typeof profile.ssao === 'object' ? Object.freeze({ ...profile.ssao }) : profile.ssao,
+    ambientOcclusion: Object.freeze({ ...profile.ambientOcclusion }),
     ...(profile.volumetricFog === undefined
       ? {}
       : { volumetricFog: Object.freeze({ ...profile.volumetricFog }) }),

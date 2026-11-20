@@ -184,7 +184,7 @@ export async function verifyStandardDeferredParity(
       renderer.setProfile({
         ...original,
         renderPath,
-        ssao,
+        ambientOcclusion: { enabled: ssao },
         ...(options.visibleSurface ? { visibleSurface: renderPath === 'deferred' } : {}),
       }),
     );

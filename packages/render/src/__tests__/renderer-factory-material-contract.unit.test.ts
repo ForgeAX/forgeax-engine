@@ -116,6 +116,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     const registry = {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      isSourceBackedMaterialArtifact: () => false,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
@@ -165,6 +166,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     const registry = {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      isSourceBackedMaterialArtifact: () => false,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
@@ -212,6 +214,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     const registry = {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      isSourceBackedMaterialArtifact: () => false,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;

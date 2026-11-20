@@ -1,5 +1,11 @@
 import type { ShaderModule } from '@forgeax/engine-rhi';
-import { type ManifestEntry, ShaderSource } from '@forgeax/engine-types';
+import {
+  publishShaderProgramTemplates,
+  type ShaderCatalog,
+  type ShaderProgramCompiler,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
+import { type ManifestEntry, ok, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ATMOSPHERE_SHADER_STAGES,
@@ -10,9 +16,94 @@ import {
   VOLUMETRIC_FOG_SHADER_STAGES,
 } from '../assembly/utility-shader-prewarm';
 
+import { prepareStandardSceneSources } from '../assembly/webgpu-ready-shaders';
+
 const ssrEntries = ['ssr_trace', 'ssr_temporal', 'vs_ssr_compose'].map(
   (entry) => ({ wgsl: `fn ${entry}() {}` }) as ManifestEntry,
 );
+it('leaves all Deferred source variants cold at boot and prepares only the selected variant', async () => {
+  const identifier = 'forgeax::engine-standard-deferred-lighting';
+  const compilerProfile = {
+    id: 'test',
+    language: 'wgsl',
+    profileVersion: '1',
+    adapterVersion: '1',
+    compilerVersion: '1',
+    nagaVersion: '1',
+  } as const;
+  const selection = { CLUSTER_FORWARD_AVAILABLE: true, DIRECT_DFG_LUT_AVAILABLE: false };
+  const library = publishShaderProgramTemplates(
+    new Map([
+      [
+        identifier,
+        {
+          schemaVersion: 'shader-program-template/1' as const,
+          compilerProfile,
+          source: '// Deferred source',
+          imports: {},
+          axes: Object.keys(selection),
+        },
+      ],
+    ]),
+  ).unwrap();
+  const compile = vi.fn<ShaderProgramCompiler['compile']>();
+  const compileAsync = vi.fn<NonNullable<ShaderProgramCompiler['compileAsync']>>(
+    async (_, defines) =>
+      ok({
+        manifestEntry: {
+          hash: 'compiled',
+          wgsl: `// LUT: ${defines.DIRECT_DFG_LUT_AVAILABLE}`,
+          bindings: '[]',
+          glsl: '',
+        },
+        uvSetCount: 0,
+      }),
+  );
+  const declaration = { identifier, program: identifier, selection };
+  const registry = new ShaderRegistry({
+    manifestUrl: 'memory:deferred',
+    programCompiler: { profile: compilerProfile, compile, compileAsync },
+    readText: async () =>
+      JSON.stringify({
+        schemaVersion: '7.0.0',
+        library,
+        entries: [
+          {
+            ...declaration,
+            hash: 'deferred',
+            programContract: {
+              schemaVersion: 'shader-program-contract/1',
+              gbuffer: 'standard-gbuffer/2',
+            },
+          },
+        ],
+        materialShaders: [{ ...declaration, sourcePath: identifier, paramSchema: '[]' }],
+      }),
+  });
+  (await registry.loadManifest()).unwrap();
+  const prepareModule = vi.fn();
+  const sources = await prepareStandardSceneSources(registry, prepareModule, vi.fn(), {
+    storageBuffer: true,
+    webgl2Downlevel: false,
+    extendedLighting: false,
+    atmosphere: false,
+    directionalPcss: false,
+    projector: false,
+  });
+  expect(compileAsync).not.toHaveBeenCalled();
+  expect(compile).not.toHaveBeenCalled();
+  expect(sources?.prepareDeferredLighting?.(true, true)).toBe(false);
+  (await registry.pendingTemplatePreparations())?.unwrap();
+  expect(sources?.prepareDeferredLighting?.(true, true)).toBe(true);
+  expect((sources?.deferred?.clusteredLut as ShaderSource).read()).toBe('// LUT: true');
+  expect(compileAsync).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    ...selection,
+    DIRECT_DFG_LUT_AVAILABLE: true,
+  });
+  expect(compile).not.toHaveBeenCalled();
+  expect(prepareModule).not.toHaveBeenCalled();
+});
+
 const pyramidEntries = ['depth_pyramid_seed', 'depth_pyramid_reduce'].map(
   (entry) => ({ wgsl: `fn ${entry}() {}` }) as ManifestEntry,
 );
@@ -29,6 +120,7 @@ describe('utility shader bundle preparation', () => {
       programContract: {
         schemaVersion: 'shader-program-contract/1' as const,
         gbuffer: 'standard-gbuffer/2' as const,
+        compactGbuffer: 'standard-gbuffer/4' as const,
       },
     }));
     const prepare = (rows: readonly ManifestEntry[]) =>
@@ -38,6 +130,17 @@ describe('utility shader bundle preparation', () => {
         vi.fn(),
       );
     expect((await prepare(entries))?.ssr.gbuffer).toBe('standard-gbuffer/2');
+    expect((await prepare(entries))?.ssr.compactGbuffer).toBe('standard-gbuffer/4');
+    const older = {
+      ...entries[0],
+      programContract: {
+        schemaVersion: 'shader-program-contract/1',
+        gbuffer: 'standard-gbuffer/2',
+      },
+    } as ManifestEntry;
+    const mixed = (await prepare([older, ...entries.slice(1)]))?.ssr;
+    expect(mixed?.gbuffer).toBe('standard-gbuffer/2');
+    expect(mixed?.compactGbuffer).toBeUndefined();
     const unversioned = ssrEntries[0];
     if (unversioned === undefined) throw new Error('Missing unversioned SSR fixture');
     expect((await prepare([unversioned, ...entries.slice(1)]))?.ssr.gbuffer).toBeUndefined();
@@ -210,4 +313,55 @@ describe.each([
       entries.map((entry) => entry.wgsl),
     );
   });
+});
+
+it('publishes Deferred lighting and diffusion sources without creating native modules', async () => {
+  const identifier = 'forgeax::engine-standard-deferred-lighting';
+  const diffusion = 'forgeax::engine-subsurface-diffusion';
+  const variants = [false, true].flatMap((clustered) =>
+    [false, true].map((directDfgLut) => ({
+      composedWgsl: `// Deferred: ${clustered} ${directDfgLut}`,
+      defines: {
+        CLUSTER_FORWARD_AVAILABLE: clustered,
+        DIRECT_DFG_LUT_AVAILABLE: directDfgLut,
+        EXTENDED_LIGHTING_AVAILABLE: true,
+        PROJECTOR_AVAILABLE: true,
+      },
+    })),
+  );
+  const registry = {
+    entries: () =>
+      [identifier, diffusion].map((identifier) => ({
+        identifier,
+        programContract: { gbuffer: 'standard-gbuffer/2' },
+      })),
+    materialShaderManifestEntries: () => [
+      { identifier, variants },
+      { identifier: diffusion, variants: [], composedWgsl: '// Subsurface diffusion' },
+    ],
+  } as unknown as ShaderCatalog;
+  const compile = vi.fn(async () => ({}) as ShaderModule),
+    seed = vi.fn();
+  const sources = await prepareStandardSceneSources(registry, compile, seed, {
+    storageBuffer: true,
+    webgl2Downlevel: false,
+    extendedLighting: true,
+    atmosphere: false,
+    directionalPcss: false,
+    projector: true,
+  });
+  expect(sources?.gbuffer).toBe('standard-gbuffer/2');
+  expect((sources?.subsurface as ShaderSource).read()).toBe('// Subsurface diffusion');
+  const published = Object.values(sources?.deferred ?? {});
+  Object.values(sources?.deferred ?? {}).forEach((source, index) => {
+    expect(source).toBe(published[index]);
+  });
+  expect(published.map((source) => (source as ShaderSource).read())).toEqual([
+    '// Deferred: true false',
+    '// Deferred: false false',
+    '// Deferred: true true',
+    '// Deferred: false true',
+  ]);
+  expect(compile).not.toHaveBeenCalled();
+  expect(seed).not.toHaveBeenCalled();
 });

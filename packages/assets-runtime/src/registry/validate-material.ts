@@ -252,6 +252,6 @@ export function materialShaderTextureFieldNames(
 ): ReadonlySet<string> | undefined {
   // A miss is an expected per-material answer here; the optional lookup does
   // not build the not-found diagnostic that lists every registered identifier.
-  return registry.shaderRegistry.materialArtifact(shaderId)?.paramSchemaProjection.derivedInterface
+  return registry.shaderRegistry.materialParamSchemaProjection(shaderId)?.derivedInterface
     .textureFieldNames;
 }

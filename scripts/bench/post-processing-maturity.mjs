@@ -325,15 +325,16 @@ async function fixture(width, height, capture = false) {
     value(
       renderer.setProfile({
         ...profile,
-        ssao: config.ao
+        ambientOcclusion: config.ao
           ? {
-              algorithm: 'gtao',
+              enabled: true,
+              method: 'gtao',
               quality: config.quality ?? 'medium',
               radius: 0.6,
               intensity: 1,
               bias: 0.025,
             }
-          : false,
+          : { enabled: false },
         volumetricFog:
           config.fogQuality === 'high'
             ? { quality: 'high', depth: 64, tileSize: 4 }

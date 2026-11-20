@@ -1,3 +1,4 @@
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { describe, expect, it } from 'vitest';
 import { resolveEngineStartup } from '../configuration';
 
@@ -23,6 +24,37 @@ const definition = {
 } as const;
 
 describe('engine startup configuration', () => {
+  it('resolves the named project AO settings independently from quality', () => {
+    const defaultPlan = resolveEngineStartup({}, ios).unwrap();
+    expect(defaultPlan.rendering.profile.ambientOcclusion).toEqual({
+      enabled: false,
+      method: 'ssao',
+    });
+    const enabled = resolveEngineStartup(
+      { settings: { rendering: { ambientOcclusion: { enabled: true, method: 'gtao' } } } },
+      ios,
+    ).unwrap();
+    expect(enabled.rendering.profile.ambientOcclusion).toMatchObject({
+      enabled: true,
+      method: 'gtao',
+    });
+  });
+
+  it('migrates a saved legacy profile without changing its selected AO method', () => {
+    const { ambientOcclusion: _ambientOcclusion, ...profile } = DEFAULT_STANDARD_PROFILE;
+    const legacy = { ...profile, ssao: true };
+    const startup = resolveEngineStartup(
+      { schemaVersion: 1, settings: { rendering: { profile: legacy } } },
+      ios,
+    ).unwrap();
+    expect(startup.rendering.profile.ambientOcclusion).toMatchObject({
+      enabled: true,
+      method: 'gtao',
+    });
+    expect(startup.rendering.profile).not.toHaveProperty('ssao');
+    expect(legacy.ssao).toBe(true);
+  });
+
   it('inherits the WeChat baseline through a custom device family while leaving Browser output native', () => {
     const native = resolveEngineStartup(definition, { ...ios, runtime: 'wechat' });
     const browser = resolveEngineStartup(definition, { ...ios, runtime: 'browser' });

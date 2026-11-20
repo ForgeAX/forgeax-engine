@@ -276,7 +276,11 @@ async function fixture(
   host.onError((error) => errors.push(error));
   const renderer = exposeRenderer(host);
   expect(
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'deferred',
+      ambientOcclusion: { enabled: false },
+    }).ok,
   ).toBe(true);
   const assets = host.assetRegistry;
   const world = new World({ assets });
@@ -396,13 +400,19 @@ async function fixture(
     return submitted.receipt;
   };
   let firstReady = false;
+  let pendingReason: string | undefined;
   for (let frame = 0; frame < 30; frame++) {
-    if ((await draw()).presentation === 'ready') {
+    const receipt = await draw();
+    if (receipt.presentation === 'ready') {
       firstReady = true;
       break;
     }
+    pendingReason = JSON.stringify(receipt.presentationPendingReason);
   }
-  expect(firstReady).toBe(true);
+  expect(
+    firstReady,
+    `initial presentation pending: ${pendingReason}; errors: ${JSON.stringify(errors)}`,
+  ).toBe(true);
   expect(asyncPipelines.mock.calls.some(([descriptor]) => newLayout(descriptor))).toBe(false);
   hold = true;
   const release = () => {

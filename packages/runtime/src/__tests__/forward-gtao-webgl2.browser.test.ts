@@ -1,10 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
 import { createProfiler } from '@forgeax/engine-profiler';
 import {
-  AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
+  DEFAULT_STANDARD_PROFILE,
   type FrameReceipt,
   PointLight,
   Skylight,
@@ -471,7 +470,7 @@ function derivePublishedStandardClusterAbi(registry: ShaderRegistry) {
 }
 
 async function captureControlledWebgl2Lighting(input: {
-  readonly algorithm: typeof AMBIENT_OCCLUSION_GTAO | typeof AMBIENT_OCCLUSION_SSAO;
+  readonly algorithm: 'gtao' | 'ssao';
   readonly world: World;
   readonly skylight: ReturnType<typeof createForwardGtaoScene>['skylight'];
   readonly pointLight: ReturnType<typeof createForwardGtaoScene>['pointLight'];
@@ -488,7 +487,7 @@ async function captureControlledWebgl2Lighting(input: {
     }
   | undefined
 > {
-  if (input.algorithm !== AMBIENT_OCCLUSION_GTAO) return undefined;
+  if (input.algorithm !== 'gtao') return undefined;
   input.world.removeComponent(input.skylight, Skylight).unwrap();
   input.world.removeComponent(input.pointLight, PointLight).unwrap();
   input.setPhase('emissive-only-no-lights');
@@ -646,8 +645,8 @@ function maxDisplayDelta(
 }
 
 it.each([
-  ['SSAO', AMBIENT_OCCLUSION_SSAO],
-  ['GTAO', AMBIENT_OCCLUSION_GTAO],
+  ['SSAO', 'ssao'],
+  ['GTAO', 'gtao'],
 ])(
   'runs production Forward %s inputs, filtering, Cluster packing and lighting on WebGL2',
   {
@@ -665,6 +664,10 @@ it.each([
     const profiler = createProfiler();
     const hostAssembly = value(
       await constructRuntimeRendererHost(canvas, {
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          ambientOcclusion: { enabled: false, method: algorithm },
+        },
         rhi: recorder.backend.rhi,
         captureGpuTimings: true,
         profiler,
@@ -1028,7 +1031,6 @@ it.each([
         .addComponent(camera, {
           component: AmbientOcclusion,
           data: {
-            algorithm,
             directLightingStrength: 0,
             radius: FORWARD_GTAO_FIXTURE.radius,
             bias: FORWARD_GTAO_FIXTURE.bias,
@@ -1314,7 +1316,7 @@ it.each([
       let rawReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
       let filteredReferenceMetrics: ReturnType<typeof byteErrorMetrics> | undefined;
       let rawNormalMetrics: ReturnType<typeof byteErrorMetrics>[] = [];
-      if (algorithm === AMBIENT_OCCLUSION_GTAO) {
+      if (algorithm === 'gtao') {
         expect(aoInspection.execution).toBe('fragment');
         expect(aoInspection.input.extent).toEqual({ width, height });
         expect(aoInspection.output.extent).toEqual({
@@ -1388,7 +1390,7 @@ it.each([
             readonly visibility: number;
           }
         | undefined;
-      if (algorithm === AMBIENT_OCCLUSION_GTAO) {
+      if (algorithm === 'gtao') {
         if (
           emissiveOnlyLinear === undefined ||
           indirectOnlyLinear === undefined ||
@@ -1674,7 +1676,7 @@ it.each([
         sha256: await sha256Hex(capture.bytes),
         base64: base64Bytes(capture.bytes),
       });
-      if (algorithm === AMBIENT_OCCLUSION_GTAO) {
+      if (algorithm === 'gtao') {
         const report = {
           schema: 'forgeax::forward-gtao-conformance::1',
           backend: 'wgpu-webgl2',
@@ -1767,7 +1769,7 @@ it.each([
     } catch (failure) {
       await writeForwardGtaoFailureReport({
         writeFile: commands.writeFile,
-        path: `packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-webgl2-${algorithm === AMBIENT_OCCLUSION_GTAO ? 'gtao' : 'ssao'}-failure.json`,
+        path: `packages/runtime/reports/portable-gpu-data-kernels-and-ao/forward-gtao-webgl2-${algorithm === 'gtao' ? 'gtao' : 'ssao'}-failure.json`,
         failure,
         context: {
           backend: 'wgpu-webgl2',
@@ -1775,7 +1777,7 @@ it.each([
           cameraConfig: {
             width,
             height,
-            algorithm: algorithm === AMBIENT_OCCLUSION_GTAO ? 'gtao' : 'ssao',
+            algorithm: algorithm === 'gtao' ? 'gtao' : 'ssao',
             quality: FORWARD_GTAO_FIXTURE.quality,
             resolutionScale: FORWARD_GTAO_FIXTURE.resolutionScale,
           },

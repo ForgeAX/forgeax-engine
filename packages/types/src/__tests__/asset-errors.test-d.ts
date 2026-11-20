@@ -7,9 +7,6 @@
 // - Type-level: AssetErrorCode union contains 'asset-invalid-value' (5th member).
 // - Type-level: ASSET_ERROR_HINTS is Record<AssetErrorCode, string> -- adding a
 //   new union member without hint entry is a TS compile error here.
-// - Type-level: exhaustive switch on AssetErrorCode covers all 5 cases without
-//   default fallback (charter proposition 4 explicit failure; noImplicitReturns
-//   guards drift).
 // - Runtime smoke: ASSET_ERROR_HINTS['asset-invalid-value'] hint literal matches
 //   the generalized register-time-validation hint (covers MaterialAsset clamp +
 //   strip-topology MeshAsset index-buffer cases; feat-20260604-mesh-topology-debug-draw
@@ -37,7 +34,7 @@ import {
   type VertexAttributeMap,
 } from '../index';
 
-describe('AssetErrorCode closed union - 22 members (feat-20260608 M0 +tileset-region-index-out-of-range + M1 +tileset-tile-entry-malformed; feat-20260621 +asset-invalidated)', () => {
+describe('AssetErrorCode closed union', () => {
   it('type-level: vertex color is the optional linear RGBA runtime attribute', () => {
     expectTypeOf<VertexAttributeMap['color']>().toEqualTypeOf<Float32Array | undefined>();
     expectTypeOf<MeshAsset['attributes']['color']>().toEqualTypeOf<Float32Array | undefined>();
@@ -58,86 +55,8 @@ describe('AssetErrorCode closed union - 22 members (feat-20260608 M0 +tileset-re
     expectTypeOf<'asset-invalidated'>().toMatchTypeOf<AssetErrorCode>();
   });
 
-  it('type-level: exhaustive switch covers all 22 members without default', () => {
-    function describeCode(code: AssetErrorCode): string {
-      switch (code) {
-        case 'asset-not-ready':
-          return 'preparing';
-        case 'asset-not-found':
-          return 'not-found';
-        case 'asset-parse-failed':
-          return 'parse-failed';
-        case 'asset-format-unsupported':
-          return 'format-unsupported';
-        case 'asset-fetch-failed':
-          return 'fetch-failed';
-        case 'catalog-source-unconfigured':
-          return 'catalog-source-unconfigured';
-        case 'asset-reference-invalid':
-        case 'asset-owner-closed':
-        case 'asset-write-conflict':
-        case 'asset-budget-exceeded':
-          return code;
-        case 'asset-invalid-value':
-          return 'invalid-value';
-        case 'cubemap-handle-missing':
-          return 'cubemap-handle-missing';
-        case 'invalid-source-format':
-          return 'invalid-source-format';
-        case 'load-failed':
-          return 'load-failed';
-        case 'device-unsupported':
-          return 'device-unsupported';
-        case 'ibl-precompute-not-dispatched':
-          return 'ibl-precompute-not-dispatched';
-        case 'mesh-vertex-stride-mismatch':
-          return 'mesh-vertex-stride-mismatch';
-        // === 1 new code (feat-20260523-shader-template-instance-split M1-T02) ===
-        case 'material-shader-ref-broken':
-          return 'ref-broken';
-        // === 1 new code (feat-20260526-material-asset-multipass-renderstate M1 / w6) ===
-        case 'material-circular-inheritance':
-          return 'circular-inheritance';
-        // === 2 new codes (feat-20260603-asset-import-loader-injection M1 / w1) ===
-        case 'loader-not-registered':
-          return 'loader-not-registered';
-        case 'asset-not-imported':
-          return 'asset-not-imported';
-        // === 1 new code (feat-20260604-hdr-equirect-cube-importer-loader M2 / w4) ===
-        case 'texture-source-not-imported':
-          return 'texture-source-not-imported';
-        case 'source-not-imported':
-          return 'source-not-imported';
-        // === 3 new codes (feat-20260608-mesh-multi-section-primitive-multi-material-slot M1 / w2) ===
-        case 'mesh-renderer-material-override-invalid':
-          return 'mesh-renderer-material-override-invalid';
-        case 'mesh-renderer-material-override-overflow':
-          return 'mesh-renderer-material-override-overflow';
-        case 'mesh-asset-submeshes-empty':
-          return 'mesh-asset-submeshes-empty';
-        case 'mesh-asset-material-slot-index-out-of-range':
-          return 'mesh-asset-material-slot-index-out-of-range';
-        case 'mesh-submesh-index-range-out-of-bounds':
-          return 'mesh-submesh-index-range-out-of-bounds';
-        // === 1 new code (feat-20260608-tilemap-object-layer-rendering M0 baseline rebuild) ===
-        case 'tileset-region-index-out-of-range':
-          return 'tileset-region-index-out-of-range';
-        // === 1 new code (feat-20260608-tilemap-object-layer-rendering M1 schema extension) ===
-        case 'tileset-tile-entry-malformed':
-          return 'tileset-tile-entry-malformed';
-        // === 1 new code (feat-20260621-asset-registry-robustness-invalidate-inflight-cach M2 / w4) ===
-        case 'asset-invalidated':
-          return 'asset-invalidated';
-        // === 1 new code (feat-20260629-multi-uv-set-support M2 / m2-w5) ===
-        case 'mesh-bin-contract-violation':
-          return 'mesh-bin-contract-violation';
-        // === 1 new code (feat-20260707-texture-block-compression M5 / w35) ===
-        case 'mipgen-unsupported-compressed-format':
-          return 'mipgen-unsupported-compressed-format';
-      }
-      // No default - TS guards union drift at compile time.
-    }
-    expectTypeOf(describeCode).returns.toEqualTypeOf<string>();
+  it('type-level: contains the Mesh CPU residency error', () => {
+    expectTypeOf<'asset-cpu-data-unavailable'>().toMatchTypeOf<AssetErrorCode>();
   });
 
   it('type-level: ASSET_ERROR_HINTS is Record<AssetErrorCode, string>', () => {

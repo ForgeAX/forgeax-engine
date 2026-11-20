@@ -1,4 +1,4 @@
-import { interleavedMesh, prepareMeshData } from '@forgeax/engine-geometry';
+import { interleavedMesh, meshAssetDecoder, prepareMeshData } from '@forgeax/engine-geometry';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
@@ -41,7 +41,7 @@ import {
   validatePublicationReferenceRoots,
   validatePublicationReferences,
 } from './publication-references.js';
-import { realmRetention } from './retention-budget.js';
+import { type RetentionBudget, realmRetention } from './retention-budget.js';
 import type { RuntimeCatalogRow } from './validate-runtime-row.js';
 import { validateRuntimeRow } from './validate-runtime-row.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
@@ -57,6 +57,8 @@ export interface AssetSourceOptions {
 
 export interface AssetLoadOptions {
   readonly signal?: AbortSignal;
+  /** Prefer split Render residency for a recoverable static Mesh. */
+  readonly usage?: 'render';
 }
 
 interface SourceLoadOptions extends AssetLoadOptions {
@@ -87,6 +89,8 @@ export interface SourceEntry {
   readonly publication: AssetPublicationTuple & AssetPublicationEnvelope;
   readonly digest: string;
   readonly decoderIdentity: symbol | undefined;
+  readonly meshBody?: PackEnvelope;
+  readonly nativeMesh?: true;
 }
 
 export interface AdoptedAssetSource {
@@ -96,12 +100,60 @@ export interface AdoptedAssetSource {
   readonly source: AssetSource | undefined;
   readonly publication: (AssetPublicationTuple & AssetPublicationEnvelope) | undefined;
   readonly contentKey: string | undefined;
+  readonly decoderIdentity?: symbol | undefined;
+}
+
+export type MeshArtifactStorage = 'publication' | 'retained-bytes';
+export type MeshArtifactFailure = 'source-unavailable' | 'recovery-budget-exceeded';
+
+interface FixedMeshArtifact {
+  readonly bytes: number;
+  readonly storage: MeshArtifactStorage;
+  read(): Promise<MeshAsset>;
+  release(): void;
+  releaseDecodedSource(): void;
+}
+
+export function standaloneMeshBody(envelope: PackEnvelope): { readonly meshBody?: PackEnvelope } {
+  return envelope.kind === 'mesh' &&
+    envelope.artifacts.body?.integrity !== undefined &&
+    Object.keys(envelope.artifacts).length === 1
+    ? { meshBody: envelope }
+    : {};
+}
+
+/** The Geometry decoder receives a private view of this verified standalone body. */
+export async function decodeStandaloneMeshBody(
+  envelope: PackEnvelope,
+  bytes: Uint8Array,
+): Promise<MeshAsset> {
+  return (
+    await meshAssetDecoder.decode({
+      envelope: envelope as AssetDecoderInput<MeshAsset>['envelope'],
+      artifacts: {
+        read: async () => ok(bytes),
+        program: async () => err(artifactError(envelope.guid, 'mesh program')),
+        locate: () => undefined,
+      },
+      signal: new AbortController().signal,
+    })
+  ).unwrap();
+}
+
+function nativeMeshProjection(envelope: RuntimePackEnvelope['assets'][number]): {
+  readonly nativeMesh?: true;
+} {
+  const payload = envelope.payload as Partial<MeshAsset> | null;
+  return envelope.kind === 'mesh' && payload?.vertices instanceof Float32Array
+    ? { nativeMesh: true }
+    : {};
 }
 
 export interface AssetSource {
   readonly catalog: CatalogReplica;
   readonly catalogSource: CatalogSource;
   openLoadScope(): PackScope;
+  withDecodedClosure<T>(guid: string, read: () => Promise<T>): Promise<T>;
   readPack(
     row: CatalogEntry,
     signal: AbortSignal,
@@ -116,9 +168,16 @@ export interface AssetSource {
     pack: RuntimePackEnvelope,
     rows: readonly CatalogEntry[],
     values: ReadonlyMap<string, Asset>,
+    standaloneMeshes: ReadonlySet<string>,
     decoderIdentities: ReadonlyMap<string, symbol | undefined>,
   ): void;
   trimReadCache(): void;
+  retainMeshArtifact(
+    guid: string,
+    expected: AssetPublicationTuple,
+    decoderIdentity: symbol | undefined,
+    signal?: AbortSignal,
+  ): Promise<Result<FixedMeshArtifact, MeshArtifactFailure>>;
   invalidate(guid: string): void;
   revision(guid: string): number;
   readPluginDefinition(guid: string): Promise<Result<PluginAssetDefinition, AssetLoadError>>;
@@ -146,6 +205,32 @@ export interface AssetSource {
   snapshot(): AssetSourceSnapshot;
   subscribe(listener: (snapshot: AssetGraphSnapshot) => void): () => void;
   dispose(): void;
+}
+
+/** A fixed body is deliberately independent of the Catalog and decoder scope. */
+function pinMeshArtifact(
+  budget: RetentionBudget,
+  size: number,
+  storage: MeshArtifactStorage,
+  read: () => Promise<MeshAsset>,
+): Result<Omit<FixedMeshArtifact, 'releaseDecodedSource'>, 'recovery-budget-exceeded'> {
+  budget.settle(Number.POSITIVE_INFINITY, size);
+  if (!budget.fits(size)) return err('recovery-budget-exceeded');
+  let retained: (() => Promise<MeshAsset>) | undefined = read;
+  budget.add(size);
+  return ok({
+    bytes: size,
+    storage,
+    async read() {
+      if (retained === undefined) throw new Error('fixed Mesh artifact was released');
+      return retained();
+    },
+    release() {
+      if (retained === undefined) return;
+      retained = undefined;
+      budget.add(-size);
+    },
+  });
 }
 
 function missing(guid: string): AssetLoadError {
@@ -423,12 +508,13 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       identity: Symbol(guid),
       value: freezeRuntimePayload(decoded.value),
       kind: envelope.kind,
+      decoderIdentity,
       // The graph decodes this output's references. The publication fence owns package evidence.
       refs: [...new Set(envelope.refs)],
       publication: tuple,
       digest: output.digest,
       references,
-      decoderIdentity,
+      ...standaloneMeshBody(envelope),
     });
   };
   const graph = new AssetGraph<SourceEntry, PackScope>({
@@ -474,6 +560,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     catalog: session,
     catalogSource: options.catalog,
     openLoadScope: () => new Map(),
+    withDecodedClosure: (guid, read) => graph.withDecodedClosure(guid, read),
     readPack: (row, signal, fetcher = sourceFetcher(row.packageUrl)) => {
       const validated = validateRuntimeRow(row);
       return validated.ok
@@ -486,6 +573,48 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         : Promise.resolve(validated);
     },
     readArtifact: storedArtifact,
+    retainMeshArtifact: async (guid, expected, decoderIdentity, signal = lifetime.signal) => {
+      if (
+        signal.aborted ||
+        !decoders.uses('mesh', meshAssetDecoder) ||
+        decoderIdentity !== decoders.identity('mesh')
+      )
+        return err('source-unavailable');
+      const row = session.get(guid);
+      const decoded = graph.entry(guid);
+      if (
+        row === undefined ||
+        decoded === undefined ||
+        decoded.decoderIdentity !== decoderIdentity ||
+        !checkCurrent(guid, expected).ok
+      )
+        return err('source-unavailable');
+      const fetcher = sourceFetcher(row.packageUrl);
+      const envelope =
+        decoded.meshBody ?? (await generatedMeshBody(row, decoded, guid, signal, fetcher));
+      const body = envelope?.artifacts.body;
+      if (envelope === undefined || body === undefined) return err('source-unavailable');
+      const pinned = await retainStandaloneMeshBody(
+        row.packageUrl,
+        envelope,
+        body,
+        signal,
+        fetcher,
+      );
+      if (!pinned.ok) return pinned;
+      if (
+        signal.aborted ||
+        decoderIdentity !== decoders.identity('mesh') ||
+        !checkCurrent(guid, expected).ok
+      ) {
+        pinned.value.release();
+        return err('source-unavailable');
+      }
+      return ok({
+        ...pinned.value,
+        releaseDecodedSource: () => graph.discardReady(guid, decoded),
+      });
+    },
     trimReadCache: () => {
       bundles.trim();
     },
@@ -493,11 +622,14 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       graph.invalidate(guid);
     },
     revision: (guid) => graph.revision(guid),
-    preparePublication: (pack, rows, values, decoderIdentities) => {
+    preparePublication: (pack, rows, values, standaloneMeshes, decoderIdentities) => {
       if (pack.scopeId !== session.scopeId)
         throw new TypeError('prepared publication must belong to the configured Catalog scope');
       const prepared = new Map<string, SourceEntry>();
       for (const row of rows) {
+        // The immutable artifact is already prepared and remains available
+        // to a first consumer. Keep no decoded cache for unconsumed meshes.
+        if (standaloneMeshes.has(row.guid)) continue;
         const envelope = pack.assets.find((asset) => asset.guid === row.guid);
         const output = row.publication?.outputs.find((output) => output.guid === row.guid);
         const value = values.get(row.guid);
@@ -507,12 +639,14 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           identity: Symbol(row.guid),
           value,
           kind: row.kind,
+          decoderIdentity: decoderIdentities.get(row.kind),
           refs: [...new Set(envelope.refs)],
           references: decoders.referencePolicy(row.kind),
           // Prepared rows are the Registry's private captured copies, not caller rows.
           publication: freezeRuntimePayload({ ...row.publication, scopeId: session.scopeId }),
           digest: output.digest,
-          decoderIdentity: decoderIdentities.get(row.kind),
+          ...standaloneMeshBody(envelope as PackEnvelope),
+          ...nativeMeshProjection(envelope),
         });
       }
       graph.prepare(prepared);
@@ -533,42 +667,33 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       // First demand may publish the declared output. Capture invalidation only
       // after that admission, just as ordinary source loads do.
       const revision = graph.revision(guid);
-      const decoded = await decodeRoot(guid, signal, new Map());
+      const decoderIdentity = decoders.identity('mesh');
+      const decoded = await graph.readOutput(
+        guid,
+        signal,
+        (entry) => decoderIdentity !== undefined && entry.decoderIdentity === decoderIdentity,
+      );
       if (!decoded.ok) return decoded;
       if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
-      const current = checkCurrent(guid, {
-        ...admitted.value.publication,
-        scopeId: session.scopeId,
-      });
-      if (!current.ok) return current;
-      if (graph.revision(guid) !== revision)
+      const requested = admitted.value.publication;
+      const actual = decoded.value.publication;
+      if (
+        graph.revision(guid) !== revision ||
+        decoded.value.decoderIdentity !== decoders.identity('mesh') ||
+        actual.generation !== requested.generation ||
+        actual.digest !== requested.digest ||
+        actual.outputSetDigest !== requested.outputSetDigest
+      )
         return err({
           code: 'asset-superseded',
           expected: 'the source read to remain current until completion',
           hint: 'retry the current Mesh publication',
           detail: { guid, generation: revision },
         });
+      const current = checkCurrent(guid, actual);
+      if (!current.ok) return current;
       // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
-      const decodedMesh = decoded.value.value as MeshAsset;
-      if (decodedMesh?.kind !== 'mesh')
-        return err(sourceFailure(guid, 'decoder returned another payload kind'));
-      const geometry = prepareMeshData(decodedMesh, guid);
-      if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
-      const mesh = interleavedMesh(decodedMesh);
-      // The decoder handed its output over, but a custom decoder may still hold
-      // its buffers; the public CPU read gives the caller private storage.
-      return ok(
-        copyAssetData({
-          vertices: mesh.vertices,
-          attributes: mesh.attributes,
-          ...(mesh.attributeStorage === undefined
-            ? {}
-            : { attributeStorage: mesh.attributeStorage }),
-          submeshes: mesh.submeshes,
-          ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
-          ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
-        }),
-      );
+      return copyCpuMeshGeometry(guid, decoded.value.value);
     },
     readPluginDefinition: async (guid) => {
       const loaded = await registry.load(guid, 'plugin');
@@ -665,6 +790,46 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       session.dispose();
     },
   };
+  // Native Runtime Pack meshes have a producer-owned cooked transport
+  // projection under the same immutable publication as their verified value.
+  async function generatedMeshBody(
+    row: CatalogEntry,
+    decoded: SourceEntry,
+    guid: string,
+    signal: AbortSignal,
+    fetcher: PackageFetcher,
+  ): Promise<PackEnvelope | undefined> {
+    if (!decoded.nativeMesh) return undefined;
+    const pack = await reader.read(row.packageUrl, decoded.publication, signal, fetcher);
+    if (!pack.ok) return undefined;
+    const envelope = pack.value.assets.find((output) => output.guid.toLowerCase() === guid);
+    return envelope && standaloneMeshBody(envelope).meshBody;
+  }
+
+  async function retainStandaloneMeshBody(
+    packageUrl: string,
+    envelope: PackEnvelope,
+    descriptor: ArtifactDescriptor,
+    signal: AbortSignal,
+    fetcher: PackageFetcher,
+  ): Promise<Result<Omit<FixedMeshArtifact, 'releaseDecodedSource'>, MeshArtifactFailure>> {
+    const request = { packageUrl, guid: envelope.guid, artifactKey: descriptor.path, descriptor };
+    if (descriptor.byteRange === undefined && descriptor.byteLength !== undefined) {
+      const fixed = options.catalog.retainArtifact?.(packageUrl, descriptor.path);
+      if (fixed !== undefined)
+        return pinMeshArtifact(retained, descriptor.byteLength, 'publication', async () => {
+          const bytes = (await readArtifact(request, fixed)).unwrap();
+          return decodeStandaloneMeshBody(envelope, bytes);
+        });
+    }
+    const result = await storedArtifact(request, signal, fetcher);
+    if (!result.ok) return err('source-unavailable');
+    const bytes = result.value.decoded;
+    return pinMeshArtifact(retained, bytes.byteLength, 'retained-bytes', () =>
+      decodeStandaloneMeshBody(envelope, bytes.slice()),
+    );
+  }
+
   function snapshot(): AssetSourceSnapshot {
     return {
       ...graph.snapshot(),
@@ -730,6 +895,26 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     return ok(row);
   }
   return registry;
+}
+
+function copyCpuMeshGeometry(guid: string, payload: unknown): Result<MeshGeometry, AssetLoadError> {
+  const decodedMesh = payload as MeshAsset;
+  if (decodedMesh?.kind !== 'mesh')
+    return err(sourceFailure(guid, 'decoder returned another payload kind'));
+  const geometry = prepareMeshData(decodedMesh, guid);
+  if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
+  const mesh = interleavedMesh(decodedMesh);
+  // A custom decoder can retain its buffers. The public CPU read owns its storage.
+  return ok(
+    copyAssetData({
+      vertices: mesh.vertices,
+      attributes: mesh.attributes,
+      ...(mesh.attributeStorage === undefined ? {} : { attributeStorage: mesh.attributeStorage }),
+      submeshes: mesh.submeshes,
+      ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+      ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+    }),
+  );
 }
 
 function resolveArtifactUrl(packageUrl: string, path: string): string {
